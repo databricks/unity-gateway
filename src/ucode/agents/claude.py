@@ -93,9 +93,7 @@ from ucode.state import (
     LAUNCH_DISCOVERY_OVERLAY_KEY,
     MANAGED_OVERLAY_KEY,
     is_tool_managed,
-    load_global_state,
     mark_tool_managed,
-    save_global_state,
     save_state,
 )
 from ucode.telemetry import agent_version, ug_version
@@ -112,7 +110,6 @@ CLAUDE_MCP_CONFIG_PATH = Path.home() / ".claude.json"
 # The default model is stored in Claude's default user settings, not the ucode settings.
 CLAUDE_USER_SETTINGS_PATH = CLAUDE_CONFIG_DIR / "settings.json"
 CLAUDE_BACKUP_PATH = APP_DIR / "claude-ucode-settings.backup.json"
-CLAUDE_CUSTOM_HEADERS_STATE_KEY = "claude_custom_headers"
 WEB_SEARCH_MCP_STATE_KEY = "claude_web_search_mcp"
 MINIMUM_CLAUDE_VERSION = (2, 1, 259)
 MINIMUM_CLAUDE_VERSION_TEXT = "2.1.259"
@@ -426,7 +423,6 @@ def render_overlay(
     static_models: list[str] | None = None,
     otel_tracing: bool = False,
     picker_catalog: AnthropicModelCatalog | None = None,
-    custom_headers: dict[str, str] | None = None,
     managed_http_headers: dict[str, str] | None = None,
 ) -> tuple[dict, list[list[str]]]:
     """Return (overlay, managed_key_paths) for Claude settings.json.
@@ -469,7 +465,6 @@ def render_overlay(
         header_lines.append(f"{MODEL_SERVICE_PARENT_SCHEMA_HEADER}: {parent_schema}")
     if smart_routing_v2.smart_routing_enabled():
         header_lines.append(f"{SMART_ROUTER_RECIPE_HEADER}: {configured_router_name()}")
-    header_lines.extend(f"{name}: {value}" for name, value in (custom_headers or {}).items())
     # Relayed: the X-Databricks-AI-Gateway-Token swap header is added per request
     # by the refresh proxy, not here — a static value would go stale mid-session.
     rendered_custom_headers = "\n".join(
@@ -1294,57 +1289,45 @@ def _custom_headers_from_settings(settings: dict) -> dict[str, set[str]]:
     return headers
 
 
-def _recorded_custom_headers() -> dict[str, set[str]]:
-    recorded = load_global_state().get(CLAUDE_CUSTOM_HEADERS_STATE_KEY)
-    if not isinstance(recorded, dict):
-        return {}
-    normalized: dict[str, set[str]] = {}
-    for name, values in recorded.items():
-        if not isinstance(name, str):
-            continue
-        if isinstance(values, str):
-            values = [values]
-        if not isinstance(values, list):
-            continue
-        strings = {value for value in values if isinstance(value, str)}
-        if strings:
-            normalized[name.casefold()] = strings
-    return normalized
-
-
 def _reject_custom_header_collisions(
     custom_headers: dict[str, str],
-    previous_custom_headers: dict[str, set[str]],
     managed_http_headers: dict[str, str] | None = None,
 ) -> None:
     if not custom_headers:
         return
 
-    settings_sources = [read_json_safe(CLAUDE_SETTINGS_PATH)]
+    private_settings = read_json_safe(CLAUDE_SETTINGS_PATH)
     managed_path = _managed_settings_path()
+    managed_settings: dict | None = None
     if managed_path is not None:
         managed_text = read_managed_file(managed_path)
         if managed_text is not None:
             try:
-                settings_sources.append(_parse_managed_settings(managed_text))
+                managed_settings = _parse_managed_settings(managed_text)
             except RuntimeError as exc:
                 raise RuntimeError(
                     f"Cannot safely inspect Claude Code managed settings at {managed_path}: {exc}."
                 ) from exc
 
+    if managed_settings is not None:
+        managed_env = managed_settings.get("env")
+        if isinstance(managed_env, dict) and ANTHROPIC_CUSTOM_HEADERS_ENV_KEY in managed_env:
+            raise RuntimeError(
+                "--header cannot be applied because Claude Code OS-managed settings define "
+                f"env.{ANTHROPIC_CUSTOM_HEADERS_ENV_KEY}, which takes precedence over launch "
+                "settings. Contact your administrator or omit --header."
+            )
+
     conflicts = custom_headers.keys() & {
-        name.strip().casefold() for name in (managed_http_headers or {})
+        name.strip().casefold() for name in (managed_http_headers or {}) if isinstance(name, str)
     }
-    for settings in settings_sources:
-        existing = _custom_headers_from_settings(settings)
-        for name in custom_headers:
-            if existing.get(name, set()) - previous_custom_headers.get(name, set()):
-                conflicts.add(name)
+    existing = _custom_headers_from_settings(private_settings)
+    conflicts.update(custom_headers.keys() & existing.keys())
     if conflicts:
         names = ", ".join(sorted(conflicts))
         raise RuntimeError(
             f"--header cannot override existing Claude Code header(s): {names}. "
-            "Remove the existing setting or use a different header name."
+            "Use a different header name or contact your administrator."
         )
 
 
@@ -1353,11 +1336,7 @@ def validate_custom_headers(state: dict, custom_headers: dict[str, str] | None =
     normalized_headers = {
         name.casefold(): value for name, value in dict(custom_headers or {}).items()
     }
-    _reject_custom_header_collisions(
-        normalized_headers,
-        _recorded_custom_headers(),
-        state.get("claude_http_headers"),
-    )
+    _reject_custom_header_collisions(normalized_headers, state.get("claude_http_headers"))
 
 
 def write_tool_config(
@@ -1371,26 +1350,7 @@ def write_tool_config(
     coding_agent_config_defaults: dict[str, str] | None = None,
     parent_schema: str | None = None,
     picker_catalog: AnthropicModelCatalog | None = None,
-    custom_headers: dict[str, str] | None = None,
 ) -> dict:
-    previous_custom_headers = _recorded_custom_headers()
-    current_custom_headers = {
-        name.casefold(): value for name, value in (custom_headers or {}).items()
-    }
-    _reject_custom_header_collisions(
-        current_custom_headers, previous_custom_headers, state.get("claude_http_headers")
-    )
-    if previous_custom_headers or current_custom_headers:
-        global_state = load_global_state()
-        # Retain old and new values until both settings files finish writing.
-        # This lets cleanup remove either value after a partial write failure.
-        pending_headers = {name: set(values) for name, values in previous_custom_headers.items()}
-        for name, value in current_custom_headers.items():
-            pending_headers.setdefault(name, set()).add(value)
-        global_state[CLAUDE_CUSTOM_HEADERS_STATE_KEY] = {
-            name: sorted(values) for name, values in pending_headers.items()
-        }
-        save_global_state(global_state)
     external_search = external_provider_selected()
     # Back up only a file that predates ucode's management of the tool. A
     # re-configure would otherwise snapshot ucode's own generated file, and
@@ -1435,7 +1395,6 @@ def write_tool_config(
         static_models=state.get("claude_static_models"),
         otel_tracing=should_write_tracing_settings,
         picker_catalog=picker_catalog,
-        custom_headers=custom_headers,
         managed_http_headers=state.get("claude_http_headers"),
     )
     source_scoped_defaults = bool((provider or parent_schema) and coding_agent_config_defaults)
@@ -1528,9 +1487,6 @@ def write_tool_config(
                     target_env.pop(key, None)
                 else:
                     target_env[key] = selected_default_model
-        managed_custom_header_names = (
-            CLAUDE_MANAGED_CUSTOM_HEADER_NAMES | current_custom_headers.keys()
-        )
         should_preserve_preexisting_claude_family_defaults = (
             not managed_config_present
             and not coding_agent_config_defaults
@@ -1559,8 +1515,7 @@ def write_tool_config(
             merged["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = _merge_anthropic_custom_headers(
                 existing_custom_headers,
                 overlay_custom_headers,
-                managed_custom_header_names,
-                previous_custom_headers,
+                CLAUDE_MANAGED_CUSTOM_HEADER_NAMES,
             )
         # Drop any apiKeyHelper a prior non-relayed launch left in the file; relayed
         # must not carry one (it would outrank the subscription OAuth).
@@ -1658,12 +1613,6 @@ def write_tool_config(
     else:
         state.pop("claude_relayed", None)
         state.pop("relayed_proxy_port", None)
-    global_state = load_global_state()
-    if current_custom_headers:
-        global_state[CLAUDE_CUSTOM_HEADERS_STATE_KEY] = current_custom_headers
-    else:
-        global_state.pop(CLAUDE_CUSTOM_HEADERS_STATE_KEY, None)
-    save_global_state(global_state)
     state = mark_tool_managed(state, "claude", managed_keys)
     save_state(state)
     return state
@@ -1673,7 +1622,6 @@ def _merge_anthropic_custom_headers(
     existing: object,
     ucode_headers: str,
     managed_header_names: Collection[str] = CLAUDE_MANAGED_CUSTOM_HEADER_NAMES,
-    removable_header_values: dict[str, set[str]] | None = None,
 ) -> str:
     """Preserve user headers while replacing the header names managed by ucode.
 
@@ -1681,8 +1629,7 @@ def _merge_anthropic_custom_headers(
 
     1. Split the existing custom headers by newline into individual header items.
     2. Split each item on ``:`` to identify its header name.
-    3. Replace headers in ``managed_header_names`` with ucode's values and remove
-       exact values previously recorded as temporary, while preserving all others.
+    3. Replace headers in ``managed_header_names`` with ucode's values while preserving all others.
     4. Append any ucode-managed headers that were not already present.
 
     Header names are compared case-insensitively. Non-header lines are also preserved to avoid
@@ -1713,12 +1660,6 @@ def _merge_anthropic_custom_headers(
                 merged.append(replacement)
                 replaced_names.add(normalized_name)
             continue
-        if (
-            separator
-            and removable_header_values
-            and _value.strip() in removable_header_values.get(normalized_name, set())
-        ):
-            continue
         if line:
             merged.append(line)
 
@@ -1726,6 +1667,34 @@ def _merge_anthropic_custom_headers(
         if name not in replaced_names:
             merged.append(ucode_lines_by_name[name])
     return "\n".join(merged)
+
+
+def _custom_headers_text(custom_headers: dict[str, str]) -> str:
+    return "\n".join(f"{name}: {value}" for name, value in custom_headers.items())
+
+
+def _merge_launch_custom_headers(settings: dict, custom_headers: dict[str, str]) -> dict:
+    """Add launch-scoped headers to a composed Claude settings document."""
+    if not custom_headers:
+        return settings
+    env = settings.setdefault("env", {})
+    if not isinstance(env, dict):
+        raise RuntimeError("Claude settings 'env' must be an object for launch headers.")
+    env[ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = _merge_anthropic_custom_headers(
+        env.get(ANTHROPIC_CUSTOM_HEADERS_ENV_KEY),
+        _custom_headers_text(custom_headers),
+        managed_header_names=frozenset(),
+    )
+    return settings
+
+
+def _launch_custom_headers_settings(custom_headers: dict[str, str]) -> dict:
+    """Return an inline settings overlay for invocation-scoped Claude headers."""
+    settings = copy.deepcopy(read_json_safe(CLAUDE_SETTINGS_PATH))
+    _merge_launch_custom_headers(settings, custom_headers)
+    env = settings.get("env")
+    value = env.get(ANTHROPIC_CUSTOM_HEADERS_ENV_KEY) if isinstance(env, dict) else None
+    return {"env": {ANTHROPIC_CUSTOM_HEADERS_ENV_KEY: value}}
 
 
 def _required_custom_headers(value: object) -> dict[str, str] | None:
@@ -2190,7 +2159,12 @@ def _rewrite_relayed_port(state: dict, port: int) -> None:
         write_json_file(CLAUDE_SETTINGS_PATH, settings)
 
 
-def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
+def _launch_relayed(
+    state: dict,
+    binary: str,
+    tool_args: list[str],
+    custom_headers: dict[str, str] | None = None,
+) -> None:
     """Relayed launch: sign into the Claude subscription, start the loopback
     refresh proxy, then run Claude Code alongside it (the proxy must outlive the
     exec, so we spawn-and-wait rather than replacing the process)."""
@@ -2216,7 +2190,15 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
 
-    proc = subprocess_cross_os.popen(_build_claude_argv(binary, tool_args, relayed=True))
+    settings_override = _launch_custom_headers_settings(custom_headers) if custom_headers else None
+    proc = subprocess_cross_os.popen(
+        _build_claude_argv(
+            binary,
+            tool_args,
+            relayed=True,
+            settings_override=settings_override,
+        )
+    )
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:
@@ -2235,6 +2217,8 @@ def launch(
     *,
     options: LaunchOptions,
 ) -> None:
+    custom_headers = dict(options.custom_headers)
+    validate_custom_headers(state, custom_headers)
     tool_args = _external_web_search_args(state, tool_args)
     binary = SPEC["binary"]
     workspace = state.get("workspace")
@@ -2243,7 +2227,10 @@ def launch(
         # than persisting it in Claude's private or OS-managed settings.
         os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
     if state.get("claude_relayed"):
-        _launch_relayed(state, binary, tool_args)
+        if custom_headers:
+            _launch_relayed(state, binary, tool_args, custom_headers=custom_headers)
+        else:
+            _launch_relayed(state, binary, tool_args)
         return
     launch_default_model = state.get("_claude_launch_default_model")
     if isinstance(launch_default_model, str) and launch_default_model:
@@ -2253,6 +2240,13 @@ def launch(
     routing_setup_failed = False
     if options.launch_smart_routing:
         try:
+            compose_settings = _compose_v2_settings
+            if custom_headers:
+
+                def compose_settings(tool_args: list[str]) -> tuple[dict, list[str]]:
+                    settings, remaining = _compose_v2_settings(tool_args)
+                    return _merge_launch_custom_headers(settings, custom_headers), remaining
+
             smart_routing_v2.launch_claude(
                 state,
                 tool_args,
@@ -2260,14 +2254,10 @@ def launch(
                 user_settings_path=CLAUDE_USER_SETTINGS_PATH,
                 # With no user pin, let Claude resolve its starting model from its own settings.
                 launch_model=options.user_pinned_model,
-                compose_settings=_compose_v2_settings,
+                compose_settings=compose_settings,
                 launch_model_args=_launch_model_args,
                 model_name=_maybe_add_1m_suffix,
-                **(
-                    {"custom_headers": dict(options.custom_headers)}
-                    if options.custom_headers
-                    else {}
-                ),
+                **({"custom_headers": custom_headers} if custom_headers else {}),
             )
         except smart_routing_v2.ClaudeRoutingSetupError:
             _debug("Claude smart-routing setup failed; launching normally", traceback.format_exc())
@@ -2276,7 +2266,7 @@ def launch(
             return
     if workspace and not custom_oauth_cli_enabled(state.get("custom_oauth")):
         os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
-    settings_override = None
+    settings_override = _launch_custom_headers_settings(custom_headers) if custom_headers else None
     launch_args = list(tool_args)
     launch_custom_model = state.get("_claude_launch_custom_model")
     if isinstance(launch_custom_model, str) and launch_custom_model:
@@ -2288,10 +2278,14 @@ def launch(
         else:
             # Claude rejects raw model ids outside its catalog.
             os.environ["ANTHROPIC_MODEL"] = CLAUDE_CUSTOM_MODEL_SELECTOR
-            settings_override = _launch_custom_model_settings(launch_custom_model)
+            settings_override = _merge_claude_settings(
+                settings_override or {}, _launch_custom_model_settings(launch_custom_model)
+            )
     elif options.user_pinned_model:
         os.environ["ANTHROPIC_MODEL"] = options.user_pinned_model
-        settings_override = {"env": {"ANTHROPIC_MODEL": options.user_pinned_model}}
+        settings_override = _merge_claude_settings(
+            settings_override or {}, {"env": {"ANTHROPIC_MODEL": options.user_pinned_model}}
+        )
         launch_args = [
             *_launch_model_args(tool_args, options.user_pinned_model),
             *tool_args,
@@ -2312,7 +2306,9 @@ def launch(
                 # Launch on a valid discovered model without turning it into a managed default or
                 # overwriting the user's saved selection. This also prevents Claude from appending
                 # that stale built-in selection to an otherwise replaced picker.
-                settings_override = {"model": picker_models[0]}
+                settings_override = _merge_claude_settings(
+                    settings_override or {}, {"model": picker_models[0]}
+                )
     if routing_setup_failed:
         # Override inherited and saved routing flags for this launch only. Older
         # saved hooks must not route to agents whose plugin could not be written.

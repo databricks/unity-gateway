@@ -2961,7 +2961,6 @@ def _launch_tool(
             custom_model=None,
             coding_agent_config_defaults=coding_agent_config_defaults,
             parent_schema=parent_schema,
-            **({"custom_headers": custom_headers} if tool == "claude" and custom_headers else {}),
         )
         if tool == "claude" and LAUNCH_DISCOVERY_OVERLAY_KEY in state:
             state[LAUNCH_DISCOVERY_OVERLAY_KEY]["_claude_launch_default_model"] = state.get(
