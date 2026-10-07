@@ -101,6 +101,37 @@ def _revert_mcp_test_state(cuj):
 class TestMcpRegistration(BaseCujTest):
     WORKSPACE_URL = "https://dbc-bbdd5508-648e.cloud.databricks.com"
 
+    def test_mcp_list_reports_managed_fixture_servers(self, cuj):
+        """Scenario: configure both agents and inspect unscoped `ug mcp list` output.
+
+        Expected: both managed fixture rows list Claude/Codex and aggregate `connected` status;
+        no `ug_e2e.other_tools` server appears. Codex connectivity is verified by its TUI journey.
+        """
+        session, workspace, _recorder = cuj
+        session.configure(
+            [
+                "configure",
+                "--agents",
+                f"{CLAUDE},{CODEX}",
+                "--workspace",
+                workspace.url,
+                "--skip-upgrade",
+            ]
+        )
+        listing = session.run("mcp", "list", timeout=120)
+        output = f"{listing.stdout}\n{listing.stderr}"
+        for service in SERVICES:
+            server_name = service.replace(".", "-")
+            rows = [
+                " ".join(line.split())
+                for line in output.splitlines()
+                if line.split()[:1] == [server_name]
+            ]
+            expected_row = f"{server_name} {service} (managed) {CLAUDE}, {CODEX} connected"
+            assert rows == [expected_row], output
+        assert "ug_e2e.other_tools" not in output, output
+        assert "ug_e2e-other_tools" not in output, output
+
     @pytest.mark.claude
     @pytest.mark.tui
     def test_mcp_registration_claude_servers_connect_and_work(self, cuj):
