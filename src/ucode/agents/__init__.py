@@ -41,7 +41,7 @@ from ucode.ui import (
     status_subprocess_stdout,
 )
 
-from . import claude, codex, copilot, gemini, opencode, pi
+from . import claude, codex, copilot, gemini, omp, opencode, pi
 from .args import LaunchOptions as LaunchOptions
 from .args import explicit_model_arg_value as explicit_model_arg_value
 
@@ -49,6 +49,7 @@ _MODULES = {
     "codex": codex,
     "claude": claude,
     "gemini": gemini,
+    "omp": omp,
     "opencode": opencode,
     "copilot": copilot,
     "pi": pi,
@@ -70,6 +71,8 @@ TOOL_ALIASES = {
     "opencode": "opencode",
     "copilot": "copilot",
     "pi": "pi",
+    "omp": "omp",
+    "oh-my-pi": "omp",
 }
 
 DEFAULT_TOOL = "codex"
@@ -80,7 +83,7 @@ _NATIVE_UPGRADE_COMMANDS = {
     "codex": ["codex", "update"],
 }
 
-# ucode tool -> `databricks aitools` agent id. gemini/pi aren't supported.
+# ucode tool -> `databricks aitools` agent id. gemini/pi/omp aren't supported.
 AITOOLS_AGENT_TOKENS = {
     "claude": "claude-code",
     "codex": "codex",
@@ -94,7 +97,7 @@ def install_databricks_ai_tools_for_agents(
 ) -> None:
     """Install Databricks AI Tools for supported agents.
 
-    Gemini and Pi have no ``aitools`` support and are dropped.
+    Gemini, Pi, and Oh My Pi have no ``aitools`` support and are dropped.
 
     This runs only during ``ug configure``. ``force_refresh`` reads the managed config fresh; a
     caller that already refreshed this launch (the main configure path) leaves it False so the gate
@@ -116,7 +119,7 @@ def normalize_tool(tool: str) -> str:
     normalized = TOOL_ALIASES.get(tool.strip().lower())
     if not normalized:
         raise RuntimeError(
-            f"Unsupported tool '{tool}'. Use one of: codex, claude, gemini, opencode, copilot, pi."
+            f"Unsupported tool '{tool}'. Use one of: codex, claude, gemini, opencode, copilot, pi, omp."
         )
     return normalized
 
@@ -444,9 +447,11 @@ def configure_tool(
             result = copilot.write_tool_config(state, model)
         elif tool == "pi":
             result = pi.write_tool_config(state, model)
+        elif tool == "omp":
+            result = omp.write_tool_config(state, model)
         else:
             result = opencode.write_tool_config(state, model)
-    # gemini/opencode/copilot/pi return (state, token); codex/claude return state
+    # gemini/opencode/copilot/pi/omp return (state, token); codex/claude return state
     if isinstance(result, tuple):
         return result[0]
     return result
@@ -499,6 +504,12 @@ def check_gateway_endpoint(state: dict, tool: str) -> bool:
             or bool(state.get("codex_models"))
             or bool(state.get("gemini_models"))
         )
+    if tool == "omp":
+        return (
+            bool(state.get("claude_models"))
+            or bool(state.get("codex_models"))
+            or bool(state.get("gemini_models"))
+        )
     return False
 
 
@@ -509,6 +520,7 @@ _TOOL_DISCOVERY_SOURCES: dict[str, tuple[str, ...]] = {
     "gemini": ("gemini",),
     "copilot": ("claude", "codex"),
     "pi": ("claude", "codex", "gemini"),
+    "omp": ("claude", "codex", "gemini"),
 }
 
 

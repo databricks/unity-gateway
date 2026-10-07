@@ -1,8 +1,8 @@
 # Unity Gateway (`ug`)
 
 Unity Gateway runs coding agents through Databricks AI Gateway. It configures
-Codex, Claude Code, Gemini CLI, OpenCode, GitHub Copilot CLI, and Pi, and can
-register Databricks MCP servers for Cursor Agent.
+Codex, Claude Code, Gemini CLI, OpenCode, GitHub Copilot CLI, Pi, and Oh My
+Pi, and can register Databricks MCP servers for Cursor Agent.
 
 The command is `ug`. Existing `ucode` commands remain supported, and the Python
 package is still named `ucode` for compatibility.
@@ -44,6 +44,7 @@ ug gemini
 ug opencode
 ug copilot
 ug pi
+ug omp
 ug cursor   # Cursor Agent, MCP-only
 ```
 
@@ -95,7 +96,8 @@ ug configure --profile DEFAULT --agents claude,codex
 ```
 
 Available coding agents are `codex`, `claude`, `gemini`, `opencode`,
-`copilot`, and `pi`. `cursor` can be included in `--agents` for MCP-only setup;
+`copilot`, `pi`, and `omp`. `cursor` can be included in `--agents` for MCP-only
+setup;
 Cursor models still run through your Cursor account.
 
 `UG_WORKSPACE` can provide the default workspace. An explicit `--workspace` or
@@ -258,6 +260,7 @@ The generated shell hooks expect Git Bash; PowerShell-only setups are not covere
 | OpenCode | `~/.ucode/opencode-xdg/opencode/opencode.json`, `~/.ucode/opencode-xdg/opencode/plugin/ucode-auth.js` |
 | GitHub Copilot CLI | `~/.copilot/ucode.env`, `~/.copilot/ucode-mcp-config.json` |
 | Pi | `~/.ucode/pi-home/.pi/agent/models.json`, `~/.ucode/pi-home/.pi/agent/settings.json` |
+| Oh My Pi | `~/.ucode/omp-home/.omp/agent/models.yml`, `~/.ucode/omp-home/.omp/agent/config.yml`, `~/.ucode/omp-home/.omp/agent/mcp.json` |
 | Cursor Agent | `~/.cursor/mcp.json` |
 | Unity Gateway | `~/.ucode/managed-state.json`, `~/.ucode/managed-backups/` |
 

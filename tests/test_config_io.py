@@ -6,6 +6,7 @@ import json
 
 import pytest
 import tomlkit
+import yaml
 
 import ucode.config_io as config_io
 from ucode.config_io import (
@@ -17,12 +18,14 @@ from ucode.config_io import (
     prune_key_paths,
     read_json_safe,
     read_toml_safe,
+    read_yaml_safe,
     restore_file,
     set_dry_run,
     write_dotenv,
     write_json_file,
     write_text_file,
     write_toml_file,
+    write_yaml_file,
 )
 
 
@@ -187,6 +190,26 @@ class TestWriteHelpers:
         write_toml_file(p, doc)
         assert not p.exists()
 
+    def test_write_yaml_file(self, tmp_path):
+        p = tmp_path / "out.yml"
+        write_yaml_file(p, {"providers": {"databricks-claude": {"apiKey": "!ug auth-token"}}})
+        assert yaml.safe_load(p.read_text(encoding="utf-8")) == {
+            "providers": {"databricks-claude": {"apiKey": "!ug auth-token"}}
+        }
+
+    def test_write_yaml_file_keeps_insertion_order(self, tmp_path):
+        # omp's models.yml is hand-read by users; a sorted dump would shuffle
+        # the provider blocks on every write.
+        p = tmp_path / "out.yml"
+        write_yaml_file(p, {"zebra": 1, "alpha": 2})
+        assert p.read_text(encoding="utf-8").splitlines() == ["zebra: 1", "alpha: 2"]
+
+    def test_write_yaml_file_dry_run_no_write(self, tmp_path):
+        set_dry_run(True)
+        p = tmp_path / "out.yml"
+        write_yaml_file(p, {"a": 1})
+        assert not p.exists()
+
     def test_write_dotenv(self, tmp_path):
         p = tmp_path / ".env"
         write_dotenv(p, {"KEY": "value", "OTHER": "123"})
@@ -254,6 +277,33 @@ class TestReadHelpers:
         p.write_text("[[[ broken", encoding="utf-8")
         doc = read_toml_safe(p)
         assert dict(doc) == {}
+
+    def test_read_yaml_safe_missing_file(self, tmp_path):
+        assert read_yaml_safe(tmp_path / "missing.yml") == {}
+
+    def test_read_yaml_safe_valid(self, tmp_path):
+        p = tmp_path / "models.yml"
+        p.write_text("providers:\n  databricks-claude:\n    api: anthropic-messages\n", "utf-8")
+        assert read_yaml_safe(p) == {
+            "providers": {"databricks-claude": {"api": "anthropic-messages"}}
+        }
+
+    def test_read_yaml_safe_invalid(self, tmp_path):
+        p = tmp_path / "bad.yml"
+        p.write_text("key: [unclosed\n", encoding="utf-8")
+        assert read_yaml_safe(p) == {}
+
+    def test_read_yaml_safe_non_mapping(self, tmp_path):
+        # A list document has no keys to merge into; treat it like an absent file
+        # rather than replacing the user's file wholesale.
+        p = tmp_path / "list.yml"
+        p.write_text("- a\n- b\n", encoding="utf-8")
+        assert read_yaml_safe(p) == {}
+
+    def test_read_yaml_safe_non_utf8(self, tmp_path):
+        p = tmp_path / "binary.yml"
+        p.write_bytes(b"\xff\xfe\x00not utf-8")
+        assert read_yaml_safe(p) == {}
 
 
 # ---------------------------------------------------------------------------

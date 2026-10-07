@@ -44,6 +44,7 @@ from ucode.agents import (
 )
 from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
+from ucode.agents.omp import OMP_CONFIG_BACKUP_PATH, OMP_CONFIG_PATH
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
 from ucode.constants import SMART_ROUTING_ENV_KEYS
@@ -175,9 +176,9 @@ from ucode.usage import usage as usage_report
 CustomOAuthConfig = custom_oauth.CustomOAuthConfig
 
 _DISCOVERY_CONSUMERS: dict[str, tuple[str, ...]] = {
-    "claude": ("claude", "opencode", "copilot", "pi"),
-    "codex": ("codex", "copilot", "pi"),
-    "gemini": ("gemini", "opencode", "pi"),
+    "claude": ("claude", "opencode", "copilot", "pi", "omp"),
+    "codex": ("codex", "copilot", "pi", "omp"),
+    "gemini": ("gemini", "opencode", "pi", "omp"),
     "oss": ("opencode",),
 }
 
@@ -602,12 +603,24 @@ def configure_shared_state(
         print_warning(f"Model service: {model_service_probe.detail}")
 
     want_claude = (
-        fetch_all or "claude" in tools or "opencode" in tools or "copilot" in tools or "pi" in tools
+        fetch_all
+        or "claude" in tools
+        or "opencode" in tools
+        or "copilot" in tools
+        or "pi" in tools
+        or "omp" in tools
     )
-    want_gemini = fetch_all or "gemini" in tools or "opencode" in tools or "pi" in tools
+    want_gemini = (
+        fetch_all or "gemini" in tools or "opencode" in tools or "pi" in tools or "omp" in tools
+    )
     # Claude's web-search server also needs a Responses-capable model.
     want_codex = (
-        fetch_all or "codex" in tools or "claude" in tools or "copilot" in tools or "pi" in tools
+        fetch_all
+        or "codex" in tools
+        or "claude" in tools
+        or "copilot" in tools
+        or "pi" in tools
+        or "omp" in tools
     )
     # Codex smart routing can select OSS models such as GLM, so a Codex-only
     # configure must persist that discovered family too.
@@ -1066,8 +1079,8 @@ def _status_models(tool: str, state: dict) -> list[str]:
         models = _model_values(state.get("copilot_models")) or (
             _model_values(state.get("claude_models")) + _model_values(state.get("codex_models"))
         )
-    elif tool == "pi":
-        models = _model_values(state.get("pi_models")) or (
+    elif tool in ("pi", "omp"):
+        models = _model_values(state.get(f"{tool}_models")) or (
             _model_values(state.get("claude_models"))
             + _model_values(state.get("codex_models"))
             + _model_values(state.get("gemini_models"))
@@ -1083,7 +1096,7 @@ def _status_default_model(tool: str, state: dict, models: list[str]) -> str | No
         return explicit
     # Claude and Codex deliberately leave the starting model to the agent unless a managed
     # config pins one. The other clients write the first resolved model into their ug config.
-    return models[0] if models and tool in ("gemini", "opencode", "copilot", "pi") else None
+    return models[0] if models and tool in ("gemini", "opencode", "copilot", "pi", "omp") else None
 
 
 def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
@@ -1275,6 +1288,9 @@ def revert() -> int:
     pi_settings_restored = restore_file(
         PI_SETTINGS_PATH, PI_SETTINGS_BACKUP_PATH, bool(managed_configs.get("pi"))
     )
+    omp_config_restored = restore_file(
+        OMP_CONFIG_PATH, OMP_CONFIG_BACKUP_PATH, bool(managed_configs.get("omp"))
+    )
     # Older Codex (< 0.134.0) had ucode edit the shared ~/.codex/config.toml in
     # place; restoring the per-profile file above does not undo that.
     legacy_codex_stripped = revert_legacy_shared_config()
@@ -1289,6 +1305,7 @@ def revert() -> int:
     print_kv("Claude Code OS-managed settings", claude_managed_result)
     print_kv("Codex OS-managed settings", codex_managed_result)
     print_kv("Pi settings", "restored" if pi_settings_restored else "unchanged")
+    print_kv("Oh My Pi config", "restored" if omp_config_restored else "unchanged")
     for client, spec in MCP_CLIENTS.items():
         print_kv(
             f"{spec['display']} MCP config",
@@ -1309,6 +1326,7 @@ _HELP_COMMAND_ORDER = (
     "copilot",
     "cursor",
     "gemini",
+    "omp",
     "opencode",
     "pi",
     "configure",
@@ -2906,7 +2924,7 @@ def _launch_tool(
                 f"{TOOL_SPECS[tool]['display']} may require one-time hook review. Open "
                 "`/hooks` and trust the ug routing hooks if prompted."
             )
-        if tool in ("gemini", "opencode", "copilot", "pi"):
+        if tool in ("gemini", "opencode", "copilot", "pi", "omp"):
             print_note(
                 f"{TOOL_SPECS[tool]['display']} token refresh is managed automatically "
                 f"every 30 minutes while the session is running."
@@ -3354,6 +3372,19 @@ def pi_cmd(
 
 
 @app.command(
+    "omp",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+    rich_help_panel="Launch",
+)
+def omp_cmd(
+    ctx: typer.Context,
+    skip_preflight: SkipPreflightOption = False,
+) -> None:
+    """Launch Oh My Pi coding agent via Databricks."""
+    _launch_tool("omp", ctx, skip_preflight=skip_preflight)
+
+
+@app.command(
     "cursor",
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     rich_help_panel="Launch",
@@ -3400,7 +3431,7 @@ def configure(
         str | None,
         typer.Option(
             "--agent",
-            help="Configure only the named agent (e.g. claude, codex, gemini, opencode, copilot, pi).",
+            help="Configure only the named agent (e.g. claude, codex, gemini, opencode, copilot, pi, omp).",
         ),
     ] = None,
     agents: Annotated[
