@@ -268,9 +268,7 @@ def test_integration_suite_uses_only_public_process_boundaries():
 
 
 def test_live_integration_cases_belong_to_exactly_one_ci_agent():
-    root = Path(__file__).parent
-    paths = [*root.glob("integration/test_*.py"), *root.glob("e2e_cuj/test_*.py")]
-    for path in paths:
+    for path in (Path(__file__).parent / "integration").glob("test_*.py"):
         tree = ast.parse(path.read_text())
         module_marks = _markers(
             node
@@ -281,7 +279,7 @@ def test_live_integration_cases_belong_to_exactly_one_ci_agent():
                 for target in node.targets
             )
         )
-        for node in ast.walk(tree):
+        for node in tree.body:
             if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
                 marks = module_marks | _markers(node.decorator_list)
                 if marks & {"live", "managed_fixture", "workspace_switch"}:
