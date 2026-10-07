@@ -258,11 +258,13 @@ def write_tool_config(
         )
     existing = parse_dotenv(COPILOT_ENV_PATH)
     # Keep the inspectable file self-consistent without treating it as launch input.
-    override_model = existing.get("COPILOT_PROVIDER_WIRE_MODEL")
+    switching_from_anthropic = existing.get("COPILOT_PROVIDER_TYPE") == "anthropic"
+    override_model = (
+        None if switching_from_anthropic else existing.get("COPILOT_PROVIDER_WIRE_MODEL")
+    )
     overlay = render_env_overlay(state["workspace"], model, token, override_model=override_model)
     for key in LEGACY_ENV_KEYS:
         existing.pop(key, None)
-    switching_from_anthropic = existing.get("COPILOT_PROVIDER_TYPE") == "anthropic"
     for key in _MODEL_SELECTION_KEYS:
         if (
             key == "COPILOT_MODEL"

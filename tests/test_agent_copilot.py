@@ -282,12 +282,12 @@ class TestWriteToolConfigSwitching:
         assert "COPILOT_MODEL" not in written
         assert "COPILOT_PROVIDER_WIRE_API" not in written
 
-        cp_mod.write_tool_config(state, "gpt-5", token="tok-b")
+        cp_mod.write_tool_config(state, "system.ai.gpt-6-astra", token="tok-b")
         written = config_io_mod.parse_dotenv(env_path)
-        assert written["COPILOT_MODEL"] == "gpt-5"
+        assert written["COPILOT_MODEL"] == "system.ai.gpt-6-astra"
         assert "COPILOT_PROVIDER_MODEL_ID" not in written
         assert "COPILOT_PROVIDER_WIRE_MODEL" not in written
-        assert written["COPILOT_PROVIDER_WIRE_API"] == "completions"
+        assert written["COPILOT_PROVIDER_WIRE_API"] == "responses"
 
 
 class TestMcpServerConfig:
