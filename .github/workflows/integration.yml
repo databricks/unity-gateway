@@ -48,6 +48,7 @@ env:
   CLAUDE_VERSION: ${{ inputs.claude_version || '2.1.280' }}
   CODEX_VERSION: ${{ inputs.codex_version || '0.154.0' }}
   OPENCODE_VERSION: ${{ inputs.opencode_version || '1.18.31' }}
+  COPILOT_VERSION: '1.0.91'
   PACKAGE_INDEX: ${{ inputs.default_index || 'https://pypi.org/simple' }}
 
 jobs:
@@ -175,14 +176,14 @@ jobs:
           PY
 
   smoke:
-    name: Smoke journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}
+    name: Smoke journeys · ${{ matrix.agent }}
     needs: workspace
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        agent: [claude, codex]
+        agent: [claude, codex, copilot]
     env:
       UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
       DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
@@ -210,6 +211,7 @@ jobs:
             claude) args=(--claude-version "$CLAUDE_VERSION") ;;
             codex) args=(--codex-version "$CODEX_VERSION") ;;
             opencode) args=(--opencode-version "$OPENCODE_VERSION") ;;
+            copilot) args=(--copilot-version "$COPILOT_VERSION") ;;
           esac
           if [[ -n "$DEPENDENCY" ]]; then
             args+=(--dependency "$DEPENDENCY")

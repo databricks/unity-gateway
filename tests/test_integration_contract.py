@@ -162,7 +162,7 @@ def test_live_integration_cases_belong_to_exactly_one_ci_agent():
             if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
                 marks = module_marks | _markers(node.decorator_list)
                 if marks & {"live", "managed", "workspace_switch"}:
-                    assert len(marks & {"claude", "codex", "opencode"}) == 1, node.name
+                    assert len(marks & {"claude", "codex", "opencode", "copilot"}) == 1, node.name
 
 
 def test_model_discovery_cases_match_current_launch_contract():
@@ -251,6 +251,7 @@ def test_smoke_covers_hosted_custom_oauth_and_headless_for_both_agents():
         "test_ug_codex_custom_oauth_cli_boots",
         "test_ug_claude_headless_prompt_argument",
         "test_ug_codex_headless_prompt_argument",
+        "test_ug_copilot_claude_native_provider",
     }
 
 

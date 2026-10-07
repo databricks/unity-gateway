@@ -99,6 +99,11 @@ when an explicit model is supplied. The only live OpenCode journey is the headle
 prompt case in `test_ug_opencode_headless.py`; there is no dedicated live OpenCode
 model-selection journey.
 
+Copilot's native Claude route has one live smoke journey in
+`test_ug_copilot_headless.py`. Run it with `--copilot-version 1.0.91` against the
+existing e2e workspace. It checks a completed file task and the generated
+Anthropic provider URL, not cache hit counts in the usage table.
+
 ## Run a specific combination
 
 Prerequisites: Python 3.12+, uv, and Node/npm. Live runs also require Databricks
@@ -211,6 +216,7 @@ test_ug_claude_headless.py              # script prompts, models, caller setting
 test_ug_claude_relayed.py               # relayed session: subscription + Databricks-hosted models
 test_ug_claude_tracing.py               # Claude OTLP export reaches the configured trace table
 test_ug_codex_headless.py               # script prompts and model arguments
+test_ug_copilot_headless.py             # Claude native provider and real file task
 test_ug_codex_tracing.py                # Codex OTLP export reaches the configured trace table
 test_ug_claude_commands.py              # command help forwarding
 test_ug_codex_commands.py               # command help and parser error forwarding
@@ -353,7 +359,7 @@ they only configure, list models, and open/close the picker. Other live CUJs per
 real model tasks.
 
 There are **62 live cases** (including 12 marked TUI journeys) and **7 installation
-checks** with Claude and Codex; selecting OpenCode adds one live headless case. A separate **6 managed-workspace cases** (one per agent, an idempotent
+checks** with Claude and Codex; selecting OpenCode or Copilot adds one live headless case per agent. A separate **6 managed-workspace cases** (one per agent, an idempotent
 re-configure, a cache-TTL journey, and two Claude defaults cases; marker `managed`) run against
 workspaces that publish CodingAgentConfigs; see "Managed-workspace journeys" below. One **`workspace_switch` case**
 uses two real workspaces and checks skills MCP cleanup and a completed Claude task.
@@ -520,8 +526,9 @@ each test; only explicit-model scenarios choose and record a discovered
 `system.ai` model as a test argument.
 Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
-headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
-two agent jobs). Full runs all 62 live cases, including those smoke cases, in two
+headless argument, and custom OAuth CLI TUI journeys for Claude and Codex, plus
+the Copilot native-Claude headless journey (seven cases, three agent jobs).
+Full runs all 62 Claude/Codex live cases, including their smoke cases, in two
 disjoint agent lanes:
 
 | Agent lane | Marker | Cases |

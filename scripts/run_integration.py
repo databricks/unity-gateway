@@ -30,6 +30,7 @@ AGENT_PACKAGES = {
     "claude": "@anthropic-ai/claude-code",
     "codex": "@openai/codex",
     "opencode": "opencode-ai",
+    "copilot": "@github/copilot",
 }
 MANAGED_DEFAULTS_TARGETS = (
     (
@@ -56,6 +57,7 @@ HEADLESS_TEST_NODES = {
     "claude": "test_ug_claude_headless.py::test_ug_claude_headless_prompt_argument",
     "codex": "test_ug_codex_headless.py::test_ug_codex_headless_prompt_argument",
     "opencode": "test_ug_opencode_headless.py::test_ug_opencode_headless_prompt_argument",
+    "copilot": "test_ug_copilot_headless.py::test_ug_copilot_claude_native_provider",
 }
 
 
@@ -288,6 +290,7 @@ def arguments(
     parser.add_argument("--claude-version", type=exact_npm_version)
     parser.add_argument("--codex-version", type=exact_npm_version)
     parser.add_argument("--opencode-version", type=exact_npm_version)
+    parser.add_argument("--copilot-version", type=exact_npm_version)
     parser.add_argument("--claude-model", default=environment.get("UG_INTEGRATION_CLAUDE_MODEL"))
     parser.add_argument("--codex-model", default=environment.get("UG_INTEGRATION_CODEX_MODEL"))
     parser.add_argument(
@@ -396,9 +399,11 @@ def arguments(
             args.pytest_args.extend([flag, str(value)])
     if selected.x:
         args.pytest_args.append("-x")
-    if not (args.claude_version or args.codex_version or args.opencode_version):
+    if not (
+        args.claude_version or args.codex_version or args.opencode_version or args.copilot_version
+    ):
         parser.error(
-            "Select --claude-version, --codex-version and/or --opencode-version explicitly."
+            "Select --claude-version, --codex-version, --opencode-version or --copilot-version explicitly."
         )
     if args.ug_version != "checkout" and not re.fullmatch(
         r"[0-9][0-9A-Za-z.!+_-]*", args.ug_version
@@ -572,6 +577,7 @@ def main() -> int:
             "claude": args.claude_version,
             "codex": args.codex_version,
             "opencode": args.opencode_version,
+            "copilot": args.copilot_version,
             "claude_model": args.claude_model,
             "codex_model": args.codex_model,
             "opencode_model": args.opencode_model,
@@ -792,6 +798,8 @@ def main() -> int:
         for agent in agents:
             agent_command = npm_executable(agent_bin, agent)
             version = run([agent_command, "--version"], env=runtime_env, timeout=30)
+            if agent == "copilot":
+                version = version.splitlines()[0].removesuffix(".")
             expected = getattr(args, f"{agent}_version")
             if not re.search(rf"(?<![\w.]){re.escape(expected)}(?![\w.])", version):
                 raise RuntimeError(f"Expected {agent} {expected}, got {version!r}")
@@ -887,7 +895,7 @@ def main() -> int:
         )
         for agent in agents:
             runtime_env[f"UG_INTEGRATION_{agent.upper()}_MODEL"] = (
-                getattr(args, f"{agent}_model") or ""
+                getattr(args, f"{agent}_model", None) or ""
             )
         suite = ROOT / "tests/integration"
         suite_hash = hashlib.sha256()
@@ -955,6 +963,8 @@ def main() -> int:
                 env=runtime_env,
                 timeout=30,
             )
+            if agent == "copilot":
+                after = after.splitlines()[0].removesuffix(".")
             if after != report["agents"][agent]:
                 raise RuntimeError(f"{agent} changed version during the suite: {after}")
     except KeyboardInterrupt:
