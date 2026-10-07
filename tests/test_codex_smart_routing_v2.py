@@ -13,6 +13,30 @@ from ucode.smart_routing import codex_interposer, codex_routing, v2
 WS = "https://example.databricks.com"
 
 
+@pytest.fixture(autouse=True)
+def routing_proxy(monkeypatch):
+    # These are launcher unit tests, not transport tests. Replace only the
+    # network factory so no developer credentials or live endpoint are used.
+    calls = []
+    resources = SimpleNamespace(calls=calls, token_provider=None)
+    server = SimpleNamespace(
+        server_address=("127.0.0.1", 41003),
+        serve_forever=lambda: None,
+        shutdown=lambda: calls.append("shutdown"),
+        server_close=lambda: calls.append("server_close"),
+    )
+    cache = SimpleNamespace(stop=lambda: calls.append("stop"))
+    client = SimpleNamespace(close=lambda: calls.append("close"))
+
+    def start_proxy(workspace, token_provider):
+        assert workspace == WS
+        resources.token_provider = token_provider
+        return server, cache, client
+
+    monkeypatch.setattr(v2.gateway_proxy, "start_codex_v2_proxy", start_proxy)
+    return resources
+
+
 def test_smart_routing_switch_message_is_boxed():
     message = v2.format_routing_notice("model-x", "Because X.")
 
@@ -181,7 +205,7 @@ class TestLaunchCodex:
         ("platform_name", "tui_has_provider"), [("posix", False), ("nt", True)]
     )
     def test_owns_app_server_interposer_and_tui_lifecycle(
-        self, monkeypatch, platform_name, tui_has_provider
+        self, monkeypatch, platform_name, tui_has_provider, routing_proxy
     ):
         processes = []
         interposer_args = {}
@@ -254,6 +278,8 @@ class TestLaunchCodex:
             "--config",
         ]
         assert processes[0].argv[7].startswith("model_providers.Databricks={")
+        assert 'base_url = "http://127.0.0.1:41003/v1"' in processes[0].argv[7]
+        assert "supports_websockets = false" in processes[0].argv[7]
         assert processes[0].argv[8] == "--config"
         hook_override = processes[0].argv[9]
         assert hook_override.startswith("hooks.PreToolUse=[{")
@@ -310,6 +336,7 @@ class TestLaunchCodex:
         assert interposer_args["kwargs"]["switch_message_fn"] is v2.format_routing_notice
         assert stopped == [True]
         assert processes[0].terminated is True
+        assert routing_proxy.calls == ["stop", "shutdown", "server_close", "close"]
 
     def test_managed_http_headers_reach_app_server_config(self, monkeypatch):
         # Smart routing rebuilds the overlay and passes it to the app-server as `-c` overrides that
@@ -364,29 +391,25 @@ class TestLaunchCodex:
         assert "x-databricks-workspace" in provider_arg
         assert "eng-ml-inference" in provider_arg
 
-    def test_subagent_only_launch_runs_tui_directly(self, tmp_path, monkeypatch):
+    def test_subagent_only_launch_runs_tui_directly(self, tmp_path, monkeypatch, routing_proxy):
         monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
         monkeypatch.setenv("CODEX_HOME", str(tmp_path))
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
         monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
         monkeypatch.setattr(
-            v2.subprocess,
-            "Popen",
-            lambda *_args, **_kwargs: pytest.fail("subagent-only routing spawns no app-server"),
-        )
-        monkeypatch.setattr(
             codex_interposer,
             "start_interposer_thread",
             lambda *_args, **_kwargs: pytest.fail("subagent-only routing must not interpose"),
         )
-        execd = []
+        spawned = []
 
-        def fake_exec(argv):
-            execd.append(argv)
-            raise SystemExit(0)
+        def fake_spawn(argv):
+            assert "app-server" not in argv
+            spawned.append(argv)
+            return SimpleNamespace(wait=lambda: 0)
 
-        monkeypatch.setattr(v2, "exec_or_spawn", fake_exec)
+        monkeypatch.setattr(v2.subprocess_cross_os, "popen", fake_spawn)
 
         with pytest.raises(SystemExit) as exc:
             v2.launch_codex(
@@ -398,7 +421,7 @@ class TestLaunchCodex:
             )
 
         assert exc.value.code == 0
-        (argv,) = execd
+        (argv,) = spawned
         assert argv[0] == "codex"
         assert argv[-1] == "--search"
         assert 'model="gpt-start"' in argv
@@ -416,6 +439,73 @@ class TestLaunchCodex:
         # The hook subprocesses inherit the launch environment and pass the routing gate.
         assert os.environ[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
         assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "token"
+        assert routing_proxy.calls == ["stop", "shutdown", "server_close", "close"]
+
+    def test_transport_closes_when_codex_fails_to_start(self, monkeypatch, routing_proxy):
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
+        monkeypatch.setattr(codex, "ug_version", lambda: "test")
+        monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.154.0")
+
+        def fail_spawn(*args, **kwargs):
+            raise FileNotFoundError("isolated test binary does not exist")
+
+        monkeypatch.setattr(v2.subprocess_cross_os, "popen", fail_spawn)
+        with pytest.raises(FileNotFoundError):
+            v2.launch_codex(
+                {"workspace": WS, "codex_models": ["system.ai.gpt-5-6-sol"]},
+                [],
+                binary="missing-codex",
+                start_model="gpt-5.6-sol",
+                render_overlay=codex.render_overlay,
+            )
+        assert routing_proxy.calls == ["stop", "shutdown", "server_close", "close"]
+
+    def test_transport_refreshes_the_same_workspace_identity(self, monkeypatch, routing_proxy):
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        token_calls = []
+
+        def token(workspace, profile, *, force_refresh=False):
+            token_calls.append((workspace, profile, force_refresh))
+            return "token"
+
+        monkeypatch.setattr(v2, "get_databricks_token", token)
+        monkeypatch.setattr(codex, "ug_version", lambda: "test")
+        monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.154.0")
+        monkeypatch.setattr(
+            v2.subprocess_cross_os, "popen", lambda *_a, **_k: SimpleNamespace(wait=lambda: 0)
+        )
+        with pytest.raises(SystemExit):
+            v2.launch_codex(
+                {"workspace": WS, "profile": "routing-user", "codex_models": ["gpt-5.6-sol"]},
+                [],
+                binary="codex",
+                start_model="gpt-5.6-sol",
+                render_overlay=codex.render_overlay,
+            )
+        assert routing_proxy.token_provider(True) == "token"
+        assert token_calls == [(WS, "routing-user", False), (WS, "routing-user", True)]
+
+    def test_transport_closes_when_thread_cannot_start(self, monkeypatch, routing_proxy):
+        monkeypatch.setattr(v2, "get_databricks_token", lambda *_a, **_k: "token")
+        monkeypatch.setattr(codex, "ug_version", lambda: "test")
+        monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.154.0")
+
+        def fail_start():
+            raise RuntimeError("thread start failed")
+
+        monkeypatch.setattr(
+            v2, "threading", SimpleNamespace(Thread=lambda **_k: SimpleNamespace(start=fail_start))
+        )
+        with pytest.raises(RuntimeError, match="thread start failed"):
+            v2.launch_codex(
+                {"workspace": WS, "codex_models": ["gpt-5.6-sol"]},
+                [],
+                binary="codex",
+                start_model="gpt-5.6-sol",
+                render_overlay=codex.render_overlay,
+            )
+        assert routing_proxy.calls == ["stop", "server_close", "close"]
 
     def test_v2_pre_tool_hook_leaves_saved_hooks_to_codex(self, tmp_path, monkeypatch):
         codex_home = tmp_path / ".codex"

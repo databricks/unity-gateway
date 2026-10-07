@@ -235,6 +235,7 @@ test_ug_claude_commands.py              # command help forwarding
 test_ug_codex_commands.py               # command help and parser error forwarding
 test_ug_codex_app_server.py             # actual client/server initialize exchange
 test_ug_smart_routing_hooks.py           # live hook contract plus skill-driven subagent toggles
+test_ug_codex_v2_routing.py              # native v2 parent/child assignment routing CUJ
 test_ug_configure_claude_lifecycle.py   # repeat setup, revert, rejected credentials
 test_ug_configure_claude_workspace_switch.py # real skills MCP cleanup across two workspaces
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
@@ -407,6 +408,18 @@ bearer; no second workspace or extra secret is involved.
 The 14 retained numbered scenarios comprise 24 explicit journeys: 12 managed and 12 unmanaged
 executions; the complete integration suite collects 103 executions. See the named coverage and gaps matrix in
 [../README.md](../README.md).
+
+The native Codex v2 routing CUJ preserves an exact multiline assignment from the routing
+decision through one native `collaboration.spawn_agent` call, verifies the unpredictable file
+value and selected child model, and rejects MCP/route-child overlays and grandchildren. Run it
+with a generic profile and workspace as follows:
+
+```bash
+UCODE_TEST_WORKSPACE=https://your-existing-e2e-workspace \
+python3.12 scripts/run_integration.py \
+  --ug-version checkout --codex-version 0.154.0 --profile YOUR_PROFILE \
+  -- -k test_ug_codex_native_v2_plain_assignment_routing
+```
 
 ```bash
 # Append one of these selections to the runner command:

@@ -284,10 +284,9 @@ def resolve_spawn_route(
         return None
     # Derive the routing task from the first available plaintext field. The
     # harness-specific names are tried in order: `prompt`/`description` (Claude
-    # Code's Agent tool), `message` (Codex's spawn_agent — encrypted at
-    # send-time but readable here because the PreToolUse hook fires before
-    # that), then `task_name` / `agent_name` (weaker labels), then the generic
-    # default.
+    # Code's Agent tool), `message` (Codex's spawn_agent, made readable by ug's
+    # v2 wire adapter before native hook dispatch), then `task_name` /
+    # `agent_name` (weaker labels for other payloads), then the generic default.
     task = next(
         (
             value
