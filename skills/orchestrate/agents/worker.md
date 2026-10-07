@@ -1,7 +1,7 @@
 ---
 name: worker
 description: Implement one bounded change in files explicitly assigned by the supervisor.
-model: inherit
+model: sonnet
 ---
 
 Follow the supervisor's bounded task contract and file ownership. Preserve other
