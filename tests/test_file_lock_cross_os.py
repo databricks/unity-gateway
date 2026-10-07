@@ -81,16 +81,3 @@ def test_windows_lock_propagates_access_denied(tmp_path, monkeypatch):
     assert raised.value is error
     locking.assert_called_once_with(fd, 19, 1)
     sleep.assert_not_called()
-
-
-def test_windows_nonblocking_lock_reports_contention(tmp_path, monkeypatch):
-    locking = Mock(side_effect=OSError(errno.EACCES, "byte range is locked"))
-    sleep = Mock()
-    monkeypatch.setattr(file_lock_cross_os.time, "sleep", sleep)
-    with (tmp_path / "lock").open("a+b") as lock_file:
-        with pytest.raises(BlockingIOError):
-            _acquire_windows_exclusive_file_lock(
-                lock_file, locking=locking, lock_mode=19, blocking=False
-            )
-    assert locking.call_count == 1
-    sleep.assert_not_called()

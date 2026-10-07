@@ -1,6 +1,6 @@
 ---
 name: orchestrate
-description: Coordinate substantive development with native subagents only inside an enabled Unity Gateway smart-routing session. Follow the routing-state check before delegation. Skip easy tasks and explicit no-subagent requests.
+description: Coordinate substantive development with native subagents while Unity Gateway smart routing is enabled. Follow the routing-state check before using this workflow. Skip easy tasks and explicit no-subagent requests.
 model: inherit
 argument-hint: "[task, configure, or unconfigure]"
 ---
@@ -11,17 +11,20 @@ argument-hint: "[task, configure, or unconfigure]"
 
 This workflow is active only in a UG-launched smart-routing session while routing
 is enabled. Installed skill files, old context, and model preferences do not
-enable it. Before **every new delegation, including a retry**, run the resolution
-command below with the launching `$UCODE_SMART_ROUTER_PYTHON` interpreter. It
-checks the same session controls as the routing hooks. If the interpreter or
-session marker is absent, or resolution reports routing off, do not delegate.
+enable it. Before **every new delegation under this workflow, including a retry**,
+run the resolution command below with the launching `$UCODE_SMART_ROUTER_PYTHON`
+interpreter. It checks the same session controls as the routing hooks. If the
+interpreter or session marker is absent, or resolution reports routing off, do
+not use this workflow.
 Do not set routing flags or create a session to bypass this check.
 
 Turning Smart Router off also turns this workflow off immediately and supersedes
-earlier orchestration instructions. Continue in the root and collect results
-from existing children; do not start new automatic delegation or use default
-role models as a fallback. Turning Smart Router back on restores this workflow.
-Use the `smart-router` skill only when the user asks to change routing.
+earlier orchestration instructions. Do not start new automatic delegation or use
+orchestrator role models as a fallback. Continue in the root unless the user
+explicitly requests a subagent; honor that request using the native tool and normal harness
+model selection, without this workflow or its resolution helper. Keep routing off
+and collect results from existing children. Turning Smart Router back on restores
+this workflow. Use the `smart-router` skill only when the user asks to change routing.
 
 ## Workflow
 
