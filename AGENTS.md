@@ -77,6 +77,8 @@ Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file 
 <summary>Codex</summary>
 
 Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`.
+`ug configure --desktop` also applies the managed default and Databricks provider to
+shared `~/.codex/config.toml`, with a backup restored by `ug revert`.
 
 | Field | Without managed config | With managed config | Notes |
 |-------|------------------------|---------------------|-------|
@@ -85,6 +87,7 @@ Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`
 | `model_providers.Databricks` | Merge | Merge | Provider block: name, gateway base URL, wire API, `ug` auth command; other keys left alone |
 | `http_headers` | Merge | Merge | In `[model_providers.Databricks]`; merge `ug`'s routing headers by name, admin headers added under managed config |
 | `model_catalog_json` | Create/replace | Create/replace | In `~/.codex/config.toml`; `ug`'s own catalog reference, for a static model list |
+| Shared `model`, `model_provider`, `model_providers.Databricks` | Ignore | Merge with `--desktop` | In `~/.codex/config.toml`; preserve unrelated settings and restore backup on revert |
 | `mcp_servers` | Ignore | Merge | Managed file; add/update the config's MCP server entries, other entries left alone |
 
 </details>

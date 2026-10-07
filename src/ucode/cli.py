@@ -78,6 +78,11 @@ from ucode.databricks import (
     resolve_provider_launch_model,
     run_databricks_login,
 )
+from ucode.desktop_config import (
+    backup_desktop_config,
+    revert_desktop_config,
+    sync_desktop_config,
+)
 from ucode.managed_budget import (
     budget_usage_percent,
     recommendation_line,
@@ -803,6 +808,7 @@ def configure_workspace_command(
     databricks_ai_tools_enabled: bool | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
     offer_optional_setup: bool = False,
+    desktop: bool = False,
 ) -> int:
     """Configure a workspace while sharing one lazy privileged settings session.
 
@@ -819,6 +825,7 @@ def configure_workspace_command(
             databricks_ai_tools_enabled=databricks_ai_tools_enabled,
             custom_oauth=custom_oauth,
             offer_optional_setup=offer_optional_setup,
+            desktop=desktop,
         )
 
 
@@ -831,6 +838,7 @@ def _configure_workspace_command(
     databricks_ai_tools_enabled: bool | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
     offer_optional_setup: bool = False,
+    desktop: bool = False,
 ) -> int:
     if tool is not None and selected_tools is not None:
         raise RuntimeError("Use either --agent or --agents, not both.")
@@ -854,14 +862,22 @@ def _configure_workspace_command(
         )
         state = states[0]
         parent_schema = None
-        if tool in ("claude", "codex"):
+        managed = None
+        if tool in ("claude", "codex", "opencode"):
             managed, _ = refresh_managed_config(state, force_refresh=True)
             _reject_disabled_agent(managed, tool)
             if managed is not None:
                 state = resolve_state(managed, state, tool)
                 if not managed_provider_service(managed, tool):
                     parent_schema = managed_unity_catalog_location(managed, tool)
+        if desktop and (managed is None or tool not in ("codex", "opencode")):
+            raise RuntimeError("--desktop requires managed Codex or OpenCode configuration.")
+        resolved = state
+        if desktop and not is_dry_run():
+            backup_desktop_config(tool)
         state = configure_single_tool(tool, state, parent_schema=parent_schema)
+        if desktop and not is_dry_run():
+            sync_desktop_config(tool, resolved)
         install_databricks_ai_tools_for_agents(
             [tool], state, force_refresh=tool not in ("claude", "codex")
         )
@@ -913,6 +929,8 @@ def _configure_workspace_command(
             ):
                 if not install_tool_binary(tool_name, strict=False):
                     continue
+                if desktop and not is_dry_run() and tool_name in ("codex", "opencode"):
+                    backup_desktop_config(tool_name)
                 configured = configure_selected_tools(
                     resolved,
                     [tool_name],
@@ -931,6 +949,8 @@ def _configure_workspace_command(
                 last = configured.get("last_configured_tools")
                 if last is None or tool_name in last:
                     configured_tools.append(tool_name)
+                    if desktop and not is_dry_run() and tool_name in ("codex", "opencode"):
+                        sync_desktop_config(tool_name, resolved)
         if not configured_tools:
             raise RuntimeError(
                 "None of the coding agents enabled by your workspace configuration "
@@ -942,6 +962,9 @@ def _configure_workspace_command(
             _configure_managed_skills(managed)
         _summarize_managed_config(managed, configured_tools, registered_mcps)
         return 0
+
+    if desktop:
+        raise RuntimeError("--desktop requires a published managed coding-agent configuration.")
 
     available_on_workspace: list[str] = []
     tools_to_check = selected_tools or list(TOOL_SPECS)
@@ -1278,6 +1301,7 @@ def revert() -> int:
     # Older Codex (< 0.134.0) had ucode edit the shared ~/.codex/config.toml in
     # place; restoring the per-profile file above does not undo that.
     legacy_codex_stripped = revert_legacy_shared_config()
+    desktop_results = revert_desktop_config()
     clear_state()
 
     print_heading("Revert")
@@ -1286,6 +1310,9 @@ def revert() -> int:
         print_kv(f"{spec['display']} config", "restored" if results[tool] else "unchanged")
     if legacy_codex_stripped:
         print_kv("Codex shared config", "ucode entries removed")
+    for tool, restored in desktop_results.items():
+        if restored:
+            print_kv(f"{tool} desktop config", "restored")
     print_kv("Claude Code OS-managed settings", claude_managed_result)
     print_kv("Codex OS-managed settings", codex_managed_result)
     print_kv("Pi settings", "restored" if pi_settings_restored else "unchanged")
@@ -3403,6 +3430,10 @@ def configure(
             help="Configure only the named agent (e.g. claude, codex, gemini, opencode, copilot, pi).",
         ),
     ] = None,
+    desktop: Annotated[
+        bool,
+        typer.Option("--desktop", help="Also update Codex/OpenCode desktop app settings."),
+    ] = False,
     agents: Annotated[
         str | None,
         typer.Option(
@@ -3577,6 +3608,8 @@ def configure(
             skip_kwargs["databricks_ai_tools_enabled"] = enable_databricks_ai_tools
         if custom_oauth is not None:
             skip_kwargs["custom_oauth"] = custom_oauth
+        if desktop:
+            skip_kwargs["desktop"] = True
         # Set True only in the fully-interactive branch below; gates the optional
         # MCP setup prompt so flag-driven / scripted runs are never interrupted.
         fully_interactive = False

@@ -531,6 +531,36 @@ class TestManagedStateOverrides:
             }
         }
 
+    def test_opencode_published_model_services_replace_discovered_models(self):
+        model = "platform_ai_gateway_dbricks.models.azure-deepseek-v4-1-flash"
+        managed = normalize_managed_config(
+            {
+                "enabled_agents": [
+                    {
+                        "agent": "CODING_AGENT_OPENCODE",
+                        "config": {
+                            "models": {"model_services": [model]},
+                            "default_models": {"default_model": model},
+                        },
+                    }
+                ]
+            }
+        )
+        state = resolve_state(
+            managed,
+            _state(opencode_models={"oss": ["system.ai.deepseek-v4-1-flash"]}),
+            "opencode",
+        )
+        assert state["opencode_models"] == {"oss": [model]}
+        overlay, _ = opencode.render_overlay(
+            state["opencode_default_model"],
+            "test-token",
+            {"oss": "https://ws.example.com/ai-gateway/mlflow/v1"},
+            state["opencode_models"],
+        )
+        assert overlay["model"] == f"databricks-oss/{model}"
+        assert list(overlay["provider"]["databricks-oss"]["models"]) == [model]
+
     def test_opencode_buckets_are_usable_by_its_own_writer(self):
         managed = {
             "enabled_agents": {

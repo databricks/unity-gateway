@@ -144,7 +144,9 @@ def _manifest_models(managed: dict, tool: str) -> dict | list | None:
             if model:
                 slots[family] = model
         return slots or None
-    manifest_models = model_config.get("models")
+    manifest_models = model_config.get("model_services") if tool == "opencode" else None
+    if not isinstance(manifest_models, list):
+        manifest_models = model_config.get("models")
     if isinstance(manifest_models, list):
         listed = [model for model in (_str(item) for item in manifest_models) if model]
         return listed or None

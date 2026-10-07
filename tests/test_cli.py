@@ -2810,6 +2810,7 @@ class TestRevert:
         with (
             patch("ucode.cli.load_state", return_value=state),
             patch("ucode.cli.restore_file", return_value=False),
+            patch("ucode.cli.revert_desktop_config", return_value={}),
             patch(
                 "ucode.cli.revert_mcp_configs",
                 side_effect=lambda loaded_state: (
@@ -3741,6 +3742,77 @@ class TestConfigureAgentsSelection:
             == 0
         )
         configure.assert_called_once_with("claude", state, parent_schema="main.models")
+
+    def test_single_opencode_agent_uses_published_model_services(self, monkeypatch):
+        model = "platform_ai_gateway_dbricks.models.azure-deepseek-v4-1-flash"
+        state = {
+            **MINIMAL_STATE,
+            "opencode_models": {"oss": ["system.ai.deepseek-v4-1-flash"]},
+        }
+        managed = normalize_managed_config(
+            {
+                "enabled_agents": [
+                    {
+                        "agent": "CODING_AGENT_OPENCODE",
+                        "config": {
+                            "models": {"model_services": [model]},
+                            "default_models": {"default_model": model},
+                        },
+                    }
+                ]
+            }
+        )
+        monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda *a, **k: (managed, False))
+        configure = MagicMock(return_value=state)
+        monkeypatch.setattr(cli_mod, "configure_single_tool", configure)
+        monkeypatch.setattr(cli_mod, "install_databricks_ai_tools_for_agents", lambda *a, **k: None)
+
+        assert (
+            cli_mod.configure_workspace_command(
+                tool="opencode", workspaces=[("https://w.com", None)]
+            )
+            == 0
+        )
+        resolved = configure.call_args.args[1]
+        assert resolved["opencode_models"] == {"oss": [model]}
+        assert resolved["opencode_default_model"] == model
+
+    def test_single_opencode_desktop_sync_receives_managed_state(self, monkeypatch):
+        model = "platform_ai_gateway_dbricks.models.azure-deepseek-v4-1-flash"
+        state = {**MINIMAL_STATE, "opencode_models": {"oss": ["system.ai.deepseek-v4-1-flash"]}}
+        managed = normalize_managed_config(
+            {
+                "enabled_agents": [
+                    {
+                        "agent": "CODING_AGENT_OPENCODE",
+                        "config": {
+                            "models": {"model_services": [model]},
+                            "default_models": {"default_model": model},
+                        },
+                    }
+                ]
+            }
+        )
+        monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda *a, **k: (managed, False))
+        monkeypatch.setattr(cli_mod, "configure_single_tool", lambda *a, **k: state)
+        monkeypatch.setattr(cli_mod, "backup_desktop_config", lambda *a: None)
+        monkeypatch.setattr(cli_mod, "install_databricks_ai_tools_for_agents", lambda *a, **k: None)
+        synced = []
+        monkeypatch.setattr(
+            cli_mod, "sync_desktop_config", lambda tool, resolved: synced.append((tool, resolved))
+        )
+
+        assert (
+            cli_mod.configure_workspace_command(
+                tool="opencode", workspaces=[("https://w.com", None)], desktop=True
+            )
+            == 0
+        )
+        assert len(synced) == 1
+        assert synced[0][0] == "opencode"
+        assert synced[0][1]["opencode_models"] == {"oss": [model]}
 
     def test_managed_codex_parent_is_passed_to_generic_configure(self, monkeypatch):
         state = {
