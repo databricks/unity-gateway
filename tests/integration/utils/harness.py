@@ -120,11 +120,11 @@ class UserSession:
         *args: str,
         timeout: int = 120,
         ok: bool = True,
-        binary=None,
+        binary: Path | None = None,
         input_text: str | None = None,
         strip_ansi: bool = True,
     ):
-        command = [self.resolve(binary or self.binary), *args]
+        command = [str(binary or self.binary), *args]
         proc = subprocess.Popen(
             command,
             cwd=self.cwd,
@@ -168,13 +168,11 @@ class UserSession:
             assert result.returncode == 0, detail
         return result
 
-    def resolve(self, binary) -> str:
+    def which(self, name: str) -> Path:
         # Windows CreateProcess ignores PATHEXT, so npm's `claude.cmd`-style shims need a full path.
-        if os.name != "nt" or Path(binary).parent != Path():
-            return str(binary)
-        resolved = shutil.which(str(binary), path=self.env.get("PATH"))
-        assert resolved, f"{binary} is not on the session PATH"
-        return resolved
+        resolved = shutil.which(name, path=self.env.get("PATH"))
+        assert resolved, f"{name} is not on the session PATH"
+        return Path(resolved)
 
     def record(self, name: str, value: object) -> None:
         (self.artifacts / name).write_text(self.redact(json.dumps(value, indent=2)))
@@ -274,10 +272,10 @@ class UserSession:
         timeout: int = 120,
         request: tuple[str, dict] | None = None,
         name: str = "app-server",
-        binary: str | None = None,
+        binary: Path | None = None,
     ) -> dict:
         """Speak the real Codex stdio protocol and require an initialize response."""
-        command = [self.resolve(binary), *args] if binary else [str(self.binary), "codex", *args]
+        command = [str(binary), *args] if binary else [str(self.binary), "codex", *args]
         messages: queue.Queue = queue.Queue()
         transcript: list[str] = []
         diagnostics: list[str] = []
@@ -365,7 +363,7 @@ class UserSession:
             )
 
     def codex_model_ids(
-        self, args: list[str], name: str = "codex-models", *, binary: str | None = None
+        self, args: list[str], name: str = "codex-models", *, binary: Path | None = None
     ) -> list[str]:
         """Ask the real Codex app-server for the catalog its model picker uses."""
         response = self.app_server_handshake(

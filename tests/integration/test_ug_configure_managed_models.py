@@ -86,7 +86,9 @@ def test_managed_claude_mps_defaults_accompany_discovery(live_session):
 
     private_settings = json.loads((session.home / ".claude" / "ucode-settings.json").read_text())
     os_managed_settings = json.loads(
-        session.run("/etc/claude-code/managed-settings.json", binary="cat", timeout=30).stdout
+        session.run(
+            "/etc/claude-code/managed-settings.json", binary=session.which("cat"), timeout=30
+        ).stdout
     )
     for settings in (private_settings, os_managed_settings):
         env = settings.get("env") or {}
@@ -152,7 +154,9 @@ def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session)
 
     private_settings = json.loads((session.home / ".claude" / "ucode-settings.json").read_text())
     os_managed_settings = json.loads(
-        session.run("/etc/claude-code/managed-settings.json", binary="cat", timeout=30).stdout
+        session.run(
+            "/etc/claude-code/managed-settings.json", binary=session.which("cat"), timeout=30
+        ).stdout
     )
     for settings in (private_settings, os_managed_settings):
         env = settings.get("env") or {}

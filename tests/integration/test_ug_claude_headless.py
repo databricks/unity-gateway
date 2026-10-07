@@ -221,7 +221,7 @@ def test_ug_claude_reports_unsupported_short_model_option(live_session, workspac
         "--skip-upgrade",
         "--disable-databricks-ai-tools",
     )
-    expected = session.run("-m", "sonnet", "-p", "hi", binary="claude", ok=False)
+    expected = session.run("-m", "sonnet", "-p", "hi", binary=session.which("claude"), ok=False)
     actual = session.run("claude", "--", "-m", "sonnet", "-p", "hi", ok=False)
     assert expected.returncode != 0 and "unknown option '-m'" in expected.stderr
     assert actual.returncode == expected.returncode

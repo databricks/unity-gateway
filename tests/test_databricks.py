@@ -2938,15 +2938,11 @@ class TestDatabricksCliResolution:
 
     # -- _discover_databricks_clis -------------------------------------------
 
-    @pytest.mark.skipif(
-        sys.platform == "win32",
-        reason="symlinks need elevated privileges on Windows, and an extension-less "
-        "`databricks` is not on PATHEXT",
-    )
     def test_discover_dedupes_by_realpath_keeping_path_order(self, tmp_path, monkeypatch):
+        name = "databricks.exe" if os.name == "nt" else "databricks"
         real_dir = tmp_path / "real"
         real_dir.mkdir()
-        real_bin = real_dir / "databricks"
+        real_bin = real_dir / name
         real_bin.write_text("#!/bin/sh\necho hi\n")
         real_bin.chmod(0o755)
 
@@ -2954,7 +2950,7 @@ class TestDatabricksCliResolution:
         # probed only once, at its first (real) PATH-order occurrence.
         link_dir = tmp_path / "link"
         link_dir.mkdir()
-        (link_dir / "databricks").symlink_to(real_bin)
+        (link_dir / name).symlink_to(real_bin)
 
         monkeypatch.setenv("PATH", os.pathsep.join([str(real_dir), str(link_dir)]))
         probed = []

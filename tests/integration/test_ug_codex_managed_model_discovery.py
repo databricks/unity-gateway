@@ -159,7 +159,9 @@ def test_case_02_managed_codex_uses_admin_discovery_after_configure(
 
     _assert_managed_provider_catalog(session, models, _managed_codex_provider_catalog)
     app_models = session.codex_model_ids(
-        ["app-server", "--listen", "stdio://"], name="bare-codex-models", binary="codex"
+        ["app-server", "--listen", "stdio://"],
+        name="bare-codex-models",
+        binary=session.which("codex"),
     )
     assert app_models == models, (app_models, models)
 
@@ -188,7 +190,9 @@ def test_case_02_managed_codex_uses_admin_discovery_from_fresh_state(
 
     _assert_managed_provider_catalog(session, models, _managed_codex_provider_catalog)
     app_models = session.codex_model_ids(
-        ["app-server", "--listen", "stdio://"], name="bare-codex-models", binary="codex"
+        ["app-server", "--listen", "stdio://"],
+        name="bare-codex-models",
+        binary=session.which("codex"),
     )
     assert app_models == models, (app_models, models)
 
