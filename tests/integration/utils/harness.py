@@ -132,7 +132,8 @@ class UserSession:
             stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             **process_group_options(),
         )
         timed_out = False
@@ -286,7 +287,8 @@ class UserSession:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
             **process_group_options(),
         )

@@ -569,7 +569,8 @@ def main() -> int:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
         ) as proc:
             try:
                 stdout, stderr = proc.communicate(timeout=timeout)
@@ -833,7 +834,8 @@ def main() -> int:
                 ],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
+                encoding="utf-8",
+                errors="replace",
                 stdin=subprocess.DEVNULL,
             ) as auth:
                 auth_stdout, _ = auth.communicate(timeout=30)
