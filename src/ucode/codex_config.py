@@ -127,11 +127,10 @@ def _windows_sandbox_configured() -> bool:
         )
     except OSError:
         return False
-    for path in paths:
-        windows = read_toml_safe(path).get("windows")
-        if isinstance(windows, Mapping) and "sandbox" in windows:
-            return True
-    return False
+    return any(
+        isinstance(windows := read_toml_safe(path).get("windows"), Mapping) and "sandbox" in windows
+        for path in paths
+    )
 
 
 def _toml_item(value: object) -> Item:
