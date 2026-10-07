@@ -41,4 +41,3 @@ BEDROCK_PROVIDER_SERVICE_FIXTURE = (
 )
 UC_MODEL_LOCATION_FIXTURE = ("ug_e2e.models", "ug_e2e.models.codex_primary")
 FIXTURE_READER_MCP_SERVICE_NAME = "ug_e2e.tools.fixture_reader"
-FIXTURE_SUMMARY_SKILL_NAME = "ug_e2e.skills.fixture-summary"

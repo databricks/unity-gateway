@@ -22,7 +22,6 @@ from .helpers.constants import (
     CLAUDE,
     CODEX,
     CODING_AGENT_BY_CLI_NAME,
-    FIXTURE_SUMMARY_SKILL_NAME,
     INFERENCE_PATHS,
     MODEL_PROVIDER_SERVICE_FIXTURES,
     SANDBOX_MCP_SERVICE_NAME,
@@ -54,7 +53,6 @@ def _assert_cuj2_config(config: dict) -> None:
         "default_agent": CODING_AGENT_BY_CLI_NAME[CODEX],
         "enabled_agents": [expected_agent_config(CLAUDE), expected_agent_config(CODEX)],
         "mcp_servers": {"names": [SANDBOX_MCP_SERVICE_NAME]},
-        "skills": {"names": [FIXTURE_SUMMARY_SKILL_NAME]},
     }
     assert actual == expected, config
 
@@ -205,10 +203,9 @@ class TestCuj2Configuration(_Cuj2Base):
     def test_cuj_configuration(self, cuj):
         """Scenario: configure ug from the preconfigured two-agent MPS/MCP workspace.
 
-        Expected: the read-only CodingAgentConfig selects the two exact MPS resources, sandbox
-        MCP, and fixture-summary skill; both native MPS APIs advertise their selected model,
-        generated agent settings use the exact provider/model values, and agent MCP listings
-        exclude web_search. Skill download and invocation are not asserted here.
+        Expected: the read-only CodingAgentConfig selects the two exact MPS resources and sandbox
+        MCP; both native MPS APIs advertise their selected model, generated agent settings use
+        the exact provider/model values, and agent MCP listings exclude web_search.
         """
         session, workspace, _ = cuj
         published = workspace.config()
