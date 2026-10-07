@@ -23,7 +23,7 @@ _REPORT_REQUEST_ENV_VAR = "UCODE_SKILL_USAGE_REPORT"
 _MAX_SKILLS_PER_REPORT = 50
 _REPORT_TIMEOUT_SECONDS = 10
 _DETACHED_POPEN_OPTIONS: dict[str, Any] = (
-    {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
+    {"creationflags": subprocess.CREATE_NO_WINDOW}
     if sys.platform == "win32"
     else {"start_new_session": True}
 )
@@ -34,7 +34,9 @@ def report_skill_usage_in_background(workspace: str, token: str, refs: list[Skil
 
     The skills go in the reporter's environment and the token on its stdin, so the token stays
     out of the environment and the whole request is handed over before this returns. ``-P`` keeps
-    a ``ucode`` package in the working directory from shadowing this one.
+    a ``ucode`` package in the working directory from shadowing this one. On Windows the reporter
+    gets a hidden console rather than none, because ``sys.executable`` is usually a venv launcher,
+    and a launcher with no console makes the interpreter it starts open a visible one.
     """
     skills = [{"full_name": ref.fqn, "id": ref.skill_id} for ref in refs if ref.skill_id]
     if not skills:
