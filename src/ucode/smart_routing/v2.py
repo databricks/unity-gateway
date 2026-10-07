@@ -27,6 +27,7 @@ from ucode.config_io import (
     write_text_file,
 )
 from ucode.constants import (
+    ENABLE_ORCHESTRATION_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
     LOOPBACK_HOST,
@@ -83,7 +84,10 @@ class ClaudeRoutingSetupError(RuntimeError):
 
 
 def _prepare_smart_router_session(agent: str) -> Path:
-    for skill in (SMART_ROUTER_SKILL, ORCHESTRATOR_SKILL):
+    skills = [SMART_ROUTER_SKILL]
+    if orchestrator.feature_enabled():
+        skills.append(ORCHESTRATOR_SKILL)
+    for skill in skills:
         try:
             install_skill(skill, agent, config_io.APP_DIR.parent)
         except (OSError, RuntimeError) as exc:
@@ -524,6 +528,7 @@ def launch_claude(
     if not isinstance(env, dict):
         raise RuntimeError("Claude settings 'env' must be an object for smart routing.")
     env.pop("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", None)
+    env[ENABLE_ORCHESTRATION_ENV_VAR] = "1" if orchestrator.feature_enabled() else "0"
     if route_first_prompt:
         env[ENABLE_SMART_ROUTING_ENV_VAR] = "1"
     else:
@@ -663,6 +668,9 @@ def launch_codex(
     for key in (SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, *SMART_ROUTING_ENV_KEYS):
         if key in os.environ:
             overlay[f"shell_environment_policy.set.{key}"] = os.environ[key]
+    overlay[f"shell_environment_policy.set.{ENABLE_ORCHESTRATION_ENV_VAR}"] = (
+        "1" if orchestrator.feature_enabled() else "0"
+    )
     config_args = codex_config_args(overlay)
     if not first_prompt_routing_enabled():
         # Subagent-only routing needs neither the app-server nor the interposer:

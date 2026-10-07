@@ -1,14 +1,16 @@
 # UG model orchestrator
 
 UG bundles the `orchestrate` workflow and five Claude role definitions from
-`model-orchestrator` 0.4.10. Smart-routed
-Claude and Codex launches install this skill alongside `smart-router`.
+`model-orchestrator` 0.4.10. Smart-routed Claude and Codex launches install and
+activate this skill alongside `smart-router` only with `ENABLE_ORCHESTRATION=1`.
+The feature is off by default; routing alone installs only `smart-router`.
 
 The workflow is injected before root prompts and after compaction. Its activation
-and pre-delegation checks require a UG smart-routing session and read the same
-session controls as the routing hooks. Turning Smart Router off stops new
-automatic delegation and supersedes the previous workflow. Turning it on restores
-both features. An installed skill or saved model preference cannot enable them.
+and pre-delegation checks require the feature flag and a UG smart-routing session,
+and read the same session controls as the routing hooks. Turning Smart Router off
+stops new automatic delegation and supersedes the previous workflow. Turning it on restores
+orchestration only in opted-in sessions. An installed skill or saved model
+preference cannot enable it.
 Explicit user requests for subagents still use native harness behavior while routing
 is off, without the orchestrator's workflow or routing check.
 User instructions take precedence, and easy tasks remain in the root.
@@ -31,7 +33,9 @@ model selection and requires no preference setup, locking, or recovery.
 The [skill](SKILL.md) checks eligibility with
 `"$UCODE_SMART_ROUTER_PYTHON" -m ucode.smart_routing.orchestrator --check` before
 delegating. This command reads session controls without reading or writing
-preference files, succeeds silently when enabled, and exits nonzero when disabled.
+preference files, succeeds silently when both orchestration and routing are enabled,
+and exits nonzero otherwise. Retained skill files stay inactive when the feature
+flag is unset or `0`.
 
 ## Attribution
 

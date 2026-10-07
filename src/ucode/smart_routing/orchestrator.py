@@ -1,4 +1,4 @@
-"""Activate the bundled orchestrator only in an enabled smart-routing session."""
+"""Activate the bundled orchestrator in opted-in smart-routing sessions."""
 
 from __future__ import annotations
 
@@ -13,24 +13,32 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from ucode import skills
+from ucode.constants import ENABLE_ORCHESTRATION_ENV_VAR
 from ucode.smart_routing.hooks import sync_managed_hooks
 from ucode.smart_routing.session_env import effective_environment, session_env_path
 
 HOOK_MODULE = "ucode.smart_routing.orchestrator"
 DISABLED_CONTEXT = (
-    "UG automatic orchestration is off because smart routing is off for this session. "
+    "UG automatic orchestration is off for this session. "
     "This supersedes any earlier model-orchestrator workflow: do not start new automatic "
     "delegation or fall back to orchestrator role models. Explicit user requests for subagents "
-    "still use native tools and normal harness model selection, without the orchestrator "
-    "or its routing check; keep routing off. Otherwise continue the task in the root. "
+    "still use native tools and the current Smart Router setting, without the orchestrator "
+    "or its routing check. Otherwise continue the task in the root. "
     "Collect results from children already running."
 )
+
+
+def feature_enabled(env: Mapping[str, str] | None = None) -> bool:
+    source = os.environ if env is None else env
+    return source.get(ENABLE_ORCHESTRATION_ENV_VAR) == "1"
 
 
 def enabled(env: Mapping[str, str] | None = None) -> bool:
     from ucode.smart_routing.v2 import smart_routing_enabled
 
     source = os.environ if env is None else env
+    if not feature_enabled(source):
+        return False
     if source.get("ISAAC_LAUNCH_MODE", "").strip().lower() == "omni":
         return False
     try:
@@ -53,26 +61,26 @@ def skill_directory() -> Path:
 
 def add_claude_agents(plugin_dir: Path) -> None:
     """Load roles alongside the router's exact-model agents, only for this launch."""
-    shutil.copytree(skill_directory() / "agents", plugin_dir / "agents", dirs_exist_ok=True)
+    if feature_enabled():
+        shutil.copytree(skill_directory() / "agents", plugin_dir / "agents", dirs_exist_ok=True)
 
 
 def sync_hooks(doc: dict, *, agent: str) -> None:
-    argv = [sys.executable, "-m", HOOK_MODULE]
-    hook = {
-        "type": "command",
-        "command": shlex.join(argv),
-        "timeout": 5,
-    }
-    if agent == "codex":
-        hook["command_windows"] = subprocess.list2cmdline(argv)
-    sync_managed_hooks(
-        doc,
-        HOOK_MODULE,
-        {
+    groups = {}
+    if feature_enabled():
+        argv = [sys.executable, "-m", HOOK_MODULE]
+        hook = {
+            "type": "command",
+            "command": shlex.join(argv),
+            "timeout": 5,
+        }
+        if agent == "codex":
+            hook["command_windows"] = subprocess.list2cmdline(argv)
+        groups = {
             "UserPromptSubmit": [{"hooks": [hook]}],
             "SessionStart": [{"matcher": "compact", "hooks": [hook]}],
-        },
-    )
+        }
+    sync_managed_hooks(doc, HOOK_MODULE, groups)
 
 
 def hook_output(payload: object) -> dict | None:
@@ -92,7 +100,7 @@ def hook_output(payload: object) -> dict | None:
             return None
         context = (
             "Apply the UG model-orchestrator workflow to this task. "
-            "Smart routing and automatic orchestration share the same session controls.\n"
+            "Orchestration is opted in and follows Smart Router's session controls.\n"
             f"Skill directory: {directory}\n\n{workflow}"
         )
     return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": context}}
@@ -103,7 +111,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--check",
         action="store_true",
-        help="Exit successfully only in an enabled smart-routing session.",
+        help="Exit successfully only in an opted-in, enabled smart-routing session.",
     )
     if parser.parse_args(argv).check:
         try:

@@ -281,9 +281,11 @@ PATH conflicts for the Smart Router skill have subprocess/component coverage in
 `ug` first in PATH. The live journeys above do not inject a second installation or
 establish PowerShell command execution.
 
-The toggle journeys require both bundled skills (`orchestrate` and `smart-router`)
-to be installed. They verify the saved session controls, a new CLI confirmation in
-the native tool-result records, and a new assistant answer after each skill invocation.
+The toggle journeys run with `ENABLE_ORCHESTRATION` unset and with
+`ENABLE_ORCHESTRATION=1`. They require only `smart-router` by default and both
+`orchestrate` and `smart-router` when opted in. They verify the saved session
+controls, a new CLI confirmation in the native tool-result records, and a new
+assistant answer after each skill invocation.
 Collapsed terminal output is allowed; the answer need not repeat the CLI's exact wording.
 Each following child still verifies whether a routing decision occurred.
 Their off-phase child is an explicit user-requested delegation;

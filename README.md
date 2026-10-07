@@ -248,19 +248,26 @@ The generated shell hooks expect Git Bash; PowerShell-only setups are not covere
 
 ### Automatic orchestration
 
-Smart-routed Claude and Codex sessions install the bundled `orchestrate` and
-`smart-router` skills. The orchestrator assigns bounded work to explorer,
-researcher, worker, tester, and reviewer roles while the root plans, integrates,
-and verifies results. Easy tasks and explicit requests not to delegate stay in
-the root.
+Smart-routed Claude and Codex sessions install `smart-router`. Set
+`ENABLE_ORCHESTRATION=1` at launch to also install and activate the bundled
+`orchestrate` skill; orchestration is off by default. For example:
 
-Orchestration follows the existing smart-routing launch eligibility and session
-controls; it has no separate rollout flag. Turning Smart Router off stops new
-automatic delegation. Turning it on
-restores orchestration. Explicit user requests for subagents still use normal
-harness behavior while routing is off. Stored skill files do not activate it in
-later non-routed sessions. The existing Isaac pilot gate and UG launch exclusions
-are unchanged.
+```bash
+ENABLE_ORCHESTRATION=1 ENABLE_SMART_ROUTING_SUBAGENT_ONLY=1 ug claude
+```
+
+Use `ug codex` in the same command for Codex. The orchestrator assigns bounded work
+to explorer, researcher, worker, tester, and reviewer roles while the root plans,
+integrates, and verifies results. Easy tasks and explicit requests not to delegate
+stay in the root.
+
+Once opted in, orchestration follows the existing smart-routing launch eligibility
+and session controls. Turning Smart Router off stops new automatic delegation;
+turning it on restores orchestration only in opted-in sessions. Explicit user
+requests for subagents still use normal harness behavior while routing is off.
+Stored skill files do not activate orchestration when the feature flag is unset or
+`ENABLE_ORCHESTRATION=0`, or in non-routed sessions. Existing Isaac pilot gating
+and UG launch exclusions still apply.
 
 UG supplies its own hooks; Codex combines them with existing hooks and applies
 project trust. Smart routing selects subagent models; separate role-model
