@@ -12,7 +12,7 @@ import pytest
 from typer.testing import CliRunner
 
 from ucode import cli, config_io, skills
-from ucode.skills import SMART_ROUTER_SKILL
+from ucode.skills import ORCHESTRATOR_SKILL, SMART_ROUTER_SKILL
 from ucode.smart_routing import session_env, v2
 
 runner = CliRunner()
@@ -33,6 +33,8 @@ def test_smart_routed_session_installs_skill(tmp_path, monkeypatch, agent):
 
     home = config_io.APP_DIR.parent
     assert home.joinpath(f".{agent}/skills/{SMART_ROUTER_SKILL}/SKILL.md").is_file()
+    assert home.joinpath(f".{agent}/skills/{ORCHESTRATOR_SKILL}/SKILL.md").is_file()
+    assert home.joinpath(f".{agent}/skills/{ORCHESTRATOR_SKILL}/scripts/configure.py").is_file()
     assert not home.joinpath(f".agents/skills/{SMART_ROUTER_SKILL}").exists()
     assert session_path == Path(os.environ[session_env.SESSION_ENV_VAR])
     assert Path(os.environ[session_env.SESSION_ENV_VAR]).is_file()

@@ -17,6 +17,7 @@ import ucode.agents.claude as claude_agent
 import ucode.codex_config as codex_config
 import ucode.config_io as config_io
 from ucode import managed_files
+from ucode.codex_config import codex_managed_config_path
 
 _REAL_SUDO_REPLACE = managed_files._sudo_replace
 
@@ -506,7 +507,8 @@ class TestSudoReplace:
         monkeypatch.setattr(codex_config, "current_os", lambda: os_enum)
         allowed = managed_files._SUDO_REPLACE_TARGETS[os_enum]
         assert claude_agent._managed_settings_path() in allowed
-        assert codex_config.codex_managed_config_path() in allowed
+        # Exercise the real helper, captured before launch fixtures isolate machine config.
+        assert codex_managed_config_path() in allowed
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="The managed writer is Unix-only")

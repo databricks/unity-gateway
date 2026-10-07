@@ -139,6 +139,7 @@ from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import FIRST_PROMPT_SOCKET_ENV, ROUTE_FIRST_PROMPT_EVENT
 from ucode.smart_routing.session_env import (
     effective_environment,
+    fresh_launch,
     session_env_path,
     set_session_environment,
 )
@@ -2310,6 +2311,12 @@ def _toggle_current_smart_routing_session(enabled: bool | None) -> bool:
         print_err(str(exc))
         raise typer.Exit(1) from None
     print_success(f"Smart Router is {'on' if enabled else 'off'} for this session")
+    if enabled:
+        print_note("Automatic orchestration is on; apply the orchestrate skill to further work.")
+    else:
+        from ucode.smart_routing.orchestrator import DISABLED_CONTEXT
+
+        print_note(DISABLED_CONTEXT)
     return True
 
 
@@ -2937,8 +2944,11 @@ def _launch_tool(
             provider=provider,
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
-        with _smart_routing_v2_flag(
-            True if managed_smart_routing_enabled and smart_routing_enabled else None
+        with (
+            _smart_routing_v2_flag(
+                True if managed_smart_routing_enabled and smart_routing_enabled else None
+            ),
+            fresh_launch(),
         ):
             launch_agent(tool, state, ctx.args, options=launch_options)
     except RuntimeError as exc:

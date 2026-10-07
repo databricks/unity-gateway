@@ -12,6 +12,7 @@ _SKILL_ROOTS = {"claude": ".claude/skills", "codex": ".codex/skills"}
 _LEGACY_SKILL_ROOTS = (".agents/skills",)
 _SKILL_NAME_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 SMART_ROUTER_SKILL = "smart-router"
+ORCHESTRATOR_SKILL = "orchestrate"
 
 
 def _skills_source() -> Path:

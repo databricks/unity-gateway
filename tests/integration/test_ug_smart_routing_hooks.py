@@ -9,14 +9,18 @@ Smart Router skill and spawn real children before and after its session-local to
 """
 
 import json
+from pathlib import Path
 
 import pytest
 from utils.constants import CLAUDE_SMART_ROUTING_MODELS, CODEX_SMART_ROUTING_MODELS
 from utils.evidence import (
     SubagentCalculation,
+    agent_sessions,
     assert_subagent_routed,
-    assistant_answer_contains,
+    assistant_answers,
+    is_child_session,
     read_jsonl,
+    tool_outputs,
 )
 from utils.managed import (
     build_claude_agent_config,
@@ -121,21 +125,46 @@ def _toggle_with_skill(tui, session, agent: str, enabled: bool) -> None:
         for path in skill_root.iterdir()
         if path.is_dir() and path.name not in ignored_skills
     )
-    assert installed_skills == ["smart-router"], installed_skills
+    assert installed_skills == ["orchestrate", "smart-router"], installed_skills
 
     state = "on" if enabled else "off"
     invocation = f"/smart-router {state}" if agent == "claude" else f"$smart-router {state}"
-    confirmation = f"{state} for this session"
+    controls = list(Path(session.env["TMPDIR"]).glob("ug-session-env-*/env.json"))
+    assert len(controls) == 1, controls
+    expected = (
+        {}
+        if enabled
+        else {
+            "ENABLE_SMART_ROUTING_V2": "0",
+            "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0",
+        }
+    )
+    assert json.loads(controls[0].read_text()) != expected
+
+    confirmation = f"Smart Router is {state} for this session"
+
+    def completion_counts():
+        answers = confirmations = 0
+        for path, records in agent_sessions(session, agent).items():
+            if is_child_session(agent, path, records):
+                continue
+            answers += len(assistant_answers(agent, records))
+            confirmations += sum(confirmation in output for output in tool_outputs(agent, records))
+        return answers, confirmations
+
+    before_answers, before_confirmations = completion_counts()
     tui.submit(invocation)
+
+    def toggled(_screen):
+        answers, confirmations = completion_counts()
+        return (
+            json.loads(controls[0].read_text()) == expected
+            and confirmations > before_confirmations
+            and answers > before_answers
+        )
+
     tui.wait_for(
-        lambda screen: (
-            "Smart Router" in screen
-            and confirmation in screen
-            and (
-                assistant_answer_contains(session, agent, confirmation)
-                or assistant_answer_contains(session, agent, f"**{state}** for this session")
-            )
-        ),
+        toggled,
         f"the installed Smart Router skill to turn routing {state}",
         timeout=120,
     )
@@ -255,12 +284,15 @@ def test_smart_router_skill_toggles_claude_subagent_routing(live_session, worksp
     installed Smart Router skill to turn routing off, spawn another child, turn routing
     back on through the skill, and spawn a third child in the same real TUI session.
 
-    Expected: Smart Router is the only user-installed Claude skill; all three uniquely tagged
+    Expected: Smart Router and orchestrate are the only user-installed Claude skills;
+    each invocation records the CLI confirmation in the native transcript and changes the saved
+    routing controls, even with collapsed terminal output; all three uniquely tagged
     calculations complete in native child sessions; only the first and third show the
     subagent-routing banner and produce live gateway decisions correlated with those children.
     No first-prompt routing wrapper starts.
     """
     session = live_session
+    session.env["TMPDIR"] = str(tmp_path)
     session.env["ENABLE_SMART_ROUTING_V2"] = "1"
     session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
     config = build_coding_agent_config(
@@ -301,12 +333,15 @@ def test_smart_router_skill_toggles_codex_subagent_routing(live_session, workspa
     installed Smart Router skill to turn routing off, spawn another child, turn routing
     back on through the skill, and spawn a third child in the same real TUI session.
 
-    Expected: Smart Router is the only user-installed Codex skill; all three uniquely tagged
+    Expected: Smart Router and orchestrate are the only user-installed Codex skills;
+    each invocation records the CLI confirmation in the native transcript and changes the saved
+    routing controls, even with collapsed terminal output; all three uniquely tagged
     calculations complete in native child sessions; only the first and third show the
     subagent-routing banner and produce live gateway decisions correlated with those children.
     No first-prompt interposer starts.
     """
     session = live_session
+    session.env["TMPDIR"] = str(tmp_path)
     session.env["ENABLE_SMART_ROUTING_V2"] = "1"
     session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
     config = build_coding_agent_config(

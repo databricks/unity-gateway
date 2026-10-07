@@ -29,12 +29,14 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     it can never touch the developer's real ~/.ucode/state.json or invoke the
     privileged writer for an OS-managed agent config.
     """
+    import ucode.codex_config as codex_config_mod
     import ucode.config_io as config_io_mod
     import ucode.databricks as databricks_mod
     import ucode.managed_config as managed_config_mod
     import ucode.managed_files as managed_files_mod
     import ucode.os_compatibility.subprocess_cross_os as subprocess_cross_os_mod
     import ucode.state as state_mod
+    from ucode.agents import claude as claude_mod
     from ucode.agents import codex as codex_mod
 
     state_dir = tmp_path / ".ucode"
@@ -56,6 +58,12 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
         codex_mod, "CODEX_MODEL_CATALOG_PATH", state_dir / "codex-model-catalog.json"
     )
     monkeypatch.setattr(codex_mod, "CODEX_CONFIG_PATH", tmp_path / ".codex" / "ucode.config.toml")
+    # Launch-time plugin discovery must not read the developer's installed plugins.
+    monkeypatch.setattr(codex_config_mod, "DEFAULT_CODEX_CONFIG_PATH", codex_mod.CODEX_CONFIG_PATH)
+    monkeypatch.setattr(codex_config_mod, "codex_managed_config_path", lambda: None)
+    monkeypatch.setattr(claude_mod, "CLAUDE_USER_SETTINGS_PATH", tmp_path / ".claude/settings.json")
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
 
     def reject_privileged_write(path, _desired_text):
         pytest.fail(

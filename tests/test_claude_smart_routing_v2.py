@@ -19,7 +19,7 @@ from ucode.smart_routing import claude_hooks, claude_pty, routing, v2
 
 def _plugin_agent_models(plugin_dir: Path) -> set[str]:
     models = set()
-    for agent_path in (plugin_dir / "agents").glob("*.md"):
+    for agent_path in (plugin_dir / "agents").glob(f"{v2.CLAUDE_ROUTED_AGENT_PREFIX}*.md"):
         model_line = next(
             line for line in agent_path.read_text().splitlines() if line.startswith("model: ")
         )
@@ -482,7 +482,8 @@ class TestV2Launch:
         assert v2.ENABLE_SMART_ROUTING_ENV_VAR not in env
         assert claude_hooks.FIRST_PROMPT_SOCKET_ENV not in env
         # Subagent routing is fully wired; only the first-prompt machinery is absent.
-        assert "UserPromptSubmit" not in settings["hooks"]
+        assert "route-first-prompt" not in str(settings["hooks"])
+        assert "ucode.smart_routing.orchestrator" in str(settings["hooks"]["UserPromptSubmit"])
         assert "route-subagent" in str(settings["hooks"]["PreToolUse"])
         assert settings["modelOverrides"] == {"claude-opus-4-8": "system.ai.claude-opus-4-8"}
         assert captured["plugin_models"] == {"system.ai.claude-opus-4-8"}

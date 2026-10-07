@@ -246,6 +246,32 @@ is enabled, ug warns and falls back to subagent routing because the first-prompt
 wrapper requires a Unix terminal.
 The generated shell hooks expect Git Bash; PowerShell-only setups are not covered.
 
+### Automatic orchestration
+
+Smart-routed Claude and Codex sessions install the bundled `orchestrate` and
+`smart-router` skills. The orchestrator assigns bounded work to explorer,
+researcher, worker, tester, and reviewer roles while the root plans, integrates,
+and verifies results. Easy tasks and explicit requests not to delegate stay in
+the root.
+
+Orchestration follows the existing smart-routing launch eligibility and session
+controls; it has no separate rollout flag. Turning Smart Router off stops new
+automatic delegation, including fallback to default role models. Turning it on
+restores orchestration. Explicit user requests for subagents still use normal
+harness behavior while routing is off. Stored skill files do not activate it in
+later non-routed sessions. The existing Isaac pilot gate and UG launch exclusions
+are unchanged.
+
+UG automatically suppresses installed standalone `model-orchestrator` plugins,
+including Isaac-synced Codex registrations, for each Claude or Codex launch.
+This also applies when smart routing is off, so the old hooks cannot activate
+orchestration independently. Codex project registrations are included. Routed Codex
+launches use its native configuration resolver to preserve trusted project hooks;
+untrusted project hooks stay disabled. Saved plugin settings, unrelated plugins and hooks,
+and existing role preferences are retained. See the bundled
+[orchestrator documentation](skills/orchestrate/README.md) for configuration and
+cutover details.
+
 ## Managed Files
 
 `ug` backs up files before overwriting them. `ug revert` restores backups.

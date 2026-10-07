@@ -10,20 +10,23 @@ import sys
 import time
 import urllib.request
 from collections.abc import Callable, MutableMapping
+from copy import deepcopy
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import NoReturn, TextIO
 
 from ucode import config_io
 from ucode.codex_config import (
+    codex_cli_config_args,
     codex_config_args,
+    codex_working_directory,
     custom_catalog_models,
     custom_catalog_path,
+    read_effective_codex_config,
 )
 from ucode.config_io import (
     APP_DIR,
     read_json_safe,
-    read_toml_safe,
     write_json_file,
     write_text_file,
 )
@@ -47,8 +50,8 @@ from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
     release_file_lock,
 )
-from ucode.skills import SMART_ROUTER_SKILL, install_skill
-from ucode.smart_routing import claude_routing, codex_interposer, routing
+from ucode.skills import ORCHESTRATOR_SKILL, SMART_ROUTER_SKILL, install_skill
+from ucode.smart_routing import claude_routing, codex_interposer, orchestrator, routing
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
     sync_first_prompt_hook,
@@ -84,10 +87,11 @@ class ClaudeRoutingSetupError(RuntimeError):
 
 
 def _prepare_smart_router_session(agent: str) -> Path:
-    try:
-        install_skill(SMART_ROUTER_SKILL, agent, config_io.APP_DIR.parent)
-    except (OSError, RuntimeError) as exc:
-        print_warning(f"Could not install the Smart Router skill: {exc}")
+    for skill in (SMART_ROUTER_SKILL, ORCHESTRATOR_SKILL):
+        try:
+            install_skill(skill, agent, config_io.APP_DIR.parent)
+        except (OSError, RuntimeError) as exc:
+            print_warning(f"Could not install the {skill} skill: {exc}")
     return start_session()
 
 
@@ -332,6 +336,7 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
                 ]
             ),
         )
+    orchestrator.add_claude_agents(plugin_dir)
 
 
 def _request_claude_routing_decision(
@@ -538,6 +543,7 @@ def launch_claude(
     sync_smart_routing_hooks(settings, routing_state, enabled=True)
     if route_first_prompt:
         sync_first_prompt_hook(settings, hook_executable)
+    orchestrator.sync_hooks(settings, agent="claude")
     model_setting = _ClaudeModelSettingGuard(user_settings_path)
 
     def route_prompt(prompt: str) -> claude_pty.FirstPromptRoute:
@@ -603,22 +609,25 @@ def _cached_routing_models(state: dict) -> list[str]:
     return routing_models(state)
 
 
-def _codex_home_config_path() -> Path:
-    codex_home = os.environ.get("CODEX_HOME")
-    if codex_home:
-        return Path(codex_home).expanduser() / "config.toml"
-    return Path.home() / ".codex" / "config.toml"
-
-
-def _v2_pre_tool_use_hooks(state: dict, available_models: list[str]) -> list[dict]:
-    doc = read_toml_safe(_codex_home_config_path())
-    configured_hooks = doc.get("hooks")
-    existing = configured_hooks.get("PreToolUse") if isinstance(configured_hooks, dict) else None
-    return merge_pre_tool_use_hooks(
+def _v2_hooks(state: dict, available_models: list[str], config: dict) -> dict:
+    configured_hooks = config.get("hooks")
+    events = ("PreToolUse", "UserPromptSubmit", "SessionStart")
+    # Only override events UG changes. Codex retains ownership of every other event.
+    doc = {
+        "hooks": {
+            event: deepcopy(configured_hooks[event])
+            for event in events
+            if isinstance(configured_hooks, dict) and event in configured_hooks
+        }
+    }
+    existing = doc["hooks"].get("PreToolUse")
+    doc["hooks"]["PreToolUse"] = merge_pre_tool_use_hooks(
         existing if isinstance(existing, list) else [],
         state,
         available_models=available_models,
     )
+    orchestrator.sync_hooks(doc, agent="codex")
+    return doc["hooks"]
 
 
 def launch_codex(
@@ -659,19 +668,26 @@ def launch_codex(
     catalog_path = custom_catalog_path()
     if catalog_path is not None:
         overlay["model_catalog_json"] = str(catalog_path)
-    overlay["hooks"] = {
-        "PreToolUse": _v2_pre_tool_use_hooks(state, available_models),
-    }
-    session_env_path = _prepare_smart_router_session("codex")
+    cwd = codex_working_directory(tool_args)
+    config = read_effective_codex_config(
+        binary,
+        cwd=cwd,
+        config_args=[*codex_config_args(overlay), *codex_cli_config_args(tool_args)],
+    )
+    overlay["hooks"] = _v2_hooks(state, available_models, config)
+    overlay["features.hooks"] = True
+    legacy_plugin_config = orchestrator.legacy_codex_plugin_config(cwd=cwd)
+    overlay.update(legacy_plugin_config)
+    _prepare_smart_router_session("codex")
     # Codex constructs tool subprocess environments through its shell policy.
-    # Pass both the session marker and its launching interpreter through that policy.
-    overlay[f"shell_environment_policy.set.{SESSION_ENV_VAR}"] = str(session_env_path)
-    overlay[f"shell_environment_policy.set.{SESSION_PYTHON_ENV_VAR}"] = os.environ[
-        SESSION_PYTHON_ENV_VAR
-    ]
+    # The skill's gate needs the same launch baseline as the routing hook, even
+    # when the user's policy filters inherited environment variables.
+    for key in (SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, *SMART_ROUTING_ENV_KEYS):
+        if key in os.environ:
+            overlay[f"shell_environment_policy.set.{key}"] = os.environ[key]
     config_args = codex_config_args(overlay)
     if not first_prompt_routing_enabled():
-        # Subagent-only routing needs neither the app-server nor the interposer:
+        # Subagent-only routing needs no persistent app-server or interposer:
         # the hooks ride in the CLI config, so launch the TUI directly.
         exec_or_spawn([binary, *config_args, *tool_args])
     app_port = _free_port()
@@ -713,7 +729,16 @@ def launch_codex(
                 }
             )
         tui = subprocess_cross_os.popen(
-            [binary, *provider_args, "--remote", tui_url, "--model", start_model, *tool_args]
+            [
+                binary,
+                *provider_args,
+                *codex_config_args(legacy_plugin_config),
+                "--remote",
+                tui_url,
+                "--model",
+                start_model,
+                *tool_args,
+            ]
         )
         try:
             returncode = tui.wait()

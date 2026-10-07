@@ -131,6 +131,27 @@ that Claude settings and Codex's shell policy carry the interpreter and session 
 These are component checks; they do not establish native skill permission matching or
 PowerShell execution.
 
+`test_orchestrator.py` covers shared routing state, off/on transitions, suppression
+of retained skills outside eligible sessions, root prompts and compaction,
+user-hook preservation, and bundled Claude roles. `test_orchestrator_config.py`
+ports the plugin's preference, ownership, locking, and interrupted-write recovery
+coverage and checks UG catalog precedence. Real subprocess tests verify that preference
+reads, writes, and removal wait for an existing writer, preserve files while waiting,
+and complete after the lock is released. `test_orchestrator_legacy_plugins.py`
+and the Claude/Codex launcher tests check native per-launch overrides that disable
+legacy marketplace registrations with routing on or off, including Codex's
+app-server and remote TUI. They check config discovery, unrelated-plugin and hook
+preservation, and unchanged saved settings, including nested project registrations
+and `--cd`. `test_codex_config.py` exercises the native configuration protocol,
+timeout cleanup, and optional hook fields; launch tests preserve its resolved
+handlers and leave unrelated hook events to Codex. These are component assertions.
+The toggle integration journeys require both bundled skills, verify the saved
+session controls and native tool-result confirmation after each toggle, and
+explicitly request their children, including while routing is off. Live automatic
+delegation and legacy-hook execution are not covered by these tests.
+`test_integration_evidence.py` checks native tool-result extraction for both agents,
+including collapsed-output records, and excludes user echoes and assistant claims.
+
 The portable Windows routing test checks native executable forwarding, generated
 hooks/plugins, caller arguments, and cleanup without Unix imports. It does not
 establish live Windows hook execution or interactive routing.

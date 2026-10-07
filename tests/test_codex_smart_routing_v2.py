@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import tomllib
+from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
@@ -11,6 +13,14 @@ from ucode.agents import LaunchOptions, codex
 from ucode.smart_routing import codex_interposer, codex_routing, v2
 
 WS = "https://example.databricks.com"
+
+
+@pytest.fixture(autouse=True)
+def native_config(monkeypatch):
+    # Launch tests isolate the native Codex process; its protocol is tested separately.
+    config = {}
+    monkeypatch.setattr(v2, "read_effective_codex_config", lambda *args, **kwargs: config)
+    return config
 
 
 def test_smart_routing_switch_message_is_boxed():
@@ -180,15 +190,26 @@ class TestLaunchCodex:
     @pytest.mark.parametrize(
         ("platform_name", "tui_has_provider"), [("posix", False), ("nt", True)]
     )
+    @pytest.mark.parametrize("legacy_plugin", [False, True])
     def test_owns_app_server_interposer_and_tui_lifecycle(
-        self, monkeypatch, platform_name, tui_has_provider
+        self, tmp_path, monkeypatch, platform_name, tui_has_provider, legacy_plugin
     ):
         processes = []
         interposer_args = {}
         stopped = []
         token_calls = []
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
-        monkeypatch.setenv("CODEX_HOME", "/user/codex-home")
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        user_config = tmp_path / "config.toml"
+        user_config.write_text(
+            '[plugins."unrelated@marketplace"]\nenabled = true\n'
+            + (
+                '[plugins."model-orchestrator@marketplace"]\nenabled = true\n'
+                if legacy_plugin
+                else ""
+            )
+        )
+        before = user_config.read_bytes()
         monkeypatch.setattr(v2, "os", SimpleNamespace(name=platform_name, environ=os.environ))
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
@@ -263,26 +284,37 @@ class TestLaunchCodex:
         assert "--profile myprof" in hook_override
         assert "--model system.ai.gpt-5-6-sol" in hook_override
         assert "--model system.ai.glm-5-2" in hook_override
-        assert processes[0].argv[10:12] == [
-            "--config",
-            (
-                "shell_environment_policy.set.UCODE_SESSION_ENV_FILE="
-                f'"{os.environ["UCODE_SESSION_ENV_FILE"]}"'
-            ),
-        ]
-        assert processes[0].argv[12:14] == [
-            "--config",
+        config_values = processes[0].argv[3:-2:2]
+        assert (
+            "shell_environment_policy.set.UCODE_SESSION_ENV_FILE="
+            f'"{os.environ["UCODE_SESSION_ENV_FILE"]}"'
+        ) in config_values
+        assert (
             "shell_environment_policy.set.UCODE_SMART_ROUTER_PYTHON="
-            + json.dumps(os.environ["UCODE_SMART_ROUTER_PYTHON"]),
-        ]
-        assert processes[0].argv[14:] == [
+            + json.dumps(os.environ["UCODE_SMART_ROUTER_PYTHON"])
+        ) in config_values
+        assert 'shell_environment_policy.set.ENABLE_SMART_ROUTING_V2="1"' in config_values
+        assert "features.hooks=true" in config_values
+        plugin_overrides = [value for value in config_values if value.startswith("plugins=")]
+        if legacy_plugin:
+            (override,) = plugin_overrides
+            assert tomllib.loads(override) == {
+                "plugins": {"model-orchestrator@marketplace": {"enabled": False}}
+            }
+        else:
+            assert plugin_overrides == []
+        for event in ("UserPromptSubmit", "SessionStart"):
+            hook = next(value for value in config_values if value.startswith(f"hooks.{event}="))
+            assert "ucode.smart_routing.orchestrator" in hook
+        assert processes[0].argv[-2:] == [
             "--listen",
             "ws://127.0.0.1:41001",
         ]
         assert processes[0].kwargs["env"][v2.OAUTH_TOKEN_ENV_VAR] == "token-1"
-        assert processes[0].kwargs["env"]["CODEX_HOME"] == "/user/codex-home"
+        assert processes[0].kwargs["env"]["CODEX_HOME"] == str(tmp_path)
         tui_argv = processes[1].argv
         expected_tui_args = [
+            *(["--config", plugin_overrides[0]] if legacy_plugin else []),
             "--remote",
             "ws://127.0.0.1:41002",
             "--model",
@@ -313,6 +345,7 @@ class TestLaunchCodex:
         assert interposer_args["kwargs"]["switch_message_fn"] is v2.format_routing_notice
         assert stopped == [True]
         assert processes[0].terminated is True
+        assert user_config.read_bytes() == before
 
     def test_managed_http_headers_reach_app_server_config(self, monkeypatch):
         # Smart routing rebuilds the overlay and passes it to the app-server as `-c` overrides that
@@ -367,16 +400,22 @@ class TestLaunchCodex:
         assert "x-databricks-workspace" in provider_arg
         assert "eng-ml-inference" in provider_arg
 
-    def test_subagent_only_launch_runs_tui_directly(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("legacy_plugin", [False, True])
+    def test_subagent_only_launch_runs_tui_directly(self, tmp_path, monkeypatch, legacy_plugin):
         monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
         monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        user_config = tmp_path / "config.toml"
+        user_config.write_text(
+            '[plugins."model-orchestrator@marketplace"]\nenabled = true\n' if legacy_plugin else ""
+        )
+        before = user_config.read_bytes()
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
         monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
         monkeypatch.setattr(
             v2.subprocess,
             "Popen",
-            lambda *_args, **_kwargs: pytest.fail("subagent-only routing spawns no app-server"),
+            lambda *_args, **_kwargs: pytest.fail("subagent-only routing starts no routing server"),
         )
         monkeypatch.setattr(
             codex_interposer,
@@ -416,6 +455,21 @@ class TestLaunchCodex:
             "shell_environment_policy.set.UCODE_SMART_ROUTER_PYTHON="
             + json.dumps(os.environ["UCODE_SMART_ROUTER_PYTHON"])
         ) in argv
+        assert 'shell_environment_policy.set.ENABLE_SMART_ROUTING_SUBAGENT_ONLY="1"' in argv
+        assert "features.hooks=true" in argv
+        plugin_overrides = [arg for arg in argv if arg.startswith("plugins=")]
+        if legacy_plugin:
+            (override,) = plugin_overrides
+            assert tomllib.loads(override) == {
+                "plugins": {"model-orchestrator@marketplace": {"enabled": False}}
+            }
+        else:
+            assert plugin_overrides == []
+        assert user_config.read_bytes() == before
+        assert any(
+            arg.startswith("hooks.UserPromptSubmit=") and "ucode.smart_routing.orchestrator" in arg
+            for arg in argv
+        )
         # The hook subprocesses inherit the launch environment and pass the routing gate.
         assert os.environ[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
         assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "token"
@@ -433,14 +487,76 @@ class TestLaunchCodex:
         )
         monkeypatch.setenv("CODEX_HOME", str(codex_home))
 
-        configured = v2._v2_pre_tool_use_hooks(
+        configured = v2._v2_hooks(
             {"workspace": WS, "profile": "myprof"},
             ["system.ai.gpt-5-6-sol"],
-        )
+            tomllib.loads((codex_home / "config.toml").read_text()),
+        )["PreToolUse"]
 
         assert configured[0]["hooks"][0]["command"] == "user-policy"
         assert configured[1]["matcher"] == "Agent|.*spawn_agent$"
         assert "--model system.ai.gpt-5-6-sol" in configured[1]["hooks"][0]["command"]
+
+    def test_subagent_launch_composes_only_native_resolved_events(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        monkeypatch.setattr(v2, "get_databricks_token", lambda *args: "token")
+        project = tmp_path / "project"
+        (project / ".codex").mkdir(parents=True)
+        project_config = project / ".codex/config.toml"
+        project_config.write_text('[plugins."model-orchestrator@project"]\nenabled = true\n')
+        before = project_config.read_bytes()
+        effective = {
+            "hooks": {
+                event: [{"hooks": [{"type": "command", "command": f"native-{event}"}]}]
+                for event in ("PreToolUse", "UserPromptSubmit", "SessionStart", "Stop")
+            }
+        }
+        saved = deepcopy(effective)
+        reads, launches = [], []
+        caller_config = ["--config", 'projects={"/other"={trust_level="untrusted"}}']
+
+        def native_read(binary, **kwargs):
+            reads.append((binary, kwargs))
+            return effective
+
+        def launch(argv):
+            launches.append(argv)
+            raise SystemExit(0)
+
+        monkeypatch.setattr(v2, "read_effective_codex_config", native_read)
+        monkeypatch.setattr(v2, "exec_or_spawn", launch)
+        with pytest.raises(SystemExit):
+            v2.launch_codex(
+                {"workspace": WS, "codex_models": ["gpt-5.6-sol"]},
+                [*caller_config, "--cd", str(project)],
+                binary="/selected/codex",
+                start_model="gpt-5.6-sol",
+                render_overlay=lambda *args, **kwargs: {"model": "gpt-5.6-sol"},
+            )
+
+        assert reads == [
+            (
+                "/selected/codex",
+                {
+                    "cwd": project,
+                    "config_args": ["--config", 'model="gpt-5.6-sol"', *caller_config],
+                },
+            )
+        ]
+        (argv,) = launches
+        for event in ("PreToolUse", "UserPromptSubmit", "SessionStart"):
+            value = next(arg for arg in argv if arg.startswith(f"hooks.{event}="))
+            groups = tomllib.loads(value)["hooks"][event]
+            assert groups[0] == saved["hooks"][event][0]
+            assert len(groups) == 2
+        assert not any(arg.startswith("hooks.Stop=") for arg in argv)
+        plugin_arg = next(arg for arg in argv if arg.startswith("plugins="))
+        assert tomllib.loads(plugin_arg) == {
+            "plugins": {"model-orchestrator@project": {"enabled": False}}
+        }
+        assert argv[-2:] == ["--cd", str(project)]
+        assert effective == saved
+        assert project_config.read_bytes() == before
 
     def test_v2_pre_tool_hook_replaces_existing_ucode_hook(self, tmp_path, monkeypatch):
         monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/bin/ug")
@@ -456,10 +572,11 @@ class TestLaunchCodex:
         )
         monkeypatch.setenv("CODEX_HOME", str(codex_home))
 
-        configured = v2._v2_pre_tool_use_hooks(
+        configured = v2._v2_hooks(
             {"workspace": WS, "profile": "myprof"},
             ["system.ai.gpt-5-6-sol"],
-        )
+            tomllib.loads((codex_home / "config.toml").read_text()),
+        )["PreToolUse"]
 
         routing_commands = [
             hook["command"]

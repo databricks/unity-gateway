@@ -82,6 +82,7 @@ from ucode.mcp_web_search import (
     external_provider_selected,
 )
 from ucode.os_compatibility import subprocess_cross_os
+from ucode.smart_routing import orchestrator
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
@@ -1857,7 +1858,9 @@ def _compose_v2_settings(tool_args: list[str]) -> tuple[dict, list[str]]:
     settings: dict = {}
     for value in caller_values:
         settings = _merge_claude_settings(settings, _load_caller_settings(value))
-    return _merge_claude_settings(settings, read_json_safe(CLAUDE_SETTINGS_PATH)), remaining
+    settings = _merge_claude_settings(settings, read_json_safe(CLAUDE_SETTINGS_PATH))
+    orchestrator.suppress_legacy_claude_plugin(settings, CLAUDE_USER_SETTINGS_PATH)
+    return settings, remaining
 
 
 def _launch_model_args(tool_args: list[str], launch_model: str | None) -> list[str]:
@@ -1972,10 +1975,6 @@ def _build_claude_argv(
     """
     source_args = ["--setting-sources", _RELAYED_SETTING_SOURCES] if relayed else []
     caller_values, remaining = _extract_caller_settings(tool_args)
-    if not caller_values and settings_override is None:
-        # No caller --settings: hand Claude ucode's settings file directly (the
-        # common path; behavior unchanged).
-        return [binary, *source_args, "--settings", str(CLAUDE_SETTINGS_PATH), *tool_args]
     caller_settings: dict = {}
     for value in caller_values:
         caller_settings = _merge_claude_settings(caller_settings, _load_caller_settings(value))
@@ -1984,6 +1983,9 @@ def _build_claude_argv(
     merged = _merge_claude_settings(caller_settings, read_json_safe(CLAUDE_SETTINGS_PATH))
     if settings_override is not None:
         merged = _merge_claude_settings(merged, settings_override)
+    suppressed = orchestrator.suppress_legacy_claude_plugin(merged, CLAUDE_USER_SETTINGS_PATH)
+    if not caller_values and settings_override is None and not suppressed:
+        return [binary, *source_args, "--settings", str(CLAUDE_SETTINGS_PATH), *tool_args]
     merged_env = merged.get("env")
     if isinstance(merged_env, dict):
         merged_env.pop("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", None)
