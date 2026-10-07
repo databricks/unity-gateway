@@ -2101,9 +2101,7 @@ def launch(
     settings_override = None
     launch_args = list(tool_args)
     if options.user_pinned_model:
-        # Native gateway discovery can populate Claude's picker without a UG catalog.
-        # Pass explicit selections directly; managed family aliases can override
-        # launch-scoped alias remapping, but must not choose this launch's model.
+        # Pass the exact ID: managed family defaults can override temporary aliases.
         os.environ["ANTHROPIC_MODEL"] = options.user_pinned_model
         settings_override = {"env": {"ANTHROPIC_MODEL": options.user_pinned_model}}
         launch_args = [

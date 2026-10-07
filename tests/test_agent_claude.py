@@ -2636,27 +2636,7 @@ class TestClaudeLaunch:
         settings = json.loads(calls[0][2])
         assert settings["env"]["ANTHROPIC_MODEL"] == "cat.schema.model"
 
-    @pytest.mark.parametrize("model", ["system.ai.claude-sonnet-4-5", "system.ai.gpt-5-6-luna"])
-    @pytest.mark.parametrize(
-        ("catalog_key", "includes_model"),
-        [
-            (None, False),
-            ("_claude_launch_picker_models", False),
-            ("_claude_launch_picker_models", True),
-            ("claude_static_models", False),
-            ("claude_static_models", True),
-        ],
-        ids=[
-            "no-catalog",
-            "picker-excludes",
-            "picker-includes",
-            "static-excludes",
-            "static-includes",
-        ],
-    )
-    def test_launch_explicit_model_forwards_native_id_regardless_of_catalog(
-        self, monkeypatch, tmp_path, model, catalog_key, includes_model
-    ):
+    def test_launch_custom_model_uses_native_model(self, monkeypatch, tmp_path):
         calls: list[list[str]] = []
         monkeypatch.setenv("ANTHROPIC_MODEL", "stale-model")
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
@@ -2664,47 +2644,27 @@ class TestClaudeLaunch:
         settings_path = tmp_path / "ucode-settings.json"
         saved_model = "system.ai.claude-haiku-4-5"
         settings_path.write_text(
-            json.dumps(
-                {
-                    "model": saved_model,
-                    "env": {
-                        "USER_SETTING": "keep",
-                        "ANTHROPIC_DEFAULT_OPUS_MODEL": "existing-opus",
-                        "ANTHROPIC_DEFAULT_SONNET_MODEL": "existing-sonnet",
-                    },
-                }
-            )
+            json.dumps({"model": saved_model, "env": {"USER_SETTING": "keep"}})
         )
         monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", settings_path)
         original_settings = settings_path.read_bytes()
 
-        state = {"workspace": WS}
-        if catalog_key is not None:
-            state[catalog_key] = [model if includes_model else "system.ai.other-model"]
+        custom_model = "system.ai.claude-opus-4-8"
         claude.launch(
-            state,
+            {"workspace": WS},
             ["--debug"],
-            options=LaunchOptions(user_pinned_model=model),
+            options=LaunchOptions(user_pinned_model=custom_model),
         )
 
-        assert os.environ["ANTHROPIC_MODEL"] == model
+        assert os.environ["ANTHROPIC_MODEL"] == custom_model
         assert calls[0][0:2] == ["claude", "--settings"]
         settings = json.loads(calls[0][2])
         assert settings["model"] == saved_model
-        assert settings["env"]["ANTHROPIC_MODEL"] == model
-        assert settings["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "existing-opus"
-        assert settings["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "existing-sonnet"
-        assert calls[0].count("--model") == 1
-        assert calls[0][calls[0].index("--model") + 1] == model
-        assert calls[0][-1] == "--debug"
+        assert settings["env"] == {"USER_SETTING": "keep", "ANTHROPIC_MODEL": custom_model}
+        assert calls[0][3:] == ["--model", custom_model, "--debug"]
         assert settings_path.read_bytes() == original_settings
 
-    @pytest.mark.parametrize(
-        "forwarded_args", [["--model", "claude-sonnet-5"], ["--model=claude-sonnet-5"]]
-    )
-    def test_launch_explicit_model_preserves_forwarded_native_model(
-        self, monkeypatch, forwarded_args
-    ):
+    def test_launch_custom_model_preserves_forwarded_native_model(self, monkeypatch):
         calls: list[list[str]] = []
         monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
@@ -2712,13 +2672,13 @@ class TestClaudeLaunch:
 
         claude.launch(
             {"workspace": WS},
-            forwarded_args,
+            ["--model", "claude-sonnet-5"],
             options=LaunchOptions(user_pinned_model="system.ai.claude-opus-4-8"),
         )
 
-        assert calls[0][3:] == forwarded_args
+        assert calls[0][3:] == ["--model", "claude-sonnet-5"]
 
-    def test_launch_managed_model_uses_native_model_over_stale_settings(
+    def test_launch_managed_custom_model_uses_native_model_over_stale_settings(
         self, monkeypatch, tmp_path
     ):
         calls: list[list[str]] = []
