@@ -12,7 +12,6 @@ import json
 from pathlib import Path
 
 import pytest
-from utils.constants import CLAUDE_SMART_ROUTING_MODELS, CODEX_SMART_ROUTING_MODELS
 from utils.evidence import (
     SubagentCalculation,
     agent_sessions,
@@ -22,12 +21,7 @@ from utils.evidence import (
     read_jsonl,
     tool_outputs,
 )
-from utils.managed import (
-    build_claude_agent_config,
-    build_codex_agent_config,
-    build_coding_agent_config,
-    set_managed_config_stub,
-)
+from utils.managed import use_managed_config_fixture
 from utils.terminal import AgentTerminal
 
 SMART_ROUTING_BANNER = "Using Unity Gateway Smart Router."
@@ -308,11 +302,7 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
     session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
     if orchestration_enabled:
         session.env["ENABLE_SMART_ROUTER_ORCHESTRATOR"] = "1"
-    config = build_coding_agent_config(
-        "CODING_AGENT_CLAUDE_CODE",
-        build_claude_agent_config(CLAUDE_SMART_ROUTING_MODELS, smart_routing=True),
-    )
-    set_managed_config_stub(session, tmp_path, config)
+    use_managed_config_fixture(session, "claude_smart_routing")
     session.run(
         "configure",
         "--workspace",
@@ -365,11 +355,7 @@ def test_smart_router_skill_toggles_codex_subagent_routing(
     session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
     if orchestration_enabled:
         session.env["ENABLE_SMART_ROUTER_ORCHESTRATOR"] = "1"
-    config = build_coding_agent_config(
-        "CODING_AGENT_CODEX",
-        build_codex_agent_config(models=CODEX_SMART_ROUTING_MODELS, smart_routing=True),
-    )
-    set_managed_config_stub(session, tmp_path, config)
+    use_managed_config_fixture(session, "codex_smart_routing")
     session.run(
         "configure",
         "--workspace",
