@@ -10,6 +10,8 @@ import pytest
 from ucode.agents import copilot
 
 WS = "https://example.databricks.com"
+# >= MINIMUM_COPILOT_ANTHROPIC_VERSION, for tests that need the anthropic path reachable.
+NEW_ENOUGH_VERSION = "1.0.82"
 
 
 class TestCopilotSpec:
@@ -27,25 +29,59 @@ class TestCopilotSpec:
 
 
 class TestRenderEnvOverlay:
-    def test_sets_provider_base_url(self):
-        env = copilot.render_env_overlay(WS, "claude-sonnet-4-6", "tok")
-        assert env["COPILOT_PROVIDER_BASE_URL"] == f"{WS}/ai-gateway/mlflow/v1"
+    """Claude uses native Messages; GPT retains the MLflow gateway and wire API."""
 
-    def test_sets_provider_type(self):
-        env = copilot.render_env_overlay(WS, "m", "t")
+    @pytest.fixture(autouse=True)
+    def _new_enough_copilot(self, monkeypatch):
+        monkeypatch.setattr(copilot, "agent_version", lambda binary: NEW_ENOUGH_VERSION)
+
+    def test_claude_model_uses_anthropic_provider_type(self):
+        env = copilot.render_env_overlay(WS, "claude-sonnet-4-6", "tok")
+        assert env["COPILOT_PROVIDER_TYPE"] == "anthropic"
+
+    def test_claude_model_uses_native_anthropic_base_url(self):
+        env = copilot.render_env_overlay(WS, "claude-sonnet-4-6", "tok")
+        assert env["COPILOT_PROVIDER_BASE_URL"] == f"{WS}/ai-gateway/anthropic"
+
+    def test_claude_model_sets_bearer_token_not_api_key(self):
+        env = copilot.render_env_overlay(WS, "claude-sonnet-4-6", "tok123")
+        assert env["COPILOT_PROVIDER_BEARER_TOKEN"] == "tok123"
+        assert "COPILOT_PROVIDER_API_KEY" not in env
+
+    def test_claude_model_splits_canonical_id_from_wire_model(self):
+        env = copilot.render_env_overlay(WS, "system.ai.claude-sonnet-5", "tok")
+        assert env["COPILOT_PROVIDER_MODEL_ID"] == "claude-sonnet-5"
+        assert env["COPILOT_PROVIDER_WIRE_MODEL"] == "system.ai.claude-sonnet-5"
+        assert "COPILOT_MODEL" not in env
+
+    def test_claude_model_matches_case_insensitively(self):
+        env = copilot.render_env_overlay(WS, "us.anthropic.Claude-Opus-4-8", "tok")
+        assert env["COPILOT_PROVIDER_TYPE"] == "anthropic"
+        assert env["COPILOT_PROVIDER_MODEL_ID"] == "claude-opus-4-8"
+
+    def test_non_claude_model_uses_openai_provider_type(self):
+        env = copilot.render_env_overlay(WS, "gpt-5", "t")
         assert env["COPILOT_PROVIDER_TYPE"] == "openai"
 
-    def test_sets_model(self):
-        env = copilot.render_env_overlay(WS, "claude-sonnet-4-6", "tok")
-        assert env["COPILOT_MODEL"] == "claude-sonnet-4-6"
+    def test_non_claude_model_uses_mlflow_base_url(self):
+        env = copilot.render_env_overlay(WS, "gpt-5", "t")
+        assert env["COPILOT_PROVIDER_BASE_URL"] == f"{WS}/ai-gateway/mlflow/v1"
 
-    def test_sets_bearer_token(self):
-        env = copilot.render_env_overlay(WS, "m", "tok123")
+    def test_non_claude_model_sets_model_and_bearer_token(self):
+        env = copilot.render_env_overlay(WS, "gpt-5", "tok123")
+        assert env["COPILOT_MODEL"] == "gpt-5"
         assert env["COPILOT_PROVIDER_BEARER_TOKEN"] == "tok123"
+        assert "COPILOT_PROVIDER_API_KEY" not in env
+        assert "COPILOT_PROVIDER_MODEL_ID" not in env
+        assert "COPILOT_PROVIDER_WIRE_MODEL" not in env
 
     def test_sets_offline_true(self):
-        env = copilot.render_env_overlay(WS, "m", "t")
+        env = copilot.render_env_overlay(WS, "gpt-5", "t")
         assert env["COPILOT_OFFLINE"] == "true"
+
+    def test_sets_oauth_token_for_both_families(self):
+        assert copilot.render_env_overlay(WS, "claude-sonnet-4-6", "tok")["OAUTH_TOKEN"] == "tok"
+        assert copilot.render_env_overlay(WS, "gpt-5", "tok")["OAUTH_TOKEN"] == "tok"
 
     @pytest.mark.parametrize(
         ("selected_model", "override_model", "expected_api"),
@@ -65,6 +101,120 @@ class TestRenderEnvOverlay:
         assert env["COPILOT_PROVIDER_WIRE_API"] == expected_api
         assert env["COPILOT_MODEL"] == selected_model
 
+    def test_claude_omits_openai_wire_api(self):
+        env = copilot.render_env_overlay(WS, "system.ai.claude-sonnet-5", "tok")
+        assert "COPILOT_PROVIDER_WIRE_API" not in env
+
+
+class TestOldCopilotFallsBackToOpenai:
+    """Older Copilot releases retain their existing OpenAI-compatible route."""
+
+    def test_old_version_keeps_claude_on_openai(self, monkeypatch):
+        monkeypatch.setattr(copilot, "agent_version", lambda binary: "1.0.80")
+        env = copilot.render_env_overlay(WS, "system.ai.claude-sonnet-5", "tok")
+        assert env["COPILOT_PROVIDER_TYPE"] == "openai"
+        assert env["COPILOT_MODEL"] == "system.ai.claude-sonnet-5"
+
+    def test_unknown_version_keeps_claude_on_openai(self, monkeypatch):
+        monkeypatch.setattr(copilot, "agent_version", lambda binary: "unknown")
+        env = copilot.render_env_overlay(WS, "system.ai.claude-sonnet-5", "tok")
+        assert env["COPILOT_PROVIDER_TYPE"] == "openai"
+
+    def test_new_enough_version_uses_anthropic(self, monkeypatch):
+        monkeypatch.setattr(copilot, "agent_version", lambda binary: "1.0.81-6")
+        env = copilot.render_env_overlay(WS, "system.ai.claude-sonnet-5", "tok")
+        assert env["COPILOT_PROVIDER_TYPE"] == "anthropic"
+
+
+class TestSupportsAnthropicProvider:
+    def test_false_below_the_minimum_patch(self, monkeypatch):
+        monkeypatch.setattr(copilot, "agent_version", lambda binary: "1.0.80")
+        assert copilot._supports_anthropic_provider() is False
+
+    def test_false_just_below_the_minimum_prerelease(self, monkeypatch):
+        monkeypatch.setattr(copilot, "agent_version", lambda binary: "1.0.81-0")
+        assert copilot._supports_anthropic_provider() is False
+
+    def test_true_at_the_exact_minimum_prerelease(self, monkeypatch):
+        monkeypatch.setattr(copilot, "agent_version", lambda binary: "1.0.81-6")
+        assert copilot._supports_anthropic_provider() is True
+
+    def test_true_above_the_minimum_prerelease(self, monkeypatch):
+        monkeypatch.setattr(copilot, "agent_version", lambda binary: "1.0.81-7")
+        assert copilot._supports_anthropic_provider() is True
+
+    def test_true_for_the_final_release_of_the_minimum_version(self, monkeypatch):
+        monkeypatch.setattr(copilot, "agent_version", lambda binary: "1.0.81")
+        assert copilot._supports_anthropic_provider() is True
+
+    def test_true_for_a_newer_minor_version(self, monkeypatch):
+        monkeypatch.setattr(copilot, "agent_version", lambda binary: "1.0.83")
+        assert copilot._supports_anthropic_provider() is True
+
+    def test_false_when_version_cannot_be_determined(self, monkeypatch):
+        monkeypatch.setattr(copilot, "agent_version", lambda binary: "unknown")
+        assert copilot._supports_anthropic_provider() is False
+
+
+class TestParseCopilotVersion:
+    def test_parses_a_final_release(self):
+        assert copilot._parse_copilot_version("1.0.82") == (1, 0, 82, copilot._UNRELEASED)
+
+    def test_parses_a_prerelease(self):
+        assert copilot._parse_copilot_version("1.0.81-6") == (1, 0, 81, 6)
+
+    def test_a_final_release_sorts_after_its_prereleases(self):
+        final = copilot._parse_copilot_version("1.0.81")
+        prerelease = copilot._parse_copilot_version("1.0.81-14")
+        assert final is not None and prerelease is not None
+        assert final > prerelease
+
+    def test_returns_none_for_unparseable_input(self):
+        assert copilot._parse_copilot_version("unknown") is None
+
+
+class TestIsClaudeModel:
+    def test_true_for_canonical_name(self):
+        assert copilot._is_claude_model("claude-sonnet-5") is True
+
+    def test_true_for_bedrock_style_slug(self):
+        assert copilot._is_claude_model("us.anthropic.claude-opus-4-8") is True
+
+    def test_false_for_codex(self):
+        assert copilot._is_claude_model("gpt-5") is False
+
+    def test_false_for_catalog_qualified_gpt(self):
+        assert copilot._is_claude_model("system.ai.gpt-5") is False
+
+
+class TestCanonicalClaudeModelId:
+    def test_strips_databricks_catalog_prefix(self):
+        assert copilot._canonical_claude_model_id("system.ai.claude-sonnet-5") == "claude-sonnet-5"
+
+    def test_strips_bedrock_region_and_provider_prefix(self):
+        result = copilot._canonical_claude_model_id("us.anthropic.claude-opus-4-8")
+        assert result == "claude-opus-4-8"
+
+    def test_leaves_bare_canonical_name_unchanged(self):
+        assert copilot._canonical_claude_model_id("claude-haiku-4-5") == "claude-haiku-4-5"
+
+    def test_falls_back_to_the_input_when_no_match(self):
+        assert copilot._canonical_claude_model_id("weird-model") == "weird-model"
+
+    def test_lowercases_a_mixed_case_id(self):
+        assert (
+            copilot._canonical_claude_model_id("us.anthropic.Claude-Opus-4-8") == "claude-opus-4-8"
+        )
+
+    def test_lowercases_the_fallback_when_no_match(self):
+        assert copilot._canonical_claude_model_id("Weird-Model") == "weird-model"
+
+    def test_strips_a_trailing_bedrock_version_suffix(self):
+        assert copilot._canonical_claude_model_id("claude-opus-4-8-v1:0") == "claude-opus-4-8"
+
+    def test_strips_a_bedrock_version_suffix_without_a_colon_part(self):
+        assert copilot._canonical_claude_model_id("claude-opus-4-8-v1") == "claude-opus-4-8"
+
 
 class TestBuildRuntimeEnv:
     def test_inherits_path(self):
@@ -75,6 +225,24 @@ class TestBuildRuntimeEnv:
         env = copilot.build_runtime_env(WS, "m", "tok")
         assert env["COPILOT_PROVIDER_BASE_URL"] == f"{WS}/ai-gateway/mlflow/v1"
         assert env["COPILOT_PROVIDER_BEARER_TOKEN"] == "tok"
+
+    def test_removes_conflicting_inherited_provider_settings(self, monkeypatch):
+        monkeypatch.setattr(copilot, "agent_version", lambda binary: NEW_ENOUGH_VERSION)
+        monkeypatch.setenv("COPILOT_PROVIDER_API_KEY", "stale-key")
+        monkeypatch.setenv("COPILOT_MODEL", "stale-model")
+        monkeypatch.setenv("COPILOT_PROVIDER_MODEL_ID", "stale-id")
+        monkeypatch.setenv("COPILOT_PROVIDER_WIRE_MODEL", "stale-wire-model")
+        monkeypatch.setenv("COPILOT_PROVIDER_WIRE_API", "responses")
+        monkeypatch.setenv("COPILOT_PROVIDER_MODEL_LIMITS_ID", "stale-limits")
+
+        env = copilot.build_runtime_env(WS, "system.ai.claude-sonnet-5", "tok")
+
+        assert "COPILOT_PROVIDER_API_KEY" not in env
+        assert "COPILOT_MODEL" not in env
+        assert "COPILOT_PROVIDER_WIRE_API" not in env
+        assert "COPILOT_PROVIDER_MODEL_LIMITS_ID" not in env
+        assert env["COPILOT_PROVIDER_MODEL_ID"] == "claude-sonnet-5"
+        assert env["COPILOT_PROVIDER_WIRE_MODEL"] == "system.ai.claude-sonnet-5"
 
     def test_sets_oauth_token_for_mcp(self):
         env = copilot.build_runtime_env(WS, "m", "tok")
@@ -92,6 +260,34 @@ class TestBuildRuntimeEnv:
         assert env["COPILOT_PROVIDER_WIRE_API"] == "completions"
         assert env["COPILOT_PROVIDER_MODEL_ID"] == "user-model-id"
         assert env["COPILOT_PROVIDER_MODEL_LIMITS_ID"] == "user-model-limits"
+
+
+class TestWriteToolConfigSwitching:
+    def test_switching_families_clears_the_stale_model_selection_keys(self, tmp_path, monkeypatch):
+        import ucode.agents.copilot as cp_mod
+        import ucode.config_io as config_io_mod
+
+        monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
+        env_path = tmp_path / "ucode.env"
+        monkeypatch.setattr(cp_mod, "COPILOT_ENV_PATH", env_path)
+        monkeypatch.setattr(cp_mod, "COPILOT_BACKUP_PATH", tmp_path / "backup")
+        monkeypatch.setattr(cp_mod, "save_state", lambda state: None)
+        monkeypatch.setattr(cp_mod, "agent_version", lambda binary: NEW_ENOUGH_VERSION)
+
+        state = {"workspace": WS}
+        cp_mod.write_tool_config(state, "system.ai.claude-sonnet-5", token="tok-a")
+        written = config_io_mod.parse_dotenv(env_path)
+        assert written["COPILOT_PROVIDER_MODEL_ID"] == "claude-sonnet-5"
+        assert written["COPILOT_PROVIDER_WIRE_MODEL"] == "system.ai.claude-sonnet-5"
+        assert "COPILOT_MODEL" not in written
+        assert "COPILOT_PROVIDER_WIRE_API" not in written
+
+        cp_mod.write_tool_config(state, "system.ai.gpt-6-astra", token="tok-b")
+        written = config_io_mod.parse_dotenv(env_path)
+        assert written["COPILOT_MODEL"] == "system.ai.gpt-6-astra"
+        assert "COPILOT_PROVIDER_MODEL_ID" not in written
+        assert "COPILOT_PROVIDER_WIRE_MODEL" not in written
+        assert written["COPILOT_PROVIDER_WIRE_API"] == "responses"
 
 
 class TestMcpServerConfig:

@@ -6,13 +6,12 @@ inspect what's configured (`cat ~/.copilot/.env`) and to give `revert` something
 to clean up; the values are also injected directly into the child process's
 environment at launch.
 
-We point Copilot CLI's `openai` provider at the Databricks MLflow gateway. GPT
-models with major version 6 or newer use Responses; other models use Chat
-Completions. Copilot fixes its wire API and model when it builds the native
-client, so changing models in the picker cannot change either mid-session.
-Relaunch Copilot after changing model families. Gemini is intentionally excluded
-— Databricks' Gemini translation layer rejects the `stream_options` field that
-Copilot CLI sends, so Gemini models 400 on every request.
+Claude uses Copilot's native `anthropic` provider so its cache_control markers
+reach the Databricks Messages gateway. Copilot 1.0.81-6 or newer is required;
+older versions retain the OpenAI-compatible route. GPT uses the MLflow gateway:
+GPT-6+ uses Responses and older GPT uses Chat Completions. Switching model
+families requires relaunching Copilot. Gemini remains unsupported because its
+gateway translation rejects Copilot's stream_options.
 """
 
 from __future__ import annotations
@@ -35,11 +34,12 @@ from ucode.config_io import (
 )
 from ucode.databricks import (
     TOKEN_REFRESH_INTERVAL_SECONDS,
-    build_copilot_base_url,
+    build_copilot_base_urls,
     get_databricks_token,
 )
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import mark_tool_managed, save_state
+from ucode.telemetry import agent_version
 
 from .args import LaunchOptions, explicit_model_arg_value
 
@@ -71,6 +71,25 @@ LEGACY_ENV_KEYS = [
     "OPENAI_API_KEY",
     "COPILOT_PROVIDER_API_KEY",
 ]
+# COPILOT_MODEL (openai) vs COPILOT_PROVIDER_MODEL_ID+COPILOT_PROVIDER_WIRE_MODEL
+# (anthropic) are mutually exclusive — cleared before every write so switching
+# families doesn't leave the other set stale in ~/.copilot/ucode.env.
+_MODEL_SELECTION_KEYS = (
+    "COPILOT_MODEL",
+    "COPILOT_PROVIDER_MODEL_ID",
+    "COPILOT_PROVIDER_WIRE_MODEL",
+)
+
+_CANONICAL_CLAUDE_MODEL_ID_RE = re.compile(r"claude-[a-z0-9]+(?:-[a-z0-9]+)*", re.IGNORECASE)
+# Copilot's model catalog does not use Bedrock's `-v1:0` suffix.
+_BEDROCK_VERSION_SUFFIX_RE = re.compile(r"-v\d+(:\d+)?$")
+
+# (major, minor, patch, prerelease) — see the module docstring. A version with
+# no prerelease suffix (a final release) is a 4th component of _UNRELEASED so
+# it always sorts after every prerelease of the same (major, minor, patch).
+MINIMUM_COPILOT_ANTHROPIC_VERSION = (1, 0, 81, 6)
+_UNRELEASED = 999_999
+_COPILOT_VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)(?:-(\d+))?")
 _GPT_MODEL_MAJOR_PATTERN = re.compile(r"^(?:system\.ai\.)?(?:databricks-)?gpt-(\d+)(?=$|[.-])")
 
 
@@ -101,20 +120,63 @@ def default_model(state: dict) -> str | None:
     return next(iter(claude_models.values()), None)
 
 
+def _is_claude_model(model: str) -> bool:
+    # Every Claude family/model id ucode discovers or pins contains "claude"
+    # (canonical Anthropic names like "claude-sonnet-5", or Bedrock-style
+    # slugs like "us.anthropic.claude-opus-4-8") — same substring check
+    # `databricks.py` already uses elsewhere to special-case the family.
+    return "claude" in model.lower()
+
+
+def _canonical_claude_model_id(model: str) -> str:
+    # e.g. "system.ai.claude-sonnet-5" -> "claude-sonnet-5" — the well-known
+    # name Copilot needs to recognize the model (see render_env_overlay).
+    # Lowercased and stripped of any Bedrock version suffix so it matches
+    # Copilot's catalog regardless of the input's casing or source.
+    match = _CANONICAL_CLAUDE_MODEL_ID_RE.search(model)
+    canonical = match.group(0).lower() if match else model.lower()
+    return _BEDROCK_VERSION_SUFFIX_RE.sub("", canonical)
+
+
+def _parse_copilot_version(value: str) -> tuple[int, int, int, int] | None:
+    match = _COPILOT_VERSION_RE.search(value)
+    if not match:
+        return None
+    major, minor, patch, pre = match.groups()
+    return int(major), int(minor), int(patch), int(pre) if pre is not None else _UNRELEASED
+
+
+def _supports_anthropic_provider() -> bool:
+    version = _parse_copilot_version(agent_version(SPEC["binary"]))
+    return version is not None and version >= MINIMUM_COPILOT_ANTHROPIC_VERSION
+
+
 def render_env_overlay(
     workspace: str,
-    selected_model: str,
+    model: str,
     token: str,
     *,
     override_model: str | None = None,
 ) -> dict[str, str]:
-    request_model = override_model or selected_model
-    wire_api = "responses" if model_uses_responses_api(request_model) else "completions"
+    base_urls = build_copilot_base_urls(workspace)
+    if _is_claude_model(model) and _supports_anthropic_provider():
+        return {
+            "COPILOT_PROVIDER_TYPE": "anthropic",
+            "COPILOT_PROVIDER_BASE_URL": base_urls["anthropic"],
+            # Keep Copilot's canonical model metadata separate from the gateway wire id.
+            "COPILOT_PROVIDER_MODEL_ID": _canonical_claude_model_id(model),
+            "COPILOT_PROVIDER_WIRE_MODEL": model,
+            "COPILOT_PROVIDER_BEARER_TOKEN": token,  # not API_KEY — see module docstring
+            "COPILOT_OFFLINE": "true",
+            "OAUTH_TOKEN": token,
+        }
     return {
         "COPILOT_PROVIDER_TYPE": "openai",
-        "COPILOT_PROVIDER_BASE_URL": build_copilot_base_url(workspace),
-        "COPILOT_PROVIDER_WIRE_API": wire_api,
-        "COPILOT_MODEL": selected_model,
+        "COPILOT_PROVIDER_BASE_URL": base_urls["openai"],
+        "COPILOT_PROVIDER_WIRE_API": (
+            "responses" if model_uses_responses_api(override_model or model) else "completions"
+        ),
+        "COPILOT_MODEL": model,
         "COPILOT_PROVIDER_BEARER_TOKEN": token,
         "COPILOT_OFFLINE": "true",
         "OAUTH_TOKEN": token,
@@ -124,7 +186,17 @@ def render_env_overlay(
 def build_runtime_env(workspace: str, model: str, token: str) -> dict[str, str]:
     env = os.environ.copy()
     override_model = env.get("COPILOT_PROVIDER_WIRE_MODEL")
-    env.update(render_env_overlay(workspace, model, token, override_model=override_model))
+    overlay = render_env_overlay(workspace, model, token, override_model=override_model)
+    for key in LEGACY_ENV_KEYS:
+        env.pop(key, None)
+    if overlay["COPILOT_PROVIDER_TYPE"] == "anthropic":
+        for key in (
+            *_MODEL_SELECTION_KEYS,
+            "COPILOT_PROVIDER_MODEL_LIMITS_ID",
+            "COPILOT_PROVIDER_WIRE_API",
+        ):
+            env.pop(key, None)
+    env.update(overlay)
     return env
 
 
@@ -186,13 +258,31 @@ def write_tool_config(
         )
     existing = parse_dotenv(COPILOT_ENV_PATH)
     # Keep the inspectable file self-consistent without treating it as launch input.
-    override_model = existing.get("COPILOT_PROVIDER_WIRE_MODEL")
+    switching_from_anthropic = existing.get("COPILOT_PROVIDER_TYPE") == "anthropic"
+    override_model = (
+        None if switching_from_anthropic else existing.get("COPILOT_PROVIDER_WIRE_MODEL")
+    )
     overlay = render_env_overlay(state["workspace"], model, token, override_model=override_model)
     for key in LEGACY_ENV_KEYS:
         existing.pop(key, None)
+    for key in _MODEL_SELECTION_KEYS:
+        if (
+            key == "COPILOT_MODEL"
+            or overlay["COPILOT_PROVIDER_TYPE"] == "anthropic"
+            or switching_from_anthropic
+        ):
+            existing.pop(key, None)
+    if overlay["COPILOT_PROVIDER_TYPE"] == "anthropic":
+        existing.pop("COPILOT_PROVIDER_MODEL_LIMITS_ID", None)
+        existing.pop("COPILOT_PROVIDER_WIRE_API", None)
     existing.update(overlay)
     write_dotenv(COPILOT_ENV_PATH, existing)
-    state = mark_tool_managed(state, "copilot", MANAGED_KEYS)
+    managed_keys = (
+        MANAGED_KEYS + ["COPILOT_PROVIDER_MODEL_ID", "COPILOT_PROVIDER_WIRE_MODEL"]
+        if overlay["COPILOT_PROVIDER_TYPE"] == "anthropic"
+        else MANAGED_KEYS
+    )
+    state = mark_tool_managed(state, "copilot", managed_keys)
     save_state(state)
     return state, token
 

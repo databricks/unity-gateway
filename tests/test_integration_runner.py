@@ -77,6 +77,18 @@ def test_headless_only_selects_exact_nodes_for_requested_agents(tmp_path):
     ]
 
 
+def test_copilot_headless_target_and_exact_version(tmp_path):
+    assert runner.integration_test_targets(
+        tmp_path,
+        ["copilot"],
+        platform_name="posix",
+        installation_only=False,
+        headless_only=True,
+    ) == [f"{tmp_path / 'test_ug_copilot_headless.py'}::test_ug_copilot_claude_native_provider"]
+    args = runner.arguments(["--copilot-version", "1.0.91", "--installation-only"], environment={})
+    assert args.copilot_version == "1.0.91"
+
+
 def test_headless_only_is_mutually_exclusive_with_installation_only():
     with pytest.raises(SystemExit):
         runner.arguments(

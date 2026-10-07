@@ -78,7 +78,7 @@ jobs:
           - group: copilot
             name: Agent launch tests · Copilot
             keyword: TestCopilotLaunch
-            package: '@github/copilot@1.0.80'
+            package: '@github/copilot@1.0.91'
           - group: pi
             name: Agent launch tests · Pi
             keyword: TestPiLaunch

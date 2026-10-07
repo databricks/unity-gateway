@@ -3459,9 +3459,13 @@ def build_pi_base_urls(workspace: str) -> dict[str, str]:
     }
 
 
-def build_copilot_base_url(workspace: str) -> str:
-    # Copilot appends `/responses` or `/chat/completions`; both use this gateway base.
-    return f"{workspace}/ai-gateway/mlflow/v1"
+def build_copilot_base_urls(workspace: str) -> dict[str, str]:
+    # Claude uses native Messages so Copilot can send cache_control; GPT uses
+    # the OpenAI-compatible gateway (Completions or Responses).
+    return {
+        "anthropic": build_tool_base_url("claude", workspace),
+        "openai": f"{workspace}/ai-gateway/mlflow/v1",
+    }
 
 
 def build_shared_base_urls(workspace: str) -> dict[str, str | dict[str, str]]:
@@ -3470,7 +3474,7 @@ def build_shared_base_urls(workspace: str) -> dict[str, str | dict[str, str]]:
         "claude": build_tool_base_url("claude", workspace),
         "gemini": build_tool_base_url("gemini", workspace),
         "opencode": build_opencode_base_urls(workspace),
-        "copilot": build_copilot_base_url(workspace),
+        "copilot": build_copilot_base_urls(workspace),
         "pi": build_pi_base_urls(workspace),
     }
     return urls
