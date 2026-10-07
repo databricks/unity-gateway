@@ -131,34 +131,22 @@ that Claude settings and Codex's shell policy carry the interpreter and session 
 These are component checks; they do not establish native skill permission matching or
 PowerShell execution.
 
-`test_orchestrator.py` covers shared routing state, off/on transitions, suppression
-of retained skills outside eligible sessions, root prompts and compaction,
-user-hook preservation, and bundled Claude roles. Subprocess checks verify that
-`--check` rejects ineligible sessions and leaves legacy preference files untouched,
-even when they are malformed. The installed skill's check command follows live
-toggles using the launching interpreter in `test_smart_router.py`. Routing checks
-cover Claude/Codex role contracts without model preferences. Separate preference
-editing, locking, and recovery are no longer part of the workflow.
-`test_orchestrator_legacy_plugins.py`
-and the Claude/Codex launcher tests check native per-launch overrides that disable
-legacy marketplace registrations with routing on or off, including Codex's
-app-server and remote TUI. They check config discovery, unrelated-plugin and hook
-preservation, and unchanged saved settings, including nested project registrations
-and `--cd`. `test_codex_config.py` covers launch-directory resolution and argument
-serialization. Codex launch tests check that UG supplies only its own hooks,
-preserves caller arguments and saved configuration, and starts no helper process
-for subagent-only routing. Native hook merging and project trust belong to Codex;
-these component assertions do not exercise its hook loader.
 The toggle integration journeys require both bundled skills, verify the saved
 session controls and native tool-result confirmation after each toggle, and
 explicitly request their children, including while routing is off. Claude's journey
 answers the visible permission prompt for the exact read-only orchestrator check,
 using the dialog's command because pending calls may not yet be in the transcript.
 Evidence tests reject added shell commands, commands in scrollback or descriptions,
-and other permission selections. Live automatic
-delegation and legacy-hook execution are not covered by these tests.
+and other permission selections.
 `test_integration_evidence.py` checks native tool-result extraction for both agents,
 including collapsed-output records, and excludes user echoes and assistant claims.
+
+Dedicated regression coverage is missing for root-only orchestrator activation,
+compaction, retained skills in ineligible sessions, nested-session eligibility,
+role-contract preservation, and isolation from legacy preference files. Legacy-plugin
+suppression and preservation of saved settings and unrelated plugins/hooks are also
+not covered by these journeys. Codex's native hook merging and project trust,
+automatic delegation, and legacy-hook execution remain outside the integration suite.
 
 The portable Windows routing test checks native executable forwarding, generated
 hooks/plugins, caller arguments, and cleanup without Unix imports. It does not

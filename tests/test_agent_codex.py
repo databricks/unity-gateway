@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import tomllib
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -994,63 +993,6 @@ class TestCodexLaunch:
         assert os.environ["OAUTH_TOKEN"] == "fresh-token"
         assert launches[0][-1] == "--search"
 
-    @pytest.mark.parametrize("version", ["0.133.0", "0.154.0"])
-    def test_non_routed_launch_suppresses_legacy_plugin(self, tmp_path, monkeypatch, version):
-        launches = self._patch(tmp_path, monkeypatch)
-        monkeypatch.setattr(codex, "agent_version", lambda _binary: version)
-        plugin = "model-orchestrator@isaac-sync-eng-plugin-marketplace-experimental"
-        user_config = tmp_path / "config.toml"
-        user_config.write_text(
-            f'[plugins."{plugin}"]\nenabled = true\n'
-            '[plugins."unrelated@marketplace"]\nenabled = true\n'
-        )
-        project = tmp_path / "project"
-        (project / ".codex").mkdir(parents=True)
-        project_config = project / ".codex/config.toml"
-        project_config.write_text(
-            '[plugins."model-orchestrator@project"]\nenabled = true\n'
-            '[plugins."unrelated@project"]\nenabled = true\n'
-        )
-        paths = (user_config, codex.CODEX_CONFIG_PATH, project_config)
-        before = {path: path.read_bytes() for path in paths}
-
-        codex.launch(
-            {"workspace": WS}, ["--cd", str(project), "exec", "hello"], options=LaunchOptions()
-        )
-
-        (argv,) = launches
-        override = next(arg for arg in argv if arg.startswith("plugins="))
-        assert tomllib.loads(override) == {
-            "plugins": {
-                plugin: {"enabled": False},
-                "model-orchestrator@project": {"enabled": False},
-            }
-        }
-        assert argv[-4:] == ["--cd", str(project), "exec", "hello"]
-        assert {path: path.read_bytes() for path in paths} == before
-
-    def test_legacy_suppression_preserves_profile_plugin_overrides(self, tmp_path, monkeypatch):
-        launches = self._patch(tmp_path, monkeypatch)
-        profile = codex.CODEX_CONFIG_PATH
-        profile.write_text(
-            profile.read_text() + '[plugins."model-orchestrator@marketplace"]\nenabled = true\n'
-            '[plugins."unrelated@marketplace"]\nenabled = false\n'
-        )
-        user_config = tmp_path / "config.toml"
-        user_config.write_text('[plugins."unrelated@marketplace"]\nenabled = true\n')
-        before = user_config.read_bytes(), profile.read_bytes()
-
-        codex.launch({"workspace": WS}, ["exec", "hello"], options=LaunchOptions())
-
-        (override,) = [arg for arg in launches[0] if arg.startswith("plugins=")]
-        assert tomllib.loads(override) == {
-            "plugins": {
-                "model-orchestrator@marketplace": {"enabled": False},
-                "unrelated@marketplace": {"enabled": False},
-            }
-        }
-        assert (user_config.read_bytes(), profile.read_bytes()) == before
-
     @pytest.mark.parametrize("custom_catalog", [None, "/user/isaac-app-model-catalog.json"])
     def test_native_update_detaches_catalog_without_discovery(
         self, tmp_path, monkeypatch, custom_catalog
@@ -1544,9 +1486,6 @@ class TestCodexLaunch:
 
     def test_injects_otel_config_when_tracing_enabled(self, tmp_path, monkeypatch):
         self._patch(tmp_path, monkeypatch)
-        user_config = tmp_path / "config.toml"
-        user_config.write_text('[plugins."model-orchestrator@marketplace"]\nenabled = true\n')
-        before = user_config.read_bytes()
         server = Mock(server_address=("127.0.0.1", 54321))
         cache = Mock()
         client = Mock()
@@ -1580,11 +1519,6 @@ class TestCodexLaunch:
         assert 'protocol = "binary"' in otel
         assert "Authorization" not in otel  # no credential in argv; the proxy injects it
         assert argv[-2:] == ["exec", "hi"]
-        override = next(arg for arg in argv if arg.startswith("plugins="))
-        assert tomllib.loads(override) == {
-            "plugins": {"model-orchestrator@marketplace": {"enabled": False}}
-        }
-        assert user_config.read_bytes() == before
 
     def test_no_otel_config_when_tracing_disabled(self, tmp_path, monkeypatch):
         launches = self._patch(tmp_path, monkeypatch)

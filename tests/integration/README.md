@@ -287,20 +287,13 @@ the native tool-result records, and a new assistant answer after each skill invo
 Collapsed terminal output is allowed; the answer need not repeat the CLI's exact wording.
 Each following child still verifies whether a routing decision occurred.
 Their off-phase child is an explicit user-requested delegation;
-these journeys do not establish automatic orchestration behavior. Shared on/off
-state, root-only activation, compaction, retained skills, role contracts, and
-isolation from legacy preferences are covered in `../test_orchestrator.py`.
-`../test_smart_router.py` executes the installed routing-check command across
-session toggles. Separate preference editing, locking, and recovery are not part
-of the workflow. `../test_orchestrator_legacy_plugins.py` and
-launcher component tests check per-launch suppression of installed legacy plugins,
-including non-routed launches, nested project config and `--cd`, and preservation
-of saved settings and unrelated plugins/hooks. Codex launcher component tests
-check that UG supplies only its own hooks, preserves caller arguments, and starts
-no helper process for subagent-only routing. Codex's native hook merging, project
-trust, and execution of pre-existing hooks are not exercised by this integration suite. Live automatic
-delegation and legacy-hook execution remain
-unverified by this suite.
+these journeys do not establish automatic orchestration behavior. Root-only
+activation, compaction, retained skills in ineligible sessions, nested-session
+eligibility, role-contract preservation, and isolation from legacy preference files
+lack dedicated regression coverage. The journeys do not cover per-launch legacy-plugin
+suppression or preservation of saved settings and unrelated plugins/hooks.
+Codex's native hook merging, project trust, and execution of pre-existing hooks
+are not exercised by this integration suite.
 
 The Claude on/off/on journey handles the visible permission prompt for the exact
 read-only orchestrator check. It verifies the command in the current dialog and

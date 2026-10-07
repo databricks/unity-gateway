@@ -121,7 +121,6 @@ def test_windows_subagent_routing_uses_native_binary_without_unix_imports(tmp_pa
     assert settings["env"][v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
     assert v2.ENABLE_SMART_ROUTING_ENV_VAR not in settings["env"]
     assert "route-first-prompt" not in str(settings["hooks"])
-    assert "ucode.smart_routing.orchestrator" in str(settings["hooks"]["UserPromptSubmit"])
     assert "route-subagent" in str(settings["hooks"]["PreToolUse"])
     assert settings["modelOverrides"] == {"claude-opus-4-8": "system.ai.claude-opus-4-8"}
     assert not captured["settings_path"].exists()

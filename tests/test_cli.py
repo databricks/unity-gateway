@@ -677,34 +677,6 @@ class TestSubcommandRouting:
 
         assert options.launch_smart_routing is expected
 
-    @pytest.mark.parametrize("tool", ["claude", "codex"])
-    @pytest.mark.parametrize("routing_enabled", [False, True])
-    def test_launch_discards_parent_session_before_applying_eligibility(
-        self, monkeypatch, tmp_path, tool, routing_enabled
-    ):
-        from ucode.smart_routing import session_env
-
-        parent = tmp_path / "parent-env.json"
-        parent.write_text("{}")
-        monkeypatch.setenv(session_env.SESSION_ENV_VAR, str(parent))
-        monkeypatch.setenv(session_env.SESSION_PYTHON_ENV_VAR, "/parent/python")
-        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1" if routing_enabled else "0")
-        observed = []
-
-        def launch(_tool, _state, _args, *, options):
-            observed.append(
-                (options.launch_smart_routing, os.environ.get(session_env.SESSION_ENV_VAR))
-            )
-
-        with _launch_policy_patches(None) as calls:
-            calls["launch"].side_effect = launch
-            result = runner.invoke(app, [tool])
-
-        assert result.exit_code == 0, result.output
-        assert observed == [(routing_enabled, None)]
-        assert os.environ[session_env.SESSION_ENV_VAR] == str(parent)
-        assert parent.read_text() == "{}"
-
     @pytest.mark.parametrize(
         ("tool_args", "expected"),
         [

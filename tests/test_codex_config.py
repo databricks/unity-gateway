@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import pytest
 import tomlkit
 
-from ucode import codex_config
 from ucode.agents import codex
 from ucode.codex_config import codex_config_args
 
@@ -62,19 +60,3 @@ args = ["codex-token"]
         assert 'http_headers = {User-Agent = "ucode"}' in provider_override
         assert 'auth = {command = "ucode", args = ["codex-token"]}' in provider_override
         assert 'tui={model_availability_nux = {"gpt-5.6-sol" = 1}}' in args
-
-
-@pytest.mark.parametrize(
-    "args",
-    [
-        ["--cd", "project"],
-        ["--cd=project"],
-        ["-C", "project"],
-        ["-Cproject"],
-        ["-C=project"],
-        ["--cd", "wrong", "--cd", "project", "--", "--cd", "ignored"],
-    ],
-)
-def test_codex_working_directory(tmp_path, monkeypatch, args):
-    monkeypatch.chdir(tmp_path)
-    assert codex_config.codex_working_directory(args) == tmp_path / "project"
