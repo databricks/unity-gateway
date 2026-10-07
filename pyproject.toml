@@ -58,6 +58,8 @@ fallback-version = "0.0.0"
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",
+    "pexpect>=4.9.0",
+    "pyte>=0.8.2",
     # Pinned so local and CI lint with the identical formatter/type-checker;
     # ruff/ty output shifts between releases, so bump these deliberately.
     "ruff==0.16.5",

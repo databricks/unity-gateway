@@ -35,6 +35,32 @@ The `smart_defaults` wire schema, legacy `spend_tiers` cache reads, and recommen
 request gating are covered by unit/component tests listed in `../README.md`. This suite
 does not yet assert live `recommendModel` request counts for configs with and without tiers.
 
+## Dedicated-workspace CUJ5
+
+[`../e2e_cuj/test_ug_budget_defaults.py`](../e2e_cuj/test_ug_budget_defaults.py) runs
+three budget cases in the shared `E2E CUJs` job against the fixed 1% tier. The above-tier
+cases use `UG_CUJ_SP_CLIENT_ID` / `UG_CUJ_SP_CLIENT_SECRET`; the below-tier case uses
+`UG_BUDGET_CUJ_SP_CLIENT_ID` / `UG_BUDGET_CUJ_SP_CLIENT_SECRET`.
+
+Run from a clean POSIX runner with both credential pairs set:
+
+```bash
+UG_CUJ_SP_CLIENT_ID=... UG_CUJ_SP_CLIENT_SECRET=... \
+UG_BUDGET_CUJ_SP_CLIENT_ID=... UG_BUDGET_CUJ_SP_CLIENT_SECRET=... \
+uv run --with pexpect==4.9.0 --with pyte==0.8.2 \
+  pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj -v
+```
+
+All three cases submit no inference tasks. The above-tier bare-launch case checks
+`ug usage`, the Luna recommendation, and Codex startup; it does not assert that Codex
+applies Luna. The below-tier case verifies Claude/Sonnet selection and checks the
+spend percentage when the backend supplies budget figures.
+
+The explicit `ug claude` case verifies that startup displays the backend's Codex/Luna
+recommendation while its generated `ANTHROPIC_MODEL` setting and native header select
+Sonnet, then exits. It does not verify Claude's inference model. All three cases leave
+workspace and budget configuration unchanged.
+
 Shared subprocess command resolution is covered by `../test_subprocess_cross_os.py` and
 enforced by Ruff. These component checks do not establish native Windows coverage
 for every agent; the Windows journeys below validate their explicitly selected paths.
