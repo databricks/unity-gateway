@@ -69,7 +69,7 @@ def test_missing_gpt_uses_generic_compatibility_metadata(bundled, name):
     assert model["tool_mode"] is None
     assert model["input_modalities"] == ["text"]
     assert model["context_window"] == 32768
-    assert model["default_reasoning_level"] == "medium"
+    assert model["default_reasoning_level"] is None
     assert model["supported_reasoning_levels"] == [
         {"effort": "low", "description": "Low reasoning"},
         {"effort": "medium", "description": "Medium reasoning"},
@@ -77,7 +77,7 @@ def test_missing_gpt_uses_generic_compatibility_metadata(bundled, name):
     ]
     assert warnings == [
         f"Codex is missing metadata for managed GPT model '{name}', so UG is using "
-        "generic GPT defaults (low/medium/high reasoning). Updating Codex with "
+        "generic GPT defaults with the model's own reasoning effort. Updating Codex with "
         "`ug codex update` may add exact metadata."
     ]
 
@@ -282,7 +282,7 @@ def test_missing_gpt_warning_is_printed_after_validation(monkeypatch, bundled):
     assert result["models"][0]["slug"] == "system.ai.gpt-99"
     assert warnings == [
         "Codex is missing metadata for managed GPT model 'system.ai.gpt-99', so UG is using "
-        "generic GPT defaults (low/medium/high reasoning). Updating Codex with "
+        "generic GPT defaults with the model's own reasoning effort. Updating Codex with "
         "`ug codex update` may add exact metadata."
     ]
 

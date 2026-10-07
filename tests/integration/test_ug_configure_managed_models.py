@@ -240,7 +240,7 @@ def test_ug_configure_managed_codex_catalog_fallback(live_session, workspace, tm
     assert fallback.get("tool_mode") is None, fallback
     assert fallback.get("input_modalities") == ["text"], fallback
     assert fallback.get("context_window") == 32768, fallback
-    assert fallback.get("default_reasoning_level") == "medium", fallback
+    assert fallback.get("default_reasoning_level") is None, fallback
     assert [level.get("effort") for level in fallback.get("supported_reasoning_levels", [])] == [
         "low",
         "medium",
