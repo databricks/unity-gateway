@@ -4444,3 +4444,58 @@ class TestRunDecodesUtf8:
         script = r"import sys; sys.stdout.buffer.write(b'\xff')"
         result = db_mod.run([sys.executable, "-c", script], capture_output=True)
         assert result.stdout == b"\xff"
+
+
+class TestFetchEndpointRates:
+    def test_requests_system_ai_services_as_query_params(self, monkeypatch):
+        seen = {}
+        glm_rate = {
+            "model_service": "system.ai.glm-5-3",
+            "costs": [
+                {"unit": "USD", "token_costs": [{"token_type": "TOKEN_TYPE_INPUT", "cost": 1.4}]}
+            ],
+        }
+
+        def fake_get(url, token, **kwargs):
+            seen.update(url=url, token=token)
+            return {"model_service_rates": [glm_rate, "not-a-rate"]}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        rates, reason = db_mod.fetch_endpoint_rates(
+            WS, "tok", ["system.ai.glm-5-3", "claude-opus-4-8", "system.ai.claude-sonnet-5"]
+        )
+
+        assert reason is None
+        assert rates == [glm_rate]
+        # Names outside system.ai are dropped (the API rejects them); the rest travel as repeated,
+        # sorted `databricks_hosted_model_services` query parameters.
+        assert seen["token"] == "tok"
+        assert seen["url"] == (
+            f"{WS}/api/ai-gateway/v2/endpoint-rates:batchGet"
+            "?databricks_hosted_model_services=system.ai.claude-sonnet-5"
+            "&databricks_hosted_model_services=system.ai.glm-5-3"
+        )
+
+    def test_skips_the_request_without_system_ai_services(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod, "_http_get_json", lambda *args, **kwargs: pytest.fail("no request expected")
+        )
+
+        assert db_mod.fetch_endpoint_rates(WS, "tok", ["claude-opus-4-8"]) == (
+            [],
+            "no system.ai model services to price",
+        )
+
+    @pytest.mark.parametrize(
+        ("response", "expected"),
+        [
+            ((None, "HTTP 404 Not Found"), ([], "HTTP 404 Not Found")),
+            ((["unexpected"], None), ([], "endpoint-rates returned an unexpected response shape")),
+            (({}, None), ([], None)),
+        ],
+    )
+    def test_reports_failures_without_raising(self, monkeypatch, response, expected):
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args, **kwargs: response)
+
+        assert db_mod.fetch_endpoint_rates(WS, "tok", ["system.ai.glm-5-3"]) == expected

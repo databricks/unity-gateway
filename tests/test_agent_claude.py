@@ -15,7 +15,7 @@ import pytest
 from ucode import constants, managed_files
 from ucode import databricks as db_mod
 from ucode.agents import LaunchOptions, claude
-from ucode.smart_routing import claude_routing, v2
+from ucode.smart_routing import claude_routing, claude_statusline, v2
 from ucode.state import MANAGED_OVERLAY_KEY
 
 WS = "https://example.databricks.com"
@@ -2461,6 +2461,7 @@ class TestClaudeLaunch:
         monkeypatch.delenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, raising=False)
         monkeypatch.delenv("ANTHROPIC_DEFAULT_MODEL", raising=False)
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
+        monkeypatch.setenv(v2.ENABLE_SAVINGS_STATUSLINE_ENV_VAR, "0")
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
         monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
 
@@ -2469,6 +2470,63 @@ class TestClaudeLaunch:
         assert os.environ["OAUTH_TOKEN"] == "token"
         assert "ANTHROPIC_DEFAULT_MODEL" not in os.environ
         assert calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), "--debug"]]
+
+    def test_savings_statusline_off_installed_on_vanilla_launch(self, monkeypatch):
+        # Default-on savings row + non-routed launch + a workspace => settings become inline JSON
+        # carrying the "off" status row (routing_enabled=False, so no --routing-enabled flag).
+        calls: list[list[str]] = []
+        monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
+        monkeypatch.delenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, raising=False)
+        monkeypatch.delenv(v2.ENABLE_SAVINGS_STATUSLINE_ENV_VAR, raising=False)
+        monkeypatch.delenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, raising=False)
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+
+        claude.launch({"workspace": WS, "profile": "test"}, ["--debug"], options=LaunchOptions())
+
+        assert calls[0][:2] == ["claude", "--settings"]
+        command = json.loads(calls[0][2])["statusLine"]["command"]
+        assert f"-m {claude_statusline.MODULE}" in command
+        assert "--routing-enabled" not in command
+
+    @staticmethod
+    def _launch_after_routing_setup_failure(monkeypatch, savings: str) -> dict:
+        """Launch routed, with `launch_claude` failing to write its files, and return the settings."""
+        calls: list[list[str]] = []
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        monkeypatch.setenv(v2.ENABLE_SAVINGS_STATUSLINE_ENV_VAR, savings)
+        monkeypatch.setenv(claude.FIRST_PROMPT_SOCKET_ENV, "/tmp/first.sock")
+        monkeypatch.setenv("OAUTH_TOKEN", "stale")
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(
+            v2, "launch_claude", Mock(side_effect=v2.ClaudeRoutingSetupError("disk full"))
+        )
+        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+
+        claude.launch(
+            {"workspace": WS, "profile": "test"},
+            ["--debug"],
+            options=LaunchOptions(launch_smart_routing=True),
+        )
+
+        return json.loads(calls[0][2])
+
+    def test_routing_setup_failure_launches_normally_with_the_off_row(self, monkeypatch):
+        # The fallback forces routing off for this launch, so the status row must say "off"
+        # rather than be missing (or be the routed launch's "on", which never got written).
+        settings = self._launch_after_routing_setup_failure(monkeypatch, "1")
+
+        assert settings["env"][v2.ENABLE_SMART_ROUTING_ENV_VAR] == "0"
+        command = settings["statusLine"]["command"]
+        assert f"-m {claude_statusline.MODULE}" in command
+        assert "--routing-enabled" not in command
+
+    def test_routing_setup_failure_respects_the_savings_opt_out(self, monkeypatch):
+        settings = self._launch_after_routing_setup_failure(monkeypatch, "0")
+
+        assert settings["env"][v2.ENABLE_SMART_ROUTING_ENV_VAR] == "0"
+        assert "statusLine" not in settings
 
     def test_windows_launch_preserves_prompt_as_literal_argv(self, monkeypatch, tmp_path):
         native_binary = tmp_path / "Claude Code" / "claude.exe"
@@ -2573,6 +2631,7 @@ class TestClaudeLaunch:
         monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", settings_path)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
         monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+        monkeypatch.setenv(v2.ENABLE_SAVINGS_STATUSLINE_ENV_VAR, "0")
 
         claude.launch(
             {
@@ -2650,6 +2709,7 @@ class TestClaudeLaunch:
     def test_v2_noninteractive_launch_bypasses_first_prompt_routing(self, monkeypatch, tool_args):
         calls: list[list[str]] = []
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        monkeypatch.setenv(v2.ENABLE_SAVINGS_STATUSLINE_ENV_VAR, "0")
         monkeypatch.setattr(v2, "launch_claude", Mock())
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
         monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
@@ -2686,6 +2746,7 @@ class TestClaudeLaunch:
         calls: list[list[str]] = []
         monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")
+        monkeypatch.setenv(v2.ENABLE_SAVINGS_STATUSLINE_ENV_VAR, "0")
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
         monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
@@ -2700,6 +2761,7 @@ class TestClaudeLaunch:
         calls: list[list[str]] = []
         monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")
+        monkeypatch.setenv(v2.ENABLE_SAVINGS_STATUSLINE_ENV_VAR, "0")
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
         monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
@@ -2716,6 +2778,29 @@ class TestClaudeLaunch:
 
         assert os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
         assert calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), "--debug"]]
+
+
+class TestVanillaLaunchSavingsStatusline:
+    """A plain (non-routed) launch installs a "routing off" statusline row."""
+
+    def test_routing_off_command_omits_routing_enabled_flag(self, tmp_path, monkeypatch):
+        """install_savings_statusline with routing_enabled=False produces no --routing-enabled."""
+        settings: dict = {}
+        user_settings_path = tmp_path / "settings.json"
+        user_settings_path.touch()
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+
+        v2.install_savings_statusline(
+            settings,
+            user_settings_path,
+            price_cache=tmp_path / "prices.json",
+            routing_enabled=False,
+            baseline_session_start=False,
+        )
+
+        command = settings["statusLine"]["command"]
+        assert f"-m {claude_statusline.MODULE}" in command
+        assert "--routing-enabled" not in command
 
 
 class TestWriteToolConfigPrunesStaleModelEnv:

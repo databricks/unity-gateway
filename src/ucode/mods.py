@@ -63,8 +63,9 @@ def write_mod(plugin_dir: Path, mod: ClaudeMod) -> None:
 
 
 # ug's smart-routing UI mod: a register.ts entry that composes the concern
-# modules it imports (today the status band).
+# modules it imports (the status band, the subagent routing line, and the
+# savings estimate the band appends).
 SMART_ROUTING_UI = ClaudeMod(
     source="register.ts",
-    extra=("smart-routing-status.ts", "subagent-routing.ts"),
+    extra=("smart-routing-status.ts", "subagent-routing.ts", "smart-routing-savings.ts"),
 )

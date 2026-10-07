@@ -2092,6 +2092,38 @@ def fetch_external_model_prices(workspace: str, token: str) -> tuple[list[dict],
     return models, None
 
 
+# Per-token rates for Databricks-hosted (`system.ai`) model services from the gateway's
+# pay-per-token endpoint-rates API, which the smart-routing savings statusline prices usage with.
+# The model names travel as repeated `databricks_hosted_model_services` query parameters.
+_ENDPOINT_RATES_API_PATH = "/api/ai-gateway/v2/endpoint-rates:batchGet"
+_SYSTEM_AI_MODEL_PREFIX = "system.ai."
+
+
+def fetch_endpoint_rates(
+    workspace: str, token: str, model_services: list[str]
+) -> tuple[list[dict], str | None]:
+    """Batch-fetch per-token rates for ``system.ai`` model services.
+
+    Returns ``(rates, reason)`` with each rate the raw ``EndpointRate`` entry; models the caller
+    can't see are absent rather than errors. Names outside ``system.ai`` are dropped because the
+    API rejects them. ``reason`` is non-None on failure so callers omit the estimate, not fail.
+    """
+    names = sorted({name for name in model_services if name.startswith(_SYSTEM_AI_MODEL_PREFIX)})
+    if not names:
+        return [], "no system.ai model services to price"
+    query = urlencode([("databricks_hosted_model_services", name) for name in names])
+    url = f"https://{workspace_hostname(workspace)}{_ENDPOINT_RATES_API_PATH}?{query}"
+    payload, reason = _http_get_json(url, token, timeout=30)
+    if reason is not None:
+        return [], reason
+    if not isinstance(payload, dict):
+        return [], "endpoint-rates returned an unexpected response shape"
+    rates = payload.get("model_service_rates")
+    if not isinstance(rates, list):
+        return [], None
+    return [rate for rate in rates if isinstance(rate, dict)], None
+
+
 # The `update_mask` paths a config PATCH sends. The server rejects paths outside its mutable set,
 # so this omits `spec_version` (an estore-internal format marker, still sent in the body; naming it
 # in the mask is the 400 this fixes) and the reserved/deprecated fields (`display_name`, `tracing`,
