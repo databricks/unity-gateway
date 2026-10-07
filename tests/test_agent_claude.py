@@ -82,6 +82,27 @@ class TestMinimumVersion:
 
         assert claude.minimum_version_error() is None
 
+    def test_mods_do_not_raise_floor_when_flag_unset(self, monkeypatch):
+        monkeypatch.delenv("ENABLE_CLAUDE_CODE_MODS", raising=False)
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.1.260")
+
+        assert claude.minimum_version_error() is None
+
+    def test_mods_flag_requires_mods_version(self, monkeypatch):
+        monkeypatch.setenv("ENABLE_CLAUDE_CODE_MODS", "1")
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.1.286")
+
+        assert claude.minimum_version_error() == (
+            "ug requires Claude Code 2.1.287 or newer when ENABLE_CLAUDE_CODE_MODS is set. "
+            "Your current version is Claude Code 2.1.286."
+        )
+
+    def test_mods_flag_satisfied_by_mods_version(self, monkeypatch):
+        monkeypatch.setenv("ENABLE_CLAUDE_CODE_MODS", "1")
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.1.287")
+
+        assert claude.minimum_version_error() is None
+
 
 class TestClaudeCodeModsFlag:
     def test_enabled_for_one_or_true_case_insensitively(self):
