@@ -73,6 +73,12 @@ def _skip_if_no_workspace():
         pytest.skip("Set UCODE_TEST_WORKSPACE=https://... to run E2E tests")
 
 
+@pytest.fixture(autouse=True)
+def _real_command_resolution(_isolate_ucode_state, monkeypatch):
+    # Unit tests stub out Windows shim lookup; live tests need the installed agent CLIs.
+    monkeypatch.setattr(subprocess_cross_os, "shutil", shutil)
+
+
 def _run_agent(
     cmd: list[str], env: dict | None = None, timeout: int = 60
 ) -> subprocess.CompletedProcess:

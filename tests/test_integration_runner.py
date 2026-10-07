@@ -82,6 +82,7 @@ def test_windows_live_runs_select_only_modules_without_pty_helpers(tmp_path):
     (tmp_path / "test_tui.py").write_text("from utils.terminal import AgentTerminal\n")
     (tmp_path / "test_mcp.py").write_text("from utils.mcp import inventory\n")
     (tmp_path / "test_screen.py").write_text("import pyte\n")
+    (tmp_path / "test_ug_claude_tracing.py").write_text("import json\n")
 
     assert runner.integration_test_targets(
         tmp_path,

@@ -1001,7 +1001,10 @@ class TestSubcommandRouting:
 
     def test_claude_v2_first_prompt_hook_is_disabled_without_flag(self, monkeypatch):
         monkeypatch.delenv("ENABLE_SMART_ROUTING_V2", raising=False)
-        with patch("ucode.smart_routing.claude_pty.request_first_prompt_route") as mock_request:
+        # A stub module keeps this check importable where the POSIX-only PTY module is not.
+        claude_pty_stub = MagicMock()
+        mock_request = claude_pty_stub.request_first_prompt_route
+        with patch.dict(sys.modules, {"ucode.smart_routing.claude_pty": claude_pty_stub}):
             result = runner.invoke(
                 app,
                 ["claude-router-hook", "route-first-prompt", "--socket", "/tmp/v2.sock"],

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from contextlib import contextmanager, nullcontext, redirect_stdout
@@ -1094,7 +1095,7 @@ class TestConfiguredPaths:
         assert paths == [
             str(CLAUDE_SETTINGS_PATH).replace(str(CLAUDE_SETTINGS_PATH.home()), "~", 1)
         ]
-        assert paths[0].startswith("~/")
+        assert paths[0].startswith(f"~{os.sep}")
 
     def test_appends_os_managed_file_recorded_in_state(self):
         from ucode.agents import configured_paths

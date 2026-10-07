@@ -55,6 +55,8 @@ NPM_TOKEN_ENV = "UG_INTEGRATION_NPM_TOKEN"
 INSTALLER_CREDENTIAL_ENV = (*UV_INDEX_CREDENTIAL_ENV, NPM_TOKEN_ENV)
 PTY_MODULES = {"pexpect", "pyte"}
 PTY_HELPERS = {"utils.terminal", "utils.mcp"}
+# Claude exports no spans on Windows, where ug writes no machine-wide Claude settings.
+WINDOWS_UNSUPPORTED_MODULES = {"test_ug_claude_tracing.py"}
 HEADLESS_TEST_NODES = {
     "claude": "test_ug_claude_headless.py::test_ug_claude_headless_prompt_argument",
     "codex": "test_ug_codex_headless.py::test_ug_codex_headless_prompt_argument",
@@ -178,7 +180,11 @@ def integration_test_targets(
     if platform_name == "nt" and installation_only:
         return [str(suite / "test_installation.py")]
     if platform_name == "nt":
-        return [str(module) for module in sorted(suite.glob("test_*.py")) if not uses_pty(module)]
+        return [
+            str(module)
+            for module in sorted(suite.glob("test_*.py"))
+            if module.name not in WINDOWS_UNSUPPORTED_MODULES and not uses_pty(module)
+        ]
     return [str(suite)]
 
 

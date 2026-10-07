@@ -32,6 +32,7 @@ def clean_environment(home: Path) -> dict[str, str]:
     # imports, and routing flags from silently changing the tested combination.
     keep = (
         "PATH",
+        "PATHEXT",
         "SYSTEMROOT",
         "COMSPEC",
         "LANG",
@@ -123,7 +124,7 @@ class UserSession:
         input_text: str | None = None,
         strip_ansi: bool = True,
     ):
-        command = [str(binary or self.binary), *args]
+        command = [self.resolve(binary or self.binary), *args]
         proc = subprocess.Popen(
             command,
             cwd=self.cwd,
@@ -166,6 +167,14 @@ class UserSession:
         if ok:
             assert result.returncode == 0, detail
         return result
+
+    def resolve(self, binary) -> str:
+        # Windows CreateProcess ignores PATHEXT, so npm's `claude.cmd`-style shims need a full path.
+        if os.name != "nt" or Path(binary).parent != Path():
+            return str(binary)
+        resolved = shutil.which(str(binary), path=self.env.get("PATH"))
+        assert resolved, f"{binary} is not on the session PATH"
+        return resolved
 
     def record(self, name: str, value: object) -> None:
         (self.artifacts / name).write_text(self.redact(json.dumps(value, indent=2)))
@@ -268,7 +277,7 @@ class UserSession:
         binary: str | None = None,
     ) -> dict:
         """Speak the real Codex stdio protocol and require an initialize response."""
-        command = [binary, *args] if binary else [str(self.binary), "codex", *args]
+        command = [self.resolve(binary), *args] if binary else [str(self.binary), "codex", *args]
         messages: queue.Queue = queue.Queue()
         transcript: list[str] = []
         diagnostics: list[str] = []

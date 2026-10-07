@@ -72,6 +72,20 @@ class _FakeResponse:
         return self._body
 
 
+def _write_fake_executable(directory: Path, name: str, python_body: str) -> str:
+    """Write a python-backed fake CLI (a `.cmd` shim on Windows) and return the path to invoke."""
+    script = directory / f"{name}.py"
+    script.write_text("import json, os, sys\nfrom pathlib import Path\n" + python_body)
+    if os.name == "nt":
+        shim = directory / f"{name}.cmd"
+        shim.write_text(f'@"{sys.executable}" "{script}" %*\r\n')
+        return str(shim)
+    wrapper = directory / name
+    wrapper.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{script}" "$@"\n')
+    wrapper.chmod(0o755)
+    return str(wrapper)
+
+
 class TestFetchCodexMpsModelCatalog:
     def test_sends_provider_header(self, monkeypatch):
         seen = {}
@@ -2123,30 +2137,26 @@ class TestGetDatabricksToken:
         clear_databricks_cli_cache()
 
     def _fake_databricks(self, tmp_path, script: str) -> dict:
-        fake = tmp_path / "databricks"
-        fake.write_text(
-            "#!/bin/sh\n"
-            # `get_databricks_token` resolves `databricks_cli_path()` (which
-            # probes `--version` to discover/select a binary) before it ever
-            # runs the real command below. Answer that probe directly so it
-            # doesn't consume a turn of — or otherwise disturb — the
-            # call-counting/state-tracking logic several scripts below rely on.
-            'case "$*" in\n'
-            '  "--version") echo "Databricks CLI v1.20.0"; exit 0 ;;\n'
-            "esac\n"
+        # CLI discovery probes `--version` first; answer it so the scripts' call counts stay intact.
+        body = (
+            'if sys.argv[1:] == ["--version"]:\n'
+            '    print("Databricks CLI v1.20.0")\n'
+            "    sys.exit(0)\n"
             f"{script}\n"
         )
-        fake.chmod(0o755)
+        _write_fake_executable(tmp_path, "databricks", body)
         # PATH holds only the fake script, not the developer's real PATH: with
         # both on PATH, discovery would find the real `databricks` too and may
-        # prefer whichever is newer, defeating the fake. The shebang is
-        # resolved by the kernel (not PATH lookup), so this stays runnable.
-        return {**os.environ, "PATH": str(tmp_path)}
+        # prefer whichever is newer, defeating the fake.
+        env = {**os.environ, "PATH": str(tmp_path)}
+        # Inert on POSIX; guarantees the `.cmd` shim is discoverable on win32.
+        env.setdefault("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+        return env
 
     def test_returns_token_on_success(self, tmp_path, monkeypatch):
         env = self._fake_databricks(
             tmp_path,
-            'echo \'{"access_token": "good-token", "token_type": "Bearer"}\'',
+            'print(json.dumps({"access_token": "good-token", "token_type": "Bearer"}))',
         )
         monkeypatch.setattr("os.environ", env)
         token = get_databricks_token(WS)
@@ -2156,8 +2166,10 @@ class TestGetDatabricksToken:
         profile_log = tmp_path / "profile"
         env = self._fake_databricks(
             tmp_path,
-            f'printf "%s" "${{DATABRICKS_CONFIG_PROFILE:-}}" > {profile_log}\n'
-            'echo \'{"access_token": "good-token", "token_type": "Bearer"}\'',
+            f"Path({str(profile_log)!r}).write_text(\n"
+            "    os.environ.get('DATABRICKS_CONFIG_PROFILE', '')\n"
+            ")\n"
+            'print(json.dumps({"access_token": "good-token", "token_type": "Bearer"}))',
         )
         env["DATABRICKS_CONFIG_PROFILE"] = "other-workspace"
         monkeypatch.setattr("os.environ", env)
@@ -2173,8 +2185,10 @@ class TestGetDatabricksToken:
         profile_log = tmp_path / "profile"
         env = self._fake_databricks(
             tmp_path,
-            f'printf "%s" "${{DATABRICKS_CONFIG_PROFILE:-}}" > {profile_log}\n'
-            'echo \'{"access_token": "good-token", "token_type": "Bearer"}\'',
+            f"Path({str(profile_log)!r}).write_text(\n"
+            "    os.environ.get('DATABRICKS_CONFIG_PROFILE', '')\n"
+            ")\n"
+            'print(json.dumps({"access_token": "good-token", "token_type": "Bearer"}))',
         )
         env["DATABRICKS_CONFIG_PROFILE"] = "other-workspace"
         monkeypatch.setattr("os.environ", env)
@@ -2187,16 +2201,13 @@ class TestGetDatabricksToken:
         call_count.write_text("0")
         env = self._fake_databricks(
             tmp_path,
-            f"count=$(cat {call_count})\n"
-            f"echo $((count + 1)) > {call_count}\n"
-            'case "$*" in\n'
-            '  *"auth login"*) exit 0 ;;\n'
-            "esac\n"
-            'if [ "$count" -eq 0 ]; then\n'
-            '  echo \'{"access_token": "", "token_type": "Bearer"}\'\n'
-            "else\n"
-            '  echo \'{"access_token": "refreshed-token", "token_type": "Bearer"}\'\n'
-            "fi",
+            f"calls = Path({str(call_count)!r})\n"
+            "count = int(calls.read_text())\n"
+            "calls.write_text(str(count + 1))\n"
+            "if 'auth login' in ' '.join(sys.argv[1:]):\n"
+            "    sys.exit(0)\n"
+            "token = '' if count == 0 else 'refreshed-token'\n"
+            'print(json.dumps({"access_token": token, "token_type": "Bearer"}))',
         )
         monkeypatch.setattr("os.environ", env)
         token = get_databricks_token(WS)
@@ -2210,14 +2221,14 @@ class TestGetDatabricksToken:
         call_count.write_text("0")
         env = self._fake_databricks(
             tmp_path,
-            f"count=$(cat {call_count})\n"
-            f"echo $((count + 1)) > {call_count}\n"
-            'if [ "$count" -lt 2 ]; then\n'
-            '  echo "Error: forced token refresh: cache update: exit status 45" >&2\n'
-            "  exit 1\n"
-            "else\n"
-            '  echo \'{"access_token": "won-the-lock", "token_type": "Bearer"}\'\n'
-            "fi",
+            f"calls = Path({str(call_count)!r})\n"
+            "count = int(calls.read_text())\n"
+            "calls.write_text(str(count + 1))\n"
+            "if count < 2:\n"
+            '    print("Error: forced token refresh: cache update: exit status 45",\n'
+            "          file=sys.stderr)\n"
+            "    sys.exit(1)\n"
+            'print(json.dumps({"access_token": "won-the-lock", "token_type": "Bearer"}))',
         )
         monkeypatch.setattr("os.environ", env)
         token = get_databricks_token(WS)
@@ -2226,7 +2237,7 @@ class TestGetDatabricksToken:
     def test_raises_when_reauth_also_fails(self, tmp_path, monkeypatch):
         env = self._fake_databricks(
             tmp_path,
-            'echo \'{"access_token": "", "token_type": "Bearer"}\'',
+            'print(json.dumps({"access_token": "", "token_type": "Bearer"}))',
         )
         monkeypatch.setattr("os.environ", env)
         with pytest.raises(RuntimeError, match="no access token"):
@@ -2238,8 +2249,10 @@ class TestGetDatabricksToken:
         argv_log = tmp_path / "argv"
         env = self._fake_databricks(
             tmp_path,
-            f'printf "%s\\n" "$@" >> {argv_log}\n'
-            'echo \'{"access_token": "good-token", "token_type": "Bearer"}\'',
+            f"with Path({str(argv_log)!r}).open('a') as fh:\n"
+            "    for arg in sys.argv[1:]:\n"
+            "        fh.write(arg + '\\n')\n"
+            'print(json.dumps({"access_token": "good-token", "token_type": "Bearer"}))',
         )
         monkeypatch.setattr("os.environ", env)
         token = get_databricks_token(WS, profile="stablebox")
@@ -2249,15 +2262,18 @@ class TestGetDatabricksToken:
         assert argv[argv.index("--profile") + 1] == "stablebox"
 
     def test_error_suggests_logout_when_matching_profile_exists(self, tmp_path, monkeypatch):
+        profiles_json = json.dumps(
+            {"profiles": [{"host": WS, "name": "example-profile", "auth_type": "databricks-cli"}]}
+        )
         env = self._fake_databricks(
             tmp_path,
-            'case "$*" in\n'
-            '  *"auth profiles"*) echo \'{"profiles": [{"host": "'
-            + WS
-            + '", "name": "example-profile", "auth_type": "databricks-cli"}]}\'; exit 0 ;;\n'
-            '  *"auth login"*) exit 0 ;;\n'
-            "esac\n"
-            'echo \'{"access_token": "", "token_type": "Bearer"}\'',
+            "joined = ' '.join(sys.argv[1:])\n"
+            "if 'auth profiles' in joined:\n"
+            f"    print({profiles_json!r})\n"
+            "    sys.exit(0)\n"
+            "if 'auth login' in joined:\n"
+            "    sys.exit(0)\n"
+            'print(json.dumps({"access_token": "", "token_type": "Bearer"}))',
         )
         monkeypatch.setattr("os.environ", env)
 
@@ -2864,12 +2880,23 @@ class TestDatabricksCliResolution:
     # -- _iter_databricks_executables ---------------------------------------
 
     def test_iter_finds_executable_on_path(self, tmp_path, monkeypatch):
-        fake = tmp_path / "databricks"
-        fake.write_text("#!/bin/sh\necho hi\n")
-        fake.chmod(0o755)
+        if os.name == "nt":
+            # PATHEXT alone decides on Windows; there is no exec bit to set.
+            monkeypatch.setenv("PATHEXT", ".CMD")
+            fake = tmp_path / "databricks.CMD"
+            fake.write_text("@rem fake\r\n")
+        else:
+            fake = tmp_path / "databricks"
+            fake.write_text("#!/bin/sh\necho hi\n")
+            fake.chmod(0o755)
         monkeypatch.setenv("PATH", str(tmp_path))
         assert db_mod._iter_databricks_executables() == [str(fake)]
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="asserts the POSIX X_OK exec bit; Windows discovery matches PATHEXT "
+        "with no permission check",
+    )
     def test_iter_skips_non_executable_and_missing_dirs(self, tmp_path, monkeypatch):
         not_exec = tmp_path / "databricks"
         not_exec.write_text("not executable")
@@ -2882,14 +2909,20 @@ class TestDatabricksCliResolution:
         first_dir, second_dir = tmp_path / "first", tmp_path / "second"
         first_dir.mkdir()
         second_dir.mkdir()
+        if os.name == "nt":
+            monkeypatch.setenv("PATHEXT", ".CMD")
+            name, content = "databricks.CMD", "@rem fake\r\n"
+        else:
+            name, content = "databricks", "#!/bin/sh\necho hi\n"
         for directory in (first_dir, second_dir):
-            fake = directory / "databricks"
-            fake.write_text("#!/bin/sh\necho hi\n")
-            fake.chmod(0o755)
+            fake = directory / name
+            fake.write_text(content)
+            if os.name != "nt":
+                fake.chmod(0o755)
         monkeypatch.setenv("PATH", os.pathsep.join([str(first_dir), str(second_dir)]))
         assert db_mod._iter_databricks_executables() == [
-            str(first_dir / "databricks"),
-            str(second_dir / "databricks"),
+            str(first_dir / name),
+            str(second_dir / name),
         ]
 
     def test_iter_finds_windows_executables_by_pathext(self, tmp_path, monkeypatch):
@@ -2905,6 +2938,11 @@ class TestDatabricksCliResolution:
 
     # -- _discover_databricks_clis -------------------------------------------
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="symlinks need elevated privileges on Windows, and an extension-less "
+        "`databricks` is not on PATHEXT",
+    )
     def test_discover_dedupes_by_realpath_keeping_path_order(self, tmp_path, monkeypatch):
         real_dir = tmp_path / "real"
         real_dir.mkdir()
@@ -3100,13 +3138,13 @@ class TestEnsureDatabricksCliVersion:
         clear_databricks_cli_cache()
 
     def _fake_databricks(self, tmp_path, version_output: str) -> dict:
-        fake = tmp_path / "databricks"
-        fake.write_text(f"#!/bin/sh\necho '{version_output}'\n")
-        fake.chmod(0o755)
+        _write_fake_executable(tmp_path, "databricks", f"print({version_output!r})\n")
         # Only the fake script is on PATH — with the developer's real PATH also
         # present, discovery would find the real `databricks` too and might
         # prefer it over the fake, depending on which is newer.
-        return {**os.environ, "PATH": str(tmp_path)}
+        env = {**os.environ, "PATH": str(tmp_path)}
+        env.setdefault("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+        return env
 
     def test_passes_when_version_meets_minimum(self, tmp_path, monkeypatch):
         env = self._fake_databricks(tmp_path, "Databricks CLI v1.0.0")
@@ -3370,6 +3408,8 @@ class TestRunDatabricksCliInstaller:
         local_bin.parent.mkdir(parents=True)
         local_bin.write_text("stale")
         monkeypatch.setenv("HOME", str(tmp_path))
+        # Path.home()/expanduser read USERPROFILE on Windows, not HOME.
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
         self._fail_installer(monkeypatch)
 
         with pytest.raises(RuntimeError) as exc:
@@ -4256,14 +4296,16 @@ class TestBearerCommand:
         is absent is asserting the OAuth path was never reached.
         """
         marker = tmp_path / "cli-calls"
-        fake = tmp_path / "databricks"
-        fake.write_text(
-            f"#!/bin/sh\necho called >> {marker}\n"
-            'echo \'{"access_token": "oauth-token", "token_type": "Bearer"}\'\n'
+        _write_fake_executable(
+            tmp_path,
+            "databricks",
+            f"with Path({str(marker)!r}).open('a') as fh:\n"
+            "    fh.write('called\\n')\n"
+            'print(json.dumps({"access_token": "oauth-token", "token_type": "Bearer"}))',
         )
-        fake.chmod(0o755)
         path = os.environ.get("PATH", "")
         env = {**os.environ, "PATH": f"{tmp_path}{os.pathsep}{path}"}
+        env.setdefault("PATHEXT", ".COM;.EXE;.BAT;.CMD")
         env.pop("DATABRICKS_BEARER", None)
         env.pop("DATABRICKS_BEARER_COMMAND", None)
         if command is not None:
@@ -4272,13 +4314,13 @@ class TestBearerCommand:
         return marker
 
     def _broker(self, tmp_path, body: str) -> str:
-        script = tmp_path / "broker.sh"
-        script.write_text(f"#!/bin/sh\n{body}\n")
-        script.chmod(0o755)
-        return str(script)
+        """A bearer-minting command; returns the DATABRICKS_BEARER_COMMAND string."""
+        # cmd.exe mangles a quoted program paired with quoted args, so quote only when needed.
+        path = _write_fake_executable(tmp_path, "broker", body)
+        return f'"{path}"' if " " in path else path
 
     def test_serves_the_command_output_without_touching_the_cli(self, tmp_path, monkeypatch):
-        broker = self._broker(tmp_path, 'echo "brokered-token"')
+        broker = self._broker(tmp_path, 'print("brokered-token")')
         marker = self._env(tmp_path, monkeypatch, broker)
 
         assert get_databricks_token(WS) == "brokered-token"
@@ -4291,7 +4333,10 @@ class TestBearerCommand:
         counter.write_text("0")
         broker = self._broker(
             tmp_path,
-            f'n=$(cat {counter})\nn=$((n + 1))\necho $n > {counter}\necho "token-$n"',
+            f"mints = Path({str(counter)!r})\n"
+            "n = int(mints.read_text()) + 1\n"
+            "mints.write_text(str(n))\n"
+            'print(f"token-{n}")',
         )
         self._env(tmp_path, monkeypatch, broker)
 
@@ -4299,10 +4344,13 @@ class TestBearerCommand:
         assert get_databricks_token(WS) == "token-2"
 
     def test_passes_arguments_without_a_shell(self, tmp_path, monkeypatch):
-        # Argv is shlex-split, not handed to `sh -c`, so this stays cross-platform.
+        # Argv is split without a shell on every platform.
         seen = tmp_path / "args"
-        broker = self._broker(tmp_path, f'printf "%s" "$1:$2" > {seen}\necho tok')
-        self._env(tmp_path, monkeypatch, f"{broker} --coords 'a path'")
+        broker = self._broker(
+            tmp_path,
+            f"Path({str(seen)!r}).write_text(sys.argv[1] + ':' + sys.argv[2])\nprint(\"tok\")",
+        )
+        self._env(tmp_path, monkeypatch, f'{broker} --coords "a path"')
 
         assert get_databricks_token(WS) == "tok"
         assert seen.read_text() == "--coords:a path"
@@ -4328,7 +4376,7 @@ class TestBearerCommand:
         # Exit 0 with an empty stdout. Falling through to OAuth would report a
         # misleading stale-login error: a broker-backed profile carries no OAuth
         # cache to refresh. Stderr rides along so the error names a cause.
-        broker = self._broker(tmp_path, 'echo "nothing to vend" >&2')
+        broker = self._broker(tmp_path, 'print("nothing to vend", file=sys.stderr)')
         marker = self._env(tmp_path, monkeypatch, broker)
 
         with pytest.raises(RuntimeError, match="printed no token") as excinfo:
@@ -4339,7 +4387,7 @@ class TestBearerCommand:
     def test_fails_closed_when_the_command_exits_non_zero(self, tmp_path, monkeypatch):
         # Stdout on a failing command is a diagnostic, not a bearer. Forwarding it
         # would only resurface as a 401 far from the real cause.
-        broker = self._broker(tmp_path, 'echo "broker unreachable"\nexit 7')
+        broker = self._broker(tmp_path, 'print("broker unreachable")\nsys.exit(7)')
         marker = self._env(tmp_path, monkeypatch, broker)
 
         with pytest.raises(RuntimeError, match="exited 7"):
@@ -4353,7 +4401,7 @@ class TestBearerCommand:
             get_databricks_token(WS)
 
     def test_static_bearer_still_wins(self, tmp_path, monkeypatch):
-        broker = self._broker(tmp_path, 'echo "brokered-token"')
+        broker = self._broker(tmp_path, 'print("brokered-token")')
         self._env(tmp_path, monkeypatch, broker)
         os.environ["DATABRICKS_BEARER"] = "ci-bearer"
 
@@ -4361,7 +4409,7 @@ class TestBearerCommand:
 
     def test_has_valid_auth_short_circuits(self, tmp_path, monkeypatch):
         # Otherwise `ensure_databricks_auth` probes the CLI and can open a browser.
-        marker = self._env(tmp_path, monkeypatch, self._broker(tmp_path, "echo tok"))
+        marker = self._env(tmp_path, monkeypatch, self._broker(tmp_path, 'print("tok")'))
 
         assert db_mod.has_valid_databricks_auth(WS) is True
         assert not marker.exists()
