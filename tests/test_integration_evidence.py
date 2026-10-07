@@ -85,6 +85,41 @@ def test_transient_retries_and_running_tasks_are_not_terminal_errors(screen):
     assert_no_terminal_api_error(screen)
 
 
+@pytest.mark.parametrize(
+    "command_suffix,tool_name,selected,accepted",
+    [
+        ("", "Bash", "1. Yes", True),
+        ("; echo unrelated", "Bash", "1. Yes", False),
+        ("\necho unrelated", "Bash", "1. Yes", False),
+        ("", "Read", "1. Yes", False),
+        ("", "Bash", "2. Yes, and switch to auto mode", False),
+    ],
+)
+def test_orchestrator_permission_requires_exact_pending_command(
+    command_suffix, tool_name, selected, accepted
+):
+    command = '"$UCODE_SMART_ROUTER_PYTHON" -m ucode.smart_routing.orchestrator --check'
+    screen = f"Bash command\n  {command}\nDo you want to proceed?\n❯ {selected}\n"
+    records = [
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "tool_use", "name": "Bash", "input": {"command": command}},
+                    {
+                        "type": "tool_use",
+                        "name": tool_name,
+                        "input": {"command": command + command_suffix},
+                    },
+                ]
+            },
+        }
+    ]
+
+    assert evidence.is_orchestrator_check_permission(screen, records) is accepted
+    assert not evidence.is_orchestrator_check_permission(screen, [])
+
+
 @pytest.mark.parametrize("agent", ["claude", "codex"])
 def test_tagged_calculation_requires_the_native_child_answer(tmp_path, agent):
     session = _Session(tmp_path)

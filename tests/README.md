@@ -151,7 +151,10 @@ for subagent-only routing. Native hook merging and project trust belong to Codex
 these component assertions do not exercise its hook loader.
 The toggle integration journeys require both bundled skills, verify the saved
 session controls and native tool-result confirmation after each toggle, and
-explicitly request their children, including while routing is off. Live automatic
+explicitly request their children, including while routing is off. Claude's journey
+answers the visible permission prompt for the exact read-only orchestrator check,
+verified against the native pending command. Evidence tests reject added shell
+commands and other permission selections. Live automatic
 delegation and legacy-hook execution are not covered by these tests.
 `test_integration_evidence.py` checks native tool-result extraction for both agents,
 including collapsed-output records, and excludes user echoes and assistant claims.

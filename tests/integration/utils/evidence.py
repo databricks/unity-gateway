@@ -88,6 +88,27 @@ def is_child_session(agent: str, path: str, records: list[dict]) -> bool:
     return _AGENT_HELPERS.get(agent, codex).is_child_session(path, records)
 
 
+def is_orchestrator_check_permission(screen: str, records: list[dict]) -> bool:
+    """Match the visible Claude prompt against its actual pending command."""
+    command = '"$UCODE_SMART_ROUTER_PYTHON" -m ucode.smart_routing.orchestrator --check'
+    if not (
+        "Do you want to proceed?" in screen
+        and re.search(r"(?m)^\s*Bash command\s*$", screen)
+        and re.search(r"(?m)^\s*[›❯>]\s*1\.\s*Yes\s*$", screen)
+        and re.search(rf"(?m)^[ \t]*{re.escape(command)}[ \t]*$", screen)
+    ):
+        return False
+    for record in reversed(records):
+        if record.get("type") != "assistant":
+            continue
+        for part in reversed(record.get("message", {}).get("content", [])):
+            if isinstance(part, dict) and part.get("type") == "tool_use":
+                return (
+                    part.get("name") == "Bash" and part.get("input", {}).get("command") == command
+                )
+    return False
+
+
 def completed_task_models(session, agent: str, answer_value: str) -> set[str]:
     """Read parent task model evidence, not proof of the gateway's destination."""
     assert agent in _AGENT_HELPERS, f"Unsupported evidence agent: {agent}"

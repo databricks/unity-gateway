@@ -302,6 +302,11 @@ trust, and execution of pre-existing hooks are not exercised by this integration
 delegation and legacy-hook execution remain
 unverified by this suite.
 
+The Claude on/off/on journey handles the visible permission prompt for the exact
+read-only orchestrator check. It compares the prompt with the native pending
+command before selecting the one-time Yes option, then still requires the routed
+banner, completed child, and correlated routing decision.
+
 The portable `../test_claude_windows_smart_routing.py` checks the Windows
 subagent-only fallback without Unix imports. Native Windows TUI and hook execution
 remain outside this integration suite.
