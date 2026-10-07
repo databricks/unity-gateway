@@ -105,6 +105,12 @@ model-selection journey.
 
 ## Shared agent helpers
 
+The Codex route-subagent hook journey checks a plaintext request against the real
+router, then supplies an opaque v2-shaped assignment to the installed hook and
+requires a skip notice, no model rewrite, and no additional decision record.
+It does not prove native encrypted-task decryption or a real v2 routed child.
+Native v2 full-assignment routing needs a supported Codex/provider plaintext interface.
+
 `utils/agents/claude.py` and `utils/agents/codex.py` own the existing native answer
 parsing, session paths, and child-session detection. `utils/evidence.py` dispatches
 through them without changing existing journey commands or completion assertions.

@@ -145,6 +145,15 @@ they do not establish live agent coverage.
 
 ## CUJ coverage matrix
 
+`test_codex_routing.py` checks that unreadable Codex assignments produce a sanitized
+skip notice without a routing request, model rewrite, or successful-decision record.
+Plaintext assignments still route; encrypted messages remain unchanged when a separate
+readable description exists in the supplied hook payload. That component fixture does
+not establish that native v2 emits such a description. The installed Codex hook journey
+also checks the opaque-assignment skip after its real plaintext routing request.
+Full-task routing of native encrypted v2 assignments remains unsupported and unverified;
+skipping routing is not a successful routed-child test.
+
 These are **implemented assertions**, not a claim that every version passes.
 Consult the run's JUnit report and artifacts for results. Each function states
 its **Scenario** and **Expected** outcome and shows its configure and launch

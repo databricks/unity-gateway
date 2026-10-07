@@ -103,6 +103,18 @@ def route_pre_tool_use(
     audit_decision: bool = False,
 ) -> dict[str, Any] | None:
     """Route one Codex ``spawn_agent`` call and rewrite its model."""
+    if not is_spawn_agent_tool(payload.get("tool_name")):
+        return None
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return None
+    if routing.plaintext_task_description(tool_input) is None:
+        # A name such as "reviewer" does not describe the child's assignment.
+        # Preserve native v2 execution instead of making an uninformed override.
+        return {
+            "systemMessage": "Smart Routing skipped: plaintext child task unavailable. "
+            "The requested model and native subagent protocol are unchanged."
+        }
     record = None
     if audit_decision:
 

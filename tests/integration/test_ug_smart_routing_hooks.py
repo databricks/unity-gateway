@@ -204,7 +204,8 @@ def test_smart_routing_codex_route_subagent_hook(live_session, workspace):
     Expected: the hook allows the call against the real workspace router, rewrites the
     requested model to the bundled catalog slug of an offered model while preserving the
     task message, and audits one decision matching the response for the session. Only the
-    hook contract is asserted; no agent decides to spawn.
+    hook contract is asserted; no agent decides to spawn. An opaque assignment then
+    produces a skip notice without an input rewrite or an additional decision.
     """
     session = live_session
     session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
@@ -245,6 +246,23 @@ def test_smart_routing_codex_route_subagent_hook(live_session, workspace):
     assert row["session_id"] == payload["session_id"], row
     assert row["task_name"] == payload["tool_input"]["message"], row
     assert row["requested_model"] == updated["model"], row
+
+    before_skip = decisions_path.read_bytes()
+    payload["tool_input"]["message"] = "gAAAAABopaque_assignment=="
+    skipped = session.run(
+        "codex-router-hook",
+        "route-subagent",
+        "--host",
+        workspace,
+        *(arg for model in CODEX_MODELS for arg in ("--model", model)),
+        input_text=json.dumps(payload),
+        timeout=60,
+    )
+    assert json.loads(skipped.stdout) == {
+        "systemMessage": "Smart Routing skipped: plaintext child task unavailable. "
+        "The requested model and native subagent protocol are unchanged."
+    }
+    assert decisions_path.read_bytes() == before_skip
 
 
 @pytest.mark.live

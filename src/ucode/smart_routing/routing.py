@@ -168,9 +168,21 @@ def _nonempty_string(value: Any) -> str | None:
 
 def _plaintext_string(value: Any) -> str | None:
     text = _nonempty_string(value)
-    if text is None or _FERNET_TOKEN_RE.fullmatch(text):
+    if text is None or _FERNET_TOKEN_RE.fullmatch(text.strip()):
         return None
     return text
+
+
+def plaintext_task_description(tool_input: dict[str, Any]) -> str | None:
+    """Read an assignment, excluding opaque messages and agent-name labels."""
+    return next(
+        (
+            value
+            for field in ("prompt", "description", "message")
+            if (value := _plaintext_string(tool_input.get(field))) is not None and value.strip()
+        ),
+        None,
+    )
 
 
 def normalize_model(model: str) -> str:
@@ -278,16 +290,13 @@ def resolve_spawn_route(
     tool_input = payload.get("tool_input")
     if not isinstance(tool_input, dict):
         return None
-    # Derive the routing task from the first available plaintext field. The
-    # harness-specific names are tried in order: `prompt`/`description` (Claude
-    # Code's Agent tool), `message` (Codex's spawn_agent — encrypted at
-    # send-time but readable here because the PreToolUse hook fires before
-    # that), then `task_name` / `agent_name` (weaker labels), then the generic
-    # default.
-    task = next(
+    # Native Codex v2 can supply an already-encrypted message to PreToolUse.
+    # Its caller requires a plaintext assignment before reaching this fallback;
+    # retain the legacy label fallback for other harnesses.
+    task = plaintext_task_description(tool_input) or next(
         (
             value
-            for field in ("prompt", "description", "message", "task_name", "agent_name")
+            for field in ("task_name", "agent_name")
             if (value := _plaintext_string(tool_input.get(field))) is not None
         ),
         default_task_label,

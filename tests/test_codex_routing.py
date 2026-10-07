@@ -5,10 +5,13 @@ from __future__ import annotations
 import json
 import urllib.error
 
+import pytest
+
 from ucode.smart_routing import codex_routing
 from ucode.smart_routing.codex_hooks import routing_models
 
 WS = "https://example.databricks.com"
+OPAQUE_FERNET_TOKEN = "gAAAAABqqU8EOCRSZac8zPpmJqgyznI8gFYExjTbUKzfT9vq7EAz722mbQxTY2ctkVwoX69"
 
 
 def test_routing_models_combines_and_deduplicates_codex_and_oss_models():
@@ -158,6 +161,7 @@ def test_spawn_rewrite_preserves_original_input(monkeypatch):
         "tool_name": "collaborationspawn_agent",
         "tool_input": {
             "task_name": "reviewer",
+            "description": "Review the parser error handling",
             "message": encrypted_message,
             "fork": False,
         },
@@ -197,6 +201,7 @@ def test_spawn_rewrite_preserves_original_input(monkeypatch):
     assert hook["permissionDecision"] == "allow"
     assert hook["updatedInput"] == {
         "task_name": "reviewer",
+        "description": "Review the parser error handling",
         "message": encrypted_message,
         "fork": False,
         "model": "gpt-5.5",
@@ -299,9 +304,7 @@ def test_non_spawn_tool_has_no_opinion():
 
 
 def test_spawn_routes_on_plaintext_message_when_present(monkeypatch):
-    # When the spawn's `message` is a plaintext string at PreToolUse (before
-    # Codex encrypts it at send-time), routing uses it as the task — giving the
-    # router real signal instead of the generic fallback.
+    # Plaintext assignments route on the full task, not the child name.
     captured = {}
 
     def fake_decision(*args, **kwargs):
@@ -327,9 +330,7 @@ def test_spawn_routes_on_plaintext_message_when_present(monkeypatch):
     assert captured["task"] == "Review the parser error handling and add missing null checks"
 
 
-def test_spawn_falls_through_encrypted_message_to_task_name(monkeypatch):
-    # When `message` is an encrypted dict (not a plaintext string), routing
-    # falls through to `task_name` — no regression from the encrypted case.
+def test_spawn_skips_encrypted_message_instead_of_task_name(monkeypatch):
     captured = {}
 
     def fake_decision(*args, **kwargs):
@@ -340,7 +341,7 @@ def test_spawn_falls_through_encrypted_message_to_task_name(monkeypatch):
         )
 
     monkeypatch.setattr(codex_routing, "request_routing_decision", fake_decision)
-    codex_routing.route_pre_tool_use(
+    output = codex_routing.route_pre_tool_use(
         {
             "tool_name": "collaborationspawn_agent",
             "tool_input": {
@@ -352,11 +353,12 @@ def test_spawn_falls_through_encrypted_message_to_task_name(monkeypatch):
         token="token",
         available_models=["databricks-gpt-5-5"],
     )
-    # Encrypted dict skipped (not a string), fell through to task_name.
-    assert captured["task"] == "reviewer"
+    assert captured == {}
+    assert "Smart Routing skipped" in output["systemMessage"]
+    assert "hookSpecificOutput" not in output
 
 
-def test_spawn_falls_through_fernet_message_to_task_name(monkeypatch):
+def test_spawn_skips_fernet_message_instead_of_task_name(monkeypatch):
     captured = {}
 
     def fake_decision(*args, **kwargs):
@@ -367,7 +369,7 @@ def test_spawn_falls_through_fernet_message_to_task_name(monkeypatch):
         )
 
     monkeypatch.setattr(codex_routing, "request_routing_decision", fake_decision)
-    codex_routing.route_pre_tool_use(
+    output = codex_routing.route_pre_tool_use(
         {
             "tool_name": "collaborationspawn_agent",
             "tool_input": {
@@ -380,10 +382,12 @@ def test_spawn_falls_through_fernet_message_to_task_name(monkeypatch):
         available_models=["databricks-gpt-5-5"],
     )
 
-    assert captured["task"] == "reviewer"
+    assert captured == {}
+    assert "Smart Routing skipped" in output["systemMessage"]
+    assert "hookSpecificOutput" not in output
 
 
-def test_spawn_uses_generic_task_instead_of_fernet_message(monkeypatch):
+def test_spawn_skips_fernet_message_instead_of_generic_task(monkeypatch):
     captured = {}
 
     def fake_decision(*args, **kwargs):
@@ -394,7 +398,7 @@ def test_spawn_uses_generic_task_instead_of_fernet_message(monkeypatch):
         )
 
     monkeypatch.setattr(codex_routing, "request_routing_decision", fake_decision)
-    codex_routing.route_pre_tool_use(
+    output = codex_routing.route_pre_tool_use(
         {
             "tool_name": "collaborationspawn_agent",
             "tool_input": {
@@ -406,7 +410,54 @@ def test_spawn_uses_generic_task_instead_of_fernet_message(monkeypatch):
         available_models=["databricks-gpt-5-5"],
     )
 
-    assert captured["task"] == "Codex subagent task"
+    assert captured == {}
+    assert "Smart Routing skipped" in output["systemMessage"]
+    assert "hookSpecificOutput" not in output
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        None,
+        "",
+        " \n\t",
+        {"encrypted": "opaque"},
+        f" {OPAQUE_FERNET_TOKEN} ",
+        f"\n{OPAQUE_FERNET_TOKEN}\n",
+        f"\t{OPAQUE_FERNET_TOKEN}\t",
+    ],
+)
+def test_missing_assignment_preserves_input_without_network_or_decision(
+    message, monkeypatch, tmp_path
+):
+    payload = {
+        "tool_name": "collaboration.spawn_agent",
+        "tool_input": {
+            "task_name": "reviewer",
+            "agent_name": "explorer",
+            "message": message,
+            "model": "gpt-6-luna",
+            "fork_turns": "none",
+            "reasoning_effort": "high",
+        },
+    }
+    original = json.loads(json.dumps(payload))
+    decisions = tmp_path / "decisions.jsonl"
+    monkeypatch.setattr(codex_routing, "DECISIONS_PATH", decisions)
+
+    def reject_network(*args, **kwargs):
+        pytest.fail("An unreadable assignment must not reach the router")
+
+    monkeypatch.setattr(codex_routing.urllib.request, "urlopen", reject_network)
+    output = codex_routing.route_pre_tool_use(
+        payload, workspace=WS, token="token", available_models=["gpt-6-luna"], audit_decision=True
+    )
+    assert output == {
+        "systemMessage": "Smart Routing skipped: plaintext child task unavailable. "
+        "The requested model and native subagent protocol are unchanged."
+    }
+    assert payload == original
+    assert not decisions.exists()
 
 
 def test_canary_and_audit_are_written(tmp_path, monkeypatch):

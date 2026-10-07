@@ -233,6 +233,18 @@ Databricks AI Tools are installed only by `ug configure`, never by agent launch
 commands. Use `--enable-databricks-ai-tools` or `--disable-databricks-ai-tools`
 with `ug configure` to control installation.
 
+## Codex subagent task visibility
+
+Subagent routing requires a readable assignment in the hook's `prompt`,
+`description`, or `message` field. Native Codex multi-agent v2 can deliver an
+encrypted assignment to `PreToolUse`. When no readable assignment is available,
+ug reports that routing was skipped and leaves the requested model and native
+protocol unchanged. It does not classify the child name or a generic task label.
+
+This is a guard against uninformed model overrides, not decryption support.
+Routing an encrypted v2 assignment requires a supported plaintext task interface
+from Codex/the model provider. ug does not force v1 or modify encrypted messages.
+
 ## Claude Routing Plugin
 
 Smart routing passes generated agents through a per-launch `--plugin-dir`,
