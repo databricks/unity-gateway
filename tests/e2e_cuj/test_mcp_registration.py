@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 import uuid
 
 import pytest
@@ -29,18 +30,18 @@ SERVICES = {
 
 class McpFixtureTask:
     def __init__(self):
-        run_id = uuid.uuid4().hex
+        self.run_id = uuid.uuid4().hex
         self.expected = {
             tool: hashlib.sha256(
                 b"unity-gateway-cuj-fixture\0"
                 + tool.encode("ascii")
                 + b"\0"
-                + run_id.encode("ascii")
+                + self.run_id.encode("ascii")
             ).hexdigest()
             for tool in SERVICES.values()
         }
         calls = "; ".join(
-            f"call {tool} on {service.replace('.', '-')} with run_id={run_id}"
+            f"call {tool} on {service.replace('.', '-')} with run_id={self.run_id}"
             for service, tool in SERVICES.items()
         )
         self.prompt = (
@@ -64,11 +65,55 @@ class McpFixtureTask:
 
 
 def _wait_for_mcp_task(tui, task):
+    approved_calls = set()
+    expected_tools = {(service.replace(".", "-"), tool) for service, tool in SERVICES.items()}
+
     def completed(screen):
         assert_no_terminal_api_error(screen)
-        assert "Do you want to proceed?" not in screen, (
-            "Unexpected permission request; inspect the actual command:\n" + screen
-        )
+        assert not any(
+            prompt in screen for prompt in ("Do you want to proceed?", "Do you want to allow")
+        ), "Unexpected permission request; inspect the actual command:\n" + screen
+
+        if (
+            "Allow for this session" in screen
+            and "Always allow" in screen
+            and "Cancel" in screen
+            and re.search(r"(?m)^[ \t]*[›❯>][ \t]*[1-4]\.", screen)
+        ):
+            questions = list(re.finditer(r"(?m)^[ \t]*(Allow\b[^\n?]+\?)[ \t]*$", screen))
+            assert questions, "Unexpected approval menu; inspect the actual command:\n" + screen
+            question = questions[-1].group(1)
+            approval = re.fullmatch(
+                r'Allow the (?P<server>\S+) MCP server to run tool "(?P<tool>[^"]+)"\?',
+                question,
+            )
+            assert tui.agent == CODEX and approval, (
+                "Unexpected Codex permission request; inspect the actual command:\n" + screen
+            )
+            tail = screen[questions[-1].end() :]
+            run_match = re.search(r"(?m)^[ \t]*run_id:[ \t]*(\S+)[ \t]*$", tail)
+            selected = re.search(
+                r"(?m)^[ \t]*[›❯>][ \t]*([1-4])\.[ \t]*(Allow(?: for this session)?|Always allow|Cancel)\b",
+                tail,
+            )
+            assert run_match and selected, (
+                "Unexpected Codex approval menu; inspect the actual command:\n" + screen
+            )
+            server = approval.group("server")
+            tool = approval.group("tool")
+            run_id = run_match.group(1)
+            assert (server, tool) in expected_tools and run_id == task.run_id, (
+                "Unexpected MCP permission request; inspect the actual command:\n" + screen
+            )
+            assert selected.group(1) == "1" and selected.group(2) == "Allow", (
+                "Codex MCP approval must remain a per-call Allow; inspect the actual menu:\n"
+                + screen
+            )
+            call = (server, tool, run_id)
+            if call not in approved_calls:
+                tui.send("\r", f"allow one MCP call: {server}.{tool}")
+                approved_calls.add(call)
+                return False
         return task.completed(tui.session, tui.agent)
 
     tui.wait_for(
