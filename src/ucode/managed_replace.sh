@@ -30,8 +30,10 @@ target_is_allowed() {
     case "$platform:$1" in
         "linux:/etc/claude-code/managed-settings.json"|\
         "linux:/etc/codex/managed_config.toml"|\
+        "linux:/etc/codex/ucode-model-catalog.json"|\
         "macos:/Library/Application Support/ClaudeCode/managed-settings.json"|\
-        "macos:/etc/codex/managed_config.toml") return 0 ;;
+        "macos:/etc/codex/managed_config.toml"|\
+        "macos:/etc/codex/ucode-model-catalog.json") return 0 ;;
         *) return 1 ;;
     esac
 }
