@@ -2962,8 +2962,15 @@ class TestDatabricksCliResolution:
 
         discovered = db_mod._discover_databricks_clis(use_cache=False)
 
-        assert discovered == [(str(real_bin), (1, 2, 3))]
-        assert probed == [str(real_bin)]
+        # Compare on resolved+normcased paths: Windows PATH entries can differ from
+        # ``str(real_bin)`` by 8.3 short form or case even when they name the same file.
+        def _norm(path: str) -> str:
+            return os.path.normcase(os.path.realpath(path))
+
+        assert len(discovered) == 1
+        assert _norm(discovered[0][0]) == _norm(str(real_bin))
+        assert discovered[0][1] == (1, 2, 3)
+        assert [_norm(path) for path in probed] == [_norm(str(real_bin))]
 
     def test_discover_orders_best_first(self, monkeypatch):
         # Newest version first; equal versions keep PATH order; unparseable last.

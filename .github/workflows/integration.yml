@@ -187,6 +187,10 @@ jobs:
       matrix:
         os: [ubuntu-22.04, windows-server-latest]
         agent: [claude, codex]
+        # Codex's only non-PTY smoke case is its headless journey, which Windows leaves out for now.
+        exclude:
+          - os: windows-server-latest
+            agent: codex
     env:
       UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
       DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}

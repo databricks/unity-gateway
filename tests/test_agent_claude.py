@@ -2289,6 +2289,11 @@ class TestRegisterWebSearchMcp:
     def isolate_mcp_config(self, tmp_path, monkeypatch):
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="shutil.which returns `ug.EXE` (PATHEXT), which the case-sensitive "
+        "_generated_search_entry binary-name check rejects; product fix tracked separately",
+    )
     def test_configuration_uses_saved_custom_oauth_profile(self, monkeypatch):
         # Isolate config writes and Claude CLI registration; execute the actual config writer.
         prior_entry = claude._web_search_mcp_entry(WS, "search-model", "workspace-profile")

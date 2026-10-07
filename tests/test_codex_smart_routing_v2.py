@@ -267,7 +267,7 @@ class TestLaunchCodex:
             "--config",
             (
                 "shell_environment_policy.set.UCODE_SESSION_ENV_FILE="
-                f'"{os.environ["UCODE_SESSION_ENV_FILE"]}"'
+                + json.dumps(os.environ["UCODE_SESSION_ENV_FILE"])
             ),
         ]
         assert processes[0].argv[12:14] == [
@@ -410,7 +410,7 @@ class TestLaunchCodex:
         assert "--model system.ai.gpt-5-6-sol" in hook_override
         assert (
             "shell_environment_policy.set.UCODE_SESSION_ENV_FILE="
-            f'"{os.environ["UCODE_SESSION_ENV_FILE"]}"'
+            + json.dumps(os.environ["UCODE_SESSION_ENV_FILE"])
         ) in argv
         assert (
             "shell_environment_policy.set.UCODE_SMART_ROUTER_PYTHON="
@@ -656,7 +656,7 @@ class TestCustomCatalogModels:
 
         assert interposer_kwargs["available_models"] == ["gpt-6-astra", "gpt-6-b"]
         catalog_override = next(arg for arg in launched[0] if arg.startswith("model_catalog_json="))
-        assert catalog_override == f'model_catalog_json="{tmp_path / "cli.json"}"'
+        assert catalog_override == "model_catalog_json=" + json.dumps(str(tmp_path / "cli.json"))
         hook_override = next(arg for arg in launched[0] if arg.startswith("hooks.PreToolUse="))
         assert "--model gpt-6-astra" in hook_override
         assert "--model gpt-6-b" in hook_override

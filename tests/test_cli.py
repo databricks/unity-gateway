@@ -97,7 +97,9 @@ class TestHelp:
 
     def test_help_groups_commands_by_workflow(self):
         result = runner.invoke(app, ["--help"])
-        output = _strip_ansi(result.output)
+        # Rich substitutes rounded box corners for square ones on legacy Windows
+        # consoles; normalize so the panel lookups below are platform-agnostic.
+        output = _strip_ansi(result.output).replace("┌", "╭")
 
         assert result.exit_code == 0
         panels = {
@@ -1989,8 +1991,9 @@ class TestStatus:
         assert "Manage:" not in result.output
         assert "Config file" not in result.output
         assert "System settings" not in result.output
+        # Rounded corners render as square on legacy Windows consoles; accept either.
         panel_tops = [
-            line for line in _strip_ansi(result.output).splitlines() if line.startswith("╭")
+            line for line in _strip_ansi(result.output).splitlines() if line.startswith(("╭", "┌"))
         ]
         assert len({len(line) for line in panel_tops}) == 1
 
@@ -3784,6 +3787,8 @@ class TestConfigureAgentsSelection:
         managed = {
             "enabled_agents": {"codex": {"model_config": {"unity_catalog_location": "main.models"}}}
         }
+        monkeypatch.setattr(cli_mod, "install_databricks_cli", MagicMock())
+        monkeypatch.setattr(cli_mod, "install_tool_binary", MagicMock())
         monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
         refresh = MagicMock(return_value=(managed, False))
         monkeypatch.setattr(cli_mod, "refresh_managed_config", refresh)
