@@ -9,6 +9,10 @@ is read-only and checked for changes at teardown; concurrent readers need no res
 CUJ2 adds three separately collected cases for exact MPS/MCP configuration, Codex inference,
 and Claude inference.
 
+The [catalog discovery journey](../e2e_cuj/README.md) uses the CUJ3 workspace to check
+agent-compatible pickers, schema exclusions, configured defaults, and real inference.
+CI collects it through the shared `dedicated-cuj` job.
+
 This suite runs the **installed product** through subprocesses, against the same
 `UCODE_TEST_WORKSPACE` used by the existing e2e tests. It does not import `ucode`,
 patch application functions, substitute agent executables, run a fake gateway,
@@ -98,6 +102,12 @@ process. The CLI still requires an available default model before launch, even
 when an explicit model is supplied. The only live OpenCode journey is the headless
 prompt case in `test_ug_opencode_headless.py`; there is no dedicated live OpenCode
 model-selection journey.
+
+## Shared agent helpers
+
+`utils/agents/claude.py` and `utils/agents/codex.py` own the existing native answer
+parsing, session paths, and child-session detection. `utils/evidence.py` dispatches
+through them without changing existing journey commands or completion assertions.
 
 ## Run a specific combination
 
