@@ -76,7 +76,17 @@ def test_windows_integration_ci_uses_shared_claude_version():
 
 
 @pytest.mark.parametrize(
-    "failed_job", ["installation", "workspace", "smoke", "full", "managed", "dedicated-cuj"]
+    "failed_job",
+    [
+        "installation",
+        "installation-windows",
+        "headless-windows",
+        "workspace",
+        "smoke",
+        "full",
+        "managed",
+        "dedicated-cuj",
+    ],
 )
 @pytest.mark.parametrize("job_result", ["success", "failure", "cancelled", "skipped"])
 def test_integration_ci_gate_requires_every_job(failed_job, job_result):
@@ -88,6 +98,8 @@ def test_integration_ci_gate_requires_every_job(failed_job, job_result):
         job: {"result": "success"}
         for job in (
             "installation",
+            "installation-windows",
+            "headless-windows",
             "workspace",
             "smoke",
             "full",

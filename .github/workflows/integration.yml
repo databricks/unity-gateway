@@ -49,6 +49,9 @@ env:
   CODEX_VERSION: ${{ inputs.codex_version || '0.154.0' }}
   OPENCODE_VERSION: ${{ inputs.opencode_version || '1.18.31' }}
   PACKAGE_INDEX: ${{ inputs.default_index || 'https://pypi.org/simple' }}
+  # Windows runners install packages through the Databricks JFrog proxies.
+  WINDOWS_PACKAGE_INDEX: https://databricks.jfrog.io/artifactory/api/pypi/db-pypi/simple
+  WINDOWS_NPM_REGISTRY: https://databricks.jfrog.io/artifactory/api/npm/db-npm/
 
 jobs:
   installation:
@@ -85,12 +88,9 @@ jobs:
             ${{ runner.temp }}/ug-integration/artifacts/
             ${{ runner.temp }}/ug-integration/wheels/
 
-  # Advisory while the first native Windows failures are diagnosed. Once they
-  # are fixed, remove continue-on-error and add this job to the cujs required set.
   installation-windows:
     name: Windows installation tests
     runs-on: windows-server-latest
-    continue-on-error: true
     timeout-minutes: 20
     permissions:
       contents: read
@@ -175,13 +175,17 @@ jobs:
           PY
 
   smoke:
-    name: Smoke journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}
+    name: Smoke journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }} · ${{ matrix.os == 'windows-server-latest' && 'Windows' || 'Linux' }}
     needs: workspace
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-22.04, windows-server-latest]
         agent: [claude, codex]
     env:
       UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
@@ -189,7 +193,7 @@ jobs:
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: ${{ matrix.agent }}
       TEST_MARKER: live and smoke and ${{ matrix.agent }}
-      ARTIFACT_NAME: integration-smoke-${{ matrix.agent }}
+      ARTIFACT_NAME: integration-smoke-${{ matrix.agent }}-${{ runner.os }}
     steps: &live-steps
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
@@ -203,9 +207,33 @@ jobs:
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
         with:
           version: 1.17.0
-      - name: Run the selected live cases against the e2e workspace
+      - &windows-databricks-path
+        name: Expose the Databricks CLI on Windows
+        if: ${{ runner.os == 'Windows' }}
         shell: bash
         run: |
+          test -f "$RUNNER_TEMP/.bin/databricks.exe"
+          cygpath -w "$RUNNER_TEMP/.bin" >> "$GITHUB_PATH"
+      - &windows-jfrog
+        name: Authenticate to JFrog with GitHub OIDC
+        id: jfrog
+        if: ${{ runner.os == 'Windows' }}
+        uses: jfrog/setup-jfrog-cli@279b1f629f43dd5bc658d8361ac4802a7ef8d2d5  # v4.9.1
+        env:
+          JF_URL: https://databricks.jfrog.io
+        with:
+          oidc-provider-name: github-actions
+      - name: Run the selected live cases against the e2e workspace
+        shell: bash
+        env:
+          UV_INDEX_DATABRICKS_PYPI_USERNAME: ${{ steps.jfrog.outputs.oidc-user }}
+          UV_INDEX_DATABRICKS_PYPI_PASSWORD: ${{ steps.jfrog.outputs.oidc-token }}
+          UG_INTEGRATION_NPM_TOKEN: ${{ steps.jfrog.outputs.oidc-token }}
+        run: |
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            PACKAGE_INDEX="databricks-pypi=$WINDOWS_PACKAGE_INDEX"
+            registry=(--npm-registry "$WINDOWS_NPM_REGISTRY")
+          fi
           case "$AGENT" in
             claude) args=(--claude-version "$CLAUDE_VERSION") ;;
             codex) args=(--codex-version "$CODEX_VERSION") ;;
@@ -217,7 +245,7 @@ jobs:
           uv run --no-project --python 3.12 python scripts/run_integration.py \
             --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
             --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
-            "${args[@]}" -- -m "$TEST_MARKER"
+            "${registry[@]}" "${args[@]}" -- -m "$TEST_MARKER"
       - name: Upload live test evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
@@ -236,7 +264,6 @@ jobs:
     name: Windows headless journey · Claude
     needs: workspace
     runs-on: windows-server-latest
-    continue-on-error: true
     timeout-minutes: 20
     permissions:
       contents: read
@@ -315,19 +342,22 @@ jobs:
             ${{ runner.temp }}/ug-integration/wheels/
 
   full:
-    name: Full journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}
+    name: Full journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }} · ${{ matrix.os == 'windows-server-latest' && 'Windows' || 'Linux' }}
     if: ${{ !cancelled() && needs.workspace.result == 'success' }}
     needs: [workspace, smoke]
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
     # The runner enforces its own 3600s pytest deadline; keep the job above it
     # so a slow run fails through the runner's report instead of a job kill.
     timeout-minutes: 70
     strategy:
       fail-fast: false
-      # One VM per agent: reuse its install and run its cases serially. Allow
-      # Claude and Codex to overlap, but never launch concurrent same-agent shards.
-      max-parallel: 2
+      # One VM per agent and OS: reuse its install and run its cases serially.
+      max-parallel: 4
       matrix:
+        os: [ubuntu-22.04, windows-server-latest]
         agent: [claude, codex]
     env:
       UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
@@ -336,17 +366,24 @@ jobs:
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: ${{ matrix.agent }}
       TEST_MARKER: live and ${{ matrix.agent }}
-      ARTIFACT_NAME: integration-full-${{ matrix.agent }}
+      ARTIFACT_NAME: integration-full-${{ matrix.agent }}-${{ runner.os }}
     steps: *live-steps
 
   # Non-blocking: continue-on-error and absent from the cujs `needs`, so a flaky OpenCode
   # leg cannot block merges. Add it to cujs once the lane is stable.
   opencode:
-    name: Full journeys · OpenCode (non-blocking)
+    name: Full journeys · OpenCode · ${{ matrix.os == 'windows-server-latest' && 'Windows' || 'Linux' }} (non-blocking)
     if: ${{ !cancelled() && needs.workspace.result == 'success' }}
     needs: workspace
     continue-on-error: true
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-server-latest]
     timeout-minutes: 30
     env:
       UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
@@ -354,23 +391,27 @@ jobs:
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: opencode
       TEST_MARKER: live and opencode
-      ARTIFACT_NAME: integration-full-opencode
+      ARTIFACT_NAME: integration-full-opencode-${{ runner.os }}
     steps: *live-steps
 
   managed:
-    name: Managed config · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}
+    name: Managed config · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }} · ${{ matrix.os == 'windows-server-latest' && 'Windows' || 'Linux' }}
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
-      max-parallel: 2
+      max-parallel: 4
       matrix:
+        os: [ubuntu-22.04, windows-server-latest]
         agent: [claude, codex]
     env:
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: ${{ matrix.agent }}
-      ARTIFACT_NAME: integration-managed-${{ matrix.agent }}
+      ARTIFACT_NAME: integration-managed-${{ matrix.agent }}-${{ runner.os }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
@@ -384,9 +425,14 @@ jobs:
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
         with:
           version: 1.17.0
+      - *windows-databricks-path
+      - *windows-jfrog
       - name: Run the managed cases against the managed e2e workspace
         shell: bash
         env:
+          UV_INDEX_DATABRICKS_PYPI_USERNAME: ${{ steps.jfrog.outputs.oidc-user }}
+          UV_INDEX_DATABRICKS_PYPI_PASSWORD: ${{ steps.jfrog.outputs.oidc-token }}
+          UG_INTEGRATION_NPM_TOKEN: ${{ steps.jfrog.outputs.oidc-token }}
           # The managed workspace authenticates as a service principal; the runner mints a
           # short-lived token from these standard Databricks client-credential variables.
           UCODE_TEST_WORKSPACE: ${{ secrets.E2E_ADMIN_WORKSPACE }}
@@ -397,6 +443,10 @@ jobs:
           UCODE_TEST_SECOND_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
           DATABRICKS_SECOND_BEARER: ${{ secrets.DATABRICKS_BEARER }}
         run: |
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            PACKAGE_INDEX="databricks-pypi=$WINDOWS_PACKAGE_INDEX"
+            registry=(--npm-registry "$WINDOWS_NPM_REGISTRY")
+          fi
           # A managed config enables both agents and `ug configure` applies it to every enabled
           # agent, so both CLIs must be installed even though this lane asserts only one agent.
           args=(--claude-version "$CLAUDE_VERSION" --codex-version "$CODEX_VERSION")
@@ -406,7 +456,7 @@ jobs:
           uv run --no-project --python 3.12 python scripts/run_integration.py \
             --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
             --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
-            "${args[@]}" -- -m "(managed or managed_fixture or workspace_switch) and $AGENT"
+            "${registry[@]}" "${args[@]}" -- -m "(managed or managed_fixture or workspace_switch) and $AGENT"
       - name: Upload managed test evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
@@ -422,11 +472,18 @@ jobs:
             ${{ runner.temp }}/ug-integration/wheels/
 
   dedicated-cuj:
-    name: E2E CUJs
+    name: E2E CUJs · ${{ matrix.os == 'windows-server-latest' && 'Windows' || 'Linux' }}
     # CUJ definitions: https://docs.google.com/document/d/1WKd1fdWD0Y4tAV1H9Si-SGx2UZFL7iZ2S3HtBjidmS0/edit?usp=drive_web&ouid=117446678071138243519
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-server-latest]
+    defaults:
+      run:
+        shell: bash
     env:
       UV_INDEX_URL: https://pypi.org/simple
       UG_CUJ1_WORKSPACE: ${{ secrets.UG_CUJ1_WORKSPACE }}
@@ -445,6 +502,7 @@ jobs:
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
         with:
           version: 1.17.0
+      - *windows-databricks-path
       - name: Install ug and agent CLIs
         run: |
           uv lock
@@ -464,8 +522,7 @@ jobs:
   cujs:
     name: All integration tests
     if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    # installation-windows remains advisory until its initial platform issues are fixed.
-    needs: [installation, workspace, smoke, full, managed, dedicated-cuj]
+    needs: [installation, installation-windows, headless-windows, workspace, smoke, full, managed, dedicated-cuj]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

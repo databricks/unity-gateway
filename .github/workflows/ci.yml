@@ -31,9 +31,16 @@ jobs:
       - run: just lint
 
   test:
-    name: Unit tests
-    runs-on: ubuntu-latest
+    name: Unit tests · ${{ matrix.os == 'windows-server-latest' && 'Windows' || 'Linux' }}
+    runs-on: ${{ matrix.os }}
     needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-server-latest]
+    defaults:
+      run:
+        shell: bash
     env:
       # uv.lock pins packages to Databricks' internal pypi-proxy, which hosted
       # GitHub runners can't reach (downloads time out). Re-resolve against
@@ -46,14 +53,19 @@ jobs:
       - run: uv run pytest --ignore=tests/test_e2e.py
 
   e2e-shards:
-    name: ${{ matrix.name }}
-    runs-on: ubuntu-latest
+    name: ${{ matrix.name }} · ${{ matrix.os == 'windows-server-latest' && 'Windows' || 'Linux' }}
+    runs-on: ${{ matrix.os }}
     needs: lint
     # The merge queue runs only lint and unit tests; e2e already ran on the PR.
     if: ${{ github.event_name != 'merge_group' }}
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-server-latest]
+        group: [gateway, claude, codex, gemini, opencode, copilot, pi]
         include:
           - group: gateway
             name: Gateway API tests
@@ -105,6 +117,11 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
+      - name: Expose the Databricks CLI on Windows
+        if: ${{ runner.os == 'Windows' }}
+        run: |
+          test -f "$RUNNER_TEMP/.bin/databricks.exe"
+          cygpath -w "$RUNNER_TEMP/.bin" >> "$GITHUB_PATH"
       - name: Install the shard's agent CLI
         if: ${{ matrix.package != '' }}
         run: npm install -g "$AGENT_PACKAGE"

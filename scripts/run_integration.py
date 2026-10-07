@@ -373,11 +373,6 @@ def arguments(
         "pytest_args", nargs=argparse.REMAINDER, help="After --, pass pytest filters."
     )
     args = parser.parse_args(argv)
-    if platform_name != "posix" and not (args.installation_only or args.headless_only):
-        parser.error(
-            "Live agent/TUI integration requires POSIX PTY, managed-settings, and signal "
-            "support. Use --installation-only or --headless-only on Windows."
-        )
     # Only selection/early-stop controls are accepted. Pytest configuration,
     # plugins and report destinations are part of the suite's isolation contract.
     filters = argparse.ArgumentParser(add_help=False)
