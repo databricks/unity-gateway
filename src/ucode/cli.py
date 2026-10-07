@@ -871,7 +871,7 @@ def _configure_workspace_command(
                 if not managed_provider_service(managed, tool):
                     parent_schema = managed_unity_catalog_location(managed, tool)
         if desktop and (managed is None or tool not in ("codex", "opencode")):
-            raise RuntimeError("--desktop requires managed Codex or OpenCode configuration.")
+            raise RuntimeError("--direct requires managed Codex or OpenCode configuration.")
         resolved = state
         if desktop and not is_dry_run():
             backup_desktop_config(tool)
@@ -964,7 +964,7 @@ def _configure_workspace_command(
         return 0
 
     if desktop:
-        raise RuntimeError("--desktop requires a published managed coding-agent configuration.")
+        raise RuntimeError("--direct requires a published managed coding-agent configuration.")
 
     available_on_workspace: list[str] = []
     tools_to_check = selected_tools or list(TOOL_SPECS)
@@ -3432,7 +3432,11 @@ def configure(
     ] = None,
     desktop: Annotated[
         bool,
-        typer.Option("--desktop", help="Also update Codex/OpenCode desktop app settings."),
+        typer.Option(
+            "--direct",
+            "--desktop",
+            help="Also configure directly launched Codex/OpenCode, including their desktop apps.",
+        ),
     ] = False,
     agents: Annotated[
         str | None,

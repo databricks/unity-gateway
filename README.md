@@ -73,7 +73,7 @@ them to `~/.ucode/codex-model-catalog.json`, referenced by shared `~/.codex/conf
 for Codex App. Managed static lists use the same path during `ug configure`. The
 latest refresh supplies the app's catalog; custom catalogs (including Isaac's) and
 custom providers are preserved. The app's gateway provider and authentication can be configured with the managed
-`ug configure --desktop` option below. Validation covers the local Codex binary.
+`ug configure --direct` option below. Validation covers the local Codex binary.
 
 Codex loads the catalog at app-server startup. When ug reports a catalog change,
 finish active tasks, restart the app server on the **connected host**, then reconnect.
@@ -92,23 +92,30 @@ ug configure
 ug configure --agents claude,codex
 ug configure --workspace https://first.databricks.com
 ug configure --profile DEFAULT --agents claude,codex
-ug configure --workspace https://first.databricks.com --agents codex,opencode --desktop
+ug configure --workspace https://first.databricks.com --agents codex,opencode --direct
 ```
 
 Available coding agents are `codex`, `claude`, `gemini`, `opencode`,
 `copilot`, and `pi`. `cursor` can be included in `--agents` for MCP-only setup;
 Cursor models still run through your Cursor account.
 
-For a workspace with published managed coding-agent configuration, `--desktop`
-additionally sets the managed defaults in Codex Desktop's shared `~/.codex/config.toml`
-and OpenCode Desktop's `~/.config/opencode/opencode.json`, including the gateway
-providers and the OpenCode token-refresh plugin. This is opt-in because both files
-also control directly launched desktop apps. Restart OpenCode Desktop after configuring.
-For Codex Desktop, finish active tasks and restart the app server on the connected
-host, then reconnect so the model catalog and default are reloaded. `ug revert`
-restores the desktop files from the first pre-configuration backup; edits made
-after that backup will be replaced. The OpenCode config must be valid JSON for
-`--desktop` to merge into it. `--dry-run` leaves desktop files alone.
+For a workspace with published managed coding-agent configuration,
+`ug configure --agent opencode` configures the isolated settings used by
+`ug opencode`. Plain
+`opencode` reads the normal `~/.config/opencode/opencode.json`, which OpenCode
+Desktop also reads. Use `--direct` to sync the managed default, Databricks
+provider, and renewable auth plugin to that shared file. The same option syncs
+managed Codex settings into `~/.codex/config.toml` for direct Codex launches and
+Codex Desktop. `--desktop` remains an alias for `--direct`.
+
+This is opt-in because the shared files also control directly launched apps.
+Restart OpenCode Desktop if it is open; a fresh `opencode` CLI process picks up
+the change immediately. For Codex Desktop, finish active tasks and restart the
+app server on the connected host, then reconnect so the catalog and default are
+reloaded. `ug revert` restores the shared files from the first pre-configuration
+backup; edits made after that backup will be replaced. The OpenCode config must
+be valid JSON for `--direct` to merge into it. `--dry-run` leaves shared files
+alone.
 
 `UG_WORKSPACE` can provide the default workspace. An explicit `--workspace` or
 `--profile` takes precedence.
@@ -264,10 +271,10 @@ The generated shell hooks expect Git Bash; PowerShell-only setups are not covere
 
 | Tool | Managed files |
 |------|---------------|
-| Codex | `~/.codex/ucode.config.toml`, shared catalog reference and optional `--desktop` defaults/provider in `~/.codex/config.toml`, `~/.ucode/codex-model-catalog.json`, `/etc/codex/managed_config.toml` (Linux and macOS) |
+| Codex | `~/.codex/ucode.config.toml`, shared catalog reference and optional `--direct` defaults/provider in `~/.codex/config.toml`, `~/.ucode/codex-model-catalog.json`, `/etc/codex/managed_config.toml` (Linux and macOS) |
 | Claude Code | `~/.claude/ucode-settings.json`, `~/.claude.json`, `/etc/claude-code/managed-settings.json` (Linux), `/Library/Application Support/ClaudeCode/managed-settings.json` (macOS) |
 | Gemini CLI | `~/.gemini/ucode.env`, `~/.ucode/.gemini-home/.gemini/settings.json` |
-| OpenCode | `~/.ucode/opencode-xdg/opencode/opencode.json`, `~/.ucode/opencode-xdg/opencode/plugin/ucode-auth.js`, optional `--desktop` `~/.config/opencode/opencode.json` and `plugin/ucode-auth.js` |
+| OpenCode | `~/.ucode/opencode-xdg/opencode/opencode.json`, `~/.ucode/opencode-xdg/opencode/plugin/ucode-auth.js`, optional `--direct` `~/.config/opencode/opencode.json` and `plugin/ucode-auth.js` |
 | GitHub Copilot CLI | `~/.copilot/ucode.env`, `~/.copilot/ucode-mcp-config.json` |
 | Pi | `~/.ucode/pi-home/.pi/agent/models.json`, `~/.ucode/pi-home/.pi/agent/settings.json` |
 | Cursor Agent | `~/.cursor/mcp.json` |

@@ -3280,6 +3280,16 @@ class TestConfigureAgentFlag:
         mock_install.assert_called_once_with("claude", strict=True)
         mock_cfg.assert_called_once_with("claude")
 
+    def test_direct_flag_targets_plain_opencode_config(self):
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.install_tool_binary"),
+            patch("ucode.cli.configure_workspace_command") as mock_cfg,
+        ):
+            result = runner.invoke(app, ["configure", "--agent", "opencode", "--direct"])
+        assert result.exit_code == 0, result.output
+        mock_cfg.assert_called_once_with("opencode", desktop=True)
+
     @pytest.mark.parametrize("flag", ["--enable-fable", "--disable-fable"])
     def test_fable_toggles_removed(self, flag):
         result = runner.invoke(app, ["configure", flag])
