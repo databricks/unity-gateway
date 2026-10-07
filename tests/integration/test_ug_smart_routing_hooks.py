@@ -103,11 +103,13 @@ def _run_calculation(tui, session, agent: str, expression: str, expected: str, *
                     for path, records in agent_sessions(session, agent).items()
                     if not is_child_session(agent, path, records)
                 ]
-                assert (
+                # Claude can render the dialog before flushing its tool call to disk.
+                if not (
                     agent == "claude"
                     and len(roots) == 1
                     and is_orchestrator_check_permission(screen, roots[0])
-                ), "Unrecognized permission before subagent routing:\n" + screen
+                ):
+                    return False
                 tui.send("\r", "allow the read-only orchestrator routing-state check")
                 permission_in_progress = True
                 return False
