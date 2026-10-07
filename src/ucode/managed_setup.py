@@ -59,6 +59,9 @@ _AGENT_MODEL_FAMILIES: dict[str, tuple[str, ...]] = {
     "opencode": ("claude", "codex", "gemini", "oss"),
     "pi": ("claude", "codex", "gemini", "oss"),
     "copilot": ("claude", "codex", "gemini", "oss"),
+    # omp mirrors pi (the multi-provider harness). It has no managed-config variant:
+    # the server's CodingAgent proto carries no omp entry (see AGENT_ENUM_TO_TOOL).
+    "omp": ("claude", "codex", "gemini", "oss"),
 }
 
 

@@ -10,6 +10,7 @@ from typing import TypedDict, cast
 
 import tomlkit
 import tomlkit.exceptions
+import yaml
 
 from ucode.ui import console
 
@@ -216,6 +217,31 @@ def read_toml_safe(path: Path) -> tomlkit.TOMLDocument:
 
 def write_toml_file(path: Path, doc: tomlkit.TOMLDocument) -> None:
     content = tomlkit.dumps(doc)
+    if _dry_run:
+        console.print(f"\n[bold]\\[dry run] {path}[/bold]\n{content}")
+        return
+    ensure_parent_dir(path)
+    try:
+        path.write_text(content, encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(f"Failed to write config file: {path}") from exc
+
+
+def read_yaml_safe(path: Path) -> dict:
+    # See read_json_safe: keep `path.exists()` inside the try so a PermissionError on a locked
+    # parent directory is treated as an empty document rather than propagating. Any YAML error
+    # (or a non-mapping document, e.g. a list) reads as "nothing to merge into → {}".
+    try:
+        if not path.exists():
+            return {}
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_yaml_file(path: Path, payload: dict) -> None:
+    content = yaml.safe_dump(payload, sort_keys=False)
     if _dry_run:
         console.print(f"\n[bold]\\[dry run] {path}[/bold]\n{content}")
         return
