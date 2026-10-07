@@ -2311,12 +2311,6 @@ def _toggle_current_smart_routing_session(enabled: bool | None) -> bool:
         print_err(str(exc))
         raise typer.Exit(1) from None
     print_success(f"Smart Router is {'on' if enabled else 'off'} for this session")
-    if enabled:
-        print_note("Automatic orchestration is on; apply the orchestrate skill to further work.")
-    else:
-        from ucode.smart_routing.orchestrator import DISABLED_CONTEXT
-
-        print_note(DISABLED_CONTEXT)
     return True
 
 
