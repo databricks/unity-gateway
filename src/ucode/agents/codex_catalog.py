@@ -49,6 +49,17 @@ _HOSTED_DEFAULTS = {
     "upgrade": None,
 }
 
+# Every GPT-5-generation gateway model accepts low/medium/high, but gpt-5-nano and
+# gpt-5-mini reject the "none" effort the non-GPT hosted defaults use.
+_GPT_HOSTED_DEFAULTS = {
+    **_HOSTED_DEFAULTS,
+    "default_reasoning_level": "medium",
+    "supported_reasoning_levels": [
+        {"effort": effort, "description": f"{effort.capitalize()} reasoning"}
+        for effort in ("low", "medium", "high")
+    ],
+}
+
 
 def _model_key(slug: str) -> str:
     # Reuse Codex's known gateway/legacy GPT aliases. Arbitrary UC service
@@ -76,13 +87,13 @@ def build_codex_catalog(
         if native is not None:
             model = copy.deepcopy(native)
         else:
-            if _model_key(name).startswith(("gpt-", "databricks-gpt-")):
-                if warn is not None:
-                    warn(
-                        f"Codex is missing metadata for managed GPT model '{name}', so UG is "
-                        "falling back to default metadata. Try updating Codex with "
-                        "`ug codex update`."
-                    )
+            is_gpt = _model_key(name).startswith(("gpt-", "databricks-gpt-"))
+            if is_gpt and warn is not None:
+                warn(
+                    f"Codex is missing metadata for managed GPT model '{name}', so UG is "
+                    "using generic GPT defaults (low/medium/high reasoning). Updating Codex "
+                    "with `ug codex update` may add exact metadata."
+                )
             baseline = next((m for m in bundled_models if m.get("tool_mode") is None), None)
             if baseline is None:
                 raise RuntimeError(
@@ -90,7 +101,7 @@ def build_codex_catalog(
                     "Upgrade or reinstall Codex."
                 )
             model = copy.deepcopy(baseline)
-            model.update(copy.deepcopy(_HOSTED_DEFAULTS))
+            model.update(copy.deepcopy(_GPT_HOSTED_DEFAULTS if is_gpt else _HOSTED_DEFAULTS))
             capabilities = _HOSTED_CAPABILITIES.get(name.removeprefix("system.ai."))
             if capabilities:
                 modalities, efforts = capabilities
