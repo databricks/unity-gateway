@@ -220,6 +220,7 @@ CLAUDE_CONDITIONAL_ENV_KEYS = ("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",)
 CLAUDE_REMOVED_ENV_KEYS = ("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",)
 CLAUDE_MANAGED_PICKER_KEYS = ("availableModels", "enforceAvailableModels", "modelPicker")
 ANTHROPIC_CUSTOM_HEADERS_ENV_KEY = "ANTHROPIC_CUSTOM_HEADERS"
+ISAAC_REQUEST_TAGS_HEADER_NAME = "databricks-ai-gateway-request-tags"
 CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
     {
         "x-databricks-use-coding-agent-mode",
@@ -249,6 +250,39 @@ def _apply_managed_header_lines(
     for name, value in (managed_http_headers or {}).items():
         lines_by_name[name.strip().casefold()] = f"{name}: {value}"
     return list(lines_by_name.values())
+
+
+def _preserve_isaac_request_tags_header(
+    existing: object,
+    ucode_headers: str,
+    managed_http_headers: dict[str, str] | None,
+) -> str:
+    """Carry Isaac's request-tags header through ug's managed-config rewrite.
+
+    ``ANTHROPIC_CUSTOM_HEADERS`` is otherwise wholly rewritten when a Coding Agent Config is
+    present, including stale headers ug previously emitted. Isaac owns this interoperable metadata
+    header, though, and restores it after ug drops it. Keep one existing line unless the admin has
+    explicitly declared the same header, in which case the admin's rendered value wins.
+    This is a named compatibility exception, not a general per-header ownership policy.
+    """
+    if any(
+        name.strip().casefold() == ISAAC_REQUEST_TAGS_HEADER_NAME
+        for name in (managed_http_headers or {})
+    ):
+        return ucode_headers
+    if not isinstance(existing, str):
+        return ucode_headers
+    for line in existing.splitlines():
+        name, separator, _value = line.partition(":")
+        if (
+            separator
+            and name.strip().casefold() == ISAAC_REQUEST_TAGS_HEADER_NAME
+            and _required_custom_headers(line) is not None
+        ):
+            # Keep the first line only: case variants or duplicates must not accumulate across
+            # repeated ug/Isaac launches.
+            return f"{ucode_headers}\n{line}" if ucode_headers else line
+    return ucode_headers
 
 
 def configured_paths(state: dict) -> list[str]:
@@ -1286,10 +1320,8 @@ def write_tool_config(
     # revert would restore that snapshot instead of deleting the file.
     if not is_tool_managed(state, "claude"):
         backup_existing_file(CLAUDE_SETTINGS_PATH, CLAUDE_BACKUP_PATH)
-    # A managed config makes ug authoritative over the whole custom-header value, so it is
-    # overwritten wholesale; without one, preserve the developer's own pre-existing headers. Reuses
-    # this launch's warm managed-config cache (no extra round trip); a failed fetch degrades to None
-    # (treated as unmanaged), never blocking the write.
+    # Reuse this launch's warm managed-config cache (no extra round trip); a failed fetch degrades
+    # to None, never blocking the write.
     managed_config_present = refresh_managed_config(state).manifest is not None
     previous_keys = ((state.get("managed_configs") or {}).get("claude") or {}).get("keys", [])
     web_search_model = _resolve_web_search_model(state)
@@ -1426,9 +1458,13 @@ def write_tool_config(
             merged.pop(key, None)
         overlay_custom_headers = overlay_for_merge["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY]
         if managed_config_present:
-            # ug owns the whole value under a managed config: overwrite wholesale so a header ug no
-            # longer emits is dropped and no stale or foreign header lingers.
-            merged["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = overlay_custom_headers
+            # Keep the one interoperable Isaac metadata header, but otherwise preserve managed
+            # config's whole-value rewrite semantics so stale admin and routing headers are removed.
+            merged["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = _preserve_isaac_request_tags_header(
+                existing_custom_headers,
+                overlay_custom_headers,
+                state.get("claude_http_headers"),
+            )
         else:
             # No managed config: preserve the developer's own pre-existing headers, replacing only
             # the header names ug manages.
