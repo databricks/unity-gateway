@@ -233,6 +233,13 @@ class AgentTerminal(TerminalProcess):
             # onboarding state. Only the test's disposable project is trusted.
             dialogs = [
                 (
+                    "external-imports",
+                    "Allow external CLAUDE.md file imports?" in text
+                    and "No, disable external imports" in text
+                    and "Yes, allow external imports" in text,
+                    "\r",
+                ),
+                (
                     "theme",
                     "Choose the text style" in text and "Dark mode" in text,
                     "\r",
@@ -307,7 +314,6 @@ class AgentTerminal(TerminalProcess):
             timeout=60,
         )
         if model_visible is not None:
-            # Native discovery can finish after the picker shell first renders.
             self.wait_for(model_visible, "a discovered model in the picker", timeout=60)
         screen = self.visible
         self.actions.append({"reason": "model-picker-visible", "screen": screen})

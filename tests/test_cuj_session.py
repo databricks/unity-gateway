@@ -16,6 +16,8 @@ def test_cuj_session_does_not_inherit_agent_credentials_or_configuration(tmp_pat
         "CODEX_HOME",
         "UG_CUJ_SP_CLIENT_ID",
         "UG_CUJ_SP_CLIENT_SECRET",
+        "UG_BUDGET_CUJ_SP_CLIENT_ID",
+        "UG_BUDGET_CUJ_SP_CLIENT_SECRET",
     ):
         monkeypatch.setenv(name, "developer-value")
     session = UserSession(tmp_path, Path("/installed/ug"), tmp_path / "artifacts", "test-token")
@@ -27,6 +29,8 @@ def test_cuj_session_does_not_inherit_agent_credentials_or_configuration(tmp_pat
     assert "UCODE_MANAGED_CONFIG_STUB" not in session.env
     assert "UG_CUJ_SP_CLIENT_ID" not in session.env
     assert "UG_CUJ_SP_CLIENT_SECRET" not in session.env
+    assert "UG_BUDGET_CUJ_SP_CLIENT_ID" not in session.env
+    assert "UG_BUDGET_CUJ_SP_CLIENT_SECRET" not in session.env
     assert session.env["CODEX_HOME"] == str(session.home / ".codex")
     assert not list(session.home.iterdir()), "Fixtures must not manufacture ug/agent state"
 
