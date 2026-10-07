@@ -258,7 +258,11 @@ class AgentTerminal(TerminalProcess):
                             text,
                         )
                     )
-                    and "Do you trust the contents of this directory?" in text
+                    and (
+                        "Do you trust the contents of this directory?" in text
+                        or "directory allows project-local config, hooks, and exec policies to load."
+                        in text
+                    )
                     and bool(re.search(r"(?m)^\s*[›❯>]\s*1[.)]\s+Yes, continue\s*$", text))
                     and bool(re.search(r"(?m)^\s*2[.)]\s+No, quit\s*$", text))
                     and "Press enter to continue" in text,
