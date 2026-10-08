@@ -8,6 +8,8 @@ MCP routing overlay.
 from __future__ import annotations
 
 import json
+import shlex
+import sys
 import tomllib
 import uuid
 from pathlib import Path
@@ -19,7 +21,7 @@ from utils.terminal import AgentTerminal
 pytestmark = [pytest.mark.live, pytest.mark.tui, pytest.mark.codex]
 
 CODEX_NATIVE_START_MODEL = "gpt-5.6-sol"
-CODEX_NATIVE_CATALOG_MODELS = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+CODEX_NATIVE_CATALOG_MODELS = ["gpt-5.6-sol", "gpt-5.6-terra"]
 
 
 class PlainAssignment:
@@ -134,17 +136,35 @@ def _seed_user_owned_native_codex_settings(session) -> tuple[Path, bytes, bytes]
         "bundled": sorted(slug for slug in by_slug if isinstance(slug, str)),
     }
     selected = [by_slug[slug] for slug in CODEX_NATIVE_CATALOG_MODELS]
+    assert all(model.get("multi_agent_version") == "v2" for model in selected), selected
 
     codex_home = session.home / ".codex"
     codex_home.mkdir(parents=True, exist_ok=True)
     catalog_path = codex_home / "native-user-model-catalog.json"
     catalog_path.write_text(json.dumps({"models": selected}, indent=2) + "\n")
+    # A user-owned observer records the actual native hook input without changing it.
+    observer = codex_home / "record-pre-tool-use.py"
+    hook_input = codex_home / "native-pre-tool-use.jsonl"
+    observer.write_text(
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "payload = json.load(sys.stdin)\n"
+        f"with Path({str(hook_input)!r}).open('a') as output:\n"
+        "    output.write(json.dumps(payload) + '\\n')\n"
+        "print('{}')\n"
+    )
+    observer_command = shlex.join([sys.executable, str(observer)])
     config_path = codex_home / "config.toml"
     config_path.write_text(
         "# User-owned native Codex settings for the routing CUJ.\n"
         f"model = {json.dumps(CODEX_NATIVE_START_MODEL)}\n"
         f"model_catalog_json = {json.dumps(str(catalog_path))}\n"
         'personality = "friendly"\n'
+        "[[hooks.PreToolUse]]\n"
+        'matcher = "Agent|.*spawn_agent$"\n'
+        "[[hooks.PreToolUse.hooks]]\n"
+        'type = "command"\n'
+        f"command = {json.dumps(observer_command)}\n"
     )
 
     config = tomllib.loads(config_path.read_text())
@@ -172,11 +192,13 @@ def test_ug_codex_native_v2_plain_assignment_routing(live_session, workspace):
     Codex's native collaboration ``spawn_agent`` function.
 
     Expected: a native Codex catalog obtained from the installed binary supplies the known
-    ``gpt-5.6-sol``, ``gpt-5.6-terra``, and ``gpt-5.6-luna`` slugs while the parent config starts
+    ``gpt-5.6-sol`` and ``gpt-5.6-terra`` v2 slugs while the parent config starts
     on ``gpt-5.6-sol``. The real gateway records one decision whose task is the exact plaintext
     message sent in the native function call; the native child is depth-one, reads the
     unpredictable file value, completes on the model requested by that decision, and the parent
-    relays that value. The user-owned model, catalog, and preferences survive configure and
+    relays that value. A user-owned hook independently records the exact assignment. The
+    session provider reaches the adapter despite the machine-managed Databricks default.
+    The user-owned model, catalog, and preferences survive configure and
     launch; native TUI trust choices may add their own records.
     No MCP tool, plaintext-routing MCP overlay, or grandchild participates. The non-normal
     workspace catalog limitation is recorded here: the route-supported bundled slugs are seeded
@@ -253,6 +275,8 @@ def test_ug_codex_native_v2_plain_assignment_routing(live_session, workspace):
     # UI. Preserve the user's settings, rather than forbidding those native writes.
     original_config = tomllib.loads(user_config_before.decode())
     after_config = tomllib.loads(user_config_path.read_text())
+    original_hooks = original_config.pop("hooks")
+    assert {key: after_config.get("hooks", {}).get(key) for key in original_hooks} == original_hooks
     assert {key: after_config.get(key) for key in original_config} == original_config
     assert catalog_path.read_bytes() == user_catalog_before
 
@@ -277,6 +301,11 @@ def test_ug_codex_native_v2_plain_assignment_routing(live_session, workspace):
     child_path, child_records = child_sessions[0]
     parent_metadata = _session_metadata(parent_records)
     child_metadata = _session_metadata(child_records)
+    managed_config = tomllib.loads(Path("/etc/codex/managed_config.toml").read_text())
+    assert managed_config["model_provider"] == "Databricks"
+    session_provider = parent_metadata.get("model_provider", "")
+    assert session_provider.startswith("Databricks-ug-"), parent_metadata
+    assert child_metadata.get("model_provider") == session_provider, child_metadata
     parent_id = parent_metadata.get("id")
     child_id = child_metadata.get("id")
     assert isinstance(parent_id, str) and isinstance(child_id, str)
@@ -301,6 +330,12 @@ def test_ug_codex_native_v2_plain_assignment_routing(live_session, workspace):
     assert call_arguments["task_name"] == task.task_name, call_arguments
     assert call_arguments["message"] == task.assignment, call_arguments
     assert call_arguments["message"] == decision["task_name"], (call_arguments, decision)
+    hook_inputs = read_jsonl(session.home / ".codex/native-pre-tool-use.jsonl")
+    session.record("codex-native-v2-pre-tool-use.json", hook_inputs)
+    assert len(hook_inputs) == 1, hook_inputs
+    assert hook_inputs[0]["session_id"] == parent_id, hook_inputs
+    assert hook_inputs[0]["tool_use_id"] == call["call_id"], hook_inputs
+    assert hook_inputs[0]["tool_input"]["message"] == task.assignment, hook_inputs
 
     # Native collaboration is the only delegation surface in this CUJ.  Reject MCP and the
     # removed plaintext route-child prototype even if a future Codex transcript emits another
@@ -346,6 +381,7 @@ def test_ug_codex_native_v2_plain_assignment_routing(live_session, workspace):
     parent_context = _turn_context(parent_records, parent_turn_id)
     assert child_context.get("multi_agent_version") == "v2", child_context
     assert parent_context.get("multi_agent_version") == "v2", parent_context
+    assert parent_context.get("model") == CODEX_NATIVE_START_MODEL, parent_context
     assert child_context.get("model") == requested_model, {
         "child_context": child_context,
         "decision": decision,

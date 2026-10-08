@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import base64
+import gzip
 import io
 import json
 import os
 import socket
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
 import pytest
@@ -568,6 +570,89 @@ class TestRetryOn401:
 
 
 class TestCodexV2Proxy:
+    @pytest.mark.parametrize("streaming", [False, True], ids=["json", "sse"])
+    def test_decodes_gzip_from_upstream_over_http(self, monkeypatch, streaming):
+        monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+        item = {
+            "type": "function_call",
+            "name": "spawn_agent",
+            "namespace": "ucode_collaboration",
+            "arguments": json.dumps({"message": "Read the file.\nPreserve punctuation: !?;"}),
+        }
+        event = {"type": "response.output_item.done", "item": item}
+        payload = (
+            b"data: " + json.dumps(event).encode() + b"\n\n"
+            if streaming
+            else json.dumps({"output": [item]}).encode()
+        )
+        compressed = gzip.compress(payload)
+        requests = []
+
+        class CompressedUpstream(BaseHTTPRequestHandler):
+            # The external provider is a local HTTP fixture; the adapter and
+            # httpx decompressor run unchanged against actual compressed bytes.
+            def do_POST(self):
+                requests.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+                self.send_response(200)
+                self.send_header(
+                    "Content-Type", "text/event-stream" if streaming else "application/json"
+                )
+                self.send_header("Content-Encoding", "gzip")
+                self.send_header("Content-Length", str(len(compressed)))
+                self.end_headers()
+                for offset in range(0, len(compressed), 13):
+                    self.wfile.write(compressed[offset : offset + 13])
+                    self.wfile.flush()
+
+            def log_message(self, *_args):
+                pass
+
+        upstream = ThreadingHTTPServer(("127.0.0.1", 0), CompressedUpstream)
+        upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        upstream_thread.start()
+        try:
+            proxy, cache, client = gateway_proxy.start_codex_v2_proxy(
+                f"http://127.0.0.1:{upstream.server_port}", lambda _force: "offline-token"
+            )
+            proxy_thread = threading.Thread(target=proxy.serve_forever, daemon=True)
+            proxy_thread.start()
+            try:
+                with httpx.Client(trust_env=False, timeout=5) as caller:
+                    response = caller.post(
+                        f"http://127.0.0.1:{proxy.server_port}/v1/responses",
+                        content=_codex_v2_request_body(),
+                        headers={"Content-Type": "application/json"},
+                    )
+                assert response.status_code == 200
+                assert "content-encoding" not in response.headers
+                assert "content-length" not in response.headers
+                rewritten = (
+                    json.loads(response.text.removeprefix("data: "))["item"]
+                    if streaming
+                    else response.json()["output"][0]
+                )
+                assert rewritten == {
+                    **item,
+                    "namespace": "collaboration",
+                    "encrypted_function_args": [],
+                }
+                assert len(requests) == 1
+                namespace = requests[0]["tools"][0]
+                assert namespace["name"] == "ucode_collaboration"
+                assert namespace["tools"][0]["parameters"]["properties"]["message"] == {
+                    "type": "string"
+                }
+            finally:
+                cache.stop()
+                proxy.shutdown()
+                proxy.server_close()
+                proxy_thread.join(timeout=5)
+                client.close()
+        finally:
+            upstream.shutdown()
+            upstream.server_close()
+            upstream_thread.join(timeout=5)
+
     def test_rewrites_native_request_body_on_v2_path(self):
         body = _codex_v2_request_body()
 

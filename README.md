@@ -294,10 +294,14 @@ No additional tool or model turn is introduced, and native v2 spawning remains
 in charge of child creation, hierarchy, and execution.
 
 The transport uses the configured workspace identity, preserves routing headers,
-and closes with the session. It does not modify Codex or persist a provider URL.
-Malformed or encrypted collaboration payloads fail closed; resumed sessions with
-old encrypted collaboration history must start a fresh session. Non-v2 requests
-remain unchanged. This path uses Responses HTTP/SSE, not provider WebSockets.
+and closes with the session. A temporary provider is selected through the native
+thread API so machine-managed Databricks settings cannot bypass the transport.
+Both routing modes use the app-server; subagent-only mode keeps the parent model.
+The transport does not modify Codex or persist its provider URL in configuration.
+New malformed or encrypted assignments fail closed. Previously executed encrypted
+calls and their outputs retain their original representation when replayed.
+Non-v2 requests remain unchanged. This path uses Responses HTTP/SSE, not provider
+WebSockets.
 
 ## Managed Files
 

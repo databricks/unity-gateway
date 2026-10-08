@@ -18,16 +18,6 @@ from typing import Any
 NATIVE_NAMESPACE = "collaboration"
 WIRE_NAMESPACE = "ucode_collaboration"
 PLAINTEXT_TOOLS = frozenset({"spawn_agent", "send_message", "followup_task"})
-NATIVE_V2_TOOLS = frozenset(
-    {
-        "spawn_agent",
-        "send_message",
-        "followup_task",
-        "wait_agent",
-        "list_agents",
-        "interrupt_agent",
-    }
-)
 _FERNET_TOKEN_RE = re.compile(r"^gAAAAA[A-Za-z0-9_-]+={0,2}$")
 
 
@@ -45,9 +35,6 @@ def prepare_request(body: bytes) -> tuple[bytes, bool]:
     if not isinstance(payload, dict):
         return body, False
 
-    if _contains_wire_namespace(payload):
-        raise ValueError(f"request already contains reserved namespace {WIRE_NAMESPACE!r}")
-
     changed = False
     tools = payload.get("tools")
     if isinstance(tools, list):
@@ -55,6 +42,13 @@ def prepare_request(body: bytes) -> tuple[bytes, bool]:
 
     input_items = payload.get("input")
     if isinstance(input_items, list):
+        encrypted_call_ids = {
+            item["call_id"]
+            for item in input_items
+            if isinstance(item, dict)
+            and isinstance(item.get("call_id"), str)
+            and _is_encrypted_replay(item)
+        }
         for item in input_items:
             if not isinstance(item, dict):
                 continue
@@ -63,7 +57,8 @@ def prepare_request(body: bytes) -> tuple[bytes, bool]:
                 if isinstance(item_tools, list):
                     changed |= _rewrite_tool_list(item_tools)
             elif item.get("type") in {"function_call", "function_call_output"}:
-                changed |= _rewrite_replay_item(item)
+                if item.get("call_id") not in encrypted_call_ids:
+                    changed |= _rewrite_replay_item(item)
 
     if not changed:
         return body, False
@@ -105,16 +100,11 @@ def transform_response_event(event: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _contains_wire_namespace(value: Any) -> bool:
-    if isinstance(value, dict):
-        if value.get("namespace") == WIRE_NAMESPACE:
-            return True
-        if value.get("type") == "namespace" and value.get("name") == WIRE_NAMESPACE:
-            return True
-        return any(_contains_wire_namespace(child) for child in value.values())
-    if isinstance(value, list):
-        return any(_contains_wire_namespace(child) for child in value)
-    return False
+def _check_wire_namespace(item: dict[str, Any]) -> None:
+    if item.get("namespace") == WIRE_NAMESPACE or (
+        item.get("type") == "namespace" and item.get("name") == WIRE_NAMESPACE
+    ):
+        raise ValueError(f"request already contains reserved namespace {WIRE_NAMESPACE!r}")
 
 
 def _rewrite_tool_list(tools: list[Any]) -> bool:
@@ -122,13 +112,12 @@ def _rewrite_tool_list(tools: list[Any]) -> bool:
     for tool in tools:
         if not isinstance(tool, dict):
             continue
+        _check_wire_namespace(tool)
         if tool.get("type") == "namespace" and tool.get("name") == NATIVE_NAMESPACE:
-            _validate_native_namespace_tools(tool)
             tool["name"] = WIRE_NAMESPACE
             _remove_plaintext_schema_markers(tool)
             changed = True
         elif tool.get("namespace") == NATIVE_NAMESPACE:
-            _validate_native_tool_name(tool.get("name"))
             tool["namespace"] = WIRE_NAMESPACE
             if tool.get("name") in PLAINTEXT_TOOLS:
                 _remove_message_encrypted_marker(tool)
@@ -145,26 +134,6 @@ def _remove_plaintext_schema_markers(namespace: dict[str, Any]) -> None:
             _remove_message_encrypted_marker(tool)
 
 
-def _validate_native_namespace_tools(namespace: dict[str, Any]) -> None:
-    tools = namespace.get("tools")
-    if not isinstance(tools, list):
-        raise ValueError("native collaboration namespace has invalid tools")
-    names: list[str] = []
-    for tool in tools:
-        if not isinstance(tool, dict) or tool.get("type") != "function":
-            raise ValueError("native collaboration namespace contains an unknown tool")
-        name = tool.get("name")
-        _validate_native_tool_name(name)
-        names.append(name)
-    if len(names) != len(set(names)):
-        raise ValueError("native collaboration namespace contains duplicate tools")
-
-
-def _validate_native_tool_name(name: Any) -> None:
-    if name not in NATIVE_V2_TOOLS:
-        raise ValueError(f"native collaboration namespace contains unknown tool {name!r}")
-
-
 def _remove_message_encrypted_marker(tool: dict[str, Any]) -> None:
     parameters = tool.get("parameters")
     if not isinstance(parameters, dict):
@@ -177,23 +146,27 @@ def _remove_message_encrypted_marker(tool: dict[str, Any]) -> None:
         message.pop("encrypted", None)
 
 
+def _is_encrypted_replay(item: dict[str, Any]) -> bool:
+    return (
+        item.get("namespace") == NATIVE_NAMESPACE
+        and item.get("type") == "function_call"
+        and (
+            ("encrypted_function_args" in item and item["encrypted_function_args"] != [])
+            or _contains_opaque_message(item.get("arguments"))
+        )
+    )
+
+
 def _rewrite_replay_item(item: dict[str, Any]) -> bool:
-    if item.get("namespace") != NATIVE_NAMESPACE:
+    _check_wire_namespace(item)
+    if item.get("namespace") != NATIVE_NAMESPACE or _is_encrypted_replay(item):
+        # Old calls have already executed. Preserve their wire representation;
+        # only new responses need to expose an assignment to the routing hook.
         return False
-    marker_present = "encrypted_function_args" in item
-    marker = item.get("encrypted_function_args")
-    if marker_present and marker != []:
-        raise ValueError("native collaboration replay contains encrypted function arguments")
     is_function_call = item.get("type") == "function_call"
-    if is_function_call:
-        _validate_native_tool_name(item.get("name"))
-        if _contains_opaque_message(item.get("arguments")):
-            raise ValueError("native collaboration replay contains an opaque message")
     item["namespace"] = WIRE_NAMESPACE
     if is_function_call and item.get("name") in PLAINTEXT_TOOLS:
-        # Empty is the native plaintext marker.  Non-empty markers were rejected
-        # above rather than sent through the old opaque-message route.
-        if marker == []:
+        if item.get("encrypted_function_args") == []:
             del item["encrypted_function_args"]
     return True
 
@@ -206,15 +179,13 @@ def _rewrite_response_item(item: dict[str, Any], *, validate_arguments: bool) ->
         return
     if item.get("type") != "function_call":
         raise ValueError("wire collaboration response is not a function call")
-    _validate_native_tool_name(item.get("name"))
     item["namespace"] = NATIVE_NAMESPACE
+    if item.get("name") not in PLAINTEXT_TOOLS:
+        return
     marker_present = "encrypted_function_args" in item
     marker = item.get("encrypted_function_args")
     if marker_present and marker != []:
         raise ValueError("wire collaboration response contains encrypted function arguments")
-    if item.get("name") not in PLAINTEXT_TOOLS:
-        return
-
     if validate_arguments:
         _validate_plaintext_arguments(item.get("arguments"))
     item["encrypted_function_args"] = []
@@ -254,7 +225,6 @@ def _validate_plaintext_arguments(arguments: Any) -> None:
 
 __all__ = [
     "NATIVE_NAMESPACE",
-    "NATIVE_V2_TOOLS",
     "PLAINTEXT_TOOLS",
     "WIRE_NAMESPACE",
     "prepare_request",

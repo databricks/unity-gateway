@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 import urllib.request
+import uuid
 from collections.abc import Callable, MutableMapping
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -683,7 +684,12 @@ def launch_codex(
     try:
         server_thread.start()
         transport_started = True
-        provider = overlay["model_providers"][overlay["model_provider"]]
+        provider = overlay["model_providers"].pop(overlay["model_provider"])
+        # OS-managed Databricks settings outrank CLI overrides. Give this
+        # transport its own provider, selected through the native thread API.
+        provider_name = f"Databricks-ug-{uuid.uuid4().hex}"
+        overlay["model_provider"] = provider_name
+        overlay["model_providers"][provider_name] = provider
         provider["base_url"] = f"http://{LOOPBACK_HOST}:{server.server_address[1]}/v1"
         # The adapter handles Responses HTTP/SSE, not the optional provider
         # WebSocket transport. The app-server/TUI WebSocket is independent.
@@ -718,16 +724,6 @@ def _run_codex_session(
     workspace: str,
 ) -> NoReturn:
     config_args = codex_config_args(overlay)
-    if not first_prompt_routing_enabled():
-        # Subagent-only routing needs neither the app-server nor the interposer:
-        # the hooks ride in the CLI config. Keep ug alive to own the transport.
-        tui = subprocess_cross_os.popen([binary, *config_args, *tool_args])
-        try:
-            returncode = tui.wait()
-        except KeyboardInterrupt:
-            tui.send_signal(signal.SIGINT)
-            returncode = tui.wait()
-        sys.exit(returncode)
     app_port = _free_port()
     app_server_url = _loopback_websocket_url(app_port)
 
@@ -749,23 +745,18 @@ def _run_codex_session(
         tui_port, stop_interposer = codex_interposer.start_interposer_thread(
             LOOPBACK_HOST,
             app_server_url,
+            model_provider=overlay["model_provider"],
             available_models=available_models,
-            workspace=workspace,
+            workspace=workspace if first_prompt_routing_enabled() else None,
             token_provider=lambda: _launch_token(state, workspace),
             switch_message_fn=format_routing_notice,
             log_path=CODEX_INTERPOSER_LOG,
         )
         tui_url = _loopback_websocket_url(tui_port)
-        provider_args = []
-        if os.name == "nt":
-            # Windows has no machine-wide Codex config for the remote TUI to inherit.
-            provider_args = codex_config_args(
-                {
-                    key: overlay[key]
-                    for key in ("model_provider", "model_providers")
-                    if key in overlay
-                }
-            )
+        # The TUI must recognize the session provider reported by the server.
+        provider_args = codex_config_args(
+            {key: overlay[key] for key in ("model_provider", "model_providers")}
+        )
         tui = subprocess_cross_os.popen(
             [binary, *provider_args, "--remote", tui_url, "--model", start_model, *tool_args]
         )

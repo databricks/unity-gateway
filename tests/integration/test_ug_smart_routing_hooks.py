@@ -347,7 +347,7 @@ def test_smart_router_skill_toggles_codex_subagent_routing(
     routing controls, even with collapsed terminal output; all three uniquely tagged
     calculations complete in native child sessions; only the first and third show the
     subagent-routing banner and produce live gateway decisions correlated with those children.
-    No first-prompt interposer starts.
+    The session transport starts without making a first-prompt routing decision.
     """
     session = live_session
     session.env["TMPDIR"] = str(tmp_path)
@@ -376,4 +376,4 @@ def test_smart_router_skill_toggles_codex_subagent_routing(
         tui.exit_normally()
         transcript = "".join(tui.output)
     assert SMART_ROUTING_BANNER not in transcript, transcript
-    session.assert_not_routed()
+    assert "[ROUTE]" not in session.routing_log("codex")

@@ -7,7 +7,6 @@ import pytest
 
 from ucode.smart_routing.codex_v2_transport import (
     NATIVE_NAMESPACE,
-    NATIVE_V2_TOOLS,
     WIRE_NAMESPACE,
     prepare_request,
     transform_response_event,
@@ -134,44 +133,43 @@ def test_prepare_request_handles_responses_lite_tools_and_output_replay():
     assert output["id"] == "out-1"
 
 
-def test_prepare_request_rejects_encrypted_or_opaque_legacy_replay():
-    encrypted = _request(
-        input=[
-            {
-                "type": "function_call",
-                "name": "spawn_agent",
-                "namespace": NATIVE_NAMESPACE,
-                "arguments": '{"message":"task"}',
-                "encrypted_function_args": ["encrypted"],
-            }
-        ]
-    )
-    with pytest.raises(ValueError, match="encrypted function arguments"):
-        prepare_request(encrypted)
+@pytest.mark.parametrize(
+    "arguments,marker",
+    [
+        ('{"message":"task"}', {"encrypted_function_args": ["encrypted"]}),
+        ('{"message":"gAAAAABopaque"}', {}),
+    ],
+)
+def test_prepare_request_preserves_encrypted_history_and_matching_output(arguments, marker):
+    history = [
+        {
+            "type": "function_call",
+            "call_id": "old-call",
+            "name": "spawn_agent",
+            "namespace": NATIVE_NAMESPACE,
+            "arguments": arguments,
+            **marker,
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "old-call",
+            "namespace": NATIVE_NAMESPACE,
+            "output": "child finished",
+        },
+    ]
+    transformed, changed = prepare_request(_request(input=history))
+    payload = _decode(transformed)
+    assert changed
+    assert payload["input"] == history
+    assert payload["tools"][0]["name"] == WIRE_NAMESPACE
+    for tool in payload["tools"][0]["tools"]:
+        assert tool["parameters"]["properties"]["message"] == {
+            "type": "string",
+            "description": "child assignment",
+        }
 
-    opaque = _request(
-        input=[
-            {
-                "type": "function_call",
-                "name": "spawn_agent",
-                "namespace": NATIVE_NAMESPACE,
-                "arguments": '{"message":"gAAAAABopaque"}',
-            }
-        ]
-    )
-    with pytest.raises(ValueError, match="opaque message"):
-        prepare_request(opaque)
 
-
-def test_prepare_request_requires_known_native_v2_tool_names():
-    assert NATIVE_V2_TOOLS == {
-        "spawn_agent",
-        "send_message",
-        "followup_task",
-        "wait_agent",
-        "list_agents",
-        "interrupt_agent",
-    }
+def test_prepare_request_preserves_additional_native_tools():
     namespace = _message_schema()
     namespace["tools"].append(
         {
@@ -180,24 +178,32 @@ def test_prepare_request_requires_known_native_v2_tool_names():
             "parameters": {"type": "object", "properties": {}},
         }
     )
-    with pytest.raises(ValueError, match="unknown tool"):
-        prepare_request(_request(tools=[namespace]))
+    transformed, changed = prepare_request(_request(tools=[namespace]))
+    assert changed
+    result = _decode(transformed)["tools"][0]
+    assert result["name"] == WIRE_NAMESPACE
+    assert result["tools"][-1] == namespace["tools"][-1]
 
 
-def test_prepare_request_rejects_unknown_direct_native_tool_replay():
-    with pytest.raises(ValueError, match="unknown tool"):
-        prepare_request(
-            _request(
-                input=[
-                    {
-                        "type": "function_call",
-                        "name": "unknown_agent_tool",
-                        "namespace": NATIVE_NAMESPACE,
-                        "arguments": "{}",
-                    }
-                ]
-            )
-        )
+def test_prepare_request_maps_additional_native_tool_replay():
+    call = {
+        "type": "function_call",
+        "name": "unknown_agent_tool",
+        "namespace": NATIVE_NAMESPACE,
+        "arguments": "{}",
+    }
+    transformed, changed = prepare_request(_request(input=[call]))
+    assert changed
+    assert _decode(transformed)["input"] == [{**call, "namespace": WIRE_NAMESPACE}]
+
+
+def test_prepare_request_leaves_namespace_literals_in_metadata_and_schemas():
+    metadata = {"namespace": WIRE_NAMESPACE}
+    tool = {"type": "function", "name": "other", "parameters": {"const": metadata}}
+    transformed, changed = prepare_request(_request(metadata=metadata, tools=[tool]))
+    assert not changed
+    assert _decode(transformed)["metadata"] == metadata
+    assert _decode(transformed)["tools"] == [tool]
 
 
 def test_prepare_request_leaves_unrelated_tools_and_fields_unchanged():
@@ -388,19 +394,15 @@ def test_transform_response_rejects_encrypted_marker_and_opaque_message():
             )
 
 
-def test_transform_response_rejects_unknown_alias_tool():
-    with pytest.raises(ValueError, match="unknown tool"):
-        transform_response_event(
-            {
-                "type": "response.output_item.done",
-                "item": {
-                    "type": "function_call",
-                    "name": "unknown_agent_tool",
-                    "namespace": WIRE_NAMESPACE,
-                    "arguments": "{}",
-                },
-            }
-        )
+def test_transform_response_maps_additional_alias_tool():
+    item = {
+        "type": "function_call",
+        "name": "unknown_agent_tool",
+        "namespace": WIRE_NAMESPACE,
+        "arguments": "{}",
+    }
+    result = transform_response_event({"type": "response.output_item.done", "item": item})
+    assert result["item"] == {**item, "namespace": NATIVE_NAMESPACE}
 
 
 def test_transform_response_rejects_native_collaboration_namespace():
@@ -469,7 +471,7 @@ def test_transform_response_maps_known_nonplaintext_tools_without_plaintext_mark
     assert "encrypted_function_args" not in transformed["item"]
 
 
-def test_transform_response_rejects_nonempty_marker_for_known_nonplaintext_tool():
+def test_transform_response_preserves_marker_for_nonmessage_tool():
     event = {
         "type": "response.output_item.done",
         "item": {
@@ -482,5 +484,5 @@ def test_transform_response_rejects_nonempty_marker_for_known_nonplaintext_tool(
         },
     }
 
-    with pytest.raises(ValueError, match="encrypted function arguments"):
-        transform_response_event(event)
+    transformed = transform_response_event(event)
+    assert transformed["item"] == {**event["item"], "namespace": NATIVE_NAMESPACE}
