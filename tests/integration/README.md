@@ -303,15 +303,15 @@ role-contract preservation, and isolation from legacy preference files
 lack dedicated regression coverage. Codex's native hook merging, project trust,
 and execution of pre-existing hooks are not exercised by this integration suite.
 
-The unit/component `../test_smart_routing_config.py` covers all three canonical v0/v1 selectors
-against every binary legacy-flag combination, including `subagent_only_v1`'s V2/subagent-on and
-first-prompt-off behavior, exact preset precedence/materialization/restoration and
-getter results, the shared routing/session key registry including the orchestrator exactly once,
-orchestrator-only activation defaults, CLI startup ordering before callbacks, early invalid-selector
-exits, explicit routing controls, registry validation, process-local environment restoration,
-native-subcommand suppression, and orchestrator off-to-on transitions through real temporary
-session files. Full CLI launch coverage also verifies that a managed routing opt-in preserves the
-exact `subagent_only_v0` flags. It does not claim live agent, hook, or gateway coverage.
+The unit/component `../test_smart_routing_config.py` is a 768-case Cartesian oracle over all
+three legacy routing flags and twelve selector forms: unset, blank, whitespace-only, the three
+canonical presets, whitespace-padded presets, unsuffixed names, and an unsupported version. It
+independently hardcodes preset values and asserts exact `resolve_environment` and `apply_config`
+settings, unrelated-key preservation, valid-selector consumption, blank-selector preservation by
+`apply_config`, legacy-value preservation, and nonmutation on invalid input. This file no longer
+asserts CLI startup ordering, import-time schema validation, snapshots/restoration, routing
+getters, native subcommands, hooks, session files, or managed launches; it does not claim live
+agent, hook, or gateway coverage.
 
 The portable `../test_claude_windows_smart_routing.py` checks the Windows
 subagent-only fallback without Unix imports. Native Windows TUI and hook execution
