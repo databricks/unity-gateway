@@ -779,10 +779,7 @@ class TestGeminiLaunch:
                 f"Installed Gemini CLI {too_new} is past the supported ceiling "
                 f"({gemini.MAX_GEMINI_VERSION_TEXT}); run `ucode gemini` to downgrade."
             )
-        # Image-only models can't serve Gemini CLI's tool calls; ug still offers them (fixed separately).
-        gemini_models = [
-            m for m in e2e_state.get("gemini_models") or [] if not m.endswith("-image")
-        ]
+        gemini_models: list = e2e_state.get("gemini_models") or []
         if not gemini_models:
             pytest.skip("No Gemini models available on this workspace")
 
