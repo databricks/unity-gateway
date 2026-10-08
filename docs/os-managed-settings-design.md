@@ -90,33 +90,21 @@ partial, and conflicting files.
 
 ## Admin Settings Passthrough
 
-A coding agent config can carry harness-native `agent_native_settings` for Claude Code. ucode
-doesn't interpret them. It writes each leaf into Claude Code's managed file as-is after the gateway
-overlay, so a key the server accepts (it starts with Claude's MCP controls, such as
-`allowManagedMcpServersOnly` and `allowedMcpServers`) needs no ucode release. Codex isn't supported
-yet: its MCP allowlist lives in `requirements.toml`, which ucode doesn't write. The rules:
+An admin can put Claude Code settings in the coding agent config under `agent_native_settings`.
+ucode copies them as-is into Claude Code's managed file. The server decides which keys are allowed.
+Codex isn't supported yet.
 
-- A leaf that overlaps a path ucode writes itself (gateway URL, auth helper, model picker, managed
-  MCP servers, and so on) is skipped with a warning, so the admin's settings can't
-  break the gateway wiring. The warning prints once and again only when the skipped set changes.
-- Lists the file shares with IT, Claude's `permissions.deny` and each `hooks.<event>`, are merged
-  rather than replaced. ucode records the items it delivered, so when the admin drops one only that
-  item is withdrawn; entries IT authored, before or after ucode's first write, stay.
-- That record lives in the managed-backup manifest, keyed by the file like ucode's picker record,
-  not in per-workspace state: the managed file is machine-wide, so a launch for a workspace without
-  these settings withdraws what ucode last delivered for another one.
-- An admin `allowedMcpServers` allowlist would block the MCP servers ucode itself registers in
-  Claude (its managed-file entries, user-scope fallbacks and web search), because Claude matches it by
-  registered name. ucode appends those servers after the admin's entries, rebuilding the list from the
-  admin's own entries each time it writes the file, so a server it stops registering drops out. Only
-  an allowlist delivered through `agent_native_settings` is extended.
-- Claude's `allowManagedHooksOnly` and `disableAllHooks` are delivered as configured, with a warning
-  that they also block the per-launch hooks smart routing installs.
-- Delivered leaves become ucode-owned paths, so `ucode revert` removes them. When the admin later
-  drops a non-list leaf, ucode withdraws it using the same three-way rule: only when the live value
-  is still the one ucode wrote, and the pre-ucode value is restored if there was one.
-- Settings only go into the managed file, never into the private ucode file. Where ucode can't write
-  the managed file (unsupported platform, relayed Claude launch), they aren't applied.
+- **ucode's own keys win.** A setting that would overwrite something ucode writes (gateway URL,
+  auth, models, MCP servers) is skipped with a warning.
+- **Shared lists are merged.** `permissions.deny` and hooks keep entries IT added; ucode only adds
+  and removes its own.
+- **ucode's MCP servers stay allowed.** If the admin sets `allowedMcpServers`, ucode adds the
+  servers it registers, so the allowlist doesn't block them.
+- **Removed settings are cleaned up.** When the admin drops a setting, or the developer switches to a
+  workspace without it, ucode removes it, unless someone edited it by hand. `ucode revert` removes
+  everything ucode wrote.
+- **Managed file only.** Settings never go into the private ucode file. Where the managed file can't
+  be written (unsupported platform, relayed launch), they aren't applied.
 
 ## Privileged Write Transaction
 
