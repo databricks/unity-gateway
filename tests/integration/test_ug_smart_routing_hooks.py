@@ -112,7 +112,7 @@ def _run_calculation(tui, session, agent: str, expression: str, expected: str, *
 
 
 def _toggle_with_skill(
-    tui, session, agent: str, enabled: bool, SMART_ROUTER_CONFIG_VERSION: str
+    tui, session, agent: str, enabled: bool, orchestration_enabled: bool
 ) -> None:
     skill_root = session.home / SKILL_ROOTS[agent]
     ignored_skills = {".system"} if agent == "codex" else set()
@@ -122,9 +122,7 @@ def _toggle_with_skill(
         if path.is_dir() and path.name not in ignored_skills
     )
     expected_skills = (
-        ["smart-router", "smart-router-orchestrator"]
-        if (SMART_ROUTER_CONFIG_VERSION == "subagent_orch_v0")
-        else ["smart-router"]
+        ["smart-router", "smart-router-orchestrator"] if orchestration_enabled else ["smart-router"]
     )
     assert installed_skills == expected_skills, installed_skills
 
@@ -177,12 +175,14 @@ def _toggle_with_skill(
 @pytest.mark.parametrize(
     "SMART_ROUTER_CONFIG_VERSION",
     [
+        None,
         "first_prompt_and_subagent_no_orch_v0",
         "subagent_only_v0",
         "subagent_only_v1",
         "subagent_orch_v0",
     ],
     ids=[
+        "legacy-env",
         "first_prompt_and_subagent_no_orch_v0",
         "subagent_only_v0",
         "subagent_only_v1",
@@ -192,8 +192,8 @@ def _toggle_with_skill(
 def test_smart_routing_claude_route_subagent_hook(
     live_session, workspace, SMART_ROUTER_CONFIG_VERSION
 ):
-    """Scenario: each supported routing selector makes Claude Code fire PreToolUse for an
-    Agent spawn, piping the payload to ``ug claude-router-hook route-subagent``.
+    """Scenario: legacy subagent routing or each supported selector makes Claude Code fire
+    PreToolUse for an Agent spawn, piping the payload to ``ug claude-router-hook route-subagent``.
 
     Expected: the hook allows the call against the real workspace router, drops the
     requested model in favor of a ``ucode-route-`` agent definition while preserving the
@@ -201,7 +201,10 @@ def test_smart_routing_claude_route_subagent_hook(
     hook contract is asserted; no agent decides to spawn.
     """
     session = live_session
-    session.env["SMART_ROUTER_CONFIG_VERSION"] = SMART_ROUTER_CONFIG_VERSION
+    if SMART_ROUTER_CONFIG_VERSION is None:
+        session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
+    else:
+        session.env["SMART_ROUTER_CONFIG_VERSION"] = SMART_ROUTER_CONFIG_VERSION
     payload = {
         "session_id": "claude-route-subagent-hook",
         "tool_name": "Agent",
@@ -248,12 +251,14 @@ def test_smart_routing_claude_route_subagent_hook(
 @pytest.mark.parametrize(
     "SMART_ROUTER_CONFIG_VERSION",
     [
+        None,
         "first_prompt_and_subagent_no_orch_v0",
         "subagent_only_v0",
         "subagent_only_v1",
         "subagent_orch_v0",
     ],
     ids=[
+        "legacy-env",
         "first_prompt_and_subagent_no_orch_v0",
         "subagent_only_v0",
         "subagent_only_v1",
@@ -263,8 +268,8 @@ def test_smart_routing_claude_route_subagent_hook(
 def test_smart_routing_codex_route_subagent_hook(
     live_session, workspace, SMART_ROUTER_CONFIG_VERSION
 ):
-    """Scenario: each supported routing selector makes Codex fire PreToolUse for a
-    spawn_agent call, piping the payload to ``ug codex-router-hook route-subagent``.
+    """Scenario: legacy subagent routing or each supported selector makes Codex fire PreToolUse
+    for a spawn_agent call, piping the payload to ``ug codex-router-hook route-subagent``.
 
     Expected: the hook allows the call against the real workspace router, rewrites the
     requested model to the bundled catalog slug of an offered model while preserving the
@@ -272,7 +277,10 @@ def test_smart_routing_codex_route_subagent_hook(
     hook contract is asserted; no agent decides to spawn.
     """
     session = live_session
-    session.env["SMART_ROUTER_CONFIG_VERSION"] = SMART_ROUTER_CONFIG_VERSION
+    if SMART_ROUTER_CONFIG_VERSION is None:
+        session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
+    else:
+        session.env["SMART_ROUTER_CONFIG_VERSION"] = SMART_ROUTER_CONFIG_VERSION
     payload = {
         "session_id": "codex-route-subagent-hook",
         "tool_name": "spawn_agent",
@@ -316,19 +324,31 @@ def test_smart_routing_codex_route_subagent_hook(
 @pytest.mark.claude
 @pytest.mark.managed_fixture
 @pytest.mark.parametrize(
-    "SMART_ROUTER_CONFIG_VERSION",
-    ["subagent_only_v0", "subagent_only_v1", "subagent_orch_v0"],
-    ids=["subagent_only_v0", "subagent_only_v1", "subagent_orch_v0"],
+    "orchestration_enabled, SMART_ROUTER_CONFIG_VERSION",
+    [
+        (False, None),
+        (True, None),
+        (False, "subagent_only_v0"),
+        (False, "subagent_only_v1"),
+        (True, "subagent_orch_v0"),
+    ],
+    ids=[
+        "routing-only",
+        "orchestration",
+        "subagent_only_v0",
+        "subagent_only_v1",
+        "subagent_orch_v0",
+    ],
 )
 def test_smart_router_skill_toggles_claude_subagent_routing(
-    live_session, workspace, tmp_path, SMART_ROUTER_CONFIG_VERSION
+    live_session, workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
 ):
-    """Scenario: launch Claude with each supported subagent selector, spawn a child, invoke
+    """Scenario: launch Claude with the legacy flags or a subagent selector, spawn a child, invoke
     the installed Smart Router skill to turn routing off, spawn another child, turn routing
     back on through the skill, and spawn a third child in the same real TUI session.
 
-    Expected: subagent_only_v0 and subagent_only_v1 install Smart Router, while
-    subagent_orch_v0 also installs Smart Router Orchestrator. Each invocation records the CLI
+    Expected: routing-only cases install Smart Router; enabling orchestration also installs
+    Smart Router Orchestrator. Each invocation records the CLI
     confirmation in the native transcript and changes the saved routing controls, even with
     collapsed terminal output; all three uniquely tagged calculations complete in native child
     sessions; only the first and third show the subagent-routing banner and produce live gateway
@@ -336,7 +356,13 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
     """
     session = live_session
     session.env["TMPDIR"] = str(tmp_path)
-    session.env["SMART_ROUTER_CONFIG_VERSION"] = SMART_ROUTER_CONFIG_VERSION
+    if SMART_ROUTER_CONFIG_VERSION is None:
+        session.env["ENABLE_SMART_ROUTING_V2"] = "1"
+        session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
+        if orchestration_enabled:
+            session.env["ENABLE_SMART_ROUTER_ORCHESTRATOR"] = "1"
+    else:
+        session.env["SMART_ROUTER_CONFIG_VERSION"] = SMART_ROUTER_CONFIG_VERSION
     use_managed_config_fixture(session, "claude_smart_routing")
     session.run(
         "configure",
@@ -356,7 +382,7 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
             session,
             "claude",
             enabled=False,
-            SMART_ROUTER_CONFIG_VERSION=SMART_ROUTER_CONFIG_VERSION,
+            orchestration_enabled=orchestration_enabled,
         )
         _run_calculation(tui, session, "claude", "1+2", "3", routed=False)
         _toggle_with_skill(
@@ -364,7 +390,7 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
             session,
             "claude",
             enabled=True,
-            SMART_ROUTER_CONFIG_VERSION=SMART_ROUTER_CONFIG_VERSION,
+            orchestration_enabled=orchestration_enabled,
         )
         _run_calculation(tui, session, "claude", "2+2", "4", routed=True)
         tui.exit_normally()
@@ -379,19 +405,31 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
 @pytest.mark.codex
 @pytest.mark.managed_fixture
 @pytest.mark.parametrize(
-    "SMART_ROUTER_CONFIG_VERSION",
-    ["subagent_only_v0", "subagent_only_v1", "subagent_orch_v0"],
-    ids=["subagent_only_v0", "subagent_only_v1", "subagent_orch_v0"],
+    "orchestration_enabled, SMART_ROUTER_CONFIG_VERSION",
+    [
+        (False, None),
+        (True, None),
+        (False, "subagent_only_v0"),
+        (False, "subagent_only_v1"),
+        (True, "subagent_orch_v0"),
+    ],
+    ids=[
+        "routing-only",
+        "orchestration",
+        "subagent_only_v0",
+        "subagent_only_v1",
+        "subagent_orch_v0",
+    ],
 )
 def test_smart_router_skill_toggles_codex_subagent_routing(
-    live_session, workspace, tmp_path, SMART_ROUTER_CONFIG_VERSION
+    live_session, workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
 ):
-    """Scenario: launch Codex with each supported subagent selector, spawn a child, invoke
+    """Scenario: launch Codex with the legacy flags or a subagent selector, spawn a child, invoke
     the installed Smart Router skill to turn routing off, spawn another child, turn routing
     back on through the skill, and spawn a third child in the same real TUI session.
 
-    Expected: subagent_only_v0 and subagent_only_v1 install Smart Router, while
-    subagent_orch_v0 also installs Smart Router Orchestrator. Each invocation records the CLI
+    Expected: routing-only cases install Smart Router; enabling orchestration also installs
+    Smart Router Orchestrator. Each invocation records the CLI
     confirmation in the native transcript and changes the saved routing controls, even with
     collapsed terminal output; all three uniquely tagged calculations complete in native child
     sessions; only the first and third show the subagent-routing banner and produce live gateway
@@ -399,7 +437,13 @@ def test_smart_router_skill_toggles_codex_subagent_routing(
     """
     session = live_session
     session.env["TMPDIR"] = str(tmp_path)
-    session.env["SMART_ROUTER_CONFIG_VERSION"] = SMART_ROUTER_CONFIG_VERSION
+    if SMART_ROUTER_CONFIG_VERSION is None:
+        session.env["ENABLE_SMART_ROUTING_V2"] = "1"
+        session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
+        if orchestration_enabled:
+            session.env["ENABLE_SMART_ROUTER_ORCHESTRATOR"] = "1"
+    else:
+        session.env["SMART_ROUTER_CONFIG_VERSION"] = SMART_ROUTER_CONFIG_VERSION
     use_managed_config_fixture(session, "codex_smart_routing")
     session.run(
         "configure",
@@ -419,7 +463,7 @@ def test_smart_router_skill_toggles_codex_subagent_routing(
             session,
             "codex",
             enabled=False,
-            SMART_ROUTER_CONFIG_VERSION=SMART_ROUTER_CONFIG_VERSION,
+            orchestration_enabled=orchestration_enabled,
         )
         _run_calculation(tui, session, "codex", "1+2", "3", routed=False)
         _toggle_with_skill(
@@ -427,7 +471,7 @@ def test_smart_router_skill_toggles_codex_subagent_routing(
             session,
             "codex",
             enabled=True,
-            SMART_ROUTER_CONFIG_VERSION=SMART_ROUTER_CONFIG_VERSION,
+            orchestration_enabled=orchestration_enabled,
         )
         _run_calculation(tui, session, "codex", "2+2", "4", routed=True)
         tui.exit_normally()

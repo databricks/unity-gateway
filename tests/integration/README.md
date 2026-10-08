@@ -289,10 +289,10 @@ PATH conflicts for the Smart Router skill have subprocess/component coverage in
 `ug` first in PATH. The live journeys above do not inject a second installation or
 establish PowerShell command execution.
 
-The toggle journeys intentionally run once under each of the three subagent-only
-`SMART_ROUTER_CONFIG_VERSION` presets. They require only `smart-router` for `subagent_only_v0`
-and `subagent_only_v1`, and both `smart-router-orchestrator` and `smart-router` for
-`subagent_orch_v0`. They verify the saved session controls, a new CLI confirmation in the native
+The toggle journeys retain the legacy routing-only and orchestration cases and add each of
+the three subagent-only `SMART_ROUTER_CONFIG_VERSION` presets. They require only `smart-router`
+for routing-only cases, and both `smart-router-orchestrator` and `smart-router` when orchestration
+is enabled. They verify the saved session controls, a new CLI confirmation in the native
 tool-result records, and a new
 assistant answer after each skill invocation.
 Collapsed terminal output is allowed; the answer need not repeat the CLI's exact wording.
@@ -304,9 +304,10 @@ role-contract preservation, and isolation from legacy preference files
 lack dedicated regression coverage. Codex's native hook merging, project trust,
 and execution of pre-existing hooks are not exercised by this integration suite.
 
-Preset parameterization is limited to routing hooks, skill toggles, explicit-model routing
-bypass, and first-prompt routing. Command forwarding, app-server initialization, and catalog
-fallback run without a routing selector; preset-specific behavior there is not covered.
+Preset parameterization augments only routing hooks, skill toggles, and first-prompt routing;
+their original legacy-env or managed-default cases remain. Explicit-model selection, command
+forwarding, app-server initialization, and catalog fallback retain their original legacy flags
+and on/off coverage; preset-specific behavior there is not covered.
 
 The unit/component `../test_smart_routing_config.py` is a 135-case Cartesian oracle over all
 three legacy routing flags (`None`, `0`, `1`) and five selector forms (`None` plus the four
@@ -399,10 +400,10 @@ startup banners and footer text cannot satisfy discovery assertions. Cases 7–1
 they only configure, list models, and open/close the picker. Other live CUJs perform
 real model tasks.
 
-There are **86 live cases** (including 14 marked TUI journeys) and **7 installation
+There are **80 live cases** (including 14 marked TUI journeys) and **7 installation
 checks** with Claude and Codex; selecting OpenCode adds one live headless case. One
 **`workspace_switch` case** uses two real workspaces and checks skills MCP cleanup and a completed
-Claude task. A further **38 `managed_fixture` cases** (six of them also `live`) run on the
+Claude task. A further **43 `managed_fixture` cases** (ten of them also `live`) run on the
 managed workspace with a checked-in JSON CodingAgentConfig from `tests/fixtures/managed_config/`
 injected through `UCODE_MANAGED_CONFIG_STUB`; there are no cases that read a published config.
 Twelve explicit configured/fresh Claude and Codex discovery and source-override journeys use the
@@ -419,7 +420,7 @@ catalog discovery with overall defaults, family defaults, or both, along with ex
 selection and preservation of static model lists. Both cases run on the managed workspace's own
 bearer; no second workspace or extra secret is involved.
 The 14 retained numbered scenarios comprise 24 explicit journeys: 12 managed and 12 unmanaged
-executions; the complete integration suite collects 126 executions. See the named coverage and gaps matrix in
+executions; the complete integration suite collects 121 executions. See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
 ```bash
@@ -562,13 +563,13 @@ each test; only explicit-model scenarios choose and record a discovered
 Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
-two agent jobs). Full runs all 86 live cases, including those smoke cases, in two
+two agent jobs). Full runs all 80 live cases, including those smoke cases, in two
 disjoint agent lanes:
 
 | Agent lane | Marker | Cases |
 | --- | --- | --- |
-| Claude | `live and claude` | 45 |
-| Codex | `live and codex` | 41 |
+| Claude | `live and claude` | 38 |
+| Codex | `live and codex` | 42 |
 
 A non-blocking **OpenCode** job (`live and opencode`, one case) runs alongside them with
 `continue-on-error` and is not part of the required `cujs` gate until it is stable.
@@ -641,9 +642,9 @@ Codex state comparisons exclude `.codex/tmp/arg0`, the disposable executable lin
 recreated by version checks, while continuing to compare persistent agent files.
 In addition, `test_ug_configure_managed_codex_catalog_fallback` injects the intentionally nonexistent
 `system.ai.gpt-99`, keeping it out of the real workspace while launching Codex through that
-workspace on the valid default model `system.ai.gpt-5-6-sol`. It opens the real Codex `/models`
-picker and requires that injected custom-catalog model to be listed. The fixture itself has
-no managed smart-routing setting, and the journey does not set a routing selector.
+workspace on the valid default model `system.ai.gpt-5-6-sol`. With legacy smart routing off and
+on, it opens the real Codex `/models` picker and requires that injected custom-catalog model
+to be listed. The fixture itself has no managed smart-routing setting.
 
 The smart-routing banner journeys inject static Claude and Codex model lists with
 `smart_routing` enabled in the agent config, run `ug configure`, then launch the real TUI and
@@ -872,7 +873,7 @@ uv run --no-project --python 3.12 python scripts/run_integration.py \
 unset DATABRICKS_BEARER
 ```
 
-This runs all 86 live cases. For the seven installation checks, run the same
+This runs all 80 live cases. For the seven installation checks, run the same
 runner/version/index arguments with `--installation-only` and omit `-- -m live`;
 no bearer or workspace is needed. Results remain under `.integration-runs/`.
 Each invocation needs a new output directory; an existing one is rejected.

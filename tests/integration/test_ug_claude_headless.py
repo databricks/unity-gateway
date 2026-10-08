@@ -116,27 +116,12 @@ def test_ug_claude_headless_prompt_after_separator(live_session, workspace):
 
 @pytest.mark.parametrize("model_form", ["separate", "equals"])
 @pytest.mark.parametrize("model_owner", ["ug", "claude"])
-@pytest.mark.parametrize(
-    "SMART_ROUTER_CONFIG_VERSION",
-    [
-        "first_prompt_and_subagent_no_orch_v0",
-        "subagent_only_v0",
-        "subagent_only_v1",
-        "subagent_orch_v0",
-    ],
-    ids=[
-        "first_prompt_and_subagent_no_orch_v0",
-        "subagent_only_v0",
-        "subagent_only_v1",
-        "subagent_orch_v0",
-    ],
-)
 def test_ug_claude_headless_explicit_model_bypasses_routing(
-    live_session, workspace, model_form, model_owner, SMART_ROUTER_CONFIG_VERSION
+    live_session, workspace, model_form, model_owner
 ):
-    """Scenario: choose a model before/after ug's separator under each supported selector.
+    """Scenario: choose a model before/after ug's separator with no workspace policy.
 
-    Expected: under each supported routing preset, the real file task completes on the
+    Expected: with smart routing enabled, the real file task completes on the
     requested model, confirmed by JSON modelUsage, without a routing wrapper.
     """
     session = live_session
@@ -153,7 +138,7 @@ def test_ug_claude_headless_explicit_model_bypasses_routing(
     )
     model = session.model_for_explicit_case("claude")
     model_args = ["--model", model] if model_form == "separate" else [f"--model={model}"]
-    session.env["SMART_ROUTER_CONFIG_VERSION"] = SMART_ROUTER_CONFIG_VERSION
+    session.env["ENABLE_SMART_ROUTING_V2"] = "1"
     result = session.run(
         "claude",
         *(model_args if model_owner == "ug" else []),
