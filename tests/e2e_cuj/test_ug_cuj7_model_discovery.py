@@ -156,14 +156,18 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         assert_codex_default_models(session, models)
 
     @pytest.mark.claude
-    def test_ug_claude_headless_fresh_model_location(self, live_session, request_recorder):
-        """Scenario: launch fresh Claude with --model-location ug_e2e.models.
+    @pytest.mark.parametrize("model_owner", ["ug", "claude"])
+    def test_ug_claude_headless_fresh_model_location(
+        self, live_session, request_recorder, model_owner
+    ):
+        """Scenario: launch fresh scoped Claude with --model before/after ug's separator.
 
         Expected: Haiku completes a file task without prior configuration or routing.
         """
         session = live_session
         task = FileTask(session)
         model = "ug_e2e.models.claude_haiku"
+        model_args = ["--model", model]
         evidence = SessionEvidence(session.home, CLAUDE)
 
         result = session.run(
@@ -172,9 +176,9 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
             request_recorder.url,
             "--model-location",
             "ug_e2e.models",
+            *(model_args if model_owner == "ug" else []),
             "--",
-            "--model",
-            model,
+            *(model_args if model_owner == "claude" else []),
             "-p",
             task.prompt,
             "--output-format",
@@ -189,10 +193,11 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         session.assert_not_routed()
 
     @pytest.mark.claude
+    @pytest.mark.parametrize("model_owner", ["ug", "claude"])
     def test_ug_claude_preserves_preexisting_managed_family_defaults(
-        self, live_session, request_recorder
+        self, live_session, request_recorder, model_owner
     ):
-        """Scenario: launch fresh Claude over existing OS-managed family defaults.
+        """Scenario: select Sonnet before/after ug's separator over OS-managed defaults.
 
         Expected: ug preserves every family default, and the selected Sonnet family
         completes a file task through the preconfigured Sonnet service, not a discovered default.
@@ -200,8 +205,11 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         session = live_session
         task = FileTask(session)
         model = "ug_e2e.models.claude_sonnet"
+        model_args = ["--model", "sonnet"]
         defaults = {
-            f"ANTHROPIC_DEFAULT_{family}_MODEL": model
+            f"ANTHROPIC_DEFAULT_{family}_MODEL": (
+                model if family == "SONNET" else "ug_e2e.models.claude_haiku"
+            )
             for family in ("FABLE", "OPUS", "SONNET", "HAIKU")
         }
         managed_path = "/etc/claude-code/managed-settings.json"
@@ -215,9 +223,9 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
                 CLAUDE,
                 "--workspace",
                 request_recorder.url,
+                *(model_args if model_owner == "ug" else []),
                 "--",
-                "--model",
-                "sonnet",
+                *(model_args if model_owner == "claude" else []),
                 "-p",
                 task.prompt,
                 "--output-format",
@@ -242,14 +250,16 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
                 session.run("rm", "-f", managed_path, binary="sudo")
 
     @pytest.mark.codex
-    def test_ug_codex_headless_fresh_model_location(self, live_session):
-        """Scenario: launch fresh Codex with --model-location ug_e2e.models.
+    @pytest.mark.parametrize("model_position", ["before_separator", "exec"])
+    def test_ug_codex_headless_fresh_model_location(self, live_session, model_position):
+        """Scenario: launch fresh scoped Codex with --model before ug's separator or in exec.
 
         Expected: GPT Luna completes a file task without prior configuration or routing.
         """
         session = live_session
         task = FileTask(session)
         model = "ug_e2e.models.gpt_luna"
+        model_args = ["--model", model]
         evidence = SessionEvidence(session.home, CODEX)
 
         result = session.run(
@@ -258,12 +268,12 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
             self.workspace.config.host,
             "--model-location",
             "ug_e2e.models",
+            *(model_args if model_position == "before_separator" else []),
             "--",
             "exec",
             "--skip-git-repo-check",
             "--json",
-            "--model",
-            model,
+            *(model_args if model_position == "exec" else []),
             task.prompt,
             timeout=240,
         )

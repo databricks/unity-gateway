@@ -80,6 +80,10 @@ before and after ug's separator, with no workspace policy. It requires a complet
 file task, the requested model with output tokens in JSON `modelUsage`, and no routing
 wrapper. Use the runner's `--claude-model` option to reproduce a specific model.
 
+Codex covers `--model VALUE`, `--model=VALUE`, and `-m VALUE` before ug's separator
+and within native `exec`, asserting the completed turn's selected model. Codex has
+no UG-owned `--model` option: both forms are forwarded to Codex.
+
 The `smart_defaults` wire schema, legacy `spend_tiers` cache reads, and recommendation
 request gating are covered by unit/component tests listed in `../README.md`. This suite
 does not yet assert live `recommendModel` request counts for configs with and without tiers.
@@ -469,7 +473,7 @@ catalog discovery with overall defaults, family defaults, or both, along with ex
 selection and preservation of static model lists. Both cases run on the managed workspace's own
 bearer; no second workspace or extra secret is involved.
 The 14 retained numbered scenarios comprise 24 explicit journeys: 12 managed and 12 unmanaged
-executions; the complete integration suite collects 121 executions. See the named coverage and gaps matrix in
+executions; the complete integration suite collects 111 executions (110 with Claude and Codex selected). See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
 ```bash
@@ -602,7 +606,7 @@ Claude lane also passes `CLAUDE_CODE_OAUTH_TOKEN` (the same secret the e2e workf
 uses) for the relayed hybrid CUJ. Fork PRs run installation checks only because they
 cannot receive those secrets.
 
-CUJ7's five cases live in `tests/e2e_cuj/test_ug_cuj7_model_discovery.py`: configured
+CUJ7's five journeys collect eight cases in `tests/e2e_cuj/test_ug_cuj7_model_discovery.py`: configured
 Claude picker and Codex app-server discovery, fresh Claude/Codex model-location file
 tasks, and Claude managed-family-default preservation on launch. The class pins `WORKSPACE_URL` to
 `https://dbc-14e376e8-6541.cloud.databricks.com`; the required `dedicated-cuj` job uses
@@ -611,14 +615,16 @@ secret. The workspace must publish no `CodingAgentConfig`, expose discoverable `
 models, and retain the existing models `ug_e2e.models.claude_haiku`,
 `ug_e2e.models.claude_sonnet`, and `ug_e2e.models.gpt_luna`; the shared service principal
 needs read/use privileges on all three.
-All five cases reuse the CUJ
+The task journeys exercise model selection before and after ug's separator, including
+Claude's UG-owned `--model` and its native option. All eight cases reuse the CUJ
 session/terminal helpers and check that the workspace remains unmanaged; they never
 change remote configuration. Every case runs terminal `ug revert` during teardown.
 Claude task attribution checks the requested UC service and successful response through
 the shared forwarding recorder, alongside the completed native turn; native model IDs
 identify the backing provider model, not necessarily the UC service.
-The preservation case seeds an OS-managed settings input only after the clean-runner
-preflight, asserts its defaults and completed-task model, then reverts and removes that input.
+The preservation case seeds distinct Sonnet and other-family defaults only after the
+clean-runner preflight, verifies Sonnet inference and unchanged defaults, then reverts
+and removes that input. An accidental Opus fallback cannot satisfy the Sonnet assertion.
 
 The workspace check requires the secret to match
 `https://eng-ml-inference-team-us-east-1.cloud.databricks.com` (a trailing slash

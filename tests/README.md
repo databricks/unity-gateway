@@ -250,7 +250,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_claude_preserves_preexisting_managed_family_defaults` | Launch fresh Claude with pre-existing OS-managed family defaults and select the Sonnet family | Every default survives unchanged; the selected family completes a file task through the preconfigured Sonnet service |
 | `test_ug_claude_exports_trace_to_configured_table`, `test_ug_codex_exports_trace_to_configured_table` | Configure tracing, complete a headless task carrying a unique trace marker, then wait for ingestion | The configured trace table contains an agent span with the same trace-safe marker and requested model |
 | `test_ug_claude_headless_explicit_model_bypasses_routing` | Pass `--model VALUE` / `--model=VALUE` before and after ug's separator with smart routing enabled, without workspace policy | Real file task completes; JSON `modelUsage` reports the requested model with output tokens; no routing wrapper |
-| `test_ug_codex_headless_explicit_model_bypasses_routing` | Pass `--model VALUE` / `--model=VALUE` / `-m VALUE` with smart routing enabled | Real file task completes; no routing wrapper |
+| `test_ug_codex_headless_explicit_model_bypasses_routing` | Pass `--model VALUE` / `--model=VALUE` / `-m VALUE` before ug's separator and within Codex `exec`, with smart routing enabled | Real file task completes; completed-turn model matches the selection; no routing wrapper |
 | `test_ug_claude_preserves_caller_settings_and_hook` | Pass a settings path containing spaces | Real SessionStart hook executes; caller file unchanged; file task completes |
 | `test_ug_claude_reports_unsupported_short_model_option` | Pass Claude's unsupported `-m` | Actual agent error and exit status preserved |
 | `test_ug_claude_auth_help`, `test_ug_claude_mcp_help` | Request subcommand help with legacy smart routing off/on | Real agent help; no routing wrapper |
@@ -347,9 +347,10 @@ suite runs all 80 live cases across two parallel agent jobs: one Claude VM and o
 Codex VM, each running its configure, headless, and commands/lifecycle cases
 serially. Each agent is installed once for the full suite, and no two full jobs
 for the same agent overlap within a run.
-CUJ7's five cases run in the required `dedicated-cuj` job: configured Claude picker and
+CUJ7's five journeys collect eight cases in the required `dedicated-cuj` job: configured Claude picker and
 Codex app-server discovery, fresh Claude/Codex model-location file tasks, and Claude
-managed-family-default preservation on launch. Each case reverts its local setup. The class
+managed-family-default preservation on launch. Task journeys cover model selection before
+and after ug's separator. Each case reverts its local setup. The class
 pins `WORKSPACE_URL` to `https://dbc-14e376e8-6541.cloud.databricks.com` rather than using
 a workspace secret. The workspace must publish no `CodingAgentConfig`, expose discoverable
 `system.ai` models, and retain the existing models `ug_e2e.models.claude_haiku`,

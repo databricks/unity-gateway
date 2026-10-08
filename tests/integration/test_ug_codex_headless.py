@@ -4,7 +4,7 @@ import json
 
 import pytest
 from utils.constants import CODEX_TEST_MODEL
-from utils.evidence import FileTask
+from utils.evidence import FileTask, assert_completed_task_model
 
 pytestmark = [pytest.mark.live, pytest.mark.codex]
 
@@ -122,11 +122,14 @@ def test_ug_codex_headless_prompt_after_separator(live_session, workspace):
 
 
 @pytest.mark.parametrize("model_form", ["separate", "equals", "short"])
-def test_ug_codex_headless_explicit_model_bypasses_routing(live_session, workspace, model_form):
-    """Scenario: choose an explicit model while global smart routing is enabled.
+@pytest.mark.parametrize("model_position", ["before_separator", "exec"])
+def test_ug_codex_headless_explicit_model_bypasses_routing(
+    live_session, workspace, model_form, model_position
+):
+    """Scenario: choose a model before ug's separator or within Codex exec.
 
-    Expected: the model option is accepted, the real file task completes, and
-    no routing wrapper overrides the caller's choice.
+    Expected: the completed file-task turn selects the requested model, and
+    no routing wrapper overrides it.
     """
     session = live_session
     session.choose_codex_windows_sandbox()
@@ -148,15 +151,17 @@ def test_ug_codex_headless_explicit_model_bypasses_routing(live_session, workspa
     session.env["ENABLE_SMART_ROUTING_V2"] = "1"
     result = session.run(
         "codex",
+        *(model_args if model_position == "before_separator" else []),
         "--",
         "exec",
         "--skip-git-repo-check",
         "--json",
         task.prompt,
-        *model_args,
+        *(model_args if model_position == "exec" else []),
         timeout=180,
     )
     task.assert_headless_answer("codex", result)
+    assert_completed_task_model(session, "codex", task.value, model)
     session.assert_not_routed()
 
 
