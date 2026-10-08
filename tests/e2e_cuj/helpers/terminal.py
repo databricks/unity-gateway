@@ -7,18 +7,38 @@ from .constants import CLAUDE, CODEX
 
 
 class Terminal(AgentTerminal):
-    def __init__(self, session, name, args):
-        if not args or args[0] not in (CLAUDE, CODEX):
-            raise ValueError("CUJ terminal requires a Claude or Codex command.")
-        super().__init__(session, args[0], [str(session.binary), *args], name)
+    def __init__(self, session, name, args, *, agent=None):
+        """Run `ug <args>`; bare `ug` (empty args) names the agent it is expected to launch."""
+        agent = agent or (args[0] if args else None)
+        if agent not in (CLAUDE, CODEX) or (args and args[0] != agent):
+            raise ValueError("CUJ terminal requires a Claude or Codex command or bare ug agent.")
+        super().__init__(session, agent, [str(session.binary), *args], name)
 
-    def task(self, evidence, task):
+    def wait_until(
+        self,
+        done,
+        description,
+        *,
+        timeout=240,
+        rejected=("Do you want to proceed?",),
+        on_screen=None,
+    ):
+        """Wait for `done()`, failing on API errors or any `rejected` permission prompt.
+
+        `on_screen(screen)` may answer an expected dialog; it returns True when it sent keys.
+        """
+
         def completed(screen):
             assert_no_terminal_api_error(screen)
             # Do not use wait_for_task's optional tool-permission approval.
-            assert "Do you want to proceed?" not in screen, (
+            assert not any(prompt in screen for prompt in rejected), (
                 "Unexpected permission request; inspect the actual command:\n" + screen
             )
-            return evidence.completed(task) is not None
+            if on_screen is not None and on_screen(screen):
+                return False
+            return done()
 
-        self.wait_for(completed, "completed native file task", timeout=240)
+        self.wait_for(completed, description, timeout=timeout)
+
+    def task(self, evidence, task):
+        self.wait_until(lambda: evidence.completed(task) is not None, "completed native file task")

@@ -11,11 +11,9 @@ from databricks.sdk.service.catalog import ListModelProviderServicesRequestView
 
 from tests.integration.utils.evidence import (
     agent_sessions,
-    assert_no_terminal_api_error,
     assistant_answers,
     is_child_session,
 )
-from tests.integration.utils.terminal import AgentTerminal
 
 from .base import BaseCujTest
 from .helpers.constants import (
@@ -25,10 +23,17 @@ from .helpers.constants import (
     FIXTURE_SUMMARY_SKILL_NAME,
     INFERENCE_PATHS,
     MODEL_PROVIDER_SERVICE_FIXTURES,
+    PROVIDER_HEADER,
     SANDBOX_MCP_SERVICE_NAME,
     WEB_SEARCH_MCP_SERVICE_NAME,
 )
+from .helpers.evidence import assert_served
+from .helpers.mcp import registered_name
+from .helpers.poll import poll
+from .helpers.terminal import Terminal
 from .helpers.workspace import Workspace
+
+CUJ_NAME = "CUJ 2 · MPS and named MCP"
 
 WORKSPACE_URL = "https://dbc-0dcf95cf-e357.cloud.databricks.com"
 
@@ -127,7 +132,7 @@ def _assert_configured_files(session, workspace_url: str) -> None:
         name, separator, value = line.partition(":")
         assert separator, line
         claude_headers[name.strip().casefold()] = value.strip()
-    assert claude_headers["databricks-model-provider-service"] == claude_mps, claude_headers
+    assert claude_headers[PROVIDER_HEADER] == claude_mps, claude_headers
     assert claude_env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == claude_model, claude_env
     assert claude_env["ANTHROPIC_BASE_URL"] == workspace_url.rstrip("/") + "/ai-gateway/anthropic"
 
@@ -141,7 +146,7 @@ def _assert_configured_files(session, workspace_url: str) -> None:
 
 
 def _mcp_name_listed(output: str, name: str) -> bool:
-    dashed = name.replace(".", "-")
+    dashed = registered_name(name)
     return any(name in line or dashed in line for line in output.splitlines())
 
 
@@ -149,11 +154,20 @@ def _assert_generated_mcp_listings(session) -> None:
     for agent in (CLAUDE, CODEX):
         binary = shutil.which(agent, path=session.env["PATH"])
         assert binary, f"Required agent is not on the isolated PATH: {agent}"
-        listing = session.run("mcp", "list", binary=binary, timeout=120)
-        output = f"{listing.stdout}\n{listing.stderr}"
-        streams = f"stdout={listing.stdout!r}\nstderr={listing.stderr!r}"
-        assert _mcp_name_listed(output, SANDBOX_MCP_SERVICE_NAME), streams
-        assert not _mcp_name_listed(output, WEB_SEARCH_MCP_SERVICE_NAME), streams
+
+        def listing(binary=binary):
+            result = session.run("mcp", "list", binary=binary, timeout=120)
+            return f"{result.stdout}\n{result.stderr}"
+
+        # `claude mcp list` sometimes exits after its health-check banner without any rows.
+        output = poll(
+            listing,
+            timeout=60,
+            interval=5,
+            done=lambda text: _mcp_name_listed(text, SANDBOX_MCP_SERVICE_NAME),
+        )
+        assert _mcp_name_listed(output, SANDBOX_MCP_SERVICE_NAME), output
+        assert not _mcp_name_listed(output, WEB_SEARCH_MCP_SERVICE_NAME), output
 
 
 def _parent_transcripts(session, agent: str) -> dict[str, list[dict]]:
@@ -190,12 +204,9 @@ def _agent_prompt(marker: str) -> str:
 
 
 def _assert_inference_request(recorder, request, *, provider: str, model: str, marker: str) -> None:
-    assert request.headers["databricks-model-provider-service"] == provider
-    assert request.payload["model"] == model
+    assert request.headers[PROVIDER_HEADER] == provider
     assert marker.encode() in request.body, request.payload
-    response = recorder.response_for(request, timeout=240)
-    assert response.status_code == 200, response.status_code
-    assert response.body, "Inference response was empty"
+    assert_served(recorder, request, model)
 
 
 class _Cuj2Base(BaseCujTest):
@@ -257,16 +268,10 @@ class TestCuj2CodexInference(_Cuj2Base):
         recorder.prepare_launch()
         marker = f"CUJ2-CODEX-{uuid.uuid4().hex}"
         checkpoint = recorder.checkpoint()
-        with AgentTerminal(session, CODEX, [str(session.binary), CODEX], "cuj2-codex") as tui:
+        with Terminal(session, "cuj2-codex", [CODEX]) as tui:
             tui.boot()
             tui.submit(_agent_prompt(marker))
-
-            def completed(screen):
-                assert_no_terminal_api_error(screen)
-                assert "Do you want to proceed?" not in screen, screen
-                return _task_complete(session, CODEX, marker)
-
-            tui.wait_for(completed, "completed Codex task", timeout=240)
+            tui.wait_until(lambda: _task_complete(session, CODEX, marker), "completed Codex task")
             tui.exit_normally()
 
         request = recorder.expect_request(
@@ -313,15 +318,10 @@ class TestCuj2ClaudeInference(_Cuj2Base):
         recorder.prepare_launch()
         marker = f"CUJ2-CLAUDE-{uuid.uuid4().hex}"
         checkpoint = recorder.checkpoint()
-        with AgentTerminal(session, CLAUDE, [str(session.binary), CLAUDE], "cuj2-claude") as tui:
+        with Terminal(session, "cuj2-claude", [CLAUDE]) as tui:
             tui.boot()
             tui.submit(_agent_prompt(marker))
-
-            def completed(screen):
-                assert_no_terminal_api_error(screen)
-                return _task_complete(session, CLAUDE, marker)
-
-            tui.wait_for(completed, "completed Claude task", timeout=240)
+            tui.wait_until(lambda: _task_complete(session, CLAUDE, marker), "completed Claude task")
             tui.exit_normally()
 
         request = recorder.expect_request(

@@ -12,7 +12,6 @@ from tests.integration.utils.provider_catalog import (
     parse_anthropic_provider_page,
     parse_codex_provider_catalog,
 )
-from tests.integration.utils.terminal import AgentTerminal, TerminalProcess
 
 from .base import BaseCujTest
 from .catalog_discovery_expectations import (
@@ -26,9 +25,11 @@ from .catalog_discovery_expectations import (
     MODEL_SCHEMA,
     OTHER_MODEL_SCHEMA,
 )
-from .helpers.constants import CLAUDE, CODEX, INFERENCE_PATHS, MANAGED_PATHS
-from .helpers.evidence import SessionEvidence, message_text
+from .helpers.constants import CLAUDE, CODEX, INFERENCE_PATHS
+from .helpers.evidence import SessionEvidence, assert_served, claude_file_task, message_text
 from .helpers.terminal import Terminal
+
+CUJ_NAME = "CUJ 3 · UC model discovery"
 
 pytestmark = [pytest.mark.managed, pytest.mark.catalog_discovery, pytest.mark.workspace_isolated]
 
@@ -66,14 +67,6 @@ def _catalog_display_names(workspace, agent, schema):
         assert cursor and cursor not in seen, "Repeated catalog pagination cursor"
         seen.add(cursor)
     raise AssertionError("Anthropic catalog exceeded 20 pages")
-
-
-def _claude_file_task(session):
-    task = FileTask(session)
-    task.prompt = (
-        f"Use the Read tool to read {session.cwd / task.filename}. Reply with only its contents."
-    )
-    return task
 
 
 def _assert_claude_headless_model(result, expected):
@@ -129,33 +122,15 @@ def _assert_inference_evidence(recorder, checkpoint, agent, task, expected):
     ]
     assert task_requests, "No inference request contained the submitted task prompt"
     for request in task_requests:
-        assert request.payload["model"] == expected_wire_model, request.payload
-        response = recorder.response_for(request, timeout=240)
-        assert response.status_code == 200, {
-            "status": response.status_code,
-            "model": request.payload["model"],
-            "output_config": request.payload.get("output_config"),
-        }
-        assert response.body, "Inference response was empty"
+        assert_served(recorder, request, expected_wire_model)
 
 
 @pytest.fixture(autouse=True)
 def _revert_catalog_test_state(cuj):
     yield
     session, _, _ = cuj
-    state_dir = session.home / ".ucode"
-    if any(
-        (state_dir / name).is_file() for name in ("state.json", "managed-backups/manifest.json")
-    ):
-        with TerminalProcess(
-            session,
-            "ug",
-            [str(session.binary), "revert"],
-            "catalog-discovery-cleanup-revert",
-        ) as terminal:
-            terminal.finish()
-    assert not any(path.exists() for path in MANAGED_PATHS), (
-        "Catalog CUJ teardown left machine-wide agent settings"
+    session.revert_machine_wide(
+        "catalog-discovery-cleanup-revert", "Catalog CUJ teardown left machine-wide agent settings"
     )
 
 
@@ -181,7 +156,7 @@ class TestCatalogDiscovery(BaseCujTest):
         assert set(decoy_catalog) == {claude.discovery_model_id(CLAUDE_DECOY)}, decoy_catalog
         default_display_name = parent_catalog[claude.discovery_model_id(CLAUDE_DEFAULT)]
 
-        task = _claude_file_task(session)
+        task = claude_file_task(session)
         evidence = SessionEvidence(session.home, CLAUDE)
         checkpoint = recorder.checkpoint()
         recorder.prepare_launch()
@@ -261,17 +236,15 @@ class TestCatalogDiscovery(BaseCujTest):
         default_display_name = _catalog_display_names(workspace, CLAUDE, MODEL_SCHEMA)[
             claude.discovery_model_id(CLAUDE_DEFAULT)
         ]
-        task = _claude_file_task(session)
+        task = claude_file_task(session)
         evidence = SessionEvidence(session.home, CLAUDE)
         checkpoint = recorder.checkpoint()
         recorder.prepare_launch()
-        with AgentTerminal(
-            session, CLAUDE, [str(session.binary)], "catalog-discovery-bare-ug-default"
-        ) as tui:
+        with Terminal(session, "catalog-discovery-bare-ug-default", [], agent=CLAUDE) as tui:
             tui.boot()
             assert f"{default_display_name} · API Usage Billing" in tui.visible, tui.visible
             tui.submit(task.prompt)
-            Terminal.task(tui, evidence, task)
+            tui.task(evidence, task)
             tui.exit_normally()
         task.assert_completed(session, CLAUDE)
         _assert_inference_evidence(recorder, checkpoint, CLAUDE, task, CLAUDE_DEFAULT)
@@ -289,7 +262,7 @@ class TestCatalogDiscovery(BaseCujTest):
         default_display_name = _catalog_display_names(workspace, CLAUDE, MODEL_SCHEMA)[
             claude.discovery_model_id(CLAUDE_DEFAULT)
         ]
-        task = _claude_file_task(session)
+        task = claude_file_task(session)
         evidence = SessionEvidence(session.home, CLAUDE)
         checkpoint = recorder.checkpoint()
         recorder.prepare_launch()
@@ -333,7 +306,7 @@ class TestCatalogDiscovery(BaseCujTest):
         """
         session, _, recorder = cuj
         recorder.configure_session(session, ["configure", "--skip-upgrade"])
-        task = _claude_file_task(session)
+        task = claude_file_task(session)
         checkpoint = recorder.checkpoint()
         recorder.prepare_launch()
         result = session.run(
@@ -379,7 +352,7 @@ class TestCatalogDiscovery(BaseCujTest):
         """
         session, _, recorder = cuj
         recorder.configure_session(session, ["configure", "--skip-upgrade"])
-        task = _claude_file_task(session)
+        task = claude_file_task(session)
         checkpoint = recorder.checkpoint()
         recorder.prepare_launch()
         result = session.run(
