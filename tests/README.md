@@ -22,8 +22,11 @@ CUJs never republish configuration or create a remote reservation.
 CUJ helper tests also verify that unsupported agent names fail rather than defaulting to Codex.
 They cover Claude/Codex helper dispatch and rejection of routing decisions without
 the agent-specific prompt-submission evidence.
-The smart-routing CUJ runs four fresh sessions: routed and explicit model for both
-Claude and Codex. Routing-disabled coverage is deferred until a separately
+The original smart-routing CUJ runs four fresh sessions: routed and explicit model for both
+Claude and Codex. One additional test has four `SMART_ROUTER_CONFIG_VERSION` cases.
+Each case exercises both agents and checks first-prompt routing, orchestrator context in
+inference input, and a completed explicitly requested routed subagent. It does not establish
+automatic orchestrator delegation. Routing-disabled coverage is deferred until a separately
 preconfigured workspace is assigned.
 
 `test_entry_points.py` also runs both installed console scripts (`ug` and `ucode`)

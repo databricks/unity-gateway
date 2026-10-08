@@ -9,6 +9,12 @@ is read-only and checked for changes at teardown; concurrent readers need no res
 CUJ2 adds three separately collected cases for exact MPS/MCP configuration, Codex inference,
 and Claude inference.
 
+The dedicated smart-routing CUJ in `../e2e_cuj/test_cuj_smart_routing.py` leaves the original
+managed-default and explicit-model cases unchanged. One additional test runs the four supported
+`SMART_ROUTER_CONFIG_VERSION` values, checking both agents' first-prompt routing, orchestrator
+context in inference input, and completed explicitly requested routed subagents.
+This is not automatic orchestrator-delegation coverage. No workspace configuration is modified.
+
 The [catalog discovery journey](../e2e_cuj/README.md) uses the CUJ3 workspace to check
 agent-compatible pickers, schema exclusions, configured defaults, and real inference.
 CI collects it through the shared `dedicated-cuj` job.

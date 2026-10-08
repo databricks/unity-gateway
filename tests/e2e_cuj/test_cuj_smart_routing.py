@@ -4,7 +4,14 @@ from dataclasses import dataclass
 
 import pytest
 
-from tests.integration.utils.evidence import FileTask
+from tests.integration.utils.evidence import (
+    FileTask,
+    agent_sessions,
+    assert_subagent_routed,
+    assistant_answers,
+    is_child_session,
+    read_jsonl,
+)
 
 from .base import BaseCujTest
 from .helpers.constants import CLAUDE, CODEX, INFERENCE_PATHS, CodingAgent
@@ -14,6 +21,7 @@ from .helpers.tui_request_recorder import RecordedRequest, RecordedResponse
 
 ROUTING_PATH = "/ai-gateway/routing/v1/routes:select"
 AGENTS = (CLAUDE, CODEX)
+ORCHESTRATOR_CONTEXT = "Smart Router Orchestrator is on for this session."
 
 
 @dataclass(frozen=True)
@@ -165,6 +173,131 @@ def completed_smart_routing_runs(cuj):
 
 class TestCujSmartRouting(BaseCujTest):
     WORKSPACE_URL = "https://dbc-1a9622fc-2e91.cloud.databricks.com/"
+
+    @pytest.mark.parametrize(
+        "SMART_ROUTER_CONFIG_VERSION, first_prompt_routed, orchestrator_enabled",
+        [
+            ("first_prompt_and_subagent_no_orch_v0", True, False),
+            ("subagent_only_v0", False, False),
+            ("subagent_only_v1", False, False),
+            ("subagent_orch_v0", False, True),
+        ],
+    )
+    def test_smart_router_config_version(
+        self, cuj, SMART_ROUTER_CONFIG_VERSION, first_prompt_routed, orchestrator_enabled
+    ):
+        """Scenario: launch both agents with a preset, then explicitly request a subagent.
+
+        Expected: first-prompt routing and orchestrator context match the preset;
+        one routed native child completes the delegated task.
+        """
+        session, workspace, recorder = cuj
+        previous = session.env.get("SMART_ROUTER_CONFIG_VERSION")
+        session.env["SMART_ROUTER_CONFIG_VERSION"] = SMART_ROUTER_CONFIG_VERSION
+        try:
+            configs = _assert_published_config_matches_expectations(workspace.config())
+            recorder.configure_session(session, ["configure", "--disable-databricks-ai-tools"])
+            for agent in AGENTS:
+                supported = workspace.model_ids(agent)
+                evidence = SessionEvidence(session.home, agent)
+                existing_sessions = set(agent_sessions(session, agent))
+                task = FileTask(session)
+                task.prompt += " Do not delegate."
+                checkpoint = recorder.checkpoint()
+                recorder.prepare_launch()
+                with Terminal(session, f"{SMART_ROUTER_CONFIG_VERSION}-{agent}", [agent]) as tui:
+                    tui.boot(timeout=150)
+                    tui.submit(task.prompt)
+                    tui.task(evidence, task)
+                    requests = recorder.requests_after(checkpoint)
+                    routes = [request for request in requests if request.path == ROUTING_PATH]
+                    assert len(routes) == int(first_prompt_routed), (agent, routes)
+                    expected_model = configs[agent]["default_models"]["default_model"]
+                    if first_prompt_routed:
+                        assert routes[0].payload["task"]["prompt"] == task.prompt
+                        response = recorder.response_for(routes[0])
+                        assert response.status_code == 200
+                        selections = response.payload["route_selection"]
+                        assert len(selections) == 1
+                        expected_model = selections[0]["route_option"]["model"]
+                    inference = next(
+                        request
+                        for request in requests
+                        if request.method == "POST" and request.path == INFERENCE_PATHS[agent]
+                    )
+                    assert recorder.response_for(inference).status_code == 200
+                    assert canonical_model(inference.payload["model"]) == canonical_model(
+                        expected_model
+                    )
+                    evidence.assert_applied(task, supported, expected=expected_model)
+                    assert (
+                        ORCHESTRATOR_CONTEXT.encode() in inference.body
+                    ) == orchestrator_enabled, agent
+                    assert not any(
+                        is_child_session(agent, path, records)
+                        for path, records in agent_sessions(session, agent).items()
+                        if path not in existing_sessions
+                    ), agent
+
+                    child_task = FileTask(session)
+                    child_task.prompt = child_task.delegate_prompt
+                    decisions_path = (
+                        session.home / ".ucode" / f"{agent}-smart-routing-decisions.jsonl"
+                    )
+                    decision_count = len(read_jsonl(decisions_path))
+                    checkpoint = recorder.checkpoint()
+                    tui.submit(child_task.prompt)
+                    tui.task(evidence, child_task)
+                    tui.wait_for(
+                        lambda screen, task=child_task, agent=agent: task.completed(
+                            session, agent, child=True
+                        ),
+                        "completed native subagent file task",
+                        timeout=240,
+                    )
+                    children = {
+                        path: records
+                        for path, records in agent_sessions(session, agent).items()
+                        if path not in existing_sessions and is_child_session(agent, path, records)
+                    }
+                    assert len(children) == 1, (agent, children.keys())
+                    assert any(
+                        child_task.value in answer
+                        for records in children.values()
+                        for answer in assistant_answers(agent, records)
+                    ), agent
+                    decisions = read_jsonl(decisions_path)[decision_count:]
+                    assert_subagent_routed(
+                        session,
+                        agent,
+                        child_task,
+                        decision_ids={decision["decision_id"] for decision in decisions},
+                    )
+                    requests = recorder.requests_after(checkpoint)
+                    routes = [request for request in requests if request.path == ROUTING_PATH]
+                    assert len(routes) == 1, (agent, routes)
+                    assert child_task.filename in routes[0].payload["task"]["prompt"]
+                    response = recorder.response_for(routes[0])
+                    assert response.status_code == 200
+                    selections = response.payload["route_selection"]
+                    assert len(selections) == 1
+                    inference = next(
+                        request
+                        for request in requests
+                        if request.method == "POST"
+                        and request.path == INFERENCE_PATHS[agent]
+                        and request.sequence > routes[0].sequence
+                    )
+                    assert recorder.response_for(inference).status_code == 200
+                    assert canonical_model(inference.payload["model"]) == canonical_model(
+                        selections[0]["route_option"]["model"]
+                    )
+                    tui.exit_normally()
+        finally:
+            if previous is None:
+                session.env.pop("SMART_ROUTER_CONFIG_VERSION", None)
+            else:
+                session.env["SMART_ROUTER_CONFIG_VERSION"] = previous
 
     @pytest.mark.parametrize("agent", AGENTS)
     def test_agent_completes_real_first_prompt_file_task_without_model_override(

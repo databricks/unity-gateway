@@ -55,3 +55,38 @@ Collection only (no authentication or inference):
 uv run pytest -c tests/e2e_cuj/pytest.ini --confcutdir=tests/e2e_cuj \
   --collect-only tests/e2e_cuj
 ```
+
+## Smart-routing CUJ
+
+`test_cuj_smart_routing.py` uses its own read-only workspace with managed smart routing enabled.
+The original tests remain unchanged. One additional test has four
+`SMART_ROUTER_CONFIG_VERSION` cases; each launches Claude and Codex once.
+The independent expectation table is:
+
+| Selector | First prompt routed | Orchestrator context | Child on first prompt | Explicitly requested child |
+| --- | --- | --- | --- | --- |
+| `first_prompt_and_subagent_no_orch_v0` | Yes | No | No | Yes, routed |
+| `subagent_only_v0` | No | No | No | Yes, routed |
+| `subagent_only_v1` | No | No | No | Yes, routed |
+| `subagent_orch_v0` | No | Yes | No | Yes, routed |
+
+First prompts explicitly forbid delegation to isolate first-prompt routing. Assertions require
+the expected presence/absence of a prompt-correlated router request, successful inference on
+the routed or configured default model, completed native file-task evidence, and no child session.
+Orchestrator presence means its activation context reached the real gateway inference input,
+not that an assistant echoed it or a skill merely existed on disk.
+Each preset session then explicitly requests one child for a separate hidden-value
+file task. Assertions require a native child transcript containing the value, the completed
+parent answer, a correlated spawn-routing decision, and successful child inference on the
+router's selected model. This tests requested delegation, not automatic orchestrator delegation.
+Selector cases have separate TUI artifact names, and the session environment is restored afterward.
+The existing Claude explicit-model precedence case remains skipped; the routing-disabled case
+still requires a separately preconfigured workspace.
+
+With the same live prerequisites:
+
+```bash
+uv run --with pexpect==4.9.0 --with pyte==0.8.2 pytest \
+  --confcutdir=tests/e2e_cuj tests/e2e_cuj/test_cuj_smart_routing.py \
+  -k test_smart_router_config_version -v
+```
