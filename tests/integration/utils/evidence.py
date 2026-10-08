@@ -52,6 +52,38 @@ def assistant_answers(agent: str, records: list[dict]) -> list[str]:
     return helper.assistant_answers(records) if helper is not None else []
 
 
+def tool_outputs(agent: str, records: list[dict]) -> list[str]:
+    """Read native tool results even when their terminal output is collapsed."""
+    contents = []
+    for record in records:
+        if agent == "claude" and record.get("type") == "user":
+            contents.extend(
+                part.get("content")
+                for part in record.get("message", {}).get("content", [])
+                if isinstance(part, dict)
+                and part.get("type") == "tool_result"
+                and not part.get("is_error")
+            )
+        if agent == "codex" and record.get("type") == "response_item":
+            payload = record.get("payload", {})
+            if payload.get("type") in {"function_call_output", "custom_tool_call_output"}:
+                contents.append(payload.get("output"))
+
+    outputs = []
+    for content in contents:
+        if isinstance(content, str):
+            outputs.append(content)
+        elif isinstance(content, list):
+            outputs.extend(
+                part["text"]
+                for part in content
+                if isinstance(part, dict)
+                and part.get("type") in {"text", "input_text"}
+                and isinstance(part.get("text"), str)
+            )
+    return outputs
+
+
 def is_child_session(agent: str, path: str, records: list[dict]) -> bool:
     return _AGENT_HELPERS.get(agent, codex).is_child_session(path, records)
 

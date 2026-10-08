@@ -71,6 +71,7 @@ Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file 
 | `managedMcpServers` | Ignore | Merge | Add/update the config's MCP server entries; other entries left alone |
 | Smart-routing hooks | Merge | Merge | `PreToolUse`, `SessionStart`, `SubagentStart`; only `ug`'s own marked handlers, other hooks left alone |
 | Admin `agent_native_settings` | Ignore | Create/replace | Managed file only; each leaf of the config's per-agent `agent_native_settings`, as-is. The server currently accepts only Claude Code's MCP controls (`allowManagedMcpServersOnly`, `allowedMcpServers`, `deniedMcpServers`, `enableAllProjectMcpServers`, `enabledMcpjsonServers`, `disabledMcpjsonServers`); `ug` itself stays generic and still skips any leaf overlapping a field above, with a warning printed once per change. `permissions.deny` and `hooks.<event>` lists merge: IT-authored entries stay, and entries `ug` delivered that the admin drops are withdrawn. Any other dropped leaf is withdrawn if unchanged since `ug` wrote it. `allowManagedHooksOnly`/`disableAllHooks` are delivered but warn, since they also block smart routing's per-launch hooks |
+| Smart Router Orchestrator hooks | Merge | Merge | Launch-only `UserPromptSubmit` and compact `SessionStart` handlers for smart-routed sessions with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`; read the same session controls as routing |
 
 </details>
 
@@ -87,5 +88,6 @@ Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`
 | `http_headers` | Merge | Merge | In `[model_providers.Databricks]`; merge `ug`'s routing headers by name, admin headers added under managed config |
 | `model_catalog_json` | Create/replace | Create/replace | In `~/.codex/config.toml`; `ug`'s own catalog reference, for a static model list |
 | `mcp_servers` | Ignore | Merge | Managed file; add/update the config's MCP server entries, other entries left alone |
+| Smart Router and Smart Router Orchestrator hooks | Merge | Merge | Launch-only `PreToolUse`, plus `UserPromptSubmit` and compact `SessionStart` with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`; Codex combines them with its native hook sources and applies project trust; `features.hooks` is enabled for a smart-routed launch |
 
 </details>
