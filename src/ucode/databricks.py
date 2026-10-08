@@ -862,6 +862,7 @@ def _refresh_windows_path() -> None:
             new_entries.append(expanded)
             known.add(normalized)
     os.environ["PATH"] = os.pathsep.join([*new_entries, *entries])
+    clear_databricks_cli_cache()
 
 
 def _run_databricks_cli_installer(brew_subcommand: str = "install") -> None:

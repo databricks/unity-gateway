@@ -8,9 +8,17 @@ from tests.integration.utils.evidence import FileTask
 
 from .base import BaseCujTest
 from .helpers.constants import CLAUDE, CODEX, INFERENCE_PATHS, CodingAgent
-from .helpers.evidence import SessionEvidence, SessionObservation, canonical_model
+from .helpers.evidence import (
+    SessionEvidence,
+    SessionObservation,
+    canonical_model,
+    claude_file_task,
+)
 from .helpers.terminal import Terminal
 from .helpers.tui_request_recorder import RecordedRequest, RecordedResponse
+from .helpers.workspace import Workspace
+
+CUJ_NAME = "CUJ 4 · Smart routing"
 
 ROUTING_PATH = "/ai-gateway/routing/v1/routes:select"
 AGENTS = (CLAUDE, CODEX)
@@ -45,6 +53,12 @@ class SmartRoutingSessionResults:
     with_model_override: dict[str, SessionCase]
 
 
+def _file_task(session, agent):
+    task = claude_file_task(session) if agent == CLAUDE else FileTask(session)
+    task.prompt += " Do not delegate."
+    return task
+
+
 def _run_session(session, recorder, agent, task, launch_args):
     evidence = SessionEvidence(session.home, agent)
     checkpoint = recorder.checkpoint()
@@ -62,7 +76,7 @@ def _assert_published_config_matches_expectations(published):
     assert published["default_agent"] == CodingAgent.CLAUDE_CODE
     entries = published["enabled_agents"]
     assert len(entries) == 2
-    configs = {entry["agent"]: entry["config"] for entry in entries}
+    configs = Workspace.agent_configs(published)
     assert set(configs) == {CodingAgent.CLAUDE_CODE, CodingAgent.CODEX}
     agent_configs = {
         CLAUDE: configs[CodingAgent.CLAUDE_CODE],
@@ -103,8 +117,7 @@ def run_smart_routing_journeys(cuj) -> SmartRoutingSessionResults:
 
     no_model_override, with_model_override = {}, {}
     for agent in AGENTS:
-        task = FileTask(session)
-        task.prompt += " Do not delegate."
+        task = _file_task(session, agent)
         observation, requests = _run_session(session, recorder, agent, task, (agent,))
         route_request = next(
             request
@@ -129,8 +142,7 @@ def run_smart_routing_journeys(cuj) -> SmartRoutingSessionResults:
             inference_response=recorder.response_for(inference_request),
         )
 
-        task = FileTask(session)
-        task.prompt += " Do not delegate."
+        task = _file_task(session, agent)
         launch_args = (agent, "--model", overrides[agent])
         observation, requests = _run_session(session, recorder, agent, task, launch_args)
         inference_request = next(

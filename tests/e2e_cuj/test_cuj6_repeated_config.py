@@ -12,7 +12,6 @@ and one trace table.
 
 import hashlib
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -24,45 +23,48 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from databricks.sdk import WorkspaceClient
 
-from tests.integration.utils.evidence import FileTask, assert_no_terminal_api_error
+from tests.integration.utils.evidence import FileTask
 from tests.integration.utils.sql import query_count, resolve_trace_table, resolve_warehouse_id
-from tests.integration.utils.terminal import AgentTerminal, TerminalProcess
+from tests.integration.utils.terminal import TerminalProcess
 from ucode.agents.claude import CLAUDE_OTEL_TRACE_ENV_KEYS
 
-from .base import BaseCujTest
+from .base import BaseCujTest, bearer, make_workspace_client
 from .helpers.constants import (
+    AGENT_HEADER,
     BEDROCK_PROVIDER_SERVICE_FIXTURE,
     CLAUDE,
+    CLAUDE_HAIKU_MODEL,
+    CLAUDE_OPUS_MODEL,
+    CLAUDE_SONNET_MODEL,
     CODEX,
+    CODEX_LUNA_MODEL,
+    CODEX_SOL_MODEL,
     FIXTURE_READER_MCP_SERVICE_NAME,
     FIXTURE_SUMMARY_SKILL_NAME,
     INFERENCE_PATHS,
     MANAGED_PATHS,
+    PROVIDER_HEADER,
+    RUN_HEADER,
     UC_MODEL_LOCATION_FIXTURE,
     CodingAgent,
 )
-from .helpers.evidence import SessionEvidence, canonical_model
+from .helpers.evidence import SessionEvidence, assert_models, canonical_model
+from .helpers.mcp import registered_name
+from .helpers.poll import poll
 from .helpers.skills import SKILL_ROOTS, skill_name, skills_view
+from .helpers.terminal import Terminal
 from .helpers.tui_request_recorder import TuiRequestRecorder
 from .helpers.workspace import Workspace
 
-CLAUDE_STATIC_MODELS = (
-    "system.ai.claude-opus-4-8",
-    "system.ai.claude-sonnet-4-6",
-    "system.ai.claude-haiku-4-5",
-)
-CLAUDE_DEFAULT = "system.ai.claude-sonnet-4-6"
-CODEX_SOL = "system.ai.gpt-5-6-sol"
-CODEX_LUNA = "system.ai.gpt-5-6-luna"
+CUJ_NAME = "CUJ 6 · Repeated config and removal"
+
+CLAUDE_STATIC_MODELS = (CLAUDE_OPUS_MODEL, CLAUDE_SONNET_MODEL, CLAUDE_HAIKU_MODEL)
+CLAUDE_DEFAULT = CLAUDE_SONNET_MODEL
 CLAUDE_PROVIDER, CLAUDE_PROVIDER_MODEL = BEDROCK_PROVIDER_SERVICE_FIXTURE
 CODEX_MODEL_LOCATION, CODEX_UC_MODEL = UC_MODEL_LOCATION_FIXTURE
-MANAGED_MCP_ENTRY = FIXTURE_READER_MCP_SERVICE_NAME.replace(".", "-")
+MANAGED_MCP_ENTRY = registered_name(FIXTURE_READER_MCP_SERVICE_NAME)
 CODEX_OS_MANAGED_CONFIG = MANAGED_PATHS[1]
-RUN_HEADER = "x-ug-e2e-run"
-AGENT_HEADER = "x-ug-e2e-agent"
-PROVIDER_HEADER = "databricks-model-provider-service"
 PARENT_SCHEMA_HEADER = "databricks-model-service-parent-schema"
 CONFIGURE_ARGS = ["configure", "--skip-upgrade", "--disable-databricks-ai-tools"]
 TRACE_DEADLINE_SECONDS = 300
@@ -104,10 +106,6 @@ def model_leaf(model: str) -> str:
     """The model's family id, without catalog/vendor/region prefixes, [1m], date, or version."""
     name = model.rsplit(".", 1)[-1].removesuffix("[1m]")
     return re.sub(r"(-\d{8})?(-v\d+:\d+)?$", "", name)
-
-
-def agent_config(config: dict, agent: CodingAgent) -> dict:
-    return next(entry["config"] for entry in config["enabled_agents"] if entry["agent"] == agent)
 
 
 def tracing_enabled(agent_settings: dict) -> bool:
@@ -153,16 +151,6 @@ def skill_bundles(files: "AgentFiles", root: str) -> set[str]:
         for path in files.skill_files
         if Path(path).is_relative_to(root)
     }
-
-
-def workspace_client(url: str) -> WorkspaceClient:
-    """The base class authenticates only WORKSPACE_URL; phases B and C need their own clients."""
-    return WorkspaceClient(
-        host=url,
-        client_id=os.environ["UG_CUJ_SP_CLIENT_ID"],
-        client_secret=os.environ["UG_CUJ_SP_CLIENT_SECRET"],
-        auth_type="oauth-m2m",
-    )
 
 
 @dataclass(frozen=True)
@@ -252,24 +240,20 @@ class Journey:
         self.published = published
         self.recorders = recorders
         self.run_id = f"cuj6-{uuid.uuid4().hex[:12]}"
-        bearer = self.bearer("a")
+        a_bearer = bearer(workspaces["a"].client)
         # All phase workspaces share one metastore and trace table, so A queries them all.
         self.trace_url = workspaces["a"].url
-        self.warehouse_id = resolve_warehouse_id(self.trace_url, bearer)
-        self.trace_table = resolve_trace_table(self.trace_url, bearer)
+        self.warehouse_id = resolve_warehouse_id(self.trace_url, a_bearer)
+        self.trace_table = resolve_trace_table(self.trace_url, a_bearer)
         self.seeded = self.seed_user_state()
 
     @property
     def home(self) -> Path:
         return self.session.home
 
-    def bearer(self, phase: str) -> str:
-        # Each workspace issues its own M2M token; refreshed per call because the journey is long.
-        headers = self.workspaces[phase].client.config.authenticate()
-        return headers["Authorization"].removeprefix("Bearer ")
-
     def enter(self, phase: str) -> None:
-        self.session.env["DATABRICKS_BEARER"] = self.bearer(phase)
+        # Each workspace issues its own M2M token; minted per entry because the journey is long.
+        self.session.install_bearer(bearer(self.workspaces[phase].client))
 
     def configure(self, phase: str) -> None:
         self.enter(phase)
@@ -404,24 +388,16 @@ class Journey:
         )
 
     def bare_ug_task(self, phase: str) -> AgentTask:
-        """Bare `ug` in a real terminal; helpers.terminal.Terminal only drives `ug <agent>`."""
+        """Bare `ug` in a real terminal, which launches the default agent Codex."""
         recorder = self.recorders[phase]
         recorder.prepare_launch()
         evidence = SessionEvidence(self.home, CODEX)
         task = FileTask(self.session)
         checkpoint = recorder.checkpoint()
-        with AgentTerminal(
-            self.session, CODEX, [str(self.session.binary)], f"phase-{phase}-bare-ug"
-        ) as tui:
+        with Terminal(self.session, f"phase-{phase}-bare-ug", [], agent=CODEX) as tui:
             tui.boot()
             tui.submit(task.prompt)
-
-            def completed(screen):
-                assert_no_terminal_api_error(screen)
-                assert "Do you want to proceed?" not in screen, screen
-                return evidence.completed(task) is not None
-
-            tui.wait_for(completed, "completed native file task", timeout=240)
+            tui.task(evidence, task)
             tui.exit_normally()
         requests = self.inference_requests(phase, CODEX, checkpoint)
         assert requests, "The recorder saw no bare ug Codex inference request"
@@ -432,7 +408,7 @@ class Journey:
         attributes = "resource.attributes" if resource else "attributes"
         return query_count(
             self.trace_url,
-            self.bearer("a"),
+            bearer(self.workspaces["a"].client),
             self.warehouse_id,
             f"SELECT COUNT(*) FROM {self.trace_table} "
             "WHERE time > current_timestamp() - INTERVAL 2 HOURS "
@@ -441,12 +417,11 @@ class Journey:
         )
 
     def wait_for_codex_span(self, marker: str) -> int:
-        deadline = time.monotonic() + TRACE_DEADLINE_SECONDS
-        while (count := self.trace_count(marker, resource=False)) == 0:
-            if time.monotonic() > deadline:
-                break
-            time.sleep(15)
-        return count
+        return poll(
+            lambda: self.trace_count(marker, resource=False),
+            timeout=TRACE_DEADLINE_SECONDS,
+            interval=15,
+        )
 
     def seed_user_state(self) -> SeededUserState:
         """Ordinary user-owned prefs, MCP registration, and skill; no ug state."""
@@ -509,8 +484,12 @@ class TestCujRepeatedConfig(BaseCujTest):
         session, workspace_a, recorder_a = cuj
         workspaces = {
             "a": workspace_a,
-            "b": Workspace(workspace_client(self.PHASE_B_URL)),
-            "c": Workspace(workspace_client(self.PHASE_C_URL)),
+            "b": Workspace(
+                make_workspace_client(self.PHASE_B_URL, self.CLIENT_ID_ENV, self.CLIENT_SECRET_ENV)
+            ),
+            "c": Workspace(
+                make_workspace_client(self.PHASE_C_URL, self.CLIENT_ID_ENV, self.CLIENT_SECRET_ENV)
+            ),
         }
         published = {phase: workspace.config() for phase, workspace in workspaces.items()}
         with (
@@ -606,11 +585,12 @@ class TestCujRepeatedConfig(BaseCujTest):
 
     def test_phase_a_workspace_publishes_plan_config(self, journey):
         config = journey.published["a"]
-        claude = agent_config(config, CodingAgent.CLAUDE_CODE)
-        codex = agent_config(config, CodingAgent.CODEX)
+        configs = Workspace.agent_configs(config)
+        claude = configs[CodingAgent.CLAUDE_CODE]
+        codex = configs[CodingAgent.CODEX]
         assert config["default_agent"] == CodingAgent.CLAUDE_CODE
         assert claude["models"]["model_services"] == list(CLAUDE_STATIC_MODELS)
-        assert codex["models"]["model_services"] == [CODEX_SOL, CODEX_LUNA]
+        assert codex["models"]["model_services"] == [CODEX_SOL_MODEL, CODEX_LUNA_MODEL]
         assert tracing_enabled(claude) and tracing_enabled(codex)
         assert config["mcp_servers"]["names"] == [FIXTURE_READER_MCP_SERVICE_NAME]
         assert config["skills"]["names"] == [FIXTURE_SUMMARY_SKILL_NAME]
@@ -645,18 +625,19 @@ class TestCujRepeatedConfig(BaseCujTest):
 
     def test_phase_a_claude_runs_its_default(self, phase_a):
         assert CLAUDE_DEFAULT in {canonical_model(m) for m in phase_a.claude.request_models}
-        assert {canonical_model(m) for m in phase_a.claude.turn_models} == {CLAUDE_DEFAULT}
+        assert_models(phase_a.claude.turn_models, CLAUDE_DEFAULT)
 
     def test_phase_a_codex_runs_its_default(self, phase_a):
-        assert {canonical_model(m) for m in phase_a.codex.request_models} == {CODEX_SOL}
-        assert {canonical_model(m) for m in phase_a.codex.turn_models} == {CODEX_SOL}
+        assert_models(phase_a.codex.request_models, CODEX_SOL_MODEL)
+        assert_models(phase_a.codex.turn_models, CODEX_SOL_MODEL)
 
     # Phase B: Claude on an MPS, Codex on UC discovery; headers, MCP, and tracing changed.
 
     def test_phase_b_workspace_publishes_plan_config(self, journey):
         config = journey.published["b"]
-        claude = agent_config(config, CodingAgent.CLAUDE_CODE)
-        codex = agent_config(config, CodingAgent.CODEX)
+        configs = Workspace.agent_configs(config)
+        claude = configs[CodingAgent.CLAUDE_CODE]
+        codex = configs[CodingAgent.CODEX]
         assert config["default_agent"] == CodingAgent.CODEX
         assert claude["models"] == {"model_provider_service": CLAUDE_PROVIDER}
         assert claude["default_models"]["default_model"] == CLAUDE_PROVIDER_MODEL
@@ -750,9 +731,9 @@ class TestCujRepeatedConfig(BaseCujTest):
     def test_phase_c_workspace_publishes_plan_config(self, journey):
         config = journey.published["c"]
         assert [entry["agent"] for entry in config["enabled_agents"]] == [CodingAgent.CODEX]
-        codex = agent_config(config, CodingAgent.CODEX)
-        assert codex["models"] == {"model_services": [CODEX_LUNA]}
-        assert codex["default_models"]["default_model"] == CODEX_LUNA
+        codex = Workspace.agent_configs(config)[CodingAgent.CODEX]
+        assert codex["models"] == {"model_services": [CODEX_LUNA_MODEL]}
+        assert codex["default_models"]["default_model"] == CODEX_LUNA_MODEL
         assert not tracing_enabled(codex) and not codex.get("http_headers")
         assert not config.get("skills")
 
@@ -773,13 +754,16 @@ class TestCujRepeatedConfig(BaseCujTest):
             assert not {RUN_HEADER, AGENT_HEADER, PARENT_SCHEMA_HEADER} & set(request.headers)
 
     def test_phase_c_codex_picker_is_only_luna(self, phase_c):
-        assert phase_c.picker == (CODEX_LUNA,)
+        assert phase_c.picker == (CODEX_LUNA_MODEL,)
 
     def test_phase_c_codex_and_bare_ug_run_luna(self, phase_c):
-        assert {canonical_model(m) for m in phase_c.codex.request_models} == {CODEX_LUNA}
-        assert {canonical_model(m) for m in phase_c.codex.turn_models} == {CODEX_LUNA}
-        assert {canonical_model(m) for m in phase_c.bare_ug.request_models} == {CODEX_LUNA}
-        assert {canonical_model(m) for m in phase_c.bare_ug.turn_models} == {CODEX_LUNA}
+        for models in (
+            phase_c.codex.request_models,
+            phase_c.codex.turn_models,
+            phase_c.bare_ug.request_models,
+            phase_c.bare_ug.turn_models,
+        ):
+            assert_models(models, CODEX_LUNA_MODEL)
 
     def test_phase_c_claude_is_rejected_before_inference(self, phase_c):
         assert phase_c.disabled_claude_returncode != 0
@@ -839,7 +823,9 @@ class TestCujAgentNativeSettings(BaseCujTest):
     @pytest.fixture(scope="class")
     def journey(self, cuj):
         session, workspace_a, _ = cuj
-        workspace_b = Workspace(workspace_client(self.PHASE_B_URL))
+        workspace_b = Workspace(
+            make_workspace_client(self.PHASE_B_URL, self.CLIENT_ID_ENV, self.CLIENT_SECRET_ENV)
+        )
         published_b = workspace_b.config()
         try:
             yield session, {"a": workspace_a, "b": workspace_b}
@@ -848,8 +834,7 @@ class TestCujAgentNativeSettings(BaseCujTest):
 
     @staticmethod
     def configure_and_add_denied_mcp(session, workspace, name) -> NativeSettingsPhase:
-        headers = workspace.client.config.authenticate()
-        session.env["DATABRICKS_BEARER"] = headers["Authorization"].removeprefix("Bearer ")
+        session.env["DATABRICKS_BEARER"] = bearer(workspace.client)
         command = [str(session.binary), *CONFIGURE_ARGS, "--workspace", workspace.url]
         with TerminalProcess(session, "ug", command, name) as terminal:
             terminal.finish(timeout=300)
@@ -885,10 +870,10 @@ class TestCujAgentNativeSettings(BaseCujTest):
 
     def test_workspaces_publish_the_expected_native_settings(self, journey):
         _, workspaces = journey
-        phase_a = agent_config(workspaces["a"].config(), CodingAgent.CLAUDE_CODE)
+        phase_a = Workspace.agent_configs(workspaces["a"].config())[CodingAgent.CLAUDE_CODE]
         assert phase_a.get("agent_native_settings") == NATIVE_SETTINGS
-        for entry in workspaces["b"].config()["enabled_agents"]:
-            assert "agent_native_settings" not in entry.get("config", {}), entry
+        for agent, config in Workspace.agent_configs(workspaces["b"].config()).items():
+            assert "agent_native_settings" not in config, agent
 
     def test_phase_a_delivers_settings_into_the_machine_wide_file(self, phase_a):
         assert phase_a.managed["deniedMcpServers"] == NATIVE_SETTINGS["deniedMcpServers"]

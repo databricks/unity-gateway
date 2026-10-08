@@ -2,6 +2,7 @@
 
 import ast
 import json
+import os
 import re
 import subprocess
 import sys
@@ -54,17 +55,120 @@ def test_managed_integration_ci_is_blocking():
     ) in gate
 
 
-def test_dedicated_cuj_ci_discovers_the_whole_folder():
-    workflow = (Path(__file__).parent.parent / ".github/workflows/integration.yml").read_text()
-    job = workflow.split("\n  dedicated-cuj:\n", 1)[1].split("\n  cujs:\n", 1)[0]
-    gate = workflow.split("\n  cujs:\n", 1)[1]
+WORKFLOW = Path(__file__).parent.parent / ".github/workflows/integration.yml"
+
+
+def _workflow_job(name, next_name):
+    workflow = WORKFLOW.read_text()
+    return workflow.split(f"\n  {name}:\n", 1)[1].split(f"\n  {next_name}:\n", 1)[0]
+
+
+def _discover_cujs(root, output):
+    plan = _workflow_job("dedicated-cuj-plan", "dedicated-cuj")
+    script = textwrap.dedent(plan.split("        run: |\n", 1)[1])
+    result = subprocess.run(
+        ["bash", "-c", script],
+        cwd=root,
+        env={"PATH": os.environ["PATH"], "GITHUB_OUTPUT": str(output)},
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if result.returncode:
+        return None, result.stderr
+    return json.loads(output.read_text().removeprefix("cujs=")), result.stderr
+
+
+def test_dedicated_cuj_ci_runs_each_discovered_file_on_its_own_runner():
+    job = _workflow_job("dedicated-cuj", "cujs")
 
     assert "docs.google.com/document/d/1WKd1fdWD0Y4tAV1H9Si-SGx2UZFL7iZ2S3HtBjidmS0" in job
-    assert "pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj" in job
-    assert "find tests/e2e_cuj -name 'test_*.py'" in job
+    assert "name: E2E CUJs · ${{ matrix.name }}" in job
+    assert "fail-fast: false" in job
+    assert "include: ${{ fromJSON(needs.dedicated-cuj-plan.outputs.cujs) }}" in job
+    assert 'pytest --confcutdir=tests/e2e_cuj "tests/e2e_cuj/${{ matrix.test }}"' in job
+    assert 'UV_HTTP_TIMEOUT: "120"' in job and 'UV_HTTP_RETRIES: "6"' in job
     assert "UG_CUJ1_WORKSPACE: ${{ secrets.UG_CUJ1_WORKSPACE }}" in job
-    assert "test_cuj_" not in job
-    assert 'result["result"] != "success"' in gate
+    assert "test_cuj" not in job
+
+
+def test_every_cuj_file_is_discovered_with_a_unique_check_name(tmp_path):
+    root = Path(__file__).parent.parent
+    entries, stderr = _discover_cujs(root, tmp_path / "github-output")
+
+    assert entries is not None, stderr
+    assert [entry["test"] for entry in entries] == sorted(
+        path.name for path in (root / "tests/e2e_cuj").glob("test_*.py")
+    )
+    names = [entry["name"] for entry in entries]
+    assert len(set(names)) == len(names), f"Duplicate CUJ_NAME values: {names}"
+    for entry in entries:
+        number = re.fullmatch(r"test_cuj(\d+)_[a-z0-9_]+\.py", entry["test"])
+        assert number, f"Name CUJ files test_cuj<N>_<topic>.py: {entry['test']}"
+        assert entry["name"].startswith(f"CUJ {number.group(1)} · "), entry
+
+
+def test_cuj_discovery_fails_for_a_file_without_a_check_name(tmp_path):
+    cujs = tmp_path / "tests/e2e_cuj"
+    cujs.mkdir(parents=True)
+    (cujs / "test_cuj1_a.py").write_text('import os\n\nCUJ_NAME = "CUJ 1 · A"\n')
+    (cujs / "test_cuj2_b.py").write_text("import os\n")
+
+    entries, stderr = _discover_cujs(tmp_path, tmp_path / "github-output")
+
+    assert entries is None
+    assert "test_cuj2_b.py must define CUJ_NAME" in stderr
+
+
+FORK_GUARD = (
+    "github.event_name != 'pull_request' || "
+    "github.event.pull_request.head.repo.full_name == github.repository"
+)
+# Fork PRs get no secrets or OIDC token, so jobs that need either must skip them.
+SKIPPED_ON_FORK_PRS = {
+    "installation-windows",
+    "workspace",
+    "smoke",
+    "headless-windows",
+    "full",
+    "opencode",
+    "managed",
+    "dedicated-cuj-plan",
+    "dedicated-cuj",
+    "cujs",
+}
+
+
+def _integration_jobs():
+    workflow = (Path(__file__).parent.parent / ".github/workflows/integration.yml").read_text()
+    body = workflow.split("\njobs:\n", 1)[1]
+    return dict(re.findall(r"(?ms)^  ([a-z0-9-]+):\n(.*?)(?=^  [a-z0-9-]+:\n|\Z)", body))
+
+
+def _skips_fork_prs(jobs, name):
+    job = jobs[name]
+    condition = re.search(r"(?m)^    if: (.*)$", job)
+    if condition and FORK_GUARD in condition.group(1):
+        return True
+    needs = re.search(r"(?m)^    needs: \[?([a-z0-9-, ]+)\]?$", job)
+    for need in [need.strip() for need in needs.group(1).split(",")] if needs else []:
+        requires_success = (
+            condition is None or f"needs.{need}.result == 'success'" in condition.group(1)
+        )
+        if requires_success and _skips_fork_prs(jobs, need):
+            return True
+    return False
+
+
+def test_integration_jobs_that_run_on_fork_pull_requests_need_no_credentials():
+    jobs = _integration_jobs()
+    skipped = {name for name in jobs if _skips_fork_prs(jobs, name)}
+
+    assert skipped == SKIPPED_ON_FORK_PRS
+    for name in set(jobs) - skipped:
+        assert "secrets." not in jobs[name] and "id-token: write" not in jobs[name], (
+            f"{name} runs on fork PRs, which get no secrets or OIDC token"
+        )
 
 
 def test_windows_integration_ci_uses_shared_claude_version():
@@ -76,7 +180,16 @@ def test_windows_integration_ci_uses_shared_claude_version():
 
 
 @pytest.mark.parametrize(
-    "failed_job", ["installation", "workspace", "smoke", "full", "managed", "dedicated-cuj"]
+    "failed_job",
+    [
+        "installation",
+        "workspace",
+        "smoke",
+        "full",
+        "managed",
+        "dedicated-cuj-plan",
+        "dedicated-cuj",
+    ],
 )
 @pytest.mark.parametrize("job_result", ["success", "failure", "cancelled", "skipped"])
 def test_integration_ci_gate_requires_every_job(failed_job, job_result):
@@ -92,6 +205,7 @@ def test_integration_ci_gate_requires_every_job(failed_job, job_result):
             "smoke",
             "full",
             "managed",
+            "dedicated-cuj-plan",
             "dedicated-cuj",
         )
     }
