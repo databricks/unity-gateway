@@ -284,24 +284,12 @@ project trust. Smart routing selects subagent models; separate role-model
 preferences are ignored and their files are left untouched. See the bundled
 [Smart Router Orchestrator documentation](skills/smart-router-orchestrator/README.md) for details.
 
-## Codex Native v2 Routing
-
-Smart-routed Codex launches use a session-local loopback transport so the existing
-subagent hook receives the complete readable assignment. On the provider wire,
-ug aliases the native collaboration namespace and requests ordinary string
-arguments; responses and replay are mapped back to Codex's native v2 protocol.
-No additional tool or model turn is introduced, and native v2 spawning remains
-in charge of child creation, hierarchy, and execution.
-
-The transport uses the configured workspace identity, preserves routing headers,
-and closes with the session. A temporary provider is selected through the native
-thread API so machine-managed Databricks settings cannot bypass the transport.
-Both routing modes use the app-server; subagent-only mode keeps the parent model.
-The transport does not modify Codex or persist its provider URL in configuration.
-New malformed or encrypted assignments fail closed. Previously executed encrypted
-calls and their outputs retain their original representation when replayed.
-Non-v2 requests remain unchanged. This path uses Responses HTTP/SSE, not provider
-WebSockets.
+Codex v2 routing uses a session-local transport to expose readable assignments to
+Smart Router while preserving native child execution and existing encrypted history.
+The transport uses the configured identity and headers, works with managed settings,
+and closes with the session without persisting its provider configuration. Both routing
+modes use the app-server; subagent-only mode preserves the parent model. Provider
+traffic uses Responses HTTP/SSE. New opaque or malformed assignments are rejected.
 
 ## Managed Files
 

@@ -25,6 +25,7 @@ import base64
 import binascii
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -83,7 +84,6 @@ _DIAGNOSTICS_ENV = "UCODE_RELAYED_PROXY_DIAGNOSTICS"
 _DIAGNOSTICS_TRUE = frozenset({"1", "true", "yes", "on"})
 _CODEX_V2_RESPONSE_PATHS = frozenset({"/v1/responses", "/v1/responses/compact"})
 _CODEX_V2_MAX_SSE_EVENT_BYTES = 16 * 1024 * 1024
-_CODEX_V2_RESPONSE_DROP_HEADERS = frozenset({"content-encoding", "content-length"})
 
 
 def _diagnostics_enabled() -> bool:
@@ -268,11 +268,6 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             pass
 
     def _prepare_request_body(self, body: bytes | None) -> bytes | None:
-        """Prepare a request body before forwarding it.
-
-        The base relay is intentionally byte-transparent. Specialized handlers may
-        override this hook for a narrowly scoped protocol adapter.
-        """
         return body
 
     def _response_headers(self, resp: httpx.Response) -> tuple[tuple[str, str], ...]:
@@ -383,14 +378,6 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 elapsed_ms=round((time.monotonic() - started) * 1000),
             )
             self._safe_send_error(502, "gateway proxy upstream error")
-        except _CodexV2ProtocolError as exc:
-            # Headers may already be committed for a streamed response, so the
-            # only safe response is a truncated stream with a sanitized diagnostic.
-            log_proxy_diagnostic(
-                "response_protocol_error",
-                request_id=diagnostic_id,
-                error_type=type(exc).__name__,
-            )
 
     # Streaming passthrough: forward chunks as they arrive so SSE token streaming
     # is not buffered (buffering would add full-response latency to first token).
@@ -491,101 +478,49 @@ class _RelayProxyHandler(_ProxyHandler):
         return self.token_header, frozenset(), "relay"
 
 
-def _codex_v2_path(path: str) -> bool:
-    return urlsplit(path).path in _CODEX_V2_RESPONSE_PATHS
-
-
-def _sse_separator(buffer: bytearray) -> tuple[int, int] | None:
-    candidates = [
-        (index, size)
-        for delimiter, size in ((b"\r\n\r\n", 4), (b"\n\n", 2))
-        if (index := buffer.find(delimiter)) >= 0
-    ]
-    return min(candidates) if candidates else None
-
-
-def _split_sse_frame(frame: bytes) -> tuple[bytes, bytes]:
-    for delimiter in (b"\r\n\r\n", b"\n\n"):
-        if frame.endswith(delimiter):
-            return frame[: -len(delimiter)], delimiter
-    raise _CodexV2ProtocolError("Codex v2 SSE frame is incomplete")
-
-
-def _replace_sse_data(frame: bytes, payload: bytes) -> bytes:
-    body, delimiter = _split_sse_frame(frame)
-    lines = body.splitlines(keepends=True)
-    replaced = False
-    output: list[bytes] = []
-    for line in lines:
-        content = line.rstrip(b"\r\n")
-        if content.startswith(b"data:"):
-            if not replaced:
-                ending = (
-                    b"\r\n" if line.endswith(b"\r\n") else b"\n" if line.endswith(b"\n") else b""
-                )
-                output.append(b"data: " + payload + ending)
-                replaced = True
-            continue
-        output.append(line)
-    if not replaced:
-        raise _CodexV2ProtocolError("Codex v2 SSE event has no data field")
-    return b"".join(output) + delimiter
-
-
 class _CodexV2ProxyHandler(_ProxyHandler):
     """Loopback adapter for native Codex v2 Responses traffic."""
 
     def _prepare_request_body(self, body: bytes | None) -> bytes | None:
         self._codex_v2_adapter_active = False
-        if self.command.upper() != "POST" or not _codex_v2_path(self.path) or body is None:
+        if (
+            self.command != "POST"
+            or urlsplit(self.path).path not in _CODEX_V2_RESPONSE_PATHS
+            or body is None
+        ):
             return body
         transformed, changed = prepare_request(body)
         self._codex_v2_adapter_active = changed
         return transformed
 
     def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
-        # Native Codex already authenticates with the Databricks bearer. Replace
-        # it from the proxy's TokenCache and remove the alternate swap header so
-        # two credentials can never compete on the same upstream request.
+        # Use the same Databricks identity, without a competing swap credential.
         return (
             AUTHORIZATION_HEADER,
             frozenset({AI_GATEWAY_TOKEN_HEADER.lower()}),
             "codex-v2",
         )
 
+    def _response_type(self, resp: httpx.Response) -> str:
+        if self._codex_v2_adapter_active and 200 <= resp.status_code < 300:
+            return resp.headers.get("content-type", "").lower()
+        return ""
+
     def _response_headers(self, resp: httpx.Response) -> tuple[tuple[str, str], ...]:
-        content_type = next(
-            (value for key, value in resp.headers.items() if key.lower() == "content-type"),
-            "",
-        ).lower()
-        drop_decoding_headers = (
-            getattr(self, "_codex_v2_adapter_active", False)
-            and 200 <= resp.status_code < 300
-            and ("json" in content_type or "text/event-stream" in content_type)
-        )
+        content_type = self._response_type(resp)
+        decoded = "json" in content_type or "text/event-stream" in content_type
         return tuple(
             (key, value)
-            for key, value in resp.headers.items()
-            if key.lower() not in HOP_BY_HOP_HEADERS
-            and (not drop_decoding_headers or key.lower() not in _CODEX_V2_RESPONSE_DROP_HEADERS)
+            for key, value in super()._response_headers(resp)
+            if not (decoded and key.lower() == "content-encoding")
         )
 
     def _iter_response_chunks(self, resp: httpx.Response):
-        if not getattr(self, "_codex_v2_adapter_active", False) or not (
-            200 <= resp.status_code < 300
-        ):
-            yield from resp.iter_raw()
-            return
-        content_type = next(
-            (value for key, value in resp.headers.items() if key.lower() == "content-type"),
-            "",
-        ).lower()
+        content_type = self._response_type(resp)
         if "text/event-stream" in content_type:
             yield from self._iter_sse_chunks(resp)
             return
         if "json" not in content_type:
-            # Error pages and other non-JSON gateway responses are outside the
-            # adapter contract and must remain byte-transparent.
             yield from resp.iter_raw()
             return
 
@@ -598,11 +533,6 @@ class _CodexV2ProxyHandler(_ProxyHandler):
             return
         try:
             event = json.loads(bytes(body))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise _CodexV2ProtocolError("Codex v2 JSON response is malformed") from exc
-        if not isinstance(event, dict):
-            raise _CodexV2ProtocolError("Codex v2 JSON response is not an object")
-        try:
             transformed = transform_response_event(event)
         except (TypeError, ValueError) as exc:
             raise _CodexV2ProtocolError("Codex v2 JSON response failed adaptation") from exc
@@ -614,12 +544,9 @@ class _CodexV2ProxyHandler(_ProxyHandler):
     def _iter_sse_chunks(self, resp: httpx.Response):
         buffer = bytearray()
         for chunk in resp.iter_bytes():
-            if not chunk:
-                continue
             buffer.extend(chunk)
-            while separator := _sse_separator(buffer):
-                index, delimiter_size = separator
-                frame_size = index + delimiter_size
+            while separator := re.search(rb"\r\n\r\n|\n\n", buffer):
+                frame_size = separator.end()
                 if frame_size > _CODEX_V2_MAX_SSE_EVENT_BYTES:
                     raise _CodexV2ProtocolError("Codex v2 SSE event exceeds the bounded limit")
                 frame = bytes(buffer[:frame_size])
@@ -628,29 +555,27 @@ class _CodexV2ProxyHandler(_ProxyHandler):
             if len(buffer) > _CODEX_V2_MAX_SSE_EVENT_BYTES:
                 raise _CodexV2ProtocolError("Codex v2 SSE event exceeds the bounded limit")
         if buffer:
-            # Do not forward an unterminated data event: the client could execute
-            # a partial function call. Comments/blank bytes are harmless and retain
-            # the normal SSE EOF behavior.
+            # Never execute a partial function call at EOF.
             if buffer.strip(b"\r\n :"):
                 raise _CodexV2ProtocolError("Codex v2 SSE stream ended mid-event")
             yield bytes(buffer)
 
     @staticmethod
     def _transform_sse_frame(frame: bytes) -> bytes:
-        body, _delimiter = _split_sse_frame(frame)
+        lines = frame.splitlines(keepends=True)
         event_type: str | None = None
-        data_lines: list[bytes] = []
-        for line in body.splitlines():
+        data_indices: list[int] = []
+        for index, line in enumerate(lines):
             if line.startswith(b"event:"):
                 try:
-                    event_type = line[6:].lstrip().decode("utf-8", "strict")
+                    event_type = line[6:].strip().decode("utf-8", "strict")
                 except UnicodeDecodeError as exc:
                     raise _CodexV2ProtocolError("Codex v2 SSE event name is malformed") from exc
             elif line.startswith(b"data:"):
-                data_lines.append(line[5:].lstrip())
-        if not data_lines:
+                data_indices.append(index)
+        if not data_indices:
             return frame
-        payload = b"\n".join(data_lines)
+        payload = b"\n".join(lines[i][5:].rstrip(b"\r\n").lstrip() for i in data_indices)
         if payload == b"[DONE]":
             return frame
         try:
@@ -671,7 +596,12 @@ class _CodexV2ProxyHandler(_ProxyHandler):
         if transformed == event:
             return frame
         serialized = json.dumps(transformed, ensure_ascii=False, separators=(",", ":")).encode()
-        return _replace_sse_data(frame, serialized)
+        first = data_indices[0]
+        ending = b"\r\n" if lines[first].endswith(b"\r\n") else b"\n"
+        lines[first] = b"data: " + serialized + ending
+        for index in data_indices[1:]:
+            lines[index] = b""
+        return b"".join(lines)
 
 
 class _LoopbackHTTPServer(ThreadingHTTPServer):
@@ -704,45 +634,33 @@ def _start_proxy(
     """
     upstream_base = f"{workspace.rstrip('/')}/{upstream_path.lstrip('/')}"
     cache = TokenCache(token_provider, force_refresh_near_expiry=force_refresh_near_expiry)
-    client: httpx.Client | None = None
-    server: ThreadingHTTPServer | None = None
+    # One pooled, keep-alive client shared across handler threads: reuses TCP+TLS
+    # to the gateway instead of a fresh handshake per request. Don't follow
+    # redirects — a proxy relays 3xx verbatim.
+    client = httpx.Client(base_url=upstream_base, timeout=UPSTREAM_TIMEOUT, follow_redirects=False)
+
+    handler = cast(
+        type[_ProxyHandler],
+        type(
+            "BoundProxyHandler",
+            (handler_type,),
+            {
+                "cache": cache,
+                "client": client,
+                "token_header": token_header,
+            },
+        ),
+    )
     try:
-        # One pooled, keep-alive client shared across handler threads: reuses TCP+TLS
-        # to the gateway instead of a fresh handshake per request. Don't follow
-        # redirects — a proxy relays 3xx verbatim.
-        client = httpx.Client(
-            base_url=upstream_base, timeout=UPSTREAM_TIMEOUT, follow_redirects=False
-        )
+        server = _LoopbackHTTPServer(("127.0.0.1", port), handler)
+    except OSError:
+        # Cached port is occupied (stale proxy from a killed session). Port 0 lets
+        # the OS pick any free port; the caller reconciles the base URL to it.
+        server = _LoopbackHTTPServer(("127.0.0.1", 0), handler)
 
-        handler = cast(
-            type[_ProxyHandler],
-            type(
-                "BoundProxyHandler",
-                (handler_type,),
-                {
-                    "cache": cache,
-                    "client": client,
-                    "token_header": token_header,
-                },
-            ),
-        )
-        try:
-            server = _LoopbackHTTPServer(("127.0.0.1", port), handler)
-        except OSError:
-            # Cached port is occupied (stale proxy from a killed session). Port 0 lets
-            # the OS pick any free port; the caller reconciles the base URL to it.
-            server = _LoopbackHTTPServer(("127.0.0.1", 0), handler)
-
-        refresher = threading.Thread(target=cache.run_refresher, daemon=True)
-        refresher.start()
-        return server, cache, client
-    except BaseException:
-        cache.stop()
-        if server is not None:
-            server.server_close()
-        if client is not None:
-            client.close()
-        raise
+    refresher = threading.Thread(target=cache.run_refresher, daemon=True)
+    refresher.start()
+    return server, cache, client
 
 
 def start_relay_proxy(

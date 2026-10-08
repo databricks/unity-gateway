@@ -1,12 +1,4 @@
-"""Adapt native Codex v2 collaboration calls for a plaintext-capable wire route.
-
-Native Codex keeps ``collaboration`` as the local namespace and uses an empty
-``encrypted_function_args`` list to mark a readable response.  The gateway
-alias makes the provider see an ordinary namespace whose ``message`` schema is
-not reserved for encrypted arguments.  This module only transforms decoded
-JSON values; transport framing, authentication, and stream management remain
-owned by the caller.
-"""
+"""Alias Codex's reserved collaboration namespace to request readable assignments."""
 
 from __future__ import annotations
 
@@ -22,12 +14,7 @@ _FERNET_TOKEN_RE = re.compile(r"^gAAAAA[A-Za-z0-9_-]+={0,2}$")
 
 
 def prepare_request(body: bytes) -> tuple[bytes, bool]:
-    """Rewrite one JSON Responses request for the plaintext wire namespace.
-
-    The original bytes are returned for non-JSON or non-v2 requests.  A request
-    containing the reserved wire namespace before this adapter runs is rejected
-    so an unrelated provider tool cannot be silently rewritten.
-    """
+    """Rewrite tool definitions and plaintext history; leave encrypted history intact."""
     try:
         payload = json.loads(body)
     except (TypeError, UnicodeDecodeError, json.JSONDecodeError):
@@ -35,10 +22,7 @@ def prepare_request(body: bytes) -> tuple[bytes, bool]:
     if not isinstance(payload, dict):
         return body, False
 
-    changed = False
-    tools = payload.get("tools")
-    if isinstance(tools, list):
-        changed |= _rewrite_tool_list(tools)
+    changed = _rewrite_tool_list(payload.get("tools"))
 
     input_items = payload.get("input")
     if isinstance(input_items, list):
@@ -53,9 +37,7 @@ def prepare_request(body: bytes) -> tuple[bytes, bool]:
             if not isinstance(item, dict):
                 continue
             if item.get("type") == "additional_tools":
-                item_tools = item.get("tools")
-                if isinstance(item_tools, list):
-                    changed |= _rewrite_tool_list(item_tools)
+                changed |= _rewrite_tool_list(item.get("tools"))
             elif item.get("type") in {"function_call", "function_call_output"}:
                 if item.get("call_id") not in encrypted_call_ids:
                     changed |= _rewrite_replay_item(item)
@@ -66,14 +48,7 @@ def prepare_request(body: bytes) -> tuple[bytes, bool]:
 
 
 def transform_response_event(event: dict[str, Any]) -> dict[str, Any]:
-    """Map provider response events back to native Codex v2 response items.
-
-    ``response.output_item.added`` and ``response.output_item.done`` carry the
-    item under ``item``.  A completed/full response may carry the same items in
-    ``response.output``; both forms are adapted.  A plaintext-capable target
-    must have no encryption marker or an empty marker.  Non-empty or malformed
-    markers fail closed instead of handing ciphertext to native hooks.
-    """
+    """Restore native calls, rejecting opaque assignments before hook dispatch."""
     if not isinstance(event, dict):
         raise TypeError("response event must be a JSON object")
 
@@ -84,19 +59,14 @@ def transform_response_event(event: dict[str, Any]) -> dict[str, Any]:
             item, validate_arguments=result.get("type") != "response.output_item.added"
         )
 
-    response = result.get("response")
-    if isinstance(response, dict):
+    for response in (result, result.get("response")):
+        if not isinstance(response, dict):
+            continue
         output = response.get("output")
         if isinstance(output, list):
             for output_item in output:
                 if isinstance(output_item, dict):
                     _rewrite_response_item(output_item, validate_arguments=True)
-
-    output = result.get("output")
-    if isinstance(output, list):
-        for output_item in output:
-            if isinstance(output_item, dict):
-                _rewrite_response_item(output_item, validate_arguments=True)
     return result
 
 
@@ -107,7 +77,9 @@ def _check_wire_namespace(item: dict[str, Any]) -> None:
         raise ValueError(f"request already contains reserved namespace {WIRE_NAMESPACE!r}")
 
 
-def _rewrite_tool_list(tools: list[Any]) -> bool:
+def _rewrite_tool_list(tools: Any) -> bool:
+    if not isinstance(tools, list):
+        return False
     changed = False
     for tool in tools:
         if not isinstance(tool, dict):
@@ -115,23 +87,18 @@ def _rewrite_tool_list(tools: list[Any]) -> bool:
         _check_wire_namespace(tool)
         if tool.get("type") == "namespace" and tool.get("name") == NATIVE_NAMESPACE:
             tool["name"] = WIRE_NAMESPACE
-            _remove_plaintext_schema_markers(tool)
-            changed = True
+            functions = tool.get("tools")
         elif tool.get("namespace") == NATIVE_NAMESPACE:
             tool["namespace"] = WIRE_NAMESPACE
-            if tool.get("name") in PLAINTEXT_TOOLS:
-                _remove_message_encrypted_marker(tool)
-            changed = True
+            functions = [tool]
+        else:
+            continue
+        changed = True
+        if isinstance(functions, list):
+            for function in functions:
+                if isinstance(function, dict) and function.get("name") in PLAINTEXT_TOOLS:
+                    _remove_message_encrypted_marker(function)
     return changed
-
-
-def _remove_plaintext_schema_markers(namespace: dict[str, Any]) -> None:
-    tools = namespace.get("tools")
-    if not isinstance(tools, list):
-        return
-    for tool in tools:
-        if isinstance(tool, dict) and tool.get("name") in PLAINTEXT_TOOLS:
-            _remove_message_encrypted_marker(tool)
 
 
 def _remove_message_encrypted_marker(tool: dict[str, Any]) -> None:
@@ -182,9 +149,7 @@ def _rewrite_response_item(item: dict[str, Any], *, validate_arguments: bool) ->
     item["namespace"] = NATIVE_NAMESPACE
     if item.get("name") not in PLAINTEXT_TOOLS:
         return
-    marker_present = "encrypted_function_args" in item
-    marker = item.get("encrypted_function_args")
-    if marker_present and marker != []:
+    if item.get("encrypted_function_args", []) != []:
         raise ValueError("wire collaboration response contains encrypted function arguments")
     if validate_arguments:
         _validate_plaintext_arguments(item.get("arguments"))
@@ -196,8 +161,6 @@ def _contains_opaque_message(arguments: Any) -> bool:
         stripped = arguments.strip()
         if _FERNET_TOKEN_RE.fullmatch(stripped):
             return True
-        if not stripped:
-            return False
         try:
             arguments = json.loads(stripped)
         except json.JSONDecodeError:
@@ -221,12 +184,3 @@ def _validate_plaintext_arguments(arguments: Any) -> None:
         raise ValueError("wire collaboration response arguments lack a string message")
     if not parsed["message"].strip():
         raise ValueError("wire collaboration response arguments have an empty message")
-
-
-__all__ = [
-    "NATIVE_NAMESPACE",
-    "PLAINTEXT_TOOLS",
-    "WIRE_NAMESPACE",
-    "prepare_request",
-    "transform_response_event",
-]

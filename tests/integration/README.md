@@ -412,28 +412,14 @@ The 14 retained numbered scenarios comprise 24 explicit journeys: 12 managed and
 executions; the complete integration suite collects 103 executions. See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
-The native Codex v2 routing CUJ checks the exact multiline assignment in a user-owned
-PreToolUse observer, the routing decision, and one native `collaboration.spawn_agent` call.
-It requires a session provider distinct from the managed Databricks default, verifies the
-unpredictable file value and selected child model, and rejects MCP/route-child overlays and
-grandchildren. Both catalog entries (`gpt-5.6-sol` and `gpt-5.6-terra`) must advertise v2
-in the installed binary. Run it with an explicitly selected profile and workspace:
-
-```bash
-UCODE_TEST_WORKSPACE=https://your-existing-e2e-workspace \
-python3.12 scripts/run_integration.py \
-  --ug-version checkout --codex-version 0.154.0 --profile YOUR_PROFILE \
-  -- -k test_ug_codex_native_v2_plain_assignment_routing
-```
-
-That CUJ alone proves only the fixed behavior. An encryption regression comparison also
-requires a fresh pre-change session with the identical Codex version, parent model, workspace,
-catalog, and assignment. Capture the provider's completed spawn response, actual PreToolUse
-input, and router request on both sides. The baseline must contain an actual encrypted
-assignment that stays opaque to the hook/router; the repaired run must expose the full
-assignment and complete the native v2 child task on the selected model. A baseline crash,
-missing spawn, or plaintext assignment is inconclusive. Keep failed attempts separate from
-accepted evidence, and use a separate resume journey to check existing encrypted history.
+The native v2 CUJ uses a bundled v2 catalog and a user-owned observer hook to verify
+the exact assignment at the native call, PreToolUse, and router decision. It checks
+managed-provider selection and completion on the selected child model. Append
+`-- -k test_ug_codex_native_v2_plain_assignment_routing` to the version-pinned runner.
+A before/after comparison additionally needs fresh sessions with identical Codex, parent
+model, workspace, catalog, and prompt, capturing the provider spawn, hook, and router
+inputs. Only an actually encrypted baseline establishes the bug; a crash, missing
+spawn, or plaintext baseline is inconclusive. Encrypted-history resume is a separate check.
 
 ```bash
 # Append one of these selections to the runner command:

@@ -94,17 +94,11 @@ Managed smart defaults are covered by `test_managed_config.py`, `test_cli.py`,
 without tier rules, applying recommendations when tiers exist, and serializing the current
 API field. These are unit/component checks; live request-count coverage is not included.
 
-`test_codex_smart_routing_v2.py` checks that the remote Codex TUI receives the
-session provider on both platforms and that native thread start/resume/fork
-requests select it explicitly. Subagent-only mode leaves parent routing disabled
-while hooks stay with the app-server. This is component coverage, not a live Windows
-sign-in or TUI test. It also checks the session-local transport URL, same-identity
-token refresh, and cleanup on normal exit and failed launch.
-`test_codex_v2_transport.py` covers native namespace translation, plaintext
-markers, preservation of encrypted history, additional native tool names, and
-rejection of new opaque or malformed assignments. Transport streaming, real gzip
-HTTP responses (JSON and SSE), and byte-transparent non-v2 requests are covered in
-`test_gateway_proxy.py`; these component tests do not establish live routing.
+`test_codex_smart_routing_v2.py` covers session-provider selection, subagent-only
+launches, identity refresh, and cleanup. `test_codex_v2_transport.py` covers native
+namespace translation, readable assignments, encrypted history, and malformed calls.
+`test_gateway_proxy.py` covers gzip JSON/SSE decoding, auth refresh, and passthrough
+with an HTTP transport fixture. These are component checks, not live Windows coverage.
 
 Claude picker composition is checked directly through the catalog and renderer functions in
 `test_agent_claude.py`; focused CLI cases cover source selection and launch precedence.
