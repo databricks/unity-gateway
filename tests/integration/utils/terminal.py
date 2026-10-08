@@ -21,6 +21,9 @@ import pyte
 
 from .evidence import agent_sessions, assert_no_terminal_api_error
 
+# ConPTY can deliver the menu selection glyph as U+FFFD.
+SELECTED = "[›❯>\ufffd]"
+
 
 class TerminalScreen(pyte.Screen):
     def __init__(self, columns, lines, send):
@@ -228,7 +231,11 @@ class TerminalProcess:
 
     def selected_line(self):
         return next(
-            (line.strip() for line in self.visible.splitlines() if re.match(r"^\s*[›❯>]", line)),
+            (
+                line.strip()
+                for line in self.visible.splitlines()
+                if re.match(rf"^\s*{SELECTED}", line)
+            ),
             "",
         )
 
@@ -319,6 +326,10 @@ class AgentTerminal(TerminalProcess):
             if "Hooks need review" in text:
                 self.choose("Hooks need review", "Trust all and continue")
                 continue
+            if self.agent == "codex" and "Set up the Codex agent sandbox" in text:
+                # Matches the unelevated sandbox the harness configures for `codex exec`.
+                self.choose("Set up the Codex agent sandbox", "Use non-admin sandbox")
+                continue
             if (
                 "Update available" in text
                 and "Press enter to continue" in text
@@ -369,8 +380,7 @@ class AgentTerminal(TerminalProcess):
                         or "directory allows project-local config, hooks, and exec policies to load."
                         in text
                     )
-                    # ConPTY can deliver the selection glyph as U+FFFD.
-                    and bool(re.search(r"(?m)^\s*[›❯>\ufffd]\s*1[.)]\s+Yes, continue\s*$", text))
+                    and bool(re.search(rf"(?m)^\s*{SELECTED}\s*1[.)]\s+Yes, continue\s*$", text))
                     and bool(re.search(r"(?m)^\s*2[.)]\s+No, quit\s*$", text))
                     and "Press enter to continue" in text,
                     "\r",
