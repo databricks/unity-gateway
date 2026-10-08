@@ -12,6 +12,8 @@ _SKILL_ROOTS = {"claude": ".claude/skills", "codex": ".codex/skills"}
 _LEGACY_SKILL_ROOTS = (".agents/skills",)
 _SKILL_NAME_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 SMART_ROUTER_SKILL = "smart-router"
+# Install the delegation workflow in the same eligible sessions as Smart Router.
+SMART_ROUTER_ORCHESTRATOR_SKILL = "smart-router-orchestrator"
 
 
 def _skills_source() -> Path:

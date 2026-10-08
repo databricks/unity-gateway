@@ -1,0 +1,22 @@
+{
+  "spec_version": 1,
+  "default_agent": "CODING_AGENT_CODEX",
+  "enabled_agents": [
+    {
+      "agent": "CODING_AGENT_CODEX",
+      "config": {
+        "models": {
+          "model_services": [
+            "system.ai.gpt-5-6-sol"
+          ]
+        },
+        "default_models": {
+          "default_model": "system.ai.gpt-5-6-sol"
+        }
+      }
+    }
+  ],
+  "skills": {
+    "unity_catalog_location": "main.default"
+  }
+}

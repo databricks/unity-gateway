@@ -1,34 +1,21 @@
 """Managed-config CUJs for agent model lists, smart routing, and Codex catalog fallback metadata.
 
-The Claude defaults cases read published configs from their dedicated workspaces. Other cases
-inject the admin CodingAgentConfig via UCODE_MANAGED_CONFIG_STUB to exercise shapes the live
-workspace does not publish; only that config input is stubbed. See tests/AGENTS.md rule 4.
+Every case injects a checked-in JSON CodingAgentConfig (tests/fixtures/managed_config/) via
+UCODE_MANAGED_CONFIG_STUB on the managed workspace; only that config input is stubbed. See
+tests/AGENTS.md rule 4.
 """
 
 import json
-import os
 
 import pytest
-from utils.constants import (
-    CLAUDE_SMART_ROUTING_MODELS,
-    CODEX_SMART_ROUTING_MODELS,
-    MANAGED_CLAUDE_PROVIDER_SERVICE,
-)
+from utils.constants import MANAGED_CLAUDE_PROVIDER_SERVICE
 from utils.evidence import FileTask
-from utils.managed import (
-    build_claude_agent_config,
-    build_codex_agent_config,
-    build_coding_agent_config,
-    set_managed_config_stub,
-)
+from utils.managed import use_managed_config_fixture
 from utils.provider_catalog import fetch_anthropic_parent_catalog, fetch_anthropic_provider_catalog
 from utils.terminal import AgentTerminal, TerminalProcess
 
-CLAUDE_OPUS = "system.ai.claude-opus-4-8"
-# A real ca-central model absent from the live published config: its presence in the picker can
-# only come from the injected config, which the live workspace's model list cannot produce.
-CLAUDE_OFF_MENU = "system.ai.claude-sonnet-5"
-LIVE_ONLY = "haiku-4-5"  # published live, but not in the injected list below
+# The picker fixture lists sonnet-5 but not haiku-4-5, which the managed workspace's own list has.
+LIVE_ONLY = "haiku-4-5"
 CODEX_DEFAULT = "system.ai.gpt-5-6-sol"
 CODEX_WITHOUT_BUNDLED_METADATA = "system.ai.gpt-99"
 MANAGED_CLAUDE_DEFAULT_ENV_KEYS = {
@@ -37,20 +24,14 @@ MANAGED_CLAUDE_DEFAULT_ENV_KEYS = {
     "default_sonnet_model": "ANTHROPIC_DEFAULT_SONNET_MODEL",
     "default_haiku_model": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
 }
-CLAUDE_MPS_DEFAULTS_WORKSPACE = (
-    "https://eng-ml-inference-batch-inference-us-west-2.cloud.databricks.com"
-)
-CLAUDE_PARENT_SCHEMA_DEFAULTS_WORKSPACE = (
-    "https://eng-ml-inference-ap-northeast-2.cloud.databricks.com"
-)
 
 SMART_ROUTING_BANNER = "Using Unity Gateway Smart Router."
 
 
-@pytest.mark.managed
+@pytest.mark.managed_fixture
 @pytest.mark.claude
-def test_managed_claude_mps_defaults_accompany_discovery(live_session):
-    """Scenario: launch Claude with managed defaults and MPS discovery on the west-2 workspace.
+def test_managed_claude_mps_defaults_accompany_discovery(live_session, workspace):
+    """Scenario: launch Claude under an injected config with defaults and MPS discovery.
 
     Expected: the installed ug launch writes the MPS header and every admin-authored default to
     both Claude settings files without changing the model ids, and replaces built-in picker rows
@@ -59,9 +40,6 @@ def test_managed_claude_mps_defaults_accompany_discovery(live_session):
     model inference.
     """
     session = live_session
-    target_bearer = os.environ.get("UG_MPS_DEFAULTS_BEARER", "").strip()
-    assert target_bearer, "The runner needs UG_MPS_DEFAULTS_CLIENT_SECRET for this workspace."
-    session.env["DATABRICKS_BEARER"] = target_bearer
     defaults = {
         "default_model": "anthropic.claude-sonnet-5",
         "default_fable_model": "anthropic.claude-fable-5-1",
@@ -69,15 +47,12 @@ def test_managed_claude_mps_defaults_accompany_discovery(live_session):
         "default_sonnet_model": "anthropic.claude-sonnet-5",
         "default_haiku_model": "anthropic.claude-haiku-4-5",
     }
-    result = session.run(
-        "configure", "--workspace", CLAUDE_MPS_DEFAULTS_WORKSPACE, "--skip-upgrade", timeout=240
-    )
+    use_managed_config_fixture(session, "claude_mps_defaults")
+    result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
     assert "Select coding agents to configure:" not in result.stdout, result.stdout
 
     catalog = fetch_anthropic_provider_catalog(
-        CLAUDE_MPS_DEFAULTS_WORKSPACE,
-        target_bearer,
-        MANAGED_CLAUDE_PROVIDER_SERVICE,
+        workspace, session.env["DATABRICKS_BEARER"], MANAGED_CLAUDE_PROVIDER_SERVICE
     )
     expected_families = ("opus", "sonnet", "haiku", "fable")
     command = [str(session.binary), "claude", "--", "--version"]
@@ -109,10 +84,10 @@ def test_managed_claude_mps_defaults_accompany_discovery(live_session):
                 assert option["label"] == display_name, option
 
 
-@pytest.mark.managed
+@pytest.mark.managed_fixture
 @pytest.mark.claude
-def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session):
-    """Scenario: launch Claude with managed defaults and UC discovery on the northeast-2 workspace.
+def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session, workspace):
+    """Scenario: launch Claude under an injected config with defaults and `system.ai` UC discovery.
 
     Expected: the installed ug launch writes the parent-schema header and every admin-authored
     default to both Claude settings files, adding ``[1m]`` only to Opus and Sonnet family defaults.
@@ -121,11 +96,6 @@ def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session)
     model inference.
     """
     session = live_session
-    target_bearer = os.environ.get("UG_PARENT_SCHEMA_DEFAULTS_BEARER", "").strip()
-    assert target_bearer, (
-        "The runner needs UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET for this workspace."
-    )
-    session.env["DATABRICKS_BEARER"] = target_bearer
     parent_schema = "system.ai"
     defaults = {
         "default_model": f"{parent_schema}.claude-sonnet-5",
@@ -134,17 +104,12 @@ def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session)
         "default_sonnet_model": f"{parent_schema}.claude-sonnet-5",
         "default_haiku_model": f"{parent_schema}.claude-haiku-4-5",
     }
-    result = session.run(
-        "configure",
-        "--workspace",
-        CLAUDE_PARENT_SCHEMA_DEFAULTS_WORKSPACE,
-        "--skip-upgrade",
-        timeout=240,
-    )
+    use_managed_config_fixture(session, "claude_parent_schema_defaults")
+    result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
     assert "Select coding agents to configure:" not in result.stdout, result.stdout
 
     catalog = fetch_anthropic_parent_catalog(
-        CLAUDE_PARENT_SCHEMA_DEFAULTS_WORKSPACE, target_bearer, parent_schema
+        workspace, session.env["DATABRICKS_BEARER"], parent_schema
     )
     command = [str(session.binary), "claude", "--", "--version"]
     with TerminalProcess(session, "claude", command, "managed-defaults-parent-schema") as terminal:
@@ -183,17 +148,14 @@ def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session)
 
 @pytest.mark.managed_fixture
 @pytest.mark.claude
-def test_managed_fixture_claude_model_picker_reflects_the_config(live_session, workspace, tmp_path):
+def test_managed_fixture_claude_model_picker_reflects_the_config(live_session, workspace):
     """Scenario: launch Claude under an injected managed config and open the /model picker.
 
     Expected: the picker offers the injected models (including one the live workspace does not
     publish) and omits a model the live workspace does publish.
     """
     session = live_session
-    config = build_coding_agent_config(
-        "CODING_AGENT_CLAUDE_CODE", build_claude_agent_config([CLAUDE_OPUS, CLAUDE_OFF_MENU])
-    )
-    set_managed_config_stub(session, tmp_path, config)
+    use_managed_config_fixture(session, "claude_model_picker")
     result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
     assert "Select coding agents to configure:" not in result.stdout, result.stdout
 
@@ -210,7 +172,7 @@ def test_managed_fixture_claude_model_picker_reflects_the_config(live_session, w
 @pytest.mark.managed_fixture
 @pytest.mark.codex
 @pytest.mark.parametrize("routing", ["0", "1"], ids=["routing-off", "routing-on"])
-def test_ug_configure_managed_codex_catalog_fallback(live_session, workspace, tmp_path, routing):
+def test_ug_configure_managed_codex_catalog_fallback(live_session, workspace, routing):
     """Scenario: configure Codex from an injected model list containing an unknown GPT model.
 
     Expected: ug creates conservative fallback metadata for the unknown model, warns how to get
@@ -218,11 +180,7 @@ def test_ug_configure_managed_codex_catalog_fallback(live_session, workspace, tm
     without smart routing.
     """
     session = live_session
-    config = build_coding_agent_config(
-        "CODING_AGENT_CODEX",
-        build_codex_agent_config(models=[CODEX_DEFAULT, CODEX_WITHOUT_BUNDLED_METADATA]),
-    )
-    set_managed_config_stub(session, tmp_path, config)
+    use_managed_config_fixture(session, "codex_catalog_fallback")
     result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
     assert "Select coding agents to configure:" not in result.stdout, result.stdout
     assert "Codex is missing metadata for managed GPT model" in result.stdout, result.stdout
@@ -259,7 +217,7 @@ def test_ug_configure_managed_codex_catalog_fallback(live_session, workspace, tm
 
 @pytest.mark.managed_fixture
 @pytest.mark.claude
-def test_managed_fixture_claude_smart_routing_banner(live_session, workspace, tmp_path):
+def test_managed_fixture_claude_smart_routing_banner(live_session, workspace):
     """Scenario: an admin config lists Claude models and enables smart routing for Claude.
 
     Expected: `ug configure` applies the config without the personal agent selector, and
@@ -269,11 +227,7 @@ def test_managed_fixture_claude_smart_routing_banner(live_session, workspace, tm
     """
     session = live_session
     task = FileTask(session)
-    config = build_coding_agent_config(
-        "CODING_AGENT_CLAUDE_CODE",
-        build_claude_agent_config(CLAUDE_SMART_ROUTING_MODELS, smart_routing=True),
-    )
-    set_managed_config_stub(session, tmp_path, config)
+    use_managed_config_fixture(session, "claude_smart_routing")
     result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
     assert "Select coding agents to configure:" not in result.stdout, result.stdout
 
@@ -295,7 +249,7 @@ def test_managed_fixture_claude_smart_routing_banner(live_session, workspace, tm
 
 @pytest.mark.managed_fixture
 @pytest.mark.codex
-def test_managed_fixture_codex_smart_routing_banner(live_session, workspace, tmp_path):
+def test_managed_fixture_codex_smart_routing_banner(live_session, workspace):
     """Scenario: an admin config lists Codex models and enables smart routing for Codex.
 
     Expected: `ug configure` applies the config without the personal agent selector, and
@@ -305,11 +259,7 @@ def test_managed_fixture_codex_smart_routing_banner(live_session, workspace, tmp
     """
     session = live_session
     task = FileTask(session)
-    config = build_coding_agent_config(
-        "CODING_AGENT_CODEX",
-        build_codex_agent_config(models=CODEX_SMART_ROUTING_MODELS, smart_routing=True),
-    )
-    set_managed_config_stub(session, tmp_path, config)
+    use_managed_config_fixture(session, "codex_smart_routing")
     result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
     assert "Select coding agents to configure:" not in result.stdout, result.stdout
 

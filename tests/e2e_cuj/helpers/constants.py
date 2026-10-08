@@ -41,3 +41,9 @@ BEDROCK_PROVIDER_SERVICE_FIXTURE = (
 )
 UC_MODEL_LOCATION_FIXTURE = ("ug_e2e.models", "ug_e2e.models.codex_primary")
 FIXTURE_READER_MCP_SERVICE_NAME = "ug_e2e.tools.fixture_reader"
+# UC skill names reject underscores, so the plan's `fixture_summary` is hyphenated.
+FIXTURE_SUMMARY_SKILL_NAME = "ug_e2e.skills.fixture-summary"
+FIXTURE_NOTES_SKILL_NAME = "ug_e2e.skills.fixture-notes"
+FIXTURE_CATALOG_LOOKUP_SKILL_NAME = "ug_e2e.skills.fixture-catalog-lookup"
+FIXTURE_DECOY_SKILL_NAME = "ug_e2e.other_skills.fixture-decoy"
+SKILLS_LOCATION = "ug_e2e.skills"

@@ -10,6 +10,7 @@ from tests.integration.utils.evidence import (
     SubagentCalculation,
     assert_no_terminal_api_error,
     assistant_answer_contains,
+    tool_outputs,
 )
 
 
@@ -228,3 +229,76 @@ def test_completed_task_model_assertion_requires_exact_singleton(tmp_path, agent
     session = _transcript_session(tmp_path, agent, {"parent.jsonl": records})
     with pytest.raises(AssertionError):
         evidence.assert_completed_task_model(session, agent, "value", "expected")
+
+
+@pytest.mark.parametrize(
+    "agent,record",
+    [
+        (
+            "claude",
+            {
+                "type": "user",
+                "message": {"content": [{"type": "tool_result", "content": "confirmed"}]},
+            },
+        ),
+        (
+            "claude",
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "content": [{"type": "text", "text": "confirmed"}],
+                        }
+                    ]
+                },
+            },
+        ),
+        (
+            "codex",
+            {
+                "type": "response_item",
+                "payload": {"type": "function_call_output", "output": "confirmed"},
+            },
+        ),
+        (
+            "codex",
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call_output",
+                    "output": [{"type": "input_text", "text": "confirmed"}],
+                },
+            },
+        ),
+    ],
+)
+def test_tool_outputs_read_native_string_and_block_results(agent, record):
+    assert tool_outputs(agent, [record]) == ["confirmed"]
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_tool_outputs_exclude_user_echoes_and_assistant_claims(agent):
+    records = [
+        {"type": "user", "message": {"role": "user", "content": "confirmed"}},
+        {
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "confirmed"}]},
+        },
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "confirmed"}],
+            },
+        },
+        {
+            "type": "user",
+            "message": {
+                "content": [{"type": "tool_result", "content": "confirmed", "is_error": True}]
+            },
+        },
+    ]
+    assert tool_outputs(agent, records) == []
