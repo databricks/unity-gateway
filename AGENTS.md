@@ -35,6 +35,9 @@ Tests live in `tests/`.
 `src/ucode/smart_routing/config.py` under `_VERSIONS`; their managed environment keys
 are registered in `SMART_ROUTING_CONFIG_ENV_KEYS` in `src/ucode/constants.py`.
 An unset or empty selector preserves legacy environment-flag behavior.
+A valid nonempty selector overrides every conflicting legacy value in that registry.
+Do not use `setdefault` or preserve inherited values for version-owned parameters.
+Explicit launch/session on/off controls still apply after version expansion.
 
 ### Adding a parameter
 

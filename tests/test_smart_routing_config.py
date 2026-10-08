@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import runpy
+from itertools import product
 from unittest.mock import patch
 
 import pytest
@@ -22,6 +23,27 @@ from ucode.constants import (
 from ucode.smart_routing import config, orchestrator, session_env, v2
 
 runner = CliRunner()
+
+_SELECTOR_EXPECTED_FLAGS = {
+    "subagent_only_v0": {
+        ENABLE_SMART_ROUTING_ENV_VAR: "0",
+        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+    },
+    "subagent_orch_v0": {
+        ENABLE_SMART_ROUTING_ENV_VAR: "0",
+        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+    },
+}
+
+
+def _assert_routing_getters(environment: dict[str, str], expected_flags: dict[str, str]) -> None:
+    assert v2.smart_routing_enabled(environment) is True
+    assert v2.first_prompt_routing_enabled(environment) is False
+    assert orchestrator.feature_enabled(environment) is (
+        expected_flags[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] == "1"
+    )
 
 
 @pytest.mark.parametrize(
@@ -64,6 +86,49 @@ def test_resolve_environment_materializes_selector_without_mutating_input(select
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
         "UNRELATED_SETTING": "preserved",
     }
+
+
+@pytest.mark.parametrize(
+    ("selector", "legacy_values", "expected_flags"),
+    [
+        (selector, legacy_values, expected_flags)
+        for selector, expected_flags in _SELECTOR_EXPECTED_FLAGS.items()
+        for legacy_values in product(("0", "1"), repeat=len(SMART_ROUTING_CONFIG_ENV_KEYS))
+    ],
+)
+def test_selector_precedence_covers_every_legacy_flag_combination(
+    selector, legacy_values, expected_flags
+):
+    legacy_environment = dict(zip(SMART_ROUTING_CONFIG_ENV_KEYS, legacy_values, strict=True))
+    original = {
+        SMART_ROUTING_CONFIG_VERSION_ENV_VAR: selector,
+        **legacy_environment,
+    }
+
+    _assert_routing_getters(original, expected_flags)
+
+    resolved = config.resolve_environment(original)
+
+    assert resolved == expected_flags
+    _assert_routing_getters(resolved, expected_flags)
+    assert original == {
+        SMART_ROUTING_CONFIG_VERSION_ENV_VAR: selector,
+        **legacy_environment,
+    }
+
+    applied = original.copy()
+    previous = config.apply_config(applied)
+
+    assert applied == expected_flags
+    assert previous == {
+        **legacy_environment,
+        SMART_ROUTING_CONFIG_VERSION_ENV_VAR: selector,
+    }
+    _assert_routing_getters(applied, expected_flags)
+
+    v2.restore_smart_routing_env(previous, applied)
+
+    assert applied == original
 
 
 @pytest.mark.parametrize(
@@ -312,6 +377,31 @@ def test_cli_context_materializes_inherited_selector_and_restores_after_failure(
             assert os.environ[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] == "1"
             assert v2.smart_routing_enabled() is True
             raise ValueError("launch failed")
+
+    assert {key: os.environ.get(key) for key in original} == original
+
+
+@pytest.mark.parametrize(
+    ("selector", "expected_flags"),
+    list(_SELECTOR_EXPECTED_FLAGS.items()),
+)
+def test_cli_context_materializes_each_selector_over_opposite_legacy_flags(
+    monkeypatch, selector, expected_flags
+):
+    legacy_environment = {
+        key: "1" if value == "0" else "0" for key, value in expected_flags.items()
+    }
+    original = {
+        SMART_ROUTING_CONFIG_VERSION_ENV_VAR: selector,
+        **legacy_environment,
+    }
+    for key, value in original.items():
+        monkeypatch.setenv(key, value)
+
+    with cli._smart_routing_v2_flag(None):
+        assert SMART_ROUTING_CONFIG_VERSION_ENV_VAR not in os.environ
+        assert {key: os.environ.get(key) for key in SMART_ROUTING_CONFIG_ENV_KEYS} == expected_flags
+        _assert_routing_getters(dict(os.environ), expected_flags)
 
     assert {key: os.environ.get(key) for key in original} == original
 

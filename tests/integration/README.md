@@ -303,8 +303,10 @@ role-contract preservation, and isolation from legacy preference files
 lack dedicated regression coverage. Codex's native hook merging, project trust,
 and execution of pre-existing hooks are not exercised by this integration suite.
 
-The unit/component `../test_smart_routing_config.py` covers canonical-v0 selector resolution,
-legacy-flag precedence, registry validation, process-local environment restoration,
+The unit/component `../test_smart_routing_config.py` covers both canonical-v0 selectors against
+all eight binary legacy-flag combinations, exact precedence/materialization/restoration and
+getter results, CLI launch-context materialization/restoration, registry validation,
+process-local environment restoration,
 native-subcommand suppression, and orchestrator off-to-on transitions through real temporary
 session files. It does not claim live agent, hook, or gateway coverage.
 
