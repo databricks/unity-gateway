@@ -6,15 +6,12 @@ without leaving stale ug-managed values or touching the user's own settings.
 Workspace configs are read only, so each phase is the single published config of its own
 workspace and the shared home moves from A to B to C. All three share one metastore with the
 ``ug_e2e`` fixtures (the Bedrock Claude MPS ``ug_e2e.providers.bedrock``, the Codex model
-services in ``ug_e2e.models``, and the ``fixture_reader`` MCP) and one trace table.
-
-Managed skills are not covered: UC skill bundles cannot be uploaded on these workspaces'
-Default Storage catalog (Files API HTTP 501).
+services in ``ug_e2e.models``, the ``fixture_reader`` MCP, and the ``fixture-summary`` skill)
+and one trace table.
 """
 
 import hashlib
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -26,49 +23,55 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from databricks.sdk import WorkspaceClient
 
-from tests.integration.utils.evidence import FileTask, assert_no_terminal_api_error
+from tests.integration.utils.evidence import FileTask
 from tests.integration.utils.sql import query_count, resolve_trace_table, resolve_warehouse_id
-from tests.integration.utils.terminal import AgentTerminal, TerminalProcess
+from tests.integration.utils.terminal import TerminalProcess
 from ucode.agents.claude import CLAUDE_OTEL_TRACE_ENV_KEYS
 
-from .base import BaseCujTest
+from .base import BaseCujTest, bearer, make_workspace_client
 from .helpers.constants import (
+    AGENT_HEADER,
     BEDROCK_PROVIDER_SERVICE_FIXTURE,
     CLAUDE,
+    CLAUDE_HAIKU_MODEL,
+    CLAUDE_OPUS_MODEL,
+    CLAUDE_SONNET_MODEL,
     CODEX,
+    CODEX_LUNA_MODEL,
+    CODEX_SOL_MODEL,
     FIXTURE_READER_MCP_SERVICE_NAME,
+    FIXTURE_SUMMARY_SKILL_NAME,
     INFERENCE_PATHS,
     MANAGED_PATHS,
+    PROVIDER_HEADER,
+    RUN_HEADER,
     UC_MODEL_LOCATION_FIXTURE,
     CodingAgent,
 )
-from .helpers.evidence import SessionEvidence, canonical_model
+from .helpers.evidence import SessionEvidence, assert_models, canonical_model
+from .helpers.mcp import registered_name
+from .helpers.poll import poll
+from .helpers.skills import SKILL_ROOTS, skill_name, skills_view
+from .helpers.terminal import Terminal
 from .helpers.tui_request_recorder import TuiRequestRecorder
 from .helpers.workspace import Workspace
 
-CLAUDE_STATIC_MODELS = (
-    "system.ai.claude-opus-4-8",
-    "system.ai.claude-sonnet-4-6",
-    "system.ai.claude-haiku-4-5",
-)
-CLAUDE_DEFAULT = "system.ai.claude-sonnet-4-6"
-CODEX_SOL = "system.ai.gpt-5-6-sol"
-CODEX_LUNA = "system.ai.gpt-5-6-luna"
+CUJ_NAME = "CUJ 6 · Repeated config and removal"
+
+CLAUDE_STATIC_MODELS = (CLAUDE_OPUS_MODEL, CLAUDE_SONNET_MODEL, CLAUDE_HAIKU_MODEL)
+CLAUDE_DEFAULT = CLAUDE_SONNET_MODEL
 CLAUDE_PROVIDER, CLAUDE_PROVIDER_MODEL = BEDROCK_PROVIDER_SERVICE_FIXTURE
 CODEX_MODEL_LOCATION, CODEX_UC_MODEL = UC_MODEL_LOCATION_FIXTURE
-MANAGED_MCP_ENTRY = FIXTURE_READER_MCP_SERVICE_NAME.replace(".", "-")
+MANAGED_MCP_ENTRY = registered_name(FIXTURE_READER_MCP_SERVICE_NAME)
 CODEX_OS_MANAGED_CONFIG = MANAGED_PATHS[1]
-RUN_HEADER = "x-ug-e2e-run"
-AGENT_HEADER = "x-ug-e2e-agent"
-PROVIDER_HEADER = "databricks-model-provider-service"
 PARENT_SCHEMA_HEADER = "databricks-model-service-parent-schema"
 CONFIGURE_ARGS = ["configure", "--skip-upgrade", "--disable-databricks-ai-tools"]
 TRACE_DEADLINE_SECONDS = 300
 TRACE_INGESTION_SECONDS = 300
 USER_MCP = "ug-e2e-user-echo"
 USER_SKILL = "ug-e2e-user-notes"
+MANAGED_SKILL = skill_name(FIXTURE_SUMMARY_SKILL_NAME)
 USER_MCP_SERVER = """\
 import json, sys
 
@@ -103,10 +106,6 @@ def model_leaf(model: str) -> str:
     """The model's family id, without catalog/vendor/region prefixes, [1m], date, or version."""
     name = model.rsplit(".", 1)[-1].removesuffix("[1m]")
     return re.sub(r"(-\d{8})?(-v\d+:\d+)?$", "", name)
-
-
-def agent_config(config: dict, agent: CodingAgent) -> dict:
-    return next(entry["config"] for entry in config["enabled_agents"] if entry["agent"] == agent)
 
 
 def tracing_enabled(agent_settings: dict) -> bool:
@@ -145,14 +144,13 @@ def mcp_tool_names(registration: dict) -> tuple[str, ...]:
     return tuple(tool["name"] for tool in responses[2]["result"]["tools"])
 
 
-def workspace_client(url: str) -> WorkspaceClient:
-    """The base class authenticates only WORKSPACE_URL; phases B and C need their own clients."""
-    return WorkspaceClient(
-        host=url,
-        client_id=os.environ["UG_CUJ_SP_CLIENT_ID"],
-        client_secret=os.environ["UG_CUJ_SP_CLIENT_SECRET"],
-        auth_type="oauth-m2m",
-    )
+def skill_bundles(files: "AgentFiles", root: str) -> set[str]:
+    """The skill directories under one root, from the files captured there."""
+    return {
+        Path(path).relative_to(root).parts[0]
+        for path in files.skill_files
+        if Path(path).is_relative_to(root)
+    }
 
 
 @dataclass(frozen=True)
@@ -206,6 +204,7 @@ class PhaseB:
     os_managed_codex: dict
     codex_span_count: int
     claude_span_count: int
+    skills: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -221,6 +220,7 @@ class PhaseC:
     bare_ug: AgentTask
     phase_b_span_count: int
     codex_span_count: int
+    skills: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -240,24 +240,20 @@ class Journey:
         self.published = published
         self.recorders = recorders
         self.run_id = f"cuj6-{uuid.uuid4().hex[:12]}"
-        bearer = self.bearer("a")
+        a_bearer = bearer(workspaces["a"].client)
         # All phase workspaces share one metastore and trace table, so A queries them all.
         self.trace_url = workspaces["a"].url
-        self.warehouse_id = resolve_warehouse_id(self.trace_url, bearer)
-        self.trace_table = resolve_trace_table(self.trace_url, bearer)
+        self.warehouse_id = resolve_warehouse_id(self.trace_url, a_bearer)
+        self.trace_table = resolve_trace_table(self.trace_url, a_bearer)
         self.seeded = self.seed_user_state()
 
     @property
     def home(self) -> Path:
         return self.session.home
 
-    def bearer(self, phase: str) -> str:
-        # Each workspace issues its own M2M token; refreshed per call because the journey is long.
-        headers = self.workspaces[phase].client.config.authenticate()
-        return headers["Authorization"].removeprefix("Bearer ")
-
     def enter(self, phase: str) -> None:
-        self.session.env["DATABRICKS_BEARER"] = self.bearer(phase)
+        # Each workspace issues its own M2M token; minted per entry because the journey is long.
+        self.session.install_bearer(bearer(self.workspaces[phase].client))
 
     def configure(self, phase: str) -> None:
         self.enter(phase)
@@ -293,7 +289,7 @@ class Journey:
 
     def skill_files(self) -> dict[str, str]:
         files = {}
-        for root in (self.home / ".claude/skills", self.home / ".agents/skills"):
+        for root in (self.home / name for name in SKILL_ROOTS):
             for path in sorted(root.rglob("*")) if root.is_dir() else []:
                 if path.is_file():
                     digest = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -381,25 +377,27 @@ class Journey:
         assert requests, f"The recorder saw no {agent} inference request"
         return AgentTask(requests=requests, turn_models=tuple(turn.models))
 
+    def skills_view(self, phase: str, agent: str) -> str:
+        # The user's own skill rendering proves the list loaded before absence is checked.
+        return skills_view(
+            self.session,
+            self.recorders[phase],
+            agent,
+            (USER_SKILL,),
+            name=f"phase-{phase}-{agent}-skills",
+        )
+
     def bare_ug_task(self, phase: str) -> AgentTask:
-        """Bare `ug` in a real terminal; helpers.terminal.Terminal only drives `ug <agent>`."""
+        """Bare `ug` in a real terminal, which launches the default agent Codex."""
         recorder = self.recorders[phase]
         recorder.prepare_launch()
         evidence = SessionEvidence(self.home, CODEX)
         task = FileTask(self.session)
         checkpoint = recorder.checkpoint()
-        with AgentTerminal(
-            self.session, CODEX, [str(self.session.binary)], f"phase-{phase}-bare-ug"
-        ) as tui:
+        with Terminal(self.session, f"phase-{phase}-bare-ug", [], agent=CODEX) as tui:
             tui.boot()
             tui.submit(task.prompt)
-
-            def completed(screen):
-                assert_no_terminal_api_error(screen)
-                assert "Do you want to proceed?" not in screen, screen
-                return evidence.completed(task) is not None
-
-            tui.wait_for(completed, "completed native file task", timeout=240)
+            tui.task(evidence, task)
             tui.exit_normally()
         requests = self.inference_requests(phase, CODEX, checkpoint)
         assert requests, "The recorder saw no bare ug Codex inference request"
@@ -410,7 +408,7 @@ class Journey:
         attributes = "resource.attributes" if resource else "attributes"
         return query_count(
             self.trace_url,
-            self.bearer("a"),
+            bearer(self.workspaces["a"].client),
             self.warehouse_id,
             f"SELECT COUNT(*) FROM {self.trace_table} "
             "WHERE time > current_timestamp() - INTERVAL 2 HOURS "
@@ -419,20 +417,24 @@ class Journey:
         )
 
     def wait_for_codex_span(self, marker: str) -> int:
-        deadline = time.monotonic() + TRACE_DEADLINE_SECONDS
-        while (count := self.trace_count(marker, resource=False)) == 0:
-            if time.monotonic() > deadline:
-                break
-            time.sleep(15)
-        return count
+        return poll(
+            lambda: self.trace_count(marker, resource=False),
+            timeout=TRACE_DEADLINE_SECONDS,
+            interval=15,
+        )
 
     def seed_user_state(self) -> SeededUserState:
         """Ordinary user-owned prefs, MCP registration, and skill; no ug state."""
         claude_settings = self.home / ".claude/settings.json"
         claude_settings.parent.mkdir(parents=True)
-        claude_settings.write_text(
-            json.dumps({"cleanupPeriodDays": 45, "env": {"UG_E2E_USER_PREF": self.run_id}})
-        )
+        # A user who already picked a theme, in Claude's own format: Claude's TUI saves the theme
+        # here on first launch, so that write is a no-op and any diff is ug's.
+        user_settings = {
+            "cleanupPeriodDays": 45,
+            "env": {"UG_E2E_USER_PREF": self.run_id},
+            "theme": "dark",
+        }
+        claude_settings.write_text(json.dumps(user_settings, indent=2) + "\n")
         codex_config = self.home / ".codex/config.toml"
         codex_config.parent.mkdir(parents=True)
         codex_config.write_text(
@@ -448,7 +450,7 @@ class Journey:
             (CODEX, ["mcp", "add", USER_MCP, "--", sys.executable, str(server)]),
         ):
             self.session.run(*args, binary=self.agent_binary(agent))
-        for root in (".claude/skills", ".agents/skills"):
+        for root in SKILL_ROOTS:
             skill = self.home / root / USER_SKILL / "SKILL.md"
             skill.parent.mkdir(parents=True)
             skill.write_text(
@@ -482,8 +484,12 @@ class TestCujRepeatedConfig(BaseCujTest):
         session, workspace_a, recorder_a = cuj
         workspaces = {
             "a": workspace_a,
-            "b": Workspace(workspace_client(self.PHASE_B_URL)),
-            "c": Workspace(workspace_client(self.PHASE_C_URL)),
+            "b": Workspace(
+                make_workspace_client(self.PHASE_B_URL, self.CLIENT_ID_ENV, self.CLIENT_SECRET_ENV)
+            ),
+            "c": Workspace(
+                make_workspace_client(self.PHASE_C_URL, self.CLIENT_ID_ENV, self.CLIENT_SECRET_ENV)
+            ),
         }
         published = {phase: workspace.config() for phase, workspace in workspaces.items()}
         with (
@@ -501,6 +507,7 @@ class TestCujRepeatedConfig(BaseCujTest):
     def phase_a(self, journey):
         # Configure A directly twice: through the recorder, the repeat would be a switch back
         # from the recorder URL rather than a repeat of the same workspace.
+        # No terminal launch in A: it makes ug own /etc, which phase B's headless configure refuses.
         journey.enter("a")
         upstream = ["--workspace", journey.workspaces["a"].url]
         journey.session.configure([*CONFIGURE_ARGS, *upstream])
@@ -534,6 +541,7 @@ class TestCujRepeatedConfig(BaseCujTest):
             os_managed_codex=read_toml(CODEX_OS_MANAGED_CONFIG),
             codex_span_count=codex_span_count,
             claude_span_count=journey.trace_count(claude_marker, resource=True),
+            skills={agent: journey.skills_view("b", agent) for agent in (CLAUDE, CODEX)},
         )
 
     @pytest.fixture(scope="class")
@@ -555,6 +563,7 @@ class TestCujRepeatedConfig(BaseCujTest):
         codex_marker = f"{journey.run_id}-codex-c"
         codex = journey.run_task("c", CODEX, marker=codex_marker)
         final = journey.agent_files()
+        skills = {CODEX: journey.skills_view("c", CODEX)}
         # Absence can't be polled; wait out the ingestion window before counting.
         time.sleep(TRACE_INGESTION_SECONDS)
         return PhaseC(
@@ -569,22 +578,32 @@ class TestCujRepeatedConfig(BaseCujTest):
             bare_ug=bare_ug,
             phase_b_span_count=journey.trace_count(f"{journey.run_id}-codex-b", resource=False),
             codex_span_count=journey.trace_count(codex_marker, resource=False),
+            skills=skills,
         )
 
     # Phase A: CUJ 1's config plus a named managed MCP.
 
     def test_phase_a_workspace_publishes_plan_config(self, journey):
         config = journey.published["a"]
-        claude = agent_config(config, CodingAgent.CLAUDE_CODE)
-        codex = agent_config(config, CodingAgent.CODEX)
+        configs = Workspace.agent_configs(config)
+        claude = configs[CodingAgent.CLAUDE_CODE]
+        codex = configs[CodingAgent.CODEX]
         assert config["default_agent"] == CodingAgent.CLAUDE_CODE
         assert claude["models"]["model_services"] == list(CLAUDE_STATIC_MODELS)
-        assert codex["models"]["model_services"] == [CODEX_SOL, CODEX_LUNA]
+        assert codex["models"]["model_services"] == [CODEX_SOL_MODEL, CODEX_LUNA_MODEL]
         assert tracing_enabled(claude) and tracing_enabled(codex)
         assert config["mcp_servers"]["names"] == [FIXTURE_READER_MCP_SERVICE_NAME]
+        assert config["skills"]["names"] == [FIXTURE_SUMMARY_SKILL_NAME]
 
     def test_phase_a_repeat_configure_changes_nothing(self, phase_a):
         assert phase_a.second == phase_a.first
+
+    def test_phase_a_downloads_the_managed_skill_once(self, phase_a):
+        files = phase_a.second
+        for root in SKILL_ROOTS:
+            assert skill_bundles(files, root) == {MANAGED_SKILL, USER_SKILL}
+            for bundle_file in ("SKILL.md", "reference/fixture-facts.md"):
+                assert f"{root}/{MANAGED_SKILL}/{bundle_file}" in files.skill_files
 
     def test_phase_a_registers_managed_and_user_mcp_once(self, phase_a):
         files = phase_a.second
@@ -606,18 +625,19 @@ class TestCujRepeatedConfig(BaseCujTest):
 
     def test_phase_a_claude_runs_its_default(self, phase_a):
         assert CLAUDE_DEFAULT in {canonical_model(m) for m in phase_a.claude.request_models}
-        assert {canonical_model(m) for m in phase_a.claude.turn_models} == {CLAUDE_DEFAULT}
+        assert_models(phase_a.claude.turn_models, CLAUDE_DEFAULT)
 
     def test_phase_a_codex_runs_its_default(self, phase_a):
-        assert {canonical_model(m) for m in phase_a.codex.request_models} == {CODEX_SOL}
-        assert {canonical_model(m) for m in phase_a.codex.turn_models} == {CODEX_SOL}
+        assert_models(phase_a.codex.request_models, CODEX_SOL_MODEL)
+        assert_models(phase_a.codex.turn_models, CODEX_SOL_MODEL)
 
     # Phase B: Claude on an MPS, Codex on UC discovery; headers, MCP, and tracing changed.
 
     def test_phase_b_workspace_publishes_plan_config(self, journey):
         config = journey.published["b"]
-        claude = agent_config(config, CodingAgent.CLAUDE_CODE)
-        codex = agent_config(config, CodingAgent.CODEX)
+        configs = Workspace.agent_configs(config)
+        claude = configs[CodingAgent.CLAUDE_CODE]
+        codex = configs[CodingAgent.CODEX]
         assert config["default_agent"] == CodingAgent.CODEX
         assert claude["models"] == {"model_provider_service": CLAUDE_PROVIDER}
         assert claude["default_models"]["default_model"] == CLAUDE_PROVIDER_MODEL
@@ -627,6 +647,7 @@ class TestCujRepeatedConfig(BaseCujTest):
         assert lower_keys(codex["http_headers"]) == {RUN_HEADER: "cuj6-phase-b"}
         assert tracing_enabled(codex)
         assert not config.get("mcp_servers", {}).get("names")
+        assert not config.get("skills")
 
     def test_phase_b_claude_routes_through_the_provider(self, phase_b):
         assert CLAUDE_PROVIDER_MODEL in phase_b.claude.request_models
@@ -692,6 +713,14 @@ class TestCujRepeatedConfig(BaseCujTest):
             ):
                 assert MANAGED_MCP_ENTRY not in registered
 
+    def test_phase_b_managed_skill_stays_removed_across_launches(self, phase_b):
+        # The /skills views open after the task launches, so they also cover restarts.
+        for files in (phase_b.files, phase_b.restarted):
+            for root in SKILL_ROOTS:
+                assert skill_bundles(files, root) == {USER_SKILL}
+        for agent, screen in phase_b.skills.items():
+            assert MANAGED_SKILL not in screen, f"{agent} /skills:\n{screen}"
+
     def test_phase_b_traces_codex_but_not_claude(self, phase_b):
         # Codex's span proves the destination is up before Claude's absence counts.
         assert phase_b.codex_span_count > 0
@@ -702,10 +731,18 @@ class TestCujRepeatedConfig(BaseCujTest):
     def test_phase_c_workspace_publishes_plan_config(self, journey):
         config = journey.published["c"]
         assert [entry["agent"] for entry in config["enabled_agents"]] == [CodingAgent.CODEX]
-        codex = agent_config(config, CodingAgent.CODEX)
-        assert codex["models"] == {"model_services": [CODEX_LUNA]}
-        assert codex["default_models"]["default_model"] == CODEX_LUNA
+        codex = Workspace.agent_configs(config)[CodingAgent.CODEX]
+        assert codex["models"] == {"model_services": [CODEX_LUNA_MODEL]}
+        assert codex["default_models"]["default_model"] == CODEX_LUNA_MODEL
         assert not tracing_enabled(codex) and not codex.get("http_headers")
+        assert not config.get("skills")
+
+    def test_phase_c_managed_skill_stays_removed(self, journey, phase_c):
+        for root in SKILL_ROOTS:
+            assert skill_bundles(phase_c.final, root) == {USER_SKILL}
+            # skill_files lists files only; a leftover empty bundle directory would hide there.
+            assert not (journey.home / root / MANAGED_SKILL).exists()
+        assert MANAGED_SKILL not in phase_c.skills[CODEX], phase_c.skills[CODEX]
 
     def test_phase_c_terminal_configure_clears_phase_b_machine_wide_headers(self, phase_c):
         provider = phase_c.os_managed_codex["model_providers"]["Databricks"]
@@ -717,13 +754,16 @@ class TestCujRepeatedConfig(BaseCujTest):
             assert not {RUN_HEADER, AGENT_HEADER, PARENT_SCHEMA_HEADER} & set(request.headers)
 
     def test_phase_c_codex_picker_is_only_luna(self, phase_c):
-        assert phase_c.picker == (CODEX_LUNA,)
+        assert phase_c.picker == (CODEX_LUNA_MODEL,)
 
     def test_phase_c_codex_and_bare_ug_run_luna(self, phase_c):
-        assert {canonical_model(m) for m in phase_c.codex.request_models} == {CODEX_LUNA}
-        assert {canonical_model(m) for m in phase_c.codex.turn_models} == {CODEX_LUNA}
-        assert {canonical_model(m) for m in phase_c.bare_ug.request_models} == {CODEX_LUNA}
-        assert {canonical_model(m) for m in phase_c.bare_ug.turn_models} == {CODEX_LUNA}
+        for models in (
+            phase_c.codex.request_models,
+            phase_c.codex.turn_models,
+            phase_c.bare_ug.request_models,
+            phase_c.bare_ug.turn_models,
+        ):
+            assert_models(models, CODEX_LUNA_MODEL)
 
     def test_phase_c_claude_is_rejected_before_inference(self, phase_c):
         assert phase_c.disabled_claude_returncode != 0

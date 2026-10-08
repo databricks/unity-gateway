@@ -272,7 +272,7 @@ def build_responses_request(
         "instructions": build_system_prompt(review_policy, repository_policy),
         "input": user_prompt,
         "reasoning": {"effort": "high"},
-        "max_output_tokens": 4_000,
+        "max_output_tokens": 16_000,
         "store": False,
     }
 
@@ -405,7 +405,10 @@ def _request_review(
         raise ReviewError("Databricks returned an unexpected review response.")
     content = extract_response_text(payload)
     if not content:
-        raise ReviewError("Databricks Responses API returned no output text.")
+        incomplete = payload.get("incomplete_details")
+        cause = incomplete.get("reason") if isinstance(incomplete, dict) else None
+        reason = f" (incomplete: {cause})" if cause else ""
+        raise ReviewError(f"Databricks Responses API returned no output text{reason}.")
     return parse_review(content, bundle)
 
 

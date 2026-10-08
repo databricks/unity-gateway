@@ -5,36 +5,29 @@ import time
 import uuid
 
 import pytest
-from utils.constants import CODEX_PLATFORM_ARGS, CODEX_TEST_MODEL
+from utils.constants import CODEX_TEST_MODEL
 from utils.evidence import FileTask
-from utils.managed import (
-    build_codex_agent_config,
-    build_coding_agent_config,
-    set_managed_config_stub,
-)
+from utils.managed import use_managed_config_fixture
 from utils.sql import query_count, resolve_trace_table, resolve_warehouse_id
 
 pytestmark = [pytest.mark.live, pytest.mark.codex]
 
 
-def test_ug_codex_exports_trace_to_configured_table(live_session, workspace, tmp_path):
+def test_ug_codex_exports_trace_to_configured_table(live_session, workspace):
     """Scenario: resolve the trace table, configure Codex, and run a uniquely marked task.
 
     Expected: the real agent task completes and, after the ingestion window, the
     configured trace table contains a Codex span carrying the same marker.
     """
     session = live_session
+    session.choose_codex_windows_sandbox()
     bearer = session.env["DATABRICKS_BEARER"]
     table = resolve_trace_table(workspace, bearer)
     warehouse_id = os.environ.get("UG_INTEGRATION_WAREHOUSE_ID", "").strip()
     warehouse_id = warehouse_id or resolve_warehouse_id(workspace, bearer)
     marker = f"ug-codex-trace-{uuid.uuid4().hex}"
     task = FileTask(session)
-    config = build_coding_agent_config(
-        "CODING_AGENT_CODEX",
-        build_codex_agent_config(models=[CODEX_TEST_MODEL], otel_tracing_enabled=True),
-    )
-    set_managed_config_stub(session, tmp_path, config)
+    use_managed_config_fixture(session, "codex_tracing")
     session.run(
         "configure",
         "--workspace",
@@ -48,7 +41,6 @@ def test_ug_codex_exports_trace_to_configured_table(live_session, workspace, tmp
         "--",
         "--config",
         f'otel.span_attributes.ug_integration_marker="{marker}"',
-        *CODEX_PLATFORM_ARGS,
         "exec",
         "--skip-git-repo-check",
         "--json",
