@@ -296,6 +296,9 @@ The toggle journeys run with `ENABLE_SMART_ROUTER_ORCHESTRATOR` unset and with
 `smart-router-orchestrator` and `smart-router` when opted in. They verify the saved session
 controls, a new CLI confirmation in the native tool-result records, and a new
 assistant answer after each skill invocation.
+Fresh remote Codex sessions can require approval to write the session controls. The
+driver accepts only the exact requested toggle command through the native permission
+dialog; unexpected commands fail, and sandbox settings are not changed.
 Collapsed terminal output is allowed; the answer need not repeat the CLI's exact wording.
 Each following child still verifies whether a routing decision occurred.
 Their off-phase child is an explicit user-requested delegation;

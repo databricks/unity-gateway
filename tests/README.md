@@ -150,6 +150,8 @@ The toggle integration journeys run with `ENABLE_SMART_ROUTER_ORCHESTRATOR` unse
 bundled skills when opted in, verify the saved session controls and native
 tool-result confirmation after each toggle, and explicitly request their children,
 including while routing is off.
+If Codex requests permission to update the session controls, the driver approves only
+the exact toggle command through its native dialog and leaves the sandbox enabled.
 `test_integration_evidence.py` checks native tool-result extraction for both agents,
 including collapsed-output records, and excludes user echoes and assistant claims.
 
