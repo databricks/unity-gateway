@@ -378,9 +378,8 @@ def test_cuj_inference_evidence_requires_exact_task_model_schema_and_response(ag
             )
 
 
-@pytest.mark.parametrize("exclusive", [True, False])
 @pytest.mark.parametrize("failure", [None, "model", "tokens", "error", "side_model"])
-def test_cuj_claude_headless_model_requires_expected_model_output_tokens(failure, exclusive):
+def test_cuj_claude_headless_model_requires_expected_model_output_tokens(failure):
     model = "ug_e2e.models.claude_haiku"
     usage = {
         "wrong-model" if failure == "model" else model: {
@@ -398,8 +397,8 @@ def test_cuj_claude_headless_model_requires_expected_model_output_tokens(failure
             }
         )
     )
-    if failure is None or (failure == "side_model" and not exclusive):
-        assert_claude_headless_model(result, model, exclusive=exclusive)
+    if failure is None:
+        assert_claude_headless_model(result, model)
     else:
         with pytest.raises(AssertionError):
-            assert_claude_headless_model(result, model, exclusive=exclusive)
+            assert_claude_headless_model(result, model)

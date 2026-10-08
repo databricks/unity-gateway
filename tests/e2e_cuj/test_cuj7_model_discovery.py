@@ -258,7 +258,7 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         )
         task.assert_headless_answer(CLAUDE, result)
         assert evidence.completed(task), "No completed native turn matched the file task"
-        assert_claude_headless_model(result, model, exclusive=False)
+        assert_claude_headless_model(result, model)
         assert_inference_evidence(recorder, 0, CLAUDE, task, model)
         settings = json.loads(session.run(str(MANAGED_PATHS[0]), binary="cat", timeout=30).stdout)
         assert {key: settings.get("env", {}).get(key) for key in defaults} == defaults
