@@ -13,8 +13,9 @@ The two stacked PRs make precedence handling deterministic:
    managed-settings path.
 
 After both PRs merge, interactive configuration reconciles the agent's OS-managed file by default.
-Non-interactive and CI execution never elevates privileges and instead uses local settings when the
-managed file is compatible.
+Non-interactive execution uses local settings when the managed file is compatible. Both agents repair
+conflicting managed settings using `sudo -n`, which requires existing authorization and never prompts
+for a password. If that repair is denied, the agent does not launch.
 
 ## Configuration Files
 
@@ -28,10 +29,14 @@ configuration, except for Claude subscription relay.
 
 ## Interactive Detection
 
-An invocation may modify OS-managed settings only when standard input is a TTY. Standard output does
-not affect the decision, so piping logs does not disable an otherwise interactive configuration.
-CI, pipes, cron jobs, and headless subprocesses normally have non-TTY standard input and therefore
-remain local-only.
+Standard input determines whether UG may request administrator permission interactively. Standard
+output does not affect the decision. Without a TTY, either agent may repair an existing conflicting
+file through one-shot `sudo -n` with stdin disconnected; absent or compatible files remain local-only.
+A denied repair blocks launch.
+
+`managed_writes_allowed` centralizes this policy: its default remains interactive-only, while the
+shared reconciliation/writer permits an existing-file repair attempt. The writer derives sudo's
+prompt mode and stdin handling itself; the predicate does not probe or grant authorization.
 
 This is a new shared ucode distinction. The previous implementation inferred interactivity from
 command shape in some flows and did not guard managed-file writes consistently.
@@ -46,12 +51,13 @@ command shape in some flows and did not guard managed-file writes consistently.
 | Interactive | Already identical | Continue without a backup, write, or `sudo` invocation. |
 | Non-interactive | Absent | Use the local ucode file. Do not create the managed file. |
 | Non-interactive | Ucode-owned values absent or equal | Use the local ucode file. Do not modify the managed file. |
-| Non-interactive | Ucode-owned value conflicts | Stop before launching because the higher-precedence value would override ucode. |
+| Non-interactive | Ucode-owned value conflicts | Repair through `sudo -n`; stop before launching if authorization or verification fails. |
 | Any | Invalid, unreadable, or symlinked | Stop without modifying the file because precedence cannot be established safely. |
 
 `ucode configure`, first-time `ucode claude` or `ucode codex`, and later launches all use the same
 agent-specific reconciliation path. A first-time launch from an interactive terminal can therefore
-request administrator permission. A first-time non-interactive launch remains local-only.
+request administrator permission. A first-time non-interactive launch uses local settings unless
+the agent must repair an existing conflicting managed file.
 
 For Claude, turning off UG tracing preserves the live OS-managed telemetry values unchanged,
 including values UG wrote on an earlier run. The same applies when the workspace has no managed
@@ -99,8 +105,8 @@ errors:
 - retries once only when device management restored the exact pre-write contents;
 - preserves a concurrently changed policy instead of overwriting it.
 
-The privilege boundary is interactive. Non-interactive paths do not invoke either normal `sudo` or
-`sudo -n`.
+Interactive updates may request administrator permission. Non-interactive conflict repairs use only
+`sudo -n` with stdin disconnected.
 
 Root access cannot sustainably override an actively enforced policy. If an MDM process immediately
 restores the original file twice, ucode stops with an error instead of repeatedly fighting the
@@ -157,7 +163,7 @@ to unchanged launches.
 
 The verification scopes distinguish:
 
-- an interactively reconciled managed file;
+- a managed file reconciled interactively or through an authorized non-prompting repair;
 - a managed file verified as compatible with local settings;
 - a managed file verified as compatible with Claude relay.
 
@@ -196,9 +202,9 @@ result. An identical file produces no elevation message.
 Representative blockers are:
 
 ```text
-Claude Code configuration cannot be applied non-interactively because OS-managed settings at
-<path> override ucode values: env.ANTHROPIC_BASE_URL. Run `ucode configure --agent claude` from an
-interactive terminal or contact your administrator.
+Claude Code cannot start because ucode could not update <path>: sudo: a password is required.
+Run the ucode command from an interactive terminal and approve the administrator prompt, or contact
+your administrator.
 ```
 
 ```text

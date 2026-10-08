@@ -3019,9 +3019,6 @@ def _launch_tool(
         if tool == "claude":
             if provider:
                 state["_claude_launch_provider"] = provider
-            elif model:
-                # Set after configure_tool so the selection stays launch-scoped.
-                state["_claude_launch_custom_model"] = model
         elif tool == "codex":
             if provider:
                 state["_codex_launch_provider"] = provider
@@ -3316,8 +3313,8 @@ def claude_cmd(
         typer.Option(
             "--model",
             help="Launch on a specific Databricks model id (e.g. a UC "
-            "`<catalog>.<schema>.<name>`). Pinned via launch-scoped Claude family aliases so the "
-            "gateway resolves it — unlike Claude Code's own --model, which rejects non-catalog ids. "
+            "`<catalog>.<schema>.<name>`). Passed to Claude Code's native `--model` option "
+            "for this launch only. "
             "With --provider, pass a family (opus/sonnet/haiku) or a target the service allows to "
             "start on that tier instead of Claude Code's opus default. Pass before any `--` separator.",
         ),
