@@ -384,3 +384,10 @@ and absent configuration. The watched test has shown a stale first parent reques
 one-second wait in a prior run; the latest run passed all four tests. This is native streaming
 component evidence, not normal TUI/UG launch integration or live gateway coverage. Commands,
 SDK API sources, and remaining adapter work are in `docs/claude-session-settings.md`.
+
+`test_claude_recipe_payload.py` covers the Smart Router consumer: both enable flags,
+default/custom startup recipes, native launch body composition, on/off/on desired-state
+updates through the real CLI, independent session files, malformed body rejection, and
+no injection when never enabled. It preserves gateway settings and caller body fields.
+These component tests do not establish native in-session payload propagation; that remains
+dependent on integrating the runtime control API into the UG launcher, as described in `docs/claude-session-settings.md`.

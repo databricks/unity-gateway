@@ -14,6 +14,7 @@ import sys
 import threading
 import traceback
 from collections.abc import Callable
+from contextlib import ExitStack
 from pathlib import Path
 
 from ucode import gateway_proxy
@@ -88,6 +89,7 @@ from ucode.smart_routing.claude_hooks import (
     remove_smart_routing_hooks,
     sync_smart_routing_hooks,
 )
+from ucode.smart_routing.recipe_payload import claude_recipe_session
 from ucode.smart_routing.routing import configured_router_name
 from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
@@ -2035,12 +2037,23 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
 
-    proc = subprocess_cross_os.popen(_build_claude_argv(binary, tool_args, relayed=True))
     try:
-        returncode = proc.wait()
-    except KeyboardInterrupt:
-        proc.send_signal(signal.SIGINT)
-        returncode = proc.wait()
+        with ExitStack() as stack:
+            recipe_settings = None
+            if smart_routing_v2.smart_routing_enabled():
+                settings, tool_args = _compose_v2_settings(tool_args)
+                session_path = smart_routing_v2._prepare_smart_router_session("claude")
+                recipe_settings = stack.enter_context(claude_recipe_session(settings, session_path))
+            proc = subprocess_cross_os.popen(
+                _build_claude_argv(
+                    binary, tool_args, relayed=True, settings_override=recipe_settings
+                )
+            )
+            try:
+                returncode = proc.wait()
+            except KeyboardInterrupt:
+                proc.send_signal(signal.SIGINT)
+                returncode = proc.wait()
     finally:
         cache.stop()
         server.shutdown()
@@ -2055,6 +2068,24 @@ def launch(
     options: LaunchOptions,
 ) -> None:
     tool_args = _external_web_search_args(state, tool_args)
+    with ExitStack() as stack:
+        recipe_settings = None
+        if not state.get("claude_relayed") and (
+            options.launch_smart_routing or smart_routing_v2.smart_routing_enabled()
+        ):
+            settings, tool_args = _compose_v2_settings(tool_args)
+            session_path = smart_routing_v2._prepare_smart_router_session("claude")
+            recipe_settings = stack.enter_context(claude_recipe_session(settings, session_path))
+        _launch(state, tool_args, options=options, recipe_settings=recipe_settings)
+
+
+def _launch(
+    state: dict,
+    tool_args: list[str],
+    *,
+    options: LaunchOptions,
+    recipe_settings: dict | None,
+) -> None:
     binary = SPEC["binary"]
     workspace = state.get("workspace")
     if workspace and os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) == "1":
@@ -2079,7 +2110,11 @@ def launch(
                 user_settings_path=CLAUDE_USER_SETTINGS_PATH,
                 # With no user pin, let Claude resolve its starting model from its own settings.
                 launch_model=options.user_pinned_model,
-                compose_settings=_compose_v2_settings,
+                compose_settings=(
+                    (lambda args: (copy.deepcopy(recipe_settings), args))
+                    if recipe_settings is not None
+                    else _compose_v2_settings
+                ),
                 launch_model_args=_launch_model_args,
                 model_name=_maybe_add_1m_suffix,
             )
@@ -2127,6 +2162,8 @@ def launch(
         }
         settings_override = _merge_claude_settings(settings_override or {}, {"env": fallback_env})
         os.environ.update(fallback_env)
+    if recipe_settings is not None:
+        settings_override = _merge_claude_settings(recipe_settings, settings_override or {})
     exec_or_spawn(_build_claude_argv(binary, launch_args, settings_override=settings_override))
 
 

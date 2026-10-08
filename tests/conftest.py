@@ -76,6 +76,8 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.delenv("ENABLE_SMART_ROUTING_V2", raising=False)
     monkeypatch.delenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", raising=False)
     monkeypatch.delenv("SMART_ROUTER_NAME", raising=False)
+    monkeypatch.delenv("SMART_ROUTER_RECIPE_LOCAL", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_EXTRA_BODY", raising=False)
     # On Windows, resolve_command swaps a bare program name for whatever `shutil.which`
     # finds on the developer's PATH (e.g. a real `codex.CMD`). Rebind only the compatibility
     # helper's `shutil` so argv stays host-independent; helper tests patch `which` explicitly.
