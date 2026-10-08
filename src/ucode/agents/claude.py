@@ -15,6 +15,7 @@ import threading
 import traceback
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from ucode import gateway_proxy
 from ucode.config_io import (
@@ -66,7 +67,6 @@ from ucode.managed_files import (
     mark_managed_file_verified,
     read_managed_file,
     reconcile_managed_file,
-    record_ug_picker,
     revert_managed_file,
 )
 from ucode.mcp_oauth import (
@@ -82,6 +82,15 @@ from ucode.mcp_web_search import (
     external_provider_selected,
 )
 from ucode.os_compatibility import subprocess_cross_os
+from ucode.provenance import (
+    KeyPath,
+    load_provenance,
+    owned_after_write,
+    retire,
+    retire_group,
+    save_provenance,
+    values_at,
+)
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
@@ -215,8 +224,8 @@ CLAUDE_CUSTOM_MODEL_SELECTOR = "opus"
 # Launch-scoped feature flags that ucode may write into Claude settings. These
 # must be removed again when the corresponding launch flag is absent.
 CLAUDE_CONDITIONAL_ENV_KEYS = ("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",)
-# Env keys ucode used to write but no longer does; stripped from the managed
-# settings file on every launch so stale values never linger.
+# Env keys ucode used to write but no longer does; retired when the provenance record, or for a
+# file from an older ucode its last write, shows ucode put the current value there.
 CLAUDE_REMOVED_ENV_KEYS = ("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",)
 CLAUDE_MANAGED_PICKER_KEYS = ("availableModels", "enforceAvailableModels", "modelPicker")
 ANTHROPIC_CUSTOM_HEADERS_ENV_KEY = "ANTHROPIC_CUSTOM_HEADERS"
@@ -1284,7 +1293,10 @@ def write_tool_config(
     # Back up only a file that predates ucode's management of the tool. A
     # re-configure would otherwise snapshot ucode's own generated file, and
     # revert would restore that snapshot instead of deleting the file.
-    if not is_tool_managed(state, "claude"):
+    if (
+        not is_tool_managed(state, "claude")
+        and load_provenance("claude", CLAUDE_SETTINGS_PATH) is None
+    ):
         backup_existing_file(CLAUDE_SETTINGS_PATH, CLAUDE_BACKUP_PATH)
     # A managed config makes ug authoritative over the whole custom-header value, so it is
     # overwritten wholesale; without one, preserve the developer's own pre-existing headers. Reuses
@@ -1320,17 +1332,10 @@ def write_tool_config(
         managed_http_headers=state.get("claude_http_headers"),
     )
     source_scoped_defaults = bool((provider or parent_schema) and coding_agent_config_defaults)
-    # Native discovery must not inherit UG's prior static allow-list. Keep a replacement picker
-    # written by this launch, and remove only previously owned picker keys that no longer apply.
-    stale_picker_keys = [
-        key
-        for key in CLAUDE_MANAGED_PICKER_KEYS
-        if [key] in previous_keys and key not in overlay and (provider or parent_schema)
-    ]
+    generated = values_at(managed_keys, overlay)
     managed_file_keys = list(managed_keys)
     for path in (
-        [[key] for key in stale_picker_keys]
-        + [["env", key] for key in CLAUDE_MANAGED_MODEL_ENV_KEYS]
+        [["env", key] for key in CLAUDE_MANAGED_MODEL_ENV_KEYS]
         + [["env", key] for key in CLAUDE_CONDITIONAL_ENV_KEYS]
         + [["env", key] for key in CLAUDE_REMOVED_ENV_KEYS]
         + [["env", key] for key in CLAUDE_OTEL_TRACE_ENV_KEYS]
@@ -1339,11 +1344,24 @@ def write_tool_config(
     ):
         if path not in managed_file_keys:
             managed_file_keys.append(path)
+    bootstrap_keys = [
+        list(path)
+        for path in dict.fromkeys(tuple(k) for k in [*previous_keys, *managed_file_keys])
+        if list(path) in previous_keys
+        or (path not in CLAUDE_OTEL_TRACE_PATHS and path[0] != "hooks")
+    ]
+    managed_path = _managed_settings_path()
+    managed_owned = load_provenance("claude", managed_path) if managed_path else None
+    managed_has_record = managed_owned is not None
+    managed_generated = dict(generated)
 
     # V2 installs routing hooks in a transient per-launch settings file. Persistent settings must
     # contain no ucode routing hooks; surgically strip legacy ones while preserving user hooks.
     def _compose(
         base: dict,
+        owned: dict[KeyPath, Any],
+        generated: dict[KeyPath, Any],
+        baseline: dict | None,
         *,
         enforce_model_default_hierarchy: bool,
         managed_settings_snapshots: ManagedFileSnapshots | None,
@@ -1407,6 +1425,8 @@ def write_tool_config(
                     target_env.pop(key, None)
                 else:
                     target_env[key] = selected_default_model
+                    if selected_default_model != settings_file_env.get(key):
+                        generated[("env", key)] = selected_default_model
         should_preserve_preexisting_claude_family_defaults = (
             not managed_config_present
             and not coding_agent_config_defaults
@@ -1422,8 +1442,6 @@ def write_tool_config(
                 if isinstance(existing_default, str):
                     target_env[key] = existing_default
         merged = deep_merge_dict(base, overlay_for_merge)
-        for key in stale_picker_keys:
-            merged.pop(key, None)
         overlay_custom_headers = overlay_for_merge["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY]
         if managed_config_present:
             # ug owns the whole value under a managed config: overwrite wholesale so a header ug no
@@ -1439,57 +1457,94 @@ def write_tool_config(
         # must not carry one (it would outrank the subscription OAuth).
         if relayed:
             merged.pop("apiKeyHelper", None)
-        # Prune ucode-managed model env keys we deliberately don't write this run
+        # Retire ucode-managed env keys it deliberately doesn't write this run
         # (e.g. ANTHROPIC_MODEL — see render_overlay).
         overlay_env = overlay_for_merge.get("env", {})
-        merged_env = merged.get("env")
-        if isinstance(merged_env, dict):
-            for key in CLAUDE_MANAGED_MODEL_ENV_KEYS:
-                if key not in overlay_env:
-                    merged_env.pop(key, None)
-            for key in CLAUDE_CONDITIONAL_ENV_KEYS:
-                if key not in overlay_env:
-                    merged_env.pop(key, None)
-            # deep_merge_dict keeps keys already in the file, so drop the ones ucode no
-            # longer writes.
-            for key in CLAUDE_REMOVED_ENV_KEYS:
-                merged_env.pop(key, None)
-        if managed_settings_snapshots is None and not should_write_tracing_settings:
-            prune_key_paths(merged, [list(path) for path in CLAUDE_OTEL_TRACE_PATHS])
-        if not any(key in overlay_for_merge for key in CLAUDE_MANAGED_PICKER_KEYS):
-            if managed_settings_snapshots is None:
-                for key in CLAUDE_MANAGED_PICKER_KEYS:
-                    merged.pop(key, None)
-            else:
-                # Revert only the picker ug recorded writing, and only while it is untouched as a
-                # unit; last-applied snapshots also hold foreign pickers ug merely preserved.
-                ug_picker = managed_settings_snapshots.ug_picker or {}
-                if ug_picker and all(merged.get(key) == ug_picker[key] for key in ug_picker):
-                    baseline = managed_settings_snapshots.original_before_ug or {}
-                    for key in ug_picker:
-                        if key in baseline:
-                            merged[key] = baseline[key]
-                        else:
-                            merged.pop(key, None)
-                elif not ug_picker:
-                    _warn_unrecorded_allow_list(merged, managed_settings_snapshots)
+        retire(
+            merged,
+            owned,
+            [
+                ("env", key)
+                for key in CLAUDE_MANAGED_MODEL_ENV_KEYS
+                + CLAUDE_CONDITIONAL_ENV_KEYS
+                + CLAUDE_REMOVED_ENV_KEYS
+                if key not in overlay_env
+            ],
+            baseline,
+        )
+        if "otelHeadersHelper" not in overlay_for_merge:
+            # ug's helper mints workspace tokens, so it never stays behind for an exporter it
+            # no longer manages, even when the rest of the group is kept.
+            retire(merged, owned, [("otelHeadersHelper",)], baseline)
+            owned.pop(("otelHeadersHelper",), None)
+            retire_group(
+                merged,
+                owned,
+                [("env", key) for key in CLAUDE_OTEL_TRACE_ENV_KEYS] + [("otelHeadersHelper",)],
+                baseline,
+            )
+        retire_group(
+            merged,
+            owned,
+            [(key,) for key in CLAUDE_MANAGED_PICKER_KEYS if key not in overlay_for_merge],
+            baseline,
+        )
+        if (
+            managed_settings_snapshots is not None
+            and not managed_has_record
+            and not any(key in overlay_for_merge for key in CLAUDE_MANAGED_PICKER_KEYS)
+        ):
+            # Revert only the picker ug recorded writing, and only while it is untouched as a
+            # unit; last-applied snapshots also hold foreign pickers ug merely preserved.
+            ug_picker = managed_settings_snapshots.ug_picker or {}
+            if ug_picker and all(merged.get(key) == ug_picker[key] for key in ug_picker):
+                baseline = managed_settings_snapshots.original_before_ug or {}
+                for key in ug_picker:
+                    if key in baseline:
+                        merged[key] = baseline[key]
+                    else:
+                        merged.pop(key, None)
+            elif not ug_picker:
+                _warn_unrecorded_allow_list(merged, managed_settings_snapshots)
         sync_smart_routing_hooks(merged, state, enabled=False)
         return merged
 
     managed_snapshots = managed_file_snapshots("claude", _parse_managed_settings)
-    write_json_file(
+    private_doc = read_json_safe(CLAUDE_SETTINGS_PATH)
+    private_owned = load_provenance("claude", CLAUDE_SETTINGS_PATH)
+    private_before = copy.deepcopy(private_doc) if private_owned is not None else None
+    if private_owned is None:
+        private_owned = values_at(bootstrap_keys, private_doc)
+    private_generated = dict(generated)
+    private_settings = _compose(
+        private_doc,
+        private_owned,
+        private_generated,
+        _private_baseline(),
+        enforce_model_default_hierarchy=source_scoped_defaults,
+        managed_settings_snapshots=None,
+    )
+    write_json_file(CLAUDE_SETTINGS_PATH, private_settings)
+    save_provenance(
+        "claude",
         CLAUDE_SETTINGS_PATH,
-        _compose(
-            read_json_safe(CLAUDE_SETTINGS_PATH),
-            enforce_model_default_hierarchy=source_scoped_defaults,
-            managed_settings_snapshots=None,
+        owned_after_write(
+            private_owned, private_generated, private_settings, before=private_before
         ),
     )
 
+    if managed_owned is None:
+        managed_owned = values_at(
+            bootstrap_keys,
+            managed_snapshots.last_applied_by_ug if managed_snapshots else None,
+        )
     _reconcile_managed_settings(
         state,
         lambda base: _compose(
             base,
+            managed_owned,
+            managed_generated,
+            managed_snapshots.original_before_ug if managed_snapshots else None,
             enforce_model_default_hierarchy=(
                 source_scoped_defaults or (provider is None and parent_schema is None)
             ),
@@ -1497,7 +1552,11 @@ def write_tool_config(
         ),
         managed_file_keys,
         relayed,
-        [key for key in CLAUDE_MANAGED_PICKER_KEYS if key in overlay],
+        managed_owned,
+        managed_generated,
+        [[key] for key in CLAUDE_MANAGED_PICKER_KEYS if key not in overlay]
+        if provider or parent_schema
+        else [],
     )
 
     custom_oauth = state.get("custom_oauth")
@@ -1639,12 +1698,19 @@ def _warn_unrecorded_allow_list(merged: dict, snapshots: ManagedFileSnapshots) -
         )
 
 
+def _private_baseline() -> dict | None:
+    """The pre-ucode snapshot of ucode's private settings, or None when ucode created the file."""
+    return read_json_safe(CLAUDE_BACKUP_PATH) if CLAUDE_BACKUP_PATH.exists() else None
+
+
 def _reconcile_managed_settings(
     state: dict,
     compose: Callable[[dict], dict],
     owned_paths: list[list[str]],
     relayed: bool,
-    picker_keys: list[str],
+    owned: dict[KeyPath, Any],
+    generated: dict[KeyPath, Any],
+    picker_conflict_paths: list[list[str]],
 ) -> None:
     """Reconcile Claude Code's OS-managed settings so a bare ``claude`` uses the gateway.
 
@@ -1694,8 +1760,9 @@ def _reconcile_managed_settings(
     managed_before = copy.deepcopy(existing)
     desired_settings = compose(existing)
     _preserve_permission_denies(managed_before, desired_settings)
+    conflict_paths = owned_paths + picker_conflict_paths
     if not managed_writes_allowed():
-        conflicts = _managed_settings_conflicts(managed_before, desired_settings, owned_paths)
+        conflicts = _managed_settings_conflicts(managed_before, desired_settings, conflict_paths)
         if conflicts:
             raise RuntimeError(
                 "Claude Code configuration cannot be applied non-interactively because "
@@ -1706,7 +1773,7 @@ def _reconcile_managed_settings(
         mark_managed_file_verified(state, "claude", path, scope="local-compatible")
         return
     try:
-        reconcile_managed_file(
+        outcome = reconcile_managed_file(
             path,
             _dump_managed_settings(desired_settings),
             tool="claude",
@@ -1715,7 +1782,7 @@ def _reconcile_managed_settings(
             parser=_parse_managed_settings,
         )
     except ManagedFileWriteUnavailable:
-        conflicts = _managed_settings_conflicts(managed_before, desired_settings, owned_paths)
+        conflicts = _managed_settings_conflicts(managed_before, desired_settings, conflict_paths)
         if conflicts:
             raise
         print_warning(
@@ -1724,8 +1791,15 @@ def _reconcile_managed_settings(
         )
         mark_managed_file_verified(state, "claude", path, scope="local-compatible")
         return
+    if outcome in ("written", "created"):
+        save_provenance(
+            "claude",
+            path,
+            owned_after_write(owned, generated, desired_settings, before=managed_before),
+        )
+    elif outcome == "unchanged":
+        save_provenance("claude", path, owned_after_write(owned, {}, desired_settings))
     mark_managed_file_verified(state, "claude", path)
-    record_ug_picker("claude", {key: desired_settings[key] for key in picker_keys})
 
 
 def _preserve_permission_denies(existing: dict, desired: dict) -> None:
