@@ -5,9 +5,25 @@ import pytest
 pytestmark = [pytest.mark.live, pytest.mark.codex]
 
 
-@pytest.mark.parametrize("routing", ["0", "1"], ids=["routing-off", "routing-on"])
-def test_ug_codex_app_help(live_session, workspace, routing):
-    """Scenario: configure codex, then ask ug for app subcommand help.
+@pytest.mark.parametrize(
+    "SMART_ROUTER_CONFIG_VERSION",
+    [
+        None,
+        "first_prompt_and_subagent_no_orch_v0",
+        "subagent_only_v0",
+        "subagent_only_v1",
+        "subagent_orch_v0",
+    ],
+    ids=[
+        "unconfigured",
+        "first_prompt_and_subagent_no_orch_v0",
+        "subagent_only_v0",
+        "subagent_only_v1",
+        "subagent_orch_v0",
+    ],
+)
+def test_ug_codex_app_help(live_session, workspace, SMART_ROUTER_CONFIG_VERSION):
+    """Scenario: configure codex, then ask ug for app subcommand help under each selector.
 
     Expected: the real codex help is returned, with no routing wrapper or
     model request. This verifies command dispatch, not an interactive session.
@@ -23,16 +39,33 @@ def test_ug_codex_app_help(live_session, workspace, routing):
         "--skip-upgrade",
         "--disable-databricks-ai-tools",
     )
-    session.env["ENABLE_SMART_ROUTING_V2"] = routing
+    if SMART_ROUTER_CONFIG_VERSION is not None:
+        session.env["SMART_ROUTER_CONFIG_VERSION"] = SMART_ROUTER_CONFIG_VERSION
     expected = session.run("app", "--help", binary="codex").stdout.strip()
     actual = session.run("codex", "--", "app", "--help").stdout
     assert expected and expected in actual, actual
     session.assert_not_routed()
 
 
-@pytest.mark.parametrize("routing", ["0", "1"], ids=["routing-off", "routing-on"])
-def test_ug_codex_app_server_help(live_session, workspace, routing):
-    """Scenario: configure codex, then ask ug for app-server subcommand help.
+@pytest.mark.parametrize(
+    "SMART_ROUTER_CONFIG_VERSION",
+    [
+        None,
+        "first_prompt_and_subagent_no_orch_v0",
+        "subagent_only_v0",
+        "subagent_only_v1",
+        "subagent_orch_v0",
+    ],
+    ids=[
+        "unconfigured",
+        "first_prompt_and_subagent_no_orch_v0",
+        "subagent_only_v0",
+        "subagent_only_v1",
+        "subagent_orch_v0",
+    ],
+)
+def test_ug_codex_app_server_help(live_session, workspace, SMART_ROUTER_CONFIG_VERSION):
+    """Scenario: configure codex, then ask ug for app-server help under each selector.
 
     Expected: the real codex help is returned, with no routing wrapper or
     model request. This verifies command dispatch, not an interactive session.
@@ -48,16 +81,33 @@ def test_ug_codex_app_server_help(live_session, workspace, routing):
         "--skip-upgrade",
         "--disable-databricks-ai-tools",
     )
-    session.env["ENABLE_SMART_ROUTING_V2"] = routing
+    if SMART_ROUTER_CONFIG_VERSION is not None:
+        session.env["SMART_ROUTER_CONFIG_VERSION"] = SMART_ROUTER_CONFIG_VERSION
     expected = session.run("app-server", "--help", binary="codex").stdout.strip()
     actual = session.run("codex", "--", "app-server", "--help").stdout
     assert expected and expected in actual, actual
     session.assert_not_routed()
 
 
-@pytest.mark.parametrize("routing", ["0", "1"], ids=["routing-off", "routing-on"])
-def test_ug_codex_exec_help(live_session, workspace, routing):
-    """Scenario: configure codex, then ask ug for exec subcommand help.
+@pytest.mark.parametrize(
+    "SMART_ROUTER_CONFIG_VERSION",
+    [
+        None,
+        "first_prompt_and_subagent_no_orch_v0",
+        "subagent_only_v0",
+        "subagent_only_v1",
+        "subagent_orch_v0",
+    ],
+    ids=[
+        "unconfigured",
+        "first_prompt_and_subagent_no_orch_v0",
+        "subagent_only_v0",
+        "subagent_only_v1",
+        "subagent_orch_v0",
+    ],
+)
+def test_ug_codex_exec_help(live_session, workspace, SMART_ROUTER_CONFIG_VERSION):
+    """Scenario: configure codex, then ask ug for exec help under each selector.
 
     Expected: the real codex help is returned, with no routing wrapper or
     model request. This verifies command dispatch, not an interactive session.
@@ -73,16 +123,33 @@ def test_ug_codex_exec_help(live_session, workspace, routing):
         "--skip-upgrade",
         "--disable-databricks-ai-tools",
     )
-    session.env["ENABLE_SMART_ROUTING_V2"] = routing
+    if SMART_ROUTER_CONFIG_VERSION is not None:
+        session.env["SMART_ROUTER_CONFIG_VERSION"] = SMART_ROUTER_CONFIG_VERSION
     expected = session.run("exec", "--help", binary="codex").stdout.strip()
     actual = session.run("codex", "--", "exec", "--help").stdout
     assert expected and expected in actual, actual
     session.assert_not_routed()
 
 
-@pytest.mark.parametrize("routing", ["0", "1"], ids=["routing-off", "routing-on"])
-def test_ug_codex_mcp_help(live_session, workspace, routing):
-    """Scenario: configure codex, then ask ug for mcp subcommand help.
+@pytest.mark.parametrize(
+    "SMART_ROUTER_CONFIG_VERSION",
+    [
+        None,
+        "first_prompt_and_subagent_no_orch_v0",
+        "subagent_only_v0",
+        "subagent_only_v1",
+        "subagent_orch_v0",
+    ],
+    ids=[
+        "unconfigured",
+        "first_prompt_and_subagent_no_orch_v0",
+        "subagent_only_v0",
+        "subagent_only_v1",
+        "subagent_orch_v0",
+    ],
+)
+def test_ug_codex_mcp_help(live_session, workspace, SMART_ROUTER_CONFIG_VERSION):
+    """Scenario: configure codex, then ask ug for mcp help under each selector.
 
     Expected: the real codex help is returned, with no routing wrapper or
     model request. This verifies command dispatch, not an interactive session.
@@ -98,16 +165,35 @@ def test_ug_codex_mcp_help(live_session, workspace, routing):
         "--skip-upgrade",
         "--disable-databricks-ai-tools",
     )
-    session.env["ENABLE_SMART_ROUTING_V2"] = routing
+    if SMART_ROUTER_CONFIG_VERSION is not None:
+        session.env["SMART_ROUTER_CONFIG_VERSION"] = SMART_ROUTER_CONFIG_VERSION
     expected = session.run("mcp", "--help", binary="codex").stdout.strip()
     actual = session.run("codex", "--", "mcp", "--help").stdout
     assert expected and expected in actual, actual
     session.assert_not_routed()
 
 
-@pytest.mark.parametrize("routing", ["0", "1"], ids=["routing-off", "routing-on"])
-def test_ug_codex_app_reports_unknown_argument(live_session, workspace, routing):
-    """Scenario: pass an unknown option directly to ug codex app.
+@pytest.mark.parametrize(
+    "SMART_ROUTER_CONFIG_VERSION",
+    [
+        None,
+        "first_prompt_and_subagent_no_orch_v0",
+        "subagent_only_v0",
+        "subagent_only_v1",
+        "subagent_orch_v0",
+    ],
+    ids=[
+        "unconfigured",
+        "first_prompt_and_subagent_no_orch_v0",
+        "subagent_only_v0",
+        "subagent_only_v1",
+        "subagent_orch_v0",
+    ],
+)
+def test_ug_codex_app_reports_unknown_argument(
+    live_session, workspace, SMART_ROUTER_CONFIG_VERSION
+):
+    """Scenario: pass an unknown option directly to ug codex app under each selector.
 
     Expected: the actual Codex parser's error and exit status are preserved,
     without opening a desktop application or starting routing.
@@ -123,7 +209,8 @@ def test_ug_codex_app_reports_unknown_argument(live_session, workspace, routing)
         "--skip-upgrade",
         "--disable-databricks-ai-tools",
     )
-    session.env["ENABLE_SMART_ROUTING_V2"] = routing
+    if SMART_ROUTER_CONFIG_VERSION is not None:
+        session.env["SMART_ROUTER_CONFIG_VERSION"] = SMART_ROUTER_CONFIG_VERSION
     args = ["app", "--ug-integration-unknown-option"]
     expected = session.run(*args, binary="codex", ok=False)
     actual = session.run("codex", *args, ok=False)

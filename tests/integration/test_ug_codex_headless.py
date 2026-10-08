@@ -119,8 +119,25 @@ def test_ug_codex_headless_prompt_after_separator(live_session, workspace):
 
 
 @pytest.mark.parametrize("model_form", ["separate", "equals", "short"])
-def test_ug_codex_headless_explicit_model_bypasses_routing(live_session, workspace, model_form):
-    """Scenario: choose an explicit model while global smart routing is enabled.
+@pytest.mark.parametrize(
+    "SMART_ROUTER_CONFIG_VERSION",
+    [
+        "first_prompt_and_subagent_no_orch_v0",
+        "subagent_only_v0",
+        "subagent_only_v1",
+        "subagent_orch_v0",
+    ],
+    ids=[
+        "first_prompt_and_subagent_no_orch_v0",
+        "subagent_only_v0",
+        "subagent_only_v1",
+        "subagent_orch_v0",
+    ],
+)
+def test_ug_codex_headless_explicit_model_bypasses_routing(
+    live_session, workspace, model_form, SMART_ROUTER_CONFIG_VERSION
+):
+    """Scenario: choose an explicit model under each supported routing selector.
 
     Expected: the model option is accepted, the real file task completes, and
     no routing wrapper overrides the caller's choice.
@@ -141,7 +158,7 @@ def test_ug_codex_headless_explicit_model_bypasses_routing(live_session, workspa
     model_args = ["--model", model] if model_form == "separate" else [f"--model={model}"]
     if model_form == "short":
         model_args = ["-m", model]
-    session.env["ENABLE_SMART_ROUTING_V2"] = "1"
+    session.env["SMART_ROUTER_CONFIG_VERSION"] = SMART_ROUTER_CONFIG_VERSION
     result = session.run(
         "codex",
         "--",

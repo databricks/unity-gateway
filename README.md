@@ -248,13 +248,18 @@ The generated shell hooks expect Git Bash; PowerShell-only setups are not covere
 
 ### Smart Router Orchestrator
 
-Use `SMART_ROUTING_CONFIG_VERSION` at launch to select a smart-routing configuration:
+Use `SMART_ROUTER_CONFIG_VERSION` at launch to select a smart-routing configuration:
 
 | Version | Subagent routing | First-prompt routing | Orchestrator |
 | --- | --- | --- | --- |
+| `first_prompt_and_subagent_no_orch_v0` | On | On | Off |
 | `subagent_only_v0` | On | Off | Off |
 | `subagent_only_v1` | On | Off | Off |
 | `subagent_orch_v0` | On | Off | On |
+
+`first_prompt_and_subagent_no_orch_v0` is the customer configuration for first-prompt
+and subagent routing without orchestration: `ENABLE_SMART_ROUTING_V2=1`,
+`ENABLE_SMART_ROUTING_SUBAGENT_ONLY=0`, and `ENABLE_SMART_ROUTER_ORCHESTRATOR=0`.
 
 `subagent_only_v1` sets both `ENABLE_SMART_ROUTING_V2` and
 `ENABLE_SMART_ROUTING_SUBAGENT_ONLY` to `"1"`. Subagent-only takes precedence,
@@ -265,7 +270,7 @@ version also installs and activates the bundled `smart-router-orchestrator` skil
 For example:
 
 ```bash
-SMART_ROUTING_CONFIG_VERSION=subagent_orch_v0 ug claude
+SMART_ROUTER_CONFIG_VERSION=subagent_orch_v0 ug claude
 ```
 
 The version takes precedence over conflicting legacy flags. Before parsing command options

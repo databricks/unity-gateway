@@ -2,10 +2,10 @@
 
 UG bundles the `smart-router-orchestrator` workflow and five Claude role definitions.
 Smart-routed Claude and Codex launches install and activate this skill alongside
-`smart-router` with `SMART_ROUTING_CONFIG_VERSION=subagent_orch_v0`.
+`smart-router` with `SMART_ROUTER_CONFIG_VERSION=subagent_orch_v0`.
 UG expands that version into the session's legacy feature flags.
 The existing `ENABLE_SMART_ROUTER_ORCHESTRATOR=1` opt-in remains supported when
-`SMART_ROUTING_CONFIG_VERSION` is unset; `subagent_only_v0` explicitly leaves orchestration off.
+`SMART_ROUTER_CONFIG_VERSION` is unset; `subagent_only_v0` explicitly leaves orchestration off.
 The feature is off by default; routing alone installs only `smart-router`.
 
 The workflow is injected before root prompts and after compaction. The hook checks

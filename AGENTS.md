@@ -31,7 +31,7 @@ Tests live in `tests/`.
 
 ## Smart-routing configuration
 
-`SMART_ROUTING_CONFIG_VERSION` is the external selector. Version definitions live in
+`SMART_ROUTER_CONFIG_VERSION` is the external selector. Version definitions live in
 `src/ucode/smart_routing/config.py` under `_VERSIONS`; their managed environment keys
 are registered in `SMART_ROUTING_ENV_KEYS` in `src/ucode/constants.py`.
 An unset or empty selector preserves legacy environment-flag behavior.

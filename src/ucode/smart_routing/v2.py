@@ -31,7 +31,7 @@ from ucode.constants import (
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
     LOOPBACK_HOST,
-    SMART_ROUTING_CONFIG_VERSION_ENV_VAR,
+    SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
 )
 from ucode.custom_oauth import custom_oauth_cli_enabled, get_custom_client_token
@@ -214,9 +214,9 @@ def disable_smart_routing(
     """Temporarily remove the smart-routing env vars and return their prior values."""
     target = os.environ if env is None else env
     previous = {var: target.pop(var, None) for var in SMART_ROUTING_ENV_KEYS}
-    if SMART_ROUTING_CONFIG_VERSION_ENV_VAR in target:
-        previous[SMART_ROUTING_CONFIG_VERSION_ENV_VAR] = target.pop(
-            SMART_ROUTING_CONFIG_VERSION_ENV_VAR
+    if SMART_ROUTER_CONFIG_VERSION_ENV_VAR in target:
+        previous[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = target.pop(
+            SMART_ROUTER_CONFIG_VERSION_ENV_VAR
         )
     return previous
 

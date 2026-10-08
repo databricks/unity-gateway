@@ -6,9 +6,27 @@ pytestmark = [pytest.mark.live, pytest.mark.codex]
 
 
 @pytest.mark.parametrize("separator", [False, True], ids=["direct", "launcher-separator"])
-@pytest.mark.parametrize("routing", ["0", "1"], ids=["routing-off", "routing-on"])
-def test_ug_codex_app_server_client_initializes(live_session, workspace, separator, routing):
-    """Scenario: configure Codex and connect a real stdio client to ug codex app-server.
+@pytest.mark.parametrize(
+    "SMART_ROUTER_CONFIG_VERSION",
+    [
+        None,
+        "first_prompt_and_subagent_no_orch_v0",
+        "subagent_only_v0",
+        "subagent_only_v1",
+        "subagent_orch_v0",
+    ],
+    ids=[
+        "unconfigured",
+        "first_prompt_and_subagent_no_orch_v0",
+        "subagent_only_v0",
+        "subagent_only_v1",
+        "subagent_orch_v0",
+    ],
+)
+def test_ug_codex_app_server_client_initializes(
+    live_session, workspace, separator, SMART_ROUTER_CONFIG_VERSION
+):
+    """Scenario: configure Codex and connect a real stdio client under each selector.
 
     Expected: initialize returns a valid JSON-RPC result, diagnostics stay off
     the protocol stream, and this utility command never starts smart routing.
@@ -24,7 +42,8 @@ def test_ug_codex_app_server_client_initializes(live_session, workspace, separat
         "--skip-upgrade",
         "--disable-databricks-ai-tools",
     )
-    session.env["ENABLE_SMART_ROUTING_V2"] = routing
+    if SMART_ROUTER_CONFIG_VERSION is not None:
+        session.env["SMART_ROUTER_CONFIG_VERSION"] = SMART_ROUTER_CONFIG_VERSION
 
     args = ["app-server", "--listen", "stdio://"]
     if separator:
