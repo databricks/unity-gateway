@@ -2478,7 +2478,9 @@ class TestConfigureAgentsForMcp:
         with (
             patch("ucode.cli.load_state", return_value={"workspace": "https://ws"}),
             patch("ucode.cli.available_mcp_clients", return_value=["claude", "codex"]),
-            patch("ucode.cli.configured_mcp_clients", return_value=["claude"]),
+            patch(
+                "ucode.cli.configured_mcp_clients", side_effect=[["claude"], ["claude", "codex"]]
+            ),
             patch("ucode.cli.configure_workspace_command") as mock_cfg,
         ):
             scope = cli_mod._configure_agents_for_mcp(["claude", "codex"])
@@ -2497,6 +2499,134 @@ class TestConfigureAgentsForMcp:
 
         assert scope == {"claude", "codex"}
         mock_cfg.assert_not_called()
+
+    def test_workspace_entries_select_workspace_and_forward_to_bootstrap(self):
+        entries = [("https://ws", None)]
+        with (
+            patch("ucode.cli.set_current_workspace") as mock_switch,
+            patch("ucode.cli.load_full_state", return_value={"workspaces": {}}),
+            patch("ucode.cli.load_state", return_value={}),
+            patch("ucode.cli.available_mcp_clients", return_value=["claude"]),
+            patch("ucode.cli.configured_mcp_clients", return_value=["claude"]),
+            patch("ucode.cli.configure_workspace_command") as mock_cfg,
+        ):
+            cli_mod._configure_agents_for_mcp(["claude"], entries)
+
+        mock_switch.assert_called_once_with("https://ws")
+        mock_cfg.assert_called_once_with(selected_tools=["claude"], workspaces=entries)
+
+    def test_known_workspace_with_ready_agents_switches_without_bootstrap(self):
+        entries = [("https://ws", None)]
+        with (
+            patch("ucode.cli.set_current_workspace") as mock_switch,
+            patch("ucode.cli.load_full_state", return_value={"workspaces": {"https://ws": {}}}),
+            patch("ucode.cli.load_state", return_value={"workspace": "https://ws"}),
+            patch("ucode.cli.available_mcp_clients", return_value=["claude", "cursor"]),
+            patch("ucode.cli.configured_mcp_clients", return_value=["claude", "cursor"]),
+            patch("ucode.cli.configure_workspace_command") as mock_cfg,
+            patch("ucode.cli._configure_shared_workspace_states") as mock_states,
+        ):
+            scope = cli_mod._configure_agents_for_mcp(["claude", "cursor"], entries)
+
+        assert scope == {"claude", "cursor"}
+        mock_switch.assert_called_once_with("https://ws")
+        mock_cfg.assert_not_called()
+        mock_states.assert_not_called()
+
+    def test_cursor_on_unseen_workspace_sets_it_up_without_prompting(self):
+        entries = [("https://ws", None)]
+        with (
+            patch("ucode.cli.set_current_workspace"),
+            patch("ucode.cli.load_full_state", return_value={"workspaces": {}}),
+            patch("ucode.cli.load_state", return_value={}),
+            patch("ucode.cli.available_mcp_clients", return_value=["cursor"]),
+            patch("ucode.cli.configured_mcp_clients", return_value=["cursor"]),
+            patch("ucode.cli._prompt_for_configuration") as mock_prompt,
+            patch("ucode.cli._configure_shared_workspace_states") as mock_states,
+        ):
+            scope = cli_mod._configure_agents_for_mcp(["cursor"], entries)
+
+        assert scope == {"cursor"}
+        mock_prompt.assert_not_called()
+        mock_states.assert_called_once_with(entries, tools=[], force_login=True)
+
+    def test_missing_mcp_only_cli_errors_instead_of_prompting(self):
+        with (
+            patch("ucode.cli.load_state", return_value={}),
+            patch("ucode.cli.available_mcp_clients", return_value=[]),
+            patch("ucode.cli._prompt_for_configuration") as mock_prompt,
+            pytest.raises(RuntimeError, match="cursor-agent"),
+        ):
+            cli_mod._configure_agents_for_mcp(["cursor"])
+
+        mock_prompt.assert_not_called()
+
+    def test_agent_still_unready_after_setup_errors(self):
+        with (
+            patch("ucode.cli.load_state", return_value={}),
+            patch("ucode.cli.available_mcp_clients", return_value=[]),
+            patch("ucode.cli.configured_mcp_clients", return_value=[]),
+            patch("ucode.cli.configure_workspace_command"),
+            pytest.raises(RuntimeError, match="Not installed or not set up: Codex"),
+        ):
+            cli_mod._configure_agents_for_mcp(["codex"])
+
+
+class TestMcpAddWorkspace:
+    def test_workspace_flag_forwarded_to_agent_setup(self):
+        with (
+            patch("ucode.cli._configure_agents_for_mcp", return_value={"cursor"}) as configure,
+            patch("ucode.cli.add_mcp_command") as mock_add,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "mcp",
+                    "add",
+                    "--agents",
+                    "cursor",
+                    "--names",
+                    "a.b.c",
+                    "--workspace",
+                    "https://ws",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        configure.assert_called_once_with(["cursor"], [("https://ws", None)])
+        mock_add.assert_called_once_with(location=None, services={"a.b.c"}, agents={"cursor"})
+
+    def test_ug_workspace_env_used_when_no_flag(self, monkeypatch):
+        monkeypatch.setenv("UG_WORKSPACE", "https://ws")
+        with (
+            patch("ucode.cli._configure_agents_for_mcp", return_value={"cursor"}) as configure,
+            patch("ucode.cli.add_mcp_command"),
+        ):
+            result = runner.invoke(app, ["mcp", "add", "--agents", "cursor", "--names", "a.b.c"])
+
+        assert result.exit_code == 0, result.output
+        configure.assert_called_once_with(["cursor"], [("https://ws", None)])
+
+    def test_workspace_without_agents_exit_1(self):
+        with patch("ucode.cli.add_mcp_command") as mock_add:
+            result = runner.invoke(
+                app, ["mcp", "add", "--names", "a.b.c", "--workspace", "https://ws"]
+            )
+
+        assert result.exit_code == 1
+        assert "only apply with --agents" in _strip_ansi(result.output)
+        mock_add.assert_not_called()
+
+    def test_workspace_and_profile_together_exit_1(self):
+        with patch("ucode.cli.add_mcp_command") as mock_add:
+            result = runner.invoke(
+                app,
+                ["mcp", "add", "--agents", "cursor", "--workspace", "https://ws", "--profile", "P"],
+            )
+
+        assert result.exit_code == 1
+        assert "not both" in _strip_ansi(result.output)
+        mock_add.assert_not_called()
 
 
 class TestSkillsRemoveCommand:
