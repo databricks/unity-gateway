@@ -6,10 +6,8 @@ without leaving stale ug-managed values or touching the user's own settings.
 Workspace configs are read only, so each phase is the single published config of its own
 workspace and the shared home moves from A to B to C. All three share one metastore with the
 ``ug_e2e`` fixtures (the Bedrock Claude MPS ``ug_e2e.providers.bedrock``, the Codex model
-services in ``ug_e2e.models``, and the ``fixture_reader`` MCP) and one trace table.
-
-Managed skills are not covered: UC skill bundles cannot be uploaded on these workspaces'
-Default Storage catalog (Files API HTTP 501).
+services in ``ug_e2e.models``, the ``fixture_reader`` MCP, and the ``fixture-summary`` skill)
+and one trace table.
 """
 
 import hashlib
@@ -39,12 +37,14 @@ from .helpers.constants import (
     CLAUDE,
     CODEX,
     FIXTURE_READER_MCP_SERVICE_NAME,
+    FIXTURE_SUMMARY_SKILL_NAME,
     INFERENCE_PATHS,
     MANAGED_PATHS,
     UC_MODEL_LOCATION_FIXTURE,
     CodingAgent,
 )
 from .helpers.evidence import SessionEvidence, canonical_model
+from .helpers.skills import SKILL_ROOTS, skill_name, skills_view
 from .helpers.tui_request_recorder import TuiRequestRecorder
 from .helpers.workspace import Workspace
 
@@ -69,6 +69,7 @@ TRACE_DEADLINE_SECONDS = 300
 TRACE_INGESTION_SECONDS = 300
 USER_MCP = "ug-e2e-user-echo"
 USER_SKILL = "ug-e2e-user-notes"
+MANAGED_SKILL = skill_name(FIXTURE_SUMMARY_SKILL_NAME)
 USER_MCP_SERVER = """\
 import json, sys
 
@@ -145,6 +146,15 @@ def mcp_tool_names(registration: dict) -> tuple[str, ...]:
     return tuple(tool["name"] for tool in responses[2]["result"]["tools"])
 
 
+def skill_bundles(files: "AgentFiles", root: str) -> set[str]:
+    """The skill directories under one root, from the files captured there."""
+    return {
+        Path(path).relative_to(root).parts[0]
+        for path in files.skill_files
+        if Path(path).is_relative_to(root)
+    }
+
+
 def workspace_client(url: str) -> WorkspaceClient:
     """The base class authenticates only WORKSPACE_URL; phases B and C need their own clients."""
     return WorkspaceClient(
@@ -206,6 +216,7 @@ class PhaseB:
     os_managed_codex: dict
     codex_span_count: int
     claude_span_count: int
+    skills: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -221,6 +232,7 @@ class PhaseC:
     bare_ug: AgentTask
     phase_b_span_count: int
     codex_span_count: int
+    skills: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -293,7 +305,7 @@ class Journey:
 
     def skill_files(self) -> dict[str, str]:
         files = {}
-        for root in (self.home / ".claude/skills", self.home / ".agents/skills"):
+        for root in (self.home / name for name in SKILL_ROOTS):
             for path in sorted(root.rglob("*")) if root.is_dir() else []:
                 if path.is_file():
                     digest = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -381,6 +393,16 @@ class Journey:
         assert requests, f"The recorder saw no {agent} inference request"
         return AgentTask(requests=requests, turn_models=tuple(turn.models))
 
+    def skills_view(self, phase: str, agent: str) -> str:
+        # The user's own skill rendering proves the list loaded before absence is checked.
+        return skills_view(
+            self.session,
+            self.recorders[phase],
+            agent,
+            (USER_SKILL,),
+            name=f"phase-{phase}-{agent}-skills",
+        )
+
     def bare_ug_task(self, phase: str) -> AgentTask:
         """Bare `ug` in a real terminal; helpers.terminal.Terminal only drives `ug <agent>`."""
         recorder = self.recorders[phase]
@@ -430,9 +452,14 @@ class Journey:
         """Ordinary user-owned prefs, MCP registration, and skill; no ug state."""
         claude_settings = self.home / ".claude/settings.json"
         claude_settings.parent.mkdir(parents=True)
-        claude_settings.write_text(
-            json.dumps({"cleanupPeriodDays": 45, "env": {"UG_E2E_USER_PREF": self.run_id}})
-        )
+        # A user who already picked a theme, in Claude's own format: Claude's TUI saves the theme
+        # here on first launch, so that write is a no-op and any diff is ug's.
+        user_settings = {
+            "cleanupPeriodDays": 45,
+            "env": {"UG_E2E_USER_PREF": self.run_id},
+            "theme": "dark",
+        }
+        claude_settings.write_text(json.dumps(user_settings, indent=2) + "\n")
         codex_config = self.home / ".codex/config.toml"
         codex_config.parent.mkdir(parents=True)
         codex_config.write_text(
@@ -448,7 +475,7 @@ class Journey:
             (CODEX, ["mcp", "add", USER_MCP, "--", sys.executable, str(server)]),
         ):
             self.session.run(*args, binary=self.agent_binary(agent))
-        for root in (".claude/skills", ".agents/skills"):
+        for root in SKILL_ROOTS:
             skill = self.home / root / USER_SKILL / "SKILL.md"
             skill.parent.mkdir(parents=True)
             skill.write_text(
@@ -501,6 +528,7 @@ class TestCujRepeatedConfig(BaseCujTest):
     def phase_a(self, journey):
         # Configure A directly twice: through the recorder, the repeat would be a switch back
         # from the recorder URL rather than a repeat of the same workspace.
+        # No terminal launch in A: it makes ug own /etc, which phase B's headless configure refuses.
         journey.enter("a")
         upstream = ["--workspace", journey.workspaces["a"].url]
         journey.session.configure([*CONFIGURE_ARGS, *upstream])
@@ -534,6 +562,7 @@ class TestCujRepeatedConfig(BaseCujTest):
             os_managed_codex=read_toml(CODEX_OS_MANAGED_CONFIG),
             codex_span_count=codex_span_count,
             claude_span_count=journey.trace_count(claude_marker, resource=True),
+            skills={agent: journey.skills_view("b", agent) for agent in (CLAUDE, CODEX)},
         )
 
     @pytest.fixture(scope="class")
@@ -555,6 +584,7 @@ class TestCujRepeatedConfig(BaseCujTest):
         codex_marker = f"{journey.run_id}-codex-c"
         codex = journey.run_task("c", CODEX, marker=codex_marker)
         final = journey.agent_files()
+        skills = {CODEX: journey.skills_view("c", CODEX)}
         # Absence can't be polled; wait out the ingestion window before counting.
         time.sleep(TRACE_INGESTION_SECONDS)
         return PhaseC(
@@ -569,6 +599,7 @@ class TestCujRepeatedConfig(BaseCujTest):
             bare_ug=bare_ug,
             phase_b_span_count=journey.trace_count(f"{journey.run_id}-codex-b", resource=False),
             codex_span_count=journey.trace_count(codex_marker, resource=False),
+            skills=skills,
         )
 
     # Phase A: CUJ 1's config plus a named managed MCP.
@@ -582,9 +613,17 @@ class TestCujRepeatedConfig(BaseCujTest):
         assert codex["models"]["model_services"] == [CODEX_SOL, CODEX_LUNA]
         assert tracing_enabled(claude) and tracing_enabled(codex)
         assert config["mcp_servers"]["names"] == [FIXTURE_READER_MCP_SERVICE_NAME]
+        assert config["skills"]["names"] == [FIXTURE_SUMMARY_SKILL_NAME]
 
     def test_phase_a_repeat_configure_changes_nothing(self, phase_a):
         assert phase_a.second == phase_a.first
+
+    def test_phase_a_downloads_the_managed_skill_once(self, phase_a):
+        files = phase_a.second
+        for root in SKILL_ROOTS:
+            assert skill_bundles(files, root) == {MANAGED_SKILL, USER_SKILL}
+            for bundle_file in ("SKILL.md", "reference/fixture-facts.md"):
+                assert f"{root}/{MANAGED_SKILL}/{bundle_file}" in files.skill_files
 
     def test_phase_a_registers_managed_and_user_mcp_once(self, phase_a):
         files = phase_a.second
@@ -627,6 +666,7 @@ class TestCujRepeatedConfig(BaseCujTest):
         assert lower_keys(codex["http_headers"]) == {RUN_HEADER: "cuj6-phase-b"}
         assert tracing_enabled(codex)
         assert not config.get("mcp_servers", {}).get("names")
+        assert not config.get("skills")
 
     def test_phase_b_claude_routes_through_the_provider(self, phase_b):
         assert CLAUDE_PROVIDER_MODEL in phase_b.claude.request_models
@@ -692,6 +732,14 @@ class TestCujRepeatedConfig(BaseCujTest):
             ):
                 assert MANAGED_MCP_ENTRY not in registered
 
+    def test_phase_b_managed_skill_stays_removed_across_launches(self, phase_b):
+        # The /skills views open after the task launches, so they also cover restarts.
+        for files in (phase_b.files, phase_b.restarted):
+            for root in SKILL_ROOTS:
+                assert skill_bundles(files, root) == {USER_SKILL}
+        for agent, screen in phase_b.skills.items():
+            assert MANAGED_SKILL not in screen, f"{agent} /skills:\n{screen}"
+
     def test_phase_b_traces_codex_but_not_claude(self, phase_b):
         # Codex's span proves the destination is up before Claude's absence counts.
         assert phase_b.codex_span_count > 0
@@ -706,6 +754,14 @@ class TestCujRepeatedConfig(BaseCujTest):
         assert codex["models"] == {"model_services": [CODEX_LUNA]}
         assert codex["default_models"]["default_model"] == CODEX_LUNA
         assert not tracing_enabled(codex) and not codex.get("http_headers")
+        assert not config.get("skills")
+
+    def test_phase_c_managed_skill_stays_removed(self, journey, phase_c):
+        for root in SKILL_ROOTS:
+            assert skill_bundles(phase_c.final, root) == {USER_SKILL}
+            # skill_files lists files only; a leftover empty bundle directory would hide there.
+            assert not (journey.home / root / MANAGED_SKILL).exists()
+        assert MANAGED_SKILL not in phase_c.skills[CODEX], phase_c.skills[CODEX]
 
     def test_phase_c_terminal_configure_clears_phase_b_machine_wide_headers(self, phase_c):
         provider = phase_c.os_managed_codex["model_providers"]["Databricks"]

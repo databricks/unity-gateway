@@ -32,20 +32,6 @@ AGENT_PACKAGES = {
     "codex": "@openai/codex",
     "opencode": "opencode-ai",
 }
-MANAGED_DEFAULTS_TARGETS = (
-    (
-        "UG_MPS_DEFAULTS_BEARER",
-        "https://eng-ml-inference-batch-inference-us-west-2.cloud.databricks.com",
-        "1c359c0f-58bc-42ac-a74f-079ccb173676",
-        "UG_MPS_DEFAULTS_CLIENT_SECRET",
-    ),
-    (
-        "UG_PARENT_SCHEMA_DEFAULTS_BEARER",
-        "https://eng-ml-inference-ap-northeast-2.cloud.databricks.com",
-        "95e267dc-4393-4360-9d45-4b9b13b2d370",
-        "UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET",
-    ),
-)
 WINDOWS_PATHEXT = ".COM;.EXE;.BAT;.CMD"
 UV_INDEX_CREDENTIAL_ENV = (
     "UV_INDEX_DATABRICKS_PYPI_USERNAME",
@@ -546,12 +532,7 @@ def main() -> int:
     bearer = os.environ.get("DATABRICKS_BEARER", "").strip()
     second_bearer = os.environ.get("DATABRICKS_SECOND_BEARER", "").strip()
     oauth_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
-    target_bearers: dict[str, str] = {}
-    client_secrets = (
-        os.environ.get("DATABRICKS_CLIENT_SECRET", ""),
-        os.environ.get("UG_MPS_DEFAULTS_CLIENT_SECRET", ""),
-        os.environ.get("UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET", ""),
-    )
+    client_secrets = (os.environ.get("DATABRICKS_CLIENT_SECRET", ""),)
 
     def redact(value: str) -> str:
         return redact_secrets(
@@ -560,7 +541,6 @@ def main() -> int:
                 bearer,
                 second_bearer,
                 oauth_token,
-                *target_bearers.values(),
                 *client_secrets,
                 *installer_secrets,
             ),
@@ -859,14 +839,6 @@ def main() -> int:
             if client_id and client_secret:
                 bearer = mint_m2m_token(args.workspace, client_id, client_secret)
 
-        if not args.installation_only:
-            for bearer_env, target_workspace, client_id, secret_env in MANAGED_DEFAULTS_TARGETS:
-                secret = os.environ.get(secret_env, "").strip()
-                if args.workspace.rstrip("/") == target_workspace:
-                    target_bearers[bearer_env] = bearer
-                elif secret:
-                    target_bearers[bearer_env] = mint_m2m_token(target_workspace, client_id, secret)
-
         test_dependencies = ["pytest==9.0.3"]
         if os.name == "posix":
             test_dependencies.extend(["pexpect==4.9.0", "pyte==0.8.2"])
@@ -904,10 +876,6 @@ def main() -> int:
                 "UG_INTEGRATION_CODEX_PARENT_MODEL": args.codex_parent_model,
                 "UCODE_TEST_WORKSPACE": args.workspace or "",
                 "DATABRICKS_BEARER": bearer,
-                "UG_MPS_DEFAULTS_BEARER": target_bearers.get("UG_MPS_DEFAULTS_BEARER", ""),
-                "UG_PARENT_SCHEMA_DEFAULTS_BEARER": target_bearers.get(
-                    "UG_PARENT_SCHEMA_DEFAULTS_BEARER", ""
-                ),
                 "UCODE_TEST_SECOND_WORKSPACE": args.second_workspace or "",
                 "DATABRICKS_SECOND_BEARER": second_bearer,
                 "UG_INTEGRATION_WAREHOUSE_ID": args.warehouse_id or "",

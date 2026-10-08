@@ -173,7 +173,7 @@ def test_live_integration_cases_belong_to_exactly_one_ci_agent():
         for node in tree.body:
             if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
                 marks = module_marks | _markers(node.decorator_list)
-                if marks & {"live", "managed", "workspace_switch"}:
+                if marks & {"live", "managed_fixture", "workspace_switch"}:
                     assert len(marks & {"claude", "codex", "opencode"}) == 1, node.name
 
 
@@ -210,7 +210,7 @@ def test_model_discovery_cases_match_current_launch_contract():
             seen.append(case)
             marks = module_marks | _markers(node.decorator_list)
             expected = {"managed_fixture"} if case <= 6 else {"live"}
-            assert marks & {"managed_fixture", "managed", "live"} == expected, node.name
+            assert marks & {"managed_fixture", "live"} == expected, node.name
             assert marks & {"claude", "codex"} == ({"claude"} if case % 2 else {"codex"}), node.name
             assert not any(arg.arg == "configured" for arg in node.args.args), node.name
             for value in ast.walk(node):
