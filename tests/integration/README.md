@@ -305,7 +305,8 @@ and execution of pre-existing hooks are not exercised by this integration suite.
 
 The unit/component `../test_smart_routing_config.py` covers both canonical-v0 selectors against
 all eight binary legacy-flag combinations, exact precedence/materialization/restoration and
-getter results, CLI launch-context materialization/restoration, registry validation,
+getter results, the shared routing/session key registry including the orchestrator exactly once,
+orchestrator-only activation defaults, CLI launch-context materialization/restoration, registry validation,
 process-local environment restoration,
 native-subcommand suppression, and orchestrator off-to-on transitions through real temporary
 session files. It does not claim live agent, hook, or gateway coverage.

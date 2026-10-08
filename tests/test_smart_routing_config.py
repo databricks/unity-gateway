@@ -19,6 +19,7 @@ from ucode.constants import (
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
     SMART_ROUTING_CONFIG_ENV_KEYS,
     SMART_ROUTING_CONFIG_VERSION_ENV_VAR,
+    SMART_ROUTING_ENV_KEYS,
 )
 from ucode.smart_routing import config, orchestrator, session_env, v2
 
@@ -44,6 +45,16 @@ def _assert_routing_getters(environment: dict[str, str], expected_flags: dict[st
     assert orchestrator.feature_enabled(environment) is (
         expected_flags[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] == "1"
     )
+
+
+def test_smart_routing_key_registry_includes_orchestrator_once():
+    assert SMART_ROUTING_ENV_KEYS == (
+        ENABLE_SMART_ROUTING_ENV_VAR,
+        ENABLE_SUBAGENT_ROUTING_ENV_VAR,
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
+    )
+    assert SMART_ROUTING_ENV_KEYS.count(ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR) == 1
+    assert SMART_ROUTING_CONFIG_ENV_KEYS is SMART_ROUTING_ENV_KEYS
 
 
 @pytest.mark.parametrize(
@@ -194,6 +205,15 @@ def test_legacy_flags_still_drive_routing_queries_without_selector():
     assert orchestrator.feature_enabled(environment) is True
 
 
+@pytest.mark.parametrize("default", [False, True])
+def test_orchestrator_alone_does_not_change_routing_activation_default(default):
+    environment = {ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1"}
+
+    assert v2.smart_routing_enabled(environment, default=default) is default
+    assert v2.first_prompt_routing_enabled(environment) is False
+    assert orchestrator.feature_enabled(environment) is True
+
+
 @pytest.mark.parametrize("selector", ["subagent_only_v0", "subagent_orch_v0"])
 def test_selector_wins_legacy_conflicts_for_routing_queries(selector):
     environment = {
@@ -310,6 +330,9 @@ def test_config_import_rejects_new_registry_flag_before_runtime_use(monkeypatch)
 def test_v2_routing_toggles_restore_selector_and_legacy_environment(operation):
     original = {
         SMART_ROUTING_CONFIG_VERSION_ENV_VAR: "subagent_orch_v0",
+        ENABLE_SMART_ROUTING_ENV_VAR: "old-v2",
+        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "old-subagent",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "old-orchestrator",
         "UNRELATED_SETTING": "preserved",
     }
     environment = original.copy()
@@ -336,6 +359,7 @@ def test_v2_routing_toggles_restore_selector_and_legacy_environment(operation):
 
     assert environment == expected
     assert SMART_ROUTING_CONFIG_VERSION_ENV_VAR in previous
+    assert previous[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] == "old-orchestrator"
 
     v2.restore_smart_routing_env(previous, environment)
 
@@ -351,6 +375,7 @@ def test_explicit_disable_wins_over_selector_until_restored():
     assert SMART_ROUTING_CONFIG_VERSION_ENV_VAR not in environment
     assert environment[ENABLE_SMART_ROUTING_ENV_VAR] == "0"
     assert environment[ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "0"
+    assert environment[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] == "0"
     assert v2.smart_routing_enabled(environment) is False
     assert v2.first_prompt_routing_enabled(environment) is False
 

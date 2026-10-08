@@ -137,7 +137,8 @@ PowerShell execution.
 
 `test_smart_routing_config.py` covers both canonical v0 selectors against all eight binary
 legacy-flag combinations, exact precedence/materialization/restoration and getter results,
-CLI launch-context materialization/restoration, fail-fast registry validation,
+the shared routing/session key registry including the orchestrator exactly once, orchestrator-only
+activation defaults, CLI launch-context materialization/restoration, fail-fast registry validation,
 native-subcommand suppression, and orchestrator state transitions through real temporary
 session files. These are component checks; they do not establish live agent, hook, or gateway
 behavior.

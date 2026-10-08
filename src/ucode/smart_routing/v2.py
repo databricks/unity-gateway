@@ -155,7 +155,9 @@ def smart_routing_enabled(
     env: MutableMapping[str, str] | None = None, *, default: bool = False
 ) -> bool:
     source = resolve_environment(env)
-    values = [source.get(var) for var in SMART_ROUTING_ENV_KEYS]
+    values = [
+        source.get(var) for var in (ENABLE_SMART_ROUTING_ENV_VAR, ENABLE_SUBAGENT_ROUTING_ENV_VAR)
+    ]
     if "1" in values:
         return True
     if "0" in values:

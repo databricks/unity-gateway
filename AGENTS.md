@@ -42,16 +42,17 @@ Explicit launch/session on/off controls still apply after version expansion.
 ### Adding a parameter
 
 1. Define its environment-variable constant in `src/ucode/constants.py` and add it to
-   `SMART_ROUTING_CONFIG_ENV_KEYS`.
+   `SMART_ROUTING_ENV_KEYS`, which also defines `SMART_ROUTING_CONFIG_ENV_KEYS`.
 2. Set an explicit value for it in **every** `_VERSIONS` entry, including existing versions.
    Choose values that preserve existing versions' behavior. Current parameters accept only
    the strings `"0"` and `"1"`; do not use booleans, empty strings, or omitted keys.
 3. Add its consumer in the appropriate routing module. Use `resolve_environment` for
    config-aware reads, or the legacy flags materialized by `apply_config` at launch.
    Keep launch-scoped changes restorable and preserve legacy behavior without a selector.
-4. Do not add arbitrary parameters to `SMART_ROUTING_ENV_KEYS`: that separate tuple controls
-   routing activation and session on/off overrides. Extend it only when those semantics
-   are intended, with regression tests. Session overrides must apply after version resolution.
+4. `SMART_ROUTING_ENV_KEYS` controls environment snapshots, restoration, and launch/session
+   off overrides. Keep routing activation limited to the V2 and subagent-only flags:
+   orchestration alone must not enable routing. Add regression tests for the new parameter's
+   controls. Session overrides must apply after version resolution.
 
 `_validate_versions` runs at module import and rejects missing keys, unknown keys, and
 invalid values. Do not weaken the complete-key check or infer required keys from `_VERSIONS`.
