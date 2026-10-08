@@ -1,15 +1,16 @@
-"""CUJs for self-managing an agent the workspace admin's published managed config does not enable.
+"""CUJs for self-managing an agent the workspace admin's managed config does not enable.
 
-These run against a real workspace whose PUBLISHED managed config enables some agents (Claude
-and/or Codex) but NOT OpenCode. No config is injected: the admin config, the gateway, and the agent
-binaries are real. The invariant under test is OpenCode: hidden and refused -> self-managed and
-launchable -> hidden and refused again.
+These run against the managed e2e workspace with the checked-in `managed_workspace_default.json`
+CodingAgentConfig injected via UCODE_MANAGED_CONFIG_STUB; it enables Claude and Codex but NOT
+OpenCode. The gateway and the agent binaries are real. The invariant under test is OpenCode: hidden
+and refused -> self-managed and launchable -> hidden and refused again.
 """
 
 import pytest
 from utils.evidence import FileTask
+from utils.managed import use_managed_config_fixture
 
-pytestmark = [pytest.mark.managed, pytest.mark.opencode]
+pytestmark = [pytest.mark.managed_fixture, pytest.mark.opencode]
 
 DISABLED_MESSAGE = "doesn't enable OpenCode"
 ADD_HINT = "ug agents add opencode"
@@ -34,6 +35,7 @@ def test_ug_agents_self_managed_opencode_journey(live_session, workspace):
     omits it and the launch is refused again.
     """
     session = live_session
+    use_managed_config_fixture(session, "managed_workspace_default")
     task = FileTask(session)
     result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
     assert "Select coding agents to configure:" not in result.stdout, result.stdout
@@ -68,14 +70,14 @@ def test_ug_agents_self_managed_opencode_journey(live_session, workspace):
 def test_ug_agents_admin_managed_guardrails(live_session, workspace):
     """Scenario: a developer tries to add or remove an agent the admin's config already enables.
 
-    Assumes the published config enables Codex (targets the first admin-managed agent shown by
-    `ug agents list`, so any enabled agent works). Only `ug agents` is driven, so no Codex binary
-    is launched.
+    Targets the first admin-managed agent shown by `ug agents list`. Only `ug agents` is driven,
+    so no agent binary is launched.
 
     Expected: `agents add` is a no-op noting the workspace admin already manages it; `agents remove`
     is rejected with nonzero exit because the workspace admin manages it.
     """
     session = live_session
+    use_managed_config_fixture(session, "managed_workspace_default")
     session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
 
     listed = session.run("agents", "list")

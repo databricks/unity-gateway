@@ -402,11 +402,11 @@ jobs:
     steps: *live-steps
 
   # Non-blocking pending stabilization: continue-on-error and absent from the cujs `needs`.
-  # Runs against the managed e2e workspace, whose published config enables Claude/Codex but not
+  # Runs on the managed e2e workspace with an injected config that enables Claude/Codex but not
   # OpenCode (a service principal authenticates it, like the `managed` lane).
   managed-opencode:
     name: Managed OpenCode self-managed (non-blocking)
-    if: ${{ inputs.suite != 'installation' && inputs.suite != 'smoke' && inputs.suite != 'tui' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     continue-on-error: true
     runs-on: ubuntu-22.04
     timeout-minutes: 30
@@ -415,7 +415,7 @@ jobs:
       DATABRICKS_CLIENT_ID: ${{ secrets.E2E_ADMIN_SP_CLIENT_ID }}
       DATABRICKS_CLIENT_SECRET: ${{ secrets.E2E_ADMIN_SP_CLIENT_SECRET }}
       DEPENDENCY: ${{ inputs.dependency }}
-      TEST_MARKER: managed and opencode
+      TEST_MARKER: managed_fixture and opencode
       ARTIFACT_NAME: integration-managed-opencode
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
