@@ -17,9 +17,9 @@ class UserSession(IntegrationSession):
 
     def redact(self, text, *, strip_ansi=False):
         text = super().redact(text, strip_ansi=strip_ansi)
-        # CI uploads CUJ artifacts, so also scrub the service-principal secrets.
-        for name in ("UG_CUJ_SP_CLIENT_SECRET", "UG_BUDGET_CUJ_SP_CLIENT_SECRET"):
-            if secret := os.environ.get(name):
+        # CI uploads CUJ artifacts, so also scrub every *SECRET* env var.
+        for name, secret in os.environ.items():
+            if "SECRET" in name.upper() and secret:
                 text = text.replace(secret, "<redacted>")
         return re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/-]+=*", r"\1<redacted>", text)
 
