@@ -3210,34 +3210,47 @@ class TestEnsureDatabricksCliVersion:
 
 
 class TestInstallDatabricksCli:
-    def test_windows_finds_existing_winget_alias_before_reinstalling(self, monkeypatch, tmp_path):
-        installed_dir = str(tmp_path / "Microsoft" / "WinGet" / "Packages" / "databricks")
+    @pytest.mark.parametrize(
+        ("path_source", "cached_missing"),
+        [("persisted_user_path", False), ("winget_alias", True), ("persisted_user_path", True)],
+    )
+    def test_windows_finds_existing_winget_alias_before_reinstalling(
+        self, monkeypatch, tmp_path, path_source, cached_missing
+    ):
+        links_dir = tmp_path / "Microsoft" / "WinGet" / "Links"
+        installed_dir = links_dir if path_source == "winget_alias" else tmp_path / "installed-cli"
+        installed_dir.mkdir(parents=True)
+        executable = installed_dir / ("databricks.exe" if os.name == "nt" else "databricks")
+        executable.touch()
+        executable.chmod(0o755)
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-        monkeypatch.setenv("PATH", "/windows/system32")
+        monkeypatch.setenv("PATH", str(tmp_path / "empty-path"))
+        monkeypatch.setenv("PATHEXT", ".EXE")
         monkeypatch.setattr(db_mod.platform, "system", lambda: "Windows")
-        monkeypatch.setattr(db_mod, "_windows_user_path", lambda: installed_dir)
         monkeypatch.setattr(
             db_mod,
-            "_discover_databricks_clis",
-            lambda **kw: (
-                [(str(Path(installed_dir) / "databricks.exe"), (1, 18, 0))]
-                if installed_dir in os.environ["PATH"].split(os.pathsep)
-                else []
-            ),
+            "_windows_user_path",
+            lambda: str(installed_dir) if path_source == "persisted_user_path" else None,
         )
+
+        def read_version(args, **kwargs):
+            assert args == [str(executable), "--version"]
+            return subprocess.CompletedProcess(args, 0, "Databricks CLI v1.20.0", "")
+
+        monkeypatch.setattr(db_mod, "run", read_version)
         monkeypatch.setattr(
             db_mod,
             "_run_databricks_cli_installer",
-            lambda **kw: pytest.fail("unexpected reinstall"),
+            lambda **kwargs: pytest.fail("existing CLI must not be reinstalled"),
         )
-        checked = []
-        monkeypatch.setattr(
-            db_mod, "ensure_databricks_cli_version", lambda *a, **kw: checked.append(True)
-        )
+        if cached_missing:
+            assert databricks_cli_path() == "databricks"
 
         install_databricks_cli()
+        install_databricks_cli()
 
-        assert checked == [True]
+        assert databricks_cli_path() == str(executable)
+        assert databricks_cli_version() == (1, 20, 0)
 
     def test_checks_version_when_present(self, monkeypatch):
         monkeypatch.setattr(

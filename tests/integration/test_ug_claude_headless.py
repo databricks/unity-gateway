@@ -115,11 +115,14 @@ def test_ug_claude_headless_prompt_after_separator(live_session, workspace):
 
 
 @pytest.mark.parametrize("model_form", ["separate", "equals"])
-def test_ug_claude_headless_explicit_model_bypasses_routing(live_session, workspace, model_form):
-    """Scenario: choose an explicit model while global smart routing is enabled.
+@pytest.mark.parametrize("model_owner", ["ug", "claude"])
+def test_ug_claude_headless_explicit_model_bypasses_routing(
+    live_session, workspace, model_form, model_owner
+):
+    """Scenario: choose a model before/after ug's separator with no workspace policy.
 
-    Expected: the model option is accepted, the real file task completes, and
-    no routing wrapper overrides the caller's choice.
+    Expected: with smart routing enabled, the real file task completes on the
+    requested model, confirmed by JSON modelUsage, without a routing wrapper.
     """
     session = live_session
     task = FileTask(session)
@@ -138,6 +141,7 @@ def test_ug_claude_headless_explicit_model_bypasses_routing(live_session, worksp
     session.env["ENABLE_SMART_ROUTING_V2"] = "1"
     result = session.run(
         "claude",
+        *(model_args if model_owner == "ug" else []),
         "--",
         "-p",
         task.prompt,
@@ -145,10 +149,13 @@ def test_ug_claude_headless_explicit_model_bypasses_routing(live_session, worksp
         "json",
         "--allowedTools",
         "Read",
-        *model_args,
+        *(model_args if model_owner == "claude" else []),
         timeout=180,
     )
     task.assert_headless_answer("claude", result)
+    usage = json.loads(result.stdout)["modelUsage"]
+    assert set(usage) == {model}, {"expected": model, "observed": sorted(usage)}
+    assert usage[model]["outputTokens"] > 0, usage
     session.assert_not_routed()
 
 

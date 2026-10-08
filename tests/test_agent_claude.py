@@ -1265,7 +1265,7 @@ class TestWriteToolConfigManagedSettings:
         )
         monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
         monkeypatch.setattr(claude, "managed_writes_allowed", lambda: True)
-        monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: True)
         monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
         monkeypatch.setattr(claude, "save_state", lambda state: None)
         monkeypatch.setattr(claude, "ug_version", lambda: "1.0")
@@ -1327,7 +1327,7 @@ class TestWriteToolConfigManagedSettings:
         monkeypatch.setattr(managed_files, "_sudo_remove", lambda *a: sudo_writes.append("remove"))
         monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
         monkeypatch.setattr(claude, "managed_writes_allowed", lambda: True)
-        monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: True)
         monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
         monkeypatch.setattr(claude, "save_state", lambda state: None)
         monkeypatch.setattr(claude, "ug_version", lambda: "1.0")
@@ -1969,20 +1969,29 @@ class TestWriteToolConfigManagedSettings:
 
         assert managed_writes == []
 
-    def test_noninteractive_fails_when_managed_file_conflicts(self, monkeypatch):
+    def test_noninteractive_repairs_conflicting_managed_settings_without_prompting(
+        self, monkeypatch
+    ):
         private_writes: list = []
         managed_writes: list = []
         existing = {
-            str(FAKE_MANAGED_PATH): {"env": {"ANTHROPIC_BASE_URL": "https://other.example.com"}}
+            str(FAKE_MANAGED_PATH): {
+                "apiKeyHelper": "isaac auth token",
+                "env": {"ANTHROPIC_BASE_URL": "https://other.example.com", "ISAAC_ONLY": "keep"},
+                "permissions": {"deny": ["Read(secret.txt)"]},
+            }
         }
         self._patch(monkeypatch, private_writes, managed_writes, existing)
         monkeypatch.setattr(claude, "managed_writes_allowed", lambda: False)
-        state = {"workspace": WS, "codex_models": []}
 
-        with pytest.raises(RuntimeError, match="cannot be applied non-interactively"):
-            claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        claude.write_tool_config({"workspace": WS, "codex_models": []}, None)
 
-        assert managed_writes == []
+        assert len(managed_writes) == 1
+        written = json.loads(managed_writes[0][1])
+        assert written["apiKeyHelper"] == private_writes[0][1]["apiKeyHelper"]
+        assert written["env"]["ANTHROPIC_BASE_URL"] == f"{WS}/ai-gateway/anthropic"
+        assert written["env"]["ISAAC_ONLY"] == "keep"
+        assert "Read(secret.txt)" in written["permissions"]["deny"]
 
     def test_headless_isaac_headers_and_telemetry_are_compatible(self, monkeypatch):
         private_writes: list = []
@@ -2066,7 +2075,12 @@ class TestWriteToolConfigManagedSettings:
         )
         monkeypatch.setattr(claude, "managed_writes_allowed", lambda: False)
 
-        with pytest.raises(RuntimeError, match="env.OTEL_TRACES_EXPORTER"):
+        def deny_managed_write(*args, **kwargs):
+            raise managed_files.ManagedFileWriteUnavailable("sudo denied")
+
+        monkeypatch.setattr(claude, "reconcile_managed_file", deny_managed_write)
+
+        with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="sudo denied"):
             claude.write_tool_config(
                 {"workspace": WS, "codex_models": [], "claude_otel_tracing": True}, None
             )
@@ -2104,13 +2118,15 @@ class TestWriteToolConfigManagedSettings:
         assert "continuing with local settings" in warnings[0]
         assert verified == [{"scope": "local-compatible"}]
 
-    def test_sudo_failure_remains_fatal_when_managed_file_conflicts(self, monkeypatch):
+    @pytest.mark.parametrize("interactive", [False, True])
+    def test_sudo_failure_remains_fatal_when_managed_file_conflicts(self, monkeypatch, interactive):
         private_writes: list = []
         managed_writes: list = []
         existing = {
             str(FAKE_MANAGED_PATH): {"env": {"ANTHROPIC_BASE_URL": "https://other.example.com"}}
         }
         self._patch(monkeypatch, private_writes, managed_writes, existing)
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: interactive)
 
         def deny_managed_write(*args, **kwargs):
             raise managed_files.ManagedFileWriteUnavailable("sudo denied")
@@ -2656,9 +2672,7 @@ class TestClaudeLaunch:
         settings = json.loads(calls[0][2])
         assert settings["env"]["ANTHROPIC_MODEL"] == "cat.schema.model"
 
-    def test_launch_custom_model_uses_family_aliases_without_native_model(
-        self, monkeypatch, tmp_path
-    ):
+    def test_launch_custom_model_uses_native_model(self, monkeypatch, tmp_path):
         calls: list[list[str]] = []
         monkeypatch.setenv("ANTHROPIC_MODEL", "stale-model")
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
@@ -2673,42 +2687,45 @@ class TestClaudeLaunch:
 
         custom_model = "system.ai.claude-opus-4-8"
         claude.launch(
-            {"workspace": WS, "_claude_launch_custom_model": custom_model},
+            {"workspace": WS},
             ["--debug"],
             options=LaunchOptions(user_pinned_model=custom_model),
         )
 
-        assert os.environ["ANTHROPIC_MODEL"] == claude.CLAUDE_CUSTOM_MODEL_SELECTOR
+        assert os.environ["ANTHROPIC_MODEL"] == custom_model
         assert calls[0][0:2] == ["claude", "--settings"]
         settings = json.loads(calls[0][2])
         assert settings["model"] == saved_model
-        for family in claude.CLAUDE_CUSTOM_MODEL_FAMILIES:
-            key = claude.CLAUDE_DEFAULT_MODEL_ENV_KEYS[family]
-            assert settings["env"][key] == custom_model
-        assert "ANTHROPIC_DEFAULT_FABLE_MODEL" not in settings["env"]
-        assert "--model" not in calls[0]
-        assert calls[0][-1] == "--debug"
+        assert settings["env"] == {"USER_SETTING": "keep", "ANTHROPIC_MODEL": custom_model}
+        assert calls[0][3:] == ["--model", custom_model, "--debug"]
         assert settings_path.read_bytes() == original_settings
 
     def test_launch_custom_model_preserves_forwarded_native_model(self, monkeypatch):
         calls: list[list[str]] = []
+        monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
         monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
 
         claude.launch(
-            {"workspace": WS, "_claude_launch_custom_model": "system.ai.claude-opus-4-8"},
+            {"workspace": WS},
             ["--model", "claude-sonnet-5"],
             options=LaunchOptions(user_pinned_model="system.ai.claude-opus-4-8"),
         )
 
-        assert calls[0][-2:] == ["--model", "claude-sonnet-5"]
+        assert calls[0][3:] == ["--model", "claude-sonnet-5"]
 
     def test_launch_managed_custom_model_uses_native_model_over_stale_settings(
         self, monkeypatch, tmp_path
     ):
         calls: list[list[str]] = []
+        monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
         settings_path = tmp_path / "settings.json"
-        settings_path.write_text(json.dumps({"model": "system.ai.claude-haiku-4-5"}))
+        original_settings = {
+            "model": "system.ai.claude-haiku-4-5",
+            "availableModels": ["system.ai.claude-opus-4-8", "system.ai.claude-haiku-4-5"],
+            "enforceAvailableModels": True,
+        }
+        settings_path.write_text(json.dumps(original_settings))
         monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", settings_path)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
         monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
@@ -2717,14 +2734,18 @@ class TestClaudeLaunch:
         claude.launch(
             {
                 "workspace": WS,
-                "_claude_launch_custom_model": custom_model,
                 "claude_static_models": ["system.ai.claude-opus-4-8", "system.ai.claude-haiku-4-5"],
             },
             [],
             options=LaunchOptions(user_pinned_model=custom_model),
         )
 
-        assert calls[0][1:3] == ["--settings", str(settings_path)]
+        assert calls[0][1] == "--settings"
+        launch_settings = json.loads(calls[0][2])
+        assert launch_settings["model"] == original_settings["model"]
+        assert launch_settings["availableModels"] == original_settings["availableModels"]
+        assert launch_settings["enforceAvailableModels"] is True
+        assert json.loads(settings_path.read_text()) == original_settings
         assert calls[0][-2:] == ["--model", custom_model]
 
     def test_launch_default_model_is_inherited_by_smart_routing(self, monkeypatch):
