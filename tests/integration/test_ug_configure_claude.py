@@ -1,11 +1,11 @@
 """CUJs: configure Claude through ug, then use its real interactive session."""
 
 import json
-import shlex
 from pathlib import Path
 
 import pytest
 from utils.evidence import FileTask
+from utils.harness import split_command
 from utils.terminal import AgentTerminal, ConfigureTerminal
 
 pytestmark = [pytest.mark.live, pytest.mark.tui, pytest.mark.claude]
@@ -39,8 +39,8 @@ def test_ug_configure_claude_databricks(live_session, workspace):
     assert not session.workspace_state().get("provider_services", {}).get("claude")
 
     settings = json.loads((session.home / ".claude/ucode-settings.json").read_text())
-    helper = shlex.split(settings["apiKeyHelper"])
-    assert Path(helper[0]) == session.binary.with_name("ug")
+    helper = split_command(settings["apiKeyHelper"])
+    assert Path(helper[0]).with_suffix("") == session.binary.with_name("ug")
     assert helper[1] == "auth-token"
     token_result = session.run(*helper[1:], binary=helper[0], strip_ansi=False, timeout=30)
     assert token_result.stdout == "<redacted>\n"

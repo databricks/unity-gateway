@@ -360,7 +360,7 @@ class AgentTerminal(TerminalProcess):
                     and bool(
                         re.search(
                             rf"(?m)^\s*>\s+You are in "
-                            rf"{re.escape(str(self.session.cwd.parent))}/[^/\r\n]*$",
+                            rf"{re.escape(str(self.session.cwd.parent))}[\\/][^\\/\r\n]*$",
                             text,
                         )
                     )
@@ -369,7 +369,8 @@ class AgentTerminal(TerminalProcess):
                         or "directory allows project-local config, hooks, and exec policies to load."
                         in text
                     )
-                    and bool(re.search(r"(?m)^\s*[›❯>]\s*1[.)]\s+Yes, continue\s*$", text))
+                    # ConPTY can deliver the selection glyph as U+FFFD.
+                    and bool(re.search(r"(?m)^\s*[›❯>\ufffd]\s*1[.)]\s+Yes, continue\s*$", text))
                     and bool(re.search(r"(?m)^\s*2[.)]\s+No, quit\s*$", text))
                     and "Press enter to continue" in text,
                     "\r",
