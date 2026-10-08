@@ -12,6 +12,12 @@ mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 | Integration CUJs | `integration/test_*.py` | Public configure, TUI, script, command, protocol, and lifecycle journeys |
 | Installation | `integration/test_installation.py` | Fresh installed package, CLI, and local helpers without credentials on Linux and advisory native Windows |
 
+Claude mod entry-point coverage lives in `test_claude_mod.py` (packaged source),
+`test_claude_smart_routing_v2.py` (launch wiring), and the explicitly selected
+`native_claude/test_mod.py` suite. Claude 2.1.290 validates the module and runs its
+TypeScript event-forwarding test in CI. Request metadata and toggle behavior are
+covered by a follow-up change. See [the mod guide](../docs/claude-mod.md).
+
 Dedicated CUJs reuse `integration/utils` session/terminal mechanics and file-task
 and transcript readers, not its config stubs or pytest fixtures. Prompt/model
 correlation remains CUJ-specific. Concurrent runs may read the same CUJ workspace.
