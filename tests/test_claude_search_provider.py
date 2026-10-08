@@ -8,7 +8,6 @@ import os
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -237,15 +236,6 @@ def test_launch_paths_receive_external_override(search_config, monkeypatch, rout
     monkeypatch.setattr(claude, "_resolve_launch_binary", lambda binary: binary)
     monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
     monkeypatch.setattr(claude, "_launch_relayed", lambda state, binary, args: calls.append(args))
-    monkeypatch.setattr(
-        claude, "claude_recipe_session", lambda settings, _path: nullcontext(settings)
-    )
-
-    def spawn(argv):
-        calls.append(argv)
-        return SimpleNamespace(wait=lambda: 0)
-
-    monkeypatch.setattr(claude.subprocess_cross_os, "popen", spawn)
 
     def routed(state, args, **kwargs):
         if routing == "fallback":
@@ -255,20 +245,11 @@ def test_launch_paths_receive_external_override(search_config, monkeypatch, rout
     monkeypatch.setattr(claude.smart_routing_v2, "launch_claude", routed)
     search_config.state["claude_relayed"] = routing == "relayed"
     with patch.dict(os.environ):
-        if routing == "fallback":
-            with pytest.raises(SystemExit) as exc:
-                claude.launch(
-                    search_config.state,
-                    ["-p", "hello"],
-                    options=LaunchOptions(launch_smart_routing=True),
-                )
-            assert exc.value.code == 0
-        else:
-            claude.launch(
-                search_config.state,
-                ["-p", "hello"],
-                options=LaunchOptions(launch_smart_routing=routing == "on"),
-            )
+        claude.launch(
+            search_config.state,
+            ["-p", "hello"],
+            options=LaunchOptions(launch_smart_routing=routing in ("on", "fallback")),
+        )
     assert len(calls) == 1
     assert _override(calls[0])["env"][PROVIDER_ENV] == "external"
 

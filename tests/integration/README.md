@@ -304,10 +304,11 @@ lack dedicated regression coverage. Codex's native hook merging, project trust,
 and execution of pre-existing hooks are not exercised by this integration suite.
 
 Claude's recipe payload has separate component coverage in `../test_claude_recipe_payload.py`:
-session-local on/off/on transitions, field/auth preservation, gzip requests, and no injection
-for never-enabled sessions. Native Claude 2.1.286 parent/child requests were also checked against
-a local fixture endpoint. Neither check establishes backend extraction or routing behavior;
-the live toggle journeys above do not currently assert the outbound recipe field.
+native startup metadata, session-local desired-state transitions, preservation of body fields
+and gateway settings, and no injection for never-enabled sessions. A direct Claude 2.1.286
+fixture probe confirmed watched user settings update parent/child payloads, while `--settings`
+remained cached. UG's per-session native reload wiring is incomplete. The live toggle journeys
+above do not currently assert the outbound recipe field or backend extraction.
 
 The portable `../test_claude_windows_smart_routing.py` checks the Windows
 subagent-only fallback without Unix imports. Native Windows TUI and hook execution

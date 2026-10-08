@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import base64
 import binascii
-import gzip
 import json
 import os
 import sys
@@ -35,8 +34,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import cast
 
 import httpx
-
-from ucode.constants import SMART_ROUTER_RECIPE_FIELD
 
 # Header we overwrite with the freshly-minted Databricks credential. Any
 # client-supplied value is replaced, so a stale settings.json value can't leak.
@@ -242,7 +239,7 @@ def _request_model(body: bytes | None) -> str | None:
 
 class _ProxyHandler(BaseHTTPRequestHandler):
     # Set by the server factory.
-    cache: TokenCache | None
+    cache: TokenCache
     client: httpx.Client
     token_header = AI_GATEWAY_TOKEN_HEADER
 
@@ -260,25 +257,11 @@ class _ProxyHandler(BaseHTTPRequestHandler):
     def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
         return self.token_header, frozenset(), "forward"
 
-    def _request_body(self, body: bytes | None) -> bytes | None:
-        return body
-
-    def _request_headers(self, token_header: str, extra_strip: frozenset[str]) -> dict[str, str]:
-        assert self.cache is not None
-        return forwarded_request_headers(
-            self, self.cache.token, token_header, extra_strip=extra_strip
-        )
-
     def _handle(self) -> None:
         diagnostic_id = uuid.uuid4().hex[:12]
         started = time.monotonic()
         length = int(self.headers.get("Content-Length", 0) or 0)
         body = self.rfile.read(length) if length else None
-        try:
-            body = self._request_body(body)
-        except (RuntimeError, ValueError, OSError):
-            self._safe_send_error(503, "Smart Router session recipe could not be read")
-            return
         url = self.path.lstrip("/")
         token_header, extra_strip, route_label = self._forward_target(body)
         log_proxy_diagnostic(
@@ -290,7 +273,9 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         )
 
         def request_headers() -> dict[str, str]:
-            return self._request_headers(token_header, extra_strip)
+            return forwarded_request_headers(
+                self, self.cache.token, token_header, extra_strip=extra_strip
+            )
 
         try:
             # First attempt with the current token.
@@ -303,7 +288,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                     status=resp.status_code,
                     elapsed_ms=round((time.monotonic() - started) * 1000),
                 )
-                if resp.status_code not in (401, 403) or self.cache is None:
+                if resp.status_code not in (401, 403):
                     self._relay_response(resp, diagnostic_id=diagnostic_id, started=started)
                     return
                 # Auth rejected. Drain the (small) error body so the pooled
@@ -316,7 +301,6 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             # genuine re-auth is triggered; a stale-Databricks 401 self-heals here
             # instead of surfacing to Claude Code as a spurious Anthropic prompt.
             try:
-                assert self.cache is not None
                 self.cache.refresh()
             except RuntimeError as exc:
                 # Refresh failed: the Databricks OAuth session is dead (not just the
@@ -444,56 +428,9 @@ class _RelayProxyHandler(_ProxyHandler):
         return self.token_header, frozenset(), "relay"
 
 
-class _ClaudeRecipeProxyHandler(_ProxyHandler):
-    """Refresh only recipe metadata; preserve the native authentication headers."""
-
-    cache = None
-    recipe_provider: Callable[[], str]
-
-    def _request_headers(self, token_header: str, extra_strip: frozenset[str]) -> dict[str, str]:
-        return {
-            key: value
-            for key, value in self.headers.items()
-            if key.lower() not in HOP_BY_HOP_HEADERS
-        }
-
-    def _request_body(self, body: bytes | None) -> bytes | None:
-        if self.command != "POST" or self.path.split("?", 1)[0].rstrip("/") != "/v1/messages":
-            return body
-        compressed = self.headers.get("Content-Encoding", "").lower() == "gzip"
-        payload = json.loads(gzip.decompress(body or b"") if compressed else body or b"")
-        if not isinstance(payload, dict):
-            raise ValueError("Claude inference body must be a JSON object")
-        payload[SMART_ROUTER_RECIPE_FIELD] = self.recipe_provider()
-        updated = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        return gzip.compress(updated) if compressed else updated
-
-
 class _LoopbackHTTPServer(ThreadingHTTPServer):
     # Windows permits sharing an active listener when SO_REUSEADDR is enabled.
     allow_reuse_address = ThreadingHTTPServer.allow_reuse_address and os.name != "nt"
-
-
-def start_claude_recipe_proxy(
-    upstream_url: str, recipe_provider: Callable[[], str]
-) -> tuple[ThreadingHTTPServer, httpx.Client]:
-    """Start one session's recipe forwarder without changing authentication or settings on disk."""
-    client = httpx.Client(
-        base_url=upstream_url.rstrip("/") + "/",
-        timeout=UPSTREAM_TIMEOUT,
-        follow_redirects=False,
-    )
-    handler = type(
-        "BoundClaudeRecipeProxyHandler",
-        (_ClaudeRecipeProxyHandler,),
-        {"client": client, "recipe_provider": staticmethod(recipe_provider)},
-    )
-    try:
-        server = _LoopbackHTTPServer(("127.0.0.1", 0), handler)
-    except BaseException:
-        client.close()
-        raise
-    return server, client
 
 
 def _start_proxy(

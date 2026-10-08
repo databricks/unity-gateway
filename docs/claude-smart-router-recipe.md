@@ -2,66 +2,59 @@
 
 When Claude starts with `ENABLE_SMART_ROUTING_V2=1` or
 `ENABLE_SMART_ROUTING_SUBAGENT_ONLY=1`, Unity Gateway initializes
-`SMART_ROUTER_RECIPE_LOCAL` to `SMART_ROUTER_NAME`, or `task_v3` when that variable is unset or
-blank. The value is stored in the session's `UCODE_SESSION_ENV_FILE`, shared by the parent,
-children, hooks, and Smart Router controls. Every launch gets its own file.
+`SMART_ROUTER_RECIPE_LOCAL` to `SMART_ROUTER_NAME`, or `task_v3` when unset or blank.
+Each launch has its own `UCODE_SESSION_ENV_FILE`, shared with its hooks and controls.
 
-The initial recipe is merged into `CLAUDE_CODE_EXTRA_BODY`. Existing JSON fields are retained;
-invalid extra-body JSON produces an actionable launch error. `/smart-router off` atomically
-sets the session recipe to the shared `SMART_ROUTER_DISABLED` constant (`DISABLED`).
-`/smart-router on` restores the launch's configured recipe.
+The initial recipe is merged into native `CLAUDE_CODE_EXTRA_BODY`. Existing body fields
+are retained; malformed or non-object JSON fails launch with an actionable error.
+Explicit-model and headless launches also carry the metadata when a routing flag is enabled.
+Never-enabled launches receive no UG-injected recipe field.
 
-Claude 2.1.286 caches the file supplied through `--settings`: replacing its extra-body value did
-not update subsequent native requests. UG therefore starts a session-owned loopback forwarder
-and passes its URL only in launch settings. The forwarder reads the authoritative session value
-for each `/v1/messages` request and replaces `smart_router_recipe_name` before forwarding to the
-configured endpoint. Parent and child requests use the same forwarder. Other body fields and
-authentication headers are preserved, including gzip request bodies and streaming responses.
-No request bodies or credentials are logged. The listener is closed when Claude exits.
+`/smart-router off` updates the desired session recipe to `SMART_ROUTER_DISABLED`
+(`DISABLED`) and updates the desired extra body in the same atomic session-file write.
+`/smart-router on` restores the configured recipe. Another session's state is unchanged.
+These state changes do not yet refresh the running native client's request payload.
 
-The process environment contains the launch-time value; the session file is authoritative after
-a toggle. UG does not mutate shared Claude settings to update a session's recipe. Explicit-model
-and headless launches still carry recipe metadata when a routing flag is enabled, even though
-they bypass UG's model-selection wrapper. Never-enabled sessions start no recipe forwarder and
-receive no UG-injected extra-body field. Missing or corrupt session state blocks inference
-instead of silently forwarding a stale recipe.
+## Native reload evidence and remaining work
 
-## Managed endpoint limitation
+A direct Claude 2.1.286 probe used a local fixture API and native Agent dispatch.
+Updating watched user `settings.json` changed both parent and child requests through
+`task_v3` → `DISABLED` → `task_v3`. Each turn followed an atomic settings update and a
+one-second wait. This proves native extra-body hot reload for that version and settings
+source; it does not prove immediate propagation or live gateway routing behavior.
 
-This draft rejects recipe-enabled launches when an OS-managed settings file enforces
-`ANTHROPIC_BASE_URL`: that scope overrides the loopback URL, so request updates would otherwise
-silently stop working. UG normally mirrors its configured endpoint into that scope. Supporting
-those normal configurations requires a session-aware native extra-body mechanism or a change
-to endpoint ownership; this draft does not modify shared policy files to bypass that precedence.
-The four payload criteria are therefore validated only when the session endpoint override is
-allowed. This is a rollout blocker, not a completed managed-settings implementation.
+The same probe replacing a file supplied through `--settings` kept sending `task_v3`.
+Exporting an environment variable from a hook subprocess also cannot mutate its parent
+Claude process's environment.
 
-## Manual verification
+UG currently supplies startup settings. A watched settings source private to each
+session still needs to be wired before off/on changes reach native inference requests.
+A shared user settings file would allow sessions to affect each other. The original
+on/off/on payload success criteria remain incomplete. Recipe metadata uses no new
+proxy and leaves the configured gateway endpoint unchanged.
 
-Configure Claude for the workspace you intend to test, then run:
+## Startup verification
+
+Use an already configured Claude workspace:
 
 ```bash
 export ENABLE_SMART_ROUTING_SUBAGENT_ONLY=1
-export ENABLE_SMART_ROUTER_ORCHESTRATOR=0
 unset ENABLE_SMART_ROUTING_V2
 unset SMART_ROUTER_NAME
 uv run ug claude
 ```
 
-In the same session, submit a main-agent task and explicitly request a child task. Invoke
-`/smart-router off`, repeat both tasks, invoke `/smart-router on`, and repeat once more. Inspect
-gateway request evidence: the three phases should carry `task_v3`, `DISABLED`, and `task_v3`
-in `smart_router_recipe_name`, for both parent and child inferences. The turn performing the
-toggle can begin under the previous value; requests submitted after the toggle completes use
-the updated value.
+Main and child inference requests should initially contain
+`{"smart_router_recipe_name":"task_v3"}`. Repeat with `SMART_ROUTER_NAME` set to a
+supported recipe, then with `ENABLE_SMART_ROUTING_V2=1`. With both routing flags unset
+or set to `0`, UG should add no recipe field. Do not manually export
+`SMART_ROUTER_RECIPE_LOCAL` or `CLAUDE_CODE_EXTRA_BODY` for these startup checks.
 
-Repeat with `SMART_ROUTER_NAME` set to a supported custom recipe. Open a second Claude session
-and confirm that toggling the first leaves the second's request values unchanged. Also repeat
-with `ENABLE_SMART_ROUTING_V2=1` and `ENABLE_SMART_ROUTING_SUBAGENT_ONLY=0` for full routing.
-Finally launch with both flags set to `0` and confirm UG does not add the body field. No manual
-`CLAUDE_CODE_EXTRA_BODY` or `SMART_ROUTER_RECIPE_LOCAL` export is needed.
+Off/on currently verifies desired session state only. Do not treat it as evidence of
+changed outbound requests until native reload wiring is implemented.
 
-Component tests run with `uv run pytest tests/test_claude_recipe_payload.py -v`. A native
-Claude 2.1.286 probe used a local fixture endpoint and the production UG toggle command to
-verify parent/child on/off/on propagation with both the default and a custom recipe. Live
-gateway backend behavior requires the request-evidence check above.
+Run component checks with:
+
+```bash
+uv run pytest tests/test_claude_recipe_payload.py -v
+```

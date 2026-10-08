@@ -10,11 +10,17 @@ from collections.abc import Mapping, MutableMapping
 from pathlib import Path
 
 from ucode.config_io import atomic_write_json
-from ucode.constants import SMART_ROUTER_RECIPE_LOCAL, SMART_ROUTING_ENV_KEYS
+from ucode.constants import (
+    CLAUDE_CODE_EXTRA_BODY,
+    SMART_ROUTER_RECIPE_LOCAL,
+    SMART_ROUTING_ENV_KEYS,
+)
 
 SESSION_ENV_VAR = "UCODE_SESSION_ENV_FILE"
 SESSION_PYTHON_ENV_VAR = "UCODE_SMART_ROUTER_PYTHON"
-_ALLOWED_KEYS = frozenset((*SMART_ROUTING_ENV_KEYS, SMART_ROUTER_RECIPE_LOCAL))
+_ALLOWED_KEYS = frozenset(
+    (*SMART_ROUTING_ENV_KEYS, SMART_ROUTER_RECIPE_LOCAL, CLAUDE_CODE_EXTRA_BODY)
+)
 
 
 def start_session(env: MutableMapping[str, str] | None = None) -> Path:
@@ -71,9 +77,9 @@ def effective_environment(env: Mapping[str, str] | None = None) -> dict[str, str
     return effective
 
 
-def set_session_environment(values: Mapping[str, str]) -> None:
+def set_session_environment(values: Mapping[str, str], *, path: Path | None = None) -> None:
     """Atomically replace the current session's allowlisted overrides."""
-    path = session_env_path()
+    path = path if path is not None else session_env_path()
     try:
         read_session_environment(path)
     except (OSError, UnicodeError, ValueError) as exc:

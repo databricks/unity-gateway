@@ -2305,13 +2305,22 @@ def _toggle_current_smart_routing_session(enabled: bool | None) -> bool:
     except RuntimeError:
         return False
     try:
-        from ucode.constants import SMART_ROUTER_DISABLED, SMART_ROUTER_RECIPE_LOCAL
+        from ucode.constants import (
+            CLAUDE_CODE_EXTRA_BODY,
+            SMART_ROUTER_DISABLED,
+            SMART_ROUTER_RECIPE_LOCAL,
+        )
+        from ucode.smart_routing.recipe_payload import merge_claude_recipe_extra_body
         from ucode.smart_routing.routing import configured_router_name
 
         values = dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0") if not enabled else {}
-        if SMART_ROUTER_RECIPE_LOCAL in effective_environment():
+        current = effective_environment()
+        if SMART_ROUTER_RECIPE_LOCAL in current:
             values[SMART_ROUTER_RECIPE_LOCAL] = (
                 configured_router_name() if enabled else SMART_ROUTER_DISABLED
+            )
+            values[CLAUDE_CODE_EXTRA_BODY] = merge_claude_recipe_extra_body(
+                current.get(CLAUDE_CODE_EXTRA_BODY), values[SMART_ROUTER_RECIPE_LOCAL]
             )
         set_session_environment(values)
     except RuntimeError as exc:

@@ -2081,26 +2081,10 @@ def launch(
         if not state.get("claude_relayed") and (
             options.launch_smart_routing or smart_routing_v2.smart_routing_enabled()
         ):
-            _check_recipe_endpoint_override()
             settings, tool_args = _compose_v2_settings(tool_args)
             session_path = smart_routing_v2._prepare_smart_router_session("claude")
             recipe_settings = stack.enter_context(claude_recipe_session(settings, session_path))
         _launch(state, tool_args, options=options, recipe_settings=recipe_settings)
-
-
-def _check_recipe_endpoint_override() -> None:
-    managed_path = _managed_settings_path()
-    if managed_path is None:
-        return
-    paths = [managed_path, *sorted(managed_path.with_name("managed-settings.d").glob("*.json"))]
-    for path in paths:
-        env = read_json_safe(path).get("env")
-        if isinstance(env, dict) and "ANTHROPIC_BASE_URL" in env:
-            raise RuntimeError(
-                "Claude's OS-managed ANTHROPIC_BASE_URL prevents session-local recipe updates. "
-                "The managed endpoint must allow a launch override before this feature can run. "
-                "Disable smart routing to launch without recipe injection."
-            )
 
 
 def _launch(
@@ -2188,18 +2172,7 @@ def _launch(
         os.environ.update(fallback_env)
     if recipe_settings is not None:
         settings_override = _merge_claude_settings(recipe_settings, settings_override or {})
-    argv = _build_claude_argv(binary, launch_args, settings_override=settings_override)
-    if recipe_settings is None:
-        exec_or_spawn(argv)
-        return
-    # The session forwarder must outlive Claude, including explicit-model and headless launches.
-    proc = subprocess_cross_os.popen(argv)
-    try:
-        returncode = proc.wait()
-    except KeyboardInterrupt:
-        proc.send_signal(signal.SIGINT)
-        returncode = proc.wait()
-    raise SystemExit(returncode)
+    exec_or_spawn(_build_claude_argv(binary, launch_args, settings_override=settings_override))
 
 
 def validate_cmd(binary: str) -> list[str]:

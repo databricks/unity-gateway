@@ -2481,8 +2481,8 @@ class TestResolveLaunchBinary:
 class TestClaudeLaunch:
     @pytest.fixture(autouse=True)
     def _recipe_session(self, monkeypatch, tmp_path):
-        # These dispatch tests do not run a native agent or a network listener. Session/body
-        # propagation is exercised separately in test_claude_recipe_payload.py.
+        # Dispatch tests isolate session setup. Native startup settings and desired session
+        # state are covered separately in test_claude_recipe_payload.py.
         monkeypatch.setattr(
             v2, "_prepare_smart_router_session", lambda _agent: tmp_path / "env.json"
         )
@@ -2870,16 +2870,9 @@ class TestClaudeLaunch:
             claude.launch({"workspace": WS}, tool_args, options=LaunchOptions())
             assert calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), *tool_args]]
         else:
-            process = Mock()
-            process.wait.return_value = 0
-            popen = Mock(return_value=process)
-            monkeypatch.setattr(claude.subprocess_cross_os, "popen", popen)
-            with pytest.raises(SystemExit) as exc:
-                claude.launch({"workspace": WS}, tool_args, options=LaunchOptions())
-            assert exc.value.code == 0
-            # Headless inference keeps the recipe forwarder alive without first-prompt routing.
-            assert popen.call_args.args[0][-len(tool_args) :] == tool_args
-            assert calls == []
+            claude.launch({"workspace": WS}, tool_args, options=LaunchOptions())
+            assert len(calls) == 1
+            assert calls[0][-len(tool_args) :] == tool_args
         v2.launch_claude.assert_not_called()
 
     @pytest.mark.parametrize("tool_args", [["fix this bug"], ["--", "fix this bug"]])
