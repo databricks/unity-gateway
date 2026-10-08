@@ -303,13 +303,15 @@ role-contract preservation, and isolation from legacy preference files
 lack dedicated regression coverage. Codex's native hook merging, project trust,
 and execution of pre-existing hooks are not exercised by this integration suite.
 
-The unit/component `../test_smart_routing_config.py` covers both canonical-v0 selectors against
-all eight binary legacy-flag combinations, exact precedence/materialization/restoration and
+The unit/component `../test_smart_routing_config.py` covers all three canonical v0/v1 selectors
+against every binary legacy-flag combination, including `subagent_only_v1`'s V2/subagent-on and
+first-prompt-off behavior, exact preset precedence/materialization/restoration and
 getter results, the shared routing/session key registry including the orchestrator exactly once,
-orchestrator-only activation defaults, CLI launch-context materialization/restoration, registry validation,
-process-local environment restoration,
+orchestrator-only activation defaults, CLI startup ordering before callbacks, early invalid-selector
+exits, explicit routing controls, registry validation, process-local environment restoration,
 native-subcommand suppression, and orchestrator off-to-on transitions through real temporary
-session files. It does not claim live agent, hook, or gateway coverage.
+session files. Full CLI launch coverage also verifies that a managed routing opt-in preserves the
+exact `subagent_only_v0` flags. It does not claim live agent, hook, or gateway coverage.
 
 The portable `../test_claude_windows_smart_routing.py` checks the Windows
 subagent-only fallback without Unix imports. Native Windows TUI and hook execution

@@ -17,7 +17,6 @@ from ucode.constants import (
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
-    SMART_ROUTING_CONFIG_ENV_KEYS,
     SMART_ROUTING_CONFIG_VERSION_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
 )
@@ -28,6 +27,11 @@ runner = CliRunner()
 _SELECTOR_EXPECTED_FLAGS = {
     "subagent_only_v0": {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
+        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+    },
+    "subagent_only_v1": {
+        ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
     },
@@ -48,55 +52,14 @@ def _assert_routing_getters(environment: dict[str, str], expected_flags: dict[st
 
 
 def test_smart_routing_key_registry_includes_orchestrator_once():
-    assert SMART_ROUTING_ENV_KEYS == (
+    assert set(SMART_ROUTING_ENV_KEYS) == {
         ENABLE_SMART_ROUTING_ENV_VAR,
         ENABLE_SUBAGENT_ROUTING_ENV_VAR,
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
-    )
+    }
+    assert len(SMART_ROUTING_ENV_KEYS) == 3
+    assert len(set(SMART_ROUTING_ENV_KEYS)) == len(SMART_ROUTING_ENV_KEYS)
     assert SMART_ROUTING_ENV_KEYS.count(ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR) == 1
-    assert SMART_ROUTING_CONFIG_ENV_KEYS is SMART_ROUTING_ENV_KEYS
-
-
-@pytest.mark.parametrize(
-    ("selector", "expected"),
-    [
-        (
-            "subagent_only_v0",
-            {
-                ENABLE_SMART_ROUTING_ENV_VAR: "0",
-                ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
-                ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
-            },
-        ),
-        (
-            "subagent_orch_v0",
-            {
-                ENABLE_SMART_ROUTING_ENV_VAR: "0",
-                ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
-                ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
-            },
-        ),
-    ],
-)
-def test_resolve_environment_materializes_selector_without_mutating_input(selector, expected):
-    source = {
-        SMART_ROUTING_CONFIG_VERSION_ENV_VAR: selector,
-        ENABLE_SMART_ROUTING_ENV_VAR: "1",
-        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
-        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
-        "UNRELATED_SETTING": "preserved",
-    }
-
-    resolved = config.resolve_environment(source)
-
-    assert resolved == {**expected, "UNRELATED_SETTING": "preserved"}
-    assert source == {
-        SMART_ROUTING_CONFIG_VERSION_ENV_VAR: selector,
-        ENABLE_SMART_ROUTING_ENV_VAR: "1",
-        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
-        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
-        "UNRELATED_SETTING": "preserved",
-    }
 
 
 @pytest.mark.parametrize(
@@ -104,33 +67,36 @@ def test_resolve_environment_materializes_selector_without_mutating_input(select
     [
         (selector, legacy_values, expected_flags)
         for selector, expected_flags in _SELECTOR_EXPECTED_FLAGS.items()
-        for legacy_values in product(("0", "1"), repeat=len(SMART_ROUTING_CONFIG_ENV_KEYS))
+        for legacy_values in product(("0", "1"), repeat=len(SMART_ROUTING_ENV_KEYS))
     ],
 )
 def test_selector_precedence_covers_every_legacy_flag_combination(
     selector, legacy_values, expected_flags
 ):
-    legacy_environment = dict(zip(SMART_ROUTING_CONFIG_ENV_KEYS, legacy_values, strict=True))
+    legacy_environment = dict(zip(SMART_ROUTING_ENV_KEYS, legacy_values, strict=True))
     original = {
         SMART_ROUTING_CONFIG_VERSION_ENV_VAR: selector,
         **legacy_environment,
+        "UNRELATED_SETTING": "preserved",
     }
+    expected_environment = {**expected_flags, "UNRELATED_SETTING": "preserved"}
 
     _assert_routing_getters(original, expected_flags)
 
     resolved = config.resolve_environment(original)
 
-    assert resolved == expected_flags
+    assert resolved == expected_environment
     _assert_routing_getters(resolved, expected_flags)
     assert original == {
         SMART_ROUTING_CONFIG_VERSION_ENV_VAR: selector,
         **legacy_environment,
+        "UNRELATED_SETTING": "preserved",
     }
 
     applied = original.copy()
     previous = config.apply_config(applied)
 
-    assert applied == expected_flags
+    assert applied == expected_environment
     assert previous == {
         **legacy_environment,
         SMART_ROUTING_CONFIG_VERSION_ENV_VAR: selector,
@@ -140,20 +106,6 @@ def test_selector_precedence_covers_every_legacy_flag_combination(
     v2.restore_smart_routing_env(previous, applied)
 
     assert applied == original
-
-
-@pytest.mark.parametrize(
-    ("selector", "expected_orchestrator"),
-    [("subagent_only_v0", "0"), ("subagent_orch_v0", "1")],
-)
-def test_resolve_environment_supports_canonical_v0_selectors(selector, expected_orchestrator):
-    resolved = config.resolve_environment({SMART_ROUTING_CONFIG_VERSION_ENV_VAR: selector})
-
-    assert resolved == {
-        ENABLE_SMART_ROUTING_ENV_VAR: "0",
-        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
-        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: expected_orchestrator,
-    }
 
 
 @pytest.mark.parametrize("selector", ["subagent_only", "subagent_orch"])
@@ -214,54 +166,16 @@ def test_orchestrator_alone_does_not_change_routing_activation_default(default):
     assert orchestrator.feature_enabled(environment) is True
 
 
-@pytest.mark.parametrize("selector", ["subagent_only_v0", "subagent_orch_v0"])
-def test_selector_wins_legacy_conflicts_for_routing_queries(selector):
-    environment = {
-        SMART_ROUTING_CONFIG_VERSION_ENV_VAR: selector,
-        ENABLE_SMART_ROUTING_ENV_VAR: "1",
-        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
-        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
-    }
-
-    assert v2.smart_routing_enabled(environment) is True
-    assert v2.first_prompt_routing_enabled(environment) is False
-    assert orchestrator.feature_enabled(environment) is (selector == "subagent_orch_v0")
-
-
-def test_apply_config_materializes_selector_and_returns_previous_owned_values():
-    environment = {
-        SMART_ROUTING_CONFIG_VERSION_ENV_VAR: "subagent_only_v0",
-        ENABLE_SMART_ROUTING_ENV_VAR: "old-v2",
-        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "old-subagent",
-        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "old-orchestrator",
-        "UNRELATED_SETTING": "preserved",
-    }
-
-    previous = config.apply_config(environment)
-
-    assert set(previous) == {
-        SMART_ROUTING_CONFIG_VERSION_ENV_VAR,
-        *SMART_ROUTING_CONFIG_ENV_KEYS,
-    }
-    assert previous == {
-        SMART_ROUTING_CONFIG_VERSION_ENV_VAR: "subagent_only_v0",
-        ENABLE_SMART_ROUTING_ENV_VAR: "old-v2",
-        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "old-subagent",
-        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "old-orchestrator",
-    }
-    assert environment == {
-        ENABLE_SMART_ROUTING_ENV_VAR: "0",
-        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
-        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
-        "UNRELATED_SETTING": "preserved",
-    }
-
-
-@pytest.mark.parametrize("selector", ["subagent_only_v1", "subagent_orch_v1"])
+@pytest.mark.parametrize("selector", ["future_mode", "subagent_orch_v1"])
 @pytest.mark.parametrize("resolver", [config.resolve_environment, config.apply_config])
-def test_future_v1_selectors_remain_unknown(selector, resolver):
-    with pytest.raises(RuntimeError):
-        resolver({SMART_ROUTING_CONFIG_VERSION_ENV_VAR: selector})
+def test_unknown_selectors_remain_unknown(selector, resolver):
+    environment = {SMART_ROUTING_CONFIG_VERSION_ENV_VAR: selector}
+
+    with pytest.raises(RuntimeError) as caught:
+        resolver(environment)
+
+    assert selector in str(caught.value)
+    assert environment == {SMART_ROUTING_CONFIG_VERSION_ENV_VAR: selector}
 
 
 @pytest.mark.parametrize("selector", [None, "", " "])
@@ -275,7 +189,7 @@ def test_apply_config_is_a_noop_for_unset_or_blank_selector(selector):
     assert environment == original
 
 
-def test_unknown_selector_mentions_supported_names_and_does_not_mutate_input():
+def test_unknown_selector_mentions_supported_names():
     for resolver in (config.resolve_environment, config.apply_config):
         environment = {SMART_ROUTING_CONFIG_VERSION_ENV_VAR: "future_mode"}
 
@@ -285,13 +199,14 @@ def test_unknown_selector_mentions_supported_names_and_does_not_mutate_input():
         message = str(caught.value)
         assert "future_mode" in message
         assert "subagent_only_v0" in message
+        assert "subagent_only_v1" in message
         assert "subagent_orch_v0" in message
         assert environment == {SMART_ROUTING_CONFIG_VERSION_ENV_VAR: "future_mode"}
 
 
-@pytest.mark.parametrize("missing_key", SMART_ROUTING_CONFIG_ENV_KEYS)
+@pytest.mark.parametrize("missing_key", SMART_ROUTING_ENV_KEYS)
 def test_validate_versions_rejects_each_missing_managed_flag(missing_key):
-    values = {key: "0" for key in SMART_ROUTING_CONFIG_ENV_KEYS if key != missing_key}
+    values = {key: "0" for key in SMART_ROUTING_ENV_KEYS if key != missing_key}
 
     with pytest.raises(ValueError):
         config._validate_versions({"test_version": values})
@@ -299,7 +214,7 @@ def test_validate_versions_rejects_each_missing_managed_flag(missing_key):
 
 @pytest.mark.parametrize("invalid_value", [None, "", "2", "true", 0, False])
 def test_validate_versions_rejects_non_binary_managed_flag_values(invalid_value):
-    values = dict.fromkeys(SMART_ROUTING_CONFIG_ENV_KEYS, "0")
+    values = dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
     values[ENABLE_SMART_ROUTING_ENV_VAR] = invalid_value
 
     with pytest.raises(ValueError):
@@ -307,7 +222,7 @@ def test_validate_versions_rejects_non_binary_managed_flag_values(invalid_value)
 
 
 def test_validate_versions_rejects_unexpected_managed_flag():
-    values = dict.fromkeys(SMART_ROUTING_CONFIG_ENV_KEYS, "0")
+    values = dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
     values["UNEXPECTED_SMART_ROUTING_FLAG"] = "0"
 
     with pytest.raises(ValueError):
@@ -318,8 +233,8 @@ def test_config_import_rejects_new_registry_flag_before_runtime_use(monkeypatch)
     new_key = "ENABLE_SMART_ROUTING_TEST_ONLY"
     monkeypatch.setattr(
         constants,
-        "SMART_ROUTING_CONFIG_ENV_KEYS",
-        (*constants.SMART_ROUTING_CONFIG_ENV_KEYS, new_key),
+        "SMART_ROUTING_ENV_KEYS",
+        (*constants.SMART_ROUTING_ENV_KEYS, new_key),
     )
 
     with pytest.raises(ValueError):
@@ -406,31 +321,6 @@ def test_cli_context_materializes_inherited_selector_and_restores_after_failure(
     assert {key: os.environ.get(key) for key in original} == original
 
 
-@pytest.mark.parametrize(
-    ("selector", "expected_flags"),
-    list(_SELECTOR_EXPECTED_FLAGS.items()),
-)
-def test_cli_context_materializes_each_selector_over_opposite_legacy_flags(
-    monkeypatch, selector, expected_flags
-):
-    legacy_environment = {
-        key: "1" if value == "0" else "0" for key, value in expected_flags.items()
-    }
-    original = {
-        SMART_ROUTING_CONFIG_VERSION_ENV_VAR: selector,
-        **legacy_environment,
-    }
-    for key, value in original.items():
-        monkeypatch.setenv(key, value)
-
-    with cli._smart_routing_v2_flag(None):
-        assert SMART_ROUTING_CONFIG_VERSION_ENV_VAR not in os.environ
-        assert {key: os.environ.get(key) for key in SMART_ROUTING_CONFIG_ENV_KEYS} == expected_flags
-        _assert_routing_getters(dict(os.environ), expected_flags)
-
-    assert {key: os.environ.get(key) for key in original} == original
-
-
 def test_cli_context_turns_invalid_selector_into_actionable_exit(monkeypatch):
     monkeypatch.setenv(SMART_ROUTING_CONFIG_VERSION_ENV_VAR, "future_mode")
 
@@ -440,6 +330,182 @@ def test_cli_context_turns_invalid_selector_into_actionable_exit(monkeypatch):
 
     assert caught.value.exit_code == 1
     assert os.environ[SMART_ROUTING_CONFIG_VERSION_ENV_VAR] == "future_mode"
+
+
+def test_cli_startup_resolves_selector_before_command_callbacks(monkeypatch):
+    selector = "subagent_only_v1"
+    expected_flags = _SELECTOR_EXPECTED_FLAGS[selector]
+    original = {
+        SMART_ROUTING_CONFIG_VERSION_ENV_VAR: selector,
+        ENABLE_SMART_ROUTING_ENV_VAR: "0",
+        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+    }
+    for key, value in original.items():
+        monkeypatch.setenv(key, value)
+    observed = []
+
+    def record_callback(name):
+        observed.append(
+            {
+                "callback": name,
+                "selector": os.environ.get(SMART_ROUTING_CONFIG_VERSION_ENV_VAR),
+                "flags": {key: os.environ.get(key) for key in SMART_ROUTING_ENV_KEYS},
+            }
+        )
+
+    def record_session_toggle(enabled):
+        assert enabled is None
+        record_callback("session_toggle")
+        return False
+
+    def record_custom_oauth(*_arguments, **_options):
+        record_callback("custom_oauth")
+        return None
+
+    def record_launch(*_arguments, **_options):
+        record_callback("launch")
+
+    with (
+        patch.object(
+            cli,
+            "_toggle_current_smart_routing_session",
+            side_effect=record_session_toggle,
+        ),
+        patch.object(cli, "_custom_oauth_config", side_effect=record_custom_oauth),
+        patch.object(cli, "_launch_tool", side_effect=record_launch),
+    ):
+        result = runner.invoke(cli.app, ["claude", "--client-id", "client"])
+
+    assert result.exit_code == 0, result.output
+    assert observed == [
+        {"callback": "session_toggle", "selector": None, "flags": expected_flags},
+        {"callback": "custom_oauth", "selector": None, "flags": expected_flags},
+        {"callback": "launch", "selector": None, "flags": expected_flags},
+    ]
+    assert {key: os.environ.get(key) for key in original} == original
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [[], ["--version"], ["configure"], ["claude", "--enable-smart-routing"]],
+    ids=["bare-launch", "version", "configure", "session-toggle"],
+)
+def test_cli_startup_rejects_invalid_selector_before_callbacks(monkeypatch, arguments):
+    original = {
+        SMART_ROUTING_CONFIG_VERSION_ENV_VAR: "future_mode",
+        ENABLE_SMART_ROUTING_ENV_VAR: "1",
+        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+    }
+    for key, value in original.items():
+        monkeypatch.setenv(key, value)
+
+    with (
+        patch("ucode.telemetry.ug_version") as version,
+        patch.object(cli, "_custom_oauth_config") as custom_oauth,
+        patch.object(cli, "_toggle_current_smart_routing_session") as session_toggle,
+        patch.object(cli, "configure_workspace_command") as configure_workspace,
+        patch.object(cli, "install_databricks_cli") as install_cli,
+        patch.object(cli, "_launch_managed_default") as launch_managed_default,
+    ):
+        result = runner.invoke(cli.app, arguments)
+
+    assert result.exit_code == 1, result.output
+    assert "Unknown SMART_ROUTING_CONFIG_VERSION" in result.output
+    for supported_selector in _SELECTOR_EXPECTED_FLAGS:
+        assert supported_selector in result.output
+    version.assert_not_called()
+    custom_oauth.assert_not_called()
+    session_toggle.assert_not_called()
+    configure_workspace.assert_not_called()
+    install_cli.assert_not_called()
+    launch_managed_default.assert_not_called()
+    assert {key: os.environ.get(key) for key in original} == original
+
+
+@pytest.mark.parametrize(
+    ("exit_case", "arguments", "expected_exit_code"),
+    [
+        ("version", ["--version"], 0),
+        ("command-error", ["claude"], 1),
+        ("parse-error", ["--workspace"], 2),
+    ],
+)
+def test_cli_startup_restores_parent_environment_after_exit(
+    monkeypatch, exit_case, arguments, expected_exit_code
+):
+    original = {
+        SMART_ROUTING_CONFIG_VERSION_ENV_VAR: "subagent_only_v1",
+        ENABLE_SMART_ROUTING_ENV_VAR: "0",
+        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+    }
+    for key, value in original.items():
+        monkeypatch.setenv(key, value)
+    launch_error = RuntimeError("launch failed") if exit_case == "command-error" else None
+
+    with patch.object(cli, "_launch_tool", side_effect=launch_error) as launch:
+        result = runner.invoke(cli.app, arguments)
+
+    assert result.exit_code == expected_exit_code, result.output
+    assert {key: os.environ.get(key) for key in original} == original
+    if exit_case in {"version", "parse-error"}:
+        launch.assert_not_called()
+    else:
+        launch.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("flag", "expected_flags"),
+    [
+        (
+            "--enable-smart-routing",
+            {
+                ENABLE_SMART_ROUTING_ENV_VAR: "1",
+                ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
+                ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+            },
+        ),
+        (
+            "--disable-smart-routing",
+            {
+                ENABLE_SMART_ROUTING_ENV_VAR: "0",
+                ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+                ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+            },
+        ),
+    ],
+)
+def test_cli_explicit_routing_control_overrides_resolved_selector(
+    monkeypatch, flag, expected_flags
+):
+    original = {
+        SMART_ROUTING_CONFIG_VERSION_ENV_VAR: "subagent_only_v0",
+        ENABLE_SMART_ROUTING_ENV_VAR: "1",
+        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+    }
+    for key, value in original.items():
+        monkeypatch.setenv(key, value)
+    observed = []
+
+    def record_launch(*_arguments, **_options):
+        observed.append(
+            {
+                SMART_ROUTING_CONFIG_VERSION_ENV_VAR: os.environ.get(
+                    SMART_ROUTING_CONFIG_VERSION_ENV_VAR
+                ),
+                **{key: os.environ.get(key) for key in SMART_ROUTING_ENV_KEYS},
+            }
+        )
+
+    with patch.object(cli, "_launch_tool", side_effect=record_launch):
+        result = runner.invoke(cli.app, ["codex", flag])
+
+    assert result.exit_code == 0, result.output
+    assert observed == [{SMART_ROUTING_CONFIG_VERSION_ENV_VAR: None, **expected_flags}]
+    assert {key: os.environ.get(key) for key in original} == original
 
 
 def test_bare_launch_materializes_selector_for_managed_default_and_restores_environment(
@@ -483,16 +549,57 @@ def test_bare_launch_materializes_selector_for_managed_default_and_restores_envi
     assert {key: os.environ.get(key) for key in original} == original
 
 
-def test_bare_launch_rejects_invalid_selector_before_managed_default(monkeypatch):
-    monkeypatch.setenv(SMART_ROUTING_CONFIG_VERSION_ENV_VAR, "future_mode")
+def test_managed_routing_preserves_subagent_only_v0_flags_during_full_launch(monkeypatch):
+    original = {
+        SMART_ROUTING_CONFIG_VERSION_ENV_VAR: "subagent_only_v0",
+        ENABLE_SMART_ROUTING_ENV_VAR: "1",
+        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+    }
+    for key, value in original.items():
+        monkeypatch.setenv(key, value)
+    launch_state = {
+        "workspace": "https://example.databricks.com",
+        "available_tools": ["claude"],
+        "base_urls": {"claude": "https://example.databricks.com/ai-gateway/anthropic"},
+        "claude_models": {"sonnet": "databricks-claude-sonnet-4"},
+        "managed_configs": {},
+    }
+    managed = {"enabled_agents": {"claude": {"smart_routing_enabled": True}}}
+    observed = []
 
-    with patch.object(cli, "_launch_managed_default") as launch:
-        result = runner.invoke(cli.app, [])
+    def record_launch(*_arguments, **_options):
+        observed.append({key: os.environ.get(key) for key in SMART_ROUTING_ENV_KEYS})
 
-    assert result.exit_code == 1
-    launch.assert_not_called()
-    assert "subagent_only_v0" in result.output
-    assert "subagent_orch_v0" in result.output
+    with (
+        patch.object(cli, "ensure_bootstrap_dependencies"),
+        patch.object(cli, "load_state", return_value=launch_state),
+        patch.object(cli, "ensure_provider_state", return_value=launch_state),
+        patch.object(cli, "_fetch_managed_config", return_value=(managed, False)),
+        patch.object(cli, "_fetch_budget_recommendation", return_value=None),
+        patch.object(cli, "get_provider_service", return_value=None),
+        patch.object(cli, "configure_shared_state", return_value=launch_state),
+        patch.object(
+            cli,
+            "resolve_launch_model",
+            return_value=(launch_state, "databricks-claude-sonnet-4"),
+        ),
+        patch.object(cli, "configure_tool", return_value=launch_state),
+        patch.object(cli, "refresh_downloaded_skills_on_launch"),
+        patch.object(cli, "launch_agent", side_effect=record_launch) as launch,
+    ):
+        result = runner.invoke(cli.app, ["claude"])
+
+    assert result.exit_code == 0, result.output
+    launch.assert_called_once()
+    assert observed == [
+        {
+            ENABLE_SMART_ROUTING_ENV_VAR: "0",
+            ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
+            ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        }
+    ]
+    assert {key: os.environ.get(key) for key in original} == original
 
 
 @pytest.mark.parametrize(

@@ -33,16 +33,20 @@ Tests live in `tests/`.
 
 `SMART_ROUTING_CONFIG_VERSION` is the external selector. Version definitions live in
 `src/ucode/smart_routing/config.py` under `_VERSIONS`; their managed environment keys
-are registered in `SMART_ROUTING_CONFIG_ENV_KEYS` in `src/ucode/constants.py`.
+are registered in `SMART_ROUTING_ENV_KEYS` in `src/ucode/constants.py`.
 An unset or empty selector preserves legacy environment-flag behavior.
 A valid nonempty selector overrides every conflicting legacy value in that registry.
 Do not use `setdefault` or preserve inherited values for version-owned parameters.
+Resolve and materialize the selector at the CLI boundary before argument parsing or callbacks,
+including setup, session controls, authentication, and managed-config discovery. Invalid
+selectors must fail before those operations. Restore the inherited environment on every exit.
 Explicit launch/session on/off controls still apply after version expansion.
+Managed routing defaults must not rewrite already-resolved version flags.
 
 ### Adding a parameter
 
 1. Define its environment-variable constant in `src/ucode/constants.py` and add it to
-   `SMART_ROUTING_ENV_KEYS`, which also defines `SMART_ROUTING_CONFIG_ENV_KEYS`.
+   `SMART_ROUTING_ENV_KEYS`.
 2. Set an explicit value for it in **every** `_VERSIONS` entry, including existing versions.
    Choose values that preserve existing versions' behavior. Current parameters accept only
    the strings `"0"` and `"1"`; do not use booleans, empty strings, or omitted keys.
@@ -63,7 +67,7 @@ If a new parameter needs nonbinary values, add parameter-specific validation and
 1. Add a complete mapping to `_VERSIONS` with an explicit suffix, such as `new_mode_v0`.
    For a changed existing mode, add `existing_mode_v1` rather than changing its `_v0` behavior.
    Do not add unsuffixed names or version aliases.
-2. Define every key in `SMART_ROUTING_CONFIG_ENV_KEYS`; never rely on the caller's
+2. Define every key in `SMART_ROUTING_ENV_KEYS`; never rely on the caller's
    inherited environment to fill missing values.
 3. Update the version table and examples in `README.md` and any affected bundled-skill docs.
 4. Extend `tests/test_smart_routing_config.py` for the new mode, precedence over legacy flags,

@@ -253,7 +253,12 @@ Use `SMART_ROUTING_CONFIG_VERSION` at launch to select a smart-routing configura
 | Version | Subagent routing | First-prompt routing | Orchestrator |
 | --- | --- | --- | --- |
 | `subagent_only_v0` | On | Off | Off |
+| `subagent_only_v1` | On | Off | Off |
 | `subagent_orch_v0` | On | Off | On |
+
+`subagent_only_v1` sets both `ENABLE_SMART_ROUTING_V2` and
+`ENABLE_SMART_ROUTING_SUBAGENT_ONLY` to `"1"`. Subagent-only takes precedence,
+so first-prompt routing remains off; orchestration is also off.
 
 Smart-routed Claude and Codex sessions install `smart-router`. The `subagent_orch_v0`
 version also installs and activates the bundled `smart-router-orchestrator` skill.
@@ -263,18 +268,21 @@ For example:
 SMART_ROUTING_CONFIG_VERSION=subagent_orch_v0 ug claude
 ```
 
-The version takes precedence over conflicting legacy flags. UG expands it into
+The version takes precedence over conflicting legacy flags. Before parsing command options
+or running any command callbacks, UG expands it into
 `ENABLE_SMART_ROUTING_V2`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY`, and
 `ENABLE_SMART_ROUTER_ORCHESTRATOR` for the launched session. When the version is
 unset or empty, these legacy flags retain their existing behavior, including
 first-prompt routing through `ENABLE_SMART_ROUTING_V2=1`. Unknown versions produce
-an error listing the supported values. Orchestration remains off by default.
+an error listing the supported values before setup, authentication, or session changes.
+Explicit launch/session on/off controls apply after expansion. Orchestration remains off by default.
+Workspace smart-routing defaults do not rewrite the selected version's flags.
 
 Version names require an explicit suffix. Future revisions use new `_v1`, `_v2`,
 etc. names without changing existing versions.
 
 Version definitions fail validation at module import if any flag in
-`SMART_ROUTING_CONFIG_ENV_KEYS` is missing, has a value other than `"0"` or `"1"`,
+`SMART_ROUTING_ENV_KEYS` is missing, has a value other than `"0"` or `"1"`,
 or an unknown flag is present. Register new managed flags in that tuple and
 explicitly set them in every version.
 

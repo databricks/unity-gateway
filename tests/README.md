@@ -135,13 +135,15 @@ that Claude settings and Codex's shell policy carry the interpreter and session 
 These are component checks; they do not establish native skill permission matching or
 PowerShell execution.
 
-`test_smart_routing_config.py` covers both canonical v0 selectors against all eight binary
-legacy-flag combinations, exact precedence/materialization/restoration and getter results,
+`test_smart_routing_config.py` covers all three canonical v0/v1 selectors against every binary
+legacy-flag combination, including `subagent_only_v1`'s V2/subagent-on and first-prompt-off
+behavior, exact preset precedence/materialization/restoration and getter results,
 the shared routing/session key registry including the orchestrator exactly once, orchestrator-only
-activation defaults, CLI launch-context materialization/restoration, fail-fast registry validation,
-native-subcommand suppression, and orchestrator state transitions through real temporary
-session files. These are component checks; they do not establish live agent, hook, or gateway
-behavior.
+activation defaults, CLI startup ordering before callbacks, early invalid-selector exits,
+explicit routing controls, fail-fast registry validation, native-subcommand suppression, and
+orchestrator state transitions through real temporary session files. Full CLI launch coverage
+also verifies that a managed routing opt-in preserves the exact `subagent_only_v0` flags.
+These are component checks; they do not establish live agent, hook, or gateway behavior.
 
 The toggle integration journeys run with `ENABLE_SMART_ROUTER_ORCHESTRATOR` unset and with
 `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`. They require only `smart-router` by default and both

@@ -9,13 +9,18 @@ from ucode.constants import (
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
-    SMART_ROUTING_CONFIG_ENV_KEYS,
     SMART_ROUTING_CONFIG_VERSION_ENV_VAR,
+    SMART_ROUTING_ENV_KEYS,
 )
 
 _VERSIONS = {
     "subagent_only_v0": {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
+        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+    },
+    "subagent_only_v1": {
+        ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
     },
@@ -29,7 +34,7 @@ _VERSIONS = {
 
 def _validate_versions(versions: Mapping[str, Mapping[str, str]]) -> None:
     """Require every version to explicitly configure the complete managed flag set."""
-    expected = set(SMART_ROUTING_CONFIG_ENV_KEYS)
+    expected = set(SMART_ROUTING_ENV_KEYS)
     for version, values in versions.items():
         missing = expected - values.keys()
         unexpected = values.keys() - expected
@@ -71,8 +76,8 @@ def apply_config(env: MutableMapping[str, str] | None = None) -> dict[str, str |
     if not version:
         return {}
     resolved = resolve_environment(target)
-    keys = (*SMART_ROUTING_CONFIG_ENV_KEYS, SMART_ROUTING_CONFIG_VERSION_ENV_VAR)
+    keys = (*SMART_ROUTING_ENV_KEYS, SMART_ROUTING_CONFIG_VERSION_ENV_VAR)
     previous = {key: target.get(key) for key in keys}
-    target.update({key: resolved[key] for key in SMART_ROUTING_CONFIG_ENV_KEYS})
+    target.update({key: resolved[key] for key in SMART_ROUTING_ENV_KEYS})
     target.pop(SMART_ROUTING_CONFIG_VERSION_ENV_VAR, None)
     return previous

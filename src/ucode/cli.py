@@ -1326,6 +1326,25 @@ _HELP_COMMAND_ORDER = (
 class _HelpOrderedGroup(TyperGroup):
     """Keep top-level help organized across commands and nested Typer apps."""
 
+    def make_context(
+        self,
+        info_name: str | None,
+        args: list[str],
+        parent: _click.Context | None = None,
+        **extra: Any,
+    ) -> _click.Context:
+        try:
+            previous = smart_routing_v2.apply_config()
+        except RuntimeError as exc:
+            raise _click.ClickException(str(exc)) from None
+        try:
+            ctx = super().make_context(info_name, args, parent, **extra)
+        except BaseException:
+            smart_routing_v2.restore_smart_routing_env(previous)
+            raise
+        ctx.call_on_close(lambda: smart_routing_v2.restore_smart_routing_env(previous))
+        return ctx
+
     def list_commands(self, ctx: _click.Context) -> list[str]:
         commands = super().list_commands(ctx)
         order = {name: index for index, name in enumerate(_HELP_COMMAND_ORDER)}
@@ -2940,7 +2959,11 @@ def _launch_tool(
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
         with _smart_routing_v2_flag(
-            True if managed_smart_routing_enabled and smart_routing_enabled else None
+            True
+            if managed_smart_routing_enabled
+            and smart_routing_enabled
+            and not smart_routing_v2.smart_routing_enabled()
+            else None
         ):
             launch_agent(tool, state, ctx.args, options=launch_options)
     except RuntimeError as exc:
