@@ -105,6 +105,11 @@ yet: its MCP allowlist lives in `requirements.toml`, which ucode doesn't write. 
 - That record lives in the managed-backup manifest, keyed by the file like ucode's picker record,
   not in per-workspace state: the managed file is machine-wide, so a launch for a workspace without
   these settings withdraws what ucode last delivered for another one.
+- An admin `allowedMcpServers` allowlist would block the MCP servers ucode itself registers in
+  Claude (its managed-file entries, user-scope fallbacks and web search), because Claude matches it by
+  registered name. ucode appends those servers after the admin's entries, rebuilding the list from the
+  admin's own entries each time it writes the file, so a server it stops registering drops out. Only
+  an allowlist delivered through `agent_native_settings` is extended.
 - Claude's `allowManagedHooksOnly` and `disableAllHooks` are delivered as configured, with a warning
   that they also block the per-launch hooks smart routing installs.
 - Delivered leaves become ucode-owned paths, so `ucode revert` removes them. When the admin later

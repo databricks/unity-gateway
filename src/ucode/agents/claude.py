@@ -13,7 +13,7 @@ import subprocess
 import sys
 import threading
 import traceback
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 
 from ucode import gateway_proxy
@@ -224,6 +224,7 @@ CLAUDE_CONDITIONAL_ENV_KEYS = ("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",)
 CLAUDE_REMOVED_ENV_KEYS = ("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",)
 CLAUDE_MANAGED_PICKER_KEYS = ("availableModels", "enforceAvailableModels", "modelPicker")
 CLAUDE_PERMISSIONS_DENY_PATH = ["permissions", "deny"]
+CLAUDE_ALLOWED_MCP_SERVERS_KEY = "allowedMcpServers"
 # The managed config's harness-native settings (resolved from the manifest), and the leaves last
 # skipped so the warning about them prints once rather than on every launch. What ug delivered is
 # recorded in the file-keyed managed manifest instead, because the managed file is machine-wide.
@@ -934,7 +935,9 @@ def managed_mcp_entry(url: str) -> dict:
     }
 
 
-def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
+def reconcile_managed_mcp(
+    state: dict, servers: dict[str, dict], *, also_registered: Iterable[str] = ()
+) -> bool:
     """Overwrite ug's ``managedMcpServers`` in Claude's OS-managed file with ``servers``.
 
     ``servers`` is the freshly resolved managed set keyed by name; an empty map clears the key. The
@@ -942,7 +945,11 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
     managed key is preserved, including the model configuration ug wrote earlier this run and any
     admin-authored policy. Returns True when the managed file is the delivery mechanism (written or
     already current), False when it cannot be used (unsupported platform or a non-interactive run),
-    so the caller routes those servers to the user-scope registration instead."""
+    so the caller routes those servers to the user-scope registration instead.
+
+    ``also_registered`` names the servers ug registers in Claude outside this file this run (the
+    user-scope fallback), so an admin's ``agent_native_settings`` MCP allowlist keeps admitting them.
+    """
     path = _managed_settings_path()
     if path is None or not managed_writes_allowed():
         return False
@@ -959,21 +966,35 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
             f"Cannot safely update Claude Code managed settings at {path}: {exc}. ucode did not "
             "modify the file. Repair it or contact your administrator."
         ) from exc
-    # Nothing managed to clear: never create or rewrite the file just to remove an absent key.
-    if not servers and MANAGED_MCP_SETTINGS_KEY not in existing:
-        return True
     desired = copy.deepcopy(existing)
     if servers:
         desired[MANAGED_MCP_SETTINGS_KEY] = servers
     else:
         desired.pop(MANAGED_MCP_SETTINGS_KEY, None)
+    admin_allowlist = _delivered_admin_allowlist()
+    desired = _allow_ug_mcp_servers(
+        desired,
+        admin_allowlist,
+        _ug_registered_mcp_names(
+            state,
+            servers,
+            web_search=bool(state.get(WEB_SEARCH_MCP_STATE_KEY)),
+            also=also_registered,
+        ),
+    )
+    # Nothing to change: never create or rewrite the file just to restate it.
+    if desired == existing:
+        return True
+    owned_paths = [[MANAGED_MCP_SETTINGS_KEY]]
+    if admin_allowlist is not None:
+        owned_paths.append([CLAUDE_ALLOWED_MCP_SERVERS_KEY])
     try:
         reconcile_managed_file(
             path,
             _dump_managed_settings(desired),
             tool="claude",
             display="Claude Code",
-            owned_paths=[[MANAGED_MCP_SETTINGS_KEY]],
+            owned_paths=owned_paths,
             parser=_parse_managed_settings,
         )
     except ManagedFileWriteUnavailable:
@@ -1520,18 +1541,28 @@ def write_tool_config(
     _warn_if_settings_disable_smart_routing(passthrough, previous_leaves)
     _reconcile_managed_settings(
         state,
-        lambda base: apply_settings_passthrough(
-            _compose(
-                base,
-                enforce_model_default_hierarchy=(
-                    source_scoped_defaults or (provider is None and parent_schema is None)
+        lambda base: _allow_ug_mcp_servers(
+            apply_settings_passthrough(
+                _compose(
+                    base,
+                    enforce_model_default_hierarchy=(
+                        source_scoped_defaults or (provider is None and parent_schema is None)
+                    ),
+                    managed_settings_snapshots=managed_snapshots,
                 ),
-                managed_settings_snapshots=managed_snapshots,
+                passthrough,
+                previous_leaves=previous_leaves,
+                snapshots=managed_snapshots,
+                is_shared_list=_is_shared_claude_list,
             ),
-            passthrough,
-            previous_leaves=previous_leaves,
-            snapshots=managed_snapshots,
-            is_shared_list=_is_shared_claude_list,
+            passthrough.items_at([CLAUDE_ALLOWED_MCP_SERVERS_KEY])
+            if [CLAUDE_ALLOWED_MCP_SERVERS_KEY] in passthrough.paths
+            else None,
+            _ug_registered_mcp_names(
+                state,
+                base.get(MANAGED_MCP_SETTINGS_KEY),
+                web_search=bool(web_search_model and not external_search),
+            ),
         ),
         [*managed_file_keys, *passthrough.paths],
         relayed,
@@ -1664,6 +1695,57 @@ def _managed_settings_conflicts(
         if existing_headers is not None and existing_headers == desired_headers:
             conflicts.remove(header_path)
     return conflicts
+
+
+def _ug_registered_mcp_names(
+    state: dict, managed_servers: object, *, web_search: bool, also: Iterable[str] = ()
+) -> set[str]:
+    """Every MCP server name ug registers in Claude: its managed-file entries, its user-scope
+    fallback registrations, and its own web search server."""
+    names = set(managed_servers) if isinstance(managed_servers, dict) else set()
+    names.update(also)
+    names.update(
+        server["name"]
+        for server in state.get("managed_mcp_servers") or []
+        if isinstance(server, dict)
+        and isinstance(server.get("name"), str)
+        and "claude" in (server.get("clients") or [])
+    )
+    if web_search:
+        names.add(WEB_SEARCH_MCP_NAME)
+    return names
+
+
+def _delivered_admin_allowlist() -> list | None:
+    """The ``allowedMcpServers`` list ug last delivered from the admin's agent_native_settings, if any."""
+    leaves = managed_file_snapshots("claude", _parse_managed_settings).settings_passthrough or []
+    for leaf in leaves:
+        if (
+            isinstance(leaf, list)
+            and len(leaf) == 2
+            and leaf[0] == [CLAUDE_ALLOWED_MCP_SERVERS_KEY]
+            and isinstance(leaf[1], list)
+        ):
+            return leaf[1]
+    return None
+
+
+def _allow_ug_mcp_servers(settings: dict, admin_allowlist: list | None, names: set[str]) -> dict:
+    """Admit ug's own MCP servers in an admin's ``allowedMcpServers``.
+
+    Claude Code blocks any server missing from that allowlist and matches it by registered name,
+    which admins can't be expected to know, so ug appends its own servers after the admin's entries.
+    Recomputed from the admin's list each time, so a server ug stops registering drops out. An
+    allowlist that didn't come from agent_native_settings is left alone.
+    """
+    if admin_allowlist is None:
+        return settings
+    listed = {entry.get("serverName") for entry in admin_allowlist if isinstance(entry, dict)}
+    settings[CLAUDE_ALLOWED_MCP_SERVERS_KEY] = [
+        *admin_allowlist,
+        *({"serverName": name} for name in sorted(names - listed)),
+    ]
+    return settings
 
 
 def _is_shared_claude_list(path: list[str]) -> bool:

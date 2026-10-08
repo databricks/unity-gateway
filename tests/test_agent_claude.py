@@ -1477,6 +1477,39 @@ class TestWriteToolConfigManagedSettings:
             managed_files.managed_file_snapshots("claude", json.loads).settings_passthrough is None
         )
 
+    def test_settings_passthrough_mcp_allowlist_admits_ug_servers(self, tmp_path, monkeypatch):
+        managed_path, sudo_writes = self._sudo_counting_env(tmp_path, monkeypatch)
+        managed_path.write_text(
+            json.dumps({"managedMcpServers": {"system-ai-github": {"type": "http", "url": "u"}}}),
+            encoding="utf-8",
+        )
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            "managed_mcp_servers": [
+                {"name": "system-ai-genie", "clients": ["claude"]},
+                {"name": "system-ai-codex-only", "clients": ["codex"]},
+            ],
+            claude.SETTINGS_PASSTHROUGH_STATE_KEY: {
+                "allowManagedMcpServersOnly": True,
+                "allowedMcpServers": [{"serverName": "jira-internal"}],
+            },
+        }
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        allowed = json.loads(managed_path.read_text())["allowedMcpServers"]
+        assert allowed[0] == {"serverName": "jira-internal"}
+        names = {entry["serverName"] for entry in allowed}
+        assert {"system-ai-genie", "system-ai-github"} <= names
+        assert "system-ai-codex-only" not in names
+        # The admin's own list is what ug records, so its additions never become admin policy.
+        recorded = managed_files.managed_file_snapshots("claude", json.loads).settings_passthrough
+        assert [["allowedMcpServers"], [{"serverName": "jira-internal"}]] in recorded
+
+        writes = len(sudo_writes)
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        assert len(sudo_writes) == writes
+
     def test_switching_workspace_withdraws_the_previous_workspaces_settings(
         self, tmp_path, monkeypatch
     ):
@@ -3744,6 +3777,55 @@ class TestClaudeReconcileManagedMcp:
         assert doc["apiKeyHelper"] == "ug auth-token"
         assert captured["owned_paths"] == [["managedMcpServers"]]
         assert captured["tool"] == "claude"
+
+    def test_admin_mcp_allowlist_admits_every_server_ug_registers(self, monkeypatch):
+        # The allowlist is rebuilt from the admin's own entries, so a server ug no longer
+        # registers (system-ai-old) drops out while this run's servers are admitted.
+        captured: dict = {}
+        admin = [{"serverName": "jira-internal"}]
+        existing = json.dumps(
+            {"allowedMcpServers": [*admin, {"serverName": "system-ai-old"}], "env": {"X": "1"}}
+        )
+        self._wire(monkeypatch, existing, captured)
+        monkeypatch.setattr(
+            claude,
+            "managed_file_snapshots",
+            lambda tool, parser: managed_files.ManagedFileSnapshots(
+                None, None, settings_passthrough=[[["allowedMcpServers"], admin]]
+            ),
+        )
+        state = {claude.WEB_SEARCH_MCP_STATE_KEY: {"name": claude.WEB_SEARCH_MCP_NAME}}
+
+        claude.reconcile_managed_mcp(
+            state,
+            {"system-ai-github": claude.managed_mcp_entry(GH_URL)},
+            also_registered=["system-ai-genie"],
+        )
+
+        doc = json.loads(captured["text"])
+        assert doc["allowedMcpServers"] == [
+            {"serverName": "jira-internal"},
+            {"serverName": "system-ai-genie"},
+            {"serverName": "system-ai-github"},
+            {"serverName": claude.WEB_SEARCH_MCP_NAME},
+        ]
+        assert ["allowedMcpServers"] in captured["owned_paths"]
+
+    def test_mcp_allowlist_not_from_agent_native_settings_is_left_alone(self, monkeypatch):
+        captured: dict = {}
+        existing = json.dumps({"allowedMcpServers": [{"serverName": "jira-internal"}]})
+        self._wire(monkeypatch, existing, captured)
+        monkeypatch.setattr(
+            claude,
+            "managed_file_snapshots",
+            lambda tool, parser: managed_files.ManagedFileSnapshots(None, None),
+        )
+
+        claude.reconcile_managed_mcp({}, {"system-ai-github": claude.managed_mcp_entry(GH_URL)})
+
+        assert json.loads(captured["text"])["allowedMcpServers"] == [
+            {"serverName": "jira-internal"}
+        ]
 
     def test_empty_map_clears_key_preserving_other_keys(self, monkeypatch):
         captured: dict = {}
