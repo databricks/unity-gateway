@@ -610,6 +610,7 @@ class TestSubagentRouting:
         }
 
     def test_routes_agent_prompt_with_initialized_model_menu(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", "0")
         captured = {}
         decisions_path = tmp_path / "decisions.jsonl"
         monkeypatch.setattr(v2.claude_routing, "DECISIONS_PATH", decisions_path)

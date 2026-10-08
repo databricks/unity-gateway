@@ -286,6 +286,20 @@ PATH conflicts for the Smart Router skill have subprocess/component coverage in
 `ug` first in PATH. The live journeys above do not inject a second installation or
 establish PowerShell command execution.
 
+The toggle journeys run with `ENABLE_SMART_ROUTER_ORCHESTRATOR` unset and with
+`ENABLE_SMART_ROUTER_ORCHESTRATOR=1`. They require only `smart-router` by default and both
+`smart-router-orchestrator` and `smart-router` when opted in. They verify the saved session
+controls, a new CLI confirmation in the native tool-result records, and a new
+assistant answer after each skill invocation.
+Collapsed terminal output is allowed; the answer need not repeat the CLI's exact wording.
+Each following child still verifies whether a routing decision occurred.
+Their off-phase child is an explicit user-requested delegation;
+these journeys do not establish automatic orchestration behavior. Root-only
+activation, compaction, retained skills in ineligible sessions,
+role-contract preservation, and isolation from legacy preference files
+lack dedicated regression coverage. Codex's native hook merging, project trust,
+and execution of pre-existing hooks are not exercised by this integration suite.
+
 The portable `../test_claude_windows_smart_routing.py` checks the Windows
 subagent-only fallback without Unix imports. Native Windows TUI and hook execution
 remain outside this integration suite.

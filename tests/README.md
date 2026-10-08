@@ -133,6 +133,20 @@ that Claude settings and Codex's shell policy carry the interpreter and session 
 These are component checks; they do not establish native skill permission matching or
 PowerShell execution.
 
+The toggle integration journeys run with `ENABLE_SMART_ROUTER_ORCHESTRATOR` unset and with
+`ENABLE_SMART_ROUTER_ORCHESTRATOR=1`. They require only `smart-router` by default and both
+bundled skills when opted in, verify the saved session controls and native
+tool-result confirmation after each toggle, and explicitly request their children,
+including while routing is off.
+`test_integration_evidence.py` checks native tool-result extraction for both agents,
+including collapsed-output records, and excludes user echoes and assistant claims.
+
+Dedicated regression coverage is missing for root-only Smart Router Orchestrator activation,
+compaction, retained skills in ineligible sessions,
+role-contract preservation, and isolation from legacy preference files. Codex's
+native hook merging and project trust, automatic delegation, and execution of
+pre-existing hooks remain outside the integration suite.
+
 The portable Windows routing test checks native executable forwarding, generated
 hooks/plugins, caller arguments, and cleanup without Unix imports. It does not
 establish live Windows hook execution or interactive routing.
@@ -182,7 +196,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_codex_app_reports_unknown_argument` | Pass an invalid option directly to `ug codex app`, routing off/on | Real Codex parser error and status preserved |
 | `test_ug_codex_app_server_client_initializes` | Connect a stdio client, direct/`--` separator, routing off/on | Actual JSON-RPC initialize response; no non-JSON stdout; no routing |
 | `test_smart_routing_claude_route_subagent_hook`, `test_smart_routing_codex_route_subagent_hook` | Pipe a real PreToolUse spawn payload to the installed route-subagent hook with subagent-only routing enabled | Allow decision against the live router; requested model replaced by a routed agent definition (Claude) or bundled catalog slug (Codex) from the offered models; one audited decision matching the session and task |
-| `test_smart_router_skill_toggles_claude_subagent_routing`, `test_smart_router_skill_toggles_codex_subagent_routing` | Configure, launch a real subagent-only TUI, then spawn tagged children while invoking the installed Smart Router skill to switch routing on -> off -> on in the same session | All three native children complete; only enabled phases show the subagent banner and produce a live routing decision correlated with the child; no first-prompt routing wrapper; normal exit |
+| `test_smart_router_skill_toggles_claude_subagent_routing`, `test_smart_router_skill_toggles_codex_subagent_routing` | Configure, launch a real subagent-only TUI with orchestration unset or opted in, then spawn tagged children while invoking the installed Smart Router skill to switch routing on -> off -> on in the same session | Only `smart-router` is installed by default; opt-in also installs `smart-router-orchestrator`; all three native children complete; only routing-enabled phases show the subagent banner and produce a live routing decision correlated with the child; no first-prompt routing wrapper; normal exit |
 | `test_ug_configure_claude_repeat_and_revert`, `test_ug_configure_codex_repeat_and_revert` | Configure twice over user settings; complete a task; revert twice | Settings preserved; no bearer in ug state; generated config removed; status unconfigured |
 | `test_ug_configure_claude_cleans_stale_skills_mcp_on_workspace_switch` | Configure the first workspace, register its skills MCP, switch to a second real workspace, and use Claude | Old registration removed from Claude and the new workspace state; old workspace bucket preserved; repeat configure stays clean; real file task completes on the second workspace |
 | `test_ug_configure_claude_rejects_invalid_credentials`, `test_ug_configure_codex_rejects_invalid_credentials` | Configure with a rejected bearer against the real workspace | Authentication failure; no successful saved setup |
@@ -329,7 +343,7 @@ These are unit/component checks; they do not establish live sudo password-prompt
 | Scenario | Status / requirement |
 | --- | --- |
 | Broad live MCP functionality | CUJ2 covers sandbox MCP configuration and generated client listings. Live sandbox execution is deferred because MAS cannot downscope the CI service principal. Installation tests cover the local web-search MCP handshake and tool listing, not upstream proxying or a real search request. Other MCP services, live parent/child search, and permission decisions remain deferred |
-| Dedicated CUJ Skill coverage | Deferred because of a backend storage-path issue; CUJ2 has no Skill configuration, download, invocation, or assertion path |
+| Dedicated CUJ Skill coverage | CUJ6 covers the named managed skill `ug_e2e.skills.fixture-summary`: download to both skill roots, an unchanged repeat configure, and removal from disk and from both agents' `/skills` once the selector is dropped, including after relaunch. Skill fixtures need a schema on customer S3 storage because Default Storage rejects skill uploads. CUJ2 checks that only the named skill downloads, byte-identical to the live fixture, is listed in `/skills` without its siblings, and is invoked by both agents. CUJ3 checks that every skill in `ug_e2e.skills` downloads and is listed, the `ug_e2e.other_skills` decoy stays absent, `ug status` counts the skills, and both agents invoke one |
 | Broad configure flags, multiple workspaces, and PAT flows | Deferred while focusing on basic CUJs |
 | Workspace-switch MCP cleanup | The `workspace_switch` CUJ covers real registration, cleanup, repeat configure, and a completed Claude task. Unit/component tests cover duplicate attempts and injected removal failures; the CUJ does not force an agent timeout. It runs in the required managed CI lane for full/live runs. |
 | Relayed/subscription MPS discovery | Not covered by the scoped discovery journeys |
