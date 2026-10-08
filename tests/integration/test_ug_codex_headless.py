@@ -190,18 +190,17 @@ def test_ug_codex_headless_fresh_workspace(live_session, workspace):
         timeout=180,
     )
     task.assert_headless_answer("codex", result)
+    assert_completed_task_model(session, "codex", task.value, CODEX_TEST_MODEL)
     session.assert_not_routed()
 
 
 @pytest.mark.usefixtures("unmanaged_workspace")
-def test_ug_codex_fresh_provider_launch(
-    live_session, workspace, codex_provider, codex_provider_model
-):
+def test_ug_codex_fresh_provider_launch(live_session, workspace, codex_provider):
     """Scenario: launch Codex from fresh state with an explicit provider service.
 
     Expected: ``ug codex --workspace`` with ``--provider`` starts the real installed Codex
-    CLI without a configure step, reports the selected provider, and exposes exactly its model
-    through the real app-server; ``--version`` exits without inference or routing.
+    CLI without a configure step and reports the selected provider; ``--version`` exits
+    without inference or routing. Case 12 covers the provider's app-server model catalog.
     """
     session = live_session
     result = session.run(
@@ -215,17 +214,4 @@ def test_ug_codex_fresh_provider_launch(
         timeout=180,
     )
     assert codex_provider in result.stdout
-    models = session.codex_model_ids(
-        [
-            "--workspace",
-            workspace,
-            "--provider",
-            codex_provider,
-            "--",
-            "app-server",
-            "--listen",
-            "stdio://",
-        ]
-    )
-    assert models == [codex_provider_model]
     session.assert_not_routed()

@@ -142,6 +142,9 @@ def test_ug_claude_headless_fresh_workspace(live_session, workspace):
         timeout=180,
     )
     task.assert_headless_answer("claude", result)
+    usage = json.loads(result.stdout)["modelUsage"]
+    assert set(usage) == {CLAUDE_TEST_MODEL}, usage
+    assert usage[CLAUDE_TEST_MODEL]["outputTokens"] > 0, usage
     session.assert_not_routed()
 
 

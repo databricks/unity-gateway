@@ -82,7 +82,7 @@ wrapper. Use the runner's `--claude-model` option to reproduce a specific model.
 
 Codex covers `--model VALUE`, `--model=VALUE`, and `-m VALUE` before ug's separator
 and within native `exec`, asserting the completed turn's selected model. Codex has
-no UG-owned `--model` option: both forms are forwarded to Codex.
+no UG-owned `--model` option: all three spellings are forwarded to Codex in either position.
 
 The `smart_defaults` wire schema, legacy `spend_tiers` cache reads, and recommendation
 request gating are covered by unit/component tests listed in `../README.md`. This suite
@@ -283,8 +283,8 @@ test_ug_configure_claude_workspace_switch.py # real skills MCP cleanup across tw
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
 test_ug_claude_managed_model_discovery.py # Claude MPS policy cases (claude_mps.json)
 test_ug_codex_managed_model_discovery.py  # Codex MPS policy cases (codex_mps.json)
-test_ug_claude_model_discovery.py       # unmanaged scenarios 7, 9, 11, 13
-test_ug_codex_model_discovery.py        # unmanaged scenarios 8, 10, 12, 14
+test_ug_claude_model_discovery.py       # unmanaged scenarios 9, 11, 13
+test_ug_codex_model_discovery.py        # unmanaged scenarios 10, 12, 14
 test_ug_configure_managed.py            # stubbed static model list/catalog pointer, no agent selector, cache TTL
 test_ug_configure_managed_models.py     # stubbed model sources, smart-routing banner, Codex fallback metadata
 test_ug_configure_managed_mcp.py        # stubbed managed MCP list
@@ -472,8 +472,11 @@ Direct renderer tests cover default/catalog composition, while focused CLI regre
 catalog discovery with overall defaults, family defaults, or both, along with explicit model
 selection and preservation of static model lists. Both cases run on the managed workspace's own
 bearer; no second workspace or extra secret is involved.
-The 14 retained numbered scenarios comprise 24 explicit journeys: 12 managed and 12 unmanaged
-executions; the complete integration suite collects 111 executions (110 with Claude and Codex selected). See the named coverage and gaps matrix in
+Across integration and dedicated CUJ7, the 14 numbered scenarios comprise 24 journeys:
+12 managed and 12 unmanaged. Integration contains 22 of them (12 managed, 10 unmanaged);
+configured unmanaged cases 7 and 8 run in `e2e_cuj/test_cuj7_model_discovery.py`.
+The complete integration suite collects 111 executions (110 with Claude and Codex selected).
+See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
 ```bash
@@ -621,12 +624,15 @@ Claude's UG-owned `--model` and its native option. All eight cases reuse the CUJ
 session/terminal helpers and check that the workspace remains unmanaged; they never
 change remote configuration. Function-scoped sessions keep every launch fresh, mint
 a bearer per case, and use shared `revert_machine_wide` cleanup.
-Claude task attribution checks the requested UC service and successful response through
-the shared forwarding recorder, alongside the completed native turn; native model IDs
-identify the backing provider model, not necessarily the UC service.
+Both agents correlate the exact user task to requests for the expected UC service and
+nonempty HTTP 200 responses through the shared recorder. Scoped launches also require
+the `databricks-model-service-parent-schema` header to equal `ug_e2e.models`.
+Claude checks structured `modelUsage`; Codex checks its completed native turn's model.
 The preservation case seeds distinct Sonnet and other-family defaults only after the
 clean-runner preflight, verifies Sonnet inference and unchanged defaults, then reverts
-and removes that input. An accidental Opus fallback cannot satisfy the Sonnet assertion.
+and removes that input. Recording stops before guarded revert; fixture teardown keeps
+cleanup failures separate from task failures. An accidental Opus fallback cannot satisfy
+the Sonnet assertion.
 
 The workspace check requires the secret to match
 `https://eng-ml-inference-team-us-east-1.cloud.databricks.com` (a trailing slash

@@ -12,13 +12,16 @@ from tests.e2e_cuj.helpers.evidence import (
     ClaudeCujHelper,
     CodexCujHelper,
     SessionEvidence,
+    assert_claude_headless_model,
+    assert_inference_evidence,
     canonical_model,
     completed_turn,
     get_cuj_helper,
 )
-from tests.e2e_cuj.helpers.tui_request_recorder import RecordedRequest
+from tests.e2e_cuj.helpers.tui_request_recorder import RecordedRequest, RecordedResponse
 from tests.e2e_cuj.test_cuj4_smart_routing import _task_inference_request
 from tests.integration.utils.evidence import FileTask, read_jsonl
+from tests.integration.utils.provider_catalog import MODEL_SERVICE_PARENT_SCHEMA_HEADER
 
 
 def records(agent, task, model):
@@ -323,3 +326,76 @@ def test_cuj_uses_shared_file_task_without_exposing_answer(tmp_path):
     assert (tmp_path / task.filename).read_text().strip() == task.value
     assert task.value not in task.prompt
     assert "Do not delegate." in task.prompt
+
+
+@pytest.mark.parametrize("agent", [CLAUDE, CODEX])
+@pytest.mark.parametrize("failure", [None, "role", "prompt", "model", "schema", "status", "body"])
+def test_cuj_inference_evidence_requires_exact_task_model_schema_and_response(agent, failure):
+    task = SimpleNamespace(prompt="Read the fixture and return its contents")
+    model = f"ug_e2e.models.{'claude_haiku' if agent == CLAUDE else 'gpt_luna'}"
+    field = "messages" if agent == CLAUDE else "input"
+    content_type = "text" if agent == CLAUDE else "input_text"
+    payload = {
+        "model": "wrong-model" if failure == "model" else model,
+        field: [
+            {
+                "role": "assistant" if failure == "role" else "user",
+                "content": [
+                    {
+                        "type": content_type,
+                        "text": f"Quoted: {task.prompt}" if failure == "prompt" else task.prompt,
+                    }
+                ],
+            }
+        ],
+    }
+    request = RecordedRequest(
+        sequence=1,
+        method="POST",
+        path=INFERENCE_PATHS[agent],
+        headers={
+            MODEL_SERVICE_PARENT_SCHEMA_HEADER.lower(): (
+                "ug_e2e.other_models" if failure == "schema" else "ug_e2e.models"
+            )
+        },
+        body=json.dumps(payload).encode(),
+    )
+    response = RecordedResponse(
+        status_code=403 if failure == "status" else 200,
+        headers={},
+        body=b"" if failure == "body" else b"model response",
+    )
+    recorder = SimpleNamespace(
+        requests_after=lambda checkpoint: (request,),
+        response_for=lambda matched, timeout: response,
+    )
+    if failure is None:
+        assert_inference_evidence(recorder, 0, agent, task, model, parent_schema="ug_e2e.models")
+    else:
+        with pytest.raises(AssertionError):
+            assert_inference_evidence(
+                recorder, 0, agent, task, model, parent_schema="ug_e2e.models"
+            )
+
+
+@pytest.mark.parametrize("failure", [None, "model", "tokens", "error"])
+def test_cuj_claude_headless_model_requires_expected_model_output_tokens(failure):
+    model = "ug_e2e.models.claude_haiku"
+    result = SimpleNamespace(
+        stdout=json.dumps(
+            {
+                "type": "result",
+                "is_error": failure == "error",
+                "modelUsage": {
+                    "wrong-model" if failure == "model" else model: {
+                        "outputTokens": 0 if failure == "tokens" else 1
+                    }
+                },
+            }
+        )
+    )
+    if failure is None:
+        assert_claude_headless_model(result, model)
+    else:
+        with pytest.raises(AssertionError):
+            assert_claude_headless_model(result, model)

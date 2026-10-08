@@ -1,7 +1,5 @@
 """Managed catalog discovery, default launches, and explicit model selection."""
 
-import json
-
 import pytest
 
 from tests.integration.utils.agents import claude, codex
@@ -25,14 +23,15 @@ from .catalog_discovery_expectations import (
     MODEL_SCHEMA,
     OTHER_MODEL_SCHEMA,
 )
-from .helpers.constants import CLAUDE, CODEX, INFERENCE_PATHS
+from .helpers.constants import CLAUDE, CODEX
 from .helpers.evidence import (
     SessionEvidence,
-    assert_served,
     claude_file_task,
-    message_text,
-    served_inference_request,
 )
+from .helpers.evidence import (
+    assert_claude_headless_model as _assert_claude_headless_model,
+)
+from .helpers.evidence import assert_inference_evidence as _assert_inference_evidence
 from .helpers.terminal import Terminal
 
 CUJ_NAME = "CUJ 3 · UC model discovery"
@@ -73,63 +72,6 @@ def _catalog_display_names(workspace, agent, schema):
         assert cursor and cursor not in seen, "Repeated catalog pagination cursor"
         seen.add(cursor)
     raise AssertionError("Anthropic catalog exceeded 20 pages")
-
-
-def _assert_claude_headless_model(result, expected):
-    final = None
-    for line in result.stdout.splitlines():
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict) and payload.get("type") == "result":
-            final = payload
-    assert final is not None and not final.get("is_error"), result.stdout
-    usage = final["modelUsage"]
-    assert set(usage) == {expected}, {"expected": expected, "observed": sorted(usage)}
-    assert usage[expected]["outputTokens"] > 0, usage
-
-
-def _request_contains_task(request, agent, task):
-    field = "messages" if agent == CLAUDE else "input"
-    entries = request.payload.get(field)
-    if not isinstance(entries, (list, str)):
-        return False
-    if isinstance(entries, str):
-        return entries == task.prompt
-    for entry in entries:
-        if not isinstance(entry, dict) or entry.get("role") != "user":
-            continue
-        content = entry.get("content", "")
-        if isinstance(content, str) and content == task.prompt:
-            return True
-        if isinstance(content, list) and any(
-            message_text([part]) == task.prompt for part in content if isinstance(part, dict)
-        ):
-            return True
-    return False
-
-
-def _assert_inference_evidence(recorder, checkpoint, agent, task, expected):
-    expected_wire_model = claude.discovery_model_id(expected) if agent == CLAUDE else expected
-    requests = recorder.requests_after(checkpoint)
-    inference_requests = [
-        request
-        for request in requests
-        if request.method == "POST" and request.path == INFERENCE_PATHS[agent]
-    ]
-    assert inference_requests, {
-        "agent": agent,
-        "path": INFERENCE_PATHS[agent],
-        "requests": [(request.method, request.path) for request in requests],
-    }
-    task_requests = [
-        request for request in inference_requests if _request_contains_task(request, agent, task)
-    ]
-    assert task_requests, "No inference request contained the submitted task prompt"
-    for request in task_requests:
-        served = served_inference_request(recorder, task_requests, request, agent)
-        assert_served(recorder, served, expected_wire_model)
 
 
 @pytest.fixture(autouse=True)

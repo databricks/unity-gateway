@@ -22,6 +22,13 @@ class MachineWideLeak:
 MACHINE_WIDE_LEAK = pytest.StashKey[MachineWideLeak]()
 
 
+def record_machine_wide_leak(request):
+    """Name the scenario that left machine-wide settings in subsequent setup failures."""
+    leaked = tuple(str(path) for path in constants.MANAGED_PATHS if path.exists())
+    if leaked:
+        request.config.stash[MACHINE_WIDE_LEAK] = MachineWideLeak(request.node.nodeid, leaked)
+
+
 def dirty_runner_message(leak: MachineWideLeak | None) -> str:
     if leak is None:
         return (

@@ -23,32 +23,29 @@ from .helpers.constants import (
     CLAUDE_SONNET_MODEL_SERVICE,
     CODEX,
     CODEX_LUNA_MODEL_SERVICE,
-    INFERENCE_PATHS,
     MANAGED_PATHS,
     MODEL_SERVICE_SCHEMA,
 )
-from .helpers.evidence import SessionEvidence, assert_served, canonical_model, claude_file_task
-from .helpers.session import UserSession
+from .helpers.evidence import (
+    SessionEvidence,
+    assert_claude_headless_model,
+    assert_inference_evidence,
+    canonical_model,
+    claude_file_task,
+)
+from .helpers.session import (
+    MACHINE_WIDE_LEAK,
+    MANAGED_STATE_FILES,
+    UserSession,
+    dirty_runner_message,
+    record_machine_wide_leak,
+)
 from .helpers.terminal import Terminal
 from .helpers.tui_request_recorder import TuiRequestRecorder
 
 CUJ_NAME = "CUJ 7 · Unmanaged model discovery"
 
-pytestmark = [pytest.mark.live, pytest.mark.cuj7, pytest.mark.workspace_isolated]
-
-
-def _assert_claude_service_task(recorder, task, turn, model):
-    assert turn, "No completed native turn matched the file task"
-    requests = [
-        request
-        for request in recorder.requests_after(0)
-        if request.method == "POST"
-        and request.path == INFERENCE_PATHS[CLAUDE]
-        and task.prompt in json.dumps(request.payload)
-    ]
-    assert requests, "No Claude inference request matched the file task"
-    for request in requests:
-        assert_served(recorder, request, model)
+pytestmark = [pytest.mark.live, pytest.mark.workspace_isolated]
 
 
 class TestUnmanagedModelDiscovery(BaseCujTest):
@@ -68,13 +65,14 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         except DatabricksError as error:
             raise RuntimeError(f"Workspace API failed: {type(error).__name__}") from None
         assert_no_managed_config(payload)
+        assert not payload.get("next_page_token"), "Incomplete CodingAgentConfig listing"
 
     @pytest.fixture
-    def live_session(self, unmanaged_workspace, tmp_path):
+    def live_session(self, unmanaged_workspace, tmp_path, request):
         """Keep each launch unconfigured; the class-scoped cuj fixture requires a published config."""
         assert os.name == "posix", "CUJ7 requires a disposable POSIX runner"
-        assert not any(path.exists() for path in MANAGED_PATHS), (
-            "Existing machine-wide agent settings; use a clean disposable runner"
+        assert not any(path.exists() for path in MANAGED_PATHS), dirty_runner_message(
+            request.config.stash.get(MACHINE_WIDE_LEAK, None)
         )
         binary = shutil.which("ug")
         assert binary, "Install ug before running CUJ7"
@@ -89,14 +87,45 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         try:
             yield session
         finally:
-            session.revert_machine_wide(
-                "cleanup-revert", "CUJ7 teardown left machine-wide agent settings"
-            )
+            try:
+                session.revert_machine_wide(
+                    "cleanup-revert", "CUJ7 teardown left machine-wide agent settings"
+                )
+            finally:
+                record_machine_wide_leak(request)
 
     @pytest.fixture
     def request_recorder(self, live_session):
         with TuiRequestRecorder(self.workspace.config.host) as recorder:
             yield recorder
+
+    @pytest.fixture
+    def family_defaults(self, live_session):
+        """Seed local family-default input; stop recording before guarded revert and removal."""
+        session = live_session
+        defaults = {
+            f"ANTHROPIC_DEFAULT_{family}_MODEL": (
+                CLAUDE_SONNET_MODEL_SERVICE if family == "SONNET" else CLAUDE_HAIKU_MODEL_SERVICE
+            )
+            for family in ("FABLE", "OPUS", "SONNET", "HAIKU")
+        }
+        managed_path = str(MANAGED_PATHS[0])
+        session.run("install", "-d", "-m", "0755", "/etc/claude-code", binary="sudo")
+        try:
+            session.run(
+                "tee", managed_path, binary="sudo", input_text=json.dumps({"env": defaults})
+            )
+            with TuiRequestRecorder(self.workspace.config.host) as recorder:
+                yield defaults, recorder
+        finally:
+            try:
+                if any((session.home / ".ucode" / name).is_file() for name in MANAGED_STATE_FILES):
+                    with TerminalProcess(
+                        session, "ug", [str(session.binary), "revert"], "family-defaults-revert"
+                    ) as terminal:
+                        terminal.finish()
+            finally:
+                session.run("rm", "-f", managed_path, binary="sudo")
 
     @pytest.mark.claude
     @pytest.mark.tui
@@ -182,14 +211,17 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
             timeout=240,
         )
         task.assert_headless_answer(CLAUDE, result)
-        turn = evidence.completed(task)
-        _assert_claude_service_task(request_recorder, task, turn, model)
+        assert evidence.completed(task), "No completed native turn matched the file task"
+        assert_claude_headless_model(result, model)
+        assert_inference_evidence(
+            request_recorder, 0, CLAUDE, task, model, parent_schema=MODEL_SERVICE_SCHEMA
+        )
         session.assert_not_routed()
 
     @pytest.mark.claude
     @pytest.mark.parametrize("model_owner", ["ug", "claude"])
     def test_ug_claude_preserves_preexisting_managed_family_defaults(
-        self, live_session, request_recorder, model_owner
+        self, live_session, family_defaults, model_owner
     ):
         """Scenario: select Sonnet before/after ug's separator over OS-managed defaults.
 
@@ -200,52 +232,36 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         task = claude_file_task(session)
         model = CLAUDE_SONNET_MODEL_SERVICE
         model_args = ["--model", "sonnet"]
-        defaults = {
-            f"ANTHROPIC_DEFAULT_{family}_MODEL": (
-                model if family == "SONNET" else CLAUDE_HAIKU_MODEL_SERVICE
-            )
-            for family in ("FABLE", "OPUS", "SONNET", "HAIKU")
-        }
-        managed_path = "/etc/claude-code/managed-settings.json"
+        defaults, recorder = family_defaults
         evidence = SessionEvidence(session.home, CLAUDE)
-        session.run("install", "-d", "-m", "0755", "/etc/claude-code", binary="sudo")
-        try:
-            session.run(
-                "tee", managed_path, binary="sudo", input_text=json.dumps({"env": defaults})
-            )
-            result = session.run(
-                CLAUDE,
-                "--workspace",
-                request_recorder.url,
-                *(model_args if model_owner == "ug" else []),
-                "--",
-                *(model_args if model_owner == "claude" else []),
-                "-p",
-                task.prompt,
-                "--output-format",
-                "json",
-                "--allowedTools",
-                "Read",
-                timeout=240,
-            )
-            task.assert_headless_answer(CLAUDE, result)
-            turn = evidence.completed(task)
-            _assert_claude_service_task(request_recorder, task, turn, model)
-            settings = json.loads(session.run(managed_path, binary="cat", timeout=30).stdout)
-            assert {key: settings.get("env", {}).get(key) for key in defaults} == defaults
-            session.assert_not_routed()
-        finally:
-            try:
-                with TerminalProcess(
-                    session, "ug", [str(session.binary), "revert"], "family-defaults-revert"
-                ) as terminal:
-                    terminal.finish()
-            finally:
-                session.run("rm", "-f", managed_path, binary="sudo")
+        result = session.run(
+            CLAUDE,
+            "--workspace",
+            recorder.url,
+            *(model_args if model_owner == "ug" else []),
+            "--",
+            *(model_args if model_owner == "claude" else []),
+            "-p",
+            task.prompt,
+            "--output-format",
+            "json",
+            "--allowedTools",
+            "Read",
+            timeout=240,
+        )
+        task.assert_headless_answer(CLAUDE, result)
+        assert evidence.completed(task), "No completed native turn matched the file task"
+        assert_claude_headless_model(result, model)
+        assert_inference_evidence(recorder, 0, CLAUDE, task, model)
+        settings = json.loads(session.run(str(MANAGED_PATHS[0]), binary="cat", timeout=30).stdout)
+        assert {key: settings.get("env", {}).get(key) for key in defaults} == defaults
+        session.assert_not_routed()
 
     @pytest.mark.codex
     @pytest.mark.parametrize("model_position", ["before_separator", "exec"])
-    def test_ug_codex_headless_fresh_model_location(self, live_session, model_position):
+    def test_ug_codex_headless_fresh_model_location(
+        self, live_session, request_recorder, model_position
+    ):
         """Scenario: launch fresh scoped Codex with --model before ug's separator or in exec.
 
         Expected: GPT Luna completes a file task without prior configuration or routing.
@@ -259,7 +275,7 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         result = session.run(
             CODEX,
             "--workspace",
-            self.workspace.config.host,
+            request_recorder.url,
             "--model-location",
             MODEL_SERVICE_SCHEMA,
             *(model_args if model_position == "before_separator" else []),
@@ -274,4 +290,7 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         task.assert_headless_answer(CODEX, result)
         turn = evidence.completed(task)
         assert turn and set(map(canonical_model, turn.models)) == {canonical_model(model)}, turn
+        assert_inference_evidence(
+            request_recorder, 0, CODEX, task, model, parent_schema=MODEL_SERVICE_SCHEMA
+        )
         session.assert_not_routed()
