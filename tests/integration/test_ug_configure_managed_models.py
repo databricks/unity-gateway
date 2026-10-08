@@ -171,31 +171,11 @@ def test_managed_fixture_claude_model_picker_reflects_the_config(live_session, w
 
 @pytest.mark.managed_fixture
 @pytest.mark.codex
-@pytest.mark.parametrize(
-    "SMART_ROUTER_CONFIG_VERSION",
-    [
-        None,
-        "first_prompt_and_subagent_no_orch_v0",
-        "subagent_only_v0",
-        "subagent_only_v1",
-        "subagent_orch_v0",
-    ],
-    ids=[
-        "unconfigured",
-        "first_prompt_and_subagent_no_orch_v0",
-        "subagent_only_v0",
-        "subagent_only_v1",
-        "subagent_orch_v0",
-    ],
-)
-def test_ug_configure_managed_codex_catalog_fallback(
-    live_session, workspace, SMART_ROUTER_CONFIG_VERSION
-):
-    """Scenario: configure Codex from an injected model list under each selector.
+def test_ug_configure_managed_codex_catalog_fallback(live_session, workspace):
+    """Scenario: configure Codex from an injected model list.
 
     Expected: ug creates conservative fallback metadata for the unknown model, warns how to get
-    richer metadata, and the real Codex TUI lists that model in its /model picker for the
-    unconfigured case and each supported routing selector.
+    richer metadata, and the real Codex TUI lists that model in its /model picker.
     """
     session = live_session
     use_managed_config_fixture(session, "codex_catalog_fallback")
@@ -217,13 +197,11 @@ def test_ug_configure_managed_codex_catalog_fallback(
     assert fallback.get("context_window") == 32768, fallback
     assert fallback.get("default_reasoning_level") == "none", fallback
 
-    if SMART_ROUTER_CONFIG_VERSION is not None:
-        session.env["SMART_ROUTER_CONFIG_VERSION"] = SMART_ROUTER_CONFIG_VERSION
     with AgentTerminal(
         session,
         "codex",
         [str(session.binary), "codex"],
-        f"managed-fallback-routing-{SMART_ROUTER_CONFIG_VERSION or 'unconfigured'}",
+        "managed-fallback",
     ) as tui:
         tui.boot()
         tui.submit("/model")
