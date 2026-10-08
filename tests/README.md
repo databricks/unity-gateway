@@ -411,6 +411,15 @@ or skipped dependency fails the gate, and a running integration suite keeps it
 pending. The advisory Windows installation and headless lanes are not part of `All integration
 tests` yet. The descriptive jobs provide the actual coverage and diagnostics.
 
+Fork PRs get no secrets, so their `pull_request` run skips every credentialed integration
+job. After reviewing a PR, an org member comments `/integration-test` to run the Integration
+workflow with secrets on the PR's current head commit, or `/integration-test <sha>` to run
+only if the head is still the commit they reviewed. It posts a `Fork integration` status,
+and works on in-repo PRs too as an on-demand rerun. Each new push needs a new command.
+It runs main's workflow definitions and never caches fork builds. `/ug-review` requests
+the UG rubric review the same way, and `/user-journey-check` runs the user-journey gate,
+which runs automatically only for in-repo PRs.
+
 ## Gaps and deferred scope
 
 Custom OAuth lock tests cover release after use, Windows contention retries, and
