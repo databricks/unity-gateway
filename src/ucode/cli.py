@@ -1443,7 +1443,8 @@ def _configure_agents_for_mcp(
     Cursor is MCP-only, so it just needs workspace state established and rides
     along via MCP_ONLY_CLIENTS. ``workspace_entries`` (from `--workspace` /
     `--profile`) makes that workspace current and skips the workspace prompt;
-    otherwise the prompt is shown on first run."""
+    otherwise the prompt is shown on first run. If setup fails, the previous
+    current workspace is restored."""
     scope = {a if a == "cursor" else normalize_tool(a) for a in requested}
     installed = available_mcp_clients()
     # Setup installs model agents but not MCP-only ones, so a missing MCP-only CLI
@@ -1451,6 +1452,22 @@ def _configure_agents_for_mcp(
     not_installed = sorted(a for a in scope if a in MCP_ONLY_CLIENTS and a not in installed)
     if not_installed:
         raise RuntimeError(_not_installed_message(not_installed))
+    previous_workspace = load_full_state().get("current_workspace")
+    try:
+        _bootstrap_agents_for_mcp(scope, installed, workspace_entries)
+    except BaseException:
+        # Don't leave launches pointed at a workspace whose setup didn't finish.
+        if workspace_entries:
+            set_current_workspace(previous_workspace)
+        raise
+    return scope
+
+
+def _bootstrap_agents_for_mcp(
+    scope: set[str],
+    installed: list[str],
+    workspace_entries: list[tuple[str, str | None]] | None,
+) -> None:
     workspace_known = True
     if workspace_entries:
         url = workspace_entries[0][0]
@@ -1468,10 +1485,18 @@ def _configure_agents_for_mcp(
         _configure_shared_workspace_states(
             workspace_entries or [_prompt_for_configuration(None)], tools=[], force_login=True
         )
-    unready = sorted(scope - set(configured_mcp_clients(load_state(), available_mcp_clients())))
+    state = load_state()
+    unready = sorted(scope - set(configured_mcp_clients(state, available_mcp_clients())))
     if unready:
         raise RuntimeError(_not_installed_message(unready))
-    return scope
+    # Setup saves an explicit --profile, but it's skipped when every agent is already
+    # ready; save it here so registration authenticates as that profile. A saved
+    # --use-pat belonged to the old profile, and --profile means OAuth without it.
+    profile = workspace_entries[0][1] if workspace_entries else None
+    if profile and state.get("profile") != profile:
+        state["profile"] = profile
+        state.pop("use_pat", None)
+        save_state(state)
 
 
 def _not_installed_message(agents: list[str]) -> str:
@@ -1495,6 +1520,7 @@ def _configure_optional_setup(state: dict, tools: list[str]) -> None:
 
 @mcp_app.command("add")
 def mcp_add(
+    ctx: typer.Context,
     location: Annotated[
         str | None,
         typer.Option(
@@ -1541,7 +1567,8 @@ def mcp_add(
         typer.Option(
             "--profile",
             help="Existing Databricks CLI profile to register --agents against, like "
-            "--workspace. The profile's host supplies the workspace URL.",
+            "--workspace. The profile's host supplies the workspace URL, and the profile is "
+            "saved as that workspace's profile.",
         ),
     ] = None,
 ) -> None:
@@ -1558,6 +1585,17 @@ def mcp_add(
         else ({a.strip().lower() for a in agents.split(",") if a.strip()} or None)
     )
     try:
+        # `ug --workspace <url> mcp add ...` is parsed by the root command, which
+        # returns early for subcommands, so forward its value here.
+        root_workspace = ctx.find_root().params.get("workspace")
+        if root_workspace is not None:
+            if workspace is not None and _parse_workspace_option(
+                workspace
+            ) != _parse_workspace_option(root_workspace):
+                raise RuntimeError(
+                    "Got two different --workspace values. Pass --workspace once, after `mcp add`."
+                )
+            workspace = root_workspace
         if workspace is not None and profile is not None:
             raise RuntimeError("Use either --workspace or --profile, not both.")
         if (workspace is not None or profile is not None) and not requested_agents:

@@ -26,6 +26,7 @@ import ucode.databricks as db_mod
 from ucode.cli import app
 from ucode.databricks import GatewayProbe
 from ucode.managed_config import normalize_managed_config
+from ucode.state import save_state as real_save_state
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -2626,6 +2627,165 @@ class TestMcpAddWorkspace:
 
         assert result.exit_code == 1
         assert "not both" in _strip_ansi(result.output)
+        mock_add.assert_not_called()
+
+
+class TestMcpAddWorkspaceState:
+    """`ug mcp add --agents` against real (temporary) state, so persisted side effects show."""
+
+    WS_A = "https://ws-a.cloud.databricks.com"
+    WS_B = "https://ws-b.cloud.databricks.com"
+
+    @pytest.fixture(autouse=True)
+    def _real_state_writes(self):
+        # Undo `no_state_writes`; conftest already points the state file at tmp_path.
+        with (
+            patch("ucode.state.save_state", real_save_state),
+            patch("ucode.cli.save_state", real_save_state),
+        ):
+            yield
+
+    @staticmethod
+    def _save_workspace(workspace: str, **extra) -> None:
+        real_save_state({"workspace": workspace, "available_tools": ["codex"], **extra})
+
+    def test_profile_used_for_auth_when_workspace_already_ready(self):
+        from ucode.mcp import setup_mcp_clients
+        from ucode.state import load_state
+
+        self._save_workspace(self.WS_A, profile="OLD")
+        profiles = [{"name": "OLD", "host": self.WS_A}, {"name": "NEW", "host": self.WS_A}]
+
+        def register(**kwargs):
+            setup_mcp_clients(load_state(), "MCP servers", agents=kwargs["agents"])
+
+        with (
+            patch("ucode.cli.list_profile_entries", return_value=profiles),
+            patch("ucode.cli.available_mcp_clients", return_value=["codex"]),
+            patch("ucode.mcp.available_mcp_clients", return_value=["codex"]),
+            patch("ucode.mcp.purge_cross_workspace_mcp_residue"),
+            patch("ucode.mcp.ensure_databricks_auth") as mock_auth,
+            patch("ucode.cli.configure_workspace_command") as mock_cfg,
+            patch("ucode.cli.add_mcp_command", side_effect=register),
+        ):
+            result = runner.invoke(
+                app, ["mcp", "add", "--agents", "codex", "--names", "a.b.c", "--profile", "NEW"]
+            )
+
+        assert result.exit_code == 0, result.output
+        mock_cfg.assert_not_called()
+        mock_auth.assert_called_once_with(self.WS_A, "NEW")
+        assert load_state()["profile"] == "NEW"
+
+    def test_new_profile_drops_saved_pat_mode(self):
+        from ucode.state import load_state
+
+        self._save_workspace(self.WS_A, profile="OLD", use_pat=True)
+        profiles = [{"name": "OLD", "host": self.WS_A}, {"name": "NEW", "host": self.WS_A}]
+        with patch("ucode.cli.list_profile_entries", return_value=profiles):
+            cli_mod._configure_agents_for_mcp([], [(self.WS_A, "NEW")])
+
+        state = load_state()
+        assert state["profile"] == "NEW"
+        assert "use_pat" not in state
+
+    def test_failed_setup_with_no_previous_workspace_clears_current(self):
+        from ucode.state import load_full_state
+
+        with (
+            patch("ucode.cli.available_mcp_clients", return_value=["codex"]),
+            patch("ucode.cli.configure_workspace_command", side_effect=RuntimeError("boom")),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            cli_mod._configure_agents_for_mcp(["codex"], [(self.WS_B, None)])
+
+        assert load_full_state()["current_workspace"] is None
+
+    @pytest.mark.parametrize(
+        ("error", "exit_code"), [(RuntimeError("boom"), 1), (KeyboardInterrupt(), 130)]
+    )
+    def test_failed_setup_restores_previous_workspace(self, error, exit_code):
+        from ucode.state import load_full_state
+
+        self._save_workspace(self.WS_A)
+        with (
+            patch("ucode.cli.available_mcp_clients", return_value=["codex"]),
+            patch("ucode.cli.configure_workspace_command", side_effect=error),
+            patch("ucode.cli.add_mcp_command") as mock_add,
+        ):
+            result = runner.invoke(
+                app,
+                ["mcp", "add", "--agents", "codex", "--names", "a.b.c", "--workspace", self.WS_B],
+            )
+
+        assert result.exit_code == exit_code, result.output
+        mock_add.assert_not_called()
+        full = load_full_state()
+        assert full["current_workspace"] == self.WS_A
+        assert self.WS_B not in full["workspaces"]
+
+
+class TestMcpAddRootWorkspace:
+    """`ug --workspace <url> mcp add ...` is forwarded rather than silently ignored."""
+
+    def test_root_workspace_forwarded_to_agent_setup(self):
+        with (
+            patch("ucode.cli._configure_agents_for_mcp", return_value={"codex"}) as configure,
+            patch("ucode.cli.add_mcp_command"),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "--workspace",
+                    "https://ws",
+                    "mcp",
+                    "add",
+                    "--agents",
+                    "codex",
+                    "--names",
+                    "a.b.c",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        configure.assert_called_once_with(["codex"], [("https://ws", None)])
+
+    def test_same_workspace_in_both_positions_is_accepted(self):
+        with (
+            patch("ucode.cli._configure_agents_for_mcp", return_value={"codex"}) as configure,
+            patch("ucode.cli.add_mcp_command"),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "--workspace",
+                    "https://ws",
+                    "mcp",
+                    "add",
+                    "--agents",
+                    "codex",
+                    "--workspace",
+                    "https://ws/",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        configure.assert_called_once_with(["codex"], [("https://ws", None)])
+
+    @pytest.mark.parametrize(
+        ("extra", "message"),
+        [
+            (["--agents", "codex", "--workspace", "https://other"], "two different --workspace"),
+            (["--agents", "codex", "--profile", "P"], "not both"),
+            (["--names", "a.b.c"], "only apply with --agents"),
+        ],
+    )
+    def test_root_workspace_conflicts_exit_1(self, extra, message):
+        with patch("ucode.cli.add_mcp_command") as mock_add:
+            result = runner.invoke(app, ["--workspace", "https://ws", "mcp", "add", *extra])
+
+        assert result.exit_code == 1
+        assert message in _strip_ansi(result.output)
         mock_add.assert_not_called()
 
 

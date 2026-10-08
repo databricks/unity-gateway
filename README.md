@@ -112,7 +112,21 @@ Use `ug mcp add` to add servers without removing existing registrations:
 ug mcp add --location system.ai
 ug mcp add --names system.ai.slack,system.ai.github
 ug mcp add --agents claude,codex --location system.ai
+ug mcp add --agents cursor --names system.ai.github --workspace https://first.databricks.com
+ug mcp add --agents codex --names system.ai.github --profile DEFAULT
 ```
+
+With `--agents`, any named agent that isn't configured yet is set up first. To
+pick its workspace without the workspace picker, pass either `--workspace` or
+`--profile` (not both); either one requires `--agents`. Without either flag,
+`UG_WORKSPACE` is used when set. The selected workspace becomes the current
+workspace, as with `ug <agent> --workspace`, and `--profile` is saved as that
+workspace's profile. If setup fails, the previous current workspace is restored.
+Put these flags after `mcp add`; `ug --workspace <url> mcp add ...` works too,
+but two different `--workspace` values are rejected. Cursor is MCP-only, so
+`cursor-agent` must already be on `PATH`. Skipping the picker doesn't make
+setup unattended: first-time setup can still open a Databricks OAuth login in
+the browser and install agent CLIs.
 
 Remove configured servers:
 
