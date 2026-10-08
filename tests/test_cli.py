@@ -1543,6 +1543,7 @@ class TestClaudeModelFlag:
         settings_path = tmp_path / "ucode-settings.json"
         original_settings = {
             "env": {
+                "ANTHROPIC_BASE_URL": "https://example.databricks.com/ai-gateway/anthropic",
                 "ANTHROPIC_DEFAULT_OPUS_MODEL": "system.ai.claude-opus-4-8[1m]",
                 "ANTHROPIC_DEFAULT_SONNET_MODEL": "system.ai.claude-sonnet-5[1m]",
             }
@@ -1552,7 +1553,14 @@ class TestClaudeModelFlag:
         monkeypatch.setattr(claude, "_resolve_launch_binary", lambda binary: binary)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_: "token")
         native_calls: list[list[str]] = []
-        monkeypatch.setattr(claude, "exec_or_spawn", native_calls.append)
+        process = MagicMock()
+        process.wait.return_value = 0
+
+        def spawn(argv):
+            native_calls.append(argv)
+            return process
+
+        monkeypatch.setattr(claude.subprocess_cross_os, "popen", spawn)
 
         with _launch_policy_patches(None) as calls:
             calls["launch"].side_effect = lambda tool, state, args, *, options: claude.launch(
@@ -1571,8 +1579,14 @@ class TestClaudeModelFlag:
         assert native_calls[0][3:] == ["--model", model]
         settings = json.loads(native_calls[0][2])
         assert settings["env"]["ANTHROPIC_MODEL"] == model
+        assert settings["env"]["SMART_ROUTER_RECIPE_LOCAL"] == "task_v3"
+        assert json.loads(settings["env"]["CLAUDE_CODE_EXTRA_BODY"]) == {
+            "smart_router_recipe_name": "task_v3"
+        }
+        assert settings["env"]["ANTHROPIC_BASE_URL"].startswith("http://127.0.0.1:")
         for key, value in original_settings["env"].items():
-            assert settings["env"][key] == value
+            if key != "ANTHROPIC_BASE_URL":
+                assert settings["env"][key] == value
         assert json.loads(settings_path.read_text()) == original_settings
 
     def test_v2_model_sets_transient_launch_override(self, monkeypatch):

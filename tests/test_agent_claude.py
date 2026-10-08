@@ -6,9 +6,10 @@ import json
 import os
 import shlex
 import subprocess
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, Mock
+from unittest.mock import ANY, MagicMock, Mock
 
 import pytest
 
@@ -2478,6 +2479,17 @@ class TestResolveLaunchBinary:
 
 
 class TestClaudeLaunch:
+    @pytest.fixture(autouse=True)
+    def _recipe_session(self, monkeypatch, tmp_path):
+        # These dispatch tests do not run a native agent or a network listener. Session/body
+        # propagation is exercised separately in test_claude_recipe_payload.py.
+        monkeypatch.setattr(
+            v2, "_prepare_smart_router_session", lambda _agent: tmp_path / "env.json"
+        )
+        monkeypatch.setattr(
+            claude, "claude_recipe_session", lambda settings, _path: nullcontext(settings)
+        )
+
     def test_gateway_discovery_enabled_for_relayed_provider(self, monkeypatch):
         calls: list[tuple[dict, str, list[str]]] = []
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")
@@ -2852,10 +2864,22 @@ class TestClaudeLaunch:
         monkeypatch.setattr(v2, "launch_claude", Mock())
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
         monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
-
-        claude.launch({"workspace": WS}, tool_args, options=LaunchOptions())
-
-        assert calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), *tool_args]]
+        if tool_args[0] == "doctor":
+            # The CLI suppresses routing for native subcommands before calling the launcher.
+            monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "0")
+            claude.launch({"workspace": WS}, tool_args, options=LaunchOptions())
+            assert calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), *tool_args]]
+        else:
+            process = Mock()
+            process.wait.return_value = 0
+            popen = Mock(return_value=process)
+            monkeypatch.setattr(claude.subprocess_cross_os, "popen", popen)
+            with pytest.raises(SystemExit) as exc:
+                claude.launch({"workspace": WS}, tool_args, options=LaunchOptions())
+            assert exc.value.code == 0
+            # Headless inference keeps the recipe forwarder alive without first-prompt routing.
+            assert popen.call_args.args[0][-len(tool_args) :] == tool_args
+            assert calls == []
         v2.launch_claude.assert_not_called()
 
     @pytest.mark.parametrize("tool_args", [["fix this bug"], ["--", "fix this bug"]])
@@ -2876,10 +2900,12 @@ class TestClaudeLaunch:
             binary="claude",
             user_settings_path=claude.CLAUDE_USER_SETTINGS_PATH,
             launch_model=None,
-            compose_settings=claude._compose_v2_settings,
+            compose_settings=ANY,
             launch_model_args=claude._launch_model_args,
             model_name=claude._maybe_add_1m_suffix,
         )
+        compose = launch_v2.call_args.kwargs["compose_settings"]
+        assert compose(tool_args) == ({}, tool_args)
 
     def test_gateway_discovery_uses_direct_gateway(self, monkeypatch):
         calls: list[list[str]] = []

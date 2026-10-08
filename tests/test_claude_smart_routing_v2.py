@@ -7,6 +7,7 @@ import os
 import sys
 import threading
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -214,6 +215,9 @@ class TestV2Launch:
     def test_non_setup_failure_does_not_launch_claude_again(self, monkeypatch):
         monkeypatch.setattr(v2, "launch_claude", Mock(side_effect=RuntimeError("process failed")))
         monkeypatch.setattr(claude, "exec_or_spawn", Mock())
+        monkeypatch.setattr(
+            claude, "claude_recipe_session", lambda settings, _path: nullcontext(settings)
+        )
 
         with pytest.raises(RuntimeError, match="process failed"):
             claude.launch({}, [], options=LaunchOptions(launch_smart_routing=True))

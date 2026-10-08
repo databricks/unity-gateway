@@ -10,16 +10,17 @@ from collections.abc import Mapping, MutableMapping
 from pathlib import Path
 
 from ucode.config_io import atomic_write_json
-from ucode.constants import SMART_ROUTING_ENV_KEYS
+from ucode.constants import SMART_ROUTER_RECIPE_LOCAL, SMART_ROUTING_ENV_KEYS
 
 SESSION_ENV_VAR = "UCODE_SESSION_ENV_FILE"
 SESSION_PYTHON_ENV_VAR = "UCODE_SMART_ROUTER_PYTHON"
-_ALLOWED_KEYS = frozenset(SMART_ROUTING_ENV_KEYS)
+_ALLOWED_KEYS = frozenset((*SMART_ROUTING_ENV_KEYS, SMART_ROUTER_RECIPE_LOCAL))
 
 
 def start_session(env: MutableMapping[str, str] | None = None) -> Path:
     """Create an empty override file and expose it to the launched harness."""
     target = os.environ if env is None else env
+    target.pop(SMART_ROUTER_RECIPE_LOCAL, None)
     path = Path(tempfile.mkdtemp(prefix="ug-session-env-")) / "env.json"
     atomic_write_json(path, {})
     target[SESSION_ENV_VAR] = str(path)
@@ -47,7 +48,8 @@ def _validate(values: object) -> dict[str, str]:
     return values
 
 
-def _read(path: Path) -> dict[str, str]:
+def read_session_environment(path: Path) -> dict[str, str]:
+    """Read and validate one session's authoritative routing controls."""
     return _validate(json.loads(path.read_text(encoding="utf-8")))
 
 
@@ -59,7 +61,7 @@ def effective_environment(env: Mapping[str, str] | None = None) -> dict[str, str
     except RuntimeError:
         return effective
     try:
-        effective.update(_read(path))
+        effective.update(read_session_environment(path))
     except (OSError, UnicodeError, ValueError) as exc:
         print(
             f"Smart Router could not read session controls at {path} ({exc}); "
@@ -73,7 +75,7 @@ def set_session_environment(values: Mapping[str, str]) -> None:
     """Atomically replace the current session's allowlisted overrides."""
     path = session_env_path()
     try:
-        _read(path)
+        read_session_environment(path)
     except (OSError, UnicodeError, ValueError) as exc:
         raise RuntimeError(f"Smart Router session controls at {path} are invalid.") from exc
     atomic_write_json(path, _validate(dict(values)))

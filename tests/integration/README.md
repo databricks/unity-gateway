@@ -303,6 +303,12 @@ role-contract preservation, and isolation from legacy preference files
 lack dedicated regression coverage. Codex's native hook merging, project trust,
 and execution of pre-existing hooks are not exercised by this integration suite.
 
+Claude's recipe payload has separate component coverage in `../test_claude_recipe_payload.py`:
+session-local on/off/on transitions, field/auth preservation, gzip requests, and no injection
+for never-enabled sessions. Native Claude 2.1.286 parent/child requests were also checked against
+a local fixture endpoint. Neither check establishes backend extraction or routing behavior;
+the live toggle journeys above do not currently assert the outbound recipe field.
+
 The portable `../test_claude_windows_smart_routing.py` checks the Windows
 subagent-only fallback without Unix imports. Native Windows TUI and hook execution
 remain outside this integration suite.

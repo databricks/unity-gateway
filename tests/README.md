@@ -96,6 +96,14 @@ gateway provider on Windows while Unix launch arguments stay unchanged and routi
 hooks stay with the app-server. This is component coverage, not a live Windows
 sign-in or TUI test.
 
+`test_claude_recipe_payload.py` covers Claude's session-local inference recipe: launch defaults,
+custom names, on/off/on changes through the real CLI, independent session files, preservation
+of other body fields/auth headers, gzip bodies, and no injection when routing was never enabled.
+Its loopback requests use a fixture upstream transport and do not establish live gateway routing.
+Pinned-model CLI cases also verify that recipe metadata remains enabled while model-selection
+routing is bypassed. Native parent/child propagation was checked separately with Claude 2.1.286
+against a local fixture endpoint; this is not a live gateway integration test.
+
 Claude picker composition is checked directly through the catalog and renderer functions in
 `test_agent_claude.py`; focused CLI cases cover source selection and launch precedence.
 Explicit Claude/GPT `--model` regressions in `test_cli.py` exercise the real launcher
