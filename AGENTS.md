@@ -29,6 +29,47 @@ Tests live in `tests/`.
 - Add or update focused tests for behavior changes.
 - Do not modify generated or lock files unless the dependency graph intentionally changes.
 
+## Smart-routing configuration
+
+`SMART_ROUTING_CONFIG_VERSION` is the external selector. Version definitions live in
+`src/ucode/smart_routing/config.py` under `_VERSIONS`; their managed environment keys
+are registered in `SMART_ROUTING_CONFIG_ENV_KEYS` in `src/ucode/constants.py`.
+An unset or empty selector preserves legacy environment-flag behavior.
+
+### Adding a parameter
+
+1. Define its environment-variable constant in `src/ucode/constants.py` and add it to
+   `SMART_ROUTING_CONFIG_ENV_KEYS`.
+2. Set an explicit value for it in **every** `_VERSIONS` entry, including existing versions.
+   Choose values that preserve existing versions' behavior. Current parameters accept only
+   the strings `"0"` and `"1"`; do not use booleans, empty strings, or omitted keys.
+3. Add its consumer in the appropriate routing module. Use `resolve_environment` for
+   config-aware reads, or the legacy flags materialized by `apply_config` at launch.
+   Keep launch-scoped changes restorable and preserve legacy behavior without a selector.
+4. Do not add arbitrary parameters to `SMART_ROUTING_ENV_KEYS`: that separate tuple controls
+   routing activation and session on/off overrides. Extend it only when those semantics
+   are intended, with regression tests. Session overrides must apply after version resolution.
+
+`_validate_versions` runs at module import and rejects missing keys, unknown keys, and
+invalid values. Do not weaken the complete-key check or infer required keys from `_VERSIONS`.
+If a new parameter needs nonbinary values, add parameter-specific validation and tests.
+
+### Adding a config type or revision
+
+1. Add a complete mapping to `_VERSIONS` with an explicit suffix, such as `new_mode_v0`.
+   For a changed existing mode, add `existing_mode_v1` rather than changing its `_v0` behavior.
+   Do not add unsuffixed names or version aliases.
+2. Define every key in `SMART_ROUTING_CONFIG_ENV_KEYS`; never rely on the caller's
+   inherited environment to fill missing values.
+3. Update the version table and examples in `README.md` and any affected bundled-skill docs.
+4. Extend `tests/test_smart_routing_config.py` for the new mode, precedence over legacy flags,
+   environment restoration, validation failures, and applicable session/launch behavior.
+   Update unknown-version tests when a previously rejected version becomes supported.
+   Follow `tests/AGENTS.md` and update its coverage READMEs.
+
+Run `uv run pytest tests/test_smart_routing_config.py` plus relevant routing/CLI tests,
+then `just lint`. These component checks do not establish live agent or gateway coverage.
+
 ## Style
 
 - Keep user-facing CLI errors actionable.
