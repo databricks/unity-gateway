@@ -368,3 +368,9 @@ See [integration/README.md](integration/README.md) for commands, CI, artifacts,
 and reproduction. Follow [AGENTS.md](AGENTS.md) and [CLAUDE.md](CLAUDE.md) when
 adding, modifying, or removing tests. The ordinary suite enforces both the
 no-mocking boundary and the Scenario/Expected docstring format.
+
+`test_session_settings.py` covers the agent-independent session JSON store: nested merges,
+explicit removals, session isolation, malformed-state rejection, atomic write failure,
+concurrent readers, and concurrent process writers. Existing Smart Router controls retain
+their allowlist and file format through this store. These are component checks; storage
+updates alone do not prove native agent reload or live gateway behavior.
