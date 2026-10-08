@@ -10,6 +10,12 @@ on:
 permissions:
   contents: read
 
+env:
+  PYTHONUTF8: 1
+  # Windows runners can't reach public PyPI or npm; they install through JFrog.
+  WINDOWS_PACKAGE_INDEX: https://databricks.jfrog.io/artifactory/api/pypi/db-pypi/simple
+  WINDOWS_NPM_REGISTRY: https://databricks.jfrog.io/artifactory/api/npm/db-npm/
+
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
@@ -31,9 +37,19 @@ jobs:
       - run: just lint
 
   test:
-    name: Unit tests
-    runs-on: ubuntu-latest
+    name: Unit tests · ${{ matrix.os == 'windows-server-latest' && 'Windows' || 'Linux' }}
+    runs-on: ${{ matrix.os }}
     needs: lint
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-server-latest]
+    defaults:
+      run:
+        shell: bash
     env:
       # uv.lock pins packages to Databricks' internal pypi-proxy, which hosted
       # GitHub runners can't reach (downloads time out). Re-resolve against
@@ -42,18 +58,44 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
-      - run: uv lock
-      - run: uv run pytest --ignore=tests/test_e2e.py
+      - name: Authenticate to JFrog with GitHub OIDC
+        id: jfrog
+        if: ${{ runner.os == 'Windows' }}
+        uses: jfrog/setup-jfrog-cli@279b1f629f43dd5bc658d8361ac4802a7ef8d2d5  # v4.9.1
+        env:
+          JF_URL: https://databricks.jfrog.io
+        with:
+          oidc-provider-name: github-actions
+      - name: Install dependencies
+        env:
+          UV_INDEX_DATABRICKS_PYPI_USERNAME: ${{ steps.jfrog.outputs.oidc-user }}
+          UV_INDEX_DATABRICKS_PYPI_PASSWORD: ${{ steps.jfrog.outputs.oidc-token }}
+        run: |
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            unset UV_INDEX_URL
+            export UV_DEFAULT_INDEX="databricks-pypi=$WINDOWS_PACKAGE_INDEX"
+          fi
+          uv lock
+          uv sync
+      - run: uv run --no-sync pytest --ignore=tests/test_e2e.py
 
   e2e-shards:
-    name: ${{ matrix.name }}
-    runs-on: ubuntu-latest
+    name: ${{ matrix.name }} · ${{ matrix.os == 'windows-server-latest' && 'Windows' || 'Linux' }}
+    runs-on: ${{ matrix.os }}
     needs: lint
     # The merge queue runs only lint and unit tests; e2e already ran on the PR.
     if: ${{ github.event_name != 'merge_group' }}
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-server-latest]
+        group: [gateway, claude, codex, gemini, opencode, copilot, pi]
         include:
           - group: gateway
             name: Gateway API tests
@@ -105,16 +147,50 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
+      - name: Expose the Databricks CLI on Windows
+        if: ${{ runner.os == 'Windows' }}
+        run: |
+          test -f "$RUNNER_TEMP/.bin/databricks.exe"
+          cygpath -w "$RUNNER_TEMP/.bin" >> "$GITHUB_PATH"
+      - name: Authenticate to JFrog with GitHub OIDC
+        id: jfrog
+        if: ${{ runner.os == 'Windows' }}
+        uses: jfrog/setup-jfrog-cli@279b1f629f43dd5bc658d8361ac4802a7ef8d2d5  # v4.9.1
+        env:
+          JF_URL: https://databricks.jfrog.io
+        with:
+          oidc-provider-name: github-actions
       - name: Install the shard's agent CLI
         if: ${{ matrix.package != '' }}
-        run: npm install -g "$AGENT_PACKAGE"
-      - run: uv lock
-      - run: uv tool install .
+        env:
+          NPM_TOKEN: ${{ steps.jfrog.outputs.oidc-token }}
+        run: |
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            npmrc="$RUNNER_TEMP/jfrog.npmrc"
+            printf 'registry=%s\n//%s:_authToken=%s\n' \
+              "$WINDOWS_NPM_REGISTRY" "${WINDOWS_NPM_REGISTRY#https://}" "$NPM_TOKEN" > "$npmrc"
+            npm install -g --userconfig "$npmrc" "$AGENT_PACKAGE"
+            rm "$npmrc"
+          else
+            npm install -g "$AGENT_PACKAGE"
+          fi
+      - name: Install ug and test dependencies
+        env:
+          UV_INDEX_DATABRICKS_PYPI_USERNAME: ${{ steps.jfrog.outputs.oidc-user }}
+          UV_INDEX_DATABRICKS_PYPI_PASSWORD: ${{ steps.jfrog.outputs.oidc-token }}
+        run: |
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            unset UV_INDEX_URL
+            export UV_DEFAULT_INDEX="databricks-pypi=$WINDOWS_PACKAGE_INDEX"
+          fi
+          uv lock
+          uv tool install .
+          uv sync
       # Redirect stdin so any interactive `databricks auth login --no-browser`
       # fallback EOFs instead of hanging the runner. With DATABRICKS_BEARER
       # set, the auth code path doesn't shell out at all — this is a safety
       # net for any code path we may have missed.
-      - run: uv run pytest tests/test_e2e.py -v -k "$TEST_KEYWORD" < /dev/null
+      - run: uv run --no-sync pytest tests/test_e2e.py -v -k "$TEST_KEYWORD" < /dev/null
 
   e2e:
     name: All agent tests

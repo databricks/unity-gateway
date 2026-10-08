@@ -1,0 +1,20 @@
+{
+  "spec_version": 1,
+  "default_agent": "CODING_AGENT_CLAUDE_CODE",
+  "enabled_agents": [
+    {
+      "agent": "CODING_AGENT_CLAUDE_CODE",
+      "config": {
+        "models": {
+          "model_services": [
+            "system.ai.claude-sonnet-4-6",
+            "system.ai.claude-haiku-4-5"
+          ]
+        },
+        "default_models": {
+          "default_model": "system.ai.claude-sonnet-4-6"
+        }
+      }
+    }
+  ]
+}

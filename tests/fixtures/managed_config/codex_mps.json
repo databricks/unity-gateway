@@ -1,0 +1,14 @@
+{
+  "spec_version": 1,
+  "default_agent": "CODING_AGENT_CODEX",
+  "enabled_agents": [
+    {
+      "agent": "CODING_AGENT_CODEX",
+      "config": {
+        "models": {
+          "model_provider_service": "main.default.ci_e2e_openai_mps"
+        }
+      }
+    }
+  ]
+}

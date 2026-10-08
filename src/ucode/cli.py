@@ -2851,6 +2851,8 @@ def _launch_tool(
             # Codex keeps an explicit --model in ctx.args and passes it to its CLI verbatim.
             if model and tool != "claude":
                 resolved_model = model
+        if model and tool == "claude" and not provider:
+            route_root_model = None
         if coding_agent_config_defaults and not state.get("claude_static_models") and not relayed:
             picker_catalog = claude_agent.default_model_picker_catalog(
                 coding_agent_config_defaults,
@@ -2867,7 +2869,6 @@ def _launch_tool(
             picker_catalog=picker_catalog,
             relayed=relayed,
             route_root_model=route_root_model,
-            # Claude's explicit model is launch-scoped and is passed through LaunchOptions below.
             custom_model=None,
             coding_agent_config_defaults=coding_agent_config_defaults,
             parent_schema=parent_schema,
@@ -2876,7 +2877,7 @@ def _launch_tool(
             # Claude re-adds an out-of-catalog saved model to /model even when built-ins are
             # replaced. Keep the catalog launch-scoped and leave the user's settings alone.
             state["_claude_launch_picker_models"] = picker_catalog.model_ids
-            if managed is None and (explicit_provider or parent_schema):
+            if managed is None and (explicit_provider or parent_schema) and not model:
                 # The permanent Default row should also resolve within the selected catalog.
                 state["_claude_launch_default_model"] = (
                     claude_agent.default_model(
@@ -3211,8 +3212,8 @@ def claude_cmd(
         typer.Option(
             "--model",
             help="Launch on a specific Databricks model id (e.g. a UC "
-            "`<catalog>.<schema>.<name>`). Pinned via ANTHROPIC_MODEL so the gateway "
-            "resolves it — unlike Claude Code's own --model, which rejects non-catalog ids. "
+            "`<catalog>.<schema>.<name>`). Passed to Claude Code's native `--model` option "
+            "for this launch only. "
             "With --provider, pass a family (opus/sonnet/haiku) or a target the service allows to "
             "start on that tier instead of Claude Code's opus default. Pass before any `--` separator.",
         ),

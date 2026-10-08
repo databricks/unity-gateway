@@ -132,7 +132,7 @@ class TuiRequestRecorder:
         if "--workspace" in args:
             raise ValueError("configure_session owns --workspace")
         session.configure([*args, "--workspace", self.upstream])
-        self._retarget_session(session.home)
+        self.retarget_session(session.home)
 
     def prepare_launch(self) -> None:
         """Keep the recorder-scoped managed-config cache fresh for a no-preflight launch."""
@@ -145,7 +145,8 @@ class TuiRequestRecorder:
         payload["retrieved_at"] = datetime.now(UTC).isoformat()
         path.write_text(json.dumps(payload, indent=2) + "\n")
 
-    def _retarget_session(self, home: Path) -> None:
+    def retarget_session(self, home: Path) -> None:
+        """Retarget a session configured outside configure_session, e.g. in a terminal."""
         state_path = home / ".ucode" / "state.json"
         state = json.loads(state_path.read_text())
         upstream = state.get("current_workspace")

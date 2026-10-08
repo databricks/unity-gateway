@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -372,6 +373,7 @@ class TestPersistence:
             RAW_MANIFEST
         )
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no POSIX file modes")
     def test_saved_file_is_0600(self, _managed_path):
         save_managed_state("https://ws.example.com", {"default_agent": "claude"})
         mode = stat.S_IMODE(os.stat(_managed_path).st_mode)

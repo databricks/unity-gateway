@@ -153,6 +153,7 @@ def test_router_failure_fails_open(monkeypatch):
 
 
 def test_spawn_rewrite_preserves_original_input(monkeypatch):
+    monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", "0")
     encrypted_message = {"encrypted": "opaque-ciphertext"}
     payload = {
         "tool_name": "collaborationspawn_agent",
@@ -204,7 +205,14 @@ def test_spawn_rewrite_preserves_original_input(monkeypatch):
     assert hook["permissionDecisionReason"] == expected_message
 
 
-def test_spawn_rewrite_uses_codex_model_id_for_uc_endpoint(monkeypatch):
+def test_spawn_rewrite_uses_codex_model_id_for_uc_endpoint(monkeypatch, tmp_path):
+    session_file = tmp_path / "env.json"
+    session_file.write_text("{}")
+    monkeypatch.setenv("UCODE_SESSION_ENV_FILE", str(session_file))
+    monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", "1")
+    monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "1")
+    monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
+    monkeypatch.delenv("ISAAC_LAUNCH_MODE", raising=False)
     monkeypatch.setattr(
         codex_routing,
         "request_routing_decision",
@@ -230,12 +238,13 @@ def test_spawn_rewrite_uses_codex_model_id_for_uc_endpoint(monkeypatch):
     expected_message = (
         "\n┌───────────────────────────────────────────────────────────────────────────┐\n"
         "│ Using Unity Gateway Smart Router - Subagent                               │\n"
-        "│ Subagent : routing-smoke-test                                             │\n"
+        "│ Subagent : routing-smoke-test [orchestrator on]                           │\n"
         "│ Selected Model : gpt-5.6-luna                                             │\n"
         "└───────────────────────────────────────────────────────────────────────────┘"
     )
     assert output["systemMessage"] == expected_message
     assert output["hookSpecificOutput"]["updatedInput"]["model"] == "gpt-5.6-luna"
+    assert output["hookSpecificOutput"]["updatedInput"]["task_name"] == "routing-smoke-test"
 
 
 def test_codex_model_id_maps_uc_gpt_models_to_codex_slugs():

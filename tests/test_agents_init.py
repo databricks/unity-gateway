@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 import sys
 from contextlib import contextmanager, nullcontext, redirect_stdout
@@ -676,7 +678,10 @@ class TestBootstrapStdout:
             assert agent_command in commands
             assert "agent setup stderr" in captured.err
         if child_owns_stdout:
-            assert captured.out == ("" if failure else '{"result":"native output"}\n')
+            # The native child's print emits "\r\n" on Windows; compare on logical lines.
+            assert captured.out.replace("\r\n", "\n") == (
+                "" if failure else '{"result":"native output"}\n'
+            )
             assert "databricks setup stdout" in captured.err
             if failure != "databricks":
                 assert "agent setup stdout" in captured.err
@@ -695,7 +700,9 @@ class TestInstallToolBinary:
         shared_path = codex.CODEX_CONFIG_PATH.parent / "config.toml"
         shared_path.parent.mkdir(parents=True, exist_ok=True)
         reference = catalog_ref or str(codex.CODEX_MODEL_CATALOG_PATH)
-        shared_path.write_text(f'model_catalog_json = "{reference}"\n', encoding="utf-8")
+        shared_path.write_text(
+            "model_catalog_json = " + json.dumps(reference) + "\n", encoding="utf-8"
+        )
         return shared_path
 
     def test_non_strict_returns_false_when_npm_missing(self, monkeypatch):
@@ -1094,7 +1101,7 @@ class TestConfiguredPaths:
         assert paths == [
             str(CLAUDE_SETTINGS_PATH).replace(str(CLAUDE_SETTINGS_PATH.home()), "~", 1)
         ]
-        assert paths[0].startswith("~/")
+        assert paths[0].startswith(f"~{os.sep}")
 
     def test_appends_os_managed_file_recorded_in_state(self):
         from ucode.agents import configured_paths

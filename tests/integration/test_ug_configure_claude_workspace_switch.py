@@ -55,7 +55,9 @@ def test_ug_configure_claude_cleans_stale_skills_mcp_on_workspace_switch(
     )
     assert urlparse(primary_entry["url"]).hostname == urlparse(workspace).hostname
     assert "claude" in primary_entry["clients"]
-    configured = session.run("mcp", "get", SKILLS_SERVER, binary="claude", timeout=60)
+    configured = session.run(
+        "mcp", "get", SKILLS_SERVER, binary=session.which("claude"), timeout=60
+    )
     assert urlparse(workspace).hostname in (configured.stdout + configured.stderr)
 
     second_url = second_workspace
@@ -72,7 +74,9 @@ def test_ug_configure_claude_cleans_stale_skills_mcp_on_workspace_switch(
     )
     assert switched.stdout.count("Dropping 1 stale MCP entry") == 1, switched.stdout
     assert SKILLS_SERVER in switched.stdout, switched.stdout
-    missing = session.run("mcp", "get", SKILLS_SERVER, binary="claude", timeout=60, ok=False)
+    missing = session.run(
+        "mcp", "get", SKILLS_SERVER, binary=session.which("claude"), timeout=60, ok=False
+    )
     _assert_claude_reports_missing(missing)
 
     state = session.state()
@@ -95,7 +99,9 @@ def test_ug_configure_claude_cleans_stale_skills_mcp_on_workspace_switch(
         timeout=240,
     )
     assert "Dropping 1 stale MCP entry" not in repeated.stdout, repeated.stdout
-    still_missing = session.run("mcp", "get", SKILLS_SERVER, binary="claude", timeout=60, ok=False)
+    still_missing = session.run(
+        "mcp", "get", SKILLS_SERVER, binary=session.which("claude"), timeout=60, ok=False
+    )
     _assert_claude_reports_missing(still_missing)
 
     result = session.run(

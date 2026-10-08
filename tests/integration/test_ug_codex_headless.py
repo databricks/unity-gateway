@@ -17,6 +17,7 @@ def test_ug_codex_headless_prompt_argument(live_session, workspace):
     its structured completed answer, with exit code zero and JSONL-only stdout.
     """
     session = live_session
+    session.choose_codex_windows_sandbox()
     task = FileTask(session)
     session.run(
         "configure",
@@ -53,6 +54,7 @@ def test_ug_codex_headless_prompt_stdin(live_session, workspace):
     its structured completed answer, with exit code zero and JSONL-only stdout.
     """
     session = live_session
+    session.choose_codex_windows_sandbox()
     task = FileTask(session)
     session.run(
         "configure",
@@ -90,6 +92,7 @@ def test_ug_codex_headless_prompt_after_separator(live_session, workspace):
     its structured completed answer, with exit code zero.
     """
     session = live_session
+    session.choose_codex_windows_sandbox()
     task = FileTask(session)
     session.run(
         "configure",
@@ -126,6 +129,7 @@ def test_ug_codex_headless_explicit_model_bypasses_routing(live_session, workspa
     no routing wrapper overrides the caller's choice.
     """
     session = live_session
+    session.choose_codex_windows_sandbox()
     task = FileTask(session)
     session.run(
         "configure",
