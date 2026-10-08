@@ -270,9 +270,8 @@ unset or empty, these legacy flags retain their existing behavior, including
 first-prompt routing through `ENABLE_SMART_ROUTING_V2=1`. Unknown versions produce
 an error listing the supported values. Orchestration remains off by default.
 
-The original `subagent_only` and `subagent_orch` names remain aliases of their
-respective `_v0` configurations. Future revisions use new `_v1`, `_v2`, etc. names
-without changing existing versions or aliases.
+Version names require an explicit suffix. Future revisions use new `_v1`, `_v2`,
+etc. names without changing existing versions.
 
 Version definitions fail validation at module import if any flag in
 `SMART_ROUTING_CONFIG_ENV_KEYS` is missing, has a value other than `"0"` or `"1"`,

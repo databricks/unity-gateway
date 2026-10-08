@@ -135,8 +135,8 @@ that Claude settings and Codex's shell policy carry the interpreter and session 
 These are component checks; they do not establish native skill permission matching or
 PowerShell execution.
 
-`test_smart_routing_config.py` covers canonical v0 and legacy selector resolution, legacy-flag
-precedence, fail-fast registry validation, environment materialization/restoration,
+`test_smart_routing_config.py` covers canonical v0 selector resolution, legacy-flag precedence,
+fail-fast registry validation, environment materialization/restoration,
 native-subcommand suppression, and orchestrator state transitions through real temporary
 session files. These are component checks; they do not establish live agent, hook, or gateway
 behavior.

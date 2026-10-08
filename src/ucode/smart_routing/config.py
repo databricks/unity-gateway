@@ -25,10 +25,6 @@ _VERSIONS = {
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
     },
 }
-_VERSION_ALIASES = {
-    "subagent_only": "subagent_only_v0",
-    "subagent_orch": "subagent_orch_v0",
-}
 
 
 def _validate_versions(versions: Mapping[str, Mapping[str, str]]) -> None:
@@ -59,7 +55,6 @@ def resolve_environment(env: Mapping[str, str] | None = None) -> dict[str, str]:
     version = resolved.pop(SMART_ROUTING_CONFIG_VERSION_ENV_VAR, "").strip()
     if not version:
         return resolved
-    version = _VERSION_ALIASES.get(version, version)
     if version not in _VERSIONS:
         raise RuntimeError(
             f"Unknown {SMART_ROUTING_CONFIG_VERSION_ENV_VAR} value {version!r}. "

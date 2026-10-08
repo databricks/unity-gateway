@@ -28,7 +28,7 @@ runner = CliRunner()
     ("selector", "expected"),
     [
         (
-            "subagent_only",
+            "subagent_only_v0",
             {
                 ENABLE_SMART_ROUTING_ENV_VAR: "0",
                 ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
@@ -36,7 +36,7 @@ runner = CliRunner()
             },
         ),
         (
-            "subagent_orch",
+            "subagent_orch_v0",
             {
                 ENABLE_SMART_ROUTING_ENV_VAR: "0",
                 ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
@@ -80,18 +80,19 @@ def test_resolve_environment_supports_canonical_v0_selectors(selector, expected_
     }
 
 
-@pytest.mark.parametrize(
-    ("alias", "canonical"),
-    [
-        ("subagent_only", "subagent_only_v0"),
-        ("subagent_orch", "subagent_orch_v0"),
-    ],
-)
-def test_unsuffixed_selectors_alias_fixed_v0_definitions(alias, canonical):
-    assert config._VERSION_ALIASES[alias] == canonical
-    assert config.resolve_environment(
-        {SMART_ROUTING_CONFIG_VERSION_ENV_VAR: alias}
-    ) == config.resolve_environment({SMART_ROUTING_CONFIG_VERSION_ENV_VAR: canonical})
+@pytest.mark.parametrize("selector", ["subagent_only", "subagent_orch"])
+@pytest.mark.parametrize("resolver", [config.resolve_environment, config.apply_config])
+def test_unsuffixed_selectors_are_rejected_without_mutating_input(selector, resolver):
+    environment = {
+        SMART_ROUTING_CONFIG_VERSION_ENV_VAR: selector,
+        "UNRELATED_SETTING": "preserved",
+    }
+    original = environment.copy()
+
+    with pytest.raises(RuntimeError):
+        resolver(environment)
+
+    assert environment == original
 
 
 @pytest.mark.parametrize("selector", [None, "", " \t"])
@@ -128,7 +129,7 @@ def test_legacy_flags_still_drive_routing_queries_without_selector():
     assert orchestrator.feature_enabled(environment) is True
 
 
-@pytest.mark.parametrize("selector", ["subagent_only", "subagent_orch"])
+@pytest.mark.parametrize("selector", ["subagent_only_v0", "subagent_orch_v0"])
 def test_selector_wins_legacy_conflicts_for_routing_queries(selector):
     environment = {
         SMART_ROUTING_CONFIG_VERSION_ENV_VAR: selector,
@@ -139,7 +140,7 @@ def test_selector_wins_legacy_conflicts_for_routing_queries(selector):
 
     assert v2.smart_routing_enabled(environment) is True
     assert v2.first_prompt_routing_enabled(environment) is False
-    assert orchestrator.feature_enabled(environment) is (selector == "subagent_orch")
+    assert orchestrator.feature_enabled(environment) is (selector == "subagent_orch_v0")
 
 
 def test_apply_config_materializes_selector_and_returns_previous_owned_values():
@@ -198,8 +199,8 @@ def test_unknown_selector_mentions_supported_names_and_does_not_mutate_input():
 
         message = str(caught.value)
         assert "future_mode" in message
-        assert "subagent_only" in message
-        assert "subagent_orch" in message
+        assert "subagent_only_v0" in message
+        assert "subagent_orch_v0" in message
         assert environment == {SMART_ROUTING_CONFIG_VERSION_ENV_VAR: "future_mode"}
 
 
@@ -375,8 +376,8 @@ def test_bare_launch_rejects_invalid_selector_before_managed_default(monkeypatch
 
     assert result.exit_code == 1
     launch.assert_not_called()
-    assert "subagent_only" in result.output
-    assert "subagent_orch" in result.output
+    assert "subagent_only_v0" in result.output
+    assert "subagent_orch_v0" in result.output
 
 
 @pytest.mark.parametrize(
