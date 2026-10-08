@@ -57,9 +57,10 @@ uv run pytest -c tests/e2e_cuj/pytest.ini --confcutdir=tests/e2e_cuj \
 
 ## Smart-routing CUJ
 
-`test_cuj_smart_routing.py` uses its own read-only workspace with managed smart routing enabled.
+`test_cuj4_smart_routing.py` uses its own read-only workspace with managed smart routing enabled.
 The original tests remain unchanged. One additional test has four
-`SMART_ROUTER_CONFIG_VERSION` cases; each launches Claude and Codex once.
+`SMART_ROUTER_CONFIG_VERSION` cases using the shared version constants; each launches Claude
+and Codex once.
 The independent expectation table is:
 
 | Selector | First prompt routed | Orchestrator context | Child on first prompt | Explicitly requested child |
@@ -86,6 +87,6 @@ With the same live prerequisites:
 
 ```bash
 uv run --with pexpect==4.9.0 --with pyte==0.8.2 pytest \
-  --confcutdir=tests/e2e_cuj tests/e2e_cuj/test_cuj_smart_routing.py \
+  --confcutdir=tests/e2e_cuj tests/e2e_cuj/test_cuj4_smart_routing.py \
   -k test_smart_router_config_version -v
 ```

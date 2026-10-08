@@ -12,6 +12,12 @@ from tests.integration.utils.evidence import (
     is_child_session,
     read_jsonl,
 )
+from ucode.smart_routing.config import (
+    FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
+    SUBAGENT_ONLY_V0,
+    SUBAGENT_ONLY_V1,
+    SUBAGENT_ORCH_V0,
+)
 
 from .base import BaseCujTest
 from .helpers.constants import CLAUDE, CODEX, INFERENCE_PATHS, CodingAgent
@@ -189,10 +195,10 @@ class TestCujSmartRouting(BaseCujTest):
     @pytest.mark.parametrize(
         "SMART_ROUTER_CONFIG_VERSION, first_prompt_routed, orchestrator_enabled",
         [
-            ("first_prompt_and_subagent_no_orch_v0", True, False),
-            ("subagent_only_v0", False, False),
-            ("subagent_only_v1", False, False),
-            ("subagent_orch_v0", False, True),
+            (FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0, True, False),
+            (SUBAGENT_ONLY_V0, False, False),
+            (SUBAGENT_ONLY_V1, False, False),
+            (SUBAGENT_ORCH_V0, False, True),
         ],
     )
     def test_smart_router_config_version(
