@@ -59,7 +59,11 @@ class McpFixtureTask:
                     observed = json.loads(answer)
                 except json.JSONDecodeError:
                     continue
-                if observed == self.expected:
+                if not isinstance(observed, dict):
+                    continue
+                # Claude may key answers by its qualified `mcp__<server>__<tool>` name.
+                tools = {str(key).rpartition("__")[2]: value for key, value in observed.items()}
+                if tools == self.expected:
                     return True
         return False
 
