@@ -46,7 +46,7 @@ does not yet assert live `recommendModel` request counts for configs with and wi
 
 ## Dedicated-workspace CUJ5
 
-[`../e2e_cuj/test_ug_budget_defaults.py`](../e2e_cuj/test_ug_budget_defaults.py) runs
+[`../e2e_cuj/test_cuj5_budget_defaults.py`](../e2e_cuj/test_cuj5_budget_defaults.py) runs
 three budget cases in the shared `E2E CUJs` job against the fixed 1% tier. The above-tier
 cases use `UG_CUJ_SP_CLIENT_ID` / `UG_CUJ_SP_CLIENT_SECRET`; the below-tier case uses
 `UG_BUDGET_CUJ_SP_CLIENT_ID` / `UG_BUDGET_CUJ_SP_CLIENT_SECRET`.

@@ -203,7 +203,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_configure_claude_cleans_stale_skills_mcp_on_workspace_switch` | Configure the first workspace, register its skills MCP, switch to a second real workspace, and use Claude | Old registration removed from Claude and the new workspace state; old workspace bucket preserved; repeat configure stays clean; real file task completes on the second workspace |
 | `test_ug_configure_claude_rejects_invalid_credentials`, `test_ug_configure_codex_rejects_invalid_credentials` | Configure with a rejected bearer against the real workspace | Authentication failure; no successful saved setup |
 | `test_ug_configure_managed_claude`, `test_ug_configure_managed_codex` | Configure on the managed workspace with the stubbed `managed_workspace_default.json` CodingAgentConfig | No agent selector; each agent's generated config exposes exactly the admin's static model_services; real gateway prompt on launch. The Codex case also checks the shared catalog pointer, restart guidance, and a fresh bare app-server's visible model list |
-| `e2e_cuj/test_ug_budget_defaults.py` | Launch bare `ug` with separate low-spend and above-tier principals against the fixed 1% tier (`spending_percentage=0.01`); explicitly launch `ug claude` above the tier | Bare launches check Claude/Sonnet below the tier and the Codex/Luna recommendation above it; `ug usage` agrees with backend spend, threshold, and percentage. Explicit `ug claude` displays the backend's Codex/Luna recommendation while its generated model setting and native header select Sonnet. No budget writes or inference tasks. Run in the shared `E2E CUJs` job with both credential pairs documented in `integration/README.md`. |
+| `e2e_cuj/test_cuj5_budget_defaults.py` | Launch bare `ug` with separate low-spend and above-tier principals against the fixed 1% tier (`spending_percentage=0.01`); explicitly launch `ug claude` above the tier | Bare launches check Claude/Sonnet below the tier and the Codex/Luna recommendation above it; `ug usage` agrees with backend spend, threshold, and percentage. Explicit `ug claude` displays the backend's Codex/Luna recommendation while its generated model setting and native header select Sonnet. No budget writes or inference tasks. Runs on its own `E2E CUJs · CUJ 5 · Budget-driven defaults` runner with both credential pairs documented in `integration/README.md`. |
 | `test_case_01_*` | Launch managed Claude without defaults after configure and from fresh state | Claude receives the admin MPS header; its gateway cache and replacement picker match the independently fetched provider model IDs; catalog labels are preserved and a model appears in a numbered picker row |
 | `test_case_03_*`, `test_case_05_*` | Pass a provider or model-location override to managed Claude after configure and from fresh state | ug rejects the override before Claude starts and preserves agent-owned state |
 | `test_case_02_*` | Launch managed Codex after configure and from fresh state | The scoped and stable catalogs, ug-launched app server, and fresh bare app server match the independently fetched admin MPS model IDs. The configured case uses real `ug revert` to remove ug's shared pointer and stable file while preserving a user setting |
@@ -316,8 +316,9 @@ locally; it does not establish live inference or in-session model switching.
 Check names describe the coverage: `Unit tests`, `Gateway API tests`,
 `Agent launch tests · Claude`, `Smoke journeys · Claude`, and
 `Full journeys · Claude` (with the other agents named likewise).
-Unit tests still run as one job. Both matrices use `fail-fast: false` so one
-failure does not cancel other coverage.
+Unit tests still run as one job. `E2E CUJs · CUJ <N> · <topic>` runs one runner per
+`tests/e2e_cuj/test_cuj<N>_*.py` file, because CUJs share machine-wide `/etc` agent
+settings. All matrices use `fail-fast: false` so one failure does not cancel other coverage.
 
 The small `test` and `e2e` compatibility gates retain the exact status contexts
 required by the repository's branch rules. `test` requires `Unit tests`; `e2e`
