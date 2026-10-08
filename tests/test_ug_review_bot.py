@@ -1,4 +1,4 @@
-"""Focused tests for the label-triggered UG review bot."""
+"""Focused tests for the comment-triggered UG review bot."""
 
 from __future__ import annotations
 

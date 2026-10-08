@@ -1,27 +1,40 @@
 name: User Journey Test Required
 
-# This gate runs from the trusted base branch and reads PR patches through the
-# GitHub API. It never checks out or executes code from the PR head, including
-# for fork PRs. The Databricks bearer is sent only to the configured workspace.
+# This gate runs the default branch's script and reads PR patches through the GitHub
+# API; it never executes code from the PR head. It runs automatically for in-repo PRs.
+# Fork PRs get no secrets on `pull_request`, so an org member comments
+# `/user-journey-check` to run it for them.
 on:
-  pull_request_target:  # zizmor: ignore[dangerous-triggers]
+  pull_request:
     types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+  issue_comment:
+    types: [created]
 
 permissions:
   contents: read
 
-concurrency:
-  group: user-journey-test-required-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
 jobs:
   require-user-journey-test:
     name: User Journey Test Required
-    if: ${{ !github.event.pull_request.draft }}
+    if: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+          !github.event.pull_request.draft &&
+          github.event.pull_request.head.repo.full_name == github.repository) ||
+        (github.event_name == 'issue_comment' &&
+          github.event.issue.pull_request &&
+          github.event.comment.body == '/user-journey-check' &&
+          contains(fromJSON('["MEMBER", "OWNER"]'), github.event.comment.author_association))
+      }}
+    # Job-level so ordinary PR comments, which skip this job, never cancel a check.
+    concurrency:
+      group: user-journey-test-required-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: true
     permissions:
       contents: read
       issues: read
-      pull-requests: read
+      pull-requests: write
+      statuses: write
     runs-on:
       group: databricks-protected-runner-group
       labels: linux-ubuntu-latest
@@ -38,13 +51,14 @@ jobs:
           persist-credentials: false
 
       - name: Require meaningful user-journey coverage
+        id: gate
         # Temporarily advisory while runner access is blocked by the org IP allowlist.
         # Keep failures visible in logs without failing the required job check.
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
           DATABRICKS_HOST: ${{ secrets.UCODE_TEST_WORKSPACE }}
           DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
           USER_JOURNEY_JUDGE_MODEL: ${{ vars.UG_CI_USER_JOURNEY_JUDGE_MODEL }}
@@ -53,3 +67,22 @@ jobs:
         run: |
           : "${USER_JOURNEY_JUDGE_MODEL:?Set the UG_CI_USER_JOURNEY_JUDGE_MODEL repository variable to a Responses-capable system.ai model}"
           python3 .github/scripts/user-journey-required/check.py
+
+      # Comment-triggered runs are not attached to the PR, so report back on its head commit.
+      - name: Report the result on the fork PR
+        if: ${{ github.event_name == 'issue_comment' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          OUTCOME: ${{ steps.gate.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq .head.sha)
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::could not read the PR head commit"; exit 1; }
+          state=$([ "$OUTCOME" = success ] && echo success || echo failure)
+          gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$sha" -f state="$state" \
+            -f context="User Journey Test Required" -f description="User-journey check $OUTCOME" \
+            -f target_url="$RUN_URL" >/dev/null
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --body "User-journey check $OUTCOME on ${sha:0:7}: $RUN_URL"

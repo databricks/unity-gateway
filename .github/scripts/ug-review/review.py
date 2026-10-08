@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Post a label-triggered, LLM-generated Unity Gateway pull-request review.
+"""Post a comment-triggered, LLM-generated Unity Gateway pull-request review.
 
-The script runs from the trusted default branch under ``pull_request_target``.
+The script runs from the trusted default branch, triggered by a ``/ug-review`` comment.
 It retrieves PR-controlled metadata and patches as untrusted text through the
 GitHub API; it never checks out or executes code from the PR head.
 """

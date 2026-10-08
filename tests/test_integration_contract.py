@@ -174,6 +174,147 @@ def test_integration_jobs_that_run_on_fork_pull_requests_need_no_credentials():
         )
 
 
+MEMBER_ONLY = 'contains(fromJSON(\'["MEMBER", "OWNER"]\'), github.event.comment.author_association)'
+
+
+def _workflow(name):
+    return (Path(__file__).parent.parent / ".github/workflows" / name).read_text()
+
+
+def test_fork_integration_runs_only_member_requested_pr_heads():
+    workflow = _workflow("fork-integration.yml")
+    authorize = workflow.split("\n  authorize:\n", 1)[1].split("\n  reject:\n", 1)[0]
+    reject = workflow.split("\n  reject:\n", 1)[1].split("\n  integration:\n", 1)[0]
+    integration = workflow.split("\n  integration:\n", 1)[1].split("\n  report:\n", 1)[0]
+    report = workflow.split("\n  report:\n", 1)[1]
+
+    assert re.search(r"(?m)^on:\n  issue_comment:\n    types: \[created\]\n", workflow)
+    assert "pull_request_target" not in workflow
+    assert "actions/checkout" not in workflow, "Only integration.yml checks out the pinned commit"
+    command = "startsWith(github.event.comment.body, '/integration-test ')"
+    assert command in authorize and command in reject
+    assert MEMBER_ONLY in authorize
+    assert f"!{MEMBER_ONLY}" in reject
+    assert "only Databricks org members can run integration tests" in reject
+    assert "set -euo pipefail" in authorize
+    assert '[[ "$sha" =~ ^[0-9a-f]{40}$ ]]' in authorize
+    assert "state=pending" in authorize
+    assert "needs: authorize" in integration
+    assert "group: fork-integration-${{ github.event.issue.number }}" in integration
+    assert "uses: ./.github/workflows/integration.yml" in integration
+    assert "ref: ${{ needs.authorize.outputs.sha }}" in integration
+    assert "needs.authorize.result == 'success'" in report
+    assert "repos/$GITHUB_REPOSITORY/statuses/$SHA" in report
+    assert "concurrency:" not in workflow.split("\njobs:\n", 1)[0], (
+        "Workflow-level concurrency would let any PR comment cancel a run"
+    )
+
+
+HEAD = "0123456789abcdef0123456789abcdef01234567"
+
+
+@pytest.mark.parametrize(
+    ("comment", "head_repo", "accepted", "reason"),
+    [
+        ("/integration-test", "fork/unity-gateway", True, ""),
+        (f"/integration-test {HEAD[:7]}", "fork/unity-gateway", True, ""),
+        (f"/integration-test {HEAD}", "fork/unity-gateway", True, ""),
+        ("/integration-test", "databricks/unity-gateway", True, ""),
+        ("/integration-test 1234567", "fork/unity-gateway", False, "the PR head is now 0123456"),
+        ("/integration-test please", "fork/unity-gateway", False, "use `/integration-test`"),
+        ("/integration-test", None, False, "fork repository no longer exists"),
+    ],
+)
+def test_fork_integration_authorize_pins_the_pr_head_or_the_reviewed_commit(
+    tmp_path, comment, head_repo, accepted, reason
+):
+    workflow = _workflow("fork-integration.yml")
+    authorize = workflow.split("\n  authorize:\n", 1)[1].split("\n  reject:\n", 1)[0]
+    script = textwrap.dedent(authorize.split("        run: |\n", 1)[1])
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    pr = {"head": {"sha": HEAD, "repo": {"full_name": head_repo} if head_repo else None}}
+    (tmp_path / "pr.json").write_text(json.dumps(pr))
+    fake_gh = bin_dir / "gh"
+    fake_gh.write_text(
+        "#!/bin/sh\n"
+        f'echo "$*" >> "{tmp_path}/calls"\n'
+        f'case "$*" in "api repos/databricks/unity-gateway/pulls/7") cat "{tmp_path}/pr.json";; esac\n'
+    )
+    fake_gh.chmod(0o755)
+    output = tmp_path / "github-output"
+    result = subprocess.run(
+        ["bash", "-c", script],
+        env={
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "GITHUB_REPOSITORY": "databricks/unity-gateway",
+            "GITHUB_OUTPUT": str(output),
+            "PR_NUMBER": "7",
+            "COMMENT_ID": "99",
+            "COMMENT_BODY": comment,
+            "RUN_URL": "https://example/run",
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    calls = (tmp_path / "calls").read_text()
+
+    if accepted:
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert output.read_text() == f"sha={HEAD}\n"
+        assert f"statuses/{HEAD} -f state=pending" in calls
+    else:
+        assert result.returncode != 0
+        assert not output.exists()
+        assert reason in calls and "statuses/" not in calls
+
+
+def test_no_workflow_uses_pull_request_target():
+    # GitHub disables pull_request_target by default in public repos from 2026-11-02.
+    workflows = sorted((Path(__file__).parent.parent / ".github/workflows").glob("*.yml"))
+
+    assert workflows
+    assert [path.name for path in workflows if "pull_request_target" in path.read_text()] == []
+
+
+def test_user_journey_gate_runs_for_in_repo_prs_or_a_member_command():
+    workflow = _workflow("user-journey-test-required.yml")
+    trigger = workflow.split("\non:\n", 1)[1].split("\npermissions:\n", 1)[0]
+
+    assert "  pull_request:\n" in trigger and "  issue_comment:\n    types: [created]" in trigger
+    assert "github.event.pull_request.head.repo.full_name == github.repository" in workflow
+    assert "github.event.comment.body == '/user-journey-check'" in workflow
+    assert MEMBER_ONLY in workflow
+    assert "ref: ${{ github.event.repository.default_branch }}" in workflow
+    assert "concurrency:" not in workflow.split("\njobs:\n", 1)[0]
+
+
+def test_ug_review_runs_only_on_member_command_from_the_default_branch():
+    workflow = _workflow("ug-review.yml")
+
+    assert re.search(r"(?m)^on:\n  issue_comment:\n    types: \[created\]\n", workflow)
+    assert "pull_request_target" not in workflow
+    assert "github.event.comment.body == '/ug-review'" in workflow
+    assert MEMBER_ONLY in workflow
+    assert "ref: ${{ github.event.repository.default_branch }}" in workflow
+    assert "PR_NUMBER: ${{ github.event.issue.number }}" in workflow
+    assert "concurrency:" not in workflow.split("\njobs:\n", 1)[0]
+
+
+def test_integration_checkouts_and_caches_are_safe_for_fork_heads():
+    workflow = (Path(__file__).parent.parent / ".github/workflows/integration.yml").read_text()
+    checkouts = re.findall(r"(?m)^      - uses: actions/checkout@.*\n((?:        .*\n)*)", workflow)
+    caches = re.findall(r"(?m)^      - uses: astral-sh/setup-uv@.*\n((?:        .*\n)*)", workflow)
+
+    assert checkouts and caches
+    for block in checkouts:
+        assert "ref: ${{ inputs.ref || github.sha }}" in block, block
+        assert "persist-credentials: false" in block, block
+    for block in caches:
+        assert "enable-cache: ${{ inputs.ref == '' }}" in block, block
+
+
 def test_windows_integration_ci_uses_shared_claude_version():
     workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
     contents = workflow.read_text()

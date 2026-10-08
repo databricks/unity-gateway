@@ -1,0 +1,127 @@
+name: Fork integration
+
+# Fork PRs get no secrets on `pull_request`. After reviewing a PR, an org member
+# comments `/integration-test` to run the Integration workflow with secrets on the PR
+# head, or `/integration-test <sha>` to run only if the head is still the reviewed
+# commit. Workflow definitions always come from the default branch.
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+jobs:
+  authorize:
+    name: Authorize fork integration
+    if: >-
+      ${{
+        github.event.issue.pull_request &&
+        (github.event.comment.body == '/integration-test' ||
+          startsWith(github.event.comment.body, '/integration-test ')) &&
+        contains(fromJSON('["MEMBER", "OWNER"]'), github.event.comment.author_association)
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+      statuses: write
+    outputs:
+      sha: ${{ steps.pr.outputs.sha }}
+    steps:
+      - name: Pin the reviewed commit
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          refuse() {
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "Fork integration not started: $1"
+            echo "::error::$1"
+            exit 1
+          }
+          [[ "$COMMENT_BODY" =~ ^/integration-test([[:space:]]+([0-9a-f]{7,40}))?[[:space:]]*$ ]] \
+            || refuse "use \`/integration-test\`, or \`/integration-test <sha>\` with the head commit you reviewed."
+          requested="${BASH_REMATCH[2]}"
+          pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER")
+          sha=$(jq -r '.head.sha' <<<"$pr")
+          head_repo=$(jq -r '.head.repo.full_name // empty' <<<"$pr")
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || refuse "could not read the PR head commit."
+          [ -n "$head_repo" ] || refuse "the fork repository no longer exists."
+          # Naming the commit binds the run to what was reviewed, not to a later push.
+          [[ -z "$requested" || "$sha" == "$requested"* ]] \
+            || refuse "the PR head is now ${sha:0:7}, not $requested. Review the new commits and comment again."
+          gh api -X POST "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID/reactions" \
+            -f content=eyes >/dev/null
+          gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$sha" -f state=pending \
+            -f context="Fork integration" -f description="Running on ${sha:0:7}" \
+            -f target_url="$RUN_URL" >/dev/null
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+  reject:
+    name: Reject non-member request
+    if: >-
+      ${{
+        github.event.issue.pull_request &&
+        (github.event.comment.body == '/integration-test' ||
+          startsWith(github.event.comment.body, '/integration-test ')) &&
+        !contains(fromJSON('["MEMBER", "OWNER"]'), github.event.comment.author_association)
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Reply with the member-only notice
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          COMMENTER: ${{ github.event.comment.user.login }}
+        run: |
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body \
+            "Sorry @$COMMENTER, only Databricks org members can run integration tests. A maintainer will run \`/integration-test\` after reviewing the changes."
+
+  integration:
+    name: Integration
+    needs: authorize
+    # Job-level so ordinary PR comments, which skip this job, never cancel a run.
+    concurrency:
+      group: fork-integration-${{ github.event.issue.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/integration.yml
+    with:
+      ref: ${{ needs.authorize.outputs.sha }}
+    secrets: inherit  # zizmor: ignore[secrets-inherit] same-repo workflow that needs nearly every secret
+
+  report:
+    name: Report fork integration
+    needs: [authorize, integration]
+    if: ${{ always() && needs.authorize.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      statuses: write
+      pull-requests: write
+    steps:
+      - name: Post the result on the PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          SHA: ${{ needs.authorize.outputs.sha }}
+          RESULT: ${{ needs.integration.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          state=$([ "$RESULT" = success ] && echo success || echo failure)
+          gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$SHA" \
+            -f state="$state" -f context="Fork integration" \
+            -f description="Integration $RESULT on ${SHA:0:7}" -f target_url="$RUN_URL" >/dev/null
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --body "Fork integration $RESULT on ${SHA:0:7}: $RUN_URL"

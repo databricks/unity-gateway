@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Require integration coverage when a PR changes a ug user journey.
 
-This script is run only from the trusted default branch by a
-``pull_request_target`` workflow. PR-controlled patches are untrusted text: they
-are retrieved through the GitHub API and sent to the judge, never executed.
+The workflow checks this script out from the default branch and runs it automatically
+for in-repo PRs, or for a fork PR when an org member comments ``/user-journey-check``.
+PR-controlled patches are untrusted text: they are retrieved through the
+GitHub API and sent to the judge, never executed.
 """
 
 from __future__ import annotations
