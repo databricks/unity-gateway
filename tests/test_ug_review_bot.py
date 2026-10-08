@@ -122,6 +122,7 @@ def test_responses_request_uses_instructions_and_does_not_store_output():
     assert request["input"] == "Review this diff"
     assert "Review policy" in request["instructions"]
     assert request["reasoning"] == {"effort": "high"}
+    assert request["max_output_tokens"] >= 16_000
     assert request["store"] is False
     assert "messages" not in request
 
@@ -141,6 +142,42 @@ def test_extract_response_text_ignores_reasoning_items():
     }
 
     assert review_bot.extract_response_text(payload) == "first\nsecond"
+
+
+def test_request_review_reports_why_the_response_has_no_text(monkeypatch):
+    monkeypatch.setenv("DATABRICKS_HOST", "https://example.databricks.com")
+    monkeypatch.setenv("UG_REVIEW_MODEL", "system.ai.gpt")
+    monkeypatch.setattr(review_bot, "_oauth_access_token", lambda host: "access-token")
+    payload = {
+        "status": "incomplete",
+        "incomplete_details": {"reason": "max_output_tokens"},
+        "output": [{"type": "reasoning", "content": []}],
+    }
+    monkeypatch.setattr(
+        review_bot.urllib.request,
+        "urlopen",
+        lambda request, timeout: BytesIO(json.dumps(payload).encode()),
+    )
+
+    with pytest.raises(
+        review_bot.ReviewError, match=r"no output text \(incomplete: max_output_tokens\)"
+    ):
+        review_bot._request_review("Title", "", _bundle(), "Review policy", "Repository policy")
+
+
+def test_request_review_ignores_non_object_incomplete_details(monkeypatch):
+    monkeypatch.setenv("DATABRICKS_HOST", "https://example.databricks.com")
+    monkeypatch.setenv("UG_REVIEW_MODEL", "system.ai.gpt")
+    monkeypatch.setattr(review_bot, "_oauth_access_token", lambda host: "access-token")
+    payload = {"status": "incomplete", "incomplete_details": "max_output_tokens", "output": []}
+    monkeypatch.setattr(
+        review_bot.urllib.request,
+        "urlopen",
+        lambda request, timeout: BytesIO(json.dumps(payload).encode()),
+    )
+
+    with pytest.raises(review_bot.ReviewError, match=r"no output text\.$"):
+        review_bot._request_review("Title", "", _bundle(), "Review policy", "Repository policy")
 
 
 def test_oauth_access_token_uses_service_principal_credentials(monkeypatch):

@@ -6,8 +6,9 @@ It reuses the session, terminal, file-task, and transcript helpers in `utils/`.
 Its Claude/Codex evidence helpers keep scenario-specific assertions separate from shared mechanics.
 Workspace config/catalog reads use its base class's Databricks SDK client. Configuration
 is read-only and checked for changes at teardown; concurrent readers need no reservation.
-CUJ2 adds three separately collected cases for exact MPS/MCP configuration, Codex inference,
-and Claude inference.
+CUJ2 adds three separately collected cases for exact published MPS/MCP configuration, Codex
+inference, and Claude inference. The config equality also accounts for the workspace's fixture
+skill name as data; skill download and invocation are not covered.
 
 The dedicated smart-routing CUJ in `../e2e_cuj/test_cuj_smart_routing.py` leaves the original
 managed-default and explicit-model cases unchanged. One additional test runs the four supported
@@ -52,7 +53,7 @@ does not yet assert live `recommendModel` request counts for configs with and wi
 
 ## Dedicated-workspace CUJ5
 
-[`../e2e_cuj/test_ug_budget_defaults.py`](../e2e_cuj/test_ug_budget_defaults.py) runs
+[`../e2e_cuj/test_cuj5_budget_defaults.py`](../e2e_cuj/test_cuj5_budget_defaults.py) runs
 three budget cases in the shared `E2E CUJs` job against the fixed 1% tier. The above-tier
 cases use `UG_CUJ_SP_CLIENT_ID` / `UG_CUJ_SP_CLIENT_SECRET`; the below-tier case uses
 `UG_BUDGET_CUJ_SP_CLIENT_ID` / `UG_BUDGET_CUJ_SP_CLIENT_SECRET`.

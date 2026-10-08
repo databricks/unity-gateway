@@ -1,5 +1,9 @@
 # Dedicated-workspace CUJs
 
+Name CUJ files `test_cuj<N>_<topic>.py` and give each a module-level
+`CUJ_NAME = "CUJ <N> · <topic>"`. CI discovers every file and runs it on its own runner
+as `E2E CUJs · <CUJ_NAME>`.
+
 Each CUJ owns a separate workspace. Subclass `BaseCujTest` from `base.py` and set
 `WORKSPACE_URL`. Setup provides `self.workspace`, a Databricks SDK client using
 `UG_CUJ_SP_CLIENT_ID` and `UG_CUJ_SP_CLIENT_SECRET` with OAuth M2M authentication.
@@ -47,6 +51,9 @@ In `helpers/evidence.py`, `ClaudeCujHelper` and `CodexCujHelper` implement
 
 Model evidence combines observed gateway requests/responses with native completed-turn
 records; neither routing banners nor native records alone prove an applied decision.
+`assert_models` checks a canonical native model set and `assert_served` a paired HTTP 200.
+`Workspace.agent_configs` splits a published config by agent.
+`helpers/mcp.py` names the dashed server a managed MCP service registers as.
 
 `test_cuj2_mps_mcp.py` runs three independently collected cases against a permanently
 preconfigured workspace: configuration, Codex inference, and Claude inference. `test_cuj2_skills.py`
@@ -54,9 +61,10 @@ adds the named-skill cases against the same workspace. Each case
 reads and validates the exact two-agent MPS/MCP shape. No case creates, updates, deletes,
 or restores CodingAgentConfig. The fixture's final read-only equality check is the only
 workspace mutation guard. The test uses the shared `UserSession`, `Workspace`, and
-`TuiRequestRecorder`, `AgentTerminal`, and integration transcript readers directly. The
-configuration case verifies the selected sandbox service and generated MCP listings; live
-`run_code` execution remains deferred because MAS cannot downscope the CI service principal.
+`TuiRequestRecorder`, `AgentTerminal` (via `helpers/terminal.py`), and integration
+transcript readers directly. The configuration case verifies the selected sandbox service
+and generated MCP listings; live `run_code` execution remains deferred because MAS cannot
+downscope the CI service principal.
 
 Use a clean disposable POSIX runner without existing machine-wide agent settings.
 Install the intended versions of `ug`, `claude`, `codex`, and `databricks` on PATH.

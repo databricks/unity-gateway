@@ -61,7 +61,9 @@ def test_managed_fixture_codex_mcp_written_to_managed_file(live_session, workspa
     with ConfigureTerminal(session, "codex", command, "managed-mcp-file-codex") as configure:
         configure.finish(timeout=300)
 
-    managed = tomllib.loads(session.run(CODEX_MANAGED_CONFIG_PATH, binary="cat", timeout=30).stdout)
+    managed = tomllib.loads(
+        session.run(CODEX_MANAGED_CONFIG_PATH, binary=session.which("cat"), timeout=30).stdout
+    )
     servers = managed.get("mcp_servers") or {}
     entries = {name: entry for name, entry in servers.items() if "github" in name.lower()}
     assert entries, managed
@@ -99,7 +101,9 @@ def test_managed_fixture_codex_http_headers_in_managed_file(live_session, worksp
     with ConfigureTerminal(session, "codex", command, "managed-http-headers-codex") as configure:
         configure.finish(timeout=300)
 
-    managed = tomllib.loads(session.run(CODEX_MANAGED_CONFIG_PATH, binary="cat", timeout=30).stdout)
+    managed = tomllib.loads(
+        session.run(CODEX_MANAGED_CONFIG_PATH, binary=session.which("cat"), timeout=30).stdout
+    )
     provider = (managed.get("model_providers") or {}).get("Databricks") or {}
     headers = provider.get("http_headers") or {}
     assert managed_header_key in headers, (

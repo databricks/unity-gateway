@@ -6,9 +6,9 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
 
-from tests.integration.utils.evidence import read_jsonl
+from tests.integration.utils.evidence import FileTask, read_jsonl
 
-from .constants import CLAUDE, CODEX
+from .constants import CLAUDE, CODEX, NATIVE_MODEL_ALIASES
 
 
 def canonical_model(value):
@@ -22,6 +22,33 @@ def canonical_model(value):
     # gateway model identifier uses a hyphen (`system.ai.gpt-5-6-sol`).
     value = re.sub(r"^(gpt-\d+)\.(\d+)", r"\1-\2", value)
     return "system.ai." + value
+
+
+def assert_models(models, expected):
+    """Every canonical model equals `expected`; not for UC models, which canonical_model mangles."""
+    actual = {NATIVE_MODEL_ALIASES.get(model, model) for model in map(canonical_model, models)}
+    assert actual == {canonical_model(expected)}, (models, expected)
+
+
+def assert_served(recorder, request, model):
+    """The request asked for `model` and its paired response was a non-empty HTTP 200."""
+    assert request.payload["model"] == model, request.payload
+    response = recorder.response_for(request, timeout=240)
+    assert response.status_code == 200, {
+        "status": response.status_code,
+        "model": request.payload["model"],
+        "output_config": request.payload.get("output_config"),
+    }
+    assert response.body, "Inference response was empty"
+
+
+def claude_file_task(session):
+    """A FileTask naming its absolute path, so Claude reads it without a `find` permission prompt."""
+    task = FileTask(session)
+    task.prompt = (
+        f"Use the Read tool to read {session.cwd / task.filename}. Reply with only its contents."
+    )
+    return task
 
 
 def message_text(content):
@@ -196,6 +223,11 @@ class SessionEvidence:
                 found.append(turn)
         assert len(found) <= 1, "Task matched multiple sessions"
         return found[0] if found else None
+
+    def assert_models(self, task, expected):
+        turn = self.completed(task)
+        assert turn is not None, f"No completed native turn matched {task.prompt!r}"
+        assert_models(turn.models, expected)
 
     def observe(self, task):
         return SessionObservation(helper=self.helper, turn=self.completed(task))

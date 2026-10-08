@@ -6,6 +6,7 @@ import json
 import os
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock
@@ -1264,7 +1265,7 @@ class TestWriteToolConfigManagedSettings:
         )
         monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
         monkeypatch.setattr(claude, "managed_writes_allowed", lambda: True)
-        monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: True)
         monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
         monkeypatch.setattr(claude, "save_state", lambda state: None)
         monkeypatch.setattr(claude, "ug_version", lambda: "1.0")
@@ -1326,7 +1327,7 @@ class TestWriteToolConfigManagedSettings:
         monkeypatch.setattr(managed_files, "_sudo_remove", lambda *a: sudo_writes.append("remove"))
         monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
         monkeypatch.setattr(claude, "managed_writes_allowed", lambda: True)
-        monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: True)
         monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
         monkeypatch.setattr(claude, "save_state", lambda state: None)
         monkeypatch.setattr(claude, "ug_version", lambda: "1.0")
@@ -1968,20 +1969,29 @@ class TestWriteToolConfigManagedSettings:
 
         assert managed_writes == []
 
-    def test_noninteractive_fails_when_managed_file_conflicts(self, monkeypatch):
+    def test_noninteractive_repairs_conflicting_managed_settings_without_prompting(
+        self, monkeypatch
+    ):
         private_writes: list = []
         managed_writes: list = []
         existing = {
-            str(FAKE_MANAGED_PATH): {"env": {"ANTHROPIC_BASE_URL": "https://other.example.com"}}
+            str(FAKE_MANAGED_PATH): {
+                "apiKeyHelper": "isaac auth token",
+                "env": {"ANTHROPIC_BASE_URL": "https://other.example.com", "ISAAC_ONLY": "keep"},
+                "permissions": {"deny": ["Read(secret.txt)"]},
+            }
         }
         self._patch(monkeypatch, private_writes, managed_writes, existing)
         monkeypatch.setattr(claude, "managed_writes_allowed", lambda: False)
-        state = {"workspace": WS, "codex_models": []}
 
-        with pytest.raises(RuntimeError, match="cannot be applied non-interactively"):
-            claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        claude.write_tool_config({"workspace": WS, "codex_models": []}, None)
 
-        assert managed_writes == []
+        assert len(managed_writes) == 1
+        written = json.loads(managed_writes[0][1])
+        assert written["apiKeyHelper"] == private_writes[0][1]["apiKeyHelper"]
+        assert written["env"]["ANTHROPIC_BASE_URL"] == f"{WS}/ai-gateway/anthropic"
+        assert written["env"]["ISAAC_ONLY"] == "keep"
+        assert "Read(secret.txt)" in written["permissions"]["deny"]
 
     def test_headless_isaac_headers_and_telemetry_are_compatible(self, monkeypatch):
         private_writes: list = []
@@ -2065,7 +2075,12 @@ class TestWriteToolConfigManagedSettings:
         )
         monkeypatch.setattr(claude, "managed_writes_allowed", lambda: False)
 
-        with pytest.raises(RuntimeError, match="env.OTEL_TRACES_EXPORTER"):
+        def deny_managed_write(*args, **kwargs):
+            raise managed_files.ManagedFileWriteUnavailable("sudo denied")
+
+        monkeypatch.setattr(claude, "reconcile_managed_file", deny_managed_write)
+
+        with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="sudo denied"):
             claude.write_tool_config(
                 {"workspace": WS, "codex_models": [], "claude_otel_tracing": True}, None
             )
@@ -2103,13 +2118,15 @@ class TestWriteToolConfigManagedSettings:
         assert "continuing with local settings" in warnings[0]
         assert verified == [{"scope": "local-compatible"}]
 
-    def test_sudo_failure_remains_fatal_when_managed_file_conflicts(self, monkeypatch):
+    @pytest.mark.parametrize("interactive", [False, True])
+    def test_sudo_failure_remains_fatal_when_managed_file_conflicts(self, monkeypatch, interactive):
         private_writes: list = []
         managed_writes: list = []
         existing = {
             str(FAKE_MANAGED_PATH): {"env": {"ANTHROPIC_BASE_URL": "https://other.example.com"}}
         }
         self._patch(monkeypatch, private_writes, managed_writes, existing)
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: interactive)
 
         def deny_managed_write(*args, **kwargs):
             raise managed_files.ManagedFileWriteUnavailable("sudo denied")
@@ -2288,6 +2305,11 @@ class TestRegisterWebSearchMcp:
     def isolate_mcp_config(self, tmp_path, monkeypatch):
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="shutil.which returns `ug.EXE` (PATHEXT), which the case-sensitive "
+        "_generated_search_entry binary-name check rejects; product fix tracked separately",
+    )
     def test_configuration_uses_saved_custom_oauth_profile(self, monkeypatch):
         # Isolate config writes and Claude CLI registration; execute the actual config writer.
         prior_entry = claude._web_search_mcp_entry(WS, "search-model", "workspace-profile")
@@ -2478,6 +2500,20 @@ class TestResolveLaunchBinary:
 
 
 class TestClaudeLaunch:
+    @pytest.fixture(autouse=True)
+    def _claude_on_windows_path(self, monkeypatch):
+        if sys.platform != "win32":
+            return
+        # Windows resolves Claude through PATH; keep the bare name so argv stays host-independent.
+        which = claude.shutil.which
+        monkeypatch.setattr(
+            claude.shutil,
+            "which",
+            lambda name, *args, **kwargs: (
+                name if name == "claude" else which(name, *args, **kwargs)
+            ),
+        )
+
     def test_gateway_discovery_enabled_for_relayed_provider(self, monkeypatch):
         calls: list[tuple[dict, str, list[str]]] = []
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")

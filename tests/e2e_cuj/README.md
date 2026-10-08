@@ -38,13 +38,12 @@ workspace configuration remains read-only. Each case cleans up with public `ug r
 the next case configures, including after failures. Set `UG_CUJ_SP_CLIENT_ID` and
 `UG_CUJ_SP_CLIENT_SECRET` before a live run.
 
-CI discovers these tests through the shared `dedicated-cuj` job, which installs both
-pinned agents. No catalog-specific workflow or workspace secret is needed. Locally,
+CI discovers each test file and runs it on its own runner with both pinned agents. No catalog-specific workflow or workspace secret is needed. Locally,
 install ug, both agents, and the Databricks CLI on a clean POSIX host, then run:
 
 ```bash
 uv run --with pexpect==4.9.0 --with pyte==0.8.2 pytest \
-  --confcutdir=tests/e2e_cuj tests/e2e_cuj/test_catalog_discovery.py -v
+  --confcutdir=tests/e2e_cuj tests/e2e_cuj/test_cuj3_models.py -v
 ```
 
 MCP/skills discovery remains separate.
