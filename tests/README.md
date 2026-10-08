@@ -101,6 +101,11 @@ orchestrator hooks and that saved user hooks stay in their original config for
 Codex to load. Both smart-routing launch modes enable Codex hooks. These checks
 do not establish native hook execution or merging.
 
+`test_claude_recipe_payload.py` covers the draft Claude body helpers: routing off
+writes `DISABLED`, routing back on restores the configured recipe, and unrelated
+settings and independent session files are preserved. Automatic launch/toggle
+wiring and native request propagation remain untested and are not enabled.
+
 Claude picker composition is checked directly through the catalog and renderer functions in
 `test_agent_claude.py`; focused CLI cases cover source selection and launch precedence.
 Explicit Claude/GPT `--model` regressions in `test_cli.py` exercise the real launcher

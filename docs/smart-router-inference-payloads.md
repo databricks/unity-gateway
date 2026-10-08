@@ -26,10 +26,12 @@ differently tagged text is not a routing-state marker.
 
 ## Claude Code structured body draft
 
-The stacked Claude Code draft provides helpers that merge the same
-`smart_router_recipe_name` value into the JSON object stored in
-`CLAUDE_CODE_EXTRA_BODY`. Existing body fields, environment variables, and unrelated settings are
-preserved. Malformed existing JSON is left untouched.
+The stacked Claude Code draft provides helpers that merge `smart_router_recipe_name` into the
+JSON object stored in `CLAUDE_CODE_EXTRA_BODY`. When routing is on, the value comes from
+`SMART_ROUTER_NAME` (default `task_v3`). Turning routing off writes
+`{"smart_router_recipe_name":"DISABLED"}`, replacing any previous recipe. Turning routing back
+on restores the configured recipe. Existing body fields, environment variables, and unrelated
+settings are preserved. Malformed existing JSON is left untouched.
 
 The atomic update helper accepts only an explicit path to an existing, session-owned watched
 settings file. It does not discover or write shared user settings, OS-managed settings, or an

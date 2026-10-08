@@ -62,7 +62,7 @@ def merge_claude_recipe_extra_body(
 
     updated_body = {
         **extra_body,
-        **smart_router_recipe_payload(enabled, env),
+        SMART_ROUTER_RECIPE_FIELD: configured_router_name(env) if enabled else "DISABLED",
     }
     updated_env = {
         **settings_env,

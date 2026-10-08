@@ -41,6 +41,24 @@ def test_extra_body_merge_preserves_unrelated_settings_and_json_escaping():
     }
 
 
+@pytest.mark.parametrize("env", [{}, {"SMART_ROUTER_NAME": "custom-v4"}])
+def test_disabled_extra_body_overrides_previous_recipe_and_preserves_other_fields(env):
+    settings = {
+        "env": {
+            CLAUDE_CODE_EXTRA_BODY_ENV_VAR: json.dumps(
+                {"smart_router_recipe_name": "previous-recipe", "caller_field": "keep"}
+            ),
+        },
+    }
+
+    assert merge_claude_recipe_extra_body(settings, False, env)
+
+    assert _extra_body(settings) == {
+        "smart_router_recipe_name": "DISABLED",
+        "caller_field": "keep",
+    }
+
+
 @pytest.mark.parametrize(
     "malformed",
     ["{not-json", "[]", 123],
@@ -72,7 +90,7 @@ def test_atomic_session_update_supports_on_off_on_and_preserves_settings(tmp_pat
         encoding="utf-8",
     )
 
-    expected = ["task_v3", None, "custom-v4"]
+    expected = ["task_v3", "DISABLED", "custom-v4"]
     controls = [
         (True, {}),
         (False, {}),
@@ -99,7 +117,7 @@ def test_independent_session_files_do_not_share_recipe_state(tmp_path):
     assert update_claude_session_recipe(first, False, {})
 
     assert _extra_body(json.loads(first.read_text(encoding="utf-8"))) == {
-        "smart_router_recipe_name": None
+        "smart_router_recipe_name": "DISABLED"
     }
     assert json.loads(second.read_text(encoding="utf-8")) == original
 
