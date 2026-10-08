@@ -246,6 +246,44 @@ is enabled, ug warns and falls back to subagent routing because the first-prompt
 wrapper requires a Unix terminal.
 The generated shell hooks expect Git Bash; PowerShell-only setups are not covered.
 
+### Smart Router Orchestrator
+
+Smart-routed Claude and Codex sessions install `smart-router`. Set
+`ENABLE_SMART_ROUTER_ORCHESTRATOR=1` at launch to also install and activate Smart Router
+Orchestrator through the bundled `smart-router-orchestrator` skill; orchestration is off by
+default. For example:
+
+```bash
+ENABLE_SMART_ROUTER_ORCHESTRATOR=1 ENABLE_SMART_ROUTING_SUBAGENT_ONLY=1 ug claude
+```
+
+Use `ug codex` in the same command for Codex. Smart Router Orchestrator assigns bounded work
+to explorer, researcher, worker, tester, and reviewer roles while the root plans,
+integrates, and verifies results. Easy tasks and explicit requests not to delegate
+stay in the root.
+
+Claude and Codex routing panels add `[orchestrator on]` to the `Subagent` line
+only when orchestration is active. When it is off, they show the normal subagent
+name. The label reports the session mode; it does not identify whether a particular
+delegation came from the workflow or an explicit user request.
+
+Once opted in, orchestration follows the existing smart-routing launch eligibility
+and session controls. Turning Smart Router off through its skill stops new automatic delegation;
+turning it on restores orchestration only in opted-in sessions. Explicit user
+requests for subagents still use normal harness behavior while routing is off.
+Stored skill files do not activate orchestration when the feature flag is unset or
+`ENABLE_SMART_ROUTER_ORCHESTRATOR=0`, or in non-routed sessions. Existing Isaac pilot gating
+and UG launch exclusions still apply.
+
+Hooks refresh orchestration state before each prompt and after compaction. A
+state change made outside the conversation is observed at the next hook; model
+routing still checks the controls for each subagent.
+
+UG supplies its own hooks; Codex combines them with existing hooks and applies
+project trust. Smart routing selects subagent models; separate role-model
+preferences are ignored and their files are left untouched. See the bundled
+[Smart Router Orchestrator documentation](skills/smart-router-orchestrator/README.md) for details.
+
 ## Managed Files
 
 `ug` backs up files before overwriting them. `ug revert` restores backups.

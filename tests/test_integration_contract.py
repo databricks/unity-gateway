@@ -54,6 +54,19 @@ def test_managed_integration_ci_is_blocking():
     ) in gate
 
 
+def test_dedicated_cuj_ci_discovers_the_whole_folder():
+    workflow = (Path(__file__).parent.parent / ".github/workflows/integration.yml").read_text()
+    job = workflow.split("\n  dedicated-cuj:\n", 1)[1].split("\n  cujs:\n", 1)[0]
+    gate = workflow.split("\n  cujs:\n", 1)[1]
+
+    assert "docs.google.com/document/d/1WKd1fdWD0Y4tAV1H9Si-SGx2UZFL7iZ2S3HtBjidmS0" in job
+    assert "pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj" in job
+    assert "find tests/e2e_cuj -name 'test_*.py'" in job
+    assert "UG_CUJ1_WORKSPACE: ${{ secrets.UG_CUJ1_WORKSPACE }}" in job
+    assert "test_cuj_" not in job
+    assert 'result["result"] != "success"' in gate
+
+
 def test_windows_integration_ci_uses_shared_claude_version():
     workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
     contents = workflow.read_text()
@@ -62,37 +75,40 @@ def test_windows_integration_ci_uses_shared_claude_version():
     assert contents.count('"--claude-version", $env:CLAUDE_VERSION,') == 2
 
 
-@pytest.mark.parametrize("suite", ["full", "live", "smoke", "tui", "installation"])
-@pytest.mark.parametrize("managed_result", ["success", "failure", "cancelled", "skipped"])
-def test_integration_ci_gate_requires_selected_managed_jobs(suite, managed_result):
+@pytest.mark.parametrize(
+    "failed_job", ["installation", "workspace", "smoke", "full", "managed", "dedicated-cuj"]
+)
+@pytest.mark.parametrize("job_result", ["success", "failure", "cancelled", "skipped"])
+def test_integration_ci_gate_requires_every_job(failed_job, job_result):
     workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
     gate = workflow.read_text().split("\n  cujs:\n", 1)[1]
     script = re.search(r"          python3 - <<'PY'\n(.*?)          PY", gate, re.DOTALL)
     assert script is not None
     results = {
         job: {"result": "success"}
-        for job in ("installation", "workspace", "smoke", "full", "managed")
+        for job in (
+            "installation",
+            "workspace",
+            "smoke",
+            "full",
+            "managed",
+            "dedicated-cuj",
+        )
     }
-    results["managed"]["result"] = managed_result
-    for job in {
-        "installation": ("workspace", "smoke", "full"),
-        "smoke": ("full",),
-        "tui": ("smoke",),
-    }.get(suite, ()):
-        results[job]["result"] = "skipped"
+    results[failed_job]["result"] = job_result
     result = subprocess.run(
         [sys.executable, "-c", textwrap.dedent(script.group(1))],
-        env={"RESULTS": json.dumps(results), "SUITE": suite},
+        env={"RESULTS": json.dumps(results)},
         capture_output=True,
         text=True,
         timeout=10,
     )
-    if suite in {"full", "live"} and managed_result != "success":
-        assert result.returncode != 0
-        assert "Integration jobs did not pass: managed" in result.stderr
-    else:
+    if job_result == "success":
         assert result.returncode == 0, result.stderr
-        assert "All selected integration jobs passed:" in result.stdout
+        assert "All integration jobs passed:" in result.stdout
+    else:
+        assert result.returncode != 0
+        assert f"Integration jobs did not pass: {failed_job}" in result.stderr
 
 
 def test_integration_suite_uses_only_public_process_boundaries():
@@ -145,7 +161,7 @@ def test_live_integration_cases_belong_to_exactly_one_ci_agent():
         for node in tree.body:
             if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
                 marks = module_marks | _markers(node.decorator_list)
-                if marks & {"live", "managed", "workspace_switch"}:
+                if marks & {"live", "managed_fixture", "workspace_switch"}:
                     assert len(marks & {"claude", "codex", "opencode"}) == 1, node.name
 
 
@@ -182,7 +198,7 @@ def test_model_discovery_cases_match_current_launch_contract():
             seen.append(case)
             marks = module_marks | _markers(node.decorator_list)
             expected = {"managed_fixture"} if case <= 6 else {"live"}
-            assert marks & {"managed_fixture", "managed", "live"} == expected, node.name
+            assert marks & {"managed_fixture", "live"} == expected, node.name
             assert marks & {"claude", "codex"} == ({"claude"} if case % 2 else {"codex"}), node.name
             assert not any(arg.arg == "configured" for arg in node.args.args), node.name
             for value in ast.walk(node):

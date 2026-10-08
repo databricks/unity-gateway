@@ -748,10 +748,6 @@ class TestManagedFileLifecycle:
         snapshots = managed_files.managed_file_snapshots("claude", json.loads)
         assert snapshots.original_before_ug == {"enterprise": True}
         assert snapshots.last_applied_by_ug == {"enterprise": True, "ucode": True}
-        assert snapshots.owned_paths == [["ucode"]]
-
-    def test_snapshots_without_a_record_report_no_owned_paths(self, backup_dir):
-        assert managed_files.managed_file_snapshots("claude", json.loads).owned_paths is None
 
     def test_batch_messages_name_all_agents_once(self, tmp_path, backup_dir, monkeypatch):
         notes: list[str] = []
@@ -842,6 +838,75 @@ class TestManagedFileLifecycle:
 
         assert result == "written"
         assert json.loads(path.read_text()) == {"a": 2}
+
+    def test_user_agent_version_only_difference_is_unchanged_without_write(
+        self, tmp_path, backup_dir, monkeypatch
+    ):
+        path = tmp_path / "managed.json"
+        path.write_text('{"User-Agent": "ucode/1.0 claude/2.1.288", "a": 1}\n', encoding="utf-8")
+        monkeypatch.setattr(
+            managed_files, "_sudo_replace", lambda *args: pytest.fail("must not write")
+        )
+
+        result = managed_files.reconcile_managed_file(
+            path,
+            '{"User-Agent": "ucode/1.1 claude/unknown", "a": 1}\n',
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[["User-Agent"], ["a"]],
+            parser=json.loads,
+        )
+
+        assert result == "unchanged"
+        assert path.read_text() == '{"User-Agent": "ucode/1.0 claude/2.1.288", "a": 1}\n'
+        assert not backup_dir.exists()
+
+    def test_user_agent_change_with_another_change_still_writes(
+        self, tmp_path, backup_dir, monkeypatch
+    ):
+        path = tmp_path / "managed.json"
+        path.write_text('{"User-Agent": "ucode/1.0 claude/2.1.288", "a": 1}\n', encoding="utf-8")
+        monkeypatch.setattr(
+            managed_files, "_sudo_replace", lambda t, text: t.write_text(text, encoding="utf-8")
+        )
+
+        result = managed_files.reconcile_managed_file(
+            path,
+            '{"User-Agent": "ucode/1.1 claude/2.1.289", "a": 2}\n',
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[["User-Agent"], ["a"]],
+            parser=json.loads,
+        )
+
+        assert result == "written"
+        assert json.loads(path.read_text()) == {"User-Agent": "ucode/1.1 claude/2.1.289", "a": 2}
+
+    def test_version_only_user_agent_difference_is_not_a_conflict(self):
+        existing = {"h": {"User-Agent": "ucode/1.0 codex/0.1"}, "a": 1}
+        desired = {"h": {"User-Agent": "ucode/1.1 codex/unknown"}, "a": 1}
+
+        assert managed_files.managed_file_conflicts(existing, desired, [["h"], ["a"]]) == []
+        assert managed_files.managed_file_conflicts(existing, {**desired, "a": 2}, [["a"]]) == ["a"]
+
+    @pytest.mark.parametrize(
+        ("value", "masked"),
+        [
+            ({"User-Agent": "ucode/0.1.0 claude/2.1.288"}, {"User-Agent": "ucode/* claude/*"}),
+            ({"user-agent": "ucode/0.1.0+abc codex/unknown"}, {"user-agent": "ucode/* codex/*"}),
+            (
+                {"h": "a: 1\nUser-Agent: ucode/1 claude/2\nb: 2"},
+                {"h": "a: 1\nUser-Agent: ucode/* claude/*\nb: 2"},
+            ),
+            ({"User-Agent": "admin-agent/9"}, {"User-Agent": "admin-agent/9"}),
+            # Outside a User-Agent header the same text is a real value and compares exactly.
+            ({"mcp": {"args": ["ucode/1 claude/2"]}}, {"mcp": {"args": ["ucode/1 claude/2"]}}),
+            ({"h": "X-Client: ucode/1 claude/2"}, {"h": "X-Client: ucode/1 claude/2"}),
+            ({"x": [True, 1]}, {"x": [True, 1]}),
+        ],
+    )
+    def test_mask_user_agent_versions_masks_only_ug_version_tokens(self, value, masked):
+        assert managed_files.mask_user_agent_versions(value) == masked
 
     def test_verified_check_uses_fingerprint(self, tmp_path):
         path = tmp_path / "managed.json"

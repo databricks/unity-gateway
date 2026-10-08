@@ -1,0 +1,19 @@
+{
+  "spec_version": 1,
+  "default_agent": "CODING_AGENT_CODEX",
+  "enabled_agents": [
+    {
+      "agent": "CODING_AGENT_CODEX",
+      "config": {
+        "models": {
+          "model_services": [
+            "system.ai.gpt-5-4-nano"
+          ]
+        },
+        "default_models": {
+          "default_model": "system.ai.gpt-5-4-nano"
+        }
+      }
+    }
+  ]
+}

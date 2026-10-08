@@ -5,6 +5,10 @@ import re
 import uuid
 from pathlib import Path
 
+from .agents import _evidence_id, claude, codex
+
+_AGENT_HELPERS = {"claude": claude, "codex": codex}
+
 
 def assert_no_terminal_api_error(screen: str) -> None:
     """Fail on definitive client errors, not an in-progress transient retry."""
@@ -37,39 +41,84 @@ def read_jsonl(path: Path) -> list[dict]:
 
 
 def agent_sessions(session, agent: str) -> dict[str, list[dict]]:
-    directory = session.home / (".claude/projects" if agent == "claude" else ".codex/sessions")
+    directory = session.home / _AGENT_HELPERS.get(agent, codex).SESSION_DIRECTORY
     return {
         str(path.relative_to(directory)): read_jsonl(path) for path in directory.rglob("*.jsonl")
     }
 
 
 def assistant_answers(agent: str, records: list[dict]) -> list[str]:
-    answers = []
+    helper = _AGENT_HELPERS.get(agent)
+    return helper.assistant_answers(records) if helper is not None else []
+
+
+def tool_outputs(agent: str, records: list[dict]) -> list[str]:
+    """Read native tool results even when their terminal output is collapsed."""
+    contents = []
     for record in records:
-        if agent == "claude" and record.get("type") == "assistant":
-            message = record.get("message", {})
-            if message.get("role") == "assistant":
-                answers.extend(
-                    part["text"]
-                    for part in message.get("content", [])
-                    if part.get("type") == "text" and isinstance(part.get("text"), str)
-                )
-        if agent == "codex" and record.get("type") == "event_msg":
+        if agent == "claude" and record.get("type") == "user":
+            contents.extend(
+                part.get("content")
+                for part in record.get("message", {}).get("content", [])
+                if isinstance(part, dict)
+                and part.get("type") == "tool_result"
+                and not part.get("is_error")
+            )
+        if agent == "codex" and record.get("type") == "response_item":
             payload = record.get("payload", {})
-            if payload.get("type") == "task_complete" and payload.get("last_agent_message"):
-                answers.append(payload["last_agent_message"])
-    return answers
+            if payload.get("type") in {"function_call_output", "custom_tool_call_output"}:
+                contents.append(payload.get("output"))
+
+    outputs = []
+    for content in contents:
+        if isinstance(content, str):
+            outputs.append(content)
+        elif isinstance(content, list):
+            outputs.extend(
+                part["text"]
+                for part in content
+                if isinstance(part, dict)
+                and part.get("type") in {"text", "input_text"}
+                and isinstance(part.get("text"), str)
+            )
+    return outputs
 
 
 def is_child_session(agent: str, path: str, records: list[dict]) -> bool:
-    if agent == "claude":
-        return "/subagents/" in path
-    return any(
-        record.get("type") == "session_meta"
-        and isinstance(record.get("payload", {}).get("source"), dict)
-        and "subagent" in record["payload"]["source"]
-        for record in records
+    return _AGENT_HELPERS.get(agent, codex).is_child_session(path, records)
+
+
+def completed_task_models(session, agent: str, answer_value: str) -> set[str]:
+    """Read parent task model evidence, not proof of the gateway's destination."""
+    assert agent in _AGENT_HELPERS, f"Unsupported evidence agent: {agent}"
+    adapter = _AGENT_HELPERS[agent]
+    assert isinstance(answer_value, str) and answer_value.strip(), (
+        "Expected a nonempty answer value"
     )
+    sessions = agent_sessions(session, agent)
+    session.record("agent-sessions.json", sessions)
+    return {
+        model
+        for path, records in sessions.items()
+        if not is_child_session(agent, path, records)
+        for model in adapter.completed_task_models(records, answer_value)
+    }
+
+
+def assert_completed_task_model(session, agent: str, answer_value: str, expected: str) -> None:
+    expected = _evidence_id(expected, "expected model")
+    observed = completed_task_models(session, agent, answer_value)
+    adapter = _AGENT_HELPERS[agent]
+    session.record(
+        f"completed-task-model-{agent}-{answer_value[:12]}.json",
+        {
+            "expected": expected,
+            "observed": sorted(observed),
+            "evidence_kind": adapter.EVIDENCE_KIND,
+            "gateway_destination_proven": False,
+        },
+    )
+    assert observed == {expected}, {"expected": expected, "observed": sorted(observed)}
 
 
 def assistant_answer_contains(session, agent: str, value: str, *, child: bool = False) -> bool:
