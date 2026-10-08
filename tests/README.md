@@ -37,6 +37,8 @@ binary output. `test_launcher.py` covers terminal handoff and exit status.
 Ruff rejects direct subprocess launches outside `os_compatibility/subprocess_cross_os.py` and tests.
 Claude's native resolver tests remain in
 `test_agent_claude.py`; installation failures are covered in `test_agents_init.py`.
+Version-floor component tests reject Claude versions below 2.1.290 and accept the
+minimum and newer versions; unknown-version handling remains unchanged.
 These are component checks, not live Windows coverage for every agent.
 
 Agent configuration tests also verify `ug` auth/MCP helper commands, including
