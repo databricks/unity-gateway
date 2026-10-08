@@ -248,14 +248,27 @@ The generated shell hooks expect Git Bash; PowerShell-only setups are not covere
 
 ### Smart Router Orchestrator
 
-Smart-routed Claude and Codex sessions install `smart-router`. Set
-`ENABLE_SMART_ROUTER_ORCHESTRATOR=1` at launch to also install and activate Smart Router
-Orchestrator through the bundled `smart-router-orchestrator` skill; orchestration is off by
-default. For example:
+Use `SMART_ROUTING_CONFIG_VERSION` at launch to select a smart-routing configuration:
+
+| Version | Subagent routing | First-prompt routing | Orchestrator |
+| --- | --- | --- | --- |
+| `subagent_only` | On | Off | Off |
+| `subagent_orch` | On | Off | On |
+
+Smart-routed Claude and Codex sessions install `smart-router`. The `subagent_orch`
+version also installs and activates the bundled `smart-router-orchestrator` skill.
+For example:
 
 ```bash
-ENABLE_SMART_ROUTER_ORCHESTRATOR=1 ENABLE_SMART_ROUTING_SUBAGENT_ONLY=1 ug claude
+SMART_ROUTING_CONFIG_VERSION=subagent_orch ug claude
 ```
+
+The version takes precedence over conflicting legacy flags. UG expands it into
+`ENABLE_SMART_ROUTING_V2`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY`, and
+`ENABLE_SMART_ROUTER_ORCHESTRATOR` for the launched session. When the version is
+unset or empty, these legacy flags retain their existing behavior, including
+first-prompt routing through `ENABLE_SMART_ROUTING_V2=1`. Unknown versions produce
+an error listing the supported values. Orchestration remains off by default.
 
 Use `ug codex` in the same command for Codex. Smart Router Orchestrator assigns bounded work
 to explorer, researcher, worker, tester, and reviewer roles while the root plans,
@@ -271,8 +284,8 @@ Once opted in, orchestration follows the existing smart-routing launch eligibili
 and session controls. Turning Smart Router off through its skill stops new automatic delegation;
 turning it on restores orchestration only in opted-in sessions. Explicit user
 requests for subagents still use normal harness behavior while routing is off.
-Stored skill files do not activate orchestration when the feature flag is unset or
-`ENABLE_SMART_ROUTER_ORCHESTRATOR=0`, or in non-routed sessions. Existing Isaac pilot gating
+Stored skill files do not activate orchestration without an opted-in configuration,
+or in non-routed sessions. Existing Isaac pilot gating
 and UG launch exclusions still apply.
 
 Hooks refresh orchestration state before each prompt and after compaction. A

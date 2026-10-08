@@ -2287,10 +2287,15 @@ CAN_USE_CACHED_CONFIG_AGENTS = frozenset({"claude", "codex"})
 @contextmanager
 def _smart_routing_v2_flag(enabled: bool | None) -> Iterator[None]:
     """Apply an explicit routing choice without leaking into an embedding process."""
-    if enabled is None:
-        yield
-        return
-    previous = smart_routing_v2.override_smart_routing(enabled)
+    try:
+        previous = (
+            smart_routing_v2.apply_config()
+            if enabled is None
+            else smart_routing_v2.override_smart_routing(enabled)
+        )
+    except RuntimeError as exc:
+        print_err(str(exc))
+        raise typer.Exit(1) from None
     try:
         yield
     finally:
@@ -3031,9 +3036,10 @@ def default(
         return
     set_dry_run(dry_run)
     try:
-        _launch_managed_default(
-            ctx, dry_run=dry_run, skip_preflight=skip_preflight, workspace=workspace
-        )
+        with _smart_routing_v2_flag(None):
+            _launch_managed_default(
+                ctx, dry_run=dry_run, skip_preflight=skip_preflight, workspace=workspace
+            )
     except typer.Exit:
         # `typer.Exit` subclasses RuntimeError, so it has to be re-raised ahead of the handler
         # below. Otherwise a launch that already reported its own error is followed by

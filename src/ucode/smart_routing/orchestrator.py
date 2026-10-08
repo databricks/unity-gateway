@@ -14,6 +14,7 @@ from pathlib import Path
 
 from ucode import skills
 from ucode.constants import ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR
+from ucode.smart_routing.config import resolve_environment
 from ucode.smart_routing.hooks import sync_managed_hooks
 from ucode.smart_routing.session_env import effective_environment, session_env_path
 
@@ -27,7 +28,7 @@ DISABLED_CONTEXT = (
 
 
 def feature_enabled(env: Mapping[str, str] | None = None) -> bool:
-    source = os.environ if env is None else env
+    source = resolve_environment(env)
     return source.get(ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR) == "1"
 
 

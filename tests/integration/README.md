@@ -303,6 +303,11 @@ role-contract preservation, and isolation from legacy preference files
 lack dedicated regression coverage. Codex's native hook merging, project trust,
 and execution of pre-existing hooks are not exercised by this integration suite.
 
+The unit/component `../test_smart_routing_config.py` covers selector resolution and legacy
+precedence, process-local environment restoration, native-subcommand suppression, and
+orchestrator off-to-on transitions through real temporary session files. It does not claim
+live agent, hook, or gateway coverage.
+
 The portable `../test_claude_windows_smart_routing.py` checks the Windows
 subagent-only fallback without Unix imports. Native Windows TUI and hook execution
 remain outside this integration suite.
