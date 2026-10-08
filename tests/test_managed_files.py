@@ -1139,3 +1139,23 @@ def test_sudo_command_refuses_noninteractive_execution(monkeypatch):
 
     with pytest.raises(RuntimeError, match="Refusing to invoke sudo"):
         managed_files._sudo_command("cp", "a", "b")
+
+
+class TestReconcileManagedFileDryRun:
+    def test_dry_run_preview_preserves_toml_section_headers(self, tmp_path, capsys):
+        # The OS-managed (via-sudo) preview routes through the same helper, so Codex
+        # managed_config.toml section headers must survive here too.
+        config_io.set_dry_run(True)
+        desired = '[model_providers.Databricks]\nname = "Databricks AI Gateway"\n'
+        result = managed_files.reconcile_managed_file(
+            tmp_path / "managed_config.toml",
+            desired,
+            tool="codex",
+            display="Codex",
+            owned_paths=[],
+            parser=lambda _text: {},
+        )
+        out = capsys.readouterr().out
+        assert result == "written"
+        assert "[model_providers.Databricks]" in out
+        assert "(via sudo)" in out

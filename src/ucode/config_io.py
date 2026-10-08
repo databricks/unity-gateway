@@ -1,4 +1,4 @@
-"""File I/O, dry-run flag, backup/restore, deep-merge, dotenv parsing."""
+"""File I/O, dry-run flag and preview, backup/restore, deep-merge, dotenv parsing."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from typing import TypedDict, cast
 
 import tomlkit
 import tomlkit.exceptions
+from rich.markup import escape
 
 from ucode.ui import console
 
@@ -92,9 +93,30 @@ def restore_file(config_path: Path, backup_path: Path, managed: bool) -> bool:
         raise RuntimeError(f"Failed to restore config at {config_path}") from exc
 
 
+def dry_run_preview(path: Path, content: str, *, note: str = "") -> None:
+    """Print a ``--dry-run`` file preview: a bold header line, then the content.
+
+    Printed with markup, word-wrap, and emoji disabled so bracketed text (TOML section
+    headers like ``[model_providers.Databricks]``, JSON arrays), long lines, and emoji
+    ``:shortcodes:`` are shown as-is rather than reinterpreted by Rich; the ``path`` is
+    escaped for the same reason. (Rich still normalizes exotic whitespace such as tabs and
+    CRLF, which ug's generated config files do not contain.) ``note`` appends to the header.
+    """
+    console.print(
+        f"\n[bold]\\[dry run] {escape(f'{path}{note}')}[/bold]", emoji=False, soft_wrap=True
+    )
+    console.print(
+        content,
+        markup=False,
+        soft_wrap=True,
+        emoji=False,
+        end="" if content.endswith("\n") else "\n",
+    )
+
+
 def write_text_file(path: Path, content: str) -> None:
     if _dry_run:
-        console.print(f"\n[bold]\\[dry run] {path}[/bold]\n{content}")
+        dry_run_preview(path, content)
         return
     ensure_parent_dir(path)
     try:
@@ -106,7 +128,7 @@ def write_text_file(path: Path, content: str) -> None:
 def write_json_file(path: Path, payload: dict) -> None:
     content = json.dumps(payload, indent=2) + "\n"
     if _dry_run:
-        console.print(f"\n[bold]\\[dry run] {path}[/bold]\n{content}")
+        dry_run_preview(path, content)
         return
     ensure_parent_dir(path)
     try:
@@ -217,7 +239,7 @@ def read_toml_safe(path: Path) -> tomlkit.TOMLDocument:
 def write_toml_file(path: Path, doc: tomlkit.TOMLDocument) -> None:
     content = tomlkit.dumps(doc)
     if _dry_run:
-        console.print(f"\n[bold]\\[dry run] {path}[/bold]\n{content}")
+        dry_run_preview(path, content)
         return
     ensure_parent_dir(path)
     try:

@@ -1053,3 +1053,19 @@ class TestGetModelRecommendation:
         )
         rec, _ = mc_mod.get_model_recommendation("https://w", "tok")
         assert rec is not None and rec["current_spend"] is None
+
+
+class TestSaveManagedStateDryRun:
+    def test_dry_run_preview_keeps_long_lines_unwrapped(self, monkeypatch, capsys):
+        # The managed-config preview must match the file: a long value must not be word-wrapped
+        # (soft_wrap), or the preview would show a different, broken file than ug writes.
+        # Pin the width so the long line would wrap without soft_wrap.
+        monkeypatch.setenv("COLUMNS", "80")
+        long_url = "https://ws.example.com/ai-gateway/codex/v1/a/deliberately/long/path/that/exceeds/eighty/columns"
+        config_io_mod.set_dry_run(True)
+        try:
+            mc_mod.save_managed_state("https://ws.example.com", {"base_url": long_url})
+        finally:
+            config_io_mod.set_dry_run(False)
+        out = capsys.readouterr().out
+        assert long_url in out  # intact on one line, not split by wrap-injected newlines

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 import tomlkit
@@ -186,6 +187,70 @@ class TestWriteHelpers:
         doc.add("key", "val")
         write_toml_file(p, doc)
         assert not p.exists()
+
+    def test_dry_run_preview_preserves_toml_section_headers(self, tmp_path, capsys):
+        # The dry-run preview must show file content verbatim. TOML section headers like
+        # `[model_providers.Databricks]` look like Rich markup tags; if the content is
+        # interpolated into a markup-enabled string they are silently dropped, so the
+        # preview no longer matches the file ug would write.
+        set_dry_run(True)
+        doc = tomlkit.parse('[model_providers.Databricks]\nname = "Databricks AI Gateway"\n')
+        write_toml_file(tmp_path / "config.toml", doc)
+        out = capsys.readouterr().out
+        assert "[model_providers.Databricks]" in out
+        assert "[dry run]" in out
+
+    def test_dry_run_preview_shows_text_brackets_verbatim(self, tmp_path, capsys):
+        # Any bracketed text (not just TOML headers) must survive, not just be eaten as a Rich tag.
+        set_dry_run(True)
+        write_text_file(tmp_path / "note.txt", "see [section] below")
+        out = capsys.readouterr().out
+        assert "[section]" in out
+
+    def test_dry_run_preview_is_faithful_including_long_lines_and_note(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        # The preview must match the file byte-for-content: section headers survive, long lines
+        # are not word-wrapped (soft_wrap), and the note is appended to the header.
+        # Pin the width so the long line would wrap without soft_wrap.
+        monkeypatch.setenv("COLUMNS", "80")
+        content = (
+            "[model_providers.Databricks]\n"
+            'base_url = "https://ws.example.com/ai-gateway/codex/v1/a/deliberately/long/path/that/exceeds/eighty/columns"\n'
+        )
+        config_io.dry_run_preview(tmp_path / "config.toml", content, note=" (via sudo)")
+        out = capsys.readouterr().out
+        assert "[model_providers.Databricks]" in out
+        assert "(via sudo)" in out
+        # The long line stays intact on one line (no wrap-injected newline splitting the URL).
+        assert (
+            'base_url = "https://ws.example.com/ai-gateway/codex/v1/a/deliberately/long/path/that/exceeds/eighty/columns"'
+            in out
+        )
+
+    def test_dry_run_preview_header_keeps_bracketed_path(self, capsys):
+        # The header interpolates the path; a bracketed directory must not be parsed as a Rich
+        # tag and dropped, or the preview names a different path than ug writes.
+        config_io.dry_run_preview(Path("/work/proj[v2]/config.toml"), "x = 1\n")
+        out = capsys.readouterr().out
+        assert "/work/proj[v2]/config.toml" in out
+
+    def test_dry_run_preview_does_not_substitute_emoji_shortcodes(self, capsys):
+        # markup=False still leaves emoji substitution on; `:warning:`/`:x:` in content must be
+        # shown literally so the preview matches the file verbatim.
+        config_io.dry_run_preview(Path("/t/c.toml"), 'v = "deploy :warning: :x:"\n')
+        out = capsys.readouterr().out
+        assert ":warning:" in out and ":x:" in out
+        assert "\u26a0" not in out and "\u274c" not in out
+
+    def test_dry_run_preview_has_exactly_one_trailing_newline(self, tmp_path, capsys):
+        # Guards the fidelity contract: the preview must not re-introduce the spurious trailing
+        # blank line that diverged save_managed_state's preview from the written file.
+        set_dry_run(True)
+        write_json_file(tmp_path / "s.json", {"a": 1})
+        out = capsys.readouterr().out
+        assert out.endswith("}\n")
+        assert not out.endswith("}\n\n")
 
     def test_write_dotenv(self, tmp_path):
         p = tmp_path / ".env"
