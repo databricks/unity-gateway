@@ -143,7 +143,8 @@ PowerShell execution.
 
 `test_smart_routing_config.py` is a 135-case Cartesian component oracle: all three legacy
 routing flags take unset, `0`, and `1`, while the selector takes unset or one of the four
-supported presets, including the customer first-prompt-and-subagent mode. It independently hardcodes each preset and asserts exact
+supported presets, including the customer first-prompt-and-subagent mode. It uses the named
+version constants but independently hardcodes each preset's settings and asserts exact
 `resolve_environment` and `apply_config` settings, true-unset omission, unrelated-key and
 input preservation, and valid-selector consumption. This file intentionally does not cover
 blank, whitespace-padded, unsuffixed, or unsupported selectors; import-time schema validation,

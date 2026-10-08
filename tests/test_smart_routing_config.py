@@ -13,22 +13,22 @@ from ucode.constants import (
 from ucode.smart_routing import config
 
 _EXPECTED_PRESETS = {
-    "first_prompt_and_subagent_no_orch_v0": {
+    config.FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
     },
-    "subagent_only_v0": {
+    config.SUBAGENT_ONLY_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
     },
-    "subagent_only_v1": {
+    config.SUBAGENT_ONLY_V1: {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
     },
-    "subagent_orch_v0": {
+    config.SUBAGENT_ORCH_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
@@ -43,10 +43,10 @@ _EXPECTED_PRESETS = {
     "SMART_ROUTER_CONFIG_VERSION",
     [
         None,
-        "first_prompt_and_subagent_no_orch_v0",
-        "subagent_only_v0",
-        "subagent_only_v1",
-        "subagent_orch_v0",
+        config.FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
+        config.SUBAGENT_ONLY_V0,
+        config.SUBAGENT_ONLY_V1,
+        config.SUBAGENT_ORCH_V0,
     ],
 )
 def test_smart_routing_config_cartesian_grid(

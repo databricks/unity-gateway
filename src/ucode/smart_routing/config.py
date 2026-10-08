@@ -13,23 +13,35 @@ from ucode.constants import (
     SMART_ROUTING_ENV_KEYS,
 )
 
+# Customer preset: route the first prompt and subagents, without orchestration.
+FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0 = "first_prompt_and_subagent_no_orch_v0"
+
+# Route only subagents, with V2 disabled and no orchestration.
+SUBAGENT_ONLY_V0 = "subagent_only_v0"
+
+# Route only subagents, with both V2 and subagent-only flags enabled; no orchestration.
+SUBAGENT_ONLY_V1 = "subagent_only_v1"
+
+# Route only subagents and inject the Smart Router Orchestrator workflow.
+SUBAGENT_ORCH_V0 = "subagent_orch_v0"
+
 _VERSIONS = {
-    "first_prompt_and_subagent_no_orch_v0": {
+    FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
     },
-    "subagent_only_v0": {
+    SUBAGENT_ONLY_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
     },
-    "subagent_only_v1": {
+    SUBAGENT_ONLY_V1: {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
     },
-    "subagent_orch_v0": {
+    SUBAGENT_ORCH_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
