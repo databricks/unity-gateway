@@ -5,7 +5,7 @@ import time
 import uuid
 
 import pytest
-from utils.constants import CODEX_PLATFORM_ARGS, CODEX_TEST_MODEL
+from utils.constants import CODEX_TEST_MODEL
 from utils.evidence import FileTask
 from utils.managed import (
     build_codex_agent_config,
@@ -24,6 +24,7 @@ def test_ug_codex_exports_trace_to_configured_table(live_session, workspace, tmp
     configured trace table contains a Codex span carrying the same marker.
     """
     session = live_session
+    session.choose_codex_windows_sandbox()
     bearer = session.env["DATABRICKS_BEARER"]
     table = resolve_trace_table(workspace, bearer)
     warehouse_id = os.environ.get("UG_INTEGRATION_WAREHOUSE_ID", "").strip()
@@ -48,7 +49,6 @@ def test_ug_codex_exports_trace_to_configured_table(live_session, workspace, tmp
         "--",
         "--config",
         f'otel.span_attributes.ug_integration_marker="{marker}"',
-        *CODEX_PLATFORM_ARGS,
         "exec",
         "--skip-git-repo-check",
         "--json",
