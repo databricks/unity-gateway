@@ -413,11 +413,12 @@ def route_claude_pre_tool_use(
             route.routed_model,
         )
     agent_name = claude_routing.SUBAGENT_NOTICE_CONFIG.name(route.tool_input) or "subagent"
-    orchestration = "on" if orchestrator.enabled() else "off"
+    if orchestrator.enabled():
+        agent_name += " [orchestrator on]"
     routing_message = claude_routing.SUBAGENT_NOTICE_CONFIG.message(
         route.decision,
         route.routed_model,
-        {**route.tool_input, "subagent_type": f"{agent_name} [orchestrator {orchestration}]"},
+        {**route.tool_input, "subagent_type": agent_name},
     )
     updated_input = {
         **{key: value for key, value in route.tool_input.items() if key != "model"},

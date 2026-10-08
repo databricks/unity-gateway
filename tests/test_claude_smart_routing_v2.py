@@ -666,7 +666,7 @@ class TestSubagentRouting:
         expected_message = (
             "\n┌───────────────────────────────────────────────────────────────────────────┐\n"
             "│ Using Unity Gateway Smart Router - Subagent                               │\n"
-            "│ Subagent : Explore [orchestrator off]                                     │\n"
+            "│ Subagent : Explore                                                        │\n"
             "│ Selected Model : system.ai.claude-opus-4-8                                │\n"
             "└───────────────────────────────────────────────────────────────────────────┘"
         )

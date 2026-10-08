@@ -187,7 +187,7 @@ def test_spawn_rewrite_preserves_original_input(monkeypatch):
     expected_message = (
         "\n┌───────────────────────────────────────────────────────────────────────────┐\n"
         "│ Using Unity Gateway Smart Router - Subagent                               │\n"
-        "│ Subagent : reviewer [orchestrator off]                                    │\n"
+        "│ Subagent : reviewer                                                       │\n"
         "│ Selected Model : gpt-5.5                                                  │\n"
         "│ Reason : Review needs deeper reasoning.                                   │\n"
         "└───────────────────────────────────────────────────────────────────────────┘"

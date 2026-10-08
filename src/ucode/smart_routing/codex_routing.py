@@ -110,7 +110,7 @@ def route_pre_tool_use(
         def record(payload, task, decision, requested):
             routing.write_decision_record(DECISIONS_PATH, payload, task, decision, requested)
 
-    orchestration = "on" if orchestrator.enabled() else "off"
+    name_suffix = " [orchestrator on]" if orchestrator.enabled() else ""
     return routing.route_spawn_tool(
         payload,
         is_spawn_agent=is_spawn_agent_tool,
@@ -119,9 +119,7 @@ def route_pre_tool_use(
         ),
         default_task_label="Codex subagent task",
         model_id_mapper=codex_model_id,
-        notice_config=replace(
-            SUBAGENT_NOTICE_CONFIG, name_suffix=f" [orchestrator {orchestration}]"
-        ),
+        notice_config=replace(SUBAGENT_NOTICE_CONFIG, name_suffix=name_suffix),
         record_decision=record,
     )
 
