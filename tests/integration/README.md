@@ -332,6 +332,8 @@ tool-result records, and a new
 assistant answer after each skill invocation.
 Collapsed terminal output is allowed; the answer need not repeat the CLI's exact wording.
 Each following child still verifies whether a routing decision occurred.
+With orchestration enabled, both routed children must show `[orchestrator on]`
+in their own subagent banner.
 Their off-phase child is an explicit user-requested delegation;
 these journeys do not establish automatic orchestration behavior. Root-only
 activation, compaction, retained skills in ineligible sessions,

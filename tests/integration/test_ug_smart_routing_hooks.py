@@ -60,7 +60,7 @@ def _routing_decisions(session, agent: str) -> list[dict]:
     return read_jsonl(session.home / ".ucode" / f"{agent}-smart-routing-decisions.jsonl")
 
 
-def _routing_banner_for_task(screen: str, marker: str) -> bool:
+def _routing_banner_for_task(screen: str, marker: str, *, orchestrator_on: bool = False) -> bool:
     """Whether the rendered router panel belongs to this uniquely tagged task."""
     lines = screen.splitlines()
     for index, line in enumerate(lines):
@@ -73,7 +73,8 @@ def _routing_banner_for_task(screen: str, marker: str) -> bool:
                 break
         # Rich can wrap the marker between any two characters in a narrow TUI.
         # Compare without rendered whitespace so the banner remains attributable.
-        if marker in "".join("\n".join(panel).split()):
+        text = "".join("\n".join(panel).split())
+        if marker in text and (not orchestrator_on or "[orchestratoron]" in text):
             return True
     return False
 
@@ -85,7 +86,11 @@ def _run_calculation(tui, session, agent: str, expression: str, expected: str, *
 
     if routed:
         tui.wait_for(
-            lambda screen: _routing_banner_for_task(screen, task.marker),
+            lambda screen: _routing_banner_for_task(
+                screen,
+                task.marker,
+                orchestrator_on=session.env.get("ENABLE_SMART_ROUTER_ORCHESTRATOR") == "1",
+            ),
             f"the Smart Router subagent banner for {task.marker}",
             timeout=120,
         )
@@ -354,6 +359,7 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
     sessions; only the first and third show the subagent-routing banner and produce live gateway
     decisions correlated with those children. Claude's native task view reports no running
     tasks before /exit is submitted. No first-prompt routing wrapper starts.
+    With orchestration enabled, both routed banners must include [orchestrator on].
     """
     session = live_session
     session.env["TMPDIR"] = str(tmp_path)
@@ -436,6 +442,7 @@ def test_smart_router_skill_toggles_codex_subagent_routing(
     collapsed terminal output; all three uniquely tagged calculations complete in native child
     sessions; only the first and third show the subagent-routing banner and produce live gateway
     decisions correlated with those children. No first-prompt interposer starts.
+    With orchestration enabled, both routed banners must include [orchestrator on].
     """
     session = live_session
     session.env["TMPDIR"] = str(tmp_path)
