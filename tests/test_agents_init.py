@@ -24,6 +24,7 @@ from ucode.agents import (
     install_tool_binary,
     normalize_tool,
     resolve_launch_model,
+    tool_binary_installed,
 )
 from ucode.agents.args import has_explicit_model_arg
 from ucode.managed_config import ManagedConfigResult
@@ -907,6 +908,9 @@ class TestInstallToolBinary:
     @pytest.mark.parametrize("tool", list(TOOL_SPECS))
     def test_compatible_tool_does_not_check_update_or_prompt(self, monkeypatch, tool):
         monkeypatch.setattr("ucode.agents.shutil.which", lambda binary: f"/usr/bin/{binary}")
+        if tool == "copilot":
+            # Copilot's availability check verifies its version branding.
+            monkeypatch.setattr(agents_mod.copilot, "resolve_binary", lambda: "/usr/bin/copilot")
         monkeypatch.setattr("ucode.agents._minimum_version_error", lambda _: None)
         monkeypatch.setattr("ucode.agents._too_new_downgrade", lambda _: None)
         monkeypatch.setattr(
@@ -967,6 +971,34 @@ class TestInstallToolBinary:
 
         with pytest.raises(RuntimeError, match="OpenCode is not installed"):
             ensure_tool_binary_available("opencode")
+
+    def test_copilot_conflict_blocks_install_without_running_npm(self, monkeypatch):
+        def conflict():
+            raise RuntimeError("AWS Copilot uses the same command name; install GitHub Copilot CLI")
+
+        calls = []
+        monkeypatch.setattr(agents_mod.copilot, "resolve_binary", conflict)
+        monkeypatch.setattr(
+            agents_mod.subprocess_cross_os,
+            "run",
+            lambda args, **_kwargs: calls.append(args),
+        )
+
+        with pytest.raises(RuntimeError, match="AWS Copilot"):
+            install_tool_binary("copilot")
+
+        assert calls == []
+
+    def test_copilot_conflict_is_not_reported_as_an_installed_agent(self, monkeypatch):
+        monkeypatch.setattr(
+            agents_mod.copilot,
+            "resolve_binary",
+            lambda: (_ for _ in ()).throw(
+                agents_mod.copilot.CopilotBinaryConflictError("AWS Copilot conflict")
+            ),
+        )
+
+        assert tool_binary_installed("copilot") is False
 
 
 @pytest.mark.parametrize("tool", ["claude", "opencode", "copilot", "pi"])

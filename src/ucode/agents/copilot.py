@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import signal
+import subprocess
 import threading
 from pathlib import Path
 
@@ -72,6 +74,85 @@ LEGACY_ENV_KEYS = [
     "COPILOT_PROVIDER_API_KEY",
 ]
 _GPT_MODEL_MAJOR_PATTERN = re.compile(r"^(?:system\.ai\.)?(?:databricks-)?gpt-(\d+)(?=$|[.-])")
+_GITHUB_COPILOT_BRAND = re.compile(r"\bGitHub Copilot CLI\b", re.IGNORECASE)
+_COPILOT_VERSION_PROBE_TIMEOUT_SECONDS = 2
+_WINDOWS_DEFAULT_PATHEXT = (".COM", ".EXE", ".BAT", ".CMD")
+
+
+class CopilotBinaryConflictError(RuntimeError):
+    """Raised when ``copilot`` resolves only to a different product's CLI."""
+
+
+def _windows_copilot_path_candidate(path_entry: str) -> str | None:
+    """Resolve only inside one PATH entry, without Windows prepending the current directory."""
+    raw_extensions = os.environ.get("PATHEXT")
+    extensions = (
+        [extension for extension in raw_extensions.split(os.pathsep) if extension]
+        if raw_extensions
+        else _WINDOWS_DEFAULT_PATHEXT
+    )
+    for extension in extensions:
+        candidate = os.path.join(path_entry, f"{SPEC['binary']}{extension}")
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def _copilot_path_candidate(path_entry: str) -> str | None:
+    if os.name == "nt":
+        return _windows_copilot_path_candidate(path_entry)
+    return shutil.which(SPEC["binary"], path=path_entry)
+
+
+def _copilot_path_candidates() -> list[str]:
+    """Return each distinct ``copilot`` executable found on PATH, in PATH order."""
+    path = os.environ.get("PATH", os.defpath)
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for path_entry in path.split(os.pathsep):
+        if not path_entry:
+            continue
+        candidate = _copilot_path_candidate(path_entry)
+        if not candidate:
+            continue
+        absolute = os.path.abspath(candidate)
+        key = os.path.normcase(absolute)
+        if key not in seen:
+            seen.add(key)
+            candidates.append(absolute)
+    return candidates
+
+
+def _is_github_copilot_cli(binary: str) -> bool:
+    try:
+        result = subprocess_cross_os.run(
+            [binary, "--version"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=_COPILOT_VERSION_PROBE_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    output = f"{result.stdout or ''}\n{result.stderr or ''}"
+    return _GITHUB_COPILOT_BRAND.search(output) is not None
+
+
+def resolve_binary() -> str | None:
+    """Find and verify the GitHub Copilot CLI, rather than another ``copilot`` command."""
+    candidates = _copilot_path_candidates()
+    for candidate in candidates:
+        if _is_github_copilot_cli(candidate):
+            return candidate
+    if candidates:
+        locations = ", ".join(candidates)
+        raise CopilotBinaryConflictError(
+            "Found `copilot` on PATH, but none reported the GitHub Copilot CLI "
+            f"({locations}). AWS Copilot uses the same command name; remove or reorder the "
+            "conflicting executable, then install GitHub Copilot CLI with `npm install -g "
+            "@github/copilot`."
+        )
+    return None
 
 
 def model_uses_responses_api(model: str) -> bool:
@@ -219,6 +300,12 @@ def _refresh_forever(state: dict, model: str, stop_event: threading.Event) -> No
 
 
 def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None:
+    binary = resolve_binary()
+    if binary is None:
+        raise RuntimeError(
+            "GitHub Copilot CLI is not installed (`copilot` was not found on PATH). "
+            "Install it with `npm install -g @github/copilot` and retry."
+        )
     model = explicit_model_arg_value(tool_args) or options.user_pinned_model or default_model(state)
     model, token = _refresh_token_once(state, model)
     env = build_runtime_env(state["workspace"], model, token)
@@ -231,7 +318,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
     )
     refresher.start()
 
-    proc = subprocess_cross_os.popen([SPEC["binary"], *mcp_config_args(), *tool_args], env=env)
+    proc = subprocess_cross_os.popen([binary, *mcp_config_args(), *tool_args], env=env)
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:

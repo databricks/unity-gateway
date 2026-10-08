@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 import questionary
 from rich.table import Table
 
-from ucode.agents import claude, codex, copilot, cursor, gemini, opencode
+from ucode.agents import claude, codex, copilot, cursor, gemini, opencode, tool_binary_status
 from ucode.config_io import restore_file
 from ucode.constants import MCP_CLEANUP_SCOPES, MCP_USER_SCOPE
 from ucode.databricks import (
@@ -141,6 +141,27 @@ MCP_SERVICE_SELECTION_PREFIX = "mcp-service:"
 VECTOR_SEARCH_SELECTION_PREFIX = "vector-search:"
 UC_FUNCTIONS_SELECTION_PREFIX = "uc-functions:"
 MCP_ADD_PREFIX = "add:"
+
+
+def _mcp_client_binary(client: str) -> str | None:
+    """Return the executable used for an MCP client, verifying Copilot's identity."""
+    if client == "copilot":
+        try:
+            return copilot.resolve_binary()
+        except copilot.CopilotBinaryConflictError:
+            return None
+    spec = MCP_CLIENTS.get(client)
+    return shutil.which(str(spec["binary"])) if spec else None
+
+
+def _raise_mcp_client_binary_conflicts(
+    clients: set[str], installed_clients: list[str] | set[str]
+) -> None:
+    if "copilot" not in clients or "copilot" in installed_clients:
+        return
+    _installed, conflict = tool_binary_status("copilot")
+    if conflict:
+        raise RuntimeError(conflict)
 
 
 def _is_missing_mcp_server_output(output: str) -> bool:
@@ -274,7 +295,7 @@ def remove_gemini_mcp_server(name: str) -> bool:
 
 
 def available_mcp_clients() -> list[str]:
-    return [client for client, spec in MCP_CLIENTS.items() if shutil.which(str(spec["binary"]))]
+    return [client for client in MCP_CLIENTS if _mcp_client_binary(client)]
 
 
 def configured_mcp_clients(state: dict, installed_clients: list[str]) -> list[str]:
@@ -1057,7 +1078,9 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
     previous = [
         server for server in (state.get("managed_mcp_servers") or []) if isinstance(server, dict)
     ]
-    configured = set(configured_mcp_clients(state, available_mcp_clients()))
+    installed_clients = available_mcp_clients()
+    _raise_mcp_client_binary_conflicts(agents, installed_clients)
+    configured = set(configured_mcp_clients(state, installed_clients))
     scope = {agent for agent in agents if agent in configured}
     # A managed file can hold a prior workspace's entries even when the fallback state is empty, so
     # reconcile whenever claude/codex is configured (to clear on a switch), not only on selector/scope.
@@ -1758,9 +1781,13 @@ def setup_mcp_clients(
     if not workspace:
         raise RuntimeError("Workspace is not configured. Run `ucode configure` first.")
 
+    configured_tools = set(state.get("available_tools") or [])
+    installed_clients = available_mcp_clients()
+    _raise_mcp_client_binary_conflicts(
+        agents if agents is not None else configured_tools, installed_clients
+    )
     purge_cross_workspace_mcp_residue(state, workspace)
 
-    installed_clients = available_mcp_clients()
     if not installed_clients:
         raise RuntimeError(
             "No supported MCP clients are installed. Install Claude, Codex, Gemini, OpenCode, "
@@ -1780,7 +1807,6 @@ def setup_mcp_clients(
             "No configured MCP-capable coding agents are installed. Run `ucode configure` "
             "for Codex, Claude, Gemini, OpenCode, or GitHub Copilot CLI first."
         )
-    configured_tools = set(state.get("available_tools") or [])
     missing_clients = [
         client for client in MCP_CLIENTS if client in configured_tools and client not in clients
     ]
@@ -2356,7 +2382,14 @@ def _run_mcp_list(client: str) -> str | None:
     spec = MCP_CLIENTS.get(client)
     if not spec:
         return None
-    argv = str(spec["list_command"]).split()
+    list_command = str(spec["list_command"]).split()
+    if client == "copilot":
+        binary = _mcp_client_binary(client)
+        if not binary:
+            return None
+        argv = [binary, *list_command[1:]]
+    else:
+        argv = list_command
     # Gemini reads its config from a pinned home dir, matching how ucode registers servers there.
     env = _gemini_cli_env() if client == "gemini" else None
     try:
@@ -2548,6 +2581,12 @@ def list_mcp_command(agents: set[str] | None = None) -> int:
 
     state = load_state()
     installed = available_mcp_clients()
+    if agents is not None:
+        _raise_mcp_client_binary_conflicts(agents, installed)
+    elif "copilot" not in installed and "copilot" in set(state.get("available_tools") or []):
+        _installed, conflict = tool_binary_status("copilot")
+        if conflict:
+            print_warning(conflict)
     probe_clients = [client for client in installed if agents is None or client in agents]
     scope_note = "" if agents is None else f" for {', '.join(sorted(agents))}"
 
