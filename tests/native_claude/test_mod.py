@@ -9,8 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from ucode.agents.claude_mod import write_hooks
-from ucode.config_io import write_json_file
+from ucode.smart_routing.v2 import _write_routed_claude_plugin
 
 
 @pytest.fixture(scope="module")
@@ -28,10 +27,7 @@ def native_binary():
 
 def test_mod_validation_and_event_forwarding(native_binary, tmp_path):
     path = tmp_path / "plugin"
-    write_json_file(
-        path / ".claude-plugin/plugin.json", {"name": "ug-smart-router", "version": "1.0.0"}
-    )
-    write_hooks(path)
+    _write_routed_claude_plugin(path, [])
     shutil.copytree(Path(__file__).with_name("mod_tests"), path / "tests")
     for command in ("validate", "test"):
         result = subprocess.run(

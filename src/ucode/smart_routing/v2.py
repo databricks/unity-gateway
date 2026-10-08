@@ -337,6 +337,9 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
             ),
         )
     orchestrator.add_claude_agents(plugin_dir)
+    source = Path(__file__).parents[1] / "agents" / "claude_mod_hooks" / "register.ts"
+    write_text_file(plugin_dir / "hooks" / "register.ts", source.read_text(encoding="utf-8"))
+    write_json_file(plugin_dir / "hooks" / "hooks.json", {"modules": ["./register.ts"]})
 
 
 def _request_claude_routing_decision(
@@ -489,7 +492,6 @@ def launch_claude(
 ) -> NoReturn:
     """Launch Claude in the first-prompt routing PTY wrapper."""
     from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR
-    from ucode.agents.claude_mod import write_hooks
 
     if os.name != "nt":
         from ucode.smart_routing import claude_pty
@@ -574,7 +576,6 @@ def launch_claude(
             try:
                 write_json_file(settings_path, settings)
                 _write_routed_claude_plugin(plugin_dir, model_ids)
-                write_hooks(plugin_dir)
             except Exception as exc:  # noqa: BLE001 - optional setup must not block normal launch
                 raise ClaudeRoutingSetupError("Failed to write Claude smart-routing files") from exc
             model_args = launch_model_args(remaining, launch_model)

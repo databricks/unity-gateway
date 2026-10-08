@@ -3,7 +3,7 @@
 UG's smart-routed Claude launcher loads `hooks/register.ts` through the existing
 launch-scoped `ug-smart-router` plugin. Claude Code 2.1.290 or newer is required.
 
-`ucode.agents.claude_mod.write_hooks` copies the packaged TypeScript entry point
+The existing `_write_routed_claude_plugin()` copies the packaged TypeScript entry point
 and writes `hooks/hooks.json` into that plugin. Both full and subagent-only smart
 routing launches use this path, and the existing temporary-directory lifecycle
 cleans up the files when Claude exits.
