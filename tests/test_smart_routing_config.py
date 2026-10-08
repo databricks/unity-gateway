@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from itertools import product
-
 import pytest
 
 from ucode.constants import (
@@ -32,73 +30,29 @@ _EXPECTED_PRESETS = {
     },
 }
 
-_LEGACY_VALUES = (None, "", "0", "1")
-_SELECTOR_CASES = (
-    ("selector-unset", None, "legacy", None),
-    ("selector-blank", "", "legacy", None),
-    ("selector-whitespace", " \t", "legacy", None),
-    ("subagent-only-v0", "subagent_only_v0", "preset", _EXPECTED_PRESETS["subagent_only_v0"]),
-    ("subagent-only-v1", "subagent_only_v1", "preset", _EXPECTED_PRESETS["subagent_only_v1"]),
-    ("subagent-orch-v0", "subagent_orch_v0", "preset", _EXPECTED_PRESETS["subagent_orch_v0"]),
-    (
-        "padded-subagent-only-v0",
-        " subagent_only_v0 ",
-        "preset",
-        _EXPECTED_PRESETS["subagent_only_v0"],
-    ),
-    (
-        "padded-subagent-only-v1",
-        " subagent_only_v1 ",
-        "preset",
-        _EXPECTED_PRESETS["subagent_only_v1"],
-    ),
-    (
-        "padded-subagent-orch-v0",
-        " subagent_orch_v0 ",
-        "preset",
-        _EXPECTED_PRESETS["subagent_orch_v0"],
-    ),
-    ("unsuffixed-subagent-only", "subagent_only", "invalid", None),
-    ("unsuffixed-subagent-orch", "subagent_orch", "invalid", None),
-    ("unsupported-version", "future_mode", "invalid", None),
-)
 
-_GRID = [
-    pytest.param(
-        v2_value,
-        subagent_value,
-        orchestrator_value,
-        selector,
-        selector_mode,
-        expected_flags,
-        id=(
-            f"{selector_id}-v2={v2_value!r}-subagent={subagent_value!r}-"
-            f"orchestrator={orchestrator_value!r}"
-        ),
-    )
-    for selector_id, selector, selector_mode, expected_flags in _SELECTOR_CASES
-    for v2_value, subagent_value, orchestrator_value in product(_LEGACY_VALUES, repeat=3)
-]
-
-
+@pytest.mark.parametrize("v2_value", [None, "", "0", "1"])
+@pytest.mark.parametrize("subagent_value", [None, "", "0", "1"])
+@pytest.mark.parametrize("orchestrator_value", [None, "", "0", "1"])
 @pytest.mark.parametrize(
-    (
-        "v2_value",
-        "subagent_value",
-        "orchestrator_value",
-        "selector",
-        "selector_mode",
-        "expected_flags",
-    ),
-    _GRID,
+    "config_version",
+    [
+        None,
+        "",
+        " \t",
+        "subagent_only_v0",
+        "subagent_only_v1",
+        "subagent_orch_v0",
+        " subagent_only_v0 ",
+        " subagent_only_v1 ",
+        " subagent_orch_v0 ",
+        "subagent_only",
+        "subagent_orch",
+        "future_mode",
+    ],
 )
 def test_smart_routing_config_cartesian_grid(
-    v2_value,
-    subagent_value,
-    orchestrator_value,
-    selector,
-    selector_mode,
-    expected_flags,
+    v2_value, subagent_value, orchestrator_value, config_version
 ):
     source = {
         environment_key: value
@@ -110,11 +64,12 @@ def test_smart_routing_config_cartesian_grid(
         if value is not None
     }
     source["UNRELATED_SETTING"] = "preserved"
-    if selector is not None:
-        source[SMART_ROUTING_CONFIG_VERSION_ENV_VAR] = selector
+    if config_version is not None:
+        source[SMART_ROUTING_CONFIG_VERSION_ENV_VAR] = config_version
     original = source.copy()
+    normalized_version = (config_version or "").strip()
 
-    if selector_mode == "invalid":
+    if normalized_version and normalized_version not in _EXPECTED_PRESETS:
         with pytest.raises(RuntimeError):
             config.resolve_environment(source)
         assert source == original
@@ -125,19 +80,18 @@ def test_smart_routing_config_cartesian_grid(
         assert applied == original
         return
 
-    expected_legacy = original.copy()
-    expected_legacy.pop(SMART_ROUTING_CONFIG_VERSION_ENV_VAR, None)
-    expected_resolved = expected_legacy.copy()
-    if selector_mode == "preset":
-        expected_resolved.update(expected_flags)
+    expected = original.copy()
+    expected.pop(SMART_ROUTING_CONFIG_VERSION_ENV_VAR, None)
+    if normalized_version:
+        expected.update(_EXPECTED_PRESETS[normalized_version])
 
     resolved = config.resolve_environment(source)
 
-    assert resolved == expected_resolved
+    assert resolved == expected
     assert source == original
 
     applied = source.copy()
     config.apply_config(applied)
 
-    expected_applied = expected_resolved if selector_mode == "preset" else original
+    expected_applied = expected if normalized_version else original
     assert applied == expected_applied
