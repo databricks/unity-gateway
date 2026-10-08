@@ -17,22 +17,18 @@ These state changes do not yet refresh the running native client's request paylo
 
 ## Native reload evidence and remaining work
 
-Earlier direct Claude 2.1.286 probes observed watched user `settings.json` updates in
-both parent and child requests. The stronger two-session test in the dependent native
-settings draft exposed a stale first parent request after a one-second wait, followed
-by updated child and parent requests. Hot reload is possible, but reliable propagation
-before a toggle reports completion remains unresolved. See `claude-session-settings.md`
-for reproducible tests, the timing failure, and the remaining production adapter work.
+The native settings draft now verifies an in-memory alternative: `apply_flag_settings`
+(the TypeScript SDK's `Query.applyFlagSettings`). After an acknowledged update to
+`env.CLAUDE_CODE_EXTRA_BODY`, main-agent and native Agent child requests used the new
+value immediately in the probe; another session kept its own value. That test created
+no settings files and used no watcher delay. See `claude-session-settings.md` for the
+SDK source, reproducible tests, precedence, and update semantics.
 
-The same probe replacing a file supplied through `--settings` kept sending `task_v3`.
-Exporting an environment variable from a hook subprocess also cannot mutate its parent
-Claude process's environment.
-
-UG currently supplies startup settings. A watched settings source private to each
-session still needs to be wired before off/on changes reach native inference requests.
-A shared user settings file would allow sessions to affect each other. The original
-on/off/on payload success criteria remain incomplete. Recipe metadata uses no new
-proxy and leaves the configured gateway endpoint unchanged.
+The control API requires streaming input. This Smart Router draft still supplies startup
+settings and writes desired toggle state to its session file; it does not yet connect
+toggles to the native control API. UG's ordinary interactive PTY launch has no verified
+connection to that API. Completing that integration is required before this draft meets
+the original off/on payload criteria. The configured gateway endpoint is unchanged.
 
 ## Startup verification
 

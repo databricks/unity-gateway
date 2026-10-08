@@ -12,8 +12,10 @@ import os
 import queue
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
+import uuid
 from contextlib import ExitStack
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -149,7 +151,9 @@ def fixture_api():
 
 
 class NativeSession:
-    def __init__(self, binary, api_url, name, cwd, *, watched, initial="initial"):
+    def __init__(
+        self, binary, api_url, name, cwd, *, watched, initial="initial", runtime_only=False
+    ):
         settings = (
             {}
             if initial is None
@@ -161,7 +165,11 @@ class NativeSession:
                 }
             }
         )
-        self.path = create_session_settings(settings)
+        self.path = (
+            Path(tempfile.mkdtemp(prefix="claude-runtime-settings-")) / "settings.json"
+            if runtime_only
+            else create_session_settings(settings)
+        )
         self.config = self.path.parent if watched else self.path.parent / "config"
         self.config.mkdir(exist_ok=True)
         self.name = name
@@ -200,7 +208,7 @@ class NativeSession:
             "--allowedTools",
             "Agent",
         ]
-        if not watched:
+        if not watched and not runtime_only:
             args.extend(["--settings", str(self.path)])
         try:
             self.proc = subprocess.Popen(
@@ -223,6 +231,49 @@ class NativeSession:
         )
         self.stdout_thread.start()
         self.stderr_thread.start()
+
+    def control(self, request):
+        identifier = str(uuid.uuid4())
+        self.proc.stdin.write(
+            json.dumps(
+                {
+                    "type": "control_request",
+                    "request_id": identifier,
+                    "request": request,
+                }
+            )
+            + "\n"
+        )
+        self.proc.stdin.flush()
+        deadline = time.monotonic() + 15
+        while True:
+            try:
+                event = json.loads(self.lines.get(timeout=max(0, deadline - time.monotonic())))
+            except queue.Empty:
+                pytest.fail("Native Claude control response timed out")
+            if (
+                event.get("type") == "control_response"
+                and event.get("response", {}).get("request_id") == identifier
+            ):
+                response = event["response"]
+                assert response["subtype"] == "success", response
+                return
+
+    def update_in_memory(self, value):
+        # Public TS SDK Query.applyFlagSettings emits this same control request.
+        # Await its response instead of relying on a file watcher or a sleep.
+        self.control(
+            {
+                "subtype": "apply_flag_settings",
+                "settings": {
+                    "env": {
+                        "CLAUDE_CODE_EXTRA_BODY": merge_extra_body(
+                            '{"caller_field":"keep"}', {"session_test_value": value}
+                        )
+                    }
+                },
+            }
+        )
 
     def update(self, value):
         update_session_settings(
@@ -324,3 +375,42 @@ def test_no_extra_body_setting_adds_no_fixture_field(native_binary, fixture_api,
         stack.callback(session.close)
         rows = session.turn(captures)
         assert all(row["value"] == "ABSENT" and row["caller"] is None for row in rows), rows
+
+
+def test_runtime_control_updates_parent_and_child_without_settings_files(
+    native_binary, fixture_api, tmp_path
+):
+    """Acknowledged in-memory updates change subsequent requests and isolate two live sessions."""
+    url, captures = fixture_api
+    with ExitStack() as stack:
+        first = NativeSession(
+            native_binary,
+            url,
+            "runtime-first",
+            tmp_path,
+            watched=False,
+            initial=None,
+            runtime_only=True,
+        )
+        stack.callback(first.close)
+        second = NativeSession(
+            native_binary,
+            url,
+            "runtime-second",
+            tmp_path,
+            watched=False,
+            initial=None,
+            runtime_only=True,
+        )
+        stack.callback(second.close)
+        for session in (first, second):
+            rows = session.turn(captures)
+            assert all(row["value"] == "ABSENT" and row["caller"] is None for row in rows), rows
+        second.update_in_memory("other-session")
+        for value in ("initial", "updated", "initial"):
+            first.update_in_memory(value)
+            assert_payload(first.turn(captures), value)
+            assert_payload(second.turn(captures), "other-session")
+            for session in (first, second):
+                assert not session.path.exists()
+                assert not (session.config / "settings.json").exists()
