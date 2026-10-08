@@ -151,8 +151,9 @@ def _assert_generated_mcp_listings(session) -> None:
         assert binary, f"Required agent is not on the isolated PATH: {agent}"
         listing = session.run("mcp", "list", binary=binary, timeout=120)
         output = f"{listing.stdout}\n{listing.stderr}"
-        assert _mcp_name_listed(output, SANDBOX_MCP_SERVICE_NAME), output
-        assert not _mcp_name_listed(output, WEB_SEARCH_MCP_SERVICE_NAME), output
+        streams = f"stdout={listing.stdout!r}\nstderr={listing.stderr!r}"
+        assert _mcp_name_listed(output, SANDBOX_MCP_SERVICE_NAME), streams
+        assert not _mcp_name_listed(output, WEB_SEARCH_MCP_SERVICE_NAME), streams
 
 
 def _parent_transcripts(session, agent: str) -> dict[str, list[dict]]:
