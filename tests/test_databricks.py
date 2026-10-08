@@ -49,6 +49,7 @@ from ucode.databricks import (
     resolve_current_budget_spend,
     upgrade_databricks_cli,
     workspace_hostname,
+    workspace_origin,
 )
 
 WS = "https://example.databricks.com"
@@ -192,6 +193,9 @@ class TestWorkspaceHostname:
         with pytest.raises((RuntimeError, ValueError)):
             workspace_hostname("")
 
+    def test_origin_preserves_explicit_scheme_and_port(self):
+        assert workspace_origin("http://127.0.0.1:54321/path") == "http://127.0.0.1:54321"
+
 
 class _FakeResponseWithHeaders(_FakeResponse):
     def __init__(self, payload: dict, headers: dict):
@@ -318,6 +322,21 @@ class TestBuildSkillsMcpUrl:
 
 
 class TestDiscoverClaudeModels:
+    def test_preserves_explicit_origin(self, monkeypatch):
+        captured = {}
+
+        def fake_get(url, token, **kwargs):
+            captured["request"] = (url, token, kwargs)
+            return {"data": []}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        db_mod.list_anthropic_models("http://127.0.0.1:43123", "token")
+
+        assert captured["request"][0] == (
+            "http://127.0.0.1:43123/ai-gateway/anthropic/v1/models?limit=1000"
+        )
+
     def test_lists_all_anthropic_model_ids_without_legacy_validation(self, monkeypatch):
         captured = {}
         payload = {
@@ -641,6 +660,19 @@ class TestDiscoverModelServices:
         # Scope to the `system.ai` schema so the endpoint returns just the
         # foundation models rather than walking the whole metastore.
         assert all("parent=schemas%2Fsystem.ai" in u for u in urls)
+
+    def test_preserves_http_origin_and_port_for_local_gateway_recorder(self, monkeypatch):
+        urls = []
+
+        def fake_page(url, token):
+            urls.append(url)
+            return {"model_services": [_model_service("system.ai.gpt-5")]}, None
+
+        monkeypatch.setattr(db_mod, "_get_model_services_page", fake_page)
+
+        db_mod.list_model_services("http://127.0.0.1:54321", "token", use_cache=False)
+
+        assert urls[0].startswith("http://127.0.0.1:54321/api/")
 
     def test_retries_page_before_giving_up(self, monkeypatch):
         payload = {"model_services": [_model_service("system.ai.gpt-5")]}
@@ -1035,6 +1067,20 @@ class TestProviderServicePagination:
 
         assert "page_size=" in seen["url"]
 
+    def test_preserves_loopback_workspace_origin(self, monkeypatch):
+        seen: dict = {}
+
+        def fake_get(url, token, **kwargs):
+            seen["url"] = url
+            return self._page(["main.s.one"]), None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+        db_mod.list_model_provider_services("http://127.0.0.1:54321", "tok", use_cache=False)
+
+        assert seen["url"].startswith(
+            "http://127.0.0.1:54321/api/2.1/unity-catalog/model-provider-services?"
+        )
+
 
 class TestGetModelProviderService:
     def test_addresses_the_service_directly(self, monkeypatch):
@@ -1060,6 +1106,26 @@ class TestGetModelProviderService:
         assert service["name"] == "main.tien_le.openai_all"
         assert service["allow_all_targets"] is True
         assert seen["url"].endswith("/model-provider-services/main.tien_le.openai_all")
+
+    def test_preserves_loopback_workspace_origin(self, monkeypatch):
+        seen: dict = {}
+
+        def fake_get(url, token, **kwargs):
+            seen["url"] = url
+            return {
+                "name": "model-provider-services/main.tien_le.openai_all",
+                "config": {"provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_OPENAI"},
+            }, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+        db_mod.get_model_provider_service(
+            "main.tien_le.openai_all", "http://127.0.0.1:54321", "tok"
+        )
+
+        assert seen["url"] == (
+            "http://127.0.0.1:54321/api/2.1/unity-catalog/"
+            "model-provider-services/main.tien_le.openai_all"
+        )
 
     def test_missing_service_returns_the_reason(self, monkeypatch):
         monkeypatch.setattr(
@@ -3103,34 +3169,47 @@ class TestEnsureDatabricksCliVersion:
 
 
 class TestInstallDatabricksCli:
-    def test_windows_finds_existing_winget_alias_before_reinstalling(self, monkeypatch, tmp_path):
-        installed_dir = str(tmp_path / "Microsoft" / "WinGet" / "Packages" / "databricks")
+    @pytest.mark.parametrize(
+        ("path_source", "cached_missing"),
+        [("persisted_user_path", False), ("winget_alias", True), ("persisted_user_path", True)],
+    )
+    def test_windows_finds_existing_winget_alias_before_reinstalling(
+        self, monkeypatch, tmp_path, path_source, cached_missing
+    ):
+        links_dir = tmp_path / "Microsoft" / "WinGet" / "Links"
+        installed_dir = links_dir if path_source == "winget_alias" else tmp_path / "installed-cli"
+        installed_dir.mkdir(parents=True)
+        executable = installed_dir / ("databricks.exe" if os.name == "nt" else "databricks")
+        executable.touch()
+        executable.chmod(0o755)
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-        monkeypatch.setenv("PATH", "/windows/system32")
+        monkeypatch.setenv("PATH", str(tmp_path / "empty-path"))
+        monkeypatch.setenv("PATHEXT", ".EXE")
         monkeypatch.setattr(db_mod.platform, "system", lambda: "Windows")
-        monkeypatch.setattr(db_mod, "_windows_user_path", lambda: installed_dir)
         monkeypatch.setattr(
             db_mod,
-            "_discover_databricks_clis",
-            lambda **kw: (
-                [(str(Path(installed_dir) / "databricks.exe"), (1, 18, 0))]
-                if installed_dir in os.environ["PATH"].split(os.pathsep)
-                else []
-            ),
+            "_windows_user_path",
+            lambda: str(installed_dir) if path_source == "persisted_user_path" else None,
         )
+
+        def read_version(args, **kwargs):
+            assert args == [str(executable), "--version"]
+            return subprocess.CompletedProcess(args, 0, "Databricks CLI v1.20.0", "")
+
+        monkeypatch.setattr(db_mod, "run", read_version)
         monkeypatch.setattr(
             db_mod,
             "_run_databricks_cli_installer",
-            lambda **kw: pytest.fail("unexpected reinstall"),
+            lambda **kwargs: pytest.fail("existing CLI must not be reinstalled"),
         )
-        checked = []
-        monkeypatch.setattr(
-            db_mod, "ensure_databricks_cli_version", lambda *a, **kw: checked.append(True)
-        )
+        if cached_missing:
+            assert databricks_cli_path() == "databricks"
 
         install_databricks_cli()
+        install_databricks_cli()
 
-        assert checked == [True]
+        assert databricks_cli_path() == str(executable)
+        assert databricks_cli_version() == (1, 20, 0)
 
     def test_checks_version_when_present(self, monkeypatch):
         monkeypatch.setattr(

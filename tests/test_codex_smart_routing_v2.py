@@ -263,14 +263,16 @@ class TestLaunchCodex:
         assert "--profile myprof" in hook_override
         assert "--model system.ai.gpt-5-6-sol" in hook_override
         assert "--model system.ai.glm-5-2" in hook_override
+        config_values = processes[0].argv[3:-2:2]
+        assert "features.hooks=true" in config_values
         assert (
             "shell_environment_policy.set.UCODE_SESSION_ENV_FILE="
             f'"{os.environ["UCODE_SESSION_ENV_FILE"]}"'
-        ) in processes[0].argv
+        ) in config_values
         assert (
             "shell_environment_policy.set.UCODE_SMART_ROUTER_PYTHON="
             + json.dumps(os.environ["UCODE_SMART_ROUTER_PYTHON"])
-        ) in processes[0].argv
+        ) in config_values
         for event in ("UserPromptSubmit", "PostToolUse", "SubagentStart", "SessionStart"):
             event_override = next(
                 arg for arg in processes[0].argv if arg.startswith(f"hooks.{event}=")
@@ -406,6 +408,7 @@ class TestLaunchCodex:
         assert argv[0] == "codex"
         assert argv[-1] == "--search"
         assert 'model="gpt-start"' in argv
+        assert "features.hooks=true" in argv
         hook_override = next(arg for arg in argv if arg.startswith("hooks.PreToolUse="))
         assert "codex-router-hook route-subagent" in hook_override
         assert "--model system.ai.gpt-5-6-sol" in hook_override
@@ -424,7 +427,7 @@ class TestLaunchCodex:
         assert os.environ[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
         assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "token"
 
-    def test_v2_pre_tool_hook_preserves_user_hooks(self, tmp_path, monkeypatch):
+    def test_v2_pre_tool_hook_leaves_saved_hooks_to_codex(self, tmp_path, monkeypatch):
         codex_home = tmp_path / ".codex"
         codex_home.mkdir()
         (codex_home / "config.toml").write_text(
@@ -437,16 +440,18 @@ class TestLaunchCodex:
         )
         monkeypatch.setenv("CODEX_HOME", str(codex_home))
 
-        configured = v2._v2_pre_tool_use_hooks(
+        before = (codex_home / "config.toml").read_bytes()
+        configured = v2._v2_hooks(
             {"workspace": WS, "profile": "myprof"},
             ["system.ai.gpt-5-6-sol"],
-        )
+        )["PreToolUse"]
 
-        assert configured[0]["hooks"][0]["command"] == "user-policy"
-        assert configured[1]["matcher"] == "Agent|.*spawn_agent$"
-        assert "--model system.ai.gpt-5-6-sol" in configured[1]["hooks"][0]["command"]
+        assert len(configured) == 1
+        assert configured[0]["matcher"] == "Agent|.*spawn_agent$"
+        assert "--model system.ai.gpt-5-6-sol" in configured[0]["hooks"][0]["command"]
+        assert (codex_home / "config.toml").read_bytes() == before
 
-    def test_v2_pre_tool_hook_replaces_existing_ucode_hook(self, tmp_path, monkeypatch):
+    def test_v2_pre_tool_hook_uses_current_model(self, tmp_path, monkeypatch):
         monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/bin/ug")
         codex_home = tmp_path / ".codex"
         codex_home.mkdir()
@@ -460,10 +465,10 @@ class TestLaunchCodex:
         )
         monkeypatch.setenv("CODEX_HOME", str(codex_home))
 
-        configured = v2._v2_pre_tool_use_hooks(
+        configured = v2._v2_hooks(
             {"workspace": WS, "profile": "myprof"},
             ["system.ai.gpt-5-6-sol"],
-        )
+        )["PreToolUse"]
 
         routing_commands = [
             hook["command"]
@@ -476,9 +481,13 @@ class TestLaunchCodex:
         assert "--model system.ai.gpt-5-6-sol" in routing_commands[0]
         assert "--model old" not in routing_commands[0]
 
-    def test_v2_recipe_hooks_preserve_user_hooks_for_every_metadata_event(
-        self, tmp_path, monkeypatch
+    @pytest.mark.parametrize("orchestrator_enabled", [False, True])
+    def test_v2_recipe_hooks_leave_saved_hooks_to_codex_for_every_metadata_event(
+        self, tmp_path, monkeypatch, orchestrator_enabled
     ):
+        monkeypatch.setenv(
+            v2.ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR, "1" if orchestrator_enabled else "0"
+        )
         codex_home = tmp_path / ".codex"
         codex_home.mkdir()
         (codex_home / "config.toml").write_text(
@@ -507,6 +516,7 @@ command = "user-session-hook"
         )
         monkeypatch.setenv("CODEX_HOME", str(codex_home))
 
+        before = (codex_home / "config.toml").read_bytes()
         configured = v2._v2_hooks(
             {"workspace": WS, "profile": "myprof"},
             ["system.ai.gpt-5-6-sol"],
@@ -514,9 +524,15 @@ command = "user-session-hook"
 
         for event in ("UserPromptSubmit", "PostToolUse", "SubagentStart", "SessionStart"):
             commands = [hook["command"] for group in configured[event] for hook in group["hooks"]]
-            assert any(command.startswith("user-") for command in commands)
+            assert not any(command.startswith("user-") for command in commands)
             assert any("codex-router-hook recipe-metadata" in command for command in commands)
 
+        assert (codex_home / "config.toml").read_bytes() == before
+        for event in ("UserPromptSubmit", "SessionStart"):
+            commands = [hook["command"] for group in configured[event] for hook in group["hooks"]]
+            assert any("ucode.smart_routing.orchestrator" in cmd for cmd in commands) == (
+                orchestrator_enabled
+            )
         assert any(
             "codex-router-hook record-subagent" in hook["command"]
             for group in configured["SubagentStart"]

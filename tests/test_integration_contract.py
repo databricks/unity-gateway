@@ -62,8 +62,59 @@ def test_dedicated_cuj_ci_discovers_the_whole_folder():
     assert "docs.google.com/document/d/1WKd1fdWD0Y4tAV1H9Si-SGx2UZFL7iZ2S3HtBjidmS0" in job
     assert "pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj" in job
     assert "find tests/e2e_cuj -name 'test_*.py'" in job
+    assert "UG_CUJ1_WORKSPACE: ${{ secrets.UG_CUJ1_WORKSPACE }}" in job
     assert "test_cuj_" not in job
     assert 'result["result"] != "success"' in gate
+
+
+FORK_GUARD = (
+    "github.event_name != 'pull_request' || "
+    "github.event.pull_request.head.repo.full_name == github.repository"
+)
+# Fork PRs get no secrets or OIDC token, so jobs that need either must skip them.
+SKIPPED_ON_FORK_PRS = {
+    "installation-windows",
+    "workspace",
+    "smoke",
+    "headless-windows",
+    "full",
+    "opencode",
+    "managed",
+    "dedicated-cuj",
+    "cujs",
+}
+
+
+def _integration_jobs():
+    workflow = (Path(__file__).parent.parent / ".github/workflows/integration.yml").read_text()
+    body = workflow.split("\njobs:\n", 1)[1]
+    return dict(re.findall(r"(?ms)^  ([a-z0-9-]+):\n(.*?)(?=^  [a-z0-9-]+:\n|\Z)", body))
+
+
+def _skips_fork_prs(jobs, name):
+    job = jobs[name]
+    condition = re.search(r"(?m)^    if: (.*)$", job)
+    if condition and FORK_GUARD in condition.group(1):
+        return True
+    needs = re.search(r"(?m)^    needs: \[?([a-z0-9-, ]+)\]?$", job)
+    for need in [need.strip() for need in needs.group(1).split(",")] if needs else []:
+        requires_success = (
+            condition is None or f"needs.{need}.result == 'success'" in condition.group(1)
+        )
+        if requires_success and _skips_fork_prs(jobs, need):
+            return True
+    return False
+
+
+def test_integration_jobs_that_run_on_fork_pull_requests_need_no_credentials():
+    jobs = _integration_jobs()
+    skipped = {name for name in jobs if _skips_fork_prs(jobs, name)}
+
+    assert skipped == SKIPPED_ON_FORK_PRS
+    for name in set(jobs) - skipped:
+        assert "secrets." not in jobs[name] and "id-token: write" not in jobs[name], (
+            f"{name} runs on fork PRs, which get no secrets or OIDC token"
+        )
 
 
 def test_windows_integration_ci_uses_shared_claude_version():
@@ -160,7 +211,7 @@ def test_live_integration_cases_belong_to_exactly_one_ci_agent():
         for node in tree.body:
             if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
                 marks = module_marks | _markers(node.decorator_list)
-                if marks & {"live", "managed", "workspace_switch"}:
+                if marks & {"live", "managed_fixture", "workspace_switch"}:
                     assert len(marks & {"claude", "codex", "opencode"}) == 1, node.name
 
 
@@ -197,7 +248,7 @@ def test_model_discovery_cases_match_current_launch_contract():
             seen.append(case)
             marks = module_marks | _markers(node.decorator_list)
             expected = {"managed_fixture"} if case <= 6 else {"live"}
-            assert marks & {"managed_fixture", "managed", "live"} == expected, node.name
+            assert marks & {"managed_fixture", "live"} == expected, node.name
             assert marks & {"claude", "codex"} == ({"claude"} if case % 2 else {"codex"}), node.name
             assert not any(arg.arg == "configured" for arg in node.args.args), node.name
             for value in ast.walk(node):

@@ -1,11 +1,14 @@
 """Offline checks for read-only CUJ workspace configuration and catalog access."""
 
 import copy
+from types import SimpleNamespace
 
 import pytest
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.core import Config
 
+from tests.e2e_cuj import base
+from tests.e2e_cuj.base import BaseCujTest
 from tests.e2e_cuj.helpers.constants import CLAUDE, CODEX
 from tests.e2e_cuj.helpers.workspace import Workspace
 
@@ -14,6 +17,47 @@ from tests.e2e_cuj.helpers.workspace import Workspace
 def client(monkeypatch):
     monkeypatch.setattr(Config, "_resolve_host_metadata", lambda self: None, raising=False)
     return WorkspaceClient(host="https://example.test", token="test-token", auth_type="pat")
+
+
+def test_cuj_workspace_auth_uses_each_class_selected_credentials(monkeypatch):
+    calls = []
+
+    class CapturingClient:
+        def __init__(self, **kwargs):
+            calls.append(kwargs)
+
+    class Shared(BaseCujTest):
+        WORKSPACE_URL = "https://shared.example"
+
+    class Budget(BaseCujTest):
+        WORKSPACE_URL = "https://budget.example"
+        CLIENT_ID_ENV = "UG_BUDGET_CUJ_SP_CLIENT_ID"
+        CLIENT_SECRET_ENV = "UG_BUDGET_CUJ_SP_CLIENT_SECRET"
+
+    monkeypatch.setattr(base, "WorkspaceClient", CapturingClient)
+    monkeypatch.setenv("UG_CUJ_SP_CLIENT_ID", "shared-id")
+    monkeypatch.setenv("UG_CUJ_SP_CLIENT_SECRET", "shared-secret")
+    monkeypatch.setenv("UG_BUDGET_CUJ_SP_CLIENT_ID", "budget-id")
+    monkeypatch.setenv("UG_BUDGET_CUJ_SP_CLIENT_SECRET", "budget-secret")
+
+    setup_workspace = BaseCujTest.setup_workspace.__wrapped__
+    setup_workspace(None, SimpleNamespace(cls=Shared))
+    setup_workspace(None, SimpleNamespace(cls=Budget))
+
+    assert calls == [
+        {
+            "host": "https://shared.example",
+            "client_id": "shared-id",
+            "client_secret": "shared-secret",
+            "auth_type": "oauth-m2m",
+        },
+        {
+            "host": "https://budget.example",
+            "client_id": "budget-id",
+            "client_secret": "budget-secret",
+            "auth_type": "oauth-m2m",
+        },
+    ]
 
 
 def test_cuj_catalog_rejects_unknown_agent_before_network_access(client, monkeypatch):

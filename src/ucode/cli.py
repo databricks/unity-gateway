@@ -107,7 +107,6 @@ from ucode.managed_resolve import (
 )
 from ucode.mcp import (
     MCP_CLIENTS,
-    SKILLS_MCP_KIND,
     McpServiceListingRateLimited,
     add_mcp_command,
     add_skills_command,
@@ -116,8 +115,8 @@ from ucode.mcp import (
     configure_mcp_command,
     configure_skills_mcp_picker_command,
     configured_mcp_clients,
+    configured_mcp_servers_by_name,
     list_mcp_command,
-    managed_mcp_server_names,
     purge_cross_workspace_mcp_residue,
     reconcile_managed_mcp_servers,
     remove_mcp_command,
@@ -1171,8 +1170,9 @@ def status() -> int:
     state = load_state()
     workspace = state.get("workspace")
     managed_configs = state.get("managed_configs") or {}
-    # Both developer- and workspace-managed servers, so the count agrees with `ug mcp list`.
-    mcp_servers = (state.get("mcp_servers") or []) + (state.get("managed_mcp_servers") or [])
+    # The one enumerator `ug mcp list` uses, keyed by name with each server's agents — so the
+    # per-agent counts below can't drift from what `ug mcp list` reports.
+    configured_mcp = configured_mcp_servers_by_name(state)
     cached_managed = load_managed_state(workspace) if workspace else None
     managed, managed_freshness = _live_status_managed_state(state, cached_managed)
     configured_tools = (
@@ -1244,18 +1244,11 @@ def status() -> int:
             )
         if tool in MCP_CLIENTS:
             # High-level overview: just a count per agent. `ug mcp list` (see the note below) shows
-            # the per-server detail and live connection status, so status stays scannable. Dedupe by
-            # name so a server present in both mcp_servers and managed_mcp_servers isn't double-counted.
-            mcp_names = {
-                server.get("name")
-                for server in mcp_servers
-                if tool in (server.get("clients") or [])
-                and server.get("name")
-                and server.get("kind") != SKILLS_MCP_KIND
-            }
-            # Managed servers ug delivers through an OS-managed file live in that file, not state.
-            mcp_names |= managed_mcp_server_names(state, {tool})
-            rows.append(("MCP servers", str(len(mcp_names))))
+            # the per-server detail and live connection status, so status stays scannable. The shared
+            # enumerator already dedupes by name and folds in servers delivered through an agent's
+            # OS-managed file (Claude/Codex), so this count matches `ug mcp list` by construction.
+            mcp_count = sum(1 for entry in configured_mcp.values() if tool in entry["clients"])
+            rows.append(("MCP servers", str(mcp_count)))
             rows.append(("Skills", str(skill_counts_by_agent.get(tool, 0))))
         base_url = state.get("base_urls", {}).get(tool)
         if isinstance(base_url, dict):
@@ -2541,13 +2534,16 @@ def _configure_managed_skills(managed: dict | None) -> None:
 
 
 def _child_owns_stdout(tool: str, tool_args: list[str]) -> bool:
-    """True when the forwarded agent command speaks a stdio protocol on stdout.
+    """Reserve stdout when forwarded arguments contain a headless-mode token.
 
-    ``codex app-server`` puts its JSON-RPC stream on stdout, so ug's status
-    output must move to stderr for that launch; the file descriptor stays
-    untouched for the agent process.
+    Only scan before ``--``. Matching option values also move ug diagnostics to
+    stderr; argument forwarding and the agent's stdout descriptor stay untouched.
     """
-    return tool == "codex" and tool_args[:1] == ["app-server"]
+    if "--" in tool_args:
+        tool_args = tool_args[: tool_args.index("--")]
+    if tool == "claude":
+        return any(arg in {"-p", "--print"} for arg in tool_args)
+    return tool == "codex" and any(arg in {"exec", "e", "app-server"} for arg in tool_args)
 
 
 def _should_launch_smart_routing(
@@ -2881,6 +2877,8 @@ def _launch_tool(
             # Codex keeps an explicit --model in ctx.args and passes it to its CLI verbatim.
             if model and tool != "claude":
                 resolved_model = model
+        if model and tool == "claude" and not provider:
+            route_root_model = None
         if coding_agent_config_defaults and not state.get("claude_static_models") and not relayed:
             picker_catalog = claude_agent.default_model_picker_catalog(
                 coding_agent_config_defaults,
@@ -2897,7 +2895,6 @@ def _launch_tool(
             picker_catalog=picker_catalog,
             relayed=relayed,
             route_root_model=route_root_model,
-            # Claude's explicit model is launch-scoped and is passed through LaunchOptions below.
             custom_model=None,
             coding_agent_config_defaults=coding_agent_config_defaults,
             parent_schema=parent_schema,
@@ -2906,7 +2903,7 @@ def _launch_tool(
             # Claude re-adds an out-of-catalog saved model to /model even when built-ins are
             # replaced. Keep the catalog launch-scoped and leave the user's settings alone.
             state["_claude_launch_picker_models"] = picker_catalog.model_ids
-            if managed is None and (explicit_provider or parent_schema):
+            if managed is None and (explicit_provider or parent_schema) and not model:
                 # The permanent Default row should also resolve within the selected catalog.
                 state["_claude_launch_default_model"] = (
                     claude_agent.default_model(
@@ -3241,8 +3238,8 @@ def claude_cmd(
         typer.Option(
             "--model",
             help="Launch on a specific Databricks model id (e.g. a UC "
-            "`<catalog>.<schema>.<name>`). Pinned via ANTHROPIC_MODEL so the gateway "
-            "resolves it — unlike Claude Code's own --model, which rejects non-catalog ids. "
+            "`<catalog>.<schema>.<name>`). Passed to Claude Code's native `--model` option "
+            "for this launch only. "
             "With --provider, pass a family (opus/sonnet/haiku) or a target the service allows to "
             "start on that tier instead of Claude Code's opus default. Pass before any `--` separator.",
         ),

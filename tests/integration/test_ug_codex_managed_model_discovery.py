@@ -1,8 +1,8 @@
 """Codex managed-config CUJs for repository scenarios 2, 4, and 6.
 
-The admin CodingAgentConfig is fetched once from the managed workspace, its Codex model source is
-set to the dedicated test MPS, and the result is reused through ``UCODE_MANAGED_CONFIG_STUB`` in
-each isolated session. Normalization, config writers, the gateway, and Codex remain real.
+The admin CodingAgentConfig is the checked-in ``codex_mps.json`` fixture, whose Codex model source
+is the dedicated test MPS, injected through ``UCODE_MANAGED_CONFIG_STUB`` in each isolated session.
+Normalization, config writers, the gateway, and Codex remain real.
 """
 
 import json
@@ -12,9 +12,8 @@ import tomllib
 import pytest
 from utils.constants import MANAGED_CODEX_PROVIDER_SERVICE
 from utils.managed import (
-    fetch_managed_config_stub,
     is_managed_config_control_plane_cache,
-    use_managed_config_stub,
+    use_managed_config_fixture,
 )
 from utils.provider_catalog import (
     CodexProviderCatalog,
@@ -27,18 +26,6 @@ pytestmark = [pytest.mark.managed_fixture, pytest.mark.codex]
 
 
 @pytest.fixture(scope="module")
-def _managed_codex_config_stub(workspace, tmp_path_factory):
-    return fetch_managed_config_stub(
-        workspace,
-        os.environ["DATABRICKS_BEARER"],
-        tmp_path_factory.mktemp("managed-config-codex"),
-        "managed-config-codex.json",
-        agent="CODING_AGENT_CODEX",
-        provider_service=MANAGED_CODEX_PROVIDER_SERVICE,
-    )
-
-
-@pytest.fixture(scope="module")
 def _managed_codex_provider_catalog(workspace):
     return fetch_codex_provider_catalog(
         workspace,
@@ -48,8 +35,8 @@ def _managed_codex_provider_catalog(workspace):
 
 
 @pytest.fixture(autouse=True)
-def _managed_codex_config(live_session, _managed_codex_config_stub):
-    use_managed_config_stub(live_session, _managed_codex_config_stub)
+def _managed_codex_config(live_session):
+    use_managed_config_fixture(live_session, "codex_mps")
 
 
 def _codex_state_and_agent_files(session):
