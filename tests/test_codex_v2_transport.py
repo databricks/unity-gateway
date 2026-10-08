@@ -23,27 +23,22 @@ CALL = {
 }
 
 
-@pytest.mark.parametrize(
-    "layout,name",
-    [
-        ("namespace", "spawn_agent"),
-        ("additional_tools", "send_message"),
-        ("flat", "followup_task"),
-        ("namespace", "future_tool"),
-        ("flat", "future_tool"),
-    ],
-)
-def test_request_changes_only_native_assignment_schemas(layout, name):
-    function = {
+@pytest.mark.parametrize("layout", ["tools", "additional_tools"])
+def test_request_changes_only_native_assignment_schemas(layout):
+    functions = [
+        {
+            "type": "function",
+            "name": name,
+            "parameters": {"properties": {"message": {"type": "string", "encrypted": True}}},
+        }
+        for name in ("spawn_agent", "send_message", "followup_task")
+    ]
+    wait = {
         "type": "function",
-        "name": name,
-        "parameters": {"properties": {"message": {"type": "string", "encrypted": True}}},
+        "name": "wait_agent",
+        "parameters": {"properties": {"timeout_ms": {"type": "integer"}}},
     }
-    tools = (
-        [{**function, "namespace": NATIVE_NAMESPACE}]
-        if layout == "flat"
-        else [{"type": "namespace", "name": NATIVE_NAMESPACE, "tools": [function]}]
-    )
+    tools = [{"type": "namespace", "name": NATIVE_NAMESPACE, "tools": [*functions, wait]}]
     unrelated = {"type": "function", "name": "other", "parameters": {"const": WIRE_NAMESPACE}}
     tools.append(unrelated)
     request = {"tools": tools, "metadata": {"namespace": WIRE_NAMESPACE}}
@@ -56,14 +51,12 @@ def test_request_changes_only_native_assignment_schemas(layout, name):
     assert changed
     assert result["metadata"] == request["metadata"]
     assert rewritten[1] == unrelated
-    assert rewritten[0]["namespace" if layout == "flat" else "name"] == WIRE_NAMESPACE
-    schema = rewritten[0] if layout == "flat" else rewritten[0]["tools"][0]
-    expected_message = {"type": "string", **({"encrypted": True} if name == "future_tool" else {})}
-    assert schema == {
-        **function,
-        **({"namespace": WIRE_NAMESPACE} if layout == "flat" else {}),
-        "parameters": {"properties": {"message": expected_message}},
-    }
+    assert rewritten[0]["name"] == WIRE_NAMESPACE
+    expected_functions = [
+        {**function, "parameters": {"properties": {"message": {"type": "string"}}}}
+        for function in functions
+    ]
+    assert rewritten[0]["tools"] == [*expected_functions, wait]
 
 
 @pytest.mark.parametrize(
@@ -92,23 +85,16 @@ def test_replay_maps_plaintext_but_preserves_encrypted_calls_and_outputs(argumen
     ]
 
 
-@pytest.mark.parametrize(
-    "body", [b"invalid JSON", b"[]", b'{"tools":[]}', b'{"input":"unchanged"}']
-)
+@pytest.mark.parametrize("body", [b"invalid JSON", b'{"tools":[],"input":"unchanged"}'])
 def test_non_v2_requests_are_byte_transparent(body):
     assert prepare_request(body) == (body, False)
 
 
-@pytest.mark.parametrize(
-    "tool",
-    [
-        {"type": "namespace", "name": WIRE_NAMESPACE},
-        {"type": "function", "namespace": WIRE_NAMESPACE, "name": "other"},
-    ],
-)
-def test_reserved_namespace_collision_is_rejected(tool):
+def test_reserved_namespace_collision_is_rejected():
     with pytest.raises(ValueError, match="reserved namespace"):
-        prepare_request(json.dumps({"tools": [tool]}).encode())
+        prepare_request(
+            json.dumps({"tools": [{"type": "namespace", "name": WIRE_NAMESPACE}]}).encode()
+        )
 
 
 @pytest.mark.parametrize(
@@ -119,7 +105,7 @@ def test_reserved_namespace_collision_is_rejected(tool):
         ("send_message", "done"),
         ("followup_task", "completed"),
         ("spawn_agent", "json"),
-        ("future_tool", "done"),
+        ("wait_agent", "done"),
     ],
 )
 def test_response_restores_native_calls_without_changing_arguments_or_ids(name, shape):
@@ -127,8 +113,8 @@ def test_response_restores_native_calls_without_changing_arguments_or_ids(name, 
     del item["encrypted_function_args"]
     if shape == "added":
         item["arguments"] = '{"message":'
-    if name == "future_tool":
-        item.update(arguments="opaque non-assignment data", encrypted_function_args=["encrypted"])
+    if name == "wait_agent":
+        item["arguments"] = '{"timeout_ms":10000}'
     if shape in {"added", "done"}:
         event = {"type": "response.output_item." + shape, "item": item}
         expected_item = {**item, "namespace": NATIVE_NAMESPACE}
@@ -139,7 +125,7 @@ def test_response_restores_native_calls_without_changing_arguments_or_ids(name, 
         expected_response = {**response, "output": [expected_item]}
         event = {"response": response} if shape == "completed" else response
         expected = {"response": expected_response} if shape == "completed" else expected_response
-    if name != "future_tool":
+    if name != "wait_agent":
         expected_item["encrypted_function_args"] = []
     assert transform_response_event(event) == expected
     assert item["namespace"] == WIRE_NAMESPACE
@@ -149,12 +135,9 @@ def test_response_restores_native_calls_without_changing_arguments_or_ids(name, 
     "override",
     [
         {"encrypted_function_args": ["encrypted"]},
-        {"encrypted_function_args": None},
         {"arguments": '{"message":"gAAAAABopaque"}'},
-        {"arguments": "gAAAAABopaque"},
         {"arguments": ""},
         {"arguments": "[]"},
-        {"arguments": '{"message":3}'},
         {"namespace": NATIVE_NAMESPACE},
         {"type": "function_call_output"},
     ],

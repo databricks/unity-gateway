@@ -532,6 +532,13 @@ class TestCodexV2Proxy:
         }
         event = {"type": "response.output_item.done", "item": item}
         payload = json.dumps({"output": [item]}).encode()
+        if path == "/v1/responses/compact":
+            payload = json.dumps(
+                {
+                    "object": "response.compaction",
+                    "output": [{"type": "compaction", "encrypted_content": "opaque-summary"}],
+                }
+            ).encode()
         if streaming:
             data = b"\r\n".join(
                 b"data: " + line for line in json.dumps(event, indent=2).encode().splitlines()
@@ -585,6 +592,9 @@ class TestCodexV2Proxy:
         else:
             assert b"content-encoding" not in headers.lower()
             assert b"content-length" not in headers.lower()
+            if path == "/v1/responses/compact":
+                assert wire == payload
+                return
             if streaming:
                 assert b": heartbeat\r\n\r\nid: evt-1\r\n" in wire
                 assert wire.endswith(b"data: [DONE]\n\n")

@@ -85,14 +85,10 @@ def _rewrite_tool_list(tools: Any) -> bool:
         if not isinstance(tool, dict):
             continue
         _check_wire_namespace(tool)
-        if tool.get("type") == "namespace" and tool.get("name") == NATIVE_NAMESPACE:
-            tool["name"] = WIRE_NAMESPACE
-            functions = tool.get("tools")
-        elif tool.get("namespace") == NATIVE_NAMESPACE:
-            tool["namespace"] = WIRE_NAMESPACE
-            functions = [tool]
-        else:
+        if tool.get("type") != "namespace" or tool.get("name") != NATIVE_NAMESPACE:
             continue
+        tool["name"] = WIRE_NAMESPACE
+        functions = tool.get("tools")
         changed = True
         if isinstance(functions, list):
             for function in functions:

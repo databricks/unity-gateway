@@ -98,7 +98,8 @@ API field. These are unit/component checks; live request-count coverage is not i
 launches, identity refresh, and cleanup. `test_codex_v2_transport.py` covers native
 namespace translation, readable assignments, encrypted history, and malformed calls.
 `test_gateway_proxy.py` covers gzip JSON/SSE decoding, auth refresh, and passthrough
-with an HTTP transport fixture. These are component checks, not live Windows coverage.
+with an HTTP transport fixture, including preservation of an opaque compaction summary.
+These are component checks, not live compaction or Windows coverage.
 
 Claude picker composition is checked directly through the catalog and renderer functions in
 `test_agent_claude.py`; focused CLI cases cover source selection and launch precedence.

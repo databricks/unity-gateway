@@ -284,12 +284,10 @@ project trust. Smart routing selects subagent models; separate role-model
 preferences are ignored and their files are left untouched. See the bundled
 [Smart Router Orchestrator documentation](skills/smart-router-orchestrator/README.md) for details.
 
-Codex v2 routing uses a session-local transport to expose readable assignments to
-Smart Router while preserving native child execution and existing encrypted history.
-The transport uses the configured identity and headers, works with managed settings,
-and closes with the session without persisting its provider configuration. Both routing
-modes use the app-server; subagent-only mode preserves the parent model. Provider
-traffic uses Responses HTTP/SSE. New opaque or malformed assignments are rejected.
+Codex v2 routing uses a temporary local transport to keep assignments readable
+while preserving native child execution and encrypted session history. Both routing
+modes use the app-server; subagent-only mode preserves the parent model. The transport
+supports managed settings, uses Responses HTTP/SSE, and rejects new opaque assignments.
 
 ## Managed Files
 

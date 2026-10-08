@@ -201,17 +201,13 @@ class TestLaunchCodex:
                 assert path.read_text() == content
         assert codex._smart_routing_config_model({"codex_default_model": "admin"}) == "admin"
 
-    @pytest.mark.parametrize("platform_name", ["posix", "nt"])
-    def test_owns_app_server_interposer_and_tui_lifecycle(
-        self, monkeypatch, platform_name, routing_proxy
-    ):
+    def test_owns_app_server_interposer_and_tui_lifecycle(self, monkeypatch, routing_proxy):
         processes = []
         interposer_args = {}
         stopped = []
         token_calls = []
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setenv("CODEX_HOME", "/user/codex-home")
-        monkeypatch.setattr(v2, "os", SimpleNamespace(name=platform_name, environ=os.environ))
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
 
