@@ -1,6 +1,5 @@
 """CUJ authentication and cleanup on the existing integration session."""
 
-import os
 import re
 
 from tests.integration.utils.harness import UserSession as IntegrationSession
@@ -17,10 +16,6 @@ class UserSession(IntegrationSession):
 
     def redact(self, text, *, strip_ansi=False):
         text = super().redact(text, strip_ansi=strip_ansi)
-        # CI uploads CUJ artifacts, so also scrub every *SECRET* env var.
-        for name, secret in os.environ.items():
-            if "SECRET" in name.upper() and secret:
-                text = text.replace(secret, "<redacted>")
         return re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/-]+=*", r"\1<redacted>", text)
 
     def configure(self, args):
