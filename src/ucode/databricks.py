@@ -4,6 +4,7 @@ discovery, AI Gateway checks, and URL builders."""
 from __future__ import annotations
 
 import configparser
+import contextvars
 import functools
 import json
 import logging
@@ -2831,7 +2832,7 @@ def _collect_concurrently[T, R](
                 results.put((_PROBE_FAILED, item))
 
     for _ in range(max(1, min(max_workers, len(items)))):
-        threading.Thread(target=worker, daemon=True).start()
+        threading.Thread(target=contextvars.copy_context().run, args=(worker,), daemon=True).start()
 
     remaining = len(items)
     while remaining > 0 and not should_stop():

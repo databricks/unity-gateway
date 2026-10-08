@@ -7,6 +7,7 @@ to import the other.
 
 from __future__ import annotations
 
+import contextvars
 import threading
 import time
 from collections.abc import Callable
@@ -262,7 +263,14 @@ def list_skill_files(
     pending = [f"{SKILL_FILES_API_PREFIX}/{catalog}/{schema}/{securable}"]
     while pending:
         futures = [
-            _files_api_pool.submit(_list_skill_directory, dirs_base, directory, token, skill_prefix)
+            _files_api_pool.submit(
+                contextvars.copy_context().run,
+                _list_skill_directory,
+                dirs_base,
+                directory,
+                token,
+                skill_prefix,
+            )
             for directory in pending
         ]
         pending = []
@@ -306,7 +314,14 @@ def fetch_skill_bundle(
 
     path_by_future = {
         _files_api_pool.submit(
-            fetch_skill_file, workspace, token, catalog, schema, securable, path
+            contextvars.copy_context().run,
+            fetch_skill_file,
+            workspace,
+            token,
+            catalog,
+            schema,
+            securable,
+            path,
         ): path
         for path in relative_paths
     }

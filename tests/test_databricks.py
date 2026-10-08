@@ -1582,6 +1582,21 @@ class TestWalkCatalogSchemas:
         assert reason == "no user UC catalogs found"
         assert probed == []
 
+    def test_workers_see_custom_header_scope(self):
+        from ucode.request_headers import custom_header_scope, get_custom_headers
+
+        seen: list[dict[str, str]] = []
+        with custom_header_scope({"X-Test": "scoped"}):
+            db_mod._collect_concurrently(
+                [1, 2],
+                lambda item: get_custom_headers(),
+                lambda result, item: seen.append(result),
+                max_workers=2,
+                should_stop=lambda: False,
+            )
+
+        assert seen == [{"X-Test": "scoped"}, {"X-Test": "scoped"}]
+
 
 class TestListAllMcpServices:
     """Workspace-wide walk: catalogs -> schemas -> per-schema mcp-services."""

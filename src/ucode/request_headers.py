@@ -60,6 +60,8 @@ def parse_custom_headers(values: list[str] | None) -> dict[str, str]:
             raise RuntimeError(
                 "--header values cannot contain control characters or line separators."
             )
+        if not value.isascii():
+            raise RuntimeError("--header values must be ASCII.")
         normalized_name = name.casefold()
         if normalized_name in _PROTECTED_CUSTOM_HEADER_NAMES:
             raise RuntimeError(f"--header cannot override protected header '{name}'.")

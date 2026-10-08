@@ -3099,10 +3099,14 @@ def default(
 ) -> None:
     """Configure and launch coding agents through Databricks AI Gateway."""
     try:
-        ctx.with_resource(custom_header_scope(_parse_custom_headers(header)))
+        headers = _parse_custom_headers(header)
+        ctx.with_resource(custom_header_scope(headers))
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
+    if headers and ctx.invoked_subcommand not in {None, *TOOL_SPECS, "cursor", "usage"}:
+        print_err("--header is only supported when launching an agent or running `ug usage`.")
+        raise typer.Exit(1)
     if ctx.invoked_subcommand is not None:
         return
     set_dry_run(dry_run)
