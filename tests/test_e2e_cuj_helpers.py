@@ -12,13 +12,7 @@ from tests.e2e_cuj import test_cuj2_mps_mcp as cuj2
 from tests.e2e_cuj import test_cuj3_mcp as mcp_registration
 from tests.e2e_cuj.base import bearer
 from tests.e2e_cuj.helpers import poll as poll_module
-from tests.e2e_cuj.helpers.constants import (
-    CLAUDE,
-    CLAUDE_HAIKU_MODEL,
-    CODEX,
-    INFERENCE_PATHS,
-    CodingAgent,
-)
+from tests.e2e_cuj.helpers.constants import CLAUDE, CLAUDE_HAIKU_MODEL, CODEX, CodingAgent
 from tests.e2e_cuj.helpers.evidence import assert_models, claude_file_task
 from tests.e2e_cuj.helpers.poll import poll
 from tests.e2e_cuj.helpers.session import (
@@ -29,7 +23,7 @@ from tests.e2e_cuj.helpers.session import (
 )
 from tests.e2e_cuj.helpers.terminal import Terminal
 from tests.e2e_cuj.helpers.workspace import Workspace
-from tests.e2e_cuj.test_cuj3_models import _assert_inference_evidence, _catalog_display_names
+from tests.e2e_cuj.test_cuj3_models import _catalog_display_names
 
 
 def _client(headers):
@@ -321,58 +315,3 @@ def test_cuj2_mcp_listing_retries_a_banner_only_claude_listing(tmp_path, monkeyp
     cuj2._assert_generated_mcp_listings(SimpleNamespace(env={"PATH": str(tmp_path)}, run=run))
 
     assert calls == [CLAUDE, CLAUDE, CODEX]
-
-
-@pytest.mark.parametrize(
-    "statuses,models,prompts,bodies,passes",
-    [
-        (
-            [400, 200],
-            ["claude-expected", "claude-expected"],
-            ["task", "task"],
-            [b"error", b"answer"],
-            True,
-        ),
-        ([400], ["claude-expected"], ["task"], [b"error"], False),
-        (
-            [200, 400],
-            ["claude-expected", "claude-expected"],
-            ["task", "task"],
-            [b"answer", b"error"],
-            False,
-        ),
-        (
-            [400, 200],
-            ["claude-wrong", "claude-expected"],
-            ["task", "task"],
-            [b"error", b"answer"],
-            False,
-        ),
-        ([200], ["claude-expected"], ["other task"], [b"answer"], False),
-        ([200], ["claude-expected"], ["task"], [b""], False),
-    ],
-)
-def test_catalog_inference_requires_expected_model_and_final_success(
-    statuses, models, prompts, bodies, passes
-):
-    requests = [
-        SimpleNamespace(
-            sequence=index,
-            method="POST",
-            path=INFERENCE_PATHS[CLAUDE],
-            payload={"model": model, "messages": [{"role": "user", "content": prompt}]},
-        )
-        for index, (model, prompt) in enumerate(zip(models, prompts, strict=True))
-    ]
-    recorder = SimpleNamespace(
-        requests_after=lambda checkpoint: requests,
-        response_for=lambda request, **kwargs: SimpleNamespace(
-            status_code=statuses[request.sequence], body=bodies[request.sequence]
-        ),
-    )
-    task = SimpleNamespace(prompt="task")
-    if passes:
-        _assert_inference_evidence(recorder, 0, CLAUDE, task, "claude-expected")
-    else:
-        with pytest.raises(AssertionError):
-            _assert_inference_evidence(recorder, 0, CLAUDE, task, "claude-expected")

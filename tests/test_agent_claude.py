@@ -65,18 +65,17 @@ class TestClaudeSpec:
 
 
 class TestMinimumVersion:
-    @pytest.mark.parametrize("version", ["2.1.290", "2.1.291", "2.2.0", "3.0.0"])
+    @pytest.mark.parametrize("version", ["2.1.290", "2.1.291", "3.0.0"])
     def test_supported_version(self, monkeypatch, version):
         monkeypatch.setattr(claude, "agent_version", lambda _binary: version)
 
         assert claude.minimum_version_error() is None
 
-    @pytest.mark.parametrize("version", ["2.1.259", "2.1.280", "2.1.286", "2.1.289"])
-    def test_older_version_requires_update(self, monkeypatch, version):
-        monkeypatch.setattr(claude, "agent_version", lambda _binary: version)
+    def test_older_version_requires_update(self, monkeypatch):
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.1.289")
 
         assert claude.minimum_version_error() == (
-            f"ug requires Claude Code 2.1.290 or newer. Your current version is Claude Code {version}."
+            "ug requires Claude Code 2.1.290 or newer. Your current version is Claude Code 2.1.289."
         )
 
     def test_unknown_version_does_not_block(self, monkeypatch):

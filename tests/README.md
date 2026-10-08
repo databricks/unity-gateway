@@ -12,14 +12,6 @@ mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 | Integration CUJs | `integration/test_*.py` | Public configure, TUI, script, command, protocol, and lifecycle journeys |
 | Installation | `integration/test_installation.py` | Fresh installed package, CLI, and local helpers without credentials on Linux and advisory native Windows |
 
-Claude 2.1.290 compatibility checks in `test_integration_evidence.py` recognize
-acknowledged, turn-ending `SubagentHandback` results as child answers while rejecting
-unconfirmed or failed calls. They also identify MCP menu rows by server name despite
-changing connection indicators. `test_e2e_cuj_helpers.py` checks that every task request
-uses the expected model and that the final attempt has a nonempty HTTP 200, allowing
-Claude's own recovery from rejected optional parameters. These are component checks;
-live journeys still require actual task completion and gateway evidence.
-
 Dedicated CUJs reuse `integration/utils` session/terminal mechanics and file-task
 and transcript readers, not its config stubs or pytest fixtures. Prompt/model
 correlation remains CUJ-specific. Concurrent runs may read the same CUJ workspace.
@@ -45,8 +37,6 @@ binary output. `test_launcher.py` covers terminal handoff and exit status.
 Ruff rejects direct subprocess launches outside `os_compatibility/subprocess_cross_os.py` and tests.
 Claude's native resolver tests remain in
 `test_agent_claude.py`; installation failures are covered in `test_agents_init.py`.
-Version-floor component tests reject Claude versions below 2.1.290 and accept the
-minimum and newer versions; unknown-version handling remains unchanged.
 These are component checks, not live Windows coverage for every agent.
 
 Agent configuration tests also verify `ug` auth/MCP helper commands, including

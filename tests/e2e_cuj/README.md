@@ -25,11 +25,7 @@ Picker cases dismiss the menu without changing selection, then complete a task o
 Separate cases cover bare `ug`, `ug claude`, and `ug codex` TUI first tasks and Claude print/Codex
 exec defaults. Each additional compatible model gets its own headless task case.
 Success requires a completed native task and successful recorded gateway inference for the
-expected service/alias, not generated settings or catalog caches. Every task request
-must target that service/alias, and the final attempt must have a nonempty HTTP 200.
-The gateway may reject an optional parameter such as effort and Claude can recover;
-that intermediate response does not replace the required successful final response
-or native task completion. Defaults omit model overrides;
+expected service/alias, not generated settings or catalog caches. Defaults omit model overrides;
 expected answers are withheld from prompts. Claude headless results also require nonzero output
 tokens in `modelUsage`; Codex joins the completed answer to its client-selected turn model.
 Claude transcript model IDs name the backing model, not the service. TUI tasks reject unexpected
