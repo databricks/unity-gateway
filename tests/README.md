@@ -370,3 +370,11 @@ explicit removals, session isolation, malformed-state rejection, atomic write fa
 concurrent readers, and concurrent process writers. Existing Smart Router controls retain
 their allowlist and file format through this store. These are component checks; storage
 updates alone do not prove native agent reload or live gateway behavior.
+
+`test_claude_session_settings.py` checks general Claude extra-body composition. The opt-in
+`native_claude/test_session_settings.py` directly runs an explicitly selected Claude binary
+and version against a local fixture API. It checks parent/child payloads, two concurrent
+config scopes, watched updates, startup-file caching, and absent configuration. The stronger
+watched-update test exposed a stale first parent request after a one-second wait and remains
+failing; it is not production UG reload or live gateway coverage. Run instructions and
+remaining adapter requirements are in `docs/claude-session-settings.md`.
