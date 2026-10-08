@@ -252,15 +252,15 @@ Use `SMART_ROUTING_CONFIG_VERSION` at launch to select a smart-routing configura
 
 | Version | Subagent routing | First-prompt routing | Orchestrator |
 | --- | --- | --- | --- |
-| `subagent_only` | On | Off | Off |
-| `subagent_orch` | On | Off | On |
+| `subagent_only_v0` | On | Off | Off |
+| `subagent_orch_v0` | On | Off | On |
 
-Smart-routed Claude and Codex sessions install `smart-router`. The `subagent_orch`
+Smart-routed Claude and Codex sessions install `smart-router`. The `subagent_orch_v0`
 version also installs and activates the bundled `smart-router-orchestrator` skill.
 For example:
 
 ```bash
-SMART_ROUTING_CONFIG_VERSION=subagent_orch ug claude
+SMART_ROUTING_CONFIG_VERSION=subagent_orch_v0 ug claude
 ```
 
 The version takes precedence over conflicting legacy flags. UG expands it into
@@ -269,6 +269,15 @@ The version takes precedence over conflicting legacy flags. UG expands it into
 unset or empty, these legacy flags retain their existing behavior, including
 first-prompt routing through `ENABLE_SMART_ROUTING_V2=1`. Unknown versions produce
 an error listing the supported values. Orchestration remains off by default.
+
+The original `subagent_only` and `subagent_orch` names remain aliases of their
+respective `_v0` configurations. Future revisions use new `_v1`, `_v2`, etc. names
+without changing existing versions or aliases.
+
+Version definitions fail validation at module import if any flag in
+`SMART_ROUTING_CONFIG_ENV_KEYS` is missing, has a value other than `"0"` or `"1"`,
+or an unknown flag is present. Register new managed flags in that tuple and
+explicitly set them in every version.
 
 Use `ug codex` in the same command for Codex. Smart Router Orchestrator assigns bounded work
 to explorer, researcher, worker, tester, and reviewer roles while the root plans,
