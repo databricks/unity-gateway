@@ -153,7 +153,6 @@ from ucode.state import (
     load_state,
     remove_self_managed_agent,
     save_state,
-    self_managed_agents,
     set_current_workspace,
     set_provider_service,
     workspace_self_managed_agents,
@@ -1512,14 +1511,14 @@ def agents_add(
         if not workspace:
             raise RuntimeError("No workspace configured. Run `ug configure` first.")
         managed, _ = _fetch_managed_config(state)
-        enabled = managed_enabled_tools(managed or {})
-        if enabled and tool in enabled:
+        management = _agent_management(managed, state, tool)
+        if management is AgentManagement.ADMIN:
             print_note(
                 f"{TOOL_SPECS[tool]['display']} is already managed by your workspace admin "
                 "— no action needed."
             )
             return
-        if is_self_managed(state, tool):
+        if management is AgentManagement.SELF:
             print_note(f"{TOOL_SPECS[tool]['display']} is already in your self-managed list.")
             return
         with managed_write_session():
@@ -1547,13 +1546,13 @@ def agents_remove(
         if not state.get("workspace"):
             raise RuntimeError("No workspace configured. Run `ug configure` first.")
         managed, _ = _fetch_managed_config(state)
-        enabled = managed_enabled_tools(managed or {})
-        if tool in enabled:
+        management = _agent_management(managed, state, tool)
+        if management is AgentManagement.ADMIN:
             raise RuntimeError(
                 f"{TOOL_SPECS[tool]['display']} is managed by your workspace admin and cannot "
                 "be removed from the self-managed list."
             )
-        if not is_self_managed(state, tool):
+        if management is AgentManagement.UNMANAGED:
             print_note(f"{TOOL_SPECS[tool]['display']} is not in your self-managed list.")
             return
         remove_self_managed_agent(state, tool)
@@ -1581,9 +1580,6 @@ def agents_list_cmd() -> None:
         print_section("Agents")
         print_kv("Workspace", state["workspace"])
 
-        enabled = managed_enabled_tools(managed or {})
-        self_managed_list = self_managed_agents(state)
-
         if managed is None:
             print_note("No managed config is published for this workspace.")
 
@@ -1593,14 +1589,11 @@ def agents_list_cmd() -> None:
         for tool in sorted(_MANAGEABLE_AGENTS):
             if TOOL_SPECS.get(tool) is None:
                 continue
-            display = TOOL_SPECS[tool]["display"]
-            if tool in enabled:
-                badge = status_badge("admin-managed", "ok")
-            elif tool in self_managed_list:
-                badge = status_badge("self-managed", "info")
-            else:
+            management = _agent_management(managed, state, tool)
+            if management is AgentManagement.UNMANAGED:
                 continue
-            table.add_row(display, badge)
+            tone = "ok" if management is AgentManagement.ADMIN else "info"
+            table.add_row(TOOL_SPECS[tool]["display"], status_badge(management.value, tone))
         if table.row_count:
             console.print(table)
         else:
@@ -2541,14 +2534,27 @@ def _migrate_legacy_smart_routing(state: dict) -> dict:
     return state
 
 
+class AgentManagement(StrEnum):
+    """Who governs an agent's setup in the current workspace."""
+
+    ADMIN = "admin-managed"
+    SELF = "self-managed"
+    UNMANAGED = "unmanaged"
+
+
+def _agent_management(managed: dict | None, state: dict, tool: str) -> AgentManagement:
+    """Admin enablement always wins over the developer's ``ug agents add`` opt-in."""
+    if tool in managed_enabled_tools(managed or {}):
+        return AgentManagement.ADMIN
+    if is_self_managed(state, tool):
+        return AgentManagement.SELF
+    return AgentManagement.UNMANAGED
+
+
 def _launches_self_managed(managed: dict | None, state: dict, tool: str) -> bool:
-    """True when ``tool`` runs outside the managed config: the developer added it via
-    ``ug agents add`` and the admin hasn't enabled it. Admin enablement always wins."""
-    return (
-        managed is not None
-        and is_self_managed(state, tool)
-        and tool not in managed_enabled_tools(managed)
-    )
+    """True when ``tool`` runs outside a published managed config because the developer added it
+    via ``ug agents add`` and the admin hasn't enabled it."""
+    return managed is not None and _agent_management(managed, state, tool) is AgentManagement.SELF
 
 
 def _reject_disabled_agent(managed: dict | None, tool: str) -> None:
@@ -2839,7 +2845,9 @@ def _launch_tool(
             and (databricks_cli_installed() or external_bearer_configured())
         ):
             early_managed = _fetch_managed_config(existing)
-        gate_managed = managed if managed is not None else (early_managed or (None, False))[0]
+        gate_managed = managed
+        if gate_managed is None and early_managed is not None:
+            gate_managed, _ = early_managed
         if not _launches_self_managed(gate_managed, existing, tool):
             _reject_disabled_agent(gate_managed, tool)
         ensure_bootstrap_dependencies(
