@@ -49,7 +49,8 @@ Model evidence combines observed gateway requests/responses with native complete
 records; neither routing banners nor native records alone prove an applied decision.
 
 `test_cuj2_mps_mcp.py` runs three independently collected cases against a permanently
-preconfigured workspace: configuration, Codex inference, and Claude inference. Each case
+preconfigured workspace: configuration, Codex inference, and Claude inference. `test_cuj2_skills.py`
+adds the named-skill cases against the same workspace. Each case
 reads and validates the exact two-agent MPS/MCP shape. No case creates, updates, deletes,
 or restores CodingAgentConfig. The fixture's final read-only equality check is the only
 workspace mutation guard. The test uses the shared `UserSession`, `Workspace`, and
