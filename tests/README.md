@@ -63,12 +63,18 @@ component checks replace external auth/network boundaries; they do not establish
 live search, parent/child discovery, or classifier permission behavior.
 
 `test_databricks.py` also covers process-local CLI token memoization, expiry
-margins, short-lived failure entries, forced refresh, and login invalidation.
+margins on both wall and monotonic clocks (including suspend and clock rollback),
+short-lived failure entries only for confirmed invalid/missing credentials,
+forced refresh, and login invalidation. Unknown CLI failures, network errors,
+and malformed token responses retry on the next call without a stale-profile hint.
 Concurrent callers share a per-profile fetch, and an in-flight result cannot
 restore a memo invalidated by login.
 Fake CLI subprocesses check that re-auth runs only when a successful help probe
 advertises `--no-browser`. Search component tests verify token reuse and transient
-timeout retries. These checks do not establish live login or launch-time savings.
+timeout retries. `test_mcp_connection_login.py` verifies token/failure invalidation
+after successful and failed login attempts; `test_mcp_proxy.py` checks fresh tokens
+on sync and async post-login retries. These checks do not establish live login or
+launch-time savings.
 
 `test_mcp_web_search_concurrency.py` drives the real stdio dispatcher with controlled
 HTTP and authentication boundaries. It covers concurrent results and catalog requests,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import tomllib
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -10,7 +11,8 @@ import anyio
 import httpx
 import pytest
 
-from ucode import mcp_proxy
+from ucode import databricks as db_mod
+from ucode import mcp_connection_login, mcp_proxy
 
 WS = "https://example.databricks.com"
 URL = f"{WS}/api/2.0/mcp/functions/system/ai"
@@ -155,6 +157,65 @@ class TestDatabricksTokenAuth:
         assert logins == [(CONN_URL, "p")]  # login driven once, only on the 401
         assert len(yielded) == 2  # retried after signing in
         assert yielded[1].headers["Authorization"] == "Bearer tok"
+
+    @pytest.mark.parametrize("async_flow", [False, True], ids=["sync", "async"])
+    def test_connection_login_retry_uses_the_new_profiles_token(self, monkeypatch, async_flow):
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        monkeypatch.setattr(mcp_connection_login, "databricks_cli_path", lambda: "databricks")
+        monkeypatch.setattr(mcp_proxy, "mcp_service_needs_connection_login", lambda *a, **k: True)
+        db_mod._remember_token(db_mod._token_memo_key(WS, "p"), "before-login", 3600)
+        token_calls = []
+        login_calls = []
+
+        def token_run(argv, **kwargs):
+            token_calls.append(argv)
+            return subprocess.CompletedProcess(
+                argv, 0, '{"access_token": "after-login", "expires_in": 3600}', ""
+            )
+
+        def login_run(argv, **kwargs):
+            if "--help" in argv:
+                return subprocess.CompletedProcess(argv, 0, "--resource", "")
+            login_calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0)
+
+        monkeypatch.setattr(db_mod, "run", token_run)
+        monkeypatch.setattr(mcp_connection_login.subprocess_cross_os, "run", login_run)
+        auth = mcp_proxy._build_token_auth(CONN_URL, WS, "p")
+        request = httpx.Request("POST", CONN_URL)
+
+        if async_flow:
+
+            async def scenario():
+                gen = auth.async_auth_flow(request)
+                try:
+                    first = await gen.__anext__()
+                    assert first.headers["Authorization"] == "Bearer before-login"
+                    retried = await gen.asend(httpx.Response(401))
+                    assert retried.headers["Authorization"] == "Bearer after-login"
+                finally:
+                    await gen.aclose()
+
+            anyio.run(scenario)
+        else:
+            gen = auth.auth_flow(request)
+            try:
+                assert next(gen).headers["Authorization"] == "Bearer before-login"
+                assert gen.send(httpx.Response(401)).headers["Authorization"] == (
+                    "Bearer after-login"
+                )
+            finally:
+                gen.close()
+
+        assert len(login_calls) == 1
+        assert "--resource" in login_calls[0]
+        assert login_calls[0][-2:] == ["--profile", "p"]
+        assert len(token_calls) == 1
+        assert token_calls[0][1:3] == ["auth", "token"]
+        assert "--force-refresh" not in token_calls[0]
+        assert token_calls[0][token_calls[0].index("--profile") + 1] == "p"
 
     def test_non_connection_401_is_not_retried(self, monkeypatch):
         monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda ws, profile: "tok")

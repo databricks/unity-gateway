@@ -69,6 +69,17 @@ TOKEN_REFRESH_INTERVAL_SECONDS = 1800
 # we retry rather than treat them as an expired session.
 _TOKEN_CACHE_LOCK_MARKERS = ("cache update", "exit status 45")
 _TOKEN_FETCH_MAX_ATTEMPTS = 4
+# Only explicit credential refusals justify a negative memo; unknown CLI errors
+# can be network, VPN, or service failures that the next call should retry.
+_TOKEN_CREDENTIAL_FAILURE_MARKERS = (
+    "invalid_grant",
+    "invalid refresh token",
+    "refresh token is invalid",
+    "expired refresh token",
+    "refresh token has expired",
+    "no cached token",
+    "no cached credentials",
+)
 # `get_databricks_token` is called from many places during one launch, and each
 # miss costs a CLI subprocess (plus a doomed re-auth when the profile is stale).
 # A minted token is reused until this close to its expiry; a token whose JSON
@@ -1389,6 +1400,7 @@ class _MemoizedToken:
     token: str | None
     error: str | None
     valid_until: float
+    wall_valid_until: float
 
 
 _TOKEN_MEMO: dict[tuple[str, str | None], _MemoizedToken] = {}
@@ -1432,7 +1444,9 @@ def _memoized_token(key: tuple[str, str | None]) -> _MemoizedToken | None:
         entry = _TOKEN_MEMO.get(key)
         if entry is None:
             return None
-        if time.monotonic() >= entry.valid_until:
+        # Monotonic time may pause during suspend; wall time catches expiry
+        # during sleep, while monotonic time bounds reuse after clock rollback.
+        if time.monotonic() >= entry.valid_until or time.time() >= entry.wall_valid_until:
             del _TOKEN_MEMO[key]
             return None
         return entry
@@ -1481,7 +1495,7 @@ def _remember_token(
             # token behind for subsequent non-forced callers.
             _TOKEN_MEMO.pop(key, None)
             return
-        _TOKEN_MEMO[key] = _MemoizedToken(token, None, time.monotonic() + ttl)
+        _TOKEN_MEMO[key] = _MemoizedToken(token, None, time.monotonic() + ttl, time.time() + ttl)
 
 
 def _remember_token_failure(
@@ -1490,7 +1504,12 @@ def _remember_token_failure(
     with _TOKEN_MEMO_LOCK:
         if _token_epoch is not None and _token_epoch != _TOKEN_CACHE_EPOCH:
             return
-        _TOKEN_MEMO[key] = _MemoizedToken(None, error, time.monotonic() + _TOKEN_MEMO_FAILURE_TTL_S)
+        _TOKEN_MEMO[key] = _MemoizedToken(
+            None,
+            error,
+            time.monotonic() + _TOKEN_MEMO_FAILURE_TTL_S,
+            time.time() + _TOKEN_MEMO_FAILURE_TTL_S,
+        )
 
 
 def _auth_login_supports_no_browser(cli: str) -> bool:
@@ -1593,14 +1612,14 @@ def _fetch_databricks_token_for_profile(
         + f" profile={profile or '<none>'}",
     )
 
-    # A timeout or lost cache lock says nothing about the profile, so only a
-    # definitive refusal is memoized.
-    transient_failure = False
+    # Treat unknown failures as transient unless the CLI explicitly identifies
+    # invalid or missing credentials.
+    transient_failure = True
 
     def _fetch() -> tuple[str, float | None, str]:
-        """Return (access_token, lifetime_s, stderr). token is '' on any failure."""
+        """Return (access_token, lifetime_s, diagnostics). token is '' on failure."""
         nonlocal transient_failure
-        transient_failure = False
+        transient_failure = True
         try:
             result = run(
                 cmd,
@@ -1613,11 +1632,16 @@ def _fetch_databricks_token_for_profile(
             _debug("auth token", _format_subprocess_result(result))
             if result.returncode == 0:
                 payload = json.loads(result.stdout or "{}")
+                if not isinstance(payload, dict):
+                    return "", None, "Databricks CLI token response is not a JSON object"
                 return payload.get("access_token", ""), _token_lifetime_s(payload), ""
-            return "", None, result.stderr or ""
+            diagnostics = f"{result.stderr or ''}\n{result.stdout or ''}"
+            transient_failure = not any(
+                marker in diagnostics.lower() for marker in _TOKEN_CREDENTIAL_FAILURE_MARKERS
+            )
+            return "", None, diagnostics
         except (subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
             _debug("auth token", f"exception: {type(exc).__name__}: {exc}")
-            transient_failure = isinstance(exc, subprocess.TimeoutExpired)
             return "", None, str(exc)
 
     def _fetch_with_lock_retry() -> tuple[str, float | None]:
@@ -1630,10 +1654,10 @@ def _fetch_databricks_token_for_profile(
         so the caller can fall through to the re-auth path."""
         nonlocal transient_failure
         for attempt in range(_TOKEN_FETCH_MAX_ATTEMPTS):
-            token, lifetime_s, stderr = _fetch()
+            token, lifetime_s, diagnostics = _fetch()
             if token:
                 return token, lifetime_s
-            if not any(marker in stderr.lower() for marker in _TOKEN_CACHE_LOCK_MARKERS):
+            if not any(marker in diagnostics.lower() for marker in _TOKEN_CACHE_LOCK_MARKERS):
                 return "", None
             _debug("auth token", f"cache-lock contention (attempt {attempt + 1}); retrying")
             transient_failure = True
@@ -1676,19 +1700,20 @@ def _fetch_databricks_token_for_profile(
         _debug("auth token", "empty on first fetch; CLI has no `auth login --no-browser`")
 
     if not token:
-        profile_name = profile or find_profile_name_for_host(workspace)
-        stale_profile_hint = ""
-        if profile_name:
-            stale_profile_hint = (
-                " The saved Databricks CLI profile may be stale or invalid. Try:\n"
-                f"  databricks auth logout --profile {profile_name}\n"
-                f"  databricks auth login --host {workspace} --profile {profile_name}"
+        error = f"Databricks CLI returned no access token for {workspace}. "
+        if transient_failure:
+            error += (
+                "Retry the request and check network connectivity or Databricks CLI diagnostics."
             )
-        error = (
-            f"Databricks CLI returned no access token for {workspace}. "
-            "Run `databricks auth login` to re-authenticate."
-            f"{stale_profile_hint}"
-        )
+        else:
+            error += "Run `databricks auth login` to re-authenticate."
+            profile_name = profile or find_profile_name_for_host(workspace)
+            if profile_name:
+                error += (
+                    " The saved Databricks CLI profile may be stale or invalid. Try:\n"
+                    f"  databricks auth logout --profile {profile_name}\n"
+                    f"  databricks auth login --host {workspace} --profile {profile_name}"
+                )
         # A forced refresh is a retry after a rejected token; its failure must not
         # shadow an earlier token that non-forced callers may still be using.
         if not force_refresh and not transient_failure:

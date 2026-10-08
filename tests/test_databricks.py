@@ -2260,9 +2260,7 @@ class TestGetDatabricksToken:
             '  *"auth profiles"*) echo \'{"profiles": [{"host": "'
             + WS
             + '", "name": "example-profile", "auth_type": "databricks-cli"}]}\'; exit 0 ;;\n'
-            '  *"auth login"*) exit 0 ;;\n'
-            "esac\n"
-            'echo \'{"access_token": "", "token_type": "Bearer"}\'',
+            '  *"auth login"*) exit 0 ;;\n' + self._STALE_TOKEN + "esac\nexit 2",
         )
         monkeypatch.setattr("os.environ", env)
 
@@ -2297,6 +2295,95 @@ class TestGetDatabricksToken:
             assert "stale or invalid" in message
             assert "databricks auth logout --profile stale-profile" in message
             assert f"databricks auth login --host {WS} --profile stale-profile" in message
+
+    @pytest.mark.parametrize("stream", ["stdout", "stderr"])
+    @pytest.mark.parametrize(
+        "diagnostic",
+        [
+            "Error: INVALID_GRANT",
+            "invalid refresh token",
+            '{"error_code": "UNAUTHENTICATED", "message": "the refresh token is invalid"}',
+            "no cached token for this host",
+            "no cached credentials for this host",
+        ],
+    )
+    def test_only_confirmed_credential_errors_are_memoized(self, monkeypatch, stream, diagnostic):
+        calls = []
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            if command[-1] == "--help":
+                return subprocess.CompletedProcess(command, 0, "--timeout duration", "")
+            output = {"stdout": "", "stderr": "", stream: diagnostic}
+            return subprocess.CompletedProcess(command, 1, **output)
+
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        monkeypatch.setattr(db_mod, "run", fake_run)
+
+        for _ in range(3):
+            with pytest.raises(RuntimeError, match="stale or invalid"):
+                get_databricks_token(WS, "p")
+
+        assert sum(command[1:3] == ["auth", "token"] for command in calls) == 1
+        assert sum(command[-1] == "--help" for command in calls) == 1
+
+    @pytest.mark.parametrize(
+        ("returncode", "stdout", "stderr"),
+        [
+            (1, "", "dial tcp: connection refused"),
+            (1, "", "lookup host: no such host"),
+            (1, "temporary VPN failure", ""),
+            (1, "", ""),
+            (1, "", '{"error_code": "UNAUTHENTICATED"}'),
+            (0, "not JSON", ""),
+            (0, "", ""),
+            (0, '{"access_token": ""}', ""),
+            (0, "[]", ""),
+            (0, "null", ""),
+        ],
+        ids=[
+            "network",
+            "dns",
+            "vpn-stdout",
+            "unknown",
+            "unclassified-auth-error",
+            "malformed-json",
+            "empty-output",
+            "empty-token",
+            "non-object-json",
+            "null-json",
+        ],
+    )
+    def test_transient_token_failure_recovers_on_the_next_call(
+        self, monkeypatch, returncode, stdout, stderr
+    ):
+        token_calls = []
+
+        def fake_run(command, **kwargs):
+            if command[-1] == "--help":
+                return subprocess.CompletedProcess(command, 0, "--timeout duration", "")
+            token_calls.append(command)
+            if len(token_calls) == 1:
+                return subprocess.CompletedProcess(command, returncode, stdout, stderr)
+            return subprocess.CompletedProcess(
+                command, 0, '{"access_token": "recovered", "expires_in": 3600}', ""
+            )
+
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        monkeypatch.setattr(db_mod, "run", fake_run)
+
+        with pytest.raises(RuntimeError, match="no access token") as exc_info:
+            get_databricks_token(WS, "p")
+        assert "stale or invalid" not in str(exc_info.value)
+        assert "auth logout" not in str(exc_info.value)
+        assert "auth login" not in str(exc_info.value)
+        assert get_databricks_token(WS, "p") == "recovered"
+        assert get_databricks_token(WS, "p") == "recovered"
+        assert len(token_calls) == 2
 
     def test_failed_help_does_not_advertise_no_browser(self, tmp_path, monkeypatch):
         env, log = self._logging_fake(
@@ -2702,9 +2789,13 @@ class TestGetDatabricksToken:
         assert get_databricks_token(WS, "p") == "t"
         assert len(log.read_text().splitlines()) == 2
 
-    def test_token_without_expiry_memo_expires_after_default_ttl(self, tmp_path, monkeypatch):
-        now = [1000.0]
-        monkeypatch.setattr(db_mod.time, "monotonic", lambda: now[0])
+    @pytest.mark.parametrize("expired_clock", ["monotonic", "wall"])
+    def test_token_without_expiry_memo_expires_after_default_ttl(
+        self, tmp_path, monkeypatch, expired_clock
+    ):
+        now = {"monotonic": 1000.0, "wall": 1_000_000_000.0}
+        monkeypatch.setattr(db_mod.time, "monotonic", lambda: now["monotonic"])
+        monkeypatch.setattr(db_mod.time, "time", lambda: now["wall"])
         counter = tmp_path / "count"
         counter.write_text("0")
         env, log = self._logging_fake(
@@ -2716,9 +2807,41 @@ class TestGetDatabricksToken:
 
         assert get_databricks_token(WS, "p") == "token-1"
         assert get_databricks_token(WS, "p") == "token-1"
-        now[0] += db_mod._TOKEN_MEMO_DEFAULT_TTL_S
+        now[expired_clock] += db_mod._TOKEN_MEMO_DEFAULT_TTL_S
         assert get_databricks_token(WS, "p") == "token-2"
         assert sum("auth token" in call for call in log.read_text().splitlines()) == 2
+
+    @pytest.mark.parametrize("expired_clock", ["monotonic", "wall"])
+    @pytest.mark.parametrize(
+        "expiry_fields",
+        [
+            {"expires_in": 3600},
+            {"expiry": "2001-09-09T02:46:40Z"},
+            {"expires_in": 86400, "expiry": "2001-09-09T02:46:40Z"},
+        ],
+        ids=["relative-expiry", "absolute-expiry", "earliest-expiry"],
+    )
+    def test_token_memo_expires_when_either_clock_reaches_the_deadline(
+        self, tmp_path, monkeypatch, expired_clock, expiry_fields
+    ):
+        now = {"monotonic": 1000.0, "wall": 1_000_000_000.0}
+        monkeypatch.setattr(db_mod.time, "monotonic", lambda: now["monotonic"])
+        monkeypatch.setattr(db_mod.time, "time", lambda: now["wall"])
+        payload = {"access_token": "t", **expiry_fields}
+        env, log = self._logging_fake(tmp_path, f"echo '{json.dumps(payload)}'")
+        monkeypatch.setattr("os.environ", env)
+
+        assert get_databricks_token(WS, "p") == "t"
+        now[expired_clock] += 3600 - db_mod._TOKEN_MEMO_EXPIRY_MARGIN_S - 1
+        assert get_databricks_token(WS, "p") == "t"
+        assert len(log.read_text().splitlines()) == 1
+        # Simulate suspend with a frozen monotonic clock, or a wall clock moved
+        # backwards while monotonic time still bounds the memo's lifetime.
+        if expired_clock == "monotonic":
+            now["wall"] -= 3600
+        now[expired_clock] += 1
+        assert get_databricks_token(WS, "p") == "t"
+        assert len(log.read_text().splitlines()) == 2
 
     def test_parses_cli_expiry_timestamp(self, monkeypatch):
         monkeypatch.setattr(db_mod.time, "time", lambda: 1_000_000_000.0)
@@ -2748,16 +2871,24 @@ class TestGetDatabricksToken:
         calls = log.read_text().splitlines()
         assert sum("auth token" in call for call in calls) == 2 * db_mod._TOKEN_FETCH_MAX_ATTEMPTS
 
-    def test_memoized_failure_expires(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("expired_clock", ["monotonic", "wall"])
+    def test_memoized_failure_expires(self, tmp_path, monkeypatch, expired_clock):
+        now = {"monotonic": 1000.0, "wall": 1_000_000_000.0}
+        monkeypatch.setattr(db_mod.time, "monotonic", lambda: now["monotonic"])
+        monkeypatch.setattr(db_mod.time, "time", lambda: now["wall"])
         env, log = self._logging_fake(
-            tmp_path, 'case "$*" in\n' + self._HELP_WITHOUT_NO_BROWSER + "esac\nexit 1"
+            tmp_path,
+            'case "$*" in\n' + self._HELP_WITHOUT_NO_BROWSER + self._STALE_TOKEN + "esac\nexit 2",
         )
         monkeypatch.setattr("os.environ", env)
-        monkeypatch.setattr(db_mod, "_TOKEN_MEMO_FAILURE_TTL_S", 0)
 
         for _ in range(2):
             with pytest.raises(RuntimeError):
                 get_databricks_token(WS, "p")
+        assert sum("auth token" in call for call in log.read_text().splitlines()) == 1
+        now[expired_clock] += db_mod._TOKEN_MEMO_FAILURE_TTL_S
+        with pytest.raises(RuntimeError):
+            get_databricks_token(WS, "p")
         assert sum("auth token" in call for call in log.read_text().splitlines()) == 2
 
     def test_has_valid_auth_shares_the_memo_but_not_its_failures(self, tmp_path, monkeypatch):
@@ -2768,12 +2899,13 @@ class TestGetDatabricksToken:
             + self._HELP_WITHOUT_NO_BROWSER
             + "esac\n"
             + f'if [ -f {flag} ]; then echo \'{{"access_token": "ok", "expires_in": 3600}}\'; '
-            + "else exit 1; fi",
+            + 'else echo "invalid refresh token" >&2; exit 1; fi',
         )
         monkeypatch.setattr("os.environ", env)
 
         with pytest.raises(RuntimeError):
             get_databricks_token(WS, "p")
+        assert db_mod._memoized_token(db_mod._token_memo_key(WS, "p")) is not None
         flag.write_text("")
         # A memoized failure must not suppress the real check that decides on login.
         assert db_mod.has_valid_databricks_auth(WS, "p")
@@ -2790,7 +2922,7 @@ class TestGetDatabricksToken:
             + f'  "auth login --host"*) : > {flag}; exit 0 ;;\n'
             + "esac\n"
             + f'if [ -f {flag} ]; then echo \'{{"access_token": "after-login"}}\'; '
-            + "else exit 1; fi",
+            + 'else echo "invalid refresh token" >&2; exit 1; fi',
         )
         monkeypatch.setattr("os.environ", env)
 
