@@ -574,6 +574,161 @@ class TestSubcommandRouting:
         assert cli_mod.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR not in os.environ
         assert mock_launch.call_args.args[1].args == []
 
+    @pytest.mark.parametrize(
+        "routing_env", ["ENABLE_SMART_ROUTING_V2", "ENABLE_SMART_ROUTING_SUBAGENT_ONLY"]
+    )
+    @pytest.mark.parametrize(
+        "tool_args",
+        [
+            ["-c", 'tui.alternate_screen="never"'],
+            ['--config=tui.alternate_screen="never"'],
+            ['-ctui.alternate_screen="never"'],
+            ["-c", 'tui.alternate_screen="never"', "--config", 'model_reasoning_effort="low"'],
+            ["--profile", "exec"],
+            ["--cd", "app-server"],
+            ["--no-alt-screen", "--search"],
+        ],
+    )
+    def test_codex_option_only_launch_preserves_smart_routing(
+        self, monkeypatch, routing_env, tool_args
+    ):
+        monkeypatch.setenv(routing_env, "1")
+        observed = []
+
+        def capture(_tool, ctx, **_kwargs):
+            options = cli_mod._launch_options(
+                "codex",
+                ctx.args,
+                smart_routing_enabled=cli_mod.smart_routing_v2.smart_routing_enabled(),
+                explicit_prompt=cli_mod._has_explicit_prompt(ctx),
+                user_pinned_model=None,
+                provider=None,
+            )
+            observed.append(
+                (os.environ.get(routing_env), list(ctx.args), options.launch_smart_routing)
+            )
+
+        with patch("ucode.cli._launch_tool", side_effect=capture):
+            result = runner.invoke(app, ["codex", *tool_args])
+
+        assert result.exit_code == 0, result.output
+        assert observed == [("1", tool_args, True)]
+        assert os.environ[routing_env] == "1"
+
+    @pytest.mark.parametrize(
+        "routing_env", ["ENABLE_SMART_ROUTING_V2", "ENABLE_SMART_ROUTING_SUBAGENT_ONLY"]
+    )
+    def test_codex_isaac_config_reaches_routed_launcher(self, monkeypatch, routing_env):
+        monkeypatch.setenv(routing_env, "1")
+        tool_args = ["-c", 'tui.alternate_screen="never"']
+        patches = _patch_launch("codex")
+        with contextlib.ExitStack() as stack:
+            for launch_patch in patches[:-1]:
+                stack.enter_context(launch_patch)
+            mock_launch = stack.enter_context(patches[-1])
+            result = runner.invoke(app, ["codex", *tool_args])
+
+        assert result.exit_code == 0, result.output
+        mock_launch.assert_called_once()
+        assert mock_launch.call_args.args[2] == tool_args
+        assert mock_launch.call_args.kwargs["options"].launch_smart_routing is True
+        assert os.environ[routing_env] == "1"
+
+    @pytest.mark.parametrize(
+        "routing_env", ["ENABLE_SMART_ROUTING_V2", "ENABLE_SMART_ROUTING_SUBAGENT_ONLY"]
+    )
+    @pytest.mark.parametrize("subcommand", ["app", "app-server", "exec", "e", "update"])
+    def test_codex_subcommand_after_config_suppresses_smart_routing(
+        self, monkeypatch, routing_env, subcommand
+    ):
+        monkeypatch.setenv(routing_env, "1")
+        tool_args = ["-c", 'tui.alternate_screen="never"', subcommand]
+        observed = []
+
+        def capture(_tool, ctx, **_kwargs):
+            observed.append((os.environ.get(routing_env), list(ctx.args)))
+
+        with patch("ucode.cli._launch_tool", side_effect=capture):
+            result = runner.invoke(app, ["codex", *tool_args])
+
+        assert result.exit_code == 0, result.output
+        assert observed == [(None, tool_args)]
+        assert os.environ[routing_env] == "1"
+        assert not cli_mod._should_launch_smart_routing(
+            "codex", tool_args, explicit_prompt=False, model=None
+        )
+
+    @pytest.mark.parametrize(
+        "tool_args",
+        [
+            ["--unknown"],
+            ["--unknown", "exec"],
+            ["-c"],
+            ["--config="],
+            ["-c", "exec"],
+            ["-c", "=value"],
+            ["-c", "key="],
+            ["--profile"],
+            ["--profile", "--no-alt-screen"],
+            ["--search=true"],
+            ["--no-alt-screen", "fix this"],
+            ["--image", "one.png", "two.png"],
+            ["--remote", "ws://localhost:1234"],
+            ["--remote=ws://localhost:1234"],
+            ["--remote-auth-token-env", "TOKEN"],
+            ["--remote-auth-token-env=TOKEN"],
+            ["--oss"],
+            ["--local-provider", "ollama"],
+            ["--local-provider=ollama"],
+            ["--enable", "hooks"],
+            ["--disable", "hooks"],
+            ["--approve-for-me"],
+            ["--dangerously-bypass-approvals-and-sandbox"],
+            ["--dangerously-bypass-hook-trust"],
+            ["--help"],
+            ["-h"],
+            ["--version"],
+            ["-V"],
+        ],
+    )
+    def test_codex_unrecognized_or_malformed_launch_stays_unrouted(self, monkeypatch, tool_args):
+        assert not cli_mod._should_launch_smart_routing(
+            "codex", tool_args, explicit_prompt=False, model=None
+        )
+        routing_envs = ["ENABLE_SMART_ROUTING_V2", "ENABLE_SMART_ROUTING_SUBAGENT_ONLY"]
+        for routing_env in routing_envs:
+            monkeypatch.setenv(routing_env, "1")
+        ctx = MagicMock(args=tool_args, meta={})
+        with cli_mod._disable_smart_routing_for_subcommand("codex", ctx):
+            assert all(routing_env not in os.environ for routing_env in routing_envs)
+        assert all(os.environ[routing_env] == "1" for routing_env in routing_envs)
+
+    @pytest.mark.parametrize(
+        "model_args",
+        [
+            ["--model", "fixed"],
+            ["--model=fixed"],
+            ["-m", "fixed"],
+            ["-mfixed"],
+            ["-c", 'model="fixed"'],
+            ['--config=model="fixed"'],
+            ['-cmodel="fixed"'],
+        ],
+    )
+    def test_codex_config_with_explicit_model_stays_unrouted(self, monkeypatch, model_args):
+        tool_args = ["-c", 'tui.alternate_screen="never"', *model_args]
+        assert not cli_mod._should_launch_smart_routing(
+            "codex", tool_args, explicit_prompt=False, model=None
+        )
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "1")
+        ctx = MagicMock(args=tool_args, meta={})
+        with cli_mod._disable_smart_routing_for_subcommand("codex", ctx):
+            assert "ENABLE_SMART_ROUTING_V2" not in os.environ
+            assert "ENABLE_SMART_ROUTING_SUBAGENT_ONLY" not in os.environ
+        assert os.environ["ENABLE_SMART_ROUTING_V2"] == "1"
+        assert os.environ["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] == "1"
+
     @pytest.mark.parametrize("tool, subcommand", [("codex", "app"), ("claude", "update")])
     def test_native_subcommand_suppresses_inherited_smart_routing(
         self, monkeypatch, tool, subcommand
