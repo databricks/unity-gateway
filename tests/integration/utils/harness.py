@@ -175,6 +175,15 @@ class UserSession:
         assert resolved, f"{name} is not on the session PATH"
         return Path(resolved)
 
+    def choose_codex_windows_sandbox(self) -> None:
+        # The Codex TUI asks users to pick a Windows sandbox on first run; `codex exec` can't ask
+        # and rejects every shell command until one is configured.
+        if os.name != "nt":
+            return
+        config = self.home / ".codex/config.toml"
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text('[windows]\nsandbox = "unelevated"\n')
+
     def record(self, name: str, value: object) -> None:
         (self.artifacts / name).write_text(self.redact(json.dumps(value, indent=2)))
 

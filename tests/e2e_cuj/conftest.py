@@ -8,10 +8,14 @@ from pathlib import Path
 import pytest
 from databricks.sdk.errors import DatabricksError
 
-from tests.integration.utils.terminal import TerminalProcess
-
+from .base import bearer
 from .helpers.constants import CLAUDE, CODEX, MANAGED_PATHS
-from .helpers.session import UserSession
+from .helpers.session import (
+    MACHINE_WIDE_LEAK,
+    MachineWideLeak,
+    UserSession,
+    dirty_runner_message,
+)
 from .helpers.tui_request_recorder import TuiRequestRecorder
 from .helpers.workspace import Workspace
 
@@ -22,26 +26,37 @@ def pytest_configure(config):
         raise pytest.UsageError("Run with --confcutdir=tests/e2e_cuj to exclude unit-test mocks.")
 
 
+def _scrubbed(error: DatabricksError) -> RuntimeError:
+    # Server messages may echo credentials; retain only the SDK error type.
+    return RuntimeError(f"Workspace API failed: {type(error).__name__}")
+
+
+def _record_machine_wide_leak(request):
+    """Name the class that leaked machine-wide settings to the later classes it blocks."""
+    leaked = tuple(str(path) for path in MANAGED_PATHS if path.exists())
+    if leaked:
+        request.config.stash[MACHINE_WIDE_LEAK] = MachineWideLeak(request.node.nodeid, leaked)
+
+
 @pytest.fixture(scope="class")
 def cuj(request, setup_workspace, tmp_path_factory):
     assert os.name == "posix", "Full TUI CUJs require a disposable POSIX runner"
-    assert not any(path.exists() for path in MANAGED_PATHS), (
-        "Existing machine-wide agent settings; use a clean disposable runner. Nothing was changed."
+    assert not any(path.exists() for path in MANAGED_PATHS), dirty_runner_message(
+        request.config.stash.get(MACHINE_WIDE_LEAK, None)
     )
     for tool in ("ug", CLAUDE, CODEX, "databricks"):
         assert shutil.which(tool), f"Install the required CLI before running this CUJ: {tool}"
 
-    authorization = request.cls.workspace.config.authenticate().get("Authorization", "")
-    if not authorization.startswith("Bearer ") or not authorization.removeprefix("Bearer "):
-        raise RuntimeError("Service-principal authentication did not return a bearer token.")
-    bearer = authorization.removeprefix("Bearer ")
+    class_bearer = bearer(request.cls.workspace)
     run_directory = tmp_path_factory.mktemp(request.cls.__name__)
     artifacts = run_directory / "artifacts"
     print(f"CUJ artifacts: {artifacts}")
     with tempfile.TemporaryDirectory(prefix="ug-cuj-", dir="/tmp") as temporary:
         workspace = Workspace(request.cls.workspace)
         with TuiRequestRecorder(workspace.url) as recorder:
-            session = UserSession(Path(temporary), Path(shutil.which("ug")), artifacts, bearer)
+            session = UserSession(
+                Path(temporary), Path(shutil.which("ug")), artifacts, class_bearer
+            )
             try:
                 published = workspace.config()
                 try:
@@ -50,21 +65,23 @@ def cuj(request, setup_workspace, tmp_path_factory):
                     try:
                         workspace.assert_unchanged(published)
                     finally:
-                        state_dir = session.home / ".ucode"
-                        if any(
-                            (state_dir / name).is_file()
-                            for name in ("state.json", "managed-backups/manifest.json")
-                        ):
-                            with TerminalProcess(
-                                session,
-                                "ug",
-                                [str(session.binary), "revert"],
-                                "cleanup-revert",
-                            ) as terminal:
-                                terminal.finish()
-                        assert not any(path.exists() for path in MANAGED_PATHS), (
-                            "CUJ teardown left machine-wide agent settings"
-                        )
+                        try:
+                            session.revert_machine_wide(
+                                "cleanup-revert", "CUJ teardown left machine-wide agent settings"
+                            )
+                        finally:
+                            _record_machine_wide_leak(request)
             except DatabricksError as error:
-                # Server messages may echo credentials; retain only the SDK error type.
-                raise RuntimeError(f"Workspace API failed: {type(error).__name__}") from None
+                raise _scrubbed(error) from None
+
+
+@pytest.fixture(autouse=True)
+def _refresh_cuj_bearer(request):
+    # The class bearer is minted once, but a long class can outlive the ~1h M2M token.
+    if "cuj" in request.fixturenames:
+        session, _, _ = request.getfixturevalue("cuj")
+        try:
+            refreshed = bearer(request.cls.workspace)
+        except DatabricksError as error:
+            raise _scrubbed(error) from None
+        session.refresh_bearer(refreshed)
