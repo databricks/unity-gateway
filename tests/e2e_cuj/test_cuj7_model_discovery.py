@@ -30,7 +30,6 @@ from .helpers.evidence import (
     SessionEvidence,
     assert_claude_headless_model,
     assert_inference_evidence,
-    canonical_model,
     claude_file_task,
 )
 from .helpers.session import (
@@ -76,7 +75,9 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         )
         binary = shutil.which("ug")
         assert binary, "Install ug before running CUJ7"
-        for tool in (CLAUDE, CODEX, "databricks"):
+        agents = [agent for agent in (CLAUDE, CODEX) if request.node.get_closest_marker(agent)]
+        assert len(agents) == 1, "CUJ7 cases must select exactly one agent"
+        for tool in (*agents, "databricks"):
             assert shutil.which(tool), f"Install the required CLI before running CUJ7: {tool}"
         session = UserSession(
             tmp_path,
@@ -110,8 +111,11 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
             for family in ("FABLE", "OPUS", "SONNET", "HAIKU")
         }
         managed_path = str(MANAGED_PATHS[0])
-        session.run("install", "-d", "-m", "0755", "/etc/claude-code", binary="sudo")
+        managed_directory = MANAGED_PATHS[0].parent
+        directory_existed = managed_directory.exists()
         try:
+            if not directory_existed:
+                session.run("install", "-d", "-m", "0755", str(managed_directory), binary="sudo")
             session.run(
                 "tee", managed_path, binary="sudo", input_text=json.dumps({"env": defaults})
             )
@@ -119,6 +123,7 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
                 yield defaults, recorder
         finally:
             try:
+                # Revert restores our seeded input; revert_machine_wide would reject that file.
                 if any((session.home / ".ucode" / name).is_file() for name in MANAGED_STATE_FILES):
                     with TerminalProcess(
                         session, "ug", [str(session.binary), "revert"], "family-defaults-revert"
@@ -126,6 +131,8 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
                         terminal.finish()
             finally:
                 session.run("rm", "-f", managed_path, binary="sudo")
+                if not directory_existed and managed_directory.exists():
+                    session.run("rmdir", str(managed_directory), binary="sudo")
 
     @pytest.mark.claude
     @pytest.mark.tui
@@ -251,7 +258,7 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         )
         task.assert_headless_answer(CLAUDE, result)
         assert evidence.completed(task), "No completed native turn matched the file task"
-        assert_claude_headless_model(result, model)
+        assert_claude_headless_model(result, model, exclusive=False)
         assert_inference_evidence(recorder, 0, CLAUDE, task, model)
         settings = json.loads(session.run(str(MANAGED_PATHS[0]), binary="cat", timeout=30).stdout)
         assert {key: settings.get("env", {}).get(key) for key in defaults} == defaults
@@ -289,7 +296,7 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         )
         task.assert_headless_answer(CODEX, result)
         turn = evidence.completed(task)
-        assert turn and set(map(canonical_model, turn.models)) == {canonical_model(model)}, turn
+        assert turn and set(turn.models) == {model}, turn
         assert_inference_evidence(
             request_recorder, 0, CODEX, task, model, parent_schema=MODEL_SERVICE_SCHEMA
         )

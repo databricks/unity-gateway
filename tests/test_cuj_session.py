@@ -1,17 +1,8 @@
 """Local environment/artifact safety checks for CUJ helpers."""
 
 from pathlib import Path
-from types import SimpleNamespace
 
-import pytest
-
-from tests.e2e_cuj.helpers import constants
-from tests.e2e_cuj.helpers.session import (
-    MACHINE_WIDE_LEAK,
-    UserSession,
-    dirty_runner_message,
-    record_machine_wide_leak,
-)
+from tests.e2e_cuj.helpers.session import UserSession
 
 
 def test_cuj_session_does_not_inherit_agent_credentials_or_configuration(tmp_path, monkeypatch):
@@ -49,17 +40,3 @@ def test_cuj_session_redacts_known_bearer_and_authorization_output(tmp_path):
     redacted = session.redact("known-token Authorization: Bearer another-token")
     assert "known-token" not in redacted and "another-token" not in redacted
     assert redacted.count("<redacted>") == 2
-
-
-def test_cuj_cleanup_leak_names_the_responsible_scenario(tmp_path, monkeypatch):
-    managed_path = tmp_path / "managed-settings.json"
-    managed_path.write_text("{}")
-    monkeypatch.setattr(constants, "MANAGED_PATHS", (managed_path,))
-    request = SimpleNamespace(
-        config=SimpleNamespace(stash=pytest.Stash()),
-        node=SimpleNamespace(nodeid="CUJ7/family-defaults"),
-    )
-    record_machine_wide_leak(request)
-    message = dirty_runner_message(request.config.stash[MACHINE_WIDE_LEAK])
-    assert "CUJ7/family-defaults" in message
-    assert str(managed_path) in message

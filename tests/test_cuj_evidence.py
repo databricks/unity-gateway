@@ -378,24 +378,28 @@ def test_cuj_inference_evidence_requires_exact_task_model_schema_and_response(ag
             )
 
 
-@pytest.mark.parametrize("failure", [None, "model", "tokens", "error"])
-def test_cuj_claude_headless_model_requires_expected_model_output_tokens(failure):
+@pytest.mark.parametrize("exclusive", [True, False])
+@pytest.mark.parametrize("failure", [None, "model", "tokens", "error", "side_model"])
+def test_cuj_claude_headless_model_requires_expected_model_output_tokens(failure, exclusive):
     model = "ug_e2e.models.claude_haiku"
+    usage = {
+        "wrong-model" if failure == "model" else model: {
+            "outputTokens": 0 if failure == "tokens" else 1
+        }
+    }
+    if failure == "side_model":
+        usage["ug_e2e.models.claude_sonnet"] = {"outputTokens": 1}
     result = SimpleNamespace(
         stdout=json.dumps(
             {
                 "type": "result",
                 "is_error": failure == "error",
-                "modelUsage": {
-                    "wrong-model" if failure == "model" else model: {
-                        "outputTokens": 0 if failure == "tokens" else 1
-                    }
-                },
+                "modelUsage": usage,
             }
         )
     )
-    if failure is None:
-        assert_claude_headless_model(result, model)
+    if failure is None or (failure == "side_model" and not exclusive):
+        assert_claude_headless_model(result, model, exclusive=exclusive)
     else:
         with pytest.raises(AssertionError):
-            assert_claude_headless_model(result, model)
+            assert_claude_headless_model(result, model, exclusive=exclusive)

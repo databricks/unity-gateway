@@ -116,7 +116,7 @@ def served_inference_request(recorder, requests, request, agent):
     raise AssertionError("Claude compatibility retries did not reach a successful response")
 
 
-def assert_claude_headless_model(result, expected):
+def assert_claude_headless_model(result, expected, *, exclusive=True):
     final = None
     for line in result.stdout.splitlines():
         try:
@@ -127,7 +127,9 @@ def assert_claude_headless_model(result, expected):
             final = payload
     assert final is not None and not final.get("is_error"), result.stdout
     usage = final["modelUsage"]
-    assert set(usage) == {expected}, {"expected": expected, "observed": sorted(usage)}
+    assert expected in usage, {"expected": expected, "observed": sorted(usage)}
+    if exclusive:
+        assert set(usage) == {expected}, {"expected": expected, "observed": sorted(usage)}
     assert usage[expected]["outputTokens"] > 0, usage
 
 

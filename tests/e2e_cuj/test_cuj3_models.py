@@ -26,12 +26,10 @@ from .catalog_discovery_expectations import (
 from .helpers.constants import CLAUDE, CODEX
 from .helpers.evidence import (
     SessionEvidence,
+    assert_claude_headless_model,
+    assert_inference_evidence,
     claude_file_task,
 )
-from .helpers.evidence import (
-    assert_claude_headless_model as _assert_claude_headless_model,
-)
-from .helpers.evidence import assert_inference_evidence as _assert_inference_evidence
 from .helpers.terminal import Terminal
 
 CUJ_NAME = "CUJ 3 · UC model discovery"
@@ -126,7 +124,7 @@ class TestCatalogDiscovery(BaseCujTest):
             tui.task(evidence, task)
             tui.exit_normally()
         task.assert_completed(session, CLAUDE)
-        _assert_inference_evidence(recorder, checkpoint, CLAUDE, task, CLAUDE_DEFAULT)
+        assert_inference_evidence(recorder, checkpoint, CLAUDE, task, CLAUDE_DEFAULT)
         session.assert_not_routed()
 
     @pytest.mark.codex
@@ -170,7 +168,7 @@ class TestCatalogDiscovery(BaseCujTest):
             tui.task(evidence, task)
             tui.exit_normally()
         assert_completed_task_model(session, CODEX, task.value, CODEX_DEFAULT)
-        _assert_inference_evidence(recorder, checkpoint, CODEX, task, CODEX_DEFAULT)
+        assert_inference_evidence(recorder, checkpoint, CODEX, task, CODEX_DEFAULT)
         session.assert_not_routed()
 
     @pytest.mark.claude
@@ -196,7 +194,7 @@ class TestCatalogDiscovery(BaseCujTest):
             tui.task(evidence, task)
             tui.exit_normally()
         task.assert_completed(session, CLAUDE)
-        _assert_inference_evidence(recorder, checkpoint, CLAUDE, task, CLAUDE_DEFAULT)
+        assert_inference_evidence(recorder, checkpoint, CLAUDE, task, CLAUDE_DEFAULT)
         session.assert_not_routed()
 
     @pytest.mark.claude
@@ -222,7 +220,7 @@ class TestCatalogDiscovery(BaseCujTest):
             tui.task(evidence, task)
             tui.exit_normally()
         task.assert_completed(session, CLAUDE)
-        _assert_inference_evidence(recorder, checkpoint, CLAUDE, task, CLAUDE_DEFAULT)
+        assert_inference_evidence(recorder, checkpoint, CLAUDE, task, CLAUDE_DEFAULT)
         session.assert_not_routed()
 
     @pytest.mark.codex
@@ -244,7 +242,7 @@ class TestCatalogDiscovery(BaseCujTest):
             tui.task(evidence, task)
             tui.exit_normally()
         assert_completed_task_model(session, CODEX, task.value, CODEX_DEFAULT)
-        _assert_inference_evidence(recorder, checkpoint, CODEX, task, CODEX_DEFAULT)
+        assert_inference_evidence(recorder, checkpoint, CODEX, task, CODEX_DEFAULT)
         session.assert_not_routed()
 
     @pytest.mark.claude
@@ -269,8 +267,8 @@ class TestCatalogDiscovery(BaseCujTest):
             timeout=240,
         )
         task.assert_headless_answer(CLAUDE, result)
-        _assert_claude_headless_model(result, CLAUDE_DEFAULT)
-        _assert_inference_evidence(recorder, checkpoint, CLAUDE, task, CLAUDE_DEFAULT)
+        assert_claude_headless_model(result, CLAUDE_DEFAULT)
+        assert_inference_evidence(recorder, checkpoint, CLAUDE, task, CLAUDE_DEFAULT)
         session.assert_not_routed()
 
     @pytest.mark.codex
@@ -289,7 +287,7 @@ class TestCatalogDiscovery(BaseCujTest):
         )
         task.assert_headless_answer(CODEX, result)
         assert_completed_task_model(session, CODEX, task.value, CODEX_DEFAULT)
-        _assert_inference_evidence(recorder, checkpoint, CODEX, task, CODEX_DEFAULT)
+        assert_inference_evidence(recorder, checkpoint, CODEX, task, CODEX_DEFAULT)
         session.assert_not_routed()
 
     @pytest.mark.claude
@@ -318,8 +316,8 @@ class TestCatalogDiscovery(BaseCujTest):
             timeout=240,
         )
         task.assert_headless_answer(CLAUDE, result)
-        _assert_claude_headless_model(result, claude.discovery_model_id(model))
-        _assert_inference_evidence(recorder, checkpoint, CLAUDE, task, model)
+        assert_claude_headless_model(result, claude.discovery_model_id(model))
+        assert_inference_evidence(recorder, checkpoint, CLAUDE, task, model)
         session.assert_not_routed()
 
     @pytest.mark.codex
@@ -347,5 +345,5 @@ class TestCatalogDiscovery(BaseCujTest):
         )
         task.assert_headless_answer(CODEX, result)
         assert_completed_task_model(session, CODEX, task.value, model)
-        _assert_inference_evidence(recorder, checkpoint, CODEX, task, model)
+        assert_inference_evidence(recorder, checkpoint, CODEX, task, model)
         session.assert_not_routed()

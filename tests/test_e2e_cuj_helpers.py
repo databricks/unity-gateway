@@ -8,10 +8,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.e2e_cuj import conftest as cuj_conftest
 from tests.e2e_cuj import test_cuj2_mps_mcp as cuj2
 from tests.e2e_cuj import test_cuj3_mcp as mcp_registration
 from tests.e2e_cuj.base import bearer
+from tests.e2e_cuj.helpers import constants
 from tests.e2e_cuj.helpers import poll as poll_module
 from tests.e2e_cuj.helpers.constants import (
     CLAUDE,
@@ -31,6 +31,7 @@ from tests.e2e_cuj.helpers.session import (
     MachineWideLeak,
     UserSession,
     dirty_runner_message,
+    record_machine_wide_leak,
 )
 from tests.e2e_cuj.helpers.terminal import Terminal
 from tests.e2e_cuj.helpers.workspace import Workspace
@@ -79,7 +80,7 @@ def _leak_fixture(tmp_path, monkeypatch, leaked_names):
     for path in paths:
         if path.name in leaked_names:
             path.write_text("{}")
-    monkeypatch.setattr(cuj_conftest, "MANAGED_PATHS", paths)
+    monkeypatch.setattr(constants, "MANAGED_PATHS", paths)
     request = SimpleNamespace(
         config=SimpleNamespace(stash=pytest.Stash()),
         node=SimpleNamespace(nodeid="tests/e2e_cuj/test_x.py::TestLeaky"),
@@ -90,7 +91,7 @@ def _leak_fixture(tmp_path, monkeypatch, leaked_names):
 def test_teardown_leak_names_the_culprit(tmp_path, monkeypatch):
     request, paths = _leak_fixture(tmp_path, monkeypatch, {"claude.json"})
 
-    cuj_conftest._record_machine_wide_leak(request)
+    record_machine_wide_leak(request)
 
     leak = request.config.stash[MACHINE_WIDE_LEAK]
     assert leak == MachineWideLeak("tests/e2e_cuj/test_x.py::TestLeaky", (str(paths[0]),))
@@ -102,7 +103,7 @@ def test_teardown_leak_names_the_culprit(tmp_path, monkeypatch):
 
 def test_clean_teardown_records_no_leak(tmp_path, monkeypatch):
     request, _ = _leak_fixture(tmp_path, monkeypatch, set())
-    cuj_conftest._record_machine_wide_leak(request)
+    record_machine_wide_leak(request)
     leak = request.config.stash.get(MACHINE_WIDE_LEAK, None)
     assert leak is None
     assert dirty_runner_message(leak) == (
