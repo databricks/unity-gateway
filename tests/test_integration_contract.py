@@ -67,6 +67,56 @@ def test_dedicated_cuj_ci_discovers_the_whole_folder():
     assert 'result["result"] != "success"' in gate
 
 
+FORK_GUARD = (
+    "github.event_name != 'pull_request' || "
+    "github.event.pull_request.head.repo.full_name == github.repository"
+)
+# Fork PRs get no secrets or OIDC token, so jobs that need either must skip them.
+SKIPPED_ON_FORK_PRS = {
+    "installation-windows",
+    "workspace",
+    "smoke",
+    "headless-windows",
+    "full",
+    "opencode",
+    "managed",
+    "dedicated-cuj",
+    "cujs",
+}
+
+
+def _integration_jobs():
+    workflow = (Path(__file__).parent.parent / ".github/workflows/integration.yml").read_text()
+    body = workflow.split("\njobs:\n", 1)[1]
+    return dict(re.findall(r"(?ms)^  ([a-z0-9-]+):\n(.*?)(?=^  [a-z0-9-]+:\n|\Z)", body))
+
+
+def _skips_fork_prs(jobs, name):
+    job = jobs[name]
+    condition = re.search(r"(?m)^    if: (.*)$", job)
+    if condition and FORK_GUARD in condition.group(1):
+        return True
+    needs = re.search(r"(?m)^    needs: \[?([a-z0-9-, ]+)\]?$", job)
+    for need in [need.strip() for need in needs.group(1).split(",")] if needs else []:
+        requires_success = (
+            condition is None or f"needs.{need}.result == 'success'" in condition.group(1)
+        )
+        if requires_success and _skips_fork_prs(jobs, need):
+            return True
+    return False
+
+
+def test_integration_jobs_that_run_on_fork_pull_requests_need_no_credentials():
+    jobs = _integration_jobs()
+    skipped = {name for name in jobs if _skips_fork_prs(jobs, name)}
+
+    assert skipped == SKIPPED_ON_FORK_PRS
+    for name in set(jobs) - skipped:
+        assert "secrets." not in jobs[name] and "id-token: write" not in jobs[name], (
+            f"{name} runs on fork PRs, which get no secrets or OIDC token"
+        )
+
+
 def test_windows_integration_ci_uses_shared_claude_version():
     workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
     contents = workflow.read_text()

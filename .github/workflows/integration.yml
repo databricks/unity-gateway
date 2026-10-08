@@ -89,6 +89,7 @@ jobs:
   # are fixed, remove continue-on-error and add this job to the cujs required set.
   installation-windows:
     name: Windows installation tests
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: windows-server-latest
     continue-on-error: true
     timeout-minutes: 20
