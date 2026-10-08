@@ -21,7 +21,9 @@ It is not collected by the default `uv run pytest` command.
 `../test_startup_imports.py` covers the bare version fast path, deferred imports,
 metadata fallback, and other-argument dispatch as component checks. Installation
 checks still exercise real console-script help and version output; neither suite
-asserts end-to-end agent startup latency.
+asserts end-to-end agent startup latency. The component suite also checks that
+version output alone cannot establish CLI health when startup dependencies are
+absent; use `--help` for the startup-import probe.
 
 `TestChildStdoutLaunch` in `../test_cli.py` covers clean Claude print-mode and
 Codex exec/app-server stdout, early launch errors, and forwarding through ug's `--`.

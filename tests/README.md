@@ -31,7 +31,9 @@ and checks their version output against the `unity-gateway` distribution metadat
 `test_startup_imports.py` guards the bare `--version` / `-V` fast path and deferred
 command-specific imports in fresh interpreters. Component tests cover metadata lookup,
 version suffixes, fallback, and unchanged dispatch for other arguments; they do not
-claim a live agent launch or end-to-end startup timing.
+claim a live agent launch or end-to-end startup timing. An isolated interpreter
+without site packages also proves that intact metadata can produce version output
+while `--help` fails on a missing CLI startup dependency.
 `TestUpgrade` in `test_cli.py` covers both command names before, during, and after
 the distribution rename with mocked installer calls, including `--help` verification
 of the full CLI import path and failure recovery guidance.

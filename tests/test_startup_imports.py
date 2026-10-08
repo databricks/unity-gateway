@@ -61,6 +61,44 @@ def test_version_entrypoint_skips_cli_imports(command: str, flag: str) -> None:
     assert loaded == []
 
 
+@pytest.mark.parametrize("command", ["ug", "ucode"])
+@pytest.mark.parametrize("flag", ["--version", "-V"])
+def test_version_output_does_not_establish_cli_health(
+    tmp_path: Path, command: str, flag: str
+) -> None:
+    _write_metadata(tmp_path, "1.2.3")
+    source = Path(entrypoint.__file__).resolve().parents[1]
+    probe = (
+        f"import sys\nsys.path[:0] = {[str(tmp_path), str(source)]!r}\n"
+        f"sys.argv = [{command!r}, sys.argv[1]]\n"
+        "from ucode.entrypoint import main\nmain()"
+    )
+    # Disable site packages so metadata survives while startup dependencies are absent.
+    command_line = [sys.executable, "-I", "-S", "-c", probe]
+    reported = subprocess.run(
+        [*command_line, flag],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    health = subprocess.run(
+        [*command_line, "--help"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+
+    assert reported.returncode == 0, reported.stderr
+    assert reported.stdout == "1.2.3\n"
+    assert reported.stderr == ""
+    assert health.returncode != 0
+    assert "ModuleNotFoundError: No module named 'typer'" in health.stderr
+
+
 def test_installed_version_matches_importlib_metadata() -> None:
     assert entrypoint._read_installed_version() == version("unity-gateway")
 

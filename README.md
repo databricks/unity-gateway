@@ -18,7 +18,13 @@ package is still named `ucode` for compatibility.
 ```bash
 uv tool install git+https://github.com/databricks/unity-gateway
 ug --version
+ug --help
 ```
+
+`--version` reports installed package metadata without loading the CLI. Use
+`ug --help` (or `ucode --help`) to verify that the CLI's startup imports work;
+version output alone is not an installation health check. Help does not validate
+workspace authentication or agent runtime behavior.
 
 ### Migrating from ucode
 
@@ -29,6 +35,8 @@ uv tool uninstall ucode
 uv tool install git+https://github.com/databricks/unity-gateway
 ug --version
 ucode --version
+ug --help
+ucode --help
 ```
 
 Future upgrades can use `ug upgrade` or `uv tool upgrade unity-gateway`.
