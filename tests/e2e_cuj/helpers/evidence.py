@@ -38,6 +38,7 @@ def assert_served(recorder, request, model):
         "status": response.status_code,
         "model": request.payload["model"],
         "output_config": request.payload.get("output_config"),
+        "response_body": response.body.decode("utf-8", errors="replace")[:2000],
     }
     assert response.body, "Inference response was empty"
 

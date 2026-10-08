@@ -121,17 +121,7 @@ def _assert_inference_evidence(recorder, checkpoint, agent, task, expected):
         request for request in inference_requests if _request_contains_task(request, agent, task)
     ]
     assert task_requests, "No inference request contained the submitted task prompt"
-    for index, request in enumerate(task_requests):
-        assert request.payload["model"] == expected_wire_model, request.payload
-        # Claude 2.1.290 retries a rejected effort setting without that parameter.
-        if (
-            agent == CLAUDE
-            and index + 1 < len(task_requests)
-            and request.payload.get("output_config", {}).get("effort") == "high"
-            and "effort" not in task_requests[index + 1].payload.get("output_config", {})
-            and recorder.response_for(request, timeout=240).status_code == 400
-        ):
-            continue
+    for request in task_requests:
         assert_served(recorder, request, expected_wire_model)
 
 
