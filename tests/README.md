@@ -378,3 +378,10 @@ config scopes, watched updates, startup-file caching, and absent configuration. 
 watched-update test exposed a stale first parent request after a one-second wait and remains
 failing; it is not production UG reload or live gateway coverage. Run instructions and
 remaining adapter requirements are in `docs/claude-session-settings.md`.
+
+`test_claude_recipe_payload.py` covers the Smart Router consumer: both enable flags,
+default/custom startup recipes, native launch body composition, on/off/on desired-state
+updates through the real CLI, independent session files, malformed body rejection, and
+no injection when never enabled. It preserves gateway settings and caller body fields.
+These component tests do not establish native in-session payload propagation; that remains
+blocked on the adapter and reload timing described in `docs/claude-session-settings.md`.

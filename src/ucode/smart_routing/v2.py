@@ -31,6 +31,7 @@ from ucode.constants import (
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
     LOOPBACK_HOST,
+    SMART_ROUTER_RECIPE_LOCAL,
     SMART_ROUTING_ENV_KEYS,
 )
 from ucode.custom_oauth import custom_oauth_cli_enabled, get_custom_client_token
@@ -55,7 +56,12 @@ from ucode.smart_routing.claude_hooks import (
     sync_smart_routing_hooks,
 )
 from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
-from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
+from ucode.smart_routing.session_env import (
+    SESSION_ENV_VAR,
+    SESSION_PYTHON_ENV_VAR,
+    session_env_path,
+    start_session,
+)
 from ucode.ui import print_warning
 
 LEGACY_STATE_KEY = "smart_routing_enabled"
@@ -567,7 +573,11 @@ def launch_claude(
             plugin_dir = launch_dir / "plugin"
             if route_first_prompt:
                 env[FIRST_PROMPT_SOCKET_ENV] = str(socket_path)
-            session_path = _prepare_smart_router_session("claude")
+            session_path = (
+                session_env_path()
+                if os.environ.get(SMART_ROUTER_RECIPE_LOCAL)
+                else _prepare_smart_router_session("claude")
+            )
             env[SESSION_ENV_VAR] = str(session_path)
             env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
             try:

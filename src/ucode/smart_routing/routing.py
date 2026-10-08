@@ -23,7 +23,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-ROUTER_NAME = "task_v3"
+from ucode.constants import SMART_ROUTER_DEFAULT_NAME
+
+ROUTER_NAME = SMART_ROUTER_DEFAULT_NAME
 ROUTER_NAME_ENV_VAR = "SMART_ROUTER_NAME"
 ROUTING_PATH = "/ai-gateway/routing/v1/routes:select"
 REQUEST_TIMEOUT_S = 30.0
