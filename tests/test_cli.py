@@ -1054,45 +1054,6 @@ class TestSubcommandRouting:
         mock_token.assert_not_called()
         assert mock_route.call_args.kwargs["token"] == token
 
-    @pytest.mark.parametrize(
-        ("event", "enabled", "recipe", "expected_value"),
-        [
-            ("UserPromptSubmit", "1", None, "task_v3"),
-            ("PostToolUse", "0", None, None),
-            ("SubagentStart", "1", "custom-recipe", "custom-recipe"),
-            ("SessionStart", "0", "ignored-while-off", None),
-        ],
-    )
-    def test_codex_recipe_metadata_hook_never_routes_or_authenticates(
-        self, event, enabled, recipe, expected_value
-    ):
-        env = {
-            "ENABLE_SMART_ROUTING_V2": enabled,
-            "SMART_ROUTER_NAME": recipe or "",
-        }
-        with (
-            patch("ucode.cli.get_databricks_token") as mock_token,
-            patch("ucode.smart_routing.codex_routing.route_pre_tool_use") as mock_route,
-        ):
-            result = runner.invoke(
-                app,
-                ["codex-router-hook", "recipe-metadata"],
-                input=json.dumps({"hook_event_name": event}),
-                env=env,
-            )
-
-        assert result.exit_code == 0, result.output
-        output = json.loads(result.output)
-        assert output["hookSpecificOutput"]["hookEventName"] == event
-        marker = output["hookSpecificOutput"]["additionalContext"]
-        assert marker.startswith("<ug-routing-state>")
-        payload = json.loads(
-            marker.removeprefix("<ug-routing-state>").removesuffix("</ug-routing-state>")
-        )
-        assert payload == {"smart_router_recipe_name": expected_value}
-        mock_token.assert_not_called()
-        mock_route.assert_not_called()
-
     def test_codex_subagent_hook_refreshes_near_expiry_oauth_token(self, monkeypatch):
         monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
 

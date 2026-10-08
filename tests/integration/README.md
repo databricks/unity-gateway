@@ -303,10 +303,6 @@ role-contract preservation, and isolation from legacy preference files
 lack dedicated regression coverage. Codex's native hook merging, project trust,
 and execution of pre-existing hooks are not exercised by this integration suite.
 
-`../test_codex_smart_routing_v2.py` provides component coverage for launch-time
-recipe and orchestrator hook composition, hook enablement, and unchanged saved
-user hooks. It does not verify native hook execution or merging.
-
 `../test_claude_recipe_payload.py` checks that the draft Claude body helpers write
 `DISABLED` when routing is off and restore the configured recipe when routing is
 on. Automatic Claude launch/toggle wiring is not enabled; these component checks

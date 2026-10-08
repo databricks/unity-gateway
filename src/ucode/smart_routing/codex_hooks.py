@@ -10,13 +10,6 @@ from ucode.databricks import build_auth_token_argv
 from ucode.smart_routing import hooks
 
 ROUTING_HOOK_COMMAND_MARKER = "codex-router-hook"
-RECIPE_METADATA_EVENT = "recipe-metadata"
-RECIPE_METADATA_EVENTS = (
-    "UserPromptSubmit",
-    "PostToolUse",
-    "SubagentStart",
-    "SessionStart",
-)
 
 
 def routing_models(state: dict) -> list[str]:
@@ -31,7 +24,7 @@ def routing_models(state: dict) -> list[str]:
 
 def sync_smart_routing_hooks(doc: dict, state: dict, *, enabled: bool) -> None:
     """Synchronize ucode-managed routing hooks in a Codex config document."""
-    groups = routing_hook_groups(state) if enabled else {}
+    groups = _routing_hook_groups(state) if enabled else {}
     hooks.sync_managed_hooks(doc, ROUTING_HOOK_COMMAND_MARKER, groups)
 
 
@@ -40,15 +33,11 @@ def remove_smart_routing_hooks(doc: dict) -> bool:
     return hooks.remove_managed_hooks(doc, ROUTING_HOOK_COMMAND_MARKER)
 
 
-def routing_hook_groups(
-    state: dict, *, available_models: list[str] | None = None
-) -> dict[str, list[dict]]:
+def _routing_hook_groups(state: dict) -> dict[str, list[dict]]:
     session_argv = _routing_hook_argv(state, "session-start")
     subagent_argv = _routing_hook_argv(state, "record-subagent")
-    groups = {
-        "PreToolUse": [
-            _pre_tool_use_hook_group(state, available_models=available_models),
-        ],
+    return {
+        "PreToolUse": [_pre_tool_use_hook_group(state)],
         "SessionStart": [
             {
                 "matcher": "startup|resume|clear",
@@ -61,10 +50,6 @@ def routing_hook_groups(
             }
         ],
     }
-    metadata_hook = _routing_command_hook(_routing_hook_argv(state, RECIPE_METADATA_EVENT))
-    for event in RECIPE_METADATA_EVENTS:
-        groups.setdefault(event, []).append({"hooks": [copy.deepcopy(metadata_hook)]})
-    return groups
 
 
 def merge_pre_tool_use_hooks(
@@ -78,19 +63,6 @@ def merge_pre_tool_use_hooks(
         {"PreToolUse": [_pre_tool_use_hook_group(state, available_models=available_models)]},
     )
     return doc["hooks"]["PreToolUse"]
-
-
-def merge_launch_hooks(
-    existing: dict, state: dict, *, available_models: list[str]
-) -> dict[str, list[dict]]:
-    """Add launch-scoped routing and recipe hooks while preserving user hooks."""
-    doc = {"hooks": copy.deepcopy(existing)}
-    hooks.sync_managed_hooks(
-        doc,
-        ROUTING_HOOK_COMMAND_MARKER,
-        routing_hook_groups(state, available_models=available_models),
-    )
-    return doc["hooks"]
 
 
 def _pre_tool_use_hook_group(state: dict, *, available_models: list[str] | None = None) -> dict:

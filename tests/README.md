@@ -96,11 +96,6 @@ gateway provider on Windows while Unix launch arguments stay unchanged and routi
 hooks stay with the app-server. This is component coverage, not a live Windows
 sign-in or TUI test.
 
-The same component suite checks that recipe metadata hooks coexist with opted-in
-orchestrator hooks and that saved user hooks stay in their original config for
-Codex to load. Both smart-routing launch modes enable Codex hooks. These checks
-do not establish native hook execution or merging.
-
 `test_claude_recipe_payload.py` covers the draft Claude body helpers: routing off
 writes `DISABLED`, routing back on restores the configured recipe, and unrelated
 settings and independent session files are preserved. Automatic launch/toggle

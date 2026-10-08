@@ -264,7 +264,6 @@ class TestLaunchCodex:
         assert "--model system.ai.gpt-5-6-sol" in hook_override
         assert "--model system.ai.glm-5-2" in hook_override
         config_values = processes[0].argv[3:-2:2]
-        assert "features.hooks=true" in config_values
         assert (
             "shell_environment_policy.set.UCODE_SESSION_ENV_FILE="
             f'"{os.environ["UCODE_SESSION_ENV_FILE"]}"'
@@ -273,11 +272,6 @@ class TestLaunchCodex:
             "shell_environment_policy.set.UCODE_SMART_ROUTER_PYTHON="
             + json.dumps(os.environ["UCODE_SMART_ROUTER_PYTHON"])
         ) in config_values
-        for event in ("UserPromptSubmit", "PostToolUse", "SubagentStart", "SessionStart"):
-            event_override = next(
-                arg for arg in processes[0].argv if arg.startswith(f"hooks.{event}=")
-            )
-            assert "codex-router-hook recipe-metadata" in event_override
         assert processes[0].argv[-2:] == [
             "--listen",
             "ws://127.0.0.1:41001",
@@ -408,13 +402,9 @@ class TestLaunchCodex:
         assert argv[0] == "codex"
         assert argv[-1] == "--search"
         assert 'model="gpt-start"' in argv
-        assert "features.hooks=true" in argv
         hook_override = next(arg for arg in argv if arg.startswith("hooks.PreToolUse="))
         assert "codex-router-hook route-subagent" in hook_override
         assert "--model system.ai.gpt-5-6-sol" in hook_override
-        for event in ("UserPromptSubmit", "PostToolUse", "SubagentStart", "SessionStart"):
-            event_override = next(arg for arg in argv if arg.startswith(f"hooks.{event}="))
-            assert "codex-router-hook recipe-metadata" in event_override
         assert (
             "shell_environment_policy.set.UCODE_SESSION_ENV_FILE="
             f'"{os.environ["UCODE_SESSION_ENV_FILE"]}"'
@@ -480,69 +470,6 @@ class TestLaunchCodex:
         assert routing_commands[0].startswith("/bin/ug codex-router-hook route-subagent ")
         assert "--model system.ai.gpt-5-6-sol" in routing_commands[0]
         assert "--model old" not in routing_commands[0]
-
-    @pytest.mark.parametrize("orchestrator_enabled", [False, True])
-    def test_v2_recipe_hooks_leave_saved_hooks_to_codex_for_every_metadata_event(
-        self, tmp_path, monkeypatch, orchestrator_enabled
-    ):
-        monkeypatch.setenv(
-            v2.ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR, "1" if orchestrator_enabled else "0"
-        )
-        codex_home = tmp_path / ".codex"
-        codex_home.mkdir()
-        (codex_home / "config.toml").write_text(
-            """
-[[hooks.UserPromptSubmit]]
-[[hooks.UserPromptSubmit.hooks]]
-type = "command"
-command = "user-prompt-hook"
-
-[[hooks.PostToolUse]]
-[[hooks.PostToolUse.hooks]]
-type = "command"
-command = "user-post-tool-hook"
-
-[[hooks.SubagentStart]]
-[[hooks.SubagentStart.hooks]]
-type = "command"
-command = "user-subagent-hook"
-
-[[hooks.SessionStart]]
-[[hooks.SessionStart.hooks]]
-type = "command"
-command = "user-session-hook"
-""",
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("CODEX_HOME", str(codex_home))
-
-        before = (codex_home / "config.toml").read_bytes()
-        configured = v2._v2_hooks(
-            {"workspace": WS, "profile": "myprof"},
-            ["system.ai.gpt-5-6-sol"],
-        )
-
-        for event in ("UserPromptSubmit", "PostToolUse", "SubagentStart", "SessionStart"):
-            commands = [hook["command"] for group in configured[event] for hook in group["hooks"]]
-            assert not any(command.startswith("user-") for command in commands)
-            assert any("codex-router-hook recipe-metadata" in command for command in commands)
-
-        assert (codex_home / "config.toml").read_bytes() == before
-        for event in ("UserPromptSubmit", "SessionStart"):
-            commands = [hook["command"] for group in configured[event] for hook in group["hooks"]]
-            assert any("ucode.smart_routing.orchestrator" in cmd for cmd in commands) == (
-                orchestrator_enabled
-            )
-        assert any(
-            "codex-router-hook record-subagent" in hook["command"]
-            for group in configured["SubagentStart"]
-            for hook in group["hooks"]
-        )
-        assert any(
-            "codex-router-hook session-start" in hook["command"]
-            for group in configured["SessionStart"]
-            for hook in group["hooks"]
-        )
 
     def test_missing_cached_models_starts_with_bootstrap_model(self, monkeypatch):
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")

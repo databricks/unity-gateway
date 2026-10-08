@@ -137,8 +137,6 @@ from ucode.skills_list import configured_skill_counts_by_agent, list_configured_
 from ucode.skills_state import records_for_scope
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import FIRST_PROMPT_SOCKET_ENV, ROUTE_FIRST_PROMPT_EVENT
-from ucode.smart_routing.codex_hooks import RECIPE_METADATA_EVENT
-from ucode.smart_routing.recipe_payload import smart_router_recipe_marker
 from ucode.smart_routing.session_env import (
     effective_environment,
     session_env_path,
@@ -2091,7 +2089,8 @@ def codex_router_hook_cmd(
     import json
     import sys
 
-    effective_env = effective_environment()
+    if not smart_routing_v2.smart_routing_enabled(effective_environment()):
+        return
 
     from ucode.smart_routing.codex_routing import (
         record_session_start,
@@ -2104,31 +2103,6 @@ def codex_router_hook_cmd(
     except ValueError:
         return
     if not isinstance(payload, dict):
-        return
-    if event == RECIPE_METADATA_EVENT:
-        hook_event_name = payload.get("hook_event_name")
-        if hook_event_name not in {
-            "UserPromptSubmit",
-            "PostToolUse",
-            "SubagentStart",
-            "SessionStart",
-        }:
-            return
-        marker = smart_router_recipe_marker(
-            smart_routing_v2.smart_routing_enabled(effective_env), effective_env
-        )
-        sys.stdout.write(
-            json.dumps(
-                {
-                    "hookSpecificOutput": {
-                        "hookEventName": hook_event_name,
-                        "additionalContext": marker,
-                    }
-                }
-            )
-        )
-        return
-    if not smart_routing_v2.smart_routing_enabled(effective_env):
         return
     if event == "session-start":
         record_session_start(payload)

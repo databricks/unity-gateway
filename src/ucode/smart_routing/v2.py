@@ -54,7 +54,7 @@ from ucode.smart_routing.claude_hooks import (
     sync_first_prompt_hook,
     sync_smart_routing_hooks,
 )
-from ucode.smart_routing.codex_hooks import merge_launch_hooks, routing_models
+from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
 from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
 from ucode.ui import print_warning
 
@@ -613,16 +613,15 @@ def _cached_routing_models(state: dict) -> list[str]:
     return routing_models(state)
 
 
-def _v2_hooks(state: dict, available_models: list[str]) -> dict[str, list[dict]]:
+def _v2_hooks(state: dict, available_models: list[str]) -> dict:
     # Codex combines hook sources itself; copying user hooks here would register them twice.
-    doc = {"hooks": merge_launch_hooks({}, state, available_models=available_models)}
+    doc = {
+        "hooks": {
+            "PreToolUse": merge_pre_tool_use_hooks([], state, available_models=available_models),
+        }
+    }
     orchestrator.sync_hooks(doc, agent="codex")
     return doc["hooks"]
-
-
-def _v2_pre_tool_use_hooks(state: dict, available_models: list[str]) -> list[dict]:
-    """Compatibility seam for callers that inspect only the spawn-routing hook."""
-    return _v2_hooks(state, available_models)["PreToolUse"]
 
 
 def launch_codex(
