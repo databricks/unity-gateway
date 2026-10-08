@@ -92,6 +92,7 @@ def test_dedicated_cuj_ci_runs_each_discovered_file_on_its_own_runner():
     assert "test_cuj" not in job
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="dedicated-cuj-plan runs on Linux")
 def test_every_cuj_file_is_discovered_with_a_unique_check_name(tmp_path):
     root = Path(__file__).parent.parent
     entries, stderr = _discover_cujs(root, tmp_path / "github-output")
@@ -108,6 +109,7 @@ def test_every_cuj_file_is_discovered_with_a_unique_check_name(tmp_path):
         assert entry["name"].startswith(f"CUJ {number.group(1)} · "), entry
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="dedicated-cuj-plan runs on Linux")
 def test_cuj_discovery_fails_for_a_file_without_a_check_name(tmp_path):
     cujs = tmp_path / "tests/e2e_cuj"
     cujs.mkdir(parents=True)

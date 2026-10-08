@@ -3220,7 +3220,7 @@ class TestInstallDatabricksCli:
         links_dir = tmp_path / "Microsoft" / "WinGet" / "Links"
         installed_dir = links_dir if path_source == "winget_alias" else tmp_path / "installed-cli"
         installed_dir.mkdir(parents=True)
-        executable = installed_dir / ("databricks.exe" if os.name == "nt" else "databricks")
+        executable = installed_dir / ("databricks.EXE" if os.name == "nt" else "databricks")
         executable.touch()
         executable.chmod(0o755)
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))

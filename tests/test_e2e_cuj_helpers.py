@@ -1,6 +1,7 @@
 """Offline checks for CUJ bearer minting, leak reporting, terminal waits, and task helpers."""
 
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -84,7 +85,7 @@ def test_teardown_leak_names_the_culprit(tmp_path, monkeypatch):
     assert paths[0].exists(), "Leak handling must not touch machine-wide files"
     message = dirty_runner_message(leak)
     assert "TestLeaky" in message
-    assert str(paths[0]) in message
+    assert repr(str(paths[0])) in message
 
 
 def test_clean_teardown_records_no_leak(tmp_path, monkeypatch):
@@ -95,6 +96,9 @@ def test_clean_teardown_records_no_leak(tmp_path, monkeypatch):
     assert dirty_runner_message(leak) == (
         "Existing machine-wide agent settings; use a clean disposable runner. Nothing was changed."
     )
+
+
+requires_pty = pytest.mark.skipif(sys.platform == "win32", reason="Terminal needs a POSIX PTY")
 
 
 def _fake_ug(tmp_path, body):
@@ -115,6 +119,7 @@ def test_terminal_rejects_a_missing_unsupported_or_mismatched_agent(tmp_path, ar
         Terminal(session, "rejected", args, agent=agent)
 
 
+@requires_pty
 def test_wait_until_rejects_a_permission_prompt(tmp_path):
     session = _fake_ug(tmp_path, "echo 'Do you want to proceed?'\nsleep 30\n")
     with Terminal(session, "rejects", [], agent=CLAUDE) as tui:
@@ -122,6 +127,7 @@ def test_wait_until_rejects_a_permission_prompt(tmp_path):
             tui.wait_until(lambda: False, "never", timeout=10)
 
 
+@requires_pty
 def test_wait_until_completes_when_done(tmp_path):
     done = tmp_path / "done"
     session = _fake_ug(tmp_path, f"echo working\ntouch '{done}'\nsleep 30\n")
@@ -130,6 +136,7 @@ def test_wait_until_completes_when_done(tmp_path):
         assert "working" in tui.visible
 
 
+@requires_pty
 def test_wait_until_lets_on_screen_answer_an_expected_dialog(tmp_path):
     done = tmp_path / "done"
     session = _fake_ug(
@@ -290,16 +297,17 @@ def test_mcp_completion_accepts_a_fenced_reply(monkeypatch):
 
 
 def test_cuj2_mcp_listing_retries_a_banner_only_claude_listing(tmp_path, monkeypatch):
+    suffix = ".EXE" if sys.platform == "win32" else ""
     for agent in (CLAUDE, CODEX):
-        (tmp_path / agent).write_text("#!/bin/sh\n")
-        (tmp_path / agent).chmod(0o755)
+        (tmp_path / f"{agent}{suffix}").write_text("#!/bin/sh\n")
+        (tmp_path / f"{agent}{suffix}").chmod(0o755)
     banner = "Checking MCP server health…\n\n\n"
     rows = f"{cuj2.registered_name(cuj2.SANDBOX_MCP_SERVICE_NAME)}: ug mcp-proxy - ✓ Connected\n"
     outputs = {CLAUDE: [banner, rows], CODEX: [rows]}
     calls = []
 
     def run(*args, binary, timeout):
-        agent = Path(binary).name
+        agent = Path(binary).stem
         calls.append(agent)
         return SimpleNamespace(stdout=outputs[agent].pop(0), stderr="")
 
