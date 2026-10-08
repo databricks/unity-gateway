@@ -992,6 +992,14 @@ class TestSubcommandRouting:
         assert result.exit_code == 1
         assert get_custom_headers() == {}
 
+    def test_global_header_is_rejected_for_non_launch_subcommand(self):
+        with patch("ucode.cli.configure_shared_state") as configure:
+            result = runner.invoke(app, ["--header", "X-A: b", "configure"])
+
+        assert result.exit_code == 1
+        assert "--header is only supported when launching an agent" in result.output
+        configure.assert_not_called()
+
     def test_codex_admin_header_collision_stops_before_discovery(self):
         managed = {"enabled_agents": {"codex": {"http_headers": {"X-Test": "admin"}}}}
         with _launch_policy_patches(managed) as calls:
@@ -1023,6 +1031,7 @@ class TestSubcommandRouting:
             ("X-Test: safe\u0085Authorization: injected", "line separators"),
             ("X-Test: safe\u2028Authorization: injected", "line separators"),
             ("X-Test: safe\u2029Authorization: injected", "line separators"),
+            ("X-Test: caf\u00e9", "must be ASCII"),
             ("Authorization: secret", "protected header"),
             ("Content-Type: text/plain", "protected header"),
             ("Accept: text/plain", "protected header"),
