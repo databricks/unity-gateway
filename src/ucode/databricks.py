@@ -764,7 +764,14 @@ def _discover_databricks_clis(
 
     seen_real: set[str] = set()
     discovered: list[tuple[str, tuple[int, int, int] | None]] = []
-    for path in _iter_databricks_executables():
+    paths = _iter_databricks_executables()
+    if platform.system() == "Windows":
+        # WinGet aliases can resolve even when a literal PATH walk misses them.
+        resolved_path = shutil.which("databricks")
+        if resolved_path:
+            paths.append(resolved_path)
+
+    for path in paths:
         real = os.path.realpath(path)
         if real in seen_real:
             continue
@@ -925,7 +932,8 @@ def install_databricks_cli(
     ``databricks aitools`` floor (v1.0.0) rejects a perfectly usable public-preview
     build (e.g. v0.299.2) as a false positive. A missing CLI is still installed —
     only the version *check* is bypassed."""
-    if databricks_cli_installed():
+    clis = _discover_databricks_clis(use_cache=False)
+    if clis:
         if not skip_version_check:
             ensure_databricks_cli_version(minimum)
         return

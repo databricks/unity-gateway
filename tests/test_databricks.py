@@ -3089,6 +3089,31 @@ class TestEnsureDatabricksCliVersion:
 
 
 class TestInstallDatabricksCli:
+    @pytest.fixture(autouse=True)
+    def _fresh_databricks_cli_cache(self):
+        clear_databricks_cli_cache()
+        yield
+        clear_databricks_cli_cache()
+
+    def test_windows_uses_resolved_cli_when_path_scan_misses_it(self, monkeypatch):
+        resolved = (
+            r"C:\Users\me\AppData\Local\Microsoft\WinGet\Packages\DatabricksCLI\databricks.exe"
+        )
+        monkeypatch.setattr(db_mod.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(db_mod, "_iter_databricks_executables", lambda: [])
+        monkeypatch.setattr(db_mod.shutil, "which", lambda name: None)
+        assert db_mod._discover_databricks_clis() == []
+
+        monkeypatch.setattr(db_mod.shutil, "which", lambda name: resolved)
+        monkeypatch.setattr(db_mod, "_read_databricks_cli_version", lambda path: (1, 20, 0))
+        monkeypatch.setattr(
+            db_mod,
+            "_run_databricks_cli_installer",
+            lambda **kw: pytest.fail("existing Databricks CLI should not be reinstalled"),
+        )
+
+        install_databricks_cli()
+
     def test_checks_version_when_present(self, monkeypatch):
         monkeypatch.setattr(
             db_mod, "_discover_databricks_clis", lambda **kw: [("/usr/bin/databricks", (1, 20, 0))]
