@@ -12,6 +12,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from ucode import mods
 from ucode.agents import LaunchOptions, claude
 from ucode.databricks import AnthropicModelCatalog
 from ucode.smart_routing import claude_hooks, claude_pty, routing, v2
@@ -203,6 +204,15 @@ class TestSmartRoutingEnvVars:
         assert not v2.first_prompt_routing_enabled()
         monkeypatch.delenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR)
         assert v2.first_prompt_routing_enabled()
+
+    def test_smart_routing_vars_accept_true_as_well_as_one(self):
+        v2_var = v2.ENABLE_SMART_ROUTING_ENV_VAR
+        sub_var = v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR
+        assert v2.smart_routing_enabled({v2_var: "true"})
+        assert v2.smart_routing_enabled({sub_var: "TRUE"})
+        assert not v2.smart_routing_enabled({v2_var: "yes"})
+        assert v2.first_prompt_routing_enabled({v2_var: "true"})
+        assert not v2.first_prompt_routing_enabled({v2_var: "true", sub_var: "True"})
 
 
 class TestV2Launch:
@@ -681,6 +691,7 @@ class TestSubagentRouting:
 
         v2._write_routed_claude_plugin(plugin_dir, models)
 
+        assert not (plugin_dir / "hooks").exists()
         manifest = json.loads((plugin_dir / ".claude-plugin" / "plugin.json").read_text())
         assert manifest["name"] == "ug-smart-router"
         assert _plugin_agent_models(plugin_dir) == {
@@ -693,6 +704,28 @@ class TestSubagentRouting:
             assert f"name: {json.dumps(slug)}" in agent
             assert v2.CLAUDE_ROUTED_AGENT_PROMPT in agent
             assert v2._routed_claude_agent_name(model) == f"{manifest['name']}:{slug}"
+
+    def test_includes_mod_when_requested(self, tmp_path):
+        plugin_dir = tmp_path / "routing-plugin"
+
+        v2._write_routed_claude_plugin(plugin_dir, ["system.ai.claude-opus-4-8"], include_mod=True)
+
+        mod = mods.SMART_ROUTING_UI
+        hooks_dir = plugin_dir / "hooks"
+        hooks = json.loads((hooks_dir / "hooks.json").read_text())
+        # One hooks module (register.ts) per plugin; the files it imports ride along.
+        assert hooks == {"modules": ["./register.ts"]}
+        for name in (mod.source, *mod.extra):
+            assert (hooks_dir / name).is_file()
+        assert "registerStatusBand" in (hooks_dir / "register.ts").read_text()
+
+        status = (hooks_dir / "smart-routing-status.ts").read_text()
+        assert "unity gateway smart router" in status
+        assert "ui.render" in status and "AbovePrompt" in status
+        # Env var names stay in sync with the Python source of truth.
+        assert v2.ENABLE_SMART_ROUTING_ENV_VAR in status
+        assert v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR in status
+        assert v2.SESSION_ENV_VAR in status
 
     def test_leaves_non_claude_custom_agent_model_unchanged(self):
         definitions = v2._routed_claude_agent_definitions(["catalog.schema.gpt-5"])

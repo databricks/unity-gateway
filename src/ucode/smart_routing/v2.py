@@ -14,7 +14,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import NoReturn, TextIO
 
-from ucode import config_io
+from ucode import config_io, mods
 from ucode.codex_config import (
     codex_config_args,
     custom_catalog_models,
@@ -32,6 +32,8 @@ from ucode.constants import (
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
     LOOPBACK_HOST,
     SMART_ROUTING_ENV_KEYS,
+    TRUTHY_ENV_VALUES,
+    claude_code_mods_enabled,
 )
 from ucode.custom_oauth import custom_oauth_cli_enabled, get_custom_client_token
 from ucode.databricks import (
@@ -149,12 +151,16 @@ def _model_picker_catalog() -> AnthropicModelCatalog | None:
     return None
 
 
+def _env_truthy(value: str | None) -> bool:
+    return isinstance(value, str) and value.strip().lower() in TRUTHY_ENV_VALUES
+
+
 def smart_routing_enabled(
     env: MutableMapping[str, str] | None = None, *, default: bool = False
 ) -> bool:
     source = os.environ if env is None else env
     values = [source.get(var) for var in SMART_ROUTING_ENV_KEYS]
-    if "1" in values:
+    if any(_env_truthy(value) for value in values):
         return True
     if "0" in values:
         return False
@@ -164,9 +170,8 @@ def smart_routing_enabled(
 def first_prompt_routing_enabled(env: MutableMapping[str, str] | None = None) -> bool:
     """Whether the first prompt is routed. Subagent-only wins over the full V2 flag."""
     source = os.environ if env is None else env
-    return (
-        source.get(ENABLE_SMART_ROUTING_ENV_VAR) == "1"
-        and source.get(ENABLE_SUBAGENT_ROUTING_ENV_VAR) != "1"
+    return _env_truthy(source.get(ENABLE_SMART_ROUTING_ENV_VAR)) and not _env_truthy(
+        source.get(ENABLE_SUBAGENT_ROUTING_ENV_VAR)
     )
 
 
@@ -308,8 +313,13 @@ def _routed_claude_agent_definitions(model_ids: list[str]) -> dict[str, dict[str
     }
 
 
-def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
-    """Write exact-model agents for launch-scoped loading through --plugin-dir."""
+def _write_routed_claude_plugin(
+    plugin_dir: Path, model_ids: list[str], *, include_mod: bool = False
+) -> None:
+    """Write exact-model agents for launch-scoped loading through --plugin-dir.
+
+    With ``include_mod``, the smart-routing Claude Mod is written into the same plugin.
+    """
     write_json_file(
         plugin_dir / ".claude-plugin" / "plugin.json",
         {
@@ -319,6 +329,8 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
             "author": {"name": "Databricks"},
         },
     )
+    if include_mod:
+        mods.write_mod(plugin_dir, mods.SMART_ROUTING_UI)
     for name, definition in _routed_claude_agent_definitions(model_ids).items():
         slug = name.partition(":")[2]
         write_text_file(
@@ -572,7 +584,9 @@ def launch_claude(
             env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
             try:
                 write_json_file(settings_path, settings)
-                _write_routed_claude_plugin(plugin_dir, model_ids)
+                _write_routed_claude_plugin(
+                    plugin_dir, model_ids, include_mod=claude_code_mods_enabled()
+                )
             except Exception as exc:  # noqa: BLE001 - optional setup must not block normal launch
                 raise ClaudeRoutingSetupError("Failed to write Claude smart-routing files") from exc
             model_args = launch_model_args(remaining, launch_model)
