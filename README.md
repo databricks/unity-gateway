@@ -262,6 +262,10 @@ to explorer, researcher, worker, tester, and reviewer roles while the root plans
 integrates, and verifies results. Easy tasks and explicit requests not to delegate
 stay in the root.
 
+Claude's routing panel adds `[orchestrator on]` or `[orchestrator off]` to its
+`Subagent` line. This reports the active session mode; it does not identify whether
+a particular delegation came from the workflow or an explicit user request.
+
 Once opted in, orchestration follows the existing smart-routing launch eligibility
 and session controls. Turning Smart Router off through its skill stops new automatic delegation;
 turning it on restores orchestration only in opted-in sessions. Explicit user
