@@ -77,14 +77,9 @@ def test_headless_only_selects_exact_nodes_for_requested_agents(tmp_path):
     ]
 
 
-def test_windows_live_runs_select_only_modules_without_pty_helpers(tmp_path):
+def test_windows_live_runs_select_every_module_except_unsupported_ones(tmp_path):
     (tmp_path / "test_headless.py").write_text("import json\n")
     (tmp_path / "test_tui.py").write_text("from utils.terminal import AgentTerminal\n")
-    (tmp_path / "test_tui_import.py").write_text("from utils import terminal as agent_terminal\n")
-    (tmp_path / "test_relative_mcp.py").write_text("from .utils import mcp as mcp_tools\n")
-    (tmp_path / "test_qualified_tui.py").write_text("import tests.integration.utils.terminal\n")
-    (tmp_path / "test_mcp.py").write_text("from utils.mcp import inventory\n")
-    (tmp_path / "test_screen.py").write_text("import pyte\n")
     (tmp_path / "test_ug_claude_tracing.py").write_text("import json\n")
 
     assert runner.integration_test_targets(
@@ -93,7 +88,7 @@ def test_windows_live_runs_select_only_modules_without_pty_helpers(tmp_path):
         platform_name="nt",
         installation_only=False,
         headless_only=False,
-    ) == [str(tmp_path / "test_headless.py")]
+    ) == [str(tmp_path / "test_headless.py"), str(tmp_path / "test_tui.py")]
     assert runner.integration_test_targets(
         tmp_path,
         ["claude"],

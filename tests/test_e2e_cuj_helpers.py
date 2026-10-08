@@ -98,14 +98,16 @@ def test_clean_teardown_records_no_leak(tmp_path, monkeypatch):
     )
 
 
-requires_pty = pytest.mark.skipif(sys.platform == "win32", reason="Terminal needs a POSIX PTY")
-
-
 def _fake_ug(tmp_path, body):
     """A real executable standing in for `ug`, so the real PTY driver runs offline."""
-    script = tmp_path / "ug"
-    script.write_text("#!/bin/sh\n" + body)
-    script.chmod(0o755)
+    (tmp_path / "fake_ug.py").write_text(body)
+    if sys.platform == "win32":
+        script = tmp_path / "ug.cmd"
+        script.write_text(f'@"{sys.executable}" "%~dp0fake_ug.py" %*\r\n')
+    else:
+        script = tmp_path / "ug"
+        script.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$(dirname "$0")/fake_ug.py" "$@"\n')
+        script.chmod(0o755)
     return UserSession(tmp_path, script, tmp_path / "artifacts", "token")
 
 
@@ -119,28 +121,33 @@ def test_terminal_rejects_a_missing_unsupported_or_mismatched_agent(tmp_path, ar
         Terminal(session, "rejected", args, agent=agent)
 
 
-@requires_pty
 def test_wait_until_rejects_a_permission_prompt(tmp_path):
-    session = _fake_ug(tmp_path, "echo 'Do you want to proceed?'\nsleep 30\n")
+    session = _fake_ug(
+        tmp_path, "import time\nprint('Do you want to proceed?', flush=True)\ntime.sleep(30)\n"
+    )
     with Terminal(session, "rejects", [], agent=CLAUDE) as tui:
         with pytest.raises(AssertionError, match="Unexpected permission request"):
             tui.wait_until(lambda: False, "never", timeout=10)
 
 
-@requires_pty
 def test_wait_until_completes_when_done(tmp_path):
     done = tmp_path / "done"
-    session = _fake_ug(tmp_path, f"echo working\ntouch '{done}'\nsleep 30\n")
+    session = _fake_ug(
+        tmp_path,
+        "import pathlib, time\nprint('working', flush=True)\n"
+        f"pathlib.Path({str(done)!r}).touch()\ntime.sleep(30)\n",
+    )
     with Terminal(session, "completes", [], agent=CODEX) as tui:
         tui.wait_until(done.exists, "the done marker", timeout=10)
         assert "working" in tui.visible
 
 
-@requires_pty
 def test_wait_until_lets_on_screen_answer_an_expected_dialog(tmp_path):
     done = tmp_path / "done"
     session = _fake_ug(
-        tmp_path, f"echo 'Allow this call?'\nread answer\necho allowed\ntouch '{done}'\nsleep 30\n"
+        tmp_path,
+        "import pathlib, time\nprint('Allow this call?', flush=True)\ninput()\n"
+        f"print('allowed', flush=True)\npathlib.Path({str(done)!r}).touch()\ntime.sleep(30)\n",
     )
     answered = []
 

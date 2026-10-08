@@ -7,7 +7,6 @@ or the developer's installed agents. Only the live workspace is shared with e2e.
 from __future__ import annotations
 
 import argparse
-import ast
 import base64
 import contextlib
 import datetime as dt
@@ -39,8 +38,6 @@ UV_INDEX_CREDENTIAL_ENV = (
 )
 NPM_TOKEN_ENV = "UG_INTEGRATION_NPM_TOKEN"
 INSTALLER_CREDENTIAL_ENV = (*UV_INDEX_CREDENTIAL_ENV, NPM_TOKEN_ENV)
-PTY_MODULES = {"pexpect", "pyte"}
-PTY_HELPERS = {"utils.terminal", "utils.mcp"}
 # Claude exports no spans on Windows, where ug writes no machine-wide Claude settings.
 WINDOWS_UNSUPPORTED_MODULES = {"test_ug_claude_tracing.py"}
 HEADLESS_TEST_NODES = {
@@ -169,29 +166,9 @@ def integration_test_targets(
         return [
             str(module)
             for module in sorted(suite.glob("test_*.py"))
-            if module.name not in WINDOWS_UNSUPPORTED_MODULES and not uses_pty(module)
+            if module.name not in WINDOWS_UNSUPPORTED_MODULES
         ]
     return [str(suite)]
-
-
-def uses_pty(module: Path) -> bool:
-    """Whether a suite module drives agents through the POSIX-only PTY helpers."""
-    imported_names = []
-    for node in ast.walk(ast.parse(module.read_text(encoding="utf-8"))):
-        if isinstance(node, ast.ImportFrom):
-            imported_names.append(node.module or "")
-            imported_names.extend(
-                f"{node.module}.{alias.name}" if node.module else alias.name
-                for alias in node.names
-                if alias.name != "*"
-            )
-        elif isinstance(node, ast.Import):
-            imported_names.extend(alias.name for alias in node.names)
-    return any(
-        name.split(".")[0] in PTY_MODULES
-        or any(name == helper or name.endswith(f".{helper}") for helper in PTY_HELPERS)
-        for name in imported_names
-    )
 
 
 def process_group_options() -> dict:
@@ -840,8 +817,8 @@ def main() -> int:
                 bearer = mint_m2m_token(args.workspace, client_id, client_secret)
 
         test_dependencies = ["pytest==9.0.3"]
-        if os.name == "posix":
-            test_dependencies.extend(["pexpect==4.9.0", "pyte==0.8.2"])
+        test_dependencies.append("pyte==0.8.2")
+        test_dependencies.append("pexpect==4.9.0" if os.name == "posix" else "pywinpty==3.0.5")
         run(
             [
                 uv,
