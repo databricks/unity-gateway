@@ -2649,9 +2649,16 @@ class TestClaudeLaunch:
         )
         assert json.loads(settings_path.read_text()) == {"env": {}}
 
-    @pytest.mark.parametrize("managed_value", ["X-Admin: managed", ""])
+    @pytest.mark.parametrize(
+        ("managed_value", "message"),
+        [
+            ("X-Admin: managed", "Contact your administrator"),
+            ("", "Contact your administrator"),
+            ("x-databricks-use-coding-agent-mode: true", "ug mirrors its Claude Code headers"),
+        ],
+    )
     def test_launch_rejects_custom_headers_when_os_managed_headers_exist(
-        self, monkeypatch, tmp_path, managed_value
+        self, monkeypatch, tmp_path, managed_value, message
     ):
         calls: list[list[str]] = []
         managed_path = tmp_path / "managed-settings.json"
@@ -2664,7 +2671,7 @@ class TestClaudeLaunch:
         monkeypatch.setattr(claude, "read_json_safe", lambda _path: {})
         monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
 
-        with pytest.raises(RuntimeError, match="Contact your administrator"):
+        with pytest.raises(RuntimeError, match=message):
             claude.launch(
                 {"workspace": WS},
                 [],
@@ -2674,6 +2681,17 @@ class TestClaudeLaunch:
             )
 
         assert calls == []
+
+    def test_custom_headers_reject_managed_drop_in_headers(self, monkeypatch, tmp_path):
+        managed_path = tmp_path / "managed-settings.json"
+        drop_in = tmp_path / "managed-settings.d" / "10-admin.json"
+        drop_in.parent.mkdir()
+        drop_in.write_text(json.dumps({"env": {"ANTHROPIC_CUSTOM_HEADERS": "X-Admin: managed"}}))
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
+        monkeypatch.setattr(claude, "read_json_safe", lambda _path: {})
+
+        with pytest.raises(RuntimeError, match="10-admin.json"):
+            claude.validate_custom_headers({}, {"X-Development-Route": "test-target"})
 
     def test_windows_launch_preserves_prompt_as_literal_argv(self, monkeypatch, tmp_path):
         native_binary = tmp_path / "Claude Code" / "claude.exe"

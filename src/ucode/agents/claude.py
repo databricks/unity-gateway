@@ -1296,24 +1296,37 @@ def _reject_custom_header_collisions(
 
     private_settings = read_json_safe(CLAUDE_SETTINGS_PATH)
     managed_path = _managed_settings_path()
-    managed_settings: dict | None = None
-    if managed_path is not None:
-        managed_text = read_managed_file(managed_path)
-        if managed_text is not None:
-            try:
-                managed_settings = _parse_managed_settings(managed_text)
-            except RuntimeError as exc:
-                raise RuntimeError(
-                    f"Cannot safely inspect Claude Code managed settings at {managed_path}: {exc}."
-                ) from exc
-
-    if managed_settings is not None:
+    managed_paths = (
+        [managed_path, *sorted(managed_path.with_name("managed-settings.d").glob("*.json"))]
+        if managed_path is not None
+        else []
+    )
+    for path in managed_paths:
+        try:
+            managed_text = read_managed_file(path)
+            managed_settings = (
+                _parse_managed_settings(managed_text) if managed_text is not None else {}
+            )
+        except (RuntimeError, ValueError) as exc:
+            raise RuntimeError(
+                f"Cannot safely inspect Claude Code managed settings at {path}: {exc}."
+            ) from exc
         managed_env = managed_settings.get("env")
         if isinstance(managed_env, dict) and ANTHROPIC_CUSTOM_HEADERS_ENV_KEY in managed_env:
+            # `ug configure` mirrors ug's own headers here for bare `claude` launches.
+            if (
+                CLAUDE_MANAGED_CUSTOM_HEADER_NAMES
+                & _custom_headers_from_settings(managed_settings).keys()
+            ):
+                owner = "ug mirrors its Claude Code headers into OS-managed settings at"
+                remedy = "Omit --header for Claude launches on this machine."
+            else:
+                owner = "Claude Code OS-managed settings define them at"
+                remedy = "Contact your administrator or omit --header."
             raise RuntimeError(
-                "--header cannot be applied because Claude Code OS-managed settings define "
-                f"env.{ANTHROPIC_CUSTOM_HEADERS_ENV_KEY}, which takes precedence over launch "
-                "settings. Contact your administrator or omit --header."
+                f"--header cannot be applied because {owner} {path} "
+                f"(env.{ANTHROPIC_CUSTOM_HEADERS_ENV_KEY}), which take precedence over launch "
+                f"settings. {remedy}"
             )
 
     conflicts = custom_headers.keys() & {
