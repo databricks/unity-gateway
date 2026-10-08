@@ -19,6 +19,13 @@ This suite runs the **installed product** through subprocesses, against the same
 patch application functions, substitute agent executables, run a fake gateway,
 or construct ug state files. The normal test suite checks these boundaries.
 
+For Claude 2.1.290, child completion evidence also accepts `SubagentHandback` only
+when the matching tool result confirms successful delivery and ends the child's turn.
+MCP inventory traversal compares server names, so changing connection status cannot
+hide menu wraparound. The relayed CUJ names an exact bare Anthropic model ID;
+family shortcuts such as `haiku` may resolve to a configured gateway model.
+Offline regressions cover the evidence parsers; live assertions remain required.
+
 The existing unit tests keep their fixtures. Integration has an independent
 pytest configuration and uses `--confcutdir` so those fixtures cannot leak in.
 It is not collected by the default `uv run pytest` command.

@@ -228,7 +228,7 @@ class SubagentCalculation:
         session.record(f"agent-sessions-{self.marker}.json", sessions)
         assert self.completed(session, agent, child=child), (
             f"No {'child' if child else 'parent'} assistant answer contained {self.value!r}; "
-            "echoed prompts and tool inputs do not count as completed answers."
+            "echoed prompts and unconfirmed tool inputs do not count as completed answers."
         )
 
 
