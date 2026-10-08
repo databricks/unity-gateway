@@ -16,12 +16,23 @@ from tests.integration.utils.model_discovery import (
 )
 from tests.integration.utils.terminal import TerminalProcess
 
-from .base import BaseCujTest
-from .helpers.constants import CLAUDE, CODEX, INFERENCE_PATHS, MANAGED_PATHS
-from .helpers.evidence import SessionEvidence, canonical_model
+from .base import BaseCujTest, bearer
+from .helpers.constants import (
+    CLAUDE,
+    CLAUDE_HAIKU_MODEL_SERVICE,
+    CLAUDE_SONNET_MODEL_SERVICE,
+    CODEX,
+    CODEX_LUNA_MODEL_SERVICE,
+    INFERENCE_PATHS,
+    MANAGED_PATHS,
+    MODEL_SERVICE_SCHEMA,
+)
+from .helpers.evidence import SessionEvidence, assert_served, canonical_model, claude_file_task
 from .helpers.session import UserSession
 from .helpers.terminal import Terminal
 from .helpers.tui_request_recorder import TuiRequestRecorder
+
+CUJ_NAME = "CUJ 7 · Unmanaged model discovery"
 
 pytestmark = [pytest.mark.live, pytest.mark.cuj7, pytest.mark.workspace_isolated]
 
@@ -37,8 +48,7 @@ def _assert_claude_service_task(recorder, task, turn, model):
     ]
     assert requests, "No Claude inference request matched the file task"
     for request in requests:
-        assert canonical_model(request.payload["model"]) == canonical_model(model), request.payload
-        assert recorder.response_for(request).status_code == 200, request.sequence
+        assert_served(recorder, request, model)
 
 
 class TestUnmanagedModelDiscovery(BaseCujTest):
@@ -61,7 +71,7 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
 
     @pytest.fixture
     def live_session(self, unmanaged_workspace, tmp_path):
-        """Reuse the session helper; the shared cuj fixture requires a managed config."""
+        """Keep each launch unconfigured; the class-scoped cuj fixture requires a published config."""
         assert os.name == "posix", "CUJ7 requires a disposable POSIX runner"
         assert not any(path.exists() for path in MANAGED_PATHS), (
             "Existing machine-wide agent settings; use a clean disposable runner"
@@ -70,33 +80,17 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         assert binary, "Install ug before running CUJ7"
         for tool in (CLAUDE, CODEX, "databricks"):
             assert shutil.which(tool), f"Install the required CLI before running CUJ7: {tool}"
-        try:
-            authorization = self.workspace.config.authenticate().get("Authorization", "")
-        except DatabricksError as error:
-            raise RuntimeError(f"Workspace authentication failed: {type(error).__name__}") from None
-        assert authorization.startswith("Bearer ") and authorization.removeprefix("Bearer "), (
-            "Service-principal authentication did not return a bearer token"
-        )
         session = UserSession(
             tmp_path,
             Path(binary),
             tmp_path / "artifacts",
-            authorization.removeprefix("Bearer "),
+            bearer(self.workspace),
         )
         try:
             yield session
         finally:
-            state_dir = session.home / ".ucode"
-            if any(
-                (state_dir / name).is_file()
-                for name in ("state.json", "managed-backups/manifest.json")
-            ):
-                with TerminalProcess(
-                    session, "ug", [str(session.binary), "revert"], "cleanup-revert"
-                ) as terminal:
-                    terminal.finish()
-            assert not any(path.exists() for path in MANAGED_PATHS), (
-                "CUJ7 teardown left machine-wide agent settings"
+            session.revert_machine_wide(
+                "cleanup-revert", "CUJ7 teardown left machine-wide agent settings"
             )
 
     @pytest.fixture
@@ -165,8 +159,8 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         Expected: Haiku completes a file task without prior configuration or routing.
         """
         session = live_session
-        task = FileTask(session)
-        model = "ug_e2e.models.claude_haiku"
+        task = claude_file_task(session)
+        model = CLAUDE_HAIKU_MODEL_SERVICE
         model_args = ["--model", model]
         evidence = SessionEvidence(session.home, CLAUDE)
 
@@ -175,7 +169,7 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
             "--workspace",
             request_recorder.url,
             "--model-location",
-            "ug_e2e.models",
+            MODEL_SERVICE_SCHEMA,
             *(model_args if model_owner == "ug" else []),
             "--",
             *(model_args if model_owner == "claude" else []),
@@ -203,12 +197,12 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         completes a file task through the preconfigured Sonnet service, not a discovered default.
         """
         session = live_session
-        task = FileTask(session)
-        model = "ug_e2e.models.claude_sonnet"
+        task = claude_file_task(session)
+        model = CLAUDE_SONNET_MODEL_SERVICE
         model_args = ["--model", "sonnet"]
         defaults = {
             f"ANTHROPIC_DEFAULT_{family}_MODEL": (
-                model if family == "SONNET" else "ug_e2e.models.claude_haiku"
+                model if family == "SONNET" else CLAUDE_HAIKU_MODEL_SERVICE
             )
             for family in ("FABLE", "OPUS", "SONNET", "HAIKU")
         }
@@ -258,7 +252,7 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         """
         session = live_session
         task = FileTask(session)
-        model = "ug_e2e.models.gpt_luna"
+        model = CODEX_LUNA_MODEL_SERVICE
         model_args = ["--model", model]
         evidence = SessionEvidence(session.home, CODEX)
 
@@ -267,7 +261,7 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
             "--workspace",
             self.workspace.config.host,
             "--model-location",
-            "ug_e2e.models",
+            MODEL_SERVICE_SCHEMA,
             *(model_args if model_position == "before_separator" else []),
             "--",
             "exec",

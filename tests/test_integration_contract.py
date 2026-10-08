@@ -291,7 +291,7 @@ def test_model_discovery_cases_match_current_launch_contract():
     seen = []
     paths = [
         *root.glob("integration/test_ug_*_model_discovery.py"),
-        *root.glob("e2e_cuj/test_ug_*_model_discovery.py"),
+        *root.glob("e2e_cuj/test_cuj*_model_discovery.py"),
     ]
     for path in paths:
         source = path.read_text()

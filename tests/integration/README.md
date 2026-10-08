@@ -606,10 +606,11 @@ Claude lane also passes `CLAUDE_CODE_OAUTH_TOKEN` (the same secret the e2e workf
 uses) for the relayed hybrid CUJ. Fork PRs run installation checks only because they
 cannot receive those secrets.
 
-CUJ7's five journeys collect eight cases in `tests/e2e_cuj/test_ug_cuj7_model_discovery.py`: configured
+CUJ7's five journeys collect eight cases in `tests/e2e_cuj/test_cuj7_model_discovery.py`: configured
 Claude picker and Codex app-server discovery, fresh Claude/Codex model-location file
 tasks, and Claude managed-family-default preservation on launch. The class pins `WORKSPACE_URL` to
-`https://dbc-14e376e8-6541.cloud.databricks.com`; the required `dedicated-cuj` job uses
+`https://dbc-14e376e8-6541.cloud.databricks.com`; the required
+`E2E CUJs · CUJ 7 · Unmanaged model discovery` shard uses
 the shared `UG_CUJ_SP_CLIENT_ID` / `UG_CUJ_SP_CLIENT_SECRET` credentials, not a workspace
 secret. The workspace must publish no `CodingAgentConfig`, expose discoverable `system.ai`
 models, and retain the existing models `ug_e2e.models.claude_haiku`,
@@ -618,7 +619,8 @@ needs read/use privileges on all three.
 The task journeys exercise model selection before and after ug's separator, including
 Claude's UG-owned `--model` and its native option. All eight cases reuse the CUJ
 session/terminal helpers and check that the workspace remains unmanaged; they never
-change remote configuration. Every case runs terminal `ug revert` during teardown.
+change remote configuration. Function-scoped sessions keep every launch fresh, mint
+a bearer per case, and use shared `revert_machine_wide` cleanup.
 Claude task attribution checks the requested UC service and successful response through
 the shared forwarding recorder, alongside the completed native turn; native model IDs
 identify the backing provider model, not necessarily the UC service.

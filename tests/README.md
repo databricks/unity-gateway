@@ -347,7 +347,8 @@ suite runs all 80 live cases across two parallel agent jobs: one Claude VM and o
 Codex VM, each running its configure, headless, and commands/lifecycle cases
 serially. Each agent is installed once for the full suite, and no two full jobs
 for the same agent overlap within a run.
-CUJ7's five journeys collect eight cases in the required `dedicated-cuj` job: configured Claude picker and
+CUJ7's five journeys collect eight cases in the required
+`E2E CUJs · CUJ 7 · Unmanaged model discovery` shard: configured Claude picker and
 Codex app-server discovery, fresh Claude/Codex model-location file tasks, and Claude
 managed-family-default preservation on launch. Task journeys cover model selection before
 and after ug's separator. Each case reverts its local setup. The class
