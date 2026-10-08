@@ -15,10 +15,11 @@ import re
 # Python modules are singletons so patching this name patches the one call site.
 import urllib.request  # noqa: F401
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 from ucode.config_io import APP_DIR
-from ucode.smart_routing import routing
+from ucode.smart_routing import orchestrator, routing
 from ucode.smart_routing.routing import RoutingDecision
 
 ROUTER_NAME = routing.ROUTER_NAME
@@ -109,6 +110,7 @@ def route_pre_tool_use(
         def record(payload, task, decision, requested):
             routing.write_decision_record(DECISIONS_PATH, payload, task, decision, requested)
 
+    orchestration = "on" if orchestrator.enabled() else "off"
     return routing.route_spawn_tool(
         payload,
         is_spawn_agent=is_spawn_agent_tool,
@@ -117,7 +119,9 @@ def route_pre_tool_use(
         ),
         default_task_label="Codex subagent task",
         model_id_mapper=codex_model_id,
-        notice_config=SUBAGENT_NOTICE_CONFIG,
+        notice_config=replace(
+            SUBAGENT_NOTICE_CONFIG, name_suffix=f" [orchestrator {orchestration}]"
+        ),
         record_decision=record,
     )
 
