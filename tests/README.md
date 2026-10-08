@@ -56,6 +56,12 @@ These are component checks, not live installer, Isaac, or inference coverage.
 The live Claude/Codex headless prompt-argument and stdin journeys also require raw stdout to
 parse as JSON/JSONL without stripping UG messages; those assertions still require a live run.
 
+`TestGetDatabricksToken` in `test_databricks.py` covers the Codex helper's browser
+sign-in (`auth-token --browser-login`) with a fake Databricks CLI: an invalid refresh
+token opens a login whose output stays off stdout, a network failure opens none, and a
+helper that waited on the lock reuses a concurrent sign-in. Real browser consent and the
+Codex desktop app are not covered.
+
 `test_mcp_web_search.py` and `test_agent_claude.py` cover custom OAuth search
 registration, stale registration repair, SDK cache reuse/refresh, CLI profile
 selection, and errors without browser consent through the MCP handler. These

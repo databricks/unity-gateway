@@ -37,6 +37,10 @@ from ucode.constants import (
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
 )
 from ucode.os_compatibility import subprocess_cross_os
+from ucode.os_compatibility.file_lock_cross_os import (
+    acquire_exclusive_file_lock,
+    release_file_lock,
+)
 from ucode.telemetry import ug_version
 from ucode.ui import (
     err_console,
@@ -68,6 +72,14 @@ TOKEN_REFRESH_INTERVAL_SECONDS = 1800
 # we retry rather than treat them as an expired session.
 _TOKEN_CACHE_LOCK_MARKERS = ("cache update", "exit status 45")
 _TOKEN_FETCH_MAX_ATTEMPTS = 4
+# The CLI's errors for a missing cached login and an invalid refresh token. Not
+# its generic "Try logging in again with `databricks auth login`" trailer: that
+# is appended to network failures too, which must never open a browser.
+_LOGIN_REQUIRED_MARKERS = ("not configured for this host", "refresh token is invalid")
+# Below the agent's 180 s helper timeout (CUSTOM_OAUTH_TIMEOUT_MS), so ug ends an
+# abandoned login itself: Codex kills only the helper, not the CLI it spawned.
+_BROWSER_LOGIN_TIMEOUT_SECONDS = 150
+_BROWSER_LOGIN_LOCK_PATH = APP_DIR / "auth-login.lock"
 _HTTP_GET_RETRYABLE_STATUS_CODES = frozenset({429})
 _HTTP_GET_RETRY_BASE_SECONDS = 1.0
 _HTTP_GET_RETRY_MAX_SECONDS = 5.0
@@ -1361,11 +1373,64 @@ def _bearer_from_command(command: str) -> str:
     raise RuntimeError(f"DATABRICKS_BEARER_COMMAND {reason}. Command: {command}.{detail}")
 
 
+def _browser_login(
+    workspace: str,
+    profile: str | None,
+    env: dict[str, str],
+    fetch: Callable[[], tuple[str, str]],
+) -> str:
+    """Run a browser `databricks auth login` from a token helper, then fetch again.
+
+    Serialized with an OS file lock: concurrent helpers (agent threads, a 401
+    retry) would otherwise each open a browser and race for the CLI's callback
+    port. Fetch first once the lock is held, since the helper that held it may
+    have just signed in."""
+    started = time.monotonic()
+    _BROWSER_LOGIN_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with _BROWSER_LOGIN_LOCK_PATH.open("a+b") as lock_file:
+        acquire_exclusive_file_lock(lock_file)
+        try:
+            token, _ = fetch()
+            if token:
+                return token
+            # The agent times the helper from launch, so time spent waiting on
+            # the lock comes out of the login's budget.
+            remaining = _BROWSER_LOGIN_TIMEOUT_SECONDS - (time.monotonic() - started)
+            if remaining <= 0:
+                return ""
+            try:
+                # stdout -> stderr: this process's stdout carries the token to
+                # the agent. stdin is closed since the flow is browser-driven.
+                subprocess_cross_os.run(
+                    [
+                        databricks_cli_path(),
+                        "auth",
+                        "login",
+                        "--host",
+                        workspace,
+                        *_profile_args(profile),
+                    ],
+                    check=False,
+                    timeout=remaining,
+                    stdin=subprocess.DEVNULL,
+                    stdout=sys.stderr,
+                    stderr=sys.stderr,
+                    env=env,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                _debug("auth login", f"exception: {type(exc).__name__}: {exc}")
+            token, _ = fetch()
+            return token
+        finally:
+            release_file_lock(lock_file)
+
+
 def get_databricks_token(
     workspace: str,
     profile: str | None = None,
     *,
     force_refresh: bool = False,
+    browser_login: bool = False,
 ) -> str:
     # ``DATABRICKS_BEARER`` is the CI escape hatch: when set, skip the
     # `databricks auth token` subprocess entirely and return the pre-fetched
@@ -1425,32 +1490,38 @@ def get_databricks_token(
             _debug("auth token", _format_subprocess_result(result))
             if result.returncode == 0:
                 return json.loads(result.stdout or "{}").get("access_token", ""), ""
-            return "", result.stderr or ""
+            # With `--output json` the CLI reports an invalid refresh token on stdout.
+            return "", f"{result.stderr or ''}{result.stdout or ''}"
         except (subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
             _debug("auth token", f"exception: {type(exc).__name__}: {exc}")
             return "", str(exc)
 
-    def _fetch_with_lock_retry() -> str:
+    def _fetch_with_lock_retry() -> tuple[str, str]:
         """Mint a token, retrying transient token-cache lock contention.
 
         Concurrent `databricks auth token` calls racing on the shared cache fail
         fast with a lock error (see ``_TOKEN_CACHE_LOCK_MARKERS``). The lock is
         held only for the brief cache write, so a short jittered backoff almost
-        always wins the next attempt. A non-lock failure returns '' immediately
-        so the caller can fall through to the re-auth path."""
+        always wins the next attempt. A non-lock failure returns ('', error)
+        immediately so the caller can fall through to the re-auth path."""
+        stderr = ""
         for attempt in range(_TOKEN_FETCH_MAX_ATTEMPTS):
             token, stderr = _fetch()
             if token:
-                return token
+                return token, ""
             if not any(marker in stderr.lower() for marker in _TOKEN_CACHE_LOCK_MARKERS):
-                return ""
+                return "", stderr
             _debug("auth token", f"cache-lock contention (attempt {attempt + 1}); retrying")
             if attempt < _TOKEN_FETCH_MAX_ATTEMPTS - 1:
                 time.sleep(random.uniform(0.05, 0.1 * (2**attempt)))
-        return ""
+        return "", stderr
 
-    token = _fetch_with_lock_retry()
-    if not token:
+    token, error = _fetch_with_lock_retry()
+    if not token and browser_login:
+        # A desktop app's helper has no terminal to finish a `--no-browser` login.
+        if any(marker in error for marker in _LOGIN_REQUIRED_MARKERS):
+            token = _browser_login(workspace, profile, env, _fetch_with_lock_retry)
+    elif not token:
         # Session may have expired — attempt non-interactive re-auth and retry once.
         _debug("auth token", "empty on first fetch; attempting auth login --no-browser")
         try:
@@ -1472,7 +1543,7 @@ def get_databricks_token(
             _debug("auth login", _format_subprocess_result(reauth))
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
             _debug("auth login", f"exception: {type(exc).__name__}: {exc}")
-        token = _fetch_with_lock_retry()
+        token, _ = _fetch_with_lock_retry()
 
     if not token:
         profile_name = profile or find_profile_name_for_host(workspace)
@@ -1591,7 +1662,11 @@ def ug_binary() -> str:
 
 
 def build_auth_token_argv(
-    workspace: str, profile: str | None = None, *, use_pat: bool = False
+    workspace: str,
+    profile: str | None = None,
+    *,
+    use_pat: bool = False,
+    browser_login: bool = False,
 ) -> list[str]:
     """Argv for the cross-platform token helper: `ug auth-token ...`.
 
@@ -1605,6 +1680,8 @@ def build_auth_token_argv(
         argv += ["--profile", profile]
     if use_pat:
         argv.append("--use-pat")
+    if browser_login:
+        argv.append("--browser-login")
     return argv
 
 

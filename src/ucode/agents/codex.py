@@ -194,10 +194,15 @@ def _provider_block(
     custom_oauth: CustomOAuthConfig | None = None,
     managed_http_headers: dict[str, str] | None = None,
 ) -> dict:
+    # The Codex desktop app has no terminal, so the helper opens a browser sign-in
+    # when the Databricks login expires. A PAT never needs one.
+    browser_login = not custom_oauth and not use_pat
     if custom_oauth:
         auth_argv = build_custom_auth_token_argv(workspace, custom_oauth)
     else:
-        auth_argv = build_auth_token_argv(workspace, databricks_profile, use_pat=use_pat)
+        auth_argv = build_auth_token_argv(
+            workspace, databricks_profile, use_pat=use_pat, browser_login=browser_login
+        )
     base_url = build_tool_base_url("codex", workspace)
     http_headers = {
         "User-Agent": f"ucode/{ug_version()} codex/{agent_version('codex')}",
@@ -219,7 +224,7 @@ def _provider_block(
         "auth": {
             "command": auth_argv[0],
             "args": auth_argv[1:],
-            "timeout_ms": CUSTOM_OAUTH_TIMEOUT_MS if custom_oauth else 5000,
+            "timeout_ms": CUSTOM_OAUTH_TIMEOUT_MS if custom_oauth or browser_login else 5000,
             "refresh_interval_ms": 900000,
         },
     }
