@@ -264,6 +264,46 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         assert {key: settings.get("env", {}).get(key) for key in defaults} == defaults
         session.assert_not_routed()
 
+    @pytest.mark.claude
+    @pytest.mark.tui
+    def test_ug_claude_tui_rewrites_managed_settings_preserving_family_defaults(
+        self, live_session, family_defaults
+    ):
+        """Scenario: select Sonnet in an interactive launch over OS-managed defaults.
+
+        Expected: unlike headless launches, the TTY lets ug rewrite the OS-managed file; the
+        rewrite keeps every family default, the TUI task reaches the preconfigured Sonnet service,
+        and revert restores the seeded file.
+        """
+        session = live_session
+        task = claude_file_task(session)
+        model = CLAUDE_SONNET_MODEL_SERVICE
+        defaults, recorder = family_defaults
+        evidence = SessionEvidence(session.home, CLAUDE)
+        with Terminal(
+            session,
+            "family-defaults-tui",
+            [CLAUDE, "--workspace", recorder.url, "--model", "sonnet"],
+        ) as tui:
+            tui.boot()
+            tui.submit(task.prompt)
+            tui.task(evidence, task)
+            tui.exit_normally()
+        task.assert_completed(session, CLAUDE)
+        assert_inference_evidence(recorder, 0, CLAUDE, task, model)
+        settings = json.loads(session.run(str(MANAGED_PATHS[0]), binary="cat", timeout=30).stdout)
+        # Proves the interactive write happened; headless launches leave this file untouched.
+        assert settings["env"]["ANTHROPIC_BASE_URL"] == f"{recorder.url}/ai-gateway/anthropic"
+        assert {key: settings["env"].get(key) for key in defaults} == defaults
+        session.assert_not_routed()
+
+        with TerminalProcess(
+            session, "ug", [str(session.binary), "revert"], "family-defaults-tui-revert"
+        ) as terminal:
+            terminal.finish()
+        restored = json.loads(session.run(str(MANAGED_PATHS[0]), binary="cat", timeout=30).stdout)
+        assert restored == {"env": defaults}
+
     @pytest.mark.codex
     @pytest.mark.parametrize("model_position", ["before_separator", "exec"])
     def test_ug_codex_headless_fresh_model_location(

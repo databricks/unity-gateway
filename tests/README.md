@@ -248,6 +248,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_claude_headless_fresh_model_location` | From fresh state, launch Claude in the CUJ7 workspace with `--workspace`, `--model-location ug_e2e.models`, and `ug_e2e.models.claude_haiku` | Haiku reads an unpredictable file value through the selected model location and returns it in a structured completed answer; exit zero; no routing |
 | `test_ug_codex_headless_fresh_model_location` | From fresh state, launch Codex in the CUJ7 workspace with `--workspace`, `--model-location ug_e2e.models`, and `ug_e2e.models.gpt_luna` | Luna reads an unpredictable file value through the selected model location and returns it in a structured completed answer; exit zero; no routing |
 | `test_ug_claude_preserves_preexisting_managed_family_defaults` | Launch fresh Claude with pre-existing OS-managed family defaults and select the Sonnet family | Every default survives unchanged; the selected family completes a file task through the preconfigured Sonnet service |
+| `test_ug_claude_tui_rewrites_managed_settings_preserving_family_defaults` | Launch the Claude TUI with the same pre-existing OS-managed family defaults and `--model sonnet` | ug rewrites the OS-managed file (headless launches leave it untouched) while keeping every default; the TUI file task reaches the Sonnet service; `ug revert` restores the seeded file |
 | `test_ug_claude_exports_trace_to_configured_table`, `test_ug_codex_exports_trace_to_configured_table` | Configure tracing, complete a headless task carrying a unique trace marker, then wait for ingestion | The configured trace table contains an agent span with the same trace-safe marker and requested model |
 | `test_ug_claude_headless_explicit_model_bypasses_routing` | Pass `--model VALUE` / `--model=VALUE` before and after ug's separator with smart routing enabled, without workspace policy | Real file task completes; JSON `modelUsage` reports the requested model with output tokens; no routing wrapper |
 | `test_ug_codex_headless_explicit_model_bypasses_routing` | Pass `--model VALUE` / `--model=VALUE` / `-m VALUE` before ug's separator and within Codex `exec`, with smart routing enabled | Real file task completes; completed-turn model matches the selection; no routing wrapper |
@@ -347,10 +348,10 @@ suite runs all 85 live cases across two parallel agent jobs: one Claude VM and o
 Codex VM, each running its configure, headless, and commands/lifecycle cases
 serially. Each agent is installed once for the full suite, and no two full jobs
 for the same agent overlap within a run.
-CUJ7's five journeys collect eight cases in the required
+CUJ7's six journeys collect nine cases in the required
 `E2E CUJs · CUJ 7 · Unmanaged model discovery` shard: configured Claude picker and
 Codex app-server discovery, fresh Claude/Codex model-location file tasks, and Claude
-managed-family-default preservation on launch. Task journeys cover model selection before
+managed-family-default preservation on headless and interactive launch. Task journeys cover model selection before
 and after ug's separator. Each case reverts its local setup. The class
 pins `WORKSPACE_URL` to `https://dbc-14e376e8-6541.cloud.databricks.com` rather than using
 a workspace secret. The workspace must publish no `CodingAgentConfig`, expose discoverable
