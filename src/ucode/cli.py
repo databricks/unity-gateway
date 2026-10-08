@@ -7,7 +7,7 @@ import os
 import shutil
 import subprocess
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from enum import StrEnum
 from importlib import metadata
 from typing import Annotated, Any
@@ -36,6 +36,7 @@ from ucode.agents import (
     resolve_gemini_provider_model,
     resolve_launch_model,
     resolve_provider_models,
+    validate_custom_headers,
 )
 from ucode.agents import claude as claude_agent
 from ucode.agents import codex as codex_agent
@@ -125,6 +126,14 @@ from ucode.mcp import (
     revert_mcp_configs,
 )
 from ucode.os_compatibility import subprocess_cross_os
+from ucode.request_headers import (
+    custom_header_environment,
+    custom_header_scope,
+    get_custom_headers,
+)
+from ucode.request_headers import (
+    parse_custom_headers as _parse_custom_headers,
+)
 from ucode.skills_download import (
     configure_location_skills_download_command,
     configure_selected_skills_download_command,
@@ -143,6 +152,7 @@ from ucode.smart_routing.session_env import (
     set_session_environment,
 )
 from ucode.state import (
+    LAUNCH_DISCOVERY_OVERLAY_KEY,
     clear_state,
     get_provider_service,
     load_state,
@@ -476,6 +486,7 @@ def configure_shared_state(
     databricks_ai_tools_enabled: bool | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
     clear_custom_oauth: bool = False,
+    request_headers: dict[str, str] | None = None,
 ) -> dict:
     """Log into Databricks, verify AI Gateway, fetch model lists, persist state.
 
@@ -496,6 +507,7 @@ def configure_shared_state(
     Only the local profile resolution and the shared state assembly still run;
     the saved model lists are preserved.
     """
+    request_headers = request_headers or get_custom_headers()
     workspace = normalize_workspace_url(workspace)
     prior_state = load_state()
     previous_workspace = prior_state.get("workspace")
@@ -595,6 +607,14 @@ def configure_shared_state(
     with spinner("Verifying Unity AI Gateway..."):
         if not cli_custom_oauth:
             token = get_databricks_token(workspace, profile)
+        if request_headers:
+            managed, _ = _fetch_managed_config(state)
+            for tool in tools or []:
+                validate_custom_headers(
+                    tool,
+                    resolve_state(managed, state, tool) if managed is not None else state,
+                    request_headers,
+                )
         model_service_probe = probe_unity_gateway_capabilities(workspace, token)
     if model_service_probe.resource_available:
         print_success("Unity Gateway connected")
@@ -664,6 +684,18 @@ def configure_shared_state(
         if oss_models:
             opencode_models["oss"] = oss_models
 
+    if request_headers:
+        state[LAUNCH_DISCOVERY_OVERLAY_KEY] = {
+            key: state.get(key)
+            for key in (
+                "claude_models",
+                "codex_models",
+                "gemini_models",
+                "oss_models",
+                "opencode_models",
+                "web_search_model",
+            )
+        }
     if skip_model_discovery:
         # Don't clobber any previously-discovered Databricks model lists; provider
         # mode just doesn't refresh or use them. Persist the web-search model so
@@ -2252,7 +2284,11 @@ def claude_router_hook_cmd(
         sys.stdout.write(json.dumps(output))
 
 
-def _auto_configure_tool(tool: str, custom_oauth: CustomOAuthConfig | None = None) -> None:
+def _auto_configure_tool(
+    tool: str,
+    custom_oauth: CustomOAuthConfig | None = None,
+    request_headers: dict[str, str] | None = None,
+) -> None:
     """Configure a tool for launch without sending a separate validation prompt.
 
     The real agent session follows immediately; explicit configure retains the
@@ -2264,6 +2300,8 @@ def _auto_configure_tool(tool: str, custom_oauth: CustomOAuthConfig | None = Non
     if not workspace:
         workspace, profile = _prompt_for_configuration(tool)
     configure_kwargs = {"custom_oauth": custom_oauth} if custom_oauth is not None else {}
+    if request_headers:
+        configure_kwargs["request_headers"] = request_headers
     state = configure_shared_state(workspace, profile=profile, tools=[tool], **configure_kwargs)
 
     state = configure_single_tool(tool, state)
@@ -2547,10 +2585,12 @@ def _launch_options(
     explicit_prompt: bool,
     user_pinned_model: str | None,
     provider: str | None,
+    custom_headers: dict[str, str] | None = None,
 ) -> LaunchOptions:
     return LaunchOptions(
         # Pinned models for providers are resolved above through the provider-specific launch path.
         user_pinned_model=user_pinned_model if provider is None else None,
+        custom_headers=tuple((custom_headers or {}).items()),
         launch_smart_routing=(
             # Smart routing is enabled globally.
             smart_routing_enabled
@@ -2587,11 +2627,17 @@ def _launch_tool(
     model: str | None = None,
     parent_schema: str | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
+    headers: list[str] | None = None,
 ) -> None:
+    header_scope = ExitStack()
     try:
         tool = normalize_tool(tool_name)
         if not custom_oauth_cli_enabled(custom_oauth):
             os.environ.pop(CUSTOM_OAUTH_CLI_ENV_VAR, None)
+        custom_headers = _parse_custom_headers(
+            [f"{name}: {value}" for name, value in get_custom_headers().items()] + (headers or [])
+        )
+        header_scope.enter_context(custom_header_scope(custom_headers))
         # Before any status print: a stdio-protocol subcommand owns stdout, so
         # every ug line from here on must go to stderr instead.
         if _child_owns_stdout(tool, ctx.args):
@@ -2625,10 +2671,11 @@ def _launch_tool(
             skip_cli_version_check=skip_preflight,
         )
         if needs_auto_configure:
-            if custom_oauth is None:
-                _auto_configure_tool(tool)
-            else:
-                _auto_configure_tool(tool, custom_oauth=custom_oauth)
+            _auto_configure_tool(
+                tool,
+                **({"custom_oauth": custom_oauth} if custom_oauth is not None else {}),
+                **({"request_headers": custom_headers} if custom_headers else {}),
+            )
         state = ensure_provider_state(tool)
         # Remembered before the fallback below collapses the two cases: a managed config may not
         # silently override a provider the user typed on the command line (it errors instead).
@@ -2644,6 +2691,11 @@ def _launch_tool(
         coding_agent_config_feature_disabled = False
         if managed is None:
             managed, coding_agent_config_feature_disabled = _fetch_managed_config(state)
+        validate_custom_headers(
+            tool,
+            resolve_state(managed, state, tool) if managed is not None else state,
+            custom_headers,
+        )
         _reject_managed_launch_source_options(
             managed,
             provider=explicit_provider,
@@ -2935,10 +2987,14 @@ def _launch_tool(
             # initial/fallback model and still participates in a routed session.
             user_pinned_model=model or forwarded_model,
             provider=provider,
+            custom_headers=custom_headers,
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
-        with _smart_routing_v2_flag(
-            True if managed_smart_routing_enabled and smart_routing_enabled else None
+        with (
+            _smart_routing_v2_flag(
+                True if managed_smart_routing_enabled and smart_routing_enabled else None
+            ),
+            custom_header_environment(state["workspace"], custom_headers),
         ):
             launch_agent(tool, state, ctx.args, options=launch_options)
     except RuntimeError as exc:
@@ -2947,6 +3003,8 @@ def _launch_tool(
     except KeyboardInterrupt:
         print_err("Interrupted.")
         raise typer.Exit(130) from None
+    finally:
+        header_scope.close()
 
 
 # Launch-only escape hatch for managed/headless launchers (e.g. omnigent) that
@@ -2977,6 +3035,15 @@ WorkspaceOption = Annotated[
         "--workspace",
         help="Databricks workspace URL to launch against; sets up and authenticates it "
         "if not already configured.",
+    ),
+]
+
+CustomHeaderOption = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--header",
+        help="Add an HTTP header to workspace requests as `Name: value`; repeatable. "
+        "Pass before any `--` separator. Credentials and transport headers are not allowed.",
     ),
 ]
 
@@ -3028,8 +3095,18 @@ def default(
     ] = False,
     skip_preflight: SkipPreflightOption = False,
     workspace: WorkspaceOption = None,
+    header: CustomHeaderOption = None,
 ) -> None:
     """Configure and launch coding agents through Databricks AI Gateway."""
+    try:
+        headers = _parse_custom_headers(header)
+        ctx.with_resource(custom_header_scope(headers))
+    except RuntimeError as exc:
+        print_err(str(exc))
+        raise typer.Exit(1) from None
+    if headers and ctx.invoked_subcommand not in {None, *TOOL_SPECS, "cursor", "usage"}:
+        print_err("--header is only supported when launching an agent or running `ug usage`.")
+        raise typer.Exit(1)
     if ctx.invoked_subcommand is not None:
         return
     set_dry_run(dry_run)
@@ -3133,6 +3210,7 @@ def codex_cmd(
             help="Discover model services in `<catalog>.<schema>`. Example: main.default",
         ),
     ] = None,
+    header: CustomHeaderOption = None,
     refresh: Annotated[
         bool,
         typer.Option(
@@ -3183,6 +3261,7 @@ def codex_cmd(
                 workspace_url=workspace,
                 parent_schema=model_location,
                 custom_oauth=custom_oauth,
+                headers=header,
             )
 
 

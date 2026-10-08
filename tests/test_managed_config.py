@@ -585,6 +585,49 @@ class TestRefreshManagedConfig:
         result, _ = refresh_managed_config(_state())
         assert result is None
 
+    def test_custom_header_fetch_failure_raises_instead_of_using_cache(self, monkeypatch):
+        def boom(ws, profile):
+            raise RuntimeError("no token")
+
+        monkeypatch.setattr(mc_mod, "get_custom_headers", lambda: {"X-Route": "scoped"})
+        monkeypatch.setattr(mc_mod, "get_databricks_token", boom)
+        monkeypatch.setattr(
+            mc_mod,
+            "_persisted_fallback",
+            lambda *args, **kwargs: pytest.fail("custom header fetch must not use the cache"),
+        )
+
+        with pytest.raises(RuntimeError, match="Could not fetch managed configuration: no token"):
+            refresh_managed_config(_state())
+
+    def test_custom_header_read_failure_raises_without_clearing_cache(self, monkeypatch):
+        saved: list[tuple] = []
+        monkeypatch.setattr(mc_mod, "get_custom_headers", lambda: {"X-Route": "scoped"})
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, tok: (None, "HTTP 403"))
+        monkeypatch.setattr(
+            mc_mod,
+            "save_managed_state",
+            lambda ws, cfg, **kwargs: saved.append((ws, cfg, kwargs)),
+        )
+
+        with pytest.raises(RuntimeError, match="Could not fetch managed configuration: HTTP 403"):
+            refresh_managed_config(_state())
+        assert saved == []
+
+    def test_custom_feature_disabled_is_authoritative_without_clearing_cache(self, monkeypatch):
+        saved: list[tuple] = []
+        reason = 'HTTP 400 Bad Request: {"error_code":"FEATURE_DISABLED"}'
+        monkeypatch.setattr(mc_mod, "get_custom_headers", lambda: {"X-Route": "scoped"})
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, tok: (None, reason))
+        monkeypatch.setattr(
+            mc_mod,
+            "save_managed_state",
+            lambda ws, cfg, **kwargs: saved.append((ws, cfg, kwargs)),
+        )
+
+        assert refresh_managed_config(_state()) == (None, True)
+        assert saved == []
+
     def test_auth_failure_falls_back_to_the_persisted_config(self, monkeypatch):
         warnings: list[str] = []
 
@@ -779,6 +822,20 @@ class TestRefreshTTL:
         )
         self._no_fetch(monkeypatch)
         assert refresh_managed_config(_state()) == (normalize_managed_config(RAW_MANIFEST), False)
+
+    def test_custom_header_fetch_bypasses_and_preserves_persistent_cache(self, monkeypatch):
+        self._write_cache(
+            config=RAW_MANIFEST, outcome="published", retrieved_at=NOW - timedelta(minutes=1)
+        )
+        calls = self._counting_fetch(monkeypatch)
+        monkeypatch.setattr(mc_mod, "get_custom_headers", lambda: {"X-Route": "scoped"})
+        before = mc_mod.MANAGED_CONFIG_PATH.read_text(encoding="utf-8")
+
+        result = refresh_managed_config(_state())
+
+        assert result == (normalize_managed_config(RAW_MANIFEST), False)
+        assert calls["n"] == 1
+        assert mc_mod.MANAGED_CONFIG_PATH.read_text(encoding="utf-8") == before
 
     def test_fresh_legacy_cache_normalizes_to_smart_defaults(self, monkeypatch):
         self._write_cache(

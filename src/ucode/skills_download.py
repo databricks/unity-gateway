@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import os
 import shutil
 import threading
@@ -204,7 +205,13 @@ def _fetch_bundles(
     pool = ThreadPoolExecutor(max_workers=min(_MAX_FETCH_WORKERS, len(refs)))
     futures = {
         pool.submit(
-            fetch_skill_bundle, workspace, token, ref.catalog, ref.schema, ref.securable_name
+            contextvars.copy_context().run,
+            fetch_skill_bundle,
+            workspace,
+            token,
+            ref.catalog,
+            ref.schema,
+            ref.securable_name,
         ): ref.fqn
         for ref in refs
     }
@@ -487,7 +494,10 @@ def _refs_needing_refresh(
     pairs: list[tuple[dict, SkillRef]] = []
     pool = ThreadPoolExecutor(max_workers=min(_MAX_FETCH_WORKERS, len(records)))
     try:
-        futures = {pool.submit(get_skill, workspace, token, r["fqn"]): r for r in records}
+        futures = {
+            pool.submit(contextvars.copy_context().run, get_skill, workspace, token, r["fqn"]): r
+            for r in records
+        }
         try:
             for future in as_completed(futures, timeout=max(0.0, deadline - time.monotonic())):
                 ref = future.result()

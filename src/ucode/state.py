@@ -24,6 +24,7 @@ STATE_VERSION = 3
 # Present only in memory: the layered values render the agent settings files, while `save_state`
 # restores what's under it so `state.json` keeps recording the developer's own configuration.
 MANAGED_OVERLAY_KEY = "_managed_overlay"
+LAUNCH_DISCOVERY_OVERLAY_KEY = "_launch_discovery_overlay"
 AUTH_COMMAND_TIMEOUT_MS = 5000
 AUTH_REFRESH_INTERVAL_MS = 900_000
 
@@ -76,21 +77,25 @@ def save_state(state: dict) -> None:
 
 
 def _without_managed_overlay(state: dict) -> dict:
-    """Return ``state`` with managed-config values swapped back for the developer's own.
+    """Return ``state`` with transient overlays swapped back for the developer's own values.
 
     Returns a new dict and leaves ``state`` untouched, so the caller keeps the layered values it
     needs for rendering and repeated saves stay idempotent.
     """
-    overlay = state.get(MANAGED_OVERLAY_KEY)
-    if not isinstance(overlay, dict):
+    overlay_keys = (MANAGED_OVERLAY_KEY, LAUNCH_DISCOVERY_OVERLAY_KEY)
+    if not any(isinstance(state.get(key), dict) for key in overlay_keys):
         return state
-    persisted = {key: value for key, value in state.items() if key != MANAGED_OVERLAY_KEY}
-    for key, value in overlay.items():
-        # A key the developer never set is dropped rather than persisted as None.
-        if value is None:
-            persisted.pop(key, None)
-        else:
-            persisted[key] = value
+    persisted = {key: value for key, value in state.items() if key not in overlay_keys}
+    # Unwind managed settings first, then any launch-specific discovery beneath them.
+    for overlay_key in overlay_keys:
+        overlay = state.get(overlay_key)
+        if not isinstance(overlay, dict):
+            continue
+        for key, value in overlay.items():
+            if value is None:
+                persisted.pop(key, None)
+            else:
+                persisted[key] = value
     return persisted
 
 

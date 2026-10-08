@@ -229,6 +229,11 @@ ug skills remove --location main.default --via mcp
 | `ug revert` | Clear saved state and restore backed-up config files |
 | `ug upgrade` | Upgrade Unity Gateway |
 
+`ug --header 'X-Development-Route: test-target' usage` adds a repeatable header to workspace
+requests for that invocation, including prelaunch discovery and configuration requests.
+`ug codex --header 'X-Development-Route: test-target'` also passes it to Codex and its routing
+helpers for that launch. Use non-secret values; headers are not saved in Codex configuration.
+
 Databricks AI Tools are installed only by `ug configure`, never by agent launch
 commands. Use `--enable-databricks-ai-tools` or `--disable-databricks-ai-tools`
 with `ug configure` to control installation.

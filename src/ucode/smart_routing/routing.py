@@ -23,6 +23,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ucode import request_headers
+from ucode.request_headers import get_custom_headers, inherited_custom_headers
+
 ROUTER_NAME = "task_v3"
 ROUTER_NAME_ENV_VAR = "SMART_ROUTER_NAME"
 ROUTING_PATH = "/ai-gateway/routing/v1/routes:select"
@@ -226,17 +229,37 @@ def select_route(
         "task": {"prompt": task},
         "route_selector": {"router_name": router_name},
     }
+    # Direct launches use the context-local value. Hook subprocesses and the
+    # PTY/interposer worker use the workspace-bound envelope explicitly here;
+    # unrelated commands do not inherit it because the launcher scopes that
+    # environment only around the child agent.
+    custom_headers = get_custom_headers() or inherited_custom_headers(workspace)
+    # Authentication and the request content type are owned by this client.
+    # The parser rejects protected names, but keep the boundary safe for any
+    # embedding caller that enters a context manually.
+    headers = {
+        name: value
+        for name, value in custom_headers.items()
+        if name.casefold() not in {"authorization", "content-type"}
+    }
+    headers.update(
+        {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+    )
     request = urllib.request.Request(
         workspace.rstrip("/") + ROUTING_PATH,
         data=json.dumps(body).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        },
+        headers=headers,
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with request_headers.urlopen(
+            request,
+            timeout=timeout,
+            scoped_headers=bool(custom_headers),
+        ) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = ""
