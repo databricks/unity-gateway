@@ -2346,7 +2346,7 @@ def build_skills_mcp_url(workspace: str, locations: list[str]) -> str:
 # produced by `_provider_type_tag` (e.g. `amazon_bedrock`).
 _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
     "claude": ("anthropic", "amazon_bedrock"),
-    "codex": ("openai", "azure_openai", "microsoft_foundry"),
+    "codex": ("openai", "azure_openai", "microsoft_foundry", "bedrock_mantle", "amazon_bedrock"),
     "gemini": ("gemini_enterprise",),
 }
 
