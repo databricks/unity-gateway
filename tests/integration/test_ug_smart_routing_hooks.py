@@ -332,12 +332,18 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
 @pytest.mark.codex
 @pytest.mark.managed_fixture
 @pytest.mark.parametrize(
+    "launch_args",
+    [[], ["-c", 'tui.alternate_screen="never"']],
+    ids=["bare", "isaac-config"],
+)
+@pytest.mark.parametrize(
     "orchestration_enabled", [False, True], ids=["routing-only", "orchestration"]
 )
 def test_smart_router_skill_toggles_codex_subagent_routing(
-    live_session, workspace, tmp_path, orchestration_enabled
+    live_session, workspace, tmp_path, orchestration_enabled, launch_args
 ):
-    """Scenario: launch Codex with subagent routing enabled and orchestration unset
+    """Scenario: launch Codex bare or with Isaac's alternate-screen config override,
+    with subagent routing enabled and orchestration unset
     or opted in through ENABLE_SMART_ROUTER_ORCHESTRATOR=1, spawn a child, invoke the
     installed Smart Router skill to turn routing off, spawn another child, turn routing
     back on through the skill, and spawn a third child in the same real TUI session.
@@ -365,7 +371,10 @@ def test_smart_router_skill_toggles_codex_subagent_routing(
         "--disable-databricks-ai-tools",
     )
     with AgentTerminal(
-        session, "codex", [str(session.binary), "codex"], "smart-router-skill-toggle"
+        session,
+        "codex",
+        [str(session.binary), "codex", *launch_args],
+        "smart-router-skill-toggle",
     ) as tui:
         tui.boot()
         _run_calculation(tui, session, "codex", "1+1", "2", routed=True)

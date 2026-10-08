@@ -29,6 +29,13 @@ tokens; component tests verify this only moves UG diagnostics, preserving agent 
 `TestBootstrapStdout` in `../test_agents_init.py` exercises real subprocess streams
 with substituted installer/upgrader commands, including failures and native handoff.
 These component checks do not establish live installer, Isaac, or inference coverage.
+`TestSubcommandRouting` in `../test_cli.py` also covers option-only Codex routing,
+including separate, equals, attached, and repeated config overrides, unchanged argv,
+inherited routing flags, and rejection of native subcommands, model pins (including
+the exact `model` config key), help/version,
+remote attachment, OSS/provider switches, or unknown and malformed arguments.
+Its option-value checks distinguish subcommand names from
+actual positional subcommands.
 The live Claude/Codex headless prompt-argument and stdin journeys require raw stdout to parse
 as JSON/JSONL, without discarding non-JSON lines before checking the completed file task.
 
@@ -288,6 +295,10 @@ controls, a new CLI confirmation in the native tool-result records, and a new
 assistant answer after each skill invocation.
 Collapsed terminal output is allowed; the answer need not repeat the CLI's exact wording.
 Each following child still verifies whether a routing decision occurred.
+The Codex toggle journey runs both bare and with Isaac's
+`-c tui.alternate_screen="never"` override for each orchestration mode, keeping all
+native child-completion, saved-control, and live routing-decision assertions.
+This covers UG's launcher-style arguments, not an execution of Isaac itself.
 Their off-phase child is an explicit user-requested delegation;
 these journeys do not establish automatic orchestration behavior. Root-only
 activation, compaction, retained skills in ineligible sessions,
@@ -376,10 +387,10 @@ startup banners and footer text cannot satisfy discovery assertions. Cases 7–1
 they only configure, list models, and open/close the picker. Other live CUJs perform
 real model tasks.
 
-There are **62 live cases** (including 12 marked TUI journeys) and **7 installation
+There are **64 live cases** (including 12 marked TUI journeys) and **7 installation
 checks** with Claude and Codex; selecting OpenCode adds one live headless case. One
 **`workspace_switch` case** uses two real workspaces and checks skills MCP cleanup and a completed
-Claude task. A further **33 `managed_fixture` cases** (two of them also `live`) run on the
+Claude task. A further **35 `managed_fixture` cases** (including the live toggle journeys) run on the
 managed workspace with a checked-in JSON CodingAgentConfig from `tests/fixtures/managed_config/`
 injected through `UCODE_MANAGED_CONFIG_STUB`; there are no cases that read a published config.
 Twelve explicit configured/fresh Claude and Codex discovery and source-override journeys use the
@@ -396,7 +407,7 @@ catalog discovery with overall defaults, family defaults, or both, along with ex
 selection and preservation of static model lists. Both cases run on the managed workspace's own
 bearer; no second workspace or extra secret is involved.
 The 14 retained numbered scenarios comprise 24 explicit journeys: 12 managed and 12 unmanaged
-executions; the complete integration suite collects 101 executions. See the named coverage and gaps matrix in
+executions; the complete integration suite collects 103 executions. See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
 ```bash
@@ -539,13 +550,13 @@ each test; only explicit-model scenarios choose and record a discovered
 Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
-two agent jobs). Full runs all 62 live cases, including those smoke cases, in two
+two agent jobs). Full runs all 64 live cases, including those smoke cases, in two
 disjoint agent lanes:
 
 | Agent lane | Marker | Cases |
 | --- | --- | --- |
 | Claude | `live and claude` | 28 |
-| Codex | `live and codex` | 34 |
+| Codex | `live and codex` | 36 |
 
 A non-blocking **OpenCode** job (`live and opencode`, one case) runs alongside them with
 `continue-on-error` and is not part of the required `cujs` gate until it is stable.
@@ -849,7 +860,7 @@ uv run --no-project --python 3.12 python scripts/run_integration.py \
 unset DATABRICKS_BEARER
 ```
 
-This runs all 62 live cases. For the seven installation checks, run the same
+This runs all 64 live cases. For the seven installation checks, run the same
 runner/version/index arguments with `--installation-only` and omit `-- -m live`;
 no bearer or workspace is needed. Results remain under `.integration-runs/`.
 Each invocation needs a new output directory; an existing one is rejected.

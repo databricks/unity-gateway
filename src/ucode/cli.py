@@ -42,7 +42,7 @@ from ucode.agents import codex as codex_agent
 from ucode.agents import (
     launch as launch_agent,
 )
-from ucode.agents.args import has_explicit_model_arg
+from ucode.agents.args import codex_option_only_launch, has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
@@ -2536,6 +2536,8 @@ def _smart_routing_launch_shape(tool: str, tool_args: list[str], explicit_prompt
     """Whether the forwarded arguments represent an interactive launch."""
     if not tool_args or explicit_prompt:
         return True
+    if tool == "codex":
+        return codex_option_only_launch(tool_args)
     return tool == "claude" and tool_args[0].startswith("-")
 
 

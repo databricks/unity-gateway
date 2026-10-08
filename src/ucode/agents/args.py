@@ -4,6 +4,30 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+_CODEX_VALUE_OPTIONS = frozenset(
+    {
+        "-c",
+        "--config",
+        "-p",
+        "--profile",
+        "-s",
+        "--sandbox",
+        "-a",
+        "--ask-for-approval",
+        "-C",
+        "--cd",
+        "--add-dir",
+    }
+)
+_CODEX_BOOLEAN_OPTIONS = frozenset(
+    {
+        "--strict-config",
+        "--worktree",
+        "--search",
+        "--no-alt-screen",
+    }
+)
+
 
 @dataclass(frozen=True)
 class LaunchOptions:
@@ -11,6 +35,39 @@ class LaunchOptions:
 
     launch_smart_routing: bool = False
     user_pinned_model: str | None = None
+
+
+def codex_option_only_launch(tool_args: list[str]) -> bool:
+    """Recognize known scalar/boolean TUI options, excluding models and positionals."""
+    index = 0
+    while index < len(tool_args):
+        argument = tool_args[index]
+        if argument in _CODEX_BOOLEAN_OPTIONS:
+            index += 1
+            continue
+        if argument.startswith("--"):
+            option, separator, value = argument.partition("=")
+        else:
+            option = argument[:2]
+            value = argument[2:].removeprefix("=")
+            separator = argument[2:]
+        if option not in _CODEX_VALUE_OPTIONS:
+            return False
+        if not separator:
+            index += 1
+            if index == len(tool_args):
+                return False
+            value = tool_args[index]
+        if not value or value.startswith("-"):
+            return False
+        if option in {"-c", "--config"}:
+            key, equals, config_value = value.partition("=")
+            if not key.strip() or not equals or not config_value.strip():
+                return False
+            if key.strip() == "model":
+                return False
+        index += 1
+    return True
 
 
 def explicit_model_arg_value(tool_args: list[str]) -> str | None:
