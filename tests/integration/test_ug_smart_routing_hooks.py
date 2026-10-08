@@ -60,7 +60,7 @@ def _routing_decisions(session, agent: str) -> list[dict]:
     return read_jsonl(session.home / ".ucode" / f"{agent}-smart-routing-decisions.jsonl")
 
 
-def _routing_banner_for_task(screen: str, marker: str, *, orchestrator_on: bool = False) -> bool:
+def _routing_banner_for_task(screen: str, marker: str, *, orchestrator_on: bool) -> bool:
     """Whether the rendered router panel belongs to this uniquely tagged task."""
     lines = screen.splitlines()
     for index, line in enumerate(lines):
@@ -101,7 +101,9 @@ def _run_calculation(tui, session, agent: str, expression: str, expected: str, *
     after = _routing_decisions(session, agent)
     new_decisions = after[len(before) :]
     if not routed:
-        assert not _routing_banner_for_task(tui.visible, task.marker), tui.visible
+        assert not _routing_banner_for_task(tui.visible, task.marker, orchestrator_on=False), (
+            tui.visible
+        )
         assert not new_decisions, new_decisions
         return
 
