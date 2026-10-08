@@ -37,6 +37,8 @@ from ucode.constants import (
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
 )
 from ucode.os_compatibility import subprocess_cross_os
+from ucode.request_headers import get_custom_headers
+from ucode.request_headers import urlopen as _open_http_request
 from ucode.telemetry import ug_version
 from ucode.ui import (
     err_console,
@@ -73,6 +75,16 @@ _HTTP_GET_RETRY_BASE_SECONDS = 1.0
 _HTTP_GET_RETRY_MAX_SECONDS = 5.0
 _HTTP_GET_RETRY_AFTER_JITTER_SECONDS = 0.25
 _ANTHROPIC_MODEL_DISCOVERY_SETUP_MAX_RETRIES = 2
+_TRANSPORT_HEADER_NAMES = frozenset(
+    {
+        "accept",
+        "authorization",
+        "content-type",
+        "user-agent",
+        MODEL_PROVIDER_SERVICE_HEADER.casefold(),
+        MODEL_SERVICE_PARENT_SCHEMA_HEADER.casefold(),
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -286,6 +298,38 @@ def clear_workspace_org_id_cache() -> None:
     _WORKSPACE_ORG_IDS.clear()
 
 
+def _merge_http_headers(
+    mandatory: dict[str, str],
+    explicit: dict[str, str] | None,
+    custom: dict[str, str],
+) -> dict[str, str]:
+    """Merge request headers while treating names case-insensitively.
+
+    Invocation-scoped headers are the lowest-precedence layer: an endpoint's explicit selector
+    (for example, a Model Provider Service header) wins over them, and transport-owned values such
+    as ``Authorization``/``Accept``/``Content-Type`` always win. Removing a case-insensitive
+    duplicate before adding the next layer also avoids sending both spellings of one header.
+    """
+    merged: dict[str, str] = {}
+    for layer in (custom, explicit or {}, mandatory):
+        for name, value in layer.items():
+            folded = name.casefold()
+            for existing in list(merged):
+                if existing.casefold() == folded:
+                    del merged[existing]
+            merged[name] = value
+    return merged
+
+
+def _has_custom_http_headers(
+    custom: dict[str, str], explicit: dict[str, str] | None = None
+) -> bool:
+    """Whether a request carries invocation or caller-supplied routing headers."""
+    return bool(custom) or any(
+        name.casefold() not in _TRANSPORT_HEADER_NAMES for name in (explicit or {})
+    )
+
+
 def _http_get_bytes(
     url: str,
     token: str,
@@ -305,12 +349,17 @@ def _http_get_bytes(
     if max_retries < 0:
         raise ValueError("max_retries must be non-negative")
 
-    request_headers = {"Authorization": f"Bearer {token}"}
-    request_headers.update(headers or {})
+    custom_headers = get_custom_headers()
+    request_headers = _merge_http_headers(
+        {"Authorization": f"Bearer {token}"}, headers, custom_headers
+    )
     request = urllib_request.Request(url, headers=request_headers)
+    scoped_headers = _has_custom_http_headers(custom_headers, headers)
     for attempt in range(max_retries + 1):
         try:
-            with urllib_request.urlopen(request, timeout=timeout) as response:
+            with _open_http_request(
+                request, timeout=timeout, scoped_headers=scoped_headers
+            ) as response:
                 body = response.read()
                 _capture_org_id(url, getattr(response, "headers", None))
             _debug(f"GET {url}", f"HTTP 200, {len(body)} bytes")
@@ -408,12 +457,17 @@ def _http_send_json(
     empty body there is the expected result, not a decode failure.
     """
     body_bytes = json.dumps(payload).encode("utf-8") if payload is not None else None
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    mandatory_headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     if body_bytes is not None:
-        headers["Content-Type"] = "application/json"
+        mandatory_headers["Content-Type"] = "application/json"
+    custom_headers = get_custom_headers()
+    headers = _merge_http_headers(mandatory_headers, None, custom_headers)
     request = urllib_request.Request(url, data=body_bytes, method=method, headers=headers)
+    scoped_headers = bool(custom_headers)
     try:
-        with urllib_request.urlopen(request, timeout=timeout) as response:
+        with _open_http_request(
+            request, timeout=timeout, scoped_headers=scoped_headers
+        ) as response:
             body = response.read().decode("utf-8")
         _debug(f"{method} {url}", f"HTTP {response.status}, {len(body)} bytes")
         if _debug_enabled():
@@ -1814,7 +1868,7 @@ def has_cached_model_provider_services(workspace: str, parent: str | None = None
     it deserves one, but repeating it per agent on an instant cache hit is just noise. Takes
     ``parent`` for the same reason the cache is keyed on it — a scoped listing is a separate entry.
     """
-    return (workspace, parent or "") in _MODEL_PROVIDER_SERVICES_CACHE
+    return not get_custom_headers() and (workspace, parent or "") in _MODEL_PROVIDER_SERVICES_CACHE
 
 
 def list_model_services(
@@ -1839,7 +1893,10 @@ def list_model_services(
     A successful result is memoized per workspace for the life of the process; pass
     ``use_cache=False`` to force a fresh walk.
     """
-    if use_cache:
+    # A custom-header route can select a different catalog than the ordinary workspace request.
+    # Keep its result invocation-scoped: never read or overwrite the process-wide headerless cache.
+    use_process_cache = use_cache and not get_custom_headers()
+    if use_process_cache:
         cached = _MODEL_SERVICES_CACHE.get(workspace)
         if cached is not None:
             return list(cached), None
@@ -1879,7 +1936,7 @@ def list_model_services(
 
     deduped = sorted(set(ids))
     if deduped:
-        if use_cache:
+        if use_process_cache:
             _MODEL_SERVICES_CACHE[workspace] = list(deduped)
         return deduped, None
     return [], last_reason or "model-services listing returned no models"
@@ -2403,7 +2460,10 @@ def list_model_provider_services(
     # vice versa) — a service that plainly exists would look absent, the same failure pagination was
     # added to fix.
     cache_key = (workspace, parent or "")
-    if use_cache:
+    # A custom-header route can select a different provider listing. Keep it out of the ordinary
+    # process cache so a later headerless launch cannot reuse the scoped response (or vice versa).
+    use_process_cache = use_cache and not get_custom_headers()
+    if use_process_cache:
         cached = _MODEL_PROVIDER_SERVICES_CACHE.get(cache_key)
         if cached is not None:
             # A fresh list of fresh dicts each time: callers treat the result as theirs (the wizard
@@ -2445,7 +2505,7 @@ def list_model_provider_services(
     if not services and last_reason is not None:
         return [], last_reason
     services.sort(key=lambda s: s["name"])
-    if use_cache:
+    if use_process_cache:
         _MODEL_PROVIDER_SERVICES_CACHE[cache_key] = [dict(service) for service in services]
     return services, None
 
@@ -2974,19 +3034,43 @@ def list_all_mcp_services(
     return sorted(names), None
 
 
+def _merge_model_discovery_headers(
+    request_headers: dict[str, str] | None,
+    mandatory_header: tuple[str, str] | None = None,
+) -> dict[str, str] | None:
+    """Merge caller headers with an optional routing header for model discovery.
+
+    Header names are case-insensitive. The routing header is added last so a
+    caller cannot override the provider or parent-schema selector used for a
+    scoped discovery request.
+    """
+    merged = dict(request_headers or {})
+    if mandatory_header is not None:
+        name, value = mandatory_header
+        merged = {
+            existing: existing_value
+            for existing, existing_value in merged.items()
+            if existing.casefold() != name.casefold()
+        }
+        merged[name] = value
+    return merged or None
+
+
 def _get_anthropic_models_json(
     workspace: str,
     token: str,
     *,
     parent_schema: str | None = None,
     provider: str | None = None,
+    request_headers: dict[str, str] | None = None,
 ) -> tuple[dict | list | None, str | None]:
     origin = workspace_origin(workspace)
-    headers = None
+    mandatory_header = None
     if provider is not None:
-        headers = {MODEL_PROVIDER_SERVICE_HEADER: provider}
+        mandatory_header = (MODEL_PROVIDER_SERVICE_HEADER, provider)
     elif parent_schema is not None:
-        headers = {MODEL_SERVICE_PARENT_SCHEMA_HEADER: parent_schema}
+        mandatory_header = (MODEL_SERVICE_PARENT_SCHEMA_HEADER, parent_schema)
+    headers = _merge_model_discovery_headers(request_headers, mandatory_header)
     return _http_get_json(
         f"{origin}{ANTHROPIC_MODELS_PATH}?limit=1000",
         token,
@@ -3012,6 +3096,7 @@ def list_anthropic_model_catalog(
     *,
     parent_schema: str | None = None,
     provider: str | None = None,
+    request_headers: dict[str, str] | None = None,
 ) -> AnthropicModelCatalog:
     """Return advertised Anthropic model ids and their optional display metadata."""
     payload, reason = _get_anthropic_models_json(
@@ -3019,6 +3104,7 @@ def list_anthropic_model_catalog(
         token,
         parent_schema=parent_schema,
         provider=provider,
+        **({"request_headers": request_headers} if request_headers is not None else {}),
     )
     if payload is None:
         return AnthropicModelCatalog(model_ids=[], model_id_to_display_name={}, error_msg=reason)
@@ -3054,14 +3140,20 @@ def list_anthropic_model_catalog(
     )
 
 
-def discover_claude_models(workspace: str, token: str) -> tuple[dict[str, str], str | None]:
+def discover_claude_models(
+    workspace: str,
+    token: str,
+    *,
+    request_headers: dict[str, str] | None = None,
+) -> tuple[dict[str, str], str | None]:
     """Discover Claude families on this workspace's AI Gateway.
 
     Returns (models_by_family, reason). reason is None on success; otherwise it
     describes why the dict is empty (HTTP error, network error, or no models
     matching the expected naming convention).
     """
-    payload, reason = _get_anthropic_models_json(workspace, token)
+    kwargs = {"request_headers": request_headers} if request_headers is not None else {}
+    payload, reason = _get_anthropic_models_json(workspace, token, **kwargs)
     if payload is None:
         return {}, reason
 
@@ -3410,25 +3502,35 @@ def _fetch_codex_model_catalog(
     workspace: str,
     token: str,
     *,
-    source: CodexCatalogSource,
-    identifier: str,
+    source: CodexCatalogSource | None = None,
+    identifier: str | None = None,
+    request_headers: dict[str, str] | None = None,
 ) -> dict:
-    header_name, kind = source.value
+    mandatory_header = None
+    if source is not None:
+        assert identifier is not None
+        header_name, kind = source.value
+        mandatory_header = (header_name, identifier)
+        discovery_label = identifier
+        catalog_label = f"{kind} {identifier}"
+    else:
+        discovery_label = catalog_label = "workspace"
+    headers = _merge_model_discovery_headers(request_headers, mandatory_header)
     payload, reason = _http_get_json(
         f"{build_tool_base_url('codex', workspace)}/models",
         token,
         max_retries=2,
-        headers={header_name: identifier},
+        **({"headers": headers} if headers is not None else {}),
     )
     if reason:
-        message = f"Could not discover Codex models for {identifier}: {reason}"
+        message = f"Could not discover Codex models for {discovery_label}: {reason}"
         if "codex/v1/models is not enabled for this workspace" in reason.lower():
             raise CodexMpsModelCatalogUnavailable(message)
         raise RuntimeError(message)
     if not isinstance(payload, dict) or not isinstance(payload.get("models"), list):
-        raise RuntimeError(f"{kind} {identifier} returned an invalid Codex model catalog.")
+        raise RuntimeError(f"{catalog_label} returned an invalid Codex model catalog.")
     if not payload["models"]:
-        raise RuntimeError(f"{kind} {identifier} returned no Codex models.")
+        raise RuntimeError(f"{catalog_label} returned no Codex models.")
     return payload
 
 

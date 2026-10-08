@@ -11,6 +11,7 @@ class LaunchOptions:
 
     launch_smart_routing: bool = False
     user_pinned_model: str | None = None
+    custom_headers: tuple[tuple[str, str], ...] = ()
 
 
 def explicit_model_arg_value(tool_args: list[str]) -> str | None:

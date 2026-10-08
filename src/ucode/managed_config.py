@@ -12,7 +12,9 @@ local file, ``~/.ucode/managed-config.json`` (0600), used on the launch path:
   re-fetching), falling back to the persisted copy when the read fails.
 
 There is deliberately one file: the workspace is the source of truth, so the pulled copy lives in
-``managed-config.json`` and a launch re-reads it from there.
+``managed-config.json`` and a launch re-reads it from there. A launch carrying invocation-scoped
+custom headers is a separate workspace view: its read bypasses and never changes this ordinary
+cache, and a failed scoped read cannot fall back to it.
 
 :func:`refresh_managed_config` is the launch path's entry point. It is called before model discovery,
 because the manifest decides whether that discovery is needed at all; the launch path then hands the
@@ -37,6 +39,7 @@ from ucode.databricks import (
     fetch_model_recommendation,
     get_databricks_token,
 )
+from ucode.request_headers import get_custom_headers
 from ucode.time_utils import parse_update_time
 from ucode.ui import console, print_warning
 
@@ -750,12 +753,15 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
     applied watermark. The manifest is None when the workspace has no managed config, the normal
     case for a workspace whose admin hasn't published one.
 
-    A failed fetch never blocks the launch: an unreachable control plane shouldn't stop someone from
-    coding. Instead it falls back to the last config persisted for this workspace, so the admin's
-    most recent known policy still applies; only when there is no persisted config either does the
-    launch fall through to the developer's own settings. ``FEATURE_DISABLED`` is the exception — it
-    is an authoritative "off", not a transient failure, so it drops the cache rather than falling
-    back (see below).
+    A failed fetch ordinarily never blocks the launch: an unreachable control plane shouldn't stop
+    someone from coding. Instead it falls back to the last config persisted for this workspace, so
+    the admin's most recent known policy still applies; only when there is no persisted config either
+    does the launch fall through to the developer's own settings. ``FEATURE_DISABLED`` is the
+    exception — it is an authoritative "off", not a transient failure, so it drops the cache rather
+    than falling back (see below). When invocation-scoped custom headers are active, the response is
+    a separate in-memory view: the persistent cache is bypassed and untouched, and an auth/read
+    failure raises instead of falling back to that unrelated view; ``FEATURE_DISABLED`` remains an
+    authoritative scoped result without clearing the ordinary cache.
 
     ``coding_agent_config_feature_disabled`` is True whenever the gateway returned ``FEATURE_DISABLED`` —
     the coding-agent-configs feature isn't enabled server-side, so callers suppress the ``ucode
@@ -766,21 +772,35 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
     workspace = state.get("workspace")
     if not workspace:
         return ManagedConfigResult(None, False)
-    if not force_refresh:
+    custom_headers_active = bool(get_custom_headers())
+    if not force_refresh and not custom_headers_active:
         cached = _cached_result_if_fresh(workspace)
         if cached is not None:
             return cached
     try:
         token = get_databricks_token(workspace, state.get("profile"))
     except RuntimeError as exc:
+        if custom_headers_active:
+            raise RuntimeError(f"Could not fetch managed configuration: {exc}") from exc
         return ManagedConfigResult(_persisted_fallback(workspace, str(exc)), False)
     raw, reason = get_managed_config(workspace, token)
     if reason is not None:
+        if custom_headers_active:
+            if _is_feature_disabled(reason):
+                return ManagedConfigResult(None, True)
+            raise RuntimeError(f"Could not fetch managed configuration: {reason}")
         if _is_feature_disabled(reason):
             save_managed_state(workspace, {}, outcome=_OUTCOME_FEATURE_DISABLED)
             return ManagedConfigResult(None, True)
         fallback = _persisted_fallback(workspace, reason, refused=_is_permission_denied(reason))
         return ManagedConfigResult(fallback, False)
+    if custom_headers_active:
+        # A scoped route may expose a different admin policy. Keep it in memory for this
+        # invocation and leave the workspace's ordinary persistent cache untouched.
+        return ManagedConfigResult(
+            normalize_managed_config(raw) if raw is not None else None,
+            False,
+        )
     if raw is None:
         # Record that this workspace has no config, rather than leaving an earlier one on disk:
         # the file doubles as the fallback above, so a removed policy would otherwise come back

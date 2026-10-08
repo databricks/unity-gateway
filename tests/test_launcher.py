@@ -21,18 +21,21 @@ class TestExecOrSpawn:
         execvp.assert_called_once_with("claude", ["claude", "--settings", "x"])
         popen.assert_not_called()
 
-    def test_windows_spawns_and_waits(self):
+    @pytest.mark.parametrize("platform, wait_for_exit", [("nt", False), ("posix", True)])
+    def test_spawns_and_waits(self, platform, wait_for_exit):
         # On Windows there is no real exec; we must spawn + wait so the parent
         # shell does not resume and corrupt the terminal (issue #173).
         proc = MagicMock()
         proc.wait.return_value = 0
         with (
-            patch.object(launcher.os, "name", "nt"),
+            patch.object(launcher.os, "name", platform),
             patch.object(launcher.os, "execvp") as execvp,
             patch.object(launcher.subprocess_cross_os, "popen", return_value=proc) as popen,
         ):
             with pytest.raises(SystemExit) as exc:
-                launcher.exec_or_spawn(["claude.exe", "--settings", "x"])
+                launcher.exec_or_spawn(
+                    ["claude.exe", "--settings", "x"], wait_for_exit=wait_for_exit
+                )
         execvp.assert_not_called()
         popen.assert_called_once_with(["claude.exe", "--settings", "x"])
         proc.wait.assert_called_once()

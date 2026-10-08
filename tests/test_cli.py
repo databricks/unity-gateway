@@ -898,6 +898,143 @@ class TestSubcommandRouting:
         assert mock_launch.call_args.kwargs["parent_schema"] == "main.default"
         assert mock_launch.call_args.args[1].args == []
 
+    def test_codex_headers_are_forwarded(self):
+        with patch("ucode.cli._launch_tool") as mock_launch:
+            result = runner.invoke(
+                app, ["codex", "--header", "X-First: one", "--header", "X-Second: two:three"]
+            )
+
+        assert result.exit_code == 0, result.output
+        assert mock_launch.call_args.kwargs["headers"] == [
+            "X-First: one",
+            "X-Second: two:three",
+        ]
+
+    def test_claude_headers_are_forwarded(self):
+        with _launch_policy_patches(None) as calls:
+            calls["state"]["claude_models"] = {"sonnet": "routed-claude-sonnet-4"}
+            calls["state"][cli_mod.LAUNCH_DISCOVERY_OVERLAY_KEY] = {"claude_models": {}}
+            result = runner.invoke(
+                app, ["claude", "--header", "X-First: one", "--header", "X-Second: two:three"]
+            )
+
+        assert result.exit_code == 0, result.output
+        assert calls["shared"].call_args.kwargs["request_headers"] == {
+            "X-First": "one",
+            "X-Second": "two:three",
+        }
+        assert calls["launch"].call_args.kwargs["options"].custom_headers == (
+            ("X-First", "one"),
+            ("X-Second", "two:three"),
+        )
+
+        assert (
+            calls["launch"].call_args.args[1]["_claude_launch_default_model"]
+            == "routed-claude-sonnet-4"
+        )
+
+    def test_global_headers_reach_prelaunch_requests_and_codex(self):
+        from ucode.request_headers import get_custom_headers, inherited_custom_headers
+
+        with _launch_policy_patches(None) as calls:
+            calls["shared"].side_effect = lambda *args, **kwargs: (
+                seen.append(get_custom_headers()) or calls["state"]
+            )
+            calls["launch"].side_effect = lambda *args, **kwargs: seen.append(
+                inherited_custom_headers(MINIMAL_STATE["workspace"])
+            )
+            seen = []
+            result = runner.invoke(
+                app,
+                ["--header", "X-Test: global", "codex", "--header", "x-test: local"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert seen == [{"x-test": "local"}, {"x-test": "local"}]
+        assert calls["launch"].call_args.kwargs["options"].custom_headers == (("x-test", "local"),)
+        assert get_custom_headers() == {}
+        assert inherited_custom_headers(MINIMAL_STATE["workspace"]) == {}
+
+    def test_usage_header_reaches_recommend_model_and_is_cleared(self):
+        from ucode.request_headers import get_custom_headers
+
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = b'{"current_spend": 12, "effective_threshold": 100}'
+        response.status = 200
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.usage.load_state", return_value=MINIMAL_STATE),
+            patch("ucode.usage.apply_pat_environment"),
+            patch("ucode.usage.ensure_databricks_auth"),
+            patch("ucode.usage.get_databricks_token", return_value="token"),
+            patch("urllib.request.urlopen", return_value=response) as send,
+            patch("urllib.request.build_opener") as opener,
+        ):
+            opener.return_value.open = send
+            result = runner.invoke(app, ["--header", "X-Test: temporary", "usage"])
+            assert result.exit_code == 0, result.output
+            request = send.call_args.args[0]
+            assert request.full_url.endswith("coding-agent-configs:recommendModel")
+            assert dict(request.header_items())["X-test"] == "temporary"
+            assert request.get_header("Authorization") == "Bearer token"
+            assert get_custom_headers() == {}
+
+            result = runner.invoke(app, ["usage"])
+            assert result.exit_code == 0, result.output
+            assert "X-test" not in dict(send.call_args.args[0].header_items())
+
+    def test_global_header_context_is_cleared_on_failure(self):
+        from ucode.request_headers import get_custom_headers
+
+        with patch("ucode.cli.install_databricks_cli", side_effect=RuntimeError("test failure")):
+            result = runner.invoke(app, ["--header", "X-Test: temporary", "usage"])
+        assert result.exit_code == 1
+        assert get_custom_headers() == {}
+
+    def test_codex_admin_header_collision_stops_before_discovery(self):
+        managed = {"enabled_agents": {"codex": {"http_headers": {"X-Test": "admin"}}}}
+        with _launch_policy_patches(managed) as calls:
+            result = runner.invoke(app, ["codex", "--header", "x-test: temporary"])
+
+        assert result.exit_code == 1
+        assert "cannot override managed Codex header" in result.output
+        calls["shared"].assert_not_called()
+        calls["launch"].assert_not_called()
+
+    def test_headers_parse_values_with_colons_and_deduplicate_case_insensitively(self):
+        assert cli_mod._parse_custom_headers(
+            [
+                "X-Test: first",
+                "x-test: second",
+                "X-Development-Route: route://development/test",
+            ]
+        ) == {
+            "x-test": "second",
+            "X-Development-Route": "route://development/test",
+        }
+
+    @pytest.mark.parametrize(
+        ("value", "message"),
+        [
+            ("missing-separator", "format `Name: value`"),
+            ("bad name: value", "format `Name: value`"),
+            ("X-Test: line\nbreak", "control characters"),
+            ("X-Test: safe\u0085Authorization: injected", "line separators"),
+            ("X-Test: safe\u2028Authorization: injected", "line separators"),
+            ("X-Test: safe\u2029Authorization: injected", "line separators"),
+            ("Authorization: secret", "protected header"),
+            ("Content-Type: text/plain", "protected header"),
+            ("Accept: text/plain", "protected header"),
+            ("Cookie: secret", "protected header"),
+            ("Databricks-Smart-Router-Recipe: custom", "protected header"),
+            ("databricks-smart-router-recipe: custom", "protected header"),
+        ],
+    )
+    def test_invalid_codex_header_is_rejected(self, value, message):
+        with pytest.raises(RuntimeError, match=message):
+            cli_mod._parse_custom_headers([value])
+
     def test_codex_provider_and_model_location_are_mutually_exclusive(self):
         with _launch_policy_patches(None):
             result = runner.invoke(
@@ -4597,8 +4734,14 @@ class TestConfigureSharedStateUsePat:
         assert legacy_called == []
         assert "uc_enabled" not in state
 
-    def test_codex_only_configure_persists_discovered_oss_models(self, monkeypatch):
-        cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
+    @pytest.mark.parametrize("custom_headers", [{}, {"X-Test": "temporary"}])
+    def test_codex_only_configure_persists_discovered_oss_models(self, monkeypatch, custom_headers):
+        from ucode.request_headers import custom_header_scope
+        from ucode.state import _without_managed_overlay
+
+        prior = {"codex_models": ["saved-codex"], "oss_models": ["saved-oss"]}
+        cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat", existing_state=prior)
+        monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda state: (None, False))
         monkeypatch.setattr(
             cli_mod,
             "discover_model_services",
@@ -4611,14 +4754,18 @@ class TestConfigureSharedStateUsePat:
             ),
         )
 
-        state = cli_mod.configure_shared_state(
-            self.WS,
-            profile="DEFAULT",
-            tools=["codex"],
-        )
+        with custom_header_scope(custom_headers):
+            state = cli_mod.configure_shared_state(
+                self.WS,
+                profile="DEFAULT",
+                tools=["codex"],
+            )
 
         assert state["codex_models"] == ["system.ai.gpt-5-6-sol"]
         assert state["oss_models"] == ["system.ai.glm-5-2"]
+        persisted = _without_managed_overlay(state)
+        for key in prior:
+            assert persisted[key] == (prior[key] if custom_headers else state[key])
 
     def _stub_with_fable(self, monkeypatch):
         cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
@@ -4883,6 +5030,24 @@ class TestConfigureSharedStateSkipDiscovery:
         monkeypatch.setattr(cli_mod, "build_shared_base_urls", lambda w: {})
         monkeypatch.setattr(cli_mod, "save_state", lambda s: None)
 
+    def test_custom_headers_validate_after_auth_before_discovery(self, monkeypatch):
+        self._stub(monkeypatch)
+        authenticated = MagicMock()
+        monkeypatch.setattr(cli_mod, "ensure_databricks_auth", authenticated)
+        discovery = MagicMock()
+        monkeypatch.setattr(cli_mod, "probe_unity_gateway_capabilities", discovery)
+
+        def managed_after_auth(state):
+            authenticated.assert_called_once()
+            return {"enabled_agents": {"codex": {"http_headers": {"X-Route": "admin"}}}}, False
+
+        monkeypatch.setattr(cli_mod, "_fetch_managed_config", managed_after_auth)
+        with pytest.raises(RuntimeError, match="cannot override managed Codex header"):
+            cli_mod.configure_shared_state(
+                MINIMAL_STATE["workspace"], tools=["codex"], request_headers={"x-route": "test"}
+            )
+        discovery.assert_not_called()
+
     def test_skips_family_discovery_and_fetches_web_search_model(self, monkeypatch):
         import ucode.cli as cli_mod
 
@@ -4912,6 +5077,50 @@ class TestConfigureSharedStateSkipDiscovery:
         assert state["web_search_model"] == "databricks-gpt-5"
         # Existing model list preserved, not overwritten to {}.
         assert state["claude_models"] == {"opus": "databricks-claude-opus-4-8"}
+
+    def test_custom_discovery_preserves_saved_models(self, monkeypatch):
+        from ucode import mcp
+        from ucode import state as state_mod
+
+        self._stub(monkeypatch)
+        monkeypatch.setattr(cli_mod, "save_state", mcp.save_state)
+        monkeypatch.setattr(cli_mod, "load_state", state_mod.load_state)
+        monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda state: (None, False))
+        workspace = MINIMAL_STATE["workspace"]
+        normal = {"sonnet": "normal-claude-sonnet-4"}
+        routed = {"sonnet": "routed-claude-sonnet-4"}
+        mcp.save_state({"workspace": workspace, "claude_models": normal})
+        monkeypatch.setattr(
+            cli_mod, "discover_model_services", lambda w, t: (normal, ["gpt"], [], [], None)
+        )
+        discovery = MagicMock(return_value=(routed, None))
+        monkeypatch.setattr(cli_mod, "discover_claude_models", discovery)
+        headers = {"X-Route": "development"}
+
+        state = cli_mod.configure_shared_state(workspace, tools=["claude"], request_headers=headers)
+
+        discovery.assert_called_once_with(workspace, "token", request_headers=headers)
+        assert state["claude_models"] == routed
+        assert state_mod.load_state()["claude_models"] == normal
+        # Later configuration writes must still preserve the normal discovery state.
+        state = cli_mod.resolve_state(
+            {
+                "enabled_agents": {
+                    "claude": {
+                        "model_config": {
+                            "default_models_by_model_family": {
+                                "default_sonnet_model": "admin-sonnet"
+                            }
+                        }
+                    }
+                }
+            },
+            state,
+            "claude",
+        )
+        assert state["claude_models"] == {"sonnet": "admin-sonnet"}
+        mcp.save_state(state)
+        assert state_mod.load_state()["claude_models"] == normal
 
 
 class TestConfigureSharedStateSkipPreflight:

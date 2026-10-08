@@ -486,6 +486,7 @@ def launch_claude(
     compose_settings: Callable[[list[str]], tuple[dict, list[str]]],
     launch_model_args: Callable[[list[str], str | None], list[str]],
     model_name: Callable[[str], str],
+    custom_headers: dict[str, str] | None = None,
 ) -> NoReturn:
     """Launch Claude in the first-prompt routing PTY wrapper."""
     from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR
@@ -505,7 +506,9 @@ def launch_claude(
     if picker_catalog is None:
         os.environ[GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
         os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
-        catalog = list_anthropic_model_catalog(workspace, token)
+        request_headers = dict(custom_headers) if custom_headers else None
+        discovery_kwargs = {"request_headers": request_headers} if request_headers else {}
+        catalog = list_anthropic_model_catalog(workspace, token, **discovery_kwargs)
     else:
         catalog = picker_catalog
     if not catalog.model_ids:
@@ -631,6 +634,8 @@ def launch_codex(
     binary: str,
     start_model: str | None,
     render_overlay: Callable[..., dict],
+    catalog_models: list[str] | None = None,
+    catalog_path: Path | None = None,
 ) -> NoReturn:
     workspace = state.get("workspace")
     if not workspace:
@@ -643,8 +648,13 @@ def launch_codex(
         )
 
     os.environ[OAUTH_TOKEN_ENV_VAR] = _launch_token(state, workspace)
-    catalog_models = custom_catalog_models()
-    available_models = catalog_models or _cached_routing_models(state)
+    if catalog_models is not None:
+        # A launch-scoped header can select a different model-service view. Do not
+        # fall back to a persisted catalog from an ordinary launch in that case.
+        available_models = catalog_models
+    else:
+        configured_models = custom_catalog_models()
+        available_models = configured_models or _cached_routing_models(state)
     if not available_models:
         print_warning(
             "Smart routing model metadata is unavailable; automatic model switching is unavailable. "
@@ -659,7 +669,9 @@ def launch_codex(
         custom_oauth=(custom_oauth if custom_oauth_cli_enabled(custom_oauth) else None),
         managed_http_headers=state.get("codex_http_headers"),
     )
-    catalog_path = custom_catalog_path()
+    isolated_catalog = catalog_path is not None
+    if catalog_path is None:
+        catalog_path = custom_catalog_path()
     if catalog_path is not None:
         overlay["model_catalog_json"] = str(catalog_path)
     overlay["hooks"] = _v2_hooks(state, available_models)
@@ -675,7 +687,11 @@ def launch_codex(
     if not first_prompt_routing_enabled():
         # Subagent-only routing needs neither the app-server nor the interposer:
         # the hooks ride in the CLI config, so launch the TUI directly.
-        exec_or_spawn([binary, *config_args, *tool_args])
+        argv = [binary, *config_args, *tool_args]
+        if isolated_catalog:
+            exec_or_spawn(argv, wait_for_exit=True)
+        else:
+            exec_or_spawn(argv)
     app_port = _free_port()
     app_server_url = _loopback_websocket_url(app_port)
 
