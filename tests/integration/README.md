@@ -875,8 +875,10 @@ updates alone do not prove native agent reload or live gateway behavior.
 
 `test_claude_session_settings.py` checks general Claude extra-body composition. The opt-in
 `native_claude/test_session_settings.py` directly runs an explicitly selected Claude binary
-and version against a local fixture API. It checks parent/child payloads, two concurrent
-config scopes, watched updates, startup-file caching, and absent configuration. The stronger
-watched-update test exposed a stale first parent request after a one-second wait and remains
-failing; it is not production UG reload or live gateway coverage. Run instructions and
-remaining adapter requirements are in `docs/claude-session-settings.md`.
+and version against a local fixture API. Its runtime-control case verifies acknowledged
+`apply_flag_settings` updates for main/child payloads in two independent sessions without
+settings files or watcher delays. Comparison cases cover watched updates, startup-file caching,
+and absent configuration. The watched test has shown a stale first parent request after a
+one-second wait in a prior run; the latest run passed all four tests. This is native streaming
+component evidence, not normal TUI/UG launch integration or live gateway coverage. Commands,
+SDK API sources, and remaining adapter work are in `docs/claude-session-settings.md`.
