@@ -190,16 +190,22 @@ def integration_test_targets(
 
 def uses_pty(module: Path) -> bool:
     """Whether a suite module drives agents through the POSIX-only PTY helpers."""
+    imported_names = []
     for node in ast.walk(ast.parse(module.read_text(encoding="utf-8"))):
         if isinstance(node, ast.ImportFrom):
-            names = [node.module or ""]
+            imported_names.append(node.module or "")
+            imported_names.extend(
+                f"{node.module}.{alias.name}" if node.module else alias.name
+                for alias in node.names
+                if alias.name != "*"
+            )
         elif isinstance(node, ast.Import):
-            names = [alias.name for alias in node.names]
-        else:
-            continue
-        if any(name.split(".")[0] in PTY_MODULES or name in PTY_HELPERS for name in names):
-            return True
-    return False
+            imported_names.extend(alias.name for alias in node.names)
+    return any(
+        name.split(".")[0] in PTY_MODULES
+        or any(name == helper or name.endswith(f".{helper}") for helper in PTY_HELPERS)
+        for name in imported_names
+    )
 
 
 def process_group_options() -> dict:

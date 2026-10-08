@@ -179,6 +179,10 @@ jobs:
     needs: workspace
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    concurrency:
+      # Both OS variants use the same workspace; avoid overlapping same-agent runs.
+      group: integration-smoke-${{ github.run_id }}-${{ matrix.agent }}
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
@@ -344,6 +348,10 @@ jobs:
     if: ${{ !cancelled() && needs.workspace.result == 'success' }}
     needs: [workspace, smoke]
     runs-on: ${{ matrix.os }}
+    concurrency:
+      # Keep the previous per-agent serialization across the new OS matrix.
+      group: integration-full-${{ github.run_id }}-${{ matrix.agent }}
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
@@ -352,7 +360,7 @@ jobs:
     timeout-minutes: 70
     strategy:
       fail-fast: false
-      # One VM per agent and OS: reuse its install and run its cases serially.
+      # One runner per OS variant; concurrency above serializes variants per agent.
       max-parallel: 4
       matrix:
         os: [ubuntu-22.04, windows-server-latest]
