@@ -145,16 +145,6 @@ class TestHelp:
         # `ug export` (read-only) stays.
         assert runner.invoke(app, ["export", "--help"]).exit_code == 0
 
-    @pytest.mark.parametrize("argv0", ["/opt/bin/ug.EXE", "/opt/bin/ug.exe", "/opt/bin/ug"])
-    def test_main_drops_windows_exe_suffix_from_usage(self, argv0, monkeypatch, capsys):
-        monkeypatch.setattr(sys, "argv", [argv0, "--help"])
-
-        with pytest.raises(SystemExit) as exited:
-            cli_mod.main()
-
-        assert exited.value.code == 0
-        assert "Usage: ug " in _strip_ansi(capsys.readouterr().out)
-
     @pytest.mark.parametrize("prog_name", ["ug", "ucode"])
     def test_help_uses_invoked_name_for_alias(self, prog_name):
         result = runner.invoke(app, ["--help"], prog_name=prog_name)

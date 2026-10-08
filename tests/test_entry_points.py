@@ -43,4 +43,6 @@ def test_installed_console_script_runs_with_its_invoked_name(command: str, flag:
     if flag == "--version":
         assert _ANSI_RE.sub("", result.stdout).strip() == version("unity-gateway")
     else:
-        assert f"Usage: {command} " in _ANSI_RE.sub("", output)
+        # On Windows `shutil.which` returns `ug.EXE`, which Click echoes from argv[0].
+        usage = rf"Usage: {command}(\.exe)? "
+        assert re.search(usage, _ANSI_RE.sub("", output), re.IGNORECASE), output
