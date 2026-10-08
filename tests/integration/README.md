@@ -29,6 +29,9 @@ tokens; component tests verify this only moves UG diagnostics, preserving agent 
 `TestBootstrapStdout` in `../test_agents_init.py` exercises real subprocess streams
 with substituted installer/upgrader commands, including failures and native handoff.
 These component checks do not establish live installer, Isaac, or inference coverage.
+`TestInstallDatabricksCli` in `../test_databricks.py` checks that Windows PATH refresh
+discards a cached missing CLI and reuses an existing WinGet alias or persisted user PATH
+entry across repeated bootstrap. It does not establish a live Windows launch.
 The live Claude/Codex headless prompt-argument and stdin journeys require raw stdout to parse
 as JSON/JSONL, without discarding non-JSON lines before checking the completed file task.
 

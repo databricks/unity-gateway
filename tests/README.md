@@ -107,8 +107,10 @@ source files unchanged. These are actual argv/configuration assertions, not nati
 classifier or parent/child acceptance coverage.
 `test_databricks.py` checks bounded Anthropic catalog requests with `limit=1000`, including
 scoped routing headers and model display metadata. It also verifies that Windows CLI install
-and upgrade use WinGet and report an actionable error when WinGet is unavailable. Its
-subprocess regression checks force a
+and upgrade use WinGet and report an actionable error when WinGet is unavailable. Windows
+PATH refresh regressions prime a cached missing CLI, then verify that existing WinGet aliases
+and persisted user PATH entries are discovered without reinstalling, including repeated bootstrap.
+These are component checks, not a live Windows launch. Subprocess regression checks force a
 cp1252 default at the dependency seam, then verify UTF-8 text decoding and unchanged binary
 output. `test_codex_catalog.py` covers the same forced-locale failure at Codex catalog validation.
 The managed-default and discovery integration journeys below check the generated settings

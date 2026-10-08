@@ -3169,6 +3169,44 @@ class TestEnsureDatabricksCliVersion:
 
 
 class TestInstallDatabricksCli:
+    @pytest.mark.parametrize("path_source", ["winget_alias", "persisted_user_path"])
+    def test_windows_refresh_discovers_cli_after_cached_missing_result(
+        self, monkeypatch, tmp_path, path_source
+    ):
+        links_dir = tmp_path / "Microsoft" / "WinGet" / "Links"
+        installed_dir = links_dir if path_source == "winget_alias" else tmp_path / "installed-cli"
+        installed_dir.mkdir(parents=True)
+        executable = installed_dir / ("databricks.exe" if os.name == "nt" else "databricks")
+        executable.touch()
+        executable.chmod(0o755)
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        monkeypatch.setenv("PATH", str(tmp_path / "empty-path"))
+        monkeypatch.setenv("PATHEXT", ".EXE")
+        monkeypatch.setattr(db_mod.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(
+            db_mod,
+            "_windows_user_path",
+            lambda: str(installed_dir) if path_source == "persisted_user_path" else None,
+        )
+
+        def read_version(args, **kwargs):
+            assert args == [str(executable), "--version"]
+            return subprocess.CompletedProcess(args, 0, "Databricks CLI v1.20.0", "")
+
+        monkeypatch.setattr(db_mod, "run", read_version)
+        monkeypatch.setattr(
+            db_mod,
+            "_run_databricks_cli_installer",
+            lambda **kwargs: pytest.fail("existing CLI must not be reinstalled"),
+        )
+        assert databricks_cli_path() == "databricks"
+
+        install_databricks_cli()
+        install_databricks_cli()
+
+        assert databricks_cli_path() == str(executable)
+        assert databricks_cli_version() == (1, 20, 0)
+
     def test_windows_finds_existing_winget_alias_before_reinstalling(self, monkeypatch, tmp_path):
         installed_dir = str(tmp_path / "Microsoft" / "WinGet" / "Packages" / "databricks")
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
