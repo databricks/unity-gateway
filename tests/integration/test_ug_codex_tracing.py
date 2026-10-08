@@ -20,6 +20,7 @@ def test_ug_codex_exports_trace_to_configured_table(live_session, workspace):
     configured trace table contains a Codex span carrying the same marker.
     """
     session = live_session
+    session.choose_codex_windows_sandbox()
     bearer = session.env["DATABRICKS_BEARER"]
     table = resolve_trace_table(workspace, bearer)
     warehouse_id = os.environ.get("UG_INTEGRATION_WAREHOUSE_ID", "").strip()

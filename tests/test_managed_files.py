@@ -542,7 +542,9 @@ class TestSudoReplace:
         )[0]
         shell_entries = set(re.findall(r'"(linux|macos):([^"]+)"', body))
         python_entries = {
-            (os_enum.value, str(path))
+            # These are fixed Unix paths; compare via as_posix so Windows'
+            # backslash separators in str(Path) don't break the match.
+            (os_enum.value, path.as_posix())
             for os_enum, paths in managed_files._SUDO_REPLACE_TARGETS.items()
             for path in paths
         }
