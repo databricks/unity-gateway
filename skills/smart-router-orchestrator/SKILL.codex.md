@@ -1,43 +1,32 @@
 ---
 name: smart-router-orchestrator
-description: Smart Router Orchestrator coordinates substantive development with native subagents when ENABLE_SMART_ROUTER_ORCHESTRATOR=1 and Unity Gateway smart routing is enabled. Follow UG's activation context. Skip easy tasks and explicit no-subagent requests.
+
+description: >-
+  Delegate substantive coding, debugging, reviews, repository questions,
+  research, and verification to cheaper native subagents, in
+  parallel where the work splits. Use by default for development tasks when
+  UG activates orchestration; skip easy tasks the root can finish faster
+  itself and explicit no-subagent requests.
+
 model: inherit
 argument-hint: "[task]"
-metadata:
-  version: "1.2.0"
+
 ---
 
 # Smart Router Orchestrator
 
-## Activation
-
-UG's prompt and compaction hooks activate this workflow only in an eligible
-smart-routing session launched with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1` while routing is on.
 Follow the latest UG activation context and successful Smart Router toggles;
-installed skill files and old context do not enable it. Use that context without
-running a separate pre-delegation check. Do not set flags or create a session to
-activate this workflow.
-
-Turning Smart Router off through its skill stops this workflow and supersedes
-earlier orchestration instructions. Do not start new automatic delegation or use
-Smart Router Orchestrator role models as a fallback. Continue in the root unless the user
-explicitly requests a subagent; honor that request using the native tool and normal harness
-model selection, without this workflow. Keep routing off
-and collect results from existing children. Turning Smart Router back on restores
-this workflow only if the session was launched with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`.
-Use the `smart-router` skill only when the user asks to change routing.
-
-## Workflow
+installed skill files and old context do not enable it.
 
 Follow user overrides. Keep the active root model and reasoning effort. The root
 owns the delegation choice, cross-deliverable integration, conflicts, and
 acceptance; a delegated owner owns its complete discovery or implementation
 assignment and its checks. Choose who synthesizes the final answer before
-assigning the work. Smart routing selects child models;
-do not apply separate role-model preferences or reasoning-effort overrides.
+assigning the work.
 Never change providers, credentials, permissions, sandbox, unrelated settings,
 or concurrency limits.
-Report conflicts with existing mandatory orchestration rules or model policies.
+Report conflicts with existing mandatory orchestration rules or model policies
+before using a different role map.
 
 ## Delegation gate
 
@@ -61,13 +50,13 @@ independent check. Launch ready independent assignments together.
 If spawning is unavailable or prohibited, continue within the caller's instructions.
 Reuse complete instructions already received and recover only missing portions.
 
-| Role | Scope |
-| --- | --- |
-| explorer | Read code and callers; map existing patterns/tests; no edits |
-| researcher | Verify external/API facts with primary sources; no edits |
-| worker | Implement one bounded change in explicitly owned files |
-| tester | Independently run checks and report failures; edit tests only if assigned |
-| reviewer | Review the actual diff for correctness, regressions, security, and missing tests; no edits |
+| Role | Scope | Codex default |
+| --- | --- | --- |
+| explorer | Read code and callers; map existing patterns/tests; no edits | Luna, max |
+| researcher | Verify external/API facts with primary sources; no edits | Luna, max |
+| worker | Implement one bounded change in explicitly owned files | Luna, max |
+| tester | Independently run checks and report failures; edit tests only if assigned | Luna, max |
+| reviewer | Review the actual diff for correctness, regressions, security, and missing tests; no edits | Luna, max |
 
 ## Assign and coordinate
 
@@ -172,21 +161,40 @@ verification.
 
 ### Codex adapter
 
-Use native `spawn_agent` without `model` or `reasoning_effort` overrides. The routing
-hook selects the model. Use fresh task context (`fork_turns="none"` when exposed)
-so the hook can supply a model override; full-history forks require the inherited
-model. Send the needed context, role scope, and contract in `message`; use the
+By default, every initial native `spawn_agent` call must explicitly carry
+`model="gpt-5.6-luna"` and `reasoning_effort="max"`.
+This also applies when a routing hook replaces the model: do not omit these
+fields and inherit the root's defaults.
+Attempt this model even if absent from the tool's partial preview. Do not retry
+another spelling, invent aliases, or substitute a successor. Send the role scope
+and contract in `message`; use `fork_turns="none"` if overrides require fresh context. Use the
 host's native follow-up, message, wait, and close tools. Do not choose a custom
-role that pins a model or effort.
+role that pins a different model or effort.
 
 Native spawning needs no role TOMLs or global `[agents]` defaults. Never simulate
 delegation with nested CLIs. Read-only role scope is instructional unless the host
 enforces per-child restrictions.
 
-If spawning fails, report the error and continue authorized work in the root.
-Do not retry with model aliases or changed permissions, credentials, or limits.
-Once a child ID is returned, collect that child's result rather than spawning a
-replacement for the same assignment.
+### Recover a Codex delegation
+
+Before every retry, check these conditions in order:
+
+1. Did `spawn_agent` return a child ID for this assignment? If yes, **never spawn
+   a replacement**, even after closing it. An error from wait, notification, or
+   the child provider is a child failure, not a rejected spawn. Report it unmet.
+2. Is the error permission, authentication, or capacity related? Stop. No alias
+   retry, inherited fallback, or changes to permissions, credentials, or limits.
+3. Did `spawn_agent` itself reject the model/effort before returning any child ID?
+   Only this selection failure (or a schema without overrides) permits recovery.
+
+Allow fallback only for the bundled defaults. Honor explicit settings and
+conversation/policy constraints; never change roles or configuration to evade them.
+
+If eligible, disclose the failure and **attempt one native spawn omitting both
+`model` and `reasoning_effort`**, with the same contract and fresh context (`fork_turns="none"`
+when exposed). A routing hook may select a model; otherwise harness defaults or
+inheritance apply. Do not assume routing ran or fallback will succeed. If forbidden
+or unsuccessful, stop retrying and report the error and unmet assignment.
 
 ## Integrate and verify
 
@@ -223,6 +231,3 @@ Account for each required child and report unavailable tools or substitutions.
 
 Finish with the concrete result, verification performed, and material remaining
 limitations. Do not claim cost or speed improvements without measurements.
-
-Use runtime evidence to identify the model that ran; submitting a delegation
-alone does not prove that its routing hook executed.

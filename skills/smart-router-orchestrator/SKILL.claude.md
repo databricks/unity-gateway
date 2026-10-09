@@ -1,42 +1,31 @@
 ---
 name: smart-router-orchestrator
-description: Smart Router Orchestrator coordinates substantive development with native subagents when ENABLE_SMART_ROUTER_ORCHESTRATOR=1 and Unity Gateway smart routing is enabled. Follow UG's activation context. Skip easy tasks and explicit no-subagent requests.
+
+description: >-
+  Delegate substantive coding, debugging, reviews, repository questions,
+  research, and verification to cheaper native subagents, in
+  parallel where the work splits. Use by default for development tasks when
+  UG activates orchestration; skip easy tasks the root can finish faster
+  itself and explicit no-subagent requests.
+
 model: inherit
 argument-hint: "[task]"
-metadata:
-  version: "1.2.0"
+
 ---
 
 # Smart Router Orchestrator
 
-## Activation
-
-UG's prompt and compaction hooks activate this workflow only in an eligible
-smart-routing session launched with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1` while routing is on.
 Follow the latest UG activation context and successful Smart Router toggles;
-installed skill files and old context do not enable it. Use that context without
-running a separate pre-delegation check. Do not set flags or create a session to
-activate this workflow.
-
-Turning Smart Router off through its skill stops this workflow and supersedes
-earlier orchestration instructions. Do not start new automatic delegation or use
-Smart Router Orchestrator role models as a fallback. Continue in the root unless the user
-explicitly requests a subagent; honor that request using the native tool and normal harness
-model selection, without this workflow. Keep routing off
-and collect results from existing children. Turning Smart Router back on restores
-this workflow only if the session was launched with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`.
-Use the `smart-router` skill only when the user asks to change routing.
-
-## Workflow
+installed skill files and old context do not enable it.
 
 Follow user overrides. Keep the active root model and reasoning effort. The root
 owns the delegation choice, cross-deliverable integration, conflicts, and
 acceptance; a delegated owner owns task-level planning, discovery, execution,
-checks, and the draft result. Smart routing selects child models;
-do not apply separate role-model preferences or reasoning-effort overrides.
+checks, and the draft result.
 Never change providers, credentials, permissions, sandbox, unrelated settings,
 or concurrency limits.
-Report conflicts with existing mandatory orchestration rules or model policies.
+Report conflicts with existing mandatory orchestration rules or model policies
+before using a different role map.
 
 ## Delegation gate
 
@@ -57,13 +46,13 @@ If spawning is unavailable or prohibited, continue locally within the caller's
 instructions. Reuse complete instructions already received; recover only missing
 or truncated portions instead of rereading them as a setup ritual.
 
-| Role | Scope |
-| --- | --- |
-| explorer | Read code and callers; map existing patterns/tests; no edits |
-| researcher | Verify external/API facts with primary sources; no edits |
-| worker | Implement one bounded change in explicitly owned files |
-| tester | Independently run checks and report failures; edit tests only if assigned |
-| reviewer | Review the actual diff for correctness, regressions, security, and missing tests; no edits |
+| Role | Scope | Claude default |
+| --- | --- | --- |
+| explorer | Read code and callers; map existing patterns/tests; no edits | Sonnet |
+| researcher | Verify external/API facts with primary sources; no edits | Sonnet |
+| worker | Implement one bounded change in explicitly owned files | Sonnet |
+| tester | Independently run checks and report failures; edit tests only if assigned | Sonnet |
+| reviewer | Review the actual diff for correctness, regressions, security, and missing tests; no edits | Sonnet |
 
 ## Assign and coordinate
 
@@ -154,16 +143,17 @@ verification.
 ### Claude Code adapter
 
 Use native `Agent` (`Task` on older hosts) with `subagent_type="ug-smart-router:<role>"`.
-**Omit `model`**: the routing hook selects it. Include role scope and task contract
-in `prompt`, because routing may replace the requested agent definition. Run
-independent children in the background when supported. Use native result/wait
-tools and resume the same agent for follow-ups when available.
+**Omit `model`**: role frontmatter selects the configured alias or full ID. Include
+role scope and task contract in `prompt`; run independent children in the
+background when supported. Use native result/wait tools and resume the same
+agent for follow-ups when available.
 
 Omitted role tool lists inherit parent tools, including deferred MCP tools;
 parent permissions and hooks still apply. Read-only scope is instructional.
-Report missing bundled definitions as requiring reload/restart; do not substitute
-custom agents with saved model preferences. Managed forced-model policy takes
-precedence; report conflicts without clearing it.
+Configured agents have distinct names. Report missing definitions as requiring
+reload/restart; do not substitute built-ins. Per-call model overrides are alias-only
+on the tested host; custom IDs belong in definitions. Managed forced-model policy
+takes precedence; report conflicts without clearing it.
 
 ## Integrate and verify
 
@@ -186,6 +176,3 @@ respawning. Report unavailable models, tools, and substitutions.
 
 Finish with the concrete result, verification actually performed, and material
 remaining limitations. Do not claim cost or speed improvements without measurements.
-
-Use runtime evidence to identify the model that ran; submitting a delegation
-alone does not prove that its routing hook executed.

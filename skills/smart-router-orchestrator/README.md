@@ -27,8 +27,9 @@ is off, without the Smart Router Orchestrator workflow.
 User instructions take precedence, and easy tasks remain in the root.
 
 Claude loads the bundled roles as `ug-smart-router:<role>` in its temporary
-routing plugin. Both agents delegate without model or reasoning-effort overrides;
-the routing hook selects the model.
+routing plugin. Claude omits model overrides; its bundled roles default to Sonnet.
+Codex requests Luna with max reasoning effort. The routing hook can replace the
+requested model.
 Role instructions belong in each task prompt because routing may replace the
 requested Claude role or Codex model. Hook approval in the native `/hooks` UI
 is still required where the harness prompts for it.
@@ -59,14 +60,14 @@ Separate role-model preferences are not used by the UG workflow. Existing
 `.model-orchestrator.json` project preferences,
 `$XDG_CONFIG_HOME/model-orchestrator/config.json` user preferences, and generated
 custom Claude agents are left untouched. The bundled workflow uses the router's
-model selection and requires no preference setup, locking, or recovery.
+model selection and requires no preference setup or locking.
 
 ## Attribution
 
 Migrated from the Databricks `model-orchestrator` plugin by Arnav Singhvi. The base
 workflow came from version 0.4.21 (source commit
 `474b08e5809205d0aa9abbd059b82d5ab541ca92`); the Claude and Codex workflows now carry
-separate refinements. The UG skill version is 1.2.0.
+separate refinements.
 Originally adapted from
 [donvito/codex-astra-luna-orchestrator](https://github.com/donvito/codex-astra-luna-orchestrator/tree/21710352ec201f8634874d8298e0eca694e298a8)
 under Apache-2.0; see [LICENSE.upstream](LICENSE.upstream). UG changes add shared
