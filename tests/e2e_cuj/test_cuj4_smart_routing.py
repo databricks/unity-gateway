@@ -13,6 +13,7 @@ from tests.integration.utils.evidence import (
     read_jsonl,
 )
 from ucode.smart_routing.config import (
+    CLAUDE_ONLY_SUBAGENT_ORCH_V0,
     FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
     SUBAGENT_ONLY_V0,
     SUBAGENT_ONLY_V1,
@@ -237,6 +238,7 @@ class TestCujSmartRouting(BaseCujTest):
             (SUBAGENT_ONLY_V1, False, False),
             (SUBAGENT_ORCH_V0, False, True),
             (SUBAGENT_ORCH_V1, False, True),
+            (CLAUDE_ONLY_SUBAGENT_ORCH_V0, False, True),
         ],
     )
     def test_smart_router_config_version(
@@ -245,7 +247,8 @@ class TestCujSmartRouting(BaseCujTest):
         """Scenario: launch both agents with a preset, then explicitly request a subagent.
 
         Expected: first-prompt routing and orchestrator context match the preset;
-        one routed native child completes the delegated task.
+        one routed native child completes the delegated task. The Claude-only preset
+        exercises Claude here; Codex's disabled path has its own file-task case.
         """
         session, workspace, recorder = cuj
         previous = session.env.get("SMART_ROUTER_CONFIG_VERSION")
@@ -253,7 +256,10 @@ class TestCujSmartRouting(BaseCujTest):
         try:
             configs = _assert_published_config_matches_expectations(workspace.config())
             recorder.configure_session(session, ["configure", "--disable-databricks-ai-tools"])
-            for agent in AGENTS:
+            agents = (
+                (CLAUDE,) if SMART_ROUTER_CONFIG_VERSION == CLAUDE_ONLY_SUBAGENT_ORCH_V0 else AGENTS
+            )
+            for agent in agents:
                 supported = workspace.model_ids(agent)
                 evidence = SessionEvidence(session.home, agent)
                 existing_sessions = set(agent_sessions(session, agent))
@@ -354,6 +360,49 @@ class TestCujSmartRouting(BaseCujTest):
             session.revert_machine_wide(
                 f"{SMART_ROUTER_CONFIG_VERSION}-revert",
                 "Smart-router preset cleanup left machine-wide agent settings",
+            )
+
+    def test_claude_only_preset_disables_codex_routing(self, cuj):
+        """Scenario: select the Claude-only preset and complete a Codex file task.
+
+        Expected: real inference uses the managed default, with no routing requests,
+        router decisions, recipe header, or orchestrator context.
+        """
+        session, workspace, recorder = cuj
+        previous = session.env.get("SMART_ROUTER_CONFIG_VERSION")
+        session.env["SMART_ROUTER_CONFIG_VERSION"] = CLAUDE_ONLY_SUBAGENT_ORCH_V0
+        try:
+            configs = _assert_published_config_matches_expectations(workspace.config())
+            recorder.configure_session(session, ["configure", "--disable-databricks-ai-tools"])
+            task = _file_task(session, CODEX)
+            evidence = SessionEvidence(session.home, CODEX)
+            decisions = session.home / ".ucode" / "codex-smart-routing-decisions.jsonl"
+            before = read_jsonl(decisions)
+            checkpoint = recorder.checkpoint()
+            recorder.prepare_launch()
+            with Terminal(session, "claude-only-codex", [CODEX]) as tui:
+                tui.boot(timeout=150)
+                tui.submit(task.prompt)
+                tui.task(evidence, task)
+                tui.exit_normally()
+            requests = recorder.requests_after(checkpoint)
+            assert not any(request.path == ROUTING_PATH for request in requests)
+            assert read_jsonl(decisions) == before
+            inference = _task_inference_request(requests, CODEX, task.prompt)
+            inference = served_inference_request(recorder, requests, inference, CODEX)
+            expected = configs[CODEX]["default_models"]["default_model"]
+            assert canonical_model(inference.payload["model"]) == canonical_model(expected)
+            evidence.assert_applied(task, workspace.model_ids(CODEX), expected=expected)
+            assert "databricks-smart-router-recipe" not in inference.headers
+            assert ORCHESTRATOR_CONTEXT.encode() not in inference.body
+        finally:
+            if previous is None:
+                session.env.pop("SMART_ROUTER_CONFIG_VERSION", None)
+            else:
+                session.env["SMART_ROUTER_CONFIG_VERSION"] = previous
+            session.revert_machine_wide(
+                "claude-only-codex-revert",
+                "Claude-only preset cleanup left machine-wide agent settings",
             )
 
     @pytest.mark.parametrize("agent", AGENTS)

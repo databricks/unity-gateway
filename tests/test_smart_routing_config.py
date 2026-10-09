@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from itertools import product
 import pytest
 
 from ucode.constants import (
@@ -11,6 +12,7 @@ from ucode.constants import (
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
+    SMART_ROUTING_ENV_KEYS,
 )
 from ucode.smart_routing import config, orchestrator, session_env, v2
 
@@ -200,3 +202,30 @@ def test_agent_config_selection_and_session_precedence(monkeypatch, agent, enabl
         session_env.SESSION_ENV_VAR: str(control),
         "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
     }
+
+
+@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
+@pytest.mark.parametrize(
+    "inherited", list(product([None, "0", "1"], repeat=len(SMART_ROUTING_ENV_KEYS)))
+)
+def test_claude_only_preset_overrides_inherited_flags_and_managed_default(agent, inherited):
+    source = {
+        key: value
+        for key, value in zip(SMART_ROUTING_ENV_KEYS, inherited, strict=True)
+        if value is not None
+    }
+    source[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = config.CLAUDE_ONLY_SUBAGENT_ORCH_V0
+    original = source.copy()
+    expected = (
+        _EXPECTED_PRESETS[config.SUBAGENT_ORCH_V0]
+        if agent == AGENT_CLAUDE
+        else dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
+    )
+    assert config.resolve_environment(source, agent=agent) == expected
+    previous = config.apply_config(source, agent=agent)
+    assert source == expected
+    assert v2.smart_routing_enabled(source, default=True, agent=agent) == (agent == AGENT_CLAUDE)
+    assert not v2.first_prompt_routing_enabled(source, agent=agent)
+    assert orchestrator.feature_enabled(source, agent=agent) == (agent == AGENT_CLAUDE)
+    v2.restore_smart_routing_env(previous, source)
+    assert source == original

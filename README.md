@@ -253,15 +253,16 @@ The generated shell hooks expect Git Bash; PowerShell-only setups are not covere
 
 Use `SMART_ROUTER_CONFIG_VERSION` at launch to select a smart-routing configuration.
 Each version defines separate Claude Code and Codex flag mappings; the existing versions
-use identical mappings for both agents:
+use identical mappings for both agents. The Claude-only version disables routing for Codex:
 
-| Version | Subagent routing | First-prompt routing | Orchestrator |
-| --- | --- | --- | --- |
-| `first_prompt_and_subagent_no_orch_v0` | On | On | Off |
-| `subagent_only_v0` | On | Off | Off |
-| `subagent_only_v1` | On | Off | Off |
-| `subagent_orch_v0` | On | Off | On |
-| `subagent_orch_v1` | On | Off | On |
+| Version | Routed agents | Subagent routing | First-prompt routing | Orchestrator |
+| --- | --- | --- | --- | --- |
+| `first_prompt_and_subagent_no_orch_v0` | Claude, Codex | On | On | Off |
+| `subagent_only_v0` | Claude, Codex | On | Off | Off |
+| `subagent_only_v1` | Claude, Codex | On | Off | Off |
+| `subagent_orch_v0` | Claude, Codex | On | Off | On |
+| `subagent_orch_v1` | Claude, Codex | On | Off | On |
+| `claude_only_subagent_orch_v0` | Claude | On | Off | On |
 
 `first_prompt_and_subagent_no_orch_v0` is the customer configuration for first-prompt
 and subagent routing without orchestration: `ENABLE_SMART_ROUTING_V2=1`,
@@ -273,6 +274,11 @@ so first-prompt routing remains off; orchestration is also off.
 
 `subagent_orch_v1` enables all three legacy flags. Like `subagent_only_v1`, it routes
 subagents rather than the first prompt, and it additionally enables orchestration.
+
+`claude_only_subagent_orch_v0` keeps Claude's `subagent_orch_v0` flags (`0`, `1`, `1`)
+and sets all three flags to `"0"` for Codex. Codex uses its ordinary launch and
+managed default model, without routing or orchestration. Explicit launch/session
+on/off controls retain their existing precedence over presets.
 
 `SMART_ROUTER_NAME` still selects the router independently of the preset.
 

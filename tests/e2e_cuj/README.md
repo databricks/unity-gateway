@@ -117,3 +117,9 @@ uv run --with pexpect==4.9.0 --with pyte==0.8.2 pytest \
   --confcutdir=tests/e2e_cuj tests/e2e_cuj/test_cuj4_smart_routing.py \
   -k test_smart_router_config_version -v
 ```
+
+
+CUJ4 additionally covers `claude_only_subagent_orch_v0`: Claude retains
+`subagent_orch_v0` behavior and completes a routed child file task; Codex completes
+a file task on the managed default without routing requests, new decisions,
+a recipe header, or orchestrator context. Workspace configuration remains read-only.
