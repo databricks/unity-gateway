@@ -305,6 +305,11 @@ role-contract preservation, and isolation from legacy preference files
 lack dedicated regression coverage. Codex's native hook merging, project trust,
 and execution of pre-existing hooks are not exercised by this integration suite.
 
+`../test_claude_recipe_payload.py` checks that the draft Claude body helpers write
+`DISABLED` when routing is off and restore the configured recipe when routing is
+on. Automatic Claude launch/toggle wiring is not enabled; these component checks
+do not establish live request propagation.
+
 The portable `../test_claude_windows_smart_routing.py` checks the Windows
 subagent-only fallback without Unix imports. Native Windows TUI and hook execution
 remain outside this integration suite.
