@@ -16,8 +16,8 @@ managed-default and explicit-model cases unchanged. One additional test runs the
 context in inference input, and completed explicitly requested routed subagents.
 This is not automatic orchestrator-delegation coverage. No workspace configuration is modified.
 Agent-specific smart-routing preset component checks cover shared base presets, explicit agent mappings,
-complete per-agent validation, configure dispatch, bootstrap and managed-default launch
-selection, session controls, and restoration after configuration/launch failures.
+complete per-agent validation, session precedence, configuration failure restoration,
+and preserving the preset selector until managed-default agent selection.
 These checks do not establish live agent coverage.
 
 CUJ3 and CUJ4 require a non-empty HTTP 200 for inference. Claude 2.1.290's known

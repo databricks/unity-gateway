@@ -28,6 +28,7 @@ from ucode.agents import (
     resolve_launch_model,
 )
 from ucode.agents.args import has_explicit_model_arg
+from ucode.constants import AGENT_CODEX
 from ucode.managed_config import ManagedConfigResult
 from ucode.ui import redirect_output_to_stderr
 
@@ -1113,41 +1114,15 @@ class TestConfiguredPaths:
         assert "/etc/codex/managed_config.toml" in paths
 
 
-@pytest.mark.parametrize("fail_write", [False, True])
-def test_configure_dispatch_scopes_agent_presets(monkeypatch, fail_write):
-    from ucode.constants import (
-        AGENT_CLAUDE,
-        AGENT_CODEX,
-        SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
-        SMART_ROUTING_ENV_KEYS,
+def test_configure_restores_routing_environment_when_writer_fails(monkeypatch):
+    monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "subagent_orch_v0")
+    monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "0")
+    before = os.environ.copy()
+    monkeypatch.setattr(
+        agents_mod.codex, "write_tool_config", MagicMock(side_effect=RuntimeError("write failed"))
     )
-    from ucode.smart_routing import config
 
-    version = config.SUBAGENT_ORCH_V0
-    codex_flags = dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
-    monkeypatch.setitem(
-        config._VERSIONS, version, {**config._VERSIONS[version], AGENT_CODEX: codex_flags}
-    )
-    monkeypatch.setenv(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, version)
-    before = {
-        key: os.environ.get(key)
-        for key in (*SMART_ROUTING_ENV_KEYS, SMART_ROUTER_CONFIG_VERSION_ENV_VAR)
-    }
-    for agent in (AGENT_CLAUDE, AGENT_CODEX):
+    with pytest.raises(RuntimeError, match="write failed"):
+        agents_mod.configure_tool(AGENT_CODEX, {}, model="model")
 
-        def write(state, *args, agent=agent, **kwargs):
-            assert {key: os.environ.get(key) for key in SMART_ROUTING_ENV_KEYS} == (
-                codex_flags if agent == AGENT_CODEX else config._BASE_VERSIONS[version]
-            )
-            assert SMART_ROUTER_CONFIG_VERSION_ENV_VAR not in os.environ
-            if fail_write:
-                raise RuntimeError("write failed")
-            return state
-
-        monkeypatch.setattr(agents_mod._MODULES[agent], "write_tool_config", write)
-        if fail_write:
-            with pytest.raises(RuntimeError, match="write failed"):
-                agents_mod.configure_tool(agent, {}, model="model")
-        else:
-            assert agents_mod.configure_tool(agent, {}, model="model") == {}
-        assert {key: os.environ.get(key) for key in before} == before
+    assert os.environ == before

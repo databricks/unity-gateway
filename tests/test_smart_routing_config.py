@@ -12,7 +12,7 @@ from ucode.constants import (
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
 )
-from ucode.smart_routing import config, orchestrator, v2
+from ucode.smart_routing import config, orchestrator, session_env, v2
 
 _EXPECTED_PRESETS = {
     config.FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0: {
@@ -171,28 +171,32 @@ def test_codex_uses_existing_presets():
         assert config.resolve_environment(source, agent=AGENT_CODEX) == expected
 
 
-@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
-def test_agent_resolution_and_session_controls(monkeypatch, agent, tmp_path):
-    from ucode.smart_routing import session_env
-
-    version = config.SUBAGENT_ORCH_V0
-    # Codex differs only in subagent routing and orchestration; V2 inherits the shared value.
-    override = {ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0", ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0"}
+@pytest.mark.parametrize("agent, enabled", [(AGENT_CLAUDE, "1"), (AGENT_CODEX, "0")])
+def test_agent_config_selection_and_session_precedence(monkeypatch, agent, enabled, tmp_path):
     monkeypatch.setitem(
-        config._VERSIONS,
-        version,
-        {**config._VERSIONS[version], AGENT_CODEX: {**config._BASE_VERSIONS[version], **override}},
+        config._VERSIONS[config.SUBAGENT_ORCH_V0],
+        AGENT_CODEX,
+        {
+            "ENABLE_SMART_ROUTING_V2": "0",
+            "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0",
+            "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
+        },
     )
-    source = {SMART_ROUTER_CONFIG_VERSION_ENV_VAR: version}
-    expected = {**_EXPECTED_PRESETS[version], **(override if agent == AGENT_CODEX else {})}
+    source = {"SMART_ROUTER_CONFIG_VERSION": "subagent_orch_v0"}
+    expected = {
+        "ENABLE_SMART_ROUTING_V2": "0",
+        "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": enabled,
+        "ENABLE_SMART_ROUTER_ORCHESTRATOR": enabled,
+    }
     assert config.resolve_environment(source, agent=agent) == expected
-    assert v2.smart_routing_enabled(source, default=True, agent=agent) == (agent == AGENT_CLAUDE)
-    assert orchestrator.feature_enabled(source, agent=agent) == (agent == AGENT_CLAUDE)
+    assert v2.smart_routing_enabled(source, default=True, agent=agent) == (enabled == "1")
+    assert orchestrator.feature_enabled(source, agent=agent) == (enabled == "1")
+
     control = tmp_path / "session.json"
     control.write_text('{"ENABLE_SMART_ROUTER_ORCHESTRATOR":"0"}')
     source[session_env.SESSION_ENV_VAR] = str(control)
     assert session_env.effective_environment(source, agent=agent) == {
         **expected,
         session_env.SESSION_ENV_VAR: str(control),
-        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
     }
