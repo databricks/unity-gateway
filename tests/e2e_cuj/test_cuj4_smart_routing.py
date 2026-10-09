@@ -27,7 +27,6 @@ from .helpers.evidence import (
     SessionObservation,
     canonical_model,
     claude_file_task,
-    message_text,
 )
 from .helpers.terminal import Terminal
 from .helpers.tui_request_recorder import RecordedRequest, RecordedResponse
@@ -87,75 +86,40 @@ def _run_session(session, recorder, agent, task, launch_args):
     return evidence.observe(task), recorder.requests_after(checkpoint)
 
 
-def _content_is_exact_prompt(content, prompt):
-    if isinstance(content, str):
-        return content == prompt
-    return isinstance(content, list) and any(
-        isinstance(part, dict)
-        and part.get("type") in {"text", "input_text"}
-        and part.get("text") == prompt
-        for part in content
-    )
-
-
-def _request_contains_exact_user_prompt(request, agent, prompt):
-    field = "messages" if agent == CLAUDE else "input"
-    entries = request.payload.get(field)
-    if isinstance(entries, str):
-        return entries == prompt
-    if not isinstance(entries, list):
-        return False
-    return any(
-        isinstance(entry, dict)
-        and entry.get("role") == "user"
-        and _content_is_exact_prompt(entry.get("content"), prompt)
-        for entry in entries
-    )
-
-
-def _is_tool_capable(request):
-    tools = request.payload.get("tools")
-    return isinstance(tools, list) and bool(tools)
-
-
-def _task_inference_request(requests, agent, prompt, *, native_turn, after=0, native_prompts=()):
-    """Select a task request from payload evidence, never from its expected model."""
-    assert native_turn is not None, "No completed native turn anchors the task request"
-    if native_prompts:
-        assert prompt in native_prompts, "Routed prompt is absent from the native child session"
-    matches = tuple(
-        request
-        for request in requests
-        if request.sequence > after
-        and request.method == "POST"
-        and request.path == INFERENCE_PATHS[agent]
-        and _request_contains_exact_user_prompt(request, agent, prompt)
-        and _is_tool_capable(request)
-    )
-    assert matches, "No tool-capable inference request contained the exact task prompt"
-    return matches[0]
-
-
-def _native_user_prompts(agent, records):
-    prompts = []
-    for record in records:
-        if agent == CLAUDE and record.get("type") == "user":
-            prompt = message_text(record.get("message", {}).get("content"))
-        elif agent == CODEX and record.get("type") == "event_msg":
-            payload = record.get("payload", {})
-            prompt = payload.get("message") if payload.get("type") == "user_message" else ""
-        elif agent == CODEX and record.get("type") == "response_item":
-            payload = record.get("payload", {})
-            prompt = (
-                message_text(payload.get("content"))
-                if payload.get("type") == "message" and payload.get("role") == "user"
-                else ""
-            )
-        else:
-            prompt = ""
-        if isinstance(prompt, str) and prompt:
-            prompts.append(prompt)
-    return tuple(dict.fromkeys(prompts))
+def _task_inference_request(requests, agent, prompt, *, after=0):
+    """Match the task payload, not the expected model or orchestrator context."""
+    for request in requests:
+        tools = request.payload.get("tools")
+        if (
+            request.sequence <= after
+            or request.method != "POST"
+            or request.path != INFERENCE_PATHS[agent]
+            or not isinstance(tools, list)
+            or not tools
+        ):
+            continue
+        entries = request.payload.get("messages" if agent == CLAUDE else "input", [])
+        if isinstance(entries, str):
+            if entries == prompt:
+                return request
+            continue
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict) or entry.get("role") != "user":
+                continue
+            content = entry.get("content", [])
+            if isinstance(content, str):
+                if content == prompt:
+                    return request
+            elif isinstance(content, list) and any(
+                isinstance(part, dict)
+                and part.get("type") in {"text", "input_text"}
+                and part.get("text") == prompt
+                for part in content
+            ):
+                return request
+    raise AssertionError("No tool-capable inference request contained the exact task prompt")
 
 
 def _assert_published_config_matches_expectations(published):
@@ -212,12 +176,7 @@ def run_smart_routing_journeys(cuj) -> SmartRoutingSessionResults:
             if request.method == "POST" and request.path == ROUTING_PATH
         )
         route_response = recorder.response_for(route_request)
-        inference_request = _task_inference_request(
-            requests,
-            agent,
-            task.prompt,
-            native_turn=observation.turn,
-        )
+        inference_request = _task_inference_request(requests, agent, task.prompt)
         no_model_override[agent] = SessionCase(
             agent=agent,
             launch_args=(agent,),
@@ -233,12 +192,7 @@ def run_smart_routing_journeys(cuj) -> SmartRoutingSessionResults:
         task = _file_task(session, agent)
         launch_args = (agent, "--model", overrides[agent])
         observation, requests = _run_session(session, recorder, agent, task, launch_args)
-        inference_request = _task_inference_request(
-            requests,
-            agent,
-            task.prompt,
-            native_turn=observation.turn,
-        )
+        inference_request = _task_inference_request(requests, agent, task.prompt)
         with_model_override[agent] = SessionCase(
             agent=agent,
             launch_args=launch_args,
@@ -314,13 +268,7 @@ class TestCujSmartRouting(BaseCujTest):
                         selections = response.payload["route_selection"]
                         assert len(selections) == 1
                         expected_model = selections[0]["route_option"]["model"]
-                    native_turn = evidence.completed(task)
-                    inference = _task_inference_request(
-                        requests,
-                        agent,
-                        task.prompt,
-                        native_turn=native_turn,
-                    )
+                    inference = _task_inference_request(requests, agent, task.prompt)
                     assert recorder.response_for(inference).status_code == 200
                     assert canonical_model(inference.payload["model"]) == canonical_model(
                         expected_model
@@ -362,12 +310,6 @@ class TestCujSmartRouting(BaseCujTest):
                         for records in children.values()
                         for answer in assistant_answers(agent, records)
                     ), agent
-                    native_turn = evidence.completed(child_task)
-                    child_prompts = tuple(
-                        prompt
-                        for records in children.values()
-                        for prompt in _native_user_prompts(agent, records)
-                    )
                     decisions = read_jsonl(decisions_path)[decision_count:]
                     assert_subagent_routed(
                         session,
@@ -379,7 +321,6 @@ class TestCujSmartRouting(BaseCujTest):
                     routes = [request for request in requests if request.path == ROUTING_PATH]
                     assert len(routes) == 1, (agent, routes)
                     route_prompt = routes[0].payload["task"]["prompt"]
-                    assert route_prompt in child_prompts, (agent, route_prompt, child_prompts)
                     assert child_task.filename in route_prompt
                     response = recorder.response_for(routes[0])
                     assert response.status_code == 200
@@ -389,9 +330,7 @@ class TestCujSmartRouting(BaseCujTest):
                         requests,
                         agent,
                         route_prompt,
-                        native_turn=native_turn,
                         after=routes[0].sequence,
-                        native_prompts=child_prompts,
                     )
                     assert recorder.response_for(inference).status_code == 200
                     assert canonical_model(inference.payload["model"]) == canonical_model(

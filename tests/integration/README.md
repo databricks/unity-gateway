@@ -18,10 +18,8 @@ This is not automatic orchestrator-delegation coverage. No workspace configurati
 Each preset cleans up interactive OS-managed settings with public `ug revert`, even on failure.
 Offline transcript tests check native Claude background-agent completion evidence;
 a completion notification alone is not treated as the parent's completed answer.
-Offline CUJ cases additionally cover Codex delegated-turn completion and reject incomplete
-or unrelated turns. Smart-routing requests are matched by exact task prompts and tool-capable
-payloads rather than the first inference POST, excluding session-title and parent-continuation
-traffic without weakening model, orchestrator-context, or paired-response assertions.
+Offline CUJ cases also cover Codex delegated-turn completion and task-request matching;
+see `../e2e_cuj/README.md` for the evidence requirements.
 
 The [catalog discovery journey](../e2e_cuj/README.md) uses the CUJ3 workspace to check
 agent-compatible pickers, schema exclusions, configured defaults, and real inference.
@@ -325,16 +323,12 @@ and on/off coverage; preset-specific behavior there is not covered.
 
 The unit/component `../test_smart_routing_config.py` includes a 162-case Cartesian oracle over all
 three legacy routing flags (`None`, `0`, `1`) and six selector forms (`None` plus the five
-supported presets, including the customer first-prompt-and-subagent mode). It independently hardcodes preset values and asserts exact
+supported presets, including the customer first-prompt-and-subagent mode). It independently
+hardcodes preset values and asserts exact
 `resolve_environment` and `apply_config` settings, true-unset omission, unrelated-key and
-input preservation, and valid-selector consumption. Additional helper cases cover no-op behavior
-for unsupported selectors, valid-selector application/restoration, and unset/empty selectors.
-Component cases in `../test_cli.py` check token-only authentication, revert, and
-Claude/Codex/default launch dispatch with unknown selectors and environment preservation.
-Import-time schema validation,
-routing getters, native subcommands, hooks, session
-files, or managed launches are not established here. It does not claim live agent, hook, or
-gateway coverage.
+input preservation, valid-selector consumption, and environment restoration.
+Absent/unknown selectors are no-ops; CLI checks cover auth, revert, and launch dispatch.
+These component checks do not establish live agent, hook, or gateway behavior.
 Three component cases additionally compare the equivalent legacy flags and presets for
 `subagent_only_v1`, `subagent_orch_v1`, and `first_prompt_and_subagent_no_orch_v0`;
 they verify routing activation, first-prompt behavior, orchestration, and router-name preservation.

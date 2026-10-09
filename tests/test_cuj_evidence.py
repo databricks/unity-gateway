@@ -228,273 +228,93 @@ def test_cuj_evidence_codex_rejects_wrong_turn(tmp_path):
     assert completed_turn(CODEX, wrong_turn, task) is None
 
 
-def _codex_parent_delegation_records(initial_task, parent_task, model, child_marker):
-    rows = records(CODEX, initial_task, model)
+def _tagged_codex_notification(row):
+    notification = copy.deepcopy(row)
+    notification["payload"]["content"] = [{"type": "input_text", "text": "<subagent_notification>"}]
+    notification["internal_chat_message_metadata_passthrough"] = {
+        "content_item_kinds": ["multi_agent.subagent_notification"]
+    }
+    return notification
+
+
+def _codex_parent_delegation_records(task, model):
+    rows = records(CODEX, SimpleNamespace(prompt="initial", value="initial"), model)
+    target = records(CODEX, task, model)[1:]
+    for row in target:
+        if row["type"] != "response_item":
+            row["payload"]["turn_id"] = "delegate"
     rows.extend(
         [
-            {
-                "type": "event_msg",
-                "payload": {"type": "user_message", "message": parent_task.prompt},
-            },
-            {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "delegate"}},
-            {
-                "type": "turn_context",
-                "payload": {"turn_id": "delegate", "model": model},
-            },
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "message",
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": (
-                                "<subagent_notification>\n"
-                                f'{{"agent_path":"child","status":{{"completed":"{child_marker}"}}}}\n'
-                                "</subagent_notification>"
-                            ),
-                        }
-                    ],
-                },
-                "internal_chat_message_metadata_passthrough": {
-                    "turn_id": "delegate",
-                    "content_item_kinds": ["multi_agent.subagent_notification"],
-                },
-            },
-            {
-                "type": "event_msg",
-                "payload": {
-                    "type": "task_complete",
-                    "turn_id": "delegate",
-                    "last_agent_message": parent_task.value,
-                },
-            },
+            {"type": "event_msg", "payload": {"type": "user_message", "message": task.prompt}},
+            *target[:3],
+            _tagged_codex_notification(target[2]),
+            target[3],
         ]
     )
     return rows
 
 
-def test_cuj_evidence_codex_parent_turn_survives_child_notification(tmp_path):
-    initial_task = FileTask(SimpleNamespace(cwd=tmp_path))
-    parent_task = FileTask(SimpleNamespace(cwd=tmp_path))
-    parent_task.prompt = parent_task.delegate_prompt
-    rows = _codex_parent_delegation_records(
-        initial_task, parent_task, "gpt-6-sol", "child-random-marker"
-    )
-
-    turn = completed_turn(CODEX, rows, parent_task)
-
-    assert turn is not None
-    assert (turn.turn_id, turn.answer) == ("delegate", parent_task.value)
-
-
-def test_cuj_evidence_codex_child_notification_or_echo_is_not_parent_completion(tmp_path):
-    initial_task = FileTask(SimpleNamespace(cwd=tmp_path))
-    parent_task = FileTask(SimpleNamespace(cwd=tmp_path))
-    parent_task.prompt = parent_task.delegate_prompt
-    rows = _codex_parent_delegation_records(
-        initial_task, parent_task, "gpt-6-sol", "child-random-marker"
-    )
-    rows.pop()
-
-    assert completed_turn(CODEX, rows, parent_task) is None
-
-
-def test_cuj_evidence_codex_rejects_an_unrelated_later_parent_turn():
-    task = SimpleNamespace(prompt="target", value="answer")
-    rows = records(CODEX, task, "model")[:-1]
-    rows.extend(
-        [
-            {
-                "type": "event_msg",
-                "payload": {"type": "task_started", "turn_id": "unrelated"},
-            },
-            {
-                "type": "turn_context",
-                "payload": {"turn_id": "unrelated", "model": "model"},
-            },
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "message",
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": "different prompt"}],
-                },
-            },
-            {
-                "type": "event_msg",
-                "payload": {
-                    "type": "task_complete",
-                    "turn_id": "unrelated",
-                    "last_agent_message": "answer",
-                },
-            },
-        ]
-    )
-
-    assert completed_turn(CODEX, rows, task) is None
-
-
-def test_cuj_evidence_codex_keeps_completed_turn_before_later_turn():
-    task = SimpleNamespace(prompt="target", value="answer")
-    rows = records(CODEX, task, "model")
-    rows.extend(
-        [
-            {
-                "type": "event_msg",
-                "payload": {"type": "task_started", "turn_id": "later"},
-            },
-            {
-                "type": "turn_context",
-                "payload": {"turn_id": "later", "model": "model"},
-            },
-            {
-                "type": "event_msg",
-                "payload": {"type": "user_message", "message": "different prompt"},
-            },
-            {
-                "type": "event_msg",
-                "payload": {
-                    "type": "task_complete",
-                    "turn_id": "later",
-                    "last_agent_message": "different answer",
-                },
-            },
-        ]
-    )
-
+def test_cuj_evidence_codex_delegated_parent_turn(tmp_path):
+    task = FileTask(SimpleNamespace(cwd=tmp_path))
+    task.prompt = task.delegate_prompt
+    rows = _codex_parent_delegation_records(task, "gpt-6-sol")
+    later = records(CODEX, SimpleNamespace(prompt="later", value="later"), "gpt-6-sol")[1:]
+    for row in later:
+        if row["type"] != "response_item":
+            row["payload"]["turn_id"] = "later"
+    rows.extend(later)
     turn = completed_turn(CODEX, rows, task)
-
     assert turn is not None
-    assert (turn.turn_id, turn.answer) == ("turn", task.value)
+    assert (turn.turn_id, turn.answer) == ("delegate", task.value)
 
 
-def test_cuj_evidence_codex_pending_prompt_representations_are_not_duplicate(tmp_path):
+@pytest.mark.parametrize("case", ["aborted", "later", "notification", "duplicate"])
+def test_cuj_evidence_codex_rejects_follow_up_false_positives(tmp_path, case):
     task = FileTask(SimpleNamespace(cwd=tmp_path))
-    rows = records(CODEX, task, "gpt-6-sol")[:-2]
-    rows.extend(
-        [
-            {
-                "type": "event_msg",
-                "payload": {"type": "user_message", "message": task.prompt},
-            },
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "message",
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": task.prompt}],
-                },
-            },
-        ]
-    )
-
-    assert completed_turn(CODEX, rows, task) is None
+    rows = records(CODEX, task, "gpt-6-sol")
+    if case == "aborted":
+        rows[-1]["payload"]["type"] = "turn_aborted"
+    elif case == "later":
+        rows.pop()
+        rows.append({"type": "event_msg", "payload": {"type": "task_started", "turn_id": "later"}})
+    elif case == "notification":
+        rows[3] = _tagged_codex_notification(rows[3])
+    else:
+        rows.insert(-1, copy.deepcopy(rows[3]))
+    if case == "duplicate":
+        with pytest.raises(AssertionError, match="Prompt was submitted more than once"):
+            completed_turn(CODEX, rows, task)
+    else:
+        assert completed_turn(CODEX, rows, task) is None
 
 
-def test_cuj_evidence_codex_rejects_repeated_prompt_representation(tmp_path):
-    task = FileTask(SimpleNamespace(cwd=tmp_path))
-    rows = records(CODEX, task, "gpt-6-sol")[:-1]
-    rows.append(copy.deepcopy(rows[-1]))
-
-    with pytest.raises(AssertionError, match="Prompt was submitted more than once"):
-        completed_turn(CODEX, rows, task)
-
-
-def _inference_request(agent, sequence, payload):
+def _inference_request(agent, sequence, prompt, tools):
+    field = "messages" if agent == CLAUDE else "input"
+    content = prompt if agent == CLAUDE else [{"type": "input_text", "text": prompt}]
     return SimpleNamespace(
         method="POST",
         path=INFERENCE_PATHS[agent],
         sequence=sequence,
-        payload=payload,
+        payload={field: [{"role": "user", "content": content}], "tools": tools},
     )
 
 
-def test_cuj_task_inference_selection_excludes_claude_title_and_helper_requests():
+def test_cuj_task_inference_selection_uses_exact_tool_prompt():
     prompt = "Read input-file.txt using a tool. Reply with only its contents."
-    title = _inference_request(
-        CLAUDE,
-        1,
-        {
-            "model": "system.ai.claude-sonnet-4-6",
-            "messages": [{"role": "user", "content": f"Name this session: {prompt}"}],
-            "tools": [],
-        },
-    )
-    helper = _inference_request(
-        CLAUDE,
-        2,
-        {
-            "model": "system.ai.claude-sonnet-4-6",
-            "messages": [{"role": "user", "content": prompt}],
-            "tools": [],
-        },
-    )
-    task = _inference_request(
-        CLAUDE,
-        3,
-        {
-            "model": "system.ai.claude-haiku-4-5",
-            "messages": [{"role": "user", "content": prompt}],
-            "tools": [{"name": "Read"}],
-        },
-    )
-
-    selected = _task_inference_request(
-        [title, helper, task],
-        CLAUDE,
-        prompt,
-        native_turn=SimpleNamespace(answer="file-value"),
-    )
-
-    assert selected is task
-
-
-def test_cuj_child_inference_selection_excludes_codex_parent_continuation():
-    parent_prompt = "Delegate this task to one subagent."
+    claude = [
+        _inference_request(CLAUDE, 1, f"Name this session: {prompt}", []),
+        _inference_request(CLAUDE, 2, prompt, []),
+        _inference_request(CLAUDE, 3, prompt, [{"name": "Read"}]),
+    ]
+    assert _task_inference_request(claude, CLAUDE, prompt) is claude[2]
     child_prompt = "Read input-file.txt using a tool and return its contents."
-    parent_continuation = _inference_request(
-        CODEX,
-        4,
-        {
-            "model": "system.ai.gpt-6-sol",
-            "input": [
-                {"role": "user", "content": [{"type": "input_text", "text": parent_prompt}]},
-                {
-                    "role": "assistant",
-                    "content": [
-                        {
-                            "type": "function_call",
-                            "name": "spawn_agent",
-                            "arguments": child_prompt,
-                        }
-                    ],
-                },
-                {"role": "tool", "content": "child result for input-file.txt"},
-            ],
-            "tools": [{"type": "function", "name": "spawn_agent"}],
-        },
+    parent = _inference_request(
+        CODEX, 4, "Delegate this task to one subagent.", [{"name": "spawn_agent"}]
     )
-    child = _inference_request(
-        CODEX,
-        5,
-        {
-            "model": "system.ai.gpt-6-luna",
-            "input": [{"role": "user", "content": [{"type": "input_text", "text": child_prompt}]}],
-            "tools": [{"type": "function", "name": "read_file"}],
-        },
-    )
-
-    selected = _task_inference_request(
-        [parent_continuation, child],
-        CODEX,
-        child_prompt,
-        native_turn=SimpleNamespace(answer="child-result"),
-        native_prompts=(child_prompt,),
-    )
-
-    assert selected is child
+    child = _inference_request(CODEX, 5, child_prompt, [{"name": "read_file"}])
+    assert _task_inference_request([parent, child], CODEX, child_prompt, after=3) is child
+    with pytest.raises(AssertionError, match="No tool-capable"):
+        _task_inference_request([parent, child], CODEX, child_prompt, after=5)
 
 
 def test_cuj_evidence_ignores_existing_session(tmp_path):

@@ -1875,7 +1875,11 @@ class TestAuthTokenCommand:
         else:
             os.environ["DATABRICKS_BEARER"] = original
 
-    def test_prints_only_the_token_to_stdout(self):
+    @pytest.mark.parametrize("selector", [None, "unsupported_v99"])
+    def test_prints_only_the_token_to_stdout(self, monkeypatch, selector):
+        if selector is not None:
+            monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", selector)
+        previous = dict(os.environ)
         with (
             patch("ucode.cli.load_state", return_value={"workspace": "https://ws"}),
             patch("ucode.cli.get_databricks_token", return_value="tok-123") as fetch,
@@ -1886,6 +1890,7 @@ class TestAuthTokenCommand:
         # or the consuming agent will treat the noise as part of the token.
         assert result.stdout == "tok-123\n"
         fetch.assert_called_once_with("https://ws", None, force_refresh=False)
+        assert dict(os.environ) == previous
 
     def test_host_and_profile_override_state(self):
         with (
@@ -1897,21 +1902,6 @@ class TestAuthTokenCommand:
             )
         assert result.exit_code == 0
         fetch.assert_called_once_with("https://override", "prod", force_refresh=False)
-
-    def test_invalid_routing_config_does_not_block_token(self, monkeypatch):
-        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "unsupported_v99")
-        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
-        previous = dict(os.environ)
-        with (
-            patch("ucode.cli.load_state", return_value={"workspace": "https://ws"}),
-            patch("ucode.cli.get_databricks_token", return_value="tok-123") as fetch,
-        ):
-            result = runner.invoke(app, ["auth-token"])
-
-        assert result.exit_code == 0, result.output
-        assert result.stdout == "tok-123\n"
-        fetch.assert_called_once_with("https://ws", None, force_refresh=False)
-        assert dict(os.environ) == previous
 
     def test_force_refresh_is_forwarded(self):
         with (

@@ -25,10 +25,8 @@ the agent-specific prompt-submission evidence.
 Native evidence-reader regressions cover Claude's background-agent completion notifications;
 notifications alone cannot substitute for a final parent answer. These offline checks do not
 establish a live routing pass.
-Offline CUJ regressions also cover Codex delegated-turn completion, including mirrored prompt
-records and child notifications, while rejecting incomplete or unrelated turns. Smart-routing
-request selection matches exact task prompts in tool-capable inference payloads, excluding
-session-title requests and parent continuations when checking child inference.
+Offline CUJ regressions cover Codex delegated-turn completion and exact task-request matching;
+notifications alone, Claude title requests, and parent continuations do not qualify.
 The original smart-routing CUJ runs four fresh sessions: routed and explicit model for both
 Claude and Codex. One additional test has five `SMART_ROUTER_CONFIG_VERSION` cases.
 Each case exercises both agents and checks first-prompt routing, orchestrator context in
@@ -153,14 +151,9 @@ routing flags take unset, `0`, and `1`, while the selector takes unset or one of
 supported presets, including the customer first-prompt-and-subagent mode. It uses the named
 version constants but independently hardcodes each preset's settings and asserts exact
 `resolve_environment` and `apply_config` settings, true-unset omission, unrelated-key and
-input preservation, and valid-selector consumption. Additional helper cases cover no-op behavior
-for unsupported selectors, valid-selector application/restoration, and unset/empty selectors.
-CLI regressions in `test_cli.py` verify that unknown selectors do not block token-only
-authentication, revert, or Claude/Codex/default launch dispatch, and preserve the environment.
-Import-time schema validation,
-routing getters, native subcommands, hooks,
-session files, or managed launches are not established by this grid. These are component
-checks; they do not establish live agent, hook, or gateway behavior.
+input preservation, valid-selector consumption, and environment restoration.
+Absent/unknown selectors are no-ops; CLI checks cover auth, revert, and launch dispatch.
+These component checks do not establish live agent, hook, or gateway behavior.
 Three additional component cases compare the legacy flags with `subagent_only_v1`,
 `subagent_orch_v1`, and `first_prompt_and_subagent_no_orch_v0`, including first-prompt,
 subagent-routing activation, orchestration, and preservation of the chosen router name.

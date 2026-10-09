@@ -269,24 +269,7 @@ so first-prompt routing remains off; orchestration is also off.
 `subagent_orch_v1` enables all three legacy flags. Like `subagent_only_v1`, it routes
 subagents rather than the first prompt, and it additionally enables orchestration.
 
-The following pairs select equivalent routing settings. Set the variables on the same command
-line (or export them); separate unexported assignments joined by `&&` do not reliably reach UG.
-Use the same `SMART_ROUTER_NAME` on both sides to select the same router.
-
-```bash
-ENABLE_SMART_ROUTING_V2=1 ENABLE_SMART_ROUTING_SUBAGENT_ONLY=1 SMART_ROUTER_NAME=m2-r315-quality-20260929 uv run ug claude
-SMART_ROUTER_CONFIG_VERSION=subagent_only_v1 SMART_ROUTER_NAME=m2-r315-quality-20260929 uv run ug claude
-
-ENABLE_SMART_ROUTING_V2=1 ENABLE_SMART_ROUTING_SUBAGENT_ONLY=1 ENABLE_SMART_ROUTER_ORCHESTRATOR=1 SMART_ROUTER_NAME=m2-r315-quality-20260929 uv run ug claude
-SMART_ROUTER_CONFIG_VERSION=subagent_orch_v1 SMART_ROUTER_NAME=m2-r315-quality-20260929 uv run ug claude
-
-ENABLE_SMART_ROUTING_V2=1 uv run ug claude
-SMART_ROUTER_CONFIG_VERSION=first_prompt_and_subagent_no_orch_v0 uv run ug claude
-```
-
-These pairs assume other routing flags are unset or `"0"`. The version selector overrides
-inherited routing flags; legacy assignments leave unspecified flags inherited.
-The orchestration flag is `ENABLE_SMART_ROUTER_ORCHESTRATOR`, not `ENABLE_SMART_ROUTING_ORCH`.
+`SMART_ROUTER_NAME` still selects the router independently of the preset.
 
 Smart-routed Claude and Codex sessions install `smart-router`. The `subagent_orch_v0`
 and `subagent_orch_v1` versions also install and activate the bundled `smart-router-orchestrator` skill.
