@@ -1,244 +1,68 @@
-name: CI
-
+name: Claude version A/B diagnostic
 on:
   workflow_dispatch:
-  pull_request:
-  merge_group:
-  push:
-    branches: [main]
-
 permissions:
   contents: read
-
-env:
-  PYTHONUTF8: 1
-  # Windows runners can't reach public PyPI or npm; they install through JFrog.
-  WINDOWS_PACKAGE_INDEX: https://databricks.jfrog.io/artifactory/api/pypi/db-pypi/simple
-  WINDOWS_NPM_REGISTRY: https://databricks.jfrog.io/artifactory/api/npm/db-npm/
-
-concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
-  cancel-in-progress: true
-
 jobs:
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
+  compare:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
     env:
-      # See the test job: hosted runners can't reach the internal pypi-proxy,
-      # so resolve against public PyPI (paired with the `uv lock` step below).
       UV_INDEX_URL: https://pypi.org/simple
+      UV_HTTP_TIMEOUT: "120"
+      UV_HTTP_RETRIES: "6"
+      UG_CUJ_SP_CLIENT_ID: ${{ secrets.UG_CUJ_SP_CLIENT_ID }}
+      UG_CUJ_SP_CLIENT_SECRET: ${{ secrets.UG_CUJ_SP_CLIENT_SECRET }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
-      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b  # v3
-      - run: uv lock
-      # Same recipe developers run locally, so lint stays identical in both places.
-      - run: just lint
-
-  test:
-    name: Unit tests · ${{ matrix.os == 'windows-server-latest' && 'Windows' || 'Linux' }}
-    runs-on: ${{ matrix.os }}
-    needs: lint
-    permissions:
-      contents: read
-      id-token: write
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-server-latest]
-    defaults:
-      run:
-        shell: bash
-    env:
-      # uv.lock pins packages to Databricks' internal pypi-proxy, which hosted
-      # GitHub runners can't reach (downloads time out). Re-resolve against
-      # public PyPI at CI time: UV_INDEX_URL + a `uv lock` before install.
-      UV_INDEX_URL: https://pypi.org/simple
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
-      - name: Authenticate to JFrog with GitHub OIDC
-        id: jfrog
-        if: ${{ runner.os == 'Windows' }}
-        uses: jfrog/setup-jfrog-cli@279b1f629f43dd5bc658d8361ac4802a7ef8d2d5  # v4.9.1
-        env:
-          JF_URL: https://databricks.jfrog.io
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          oidc-provider-name: github-actions
-      - name: Install dependencies
-        env:
-          UV_INDEX_DATABRICKS_PYPI_USERNAME: ${{ steps.jfrog.outputs.oidc-user }}
-          UV_INDEX_DATABRICKS_PYPI_PASSWORD: ${{ steps.jfrog.outputs.oidc-token }}
-        run: |
-          if [[ "$RUNNER_OS" == Windows ]]; then
-            unset UV_INDEX_URL
-            export UV_DEFAULT_INDEX="databricks-pypi=$WINDOWS_PACKAGE_INDEX"
-          fi
-          uv lock
-          uv sync
-      - run: uv run --no-sync pytest --ignore=tests/test_e2e.py
-
-  e2e-shards:
-    name: ${{ matrix.name }} · ${{ matrix.os == 'windows-server-latest' && 'Windows' || 'Linux' }}
-    runs-on: ${{ matrix.os }}
-    needs: lint
-    # The merge queue runs only lint and unit tests; e2e already ran on the PR.
-    if: ${{ github.event_name != 'merge_group' }}
-    permissions:
-      contents: read
-      id-token: write
-    defaults:
-      run:
-        shell: bash
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-server-latest]
-        group: [gateway, claude, codex, gemini, opencode, copilot, pi]
-        include:
-          - group: gateway
-            name: Gateway API tests
-            keyword: not (TestCodexLaunch or TestClaudeLaunch or TestConfigureSubset or TestModelProviderLaunch or TestGeminiLaunch or TestGeminiFreshInstall or TestGeminiAuthRecovery or TestOpencodeLaunch or TestCopilotLaunch or TestPiLaunch)
-            package: ''
-          - group: claude
-            name: Agent launch tests · Claude
-            keyword: TestClaudeLaunch or TestConfigureSubset or (TestModelProviderLaunch and not codex)
-            package: '@anthropic-ai/claude-code'
-          - group: codex
-            name: Agent launch tests · Codex
-            keyword: TestCodexLaunch
-            package: '@openai/codex'
-          - group: gemini
-            name: Agent launch tests · Gemini
-            keyword: TestGeminiLaunch or TestGeminiFreshInstall or TestGeminiAuthRecovery
-            package: '@google/gemini-cli'
-          - group: opencode
-            name: Agent launch tests · OpenCode
-            keyword: TestOpencodeLaunch
-            package: opencode-ai@1
-          - group: copilot
-            name: Agent launch tests · Copilot
-            keyword: TestCopilotLaunch
-            package: '@github/copilot@1.0.80'
-          - group: pi
-            name: Agent launch tests · Pi
-            keyword: TestPiLaunch
-            package: '@earendil-works/pi-coding-agent'
-    env:
-      # See the test job: hosted runners can't reach the internal pypi-proxy,
-      # so resolve against public PyPI (paired with the `uv lock` step below).
-      UV_INDEX_URL: https://pypi.org/simple
-      UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
-      DATABRICKS_HOST: ${{ secrets.UCODE_TEST_WORKSPACE }}
-      # DATABRICKS_BEARER is the CI escape hatch: `databricks auth token`
-      # only retrieves cached user-OAuth tokens, so on a hosted runner
-      # (no databrickscfg, no cached login) it can never produce a bearer.
-      # Pre-fetch one (e.g. via M2M OAuth client_credentials against
-      # /oidc/v1/token) and store it as a repo secret. Both
-      # has_valid_databricks_auth + get_databricks_token + the agents'
-      # apiKeyHelper short-circuit to this value when set. Tokens are
-      # short-lived (~1h); rotate when CI starts failing with 401s.
-      DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
-      AGENT_PACKAGE: ${{ matrix.package }}
-      TEST_KEYWORD: ${{ matrix.keyword }}
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
-      - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
-      - name: Expose the Databricks CLI on Windows
-        if: ${{ runner.os == 'Windows' }}
-        run: |
-          test -f "$RUNNER_TEMP/.bin/databricks.exe"
-          cygpath -w "$RUNNER_TEMP/.bin" >> "$GITHUB_PATH"
-      - name: Authenticate to JFrog with GitHub OIDC
-        id: jfrog
-        if: ${{ runner.os == 'Windows' }}
-        uses: jfrog/setup-jfrog-cli@279b1f629f43dd5bc658d8361ac4802a7ef8d2d5  # v4.9.1
-        env:
-          JF_URL: https://databricks.jfrog.io
+          ref: ba0d79ed9d429e08af3e7cf110e379c004a3a503
+          path: baseline-ug
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          oidc-provider-name: github-actions
-      - name: Install the shard's agent CLI
-        if: ${{ matrix.package != '' }}
-        env:
-          NPM_TOKEN: ${{ steps.jfrog.outputs.oidc-token }}
+          node-version: 22.19.0
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+        with:
+          version: 0.9.8
+      - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a
+        with:
+          version: 1.17.0
+      - name: Install identical baseline UG and both native Claude versions
         run: |
-          if [[ "$RUNNER_OS" == Windows ]]; then
-            npmrc="$RUNNER_TEMP/jfrog.npmrc"
-            printf 'registry=%s\n//%s:_authToken=%s\n' \
-              "$WINDOWS_NPM_REGISTRY" "${WINDOWS_NPM_REGISTRY#https://}" "$NPM_TOKEN" > "$npmrc"
-            npm install -g --userconfig "$npmrc" "$AGENT_PACKAGE"
-            rm "$npmrc"
-          else
-            npm install -g "$AGENT_PACKAGE"
-          fi
-      - name: Install ug and test dependencies
-        env:
-          UV_INDEX_DATABRICKS_PYPI_USERNAME: ${{ steps.jfrog.outputs.oidc-user }}
-          UV_INDEX_DATABRICKS_PYPI_PASSWORD: ${{ steps.jfrog.outputs.oidc-token }}
-        run: |
-          if [[ "$RUNNER_OS" == Windows ]]; then
-            unset UV_INDEX_URL
-            export UV_DEFAULT_INDEX="databricks-pypi=$WINDOWS_PACKAGE_INDEX"
-          fi
           uv lock
-          uv tool install .
-          uv sync
-      # Redirect stdin so any interactive `databricks auth login --no-browser`
-      # fallback EOFs instead of hanging the runner. With DATABRICKS_BEARER
-      # set, the auth code path doesn't shell out at all — this is a safety
-      # net for any code path we may have missed.
-      - run: uv run --no-sync pytest tests/test_e2e.py -v -k "$TEST_KEYWORD" < /dev/null
-
-  e2e:
-    name: All agent tests
-    if: ${{ !cancelled() && github.event_name != 'merge_group' }}
-    needs: e2e-shards
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Require every e2e shard to pass
-        env:
-          RESULT: ${{ needs.e2e-shards.result }}
-        run: test "$RESULT" = success
-
-  integration:
-    name: Integration
-    needs: lint
-    # The condition runs integration tests only if lint passes and the overall workflow is not cancelled.
-    if: ${{ github.event_name != 'merge_group' && needs.lint.result == 'success' && !cancelled() }}
-    permissions:
-      contents: read
-      id-token: write
-    uses: ./.github/workflows/integration.yml
-    secrets: inherit
-
-  # Preserve the exact contexts required by the repository's branch rules.
-  # Keep these aliases until the rules and all active branches migrate together.
-  required-tests:
-    name: test
-    if: ${{ !cancelled() }}
-    needs: test
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Require unit tests to pass
-        env:
-          RESULT: ${{ needs.test.result }}
-        run: test "$RESULT" = success
-
-  required-e2e:
-    name: e2e
-    if: ${{ !cancelled() }}
-    needs: [e2e, integration]
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Require all agent and integration tests to pass
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          RESULT: ${{ needs.e2e.result }}
-          INTEGRATION_RESULT: ${{ needs.integration.result }}
-        run: test "$EVENT_NAME" = merge_group || { test "$RESULT" = success && test "$INTEGRATION_RESULT" = success; }
+          uv tool install ./baseline-ug
+          npm install -g "@openai/codex@0.154.0"
+          for version in 2.1.280 2.1.290; do
+            npm install --prefix "$RUNNER_TEMP/claude-$version" "@anthropic-ai/claude-code@$version"
+          done
+      - name: Run the same strict TUI test in ABBA order with fresh homes
+        shell: bash
+        run: |
+          overall=0
+          arm=0
+          for version in 2.1.280 2.1.290 2.1.290 2.1.280; do
+            arm=$((arm + 1))
+            export PATH="$RUNNER_TEMP/claude-$version/node_modules/.bin:$PATH"
+            claude --version
+            if uv run --with pexpect==4.9.0 --with pyte==0.8.2 \
+              pytest --confcutdir=tests/e2e_cuj \
+              tests/e2e_cuj/test_cuj3_models.py::TestCatalogDiscovery::test_catalog_discovery_claude_tui_uses_default \
+              -v --basetemp "$RUNNER_TEMP/cuj-$arm-$version" \
+              --junitxml "$RUNNER_TEMP/ab-results/$arm-$version.xml"; then
+              echo "Arm $arm / Claude $version: PASS" >> "$GITHUB_STEP_SUMMARY"
+            else
+              overall=1
+              echo "Arm $arm / Claude $version: FAIL (inspect wire evidence)" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+          exit "$overall"
+      - name: Upload redacted wire evidence and strict test results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: claude-live-abba
+          include-hidden-files: true
+          path: |
+            ${{ runner.temp }}/cuj-*/*/artifacts/
+            ${{ runner.temp }}/ab-results/

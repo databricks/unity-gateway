@@ -1,7 +1,9 @@
 """Managed catalog discovery, default launches, and explicit model selection."""
 
 import json
+from pathlib import Path
 
+import httpx
 import pytest
 
 from tests.integration.utils.agents import claude, codex
@@ -128,10 +130,41 @@ def _assert_inference_evidence(recorder, checkpoint, agent, task, expected):
 @pytest.fixture(autouse=True)
 def _revert_catalog_test_state(cuj):
     yield
-    session, _, _ = cuj
-    session.revert_machine_wide(
-        "catalog-discovery-cleanup-revert", "Catalog CUJ teardown left machine-wide agent settings"
-    )
+    session, workspace, recorder = cuj
+    try:
+        # Diagnostic branch only: preserve the real exchange, without weakening assertions.
+        session.run("--version", binary=session.which(CLAUDE))
+        session.record("workspace-config.json", workspace.config())
+        for name, path in {
+            "claude-settings.json": session.home / ".claude/ucode-settings.json",
+            "claude-managed-settings.json": Path("/etc/claude-code/managed-settings.json"),
+            "claude-catalog.json": session.home / ".claude/cache/gateway-models.json",
+        }.items():
+            if path.is_file():
+                session.record(name, json.loads(path.read_text()))
+        exchanges = []
+        for request in recorder.requests_after(0):
+            response = recorder.response_for(request, timeout=240)
+            exchanges.append(
+                {
+                    "sequence": request.sequence,
+                    "method": request.method,
+                    "path": request.path,
+                    "request_headers": request.headers,
+                    "request_body": request.body.decode("utf-8"),
+                    "status": response.status_code,
+                    "response_headers": response.headers,
+                    "response_body": httpx.Response(
+                        response.status_code, headers=response.headers, content=response.body
+                    ).text,
+                }
+            )
+        session.record("wire-exchanges.json", exchanges)
+    finally:
+        session.revert_machine_wide(
+            "catalog-discovery-cleanup-revert",
+            "Catalog CUJ teardown left machine-wide agent settings",
+        )
 
 
 class TestCatalogDiscovery(BaseCujTest):
