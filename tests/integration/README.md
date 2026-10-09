@@ -12,7 +12,8 @@ skill name as data; skill download and invocation are not covered.
 
 The [catalog discovery journey](../e2e_cuj/README.md) uses the CUJ3 workspace to check
 agent-compatible pickers, schema exclusions, configured defaults, and real inference.
-CI collects it through the shared `dedicated-cuj` job.
+CI collects it through the shared `dedicated-cuj` job. Its request checks accept the known
+Claude thinking-display 400 only with a successful, otherwise identical native retry.
 
 This suite runs the **installed product** through subprocesses, against the same
 `UCODE_TEST_WORKSPACE` used by the existing e2e tests. It does not import `ucode`,

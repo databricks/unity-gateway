@@ -21,7 +21,8 @@ The live fixture compares configuration before and after the journey, even on fa
 CUJs never republish configuration or create a remote reservation.
 CUJ helper tests also verify that unsupported agent names fail rather than defaulting to Codex.
 They cover Claude/Codex helper dispatch and rejection of routing decisions without
-the agent-specific prompt-submission evidence.
+the agent-specific prompt-submission evidence. CUJ3 also verifies Claude's native recovery
+from the known thinking-display 400: the same payload without display must receive 200.
 The smart-routing CUJ runs four fresh sessions: routed and explicit model for both
 Claude and Codex. Routing-disabled coverage is deferred until a separately
 preconfigured workspace is assigned.
