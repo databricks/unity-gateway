@@ -1,6 +1,7 @@
 """CUJs for changing and undoing claude's ug setup."""
 
 import json
+import os
 
 import pytest
 from utils.evidence import FileTask
@@ -17,6 +18,7 @@ PREEXISTING_FAMILY_DEFAULTS = {
 }
 
 
+@pytest.mark.skipif(os.name == "nt", reason="ug has no Windows managed-settings path to seed")
 def test_unmanaged_claude_preserves_preexisting_family_defaults(live_session, unmanaged_workspace):
     """Scenario: seed Claude's OS-managed family defaults, then configure ug against a real
     workspace verified to publish no CodingAgentConfig.
