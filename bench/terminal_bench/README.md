@@ -4,7 +4,37 @@ This directory runs Terminal Bench tasks through `ug claude` and `ug codex`. It 
 
 The workflow has two lanes. The Harbor lane runs on Linux. It runs a subset of [Terminal Bench 2](https://www.tbench.ai/) and the tasks in `tasks/` inside Harbor's Docker containers, and `ug_agent.py` installs ug in each container. The native lane runs on Linux and Windows. GitHub's Windows runners can't run Linux containers, so `run_native.py` runs the tasks in `tasks/` directly on the runner.
 
-[TASKS.md](TASKS.md) describes the task format and lists every task.
+```mermaid
+flowchart LR
+	workflow["Terminal Bench workflow"] --> harbor["Harbor lane<br/>Linux, Docker"]
+	workflow --> native["Native lane<br/>Linux and Windows"]
+	harbor --> tb2["TB2 subset"]
+	harbor --> own["tasks/"]
+	native --> own
+```
+
+Each lane runs every task for Claude and for Codex. [TASKS.md](TASKS.md) describes the task format and lists every task.
+
+## How a task runs
+
+Both lanes run a task the same way. The host mints the gateway token, so the agent never sees the service principal secret. The verifier runs after the agent exits and decides the result.
+
+```mermaid
+sequenceDiagram
+	participant host as Runner host
+	participant env as Task directory
+	participant agent as ug and agent CLI
+	participant gateway as AI Gateway
+	host->>env: Copy environment/app/ and run environment/setup.py
+	host->>host: bench_auth.py mints a token
+	host->>agent: ug configure, then ug claude or ug codex with instruction.md
+	agent->>gateway: Model calls with the token
+	agent->>env: Read files, run commands, write output
+	host->>env: Run tests/test_outputs.py
+	env-->>host: Exit code 0 is a pass
+```
+
+The Harbor lane runs `ug configure` in each container. The native lane runs it once at the start of the job. A multi-step task mints a new token, launches the agent, and runs the verifier again for each step, resuming the agent's session each time.
 
 ## Run the workflow with other tasks or a model
 
