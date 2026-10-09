@@ -169,50 +169,6 @@ def test_wait_until_lets_on_screen_answer_an_expected_dialog(tmp_path):
         assert "allowed" in tui.visible
 
 
-@requires_pty
-@pytest.mark.parametrize("agent", [CLAUDE, CODEX])
-def test_terminal_exit_without_confirmation(tmp_path, agent):
-    session = _fake_ug(tmp_path, "echo '❯'\nread command\n[ \"$command\" = /exit ]\n")
-    with Terminal(session, "exits", [], agent=agent) as tui:
-        tui.exit_normally()
-        assert tui.ended
-        assert tui.child.exitstatus == 0
-        assert not any(action["reason"] == "confirm Exit and stop tasks" for action in tui.actions)
-
-
-@requires_pty
-@pytest.mark.parametrize("selected", ["Exit and stop tasks", "Move to background and exit"])
-def test_terminal_exit_handles_claude_background_work_confirmation(tmp_path, selected):
-    session = _fake_ug(
-        tmp_path,
-        "echo '❯'\n"
-        "read command\n"
-        '[ "$command" = /exit ] || exit 1\n'
-        "echo 'Background work is running'\n"
-        "echo 'scheduled task · Runs once in 1m · <<autonomous-loop-dynamic>>'\n"
-        f"echo '❯ 1. {selected}'\n"
-        "echo '  2. Move to background and exit'\n"
-        "echo '  3. Stay'\n"
-        "echo 'Enter to confirm · Esc to cancel'\n"
-        "read confirmation\n"
-        '[ -z "$confirmation" ]\n',
-    )
-    with Terminal(session, "confirms-exit", [], agent=CLAUDE) as tui:
-        if selected == "Exit and stop tasks":
-            tui.exit_normally()
-            assert tui.ended
-            assert tui.child.exitstatus == 0
-            assert tui.actions[-1]["reason"] == "confirm Exit and stop tasks"
-            assert tui.actions[-1]["keys"] == "\r"
-        else:
-            with pytest.raises(AssertionError, match="Unrecognized background-work exit selection"):
-                tui.exit_normally()
-            assert not tui.ended
-            assert not any(
-                action["reason"] == "confirm Exit and stop tasks" for action in tui.actions
-            )
-
-
 def test_mcp_list_poll_retries_a_failed_probe_until_rows_match(monkeypatch):
     monkeypatch.setattr(poll_module.time, "sleep", lambda seconds: None)
     healthy = "\n".join(

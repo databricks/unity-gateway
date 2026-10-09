@@ -20,9 +20,6 @@ offline tests require GET-only API calls and verify config changes fail without 
 The live fixture compares configuration before and after the journey, even on failure.
 CUJs never republish configuration or create a remote reservation.
 CUJ helper tests also verify that unsupported agent names fail rather than defaulting to Codex.
-Offline PTY checks cover ordinary Claude/Codex exits and Claude 2.1.290's background-work
-exit confirmation. The driver confirms the visible "Exit and stop tasks" selection and
-rejects other selections; these checks do not establish live agent coverage.
 They cover Claude/Codex helper dispatch and rejection of routing decisions without
 the agent-specific prompt-submission evidence.
 CUJ3 and CUJ4 also verify Claude's native recovery from the known thinking-display 400:

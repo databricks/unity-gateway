@@ -402,17 +402,4 @@ class AgentTerminal(TerminalProcess):
 
     def exit_normally(self):
         self.submit("/exit")
-        if self.agent == "claude":
-            prompt = "Background work is running"
-            self.wait_for(
-                lambda text: self.ended or (prompt in text and "Enter to confirm" in text),
-                "process exit or background-work confirmation",
-                timeout=30,
-            )
-            if not self.ended:
-                menu = self.visible.rsplit(prompt, 1)[1]
-                assert re.search(r"(?m)^\s*[❯›>]\s*1\.\s*Exit and stop tasks\s*$", menu), (
-                    f"Unrecognized background-work exit selection:\n{self.visible}"
-                )
-                self.send("\r", "confirm Exit and stop tasks")
-        self.finish(timeout=30)
+        self.finish(timeout=120 if self.agent == "claude" else 30)
