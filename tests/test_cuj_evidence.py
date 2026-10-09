@@ -320,6 +320,13 @@ def test_cuj_evidence_shared_jsonl_reader_handles_partial_and_complete_final_lin
         read_jsonl(path)
 
 
+def test_cuj_evidence_shared_jsonl_reader_decodes_utf8_regardless_of_locale(tmp_path):
+    # Agent transcripts are UTF-8; Windows' cp1252 default cannot decode `”` (ends in 0x9d).
+    path = tmp_path / "events.jsonl"
+    path.write_bytes('{"text": "the value is “42” — done"}\n'.encode())
+    assert read_jsonl(path) == [{"text": "the value is “42” — done"}]
+
+
 def test_cuj_uses_shared_file_task_without_exposing_answer(tmp_path):
     task = FileTask(SimpleNamespace(cwd=tmp_path))
     task.prompt += " Do not delegate."
