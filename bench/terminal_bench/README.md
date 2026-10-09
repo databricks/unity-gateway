@@ -34,7 +34,9 @@ The native Linux job overlaps with Harbor. It adds one thing: ug running outside
 
 ## How a task runs
 
-Both lanes run a task the same way. The host mints the gateway token, so the agent never sees the service principal secret. The verifier runs after the agent exits and decides the result.
+Both lanes run a task the same way. The agent gets the task's `instruction.md` once, at launch, and works on its own until it exits or hits the task's `timeout_sec`. Nothing sends it more instructions while it runs. That matches Terminal Bench and Harbor's built-in `claude-code` and `codex` agents, which also launch `claude --print` and `codex exec` with the instruction and wait.
+
+Claude reads the instruction on stdin in print mode (`-p`). Codex gets it as an argument to `codex exec`. The host mints the gateway token, so the agent never sees the service principal secret. The verifier runs after the agent exits and decides the result.
 
 ```mermaid
 sequenceDiagram
@@ -51,7 +53,20 @@ sequenceDiagram
 	env-->>host: Exit code 0 is a pass
 ```
 
-The Harbor lane runs `ug configure` in each container. The native lane runs it once at the start of the job. A multi-step task mints a new token, launches the agent, and runs the verifier again for each step, resuming the agent's session each time.
+The Harbor lane runs `ug configure` in each container. The native lane runs it once at the start of the job.
+
+A multi-step task launches the agent again for each step, with that step's instruction and a new token. The new launch resumes the previous session with `--continue` for Claude or `exec resume --last` for Codex, and the verifier runs after each step. All TB2 tasks have one step. `resume-session` is the only multi-step task here.
+
+## What the bench doesn't test
+
+The bench treats ug as a black box. It installs ug from this checkout, runs `ug configure`, and launches the agent with `ug claude` or `ug codex`. Verifiers check only what the agent left behind. Some of ug runs differently from a user's setup:
+
+- Auth goes through `DATABRICKS_BEARER` with a token the host mints. ug's `databricks auth login` and OAuth flows don't run.
+- Databricks AI Tools, the skills and plugins that `--enable-databricks-ai-tools` installs, aren't installed. That's ug's default.
+- The CUJ1 workspace's managed config lists no MCP servers, so ug registers none.
+- The harness installs a pinned Claude Code or Codex before ug starts, so ug's agent install doesn't run for that agent. It can still run for the other one. In a Claude job, ug tries to install Codex because the CUJ1 managed config enables both.
+- Claude runs with `--dangerously-skip-permissions` and Codex with `--dangerously-bypass-approvals-and-sandbox`. Permission prompts and the Codex sandbox don't run.
+- Smart routing is off.
 
 ## Run the workflow with other tasks or a model
 
