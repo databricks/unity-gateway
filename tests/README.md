@@ -27,7 +27,8 @@ The live fixture compares configuration before and after the journey, even on fa
 CUJs never republish configuration or create a remote reservation.
 CUJ helper tests also verify that unsupported agent names fail rather than defaulting to Codex.
 They cover Claude/Codex helper dispatch and rejection of routing decisions without
-the agent-specific prompt-submission evidence.
+the agent-specific prompt-submission evidence. CUJ3 also verifies Claude's native recovery
+from the known thinking-display 400: the same payload without display must receive 200.
 The smart-routing CUJ runs four fresh sessions: routed and explicit model for both
 Claude and Codex. Routing-disabled coverage is deferred until a separately
 preconfigured workspace is assigned.
@@ -43,8 +44,6 @@ binary output. `test_launcher.py` covers terminal handoff and exit status.
 Ruff rejects direct subprocess launches outside `os_compatibility/subprocess_cross_os.py` and tests.
 Claude's native resolver tests remain in
 `test_agent_claude.py`; installation failures are covered in `test_agents_init.py`.
-Version-floor component tests reject Claude versions below 2.1.290 and accept the
-minimum and newer versions; unknown-version handling remains unchanged.
 These are component checks, not live Windows coverage for every agent.
 
 Agent configuration tests also verify `ug` auth/MCP helper commands, including
@@ -199,6 +198,8 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_claude_headless_prompt_argument`, `test_ug_claude_headless_prompt_stdin`, `test_ug_claude_headless_prompt_after_separator` | Run Claude from a script using each prompt form | Structured final answer contains the file value; exit zero; no routing |
 | `test_ug_codex_headless_prompt_argument`, `test_ug_codex_headless_prompt_stdin`, `test_ug_codex_headless_prompt_after_separator` | Run Codex from a script using each prompt form | Completed turn and final answer contain the file value; exit zero; no routing |
 | `test_ug_opencode_headless_prompt_argument` | Run OpenCode from a script (`run --format json --auto`) with an argument prompt | Completed Read tool call; final text answer contains the file value; exit zero (non-blocking CI lane) |
+| `test_ug_agents_self_managed_opencode_journey` | Under the injected `managed_workspace_default` config (enables Claude/Codex, not OpenCode): bare configure, `ug agents list`, refused OpenCode launch, `ug agents add opencode`, real headless task, `ug agents remove opencode` (marker `managed_fixture and opencode`, non-blocking CI lane) | OpenCode absent from the list and launch fails with "doesn't enable OpenCode" / `ug agents add opencode`; after add it is listed self-managed and the headless Read task returns the fixture value; after remove it is hidden and refused again |
+| `test_ug_agents_admin_managed_guardrails` | `ug agents add` / `remove` on an agent the admin config enables | Add is a no-op noting the admin manages it; remove is rejected with nonzero exit |
 | `test_ug_claude_exports_trace_to_configured_table`, `test_ug_codex_exports_trace_to_configured_table` | Configure tracing, complete a headless task carrying a unique trace marker, then wait for ingestion | The configured trace table contains an agent span with the same trace-safe marker and requested model |
 | `test_ug_claude_headless_explicit_model_bypasses_routing` | Pass `--model VALUE` / `--model=VALUE` before and after ug's separator, without workspace policy and with routing enabled | Real file task completes; JSON `modelUsage` reports the requested model with output tokens; no routing wrapper |
 | `test_ug_codex_headless_explicit_model_bypasses_routing` | Pass `--model VALUE` / `--model=VALUE` / `-m VALUE` with routing enabled | Real file task completes; no routing wrapper |

@@ -12,7 +12,8 @@ skill name as data; skill download and invocation are not covered.
 
 The [catalog discovery journey](../e2e_cuj/README.md) uses the CUJ3 workspace to check
 agent-compatible pickers, schema exclusions, configured defaults, and real inference.
-CI collects it through the shared `dedicated-cuj` job.
+CI collects it through the shared `dedicated-cuj` job. Its request checks accept the known
+Claude thinking-display 400 only with a successful, otherwise identical native retry.
 
 This suite runs the **installed product** through subprocesses, against the same
 `UCODE_TEST_WORKSPACE` used by the existing e2e tests. It does not import `ucode`,
@@ -125,9 +126,6 @@ through them without changing existing journey commands or completion assertions
 
 ## Run a specific combination
 
-Claude Code requires 2.1.290 or newer. To exercise the required-upgrade gate,
-run `test_ug_version_floor.py` with `--claude-version 2.1.289`.
-
 Prerequisites: Python 3.12+, uv, and Node/npm. Live runs also require Databricks
 CLI 1.17.0. Full live/TUI runs require a POSIX host; Windows supports the explicit
 headless subset described below. The runner installs the requested agents into a new
@@ -151,7 +149,7 @@ export UCODE_TEST_WORKSPACE=https://your-existing-e2e-workspace
 
 python3.12 scripts/run_integration.py \
   --ug-version checkout \
-  --claude-version 2.1.290 \
+  --claude-version 2.1.268 \
   --codex-version 0.154.0 \
   --profile YOUR_PROFILE
 ```
@@ -176,7 +174,7 @@ OpenCode is opt-in: pass `--opencode-version` (for example `1.18.31`) to install
 ```bash
 # Constrain the suspected dependency while keeping the real CLI and gateway.
 python3.12 scripts/run_integration.py \
-  --ug-version checkout --claude-version 2.1.290 --codex-version 0.154.0 \
+  --ug-version checkout --claude-version 2.1.268 --codex-version 0.154.0 \
   --claude-model YOUR_CLAUDE_MODEL --codex-model YOUR_CODEX_MODEL \
   --opencode-version 1.18.31 --opencode-model YOUR_OPENCODE_MODEL \
   --profile YOUR_PROFILE --dependency tomlkit==0.14.0 \
@@ -191,7 +189,7 @@ For package-only validation without credentials:
 
 ```bash
 python3.12 scripts/run_integration.py \
-  --ug-version checkout --claude-version 2.1.290 --installation-only
+  --ug-version checkout --claude-version 2.1.268 --installation-only
 ```
 
 This explicitly selects only the installation checks; it does not claim a live
@@ -207,7 +205,7 @@ just as for a POSIX live run. This is not TUI coverage. Windows live PTY/TUI
 journeys, managed settings, and signal behavior remain outside this subset.
 
 ```powershell
-python scripts/run_integration.py --ug-version checkout --claude-version 2.1.290 --headless-only
+python scripts/run_integration.py --ug-version checkout --claude-version 2.1.268 --headless-only
 ```
 
 Use `--codex-version 0.154.0` instead of or alongside the Claude version to test
@@ -223,7 +221,7 @@ The Claude journey also opens `/model` after a plain `ug claude` launch, require
 its native gateway cache to contain `system.ai` models, and checks that a discovered
 model appears in the picker. No managed config, provider, model location, discovery
 flag, or inherited discovery environment variable enables this path. This runs with
-the pinned Claude version (currently 2.1.290 in CI).
+the pinned Claude version (currently 2.1.280 in CI).
 
 ## Test layout and format
 
@@ -460,7 +458,7 @@ enables both. Supply the second workspace and its bearer explicitly:
 ```bash
 # DATABRICKS_SECOND_BEARER must already contain a token for SECOND_WORKSPACE_URL.
 python3.12 scripts/run_integration.py \
-  --ug-version checkout --claude-version 2.1.290 --codex-version 0.154.0 \
+  --ug-version checkout --claude-version 2.1.268 --codex-version 0.154.0 \
   --workspace FIRST_WORKSPACE_URL --profile FIRST_WORKSPACE_PROFILE \
   --second-workspace SECOND_WORKSPACE_URL -- -m workspace_switch
 ```
@@ -566,8 +564,13 @@ disjoint agent lanes:
 
 A non-blocking **OpenCode** job (`live and opencode`, one case) runs alongside them with
 `continue-on-error` and is not part of the required `cujs` gate until it is stable.
+A second non-blocking job, **Managed OpenCode self-managed** (`managed_fixture and opencode`, two cases
+in `test_ug_agents_self_managed.py`), installs Claude, Codex and OpenCode and runs against the
+managed e2e workspace (`E2E_ADMIN_WORKSPACE`) with the injected `managed_workspace_default` config,
+which enables Claude/Codex but not OpenCode. It is likewise outside `cujs`.
 
-Each lane installs only its agent CLI, once, and runs all its configure, headless,
+Each lane installs only the agent CLIs it needs (one, except the managed OpenCode lane's
+three), once, and runs all its configure, headless,
 commands, lifecycle, and applicable app-server journeys. Cases remain serial
 inside each fresh VM because configure/revert can touch machine-level settings;
 separate runners isolate those writes as well as the PTYs. Claude and Codex run
@@ -665,7 +668,7 @@ To run only the two Claude defaults cases locally, select them by name with the 
 
 ```bash
 python3.12 scripts/run_integration.py \
-  --ug-version checkout --claude-version 2.1.290 --codex-version 0.154.0 \
+  --ug-version checkout --claude-version 2.1.268 --codex-version 0.154.0 \
   -- -k 'test_managed_claude_mps_defaults_accompany_discovery or test_managed_claude_parent_schema_defaults_accompany_discovery'
 ```
 
@@ -699,7 +702,7 @@ From the CLI:
 ```bash
 gh workflow run integration.yml -R databricks/unity-gateway --ref YOUR_BRANCH \
   -f ug_version=checkout \
-  -f claude_version=2.1.290 -f codex_version=0.154.0
+  -f claude_version=2.1.268 -f codex_version=0.154.0
 gh run list -R databricks/unity-gateway --workflow integration.yml
 gh run watch RUN_ID -R databricks/unity-gateway --exit-status
 ```
@@ -802,7 +805,7 @@ docker run --rm --init \
   -v ug-integration-results:/results \
   ug-integration \
   --ug-version YOUR_RELEASE_VERSION \
-  --claude-version 2.1.290 --codex-version 0.154.0 \
+  --claude-version 2.1.268 --codex-version 0.154.0 \
   --installation-only
 ```
 
@@ -862,7 +865,7 @@ DATABRICKS_BEARER=$(databricks auth token --host "$integration_workspace" \
 uv run --no-project --python 3.12 python scripts/run_integration.py \
   --python 3.12 --ug-version checkout --workspace "$integration_workspace" \
   --default-index "$integration_index" --npm-registry "$integration_registry" \
-  --claude-version 2.1.290 --codex-version 0.154.0 -- -m live
+  --claude-version 2.1.268 --codex-version 0.154.0 -- -m live
 unset DATABRICKS_BEARER
 ```
 
