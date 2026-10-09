@@ -395,7 +395,8 @@ class AgentTerminal(TerminalProcess):
                     self.agent == "codex"
                     and bool(
                         re.search(
-                            rf"(?m)^\s*>\s+You are in ",
+                            rf"(?m)^\s*>\s+You are in "
+                            rf"{re.escape(str(self.session.cwd.parent))}[\\/][^\\/\r\n]*$",
                             text,
                         )
                     )
@@ -404,8 +405,8 @@ class AgentTerminal(TerminalProcess):
                         or "directory allows project-local config, hooks, and exec policies to load."
                         in text
                     )
-                    and bool(re.search(r"[1.].*Yes.*continue", text, re.IGNORECASE))
-                    and bool(re.search(r"[2.].*No.*quit", text, re.IGNORECASE))
+                    and bool(re.search(rf"(?m)^\s*{SELECTED}\s*1[.)]\s+Yes, continue\s*$", text))
+                    and bool(re.search(r"(?m)^\s*2[.)]\s+No, quit\s*$", text))
                     and "Press enter to continue" in text,
                     "\r",
                 ),
