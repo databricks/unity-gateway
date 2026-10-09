@@ -31,12 +31,12 @@ DISABLED_CONTEXT = (
 )
 
 
-def feature_enabled(env: Mapping[str, str] | None = None, *, agent: str = AGENT_CLAUDE) -> bool:
+def feature_enabled(env: Mapping[str, str] | None = None, *, agent: str) -> bool:
     source = resolve_environment(env, agent=agent)
     return source.get(ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR) == "1"
 
 
-def enabled(env: Mapping[str, str] | None = None, *, agent: str = AGENT_CLAUDE) -> bool:
+def enabled(env: Mapping[str, str] | None = None, *, agent: str) -> bool:
     from ucode.smart_routing.v2 import smart_routing_enabled
 
     source = os.environ if env is None else env
@@ -50,7 +50,9 @@ def enabled(env: Mapping[str, str] | None = None, *, agent: str = AGENT_CLAUDE) 
             return False
     except (RuntimeError, OSError):
         return False
-    return smart_routing_enabled(effective_environment(source, agent=agent), agent=agent)
+    return smart_routing_enabled(
+        effective_environment(source, agent=agent), default=False, agent=agent
+    )
 
 
 def skill_directory() -> Path:
@@ -59,7 +61,7 @@ def skill_directory() -> Path:
 
 def add_claude_agents(plugin_dir: Path) -> None:
     """Load roles alongside the router's exact-model agents, only for this launch."""
-    if feature_enabled():
+    if feature_enabled(agent=AGENT_CLAUDE):
         shutil.copytree(skill_directory() / "agents", plugin_dir / "agents", dirs_exist_ok=True)
 
 

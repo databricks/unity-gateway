@@ -123,9 +123,7 @@ def _validate_versions(versions: Mapping[str, Mapping[str, Mapping[str, str]]]) 
 _validate_versions(_VERSIONS)
 
 
-def resolve_environment(
-    env: Mapping[str, str] | None = None, *, agent: str = AGENT_CLAUDE
-) -> dict[str, str]:
+def resolve_environment(env: Mapping[str, str] | None = None, *, agent: str) -> dict[str, str]:
     """Expand a version before applying any launch or session-specific overrides."""
     resolved = dict(os.environ if env is None else env)
     version = resolved.pop(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, "").strip()
@@ -134,7 +132,7 @@ def resolve_environment(
 
 
 def apply_config(
-    env: MutableMapping[str, str] | None = None, *, agent: str = AGENT_CLAUDE
+    env: MutableMapping[str, str] | None = None, *, agent: str
 ) -> dict[str, str | None]:
     """Consume the launch selector, returning the values needed to restore its input."""
     target = os.environ if env is None else env

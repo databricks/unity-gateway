@@ -60,9 +60,9 @@ def test_absent_or_unknown_selector_is_a_no_op(selector):
         applied[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = selector
     original = applied.copy()
 
-    assert config.resolve_environment(applied) == expected
+    assert config.resolve_environment(applied, agent=AGENT_CLAUDE) == expected
     assert applied == original
-    assert config.apply_config(applied) == {}
+    assert config.apply_config(applied, agent=AGENT_CLAUDE) == {}
     assert applied == original
 
 
@@ -135,16 +135,16 @@ def test_legacy_preset_equivalence(version, expected_routing):
         SMART_ROUTER_CONFIG_VERSION_ENV_VAR: version,
         "SMART_ROUTER_NAME": legacy_env["SMART_ROUTER_NAME"],
     }
-    resolved = config.resolve_environment(preset_env)
+    resolved = config.resolve_environment(preset_env, agent=AGENT_CLAUDE)
     applied = preset_env.copy()
-    config.apply_config(applied)
+    config.apply_config(applied, agent=AGENT_CLAUDE)
     assert applied == resolved
     for environment in (legacy_env, preset_env, resolved, applied):
         assert environment["SMART_ROUTER_NAME"] == legacy_env["SMART_ROUTER_NAME"]
         assert (
-            v2.smart_routing_enabled(environment),
-            v2.first_prompt_routing_enabled(environment),
-            orchestrator.feature_enabled(environment),
+            v2.smart_routing_enabled(environment, default=False, agent=AGENT_CLAUDE),
+            v2.first_prompt_routing_enabled(environment, agent=AGENT_CLAUDE),
+            orchestrator.feature_enabled(environment, agent=AGENT_CLAUDE),
         ) == expected_routing
 
 
@@ -195,3 +195,14 @@ def test_agent_resolution_and_session_controls(monkeypatch, agent, tmp_path):
         session_env.SESSION_ENV_VAR: str(control),
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
     }
+
+
+@pytest.mark.parametrize("resolver", [config.resolve_environment, config.apply_config])
+def test_config_resolution_requires_an_explicit_agent(resolver):
+    with pytest.raises(TypeError, match="agent"):
+        resolver({})
+
+
+def test_smart_routing_check_requires_an_explicit_agent():
+    with pytest.raises(TypeError, match="agent"):
+        v2.smart_routing_enabled(None, default=False)

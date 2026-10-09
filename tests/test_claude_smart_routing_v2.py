@@ -13,6 +13,7 @@ from unittest.mock import Mock
 import pytest
 
 from ucode.agents import LaunchOptions, claude
+from ucode.constants import AGENT_CLAUDE
 from ucode.databricks import AnthropicModelCatalog
 from ucode.smart_routing import claude_hooks, routing, v2
 
@@ -199,22 +200,22 @@ class TestSmartRoutingEnvVars:
     def test_either_flag_enables_smart_routing(self, monkeypatch):
         monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
         monkeypatch.delenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, raising=False)
-        assert not v2.smart_routing_enabled()
+        assert not v2.smart_routing_enabled(None, default=False, agent=AGENT_CLAUDE)
         monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
-        assert v2.smart_routing_enabled()
+        assert v2.smart_routing_enabled(None, default=False, agent=AGENT_CLAUDE)
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
-        assert v2.smart_routing_enabled()
+        assert v2.smart_routing_enabled(None, default=False, agent=AGENT_CLAUDE)
 
     def test_subagent_only_flag_suppresses_first_prompt_routing(self, monkeypatch):
         monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
         monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
-        assert not v2.first_prompt_routing_enabled()
+        assert not v2.first_prompt_routing_enabled(agent=AGENT_CLAUDE)
         # Subagent-only wins when both are set: an ambient full flag cannot
         # override an explicit subagent-only session.
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
-        assert not v2.first_prompt_routing_enabled()
+        assert not v2.first_prompt_routing_enabled(agent=AGENT_CLAUDE)
         monkeypatch.delenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR)
-        assert v2.first_prompt_routing_enabled()
+        assert v2.first_prompt_routing_enabled(agent=AGENT_CLAUDE)
 
 
 class TestV2Launch:

@@ -10,7 +10,7 @@ from collections.abc import Mapping, MutableMapping
 from pathlib import Path
 
 from ucode.config_io import atomic_write_json
-from ucode.constants import AGENT_CLAUDE, SMART_ROUTING_ENV_KEYS
+from ucode.constants import SMART_ROUTING_ENV_KEYS
 from ucode.smart_routing.config import resolve_environment
 
 SESSION_ENV_VAR = "UCODE_SESSION_ENV_FILE"
@@ -52,9 +52,7 @@ def _read(path: Path) -> dict[str, str]:
     return _validate(json.loads(path.read_text(encoding="utf-8")))
 
 
-def effective_environment(
-    env: Mapping[str, str] | None = None, *, agent: str = AGENT_CLAUDE
-) -> dict[str, str]:
+def effective_environment(env: Mapping[str, str] | None = None, *, agent: str) -> dict[str, str]:
     """Overlay the latest session controls on the hook process environment."""
     effective = resolve_environment(env, agent=agent)
     try:

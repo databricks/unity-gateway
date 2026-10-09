@@ -997,7 +997,7 @@ class TestSubcommandRouting:
             patch(
                 "ucode.cli._launch_tool",
                 side_effect=lambda *_args, **_kwargs: routing_during_launch.append(
-                    cli_mod.smart_routing_v2.smart_routing_enabled()
+                    cli_mod.smart_routing_v2.smart_routing_enabled(None, default=False, agent=tool)
                 ),
             ) as mock_launch,
         ):

@@ -154,7 +154,7 @@ def _model_picker_catalog() -> AnthropicModelCatalog | None:
 
 
 def smart_routing_enabled(
-    env: MutableMapping[str, str] | None = None, *, default: bool = False, agent: str = AGENT_CLAUDE
+    env: MutableMapping[str, str] | None, *, default: bool, agent: str
 ) -> bool:
     source = resolve_environment(env, agent=agent)
     values = [
@@ -168,7 +168,7 @@ def smart_routing_enabled(
 
 
 def first_prompt_routing_enabled(
-    env: MutableMapping[str, str] | None = None, *, agent: str = AGENT_CLAUDE
+    env: MutableMapping[str, str] | None = None, *, agent: str
 ) -> bool:
     """Whether the first prompt is routed. Subagent-only wins over the full V2 flag."""
     source = resolve_environment(env, agent=agent)
@@ -179,17 +179,17 @@ def first_prompt_routing_enabled(
 
 
 def enable_smart_routing(
-    env: MutableMapping[str, str] | None = None,
+    env: MutableMapping[str, str] | None = None, *, agent: str
 ) -> dict[str, str | None]:
     """Set the full smart-routing env var and return the prior value of every routing var."""
-    return override_smart_routing(True, env)
+    return override_smart_routing(True, env, agent=agent)
 
 
 def override_smart_routing(
     enabled: bool,
     env: MutableMapping[str, str] | None = None,
     *,
-    agent: str = AGENT_CLAUDE,
+    agent: str,
 ) -> dict[str, str | None]:
     """Set an explicit launch-scoped routing choice and return the prior values."""
     target = os.environ if env is None else env
@@ -366,7 +366,7 @@ def _request_claude_routing_decision(
         available.setdefault(_claude_router_model_id(model), model)
     if not available:
         return None, "Anthropic models endpoint returned no Claude models"
-    route_options = [(model, "claude") for model in available]
+    route_options = [(model, AGENT_CLAUDE) for model in available]
     return routing.select_route(
         workspace,
         token,
@@ -429,7 +429,7 @@ def route_claude_pre_tool_use(
             route.routed_model,
         )
     agent_name = claude_routing.SUBAGENT_NOTICE_CONFIG.name(route.tool_input) or "subagent"
-    if orchestrator.enabled():
+    if orchestrator.enabled(agent=AGENT_CLAUDE):
         agent_name += " [orchestrator on]"
     routing_message = claude_routing.SUBAGENT_NOTICE_CONFIG.message(
         route.decision,
@@ -530,7 +530,7 @@ def launch_claude(
         )
     model_ids = catalog.model_ids
 
-    route_first_prompt = first_prompt_routing_enabled()
+    route_first_prompt = first_prompt_routing_enabled(agent=AGENT_CLAUDE)
     # TODO: Restore first-prompt routing on Windows after replacing the Unix-only PTY wrapper:
     # https://databricks.atlassian.net/browse/AIGTWY-4385
     if route_first_prompt and os.name == "nt":
@@ -547,7 +547,9 @@ def launch_claude(
     if not isinstance(env, dict):
         raise RuntimeError("Claude settings 'env' must be an object for smart routing.")
     env.pop("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", None)
-    env[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] = "1" if orchestrator.feature_enabled() else "0"
+    env[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] = (
+        "1" if orchestrator.feature_enabled(agent=AGENT_CLAUDE) else "0"
+    )
     if route_first_prompt:
         env[ENABLE_SMART_ROUTING_ENV_VAR] = "1"
     else:
@@ -563,7 +565,7 @@ def launch_claude(
     sync_smart_routing_hooks(settings, routing_state, enabled=True)
     if route_first_prompt:
         sync_first_prompt_hook(settings, hook_executable)
-    orchestrator.sync_hooks(settings, agent="claude")
+    orchestrator.sync_hooks(settings, agent=AGENT_CLAUDE)
     model_setting = _ClaudeModelSettingGuard(user_settings_path)
 
     def route_prompt(prompt: str) -> claude_pty.FirstPromptRoute:
@@ -583,7 +585,7 @@ def launch_claude(
             plugin_dir = launch_dir / "plugin"
             if route_first_prompt:
                 env[FIRST_PROMPT_SOCKET_ENV] = str(socket_path)
-            session_path = _prepare_smart_router_session("claude")
+            session_path = _prepare_smart_router_session(AGENT_CLAUDE)
             env[SESSION_ENV_VAR] = str(session_path)
             env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
             try:
@@ -636,7 +638,7 @@ def _v2_hooks(state: dict, available_models: list[str]) -> dict:
             "PreToolUse": merge_pre_tool_use_hooks([], state, available_models=available_models),
         }
     }
-    orchestrator.sync_hooks(doc, agent="codex")
+    orchestrator.sync_hooks(doc, agent=AGENT_CODEX)
     return doc["hooks"]
 
 
@@ -680,7 +682,7 @@ def launch_codex(
         overlay["model_catalog_json"] = str(catalog_path)
     overlay["hooks"] = _v2_hooks(state, available_models)
     overlay["features.hooks"] = True
-    session_env_path = _prepare_smart_router_session("codex")
+    session_env_path = _prepare_smart_router_session(AGENT_CODEX)
     # Codex constructs tool subprocess environments through its shell policy.
     # Pass both the session marker and its launching interpreter through that policy.
     overlay[f"shell_environment_policy.set.{SESSION_ENV_VAR}"] = str(session_env_path)

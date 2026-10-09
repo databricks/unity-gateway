@@ -770,7 +770,7 @@ def _setup_single_agent(
     state = states[0]
     parent_schema = None
     managed = None
-    if apply_managed and tool in ("claude", "codex"):
+    if apply_managed and tool in (AGENT_CLAUDE, AGENT_CODEX):
         managed, _ = refresh_managed_config(state, force_refresh=True)
         _reject_disabled_agent(managed, tool)
         if managed is not None:
@@ -783,7 +783,7 @@ def _setup_single_agent(
     if apply_managed and not managed_enabled_tools(managed or {}):
         state = _record_unmanaged_configured_agents(state, [tool])
     install_databricks_ai_tools_for_agents(
-        [tool], state, force_refresh=tool not in ("claude", "codex")
+        [tool], state, force_refresh=tool not in (AGENT_CLAUDE, AGENT_CODEX)
     )
     spec = TOOL_SPECS[tool]
     provider_summary = "Databricks" if parent_schema else _provider_summary(tool, state)
@@ -828,7 +828,7 @@ def _maybe_select_provider_service(tool: str, state: dict) -> dict:
     No-op for tools other than claude/codex/gemini. Falls back to Databricks when no
     matching provider services are found or the listing fails.
     """
-    if tool not in ("claude", "codex", "gemini"):
+    if tool not in (AGENT_CLAUDE, AGENT_CODEX, "gemini"):
         return state
     display = TOOL_SPECS[tool]["display"]
 
@@ -960,7 +960,7 @@ def _configure_workspace_command(
             resolved = resolve_state(managed, state, tool_name)
             parent_schema = (
                 managed_unity_catalog_location(managed, tool_name)
-                if tool_name in ("claude", "codex")
+                if tool_name in (AGENT_CLAUDE, AGENT_CODEX)
                 and not managed_provider_service(managed, tool_name)
                 else None
             )
@@ -1121,7 +1121,7 @@ def _status_models(tool: str, state: dict) -> list[str]:
     static_models = _model_values(state.get(f"{tool}_static_models"))
     if static_models:
         models = static_models
-    elif tool in ("claude", "codex", "gemini", "opencode"):
+    elif tool in (AGENT_CLAUDE, AGENT_CODEX, "gemini", "opencode"):
         models = _model_values(state.get(f"{tool}_models"))
     elif tool == "copilot":
         models = _model_values(state.get("copilot_models")) or (
@@ -1294,7 +1294,7 @@ def status() -> int:
         default_model = _status_default_model(tool, effective_state, models)
         if default_model:
             rows.append(("Default model", default_model))
-        if tool in ("claude", "codex"):
+        if tool in (AGENT_CLAUDE, AGENT_CODEX):
             rows.append(
                 (
                     "Tracing",
@@ -2281,7 +2281,7 @@ def codex_router_hook_cmd(
     import sys
 
     if not smart_routing_v2.smart_routing_enabled(
-        effective_environment(agent=AGENT_CODEX), agent=AGENT_CODEX
+        effective_environment(agent=AGENT_CODEX), default=False, agent=AGENT_CODEX
     ):
         return
 
@@ -2362,7 +2362,7 @@ def claude_router_hook_cmd(
     import sys
 
     if not smart_routing_v2.smart_routing_enabled(
-        effective_environment(agent=AGENT_CLAUDE), agent=AGENT_CLAUDE
+        effective_environment(agent=AGENT_CLAUDE), default=False, agent=AGENT_CLAUDE
     ):
         return
 
@@ -2476,7 +2476,7 @@ def _auto_configure_tool(tool: str, custom_oauth: CustomOAuthConfig | None = Non
     )
 
 
-CAN_USE_CACHED_CONFIG_AGENTS = frozenset({"claude", "codex"})
+CAN_USE_CACHED_CONFIG_AGENTS = frozenset({AGENT_CLAUDE, AGENT_CODEX})
 
 
 @contextmanager
@@ -2735,9 +2735,9 @@ def _child_owns_stdout(tool: str, tool_args: list[str]) -> bool:
     """
     if "--" in tool_args:
         tool_args = tool_args[: tool_args.index("--")]
-    if tool == "claude":
+    if tool == AGENT_CLAUDE:
         return any(arg in {"-p", "--print"} for arg in tool_args)
-    return tool == "codex" and any(arg in {"exec", "e", "app-server"} for arg in tool_args)
+    return tool == AGENT_CODEX and any(arg in {"exec", "e", "app-server"} for arg in tool_args)
 
 
 def _should_launch_smart_routing(
@@ -2756,7 +2756,7 @@ def _smart_routing_launch_shape(tool: str, tool_args: list[str], explicit_prompt
     """Whether the forwarded arguments represent an interactive launch."""
     if not tool_args or explicit_prompt:
         return True
-    return tool == "claude" and tool_args[0].startswith("-")
+    return tool == AGENT_CLAUDE and tool_args[0].startswith("-")
 
 
 def _launch_options(
@@ -2823,7 +2823,7 @@ def _launch_tool(
         # `--model` lands in ctx.args instead of a ucode option. It still determines the effective
         # launch model and should therefore win in the launch summary.
         forwarded_model = (
-            explicit_model_arg_value(ctx.args) if tool in {"claude", "codex"} else None
+            explicit_model_arg_value(ctx.args) if tool in {AGENT_CLAUDE, AGENT_CODEX} else None
         )
         # `--model` is exposed by the claude and gemini launch commands. Under a provider it selects
         # which of the service's targets/tiers to launch on, rather than being rejected — see the
@@ -2905,7 +2905,7 @@ def _launch_tool(
         managed_provider = managed_provider_service(managed or {}, tool)
         managed_parent_schema = (
             managed_unity_catalog_location(managed or {}, tool)
-            if tool in {"claude", "codex"} and not managed_provider
+            if tool in {AGENT_CLAUDE, AGENT_CODEX} and not managed_provider
             else None
         )
         if managed_provider:
@@ -2919,13 +2919,13 @@ def _launch_tool(
         # Unmanaged Claude launches discover gateway models automatically; with no
         # provider or parent header the gateway defaults to system.ai. Managed
         # configs opt into discovery by selecting an MPS or Unity Catalog location.
-        if tool == "claude" and (managed is None or managed_provider or managed_parent_schema):
+        if tool == AGENT_CLAUDE and (managed is None or managed_provider or managed_parent_schema):
             os.environ[claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
         # The environment switch remains a developer override; managed config is the workspace
         # policy equivalent and must take effect before launch options are computed.
         managed_smart_routing_enabled = _managed_smart_routing_enabled(managed, tool)
         smart_routing_enabled = smart_routing_v2.smart_routing_enabled(
-            default=managed_smart_routing_enabled
+            None, default=managed_smart_routing_enabled, agent=tool
         )
         # Discovery exists to find models and isn't needed for managed config that already names them.
         managed_models_known = managed_supplies_models(managed, tool)
@@ -2986,7 +2986,7 @@ def _launch_tool(
         relayed = False
         coding_agent_config_defaults = (
             managed_claude_family_models(managed) or {}
-            if tool == "claude" and managed is not None
+            if tool == AGENT_CLAUDE and managed is not None
             else {}
         )
         if provider and tool != "gemini":
@@ -3005,7 +3005,7 @@ def _launch_tool(
             # re-derivation (see resolve_provider_models). Only when the manifest actually selected
             # this provider for claude, and authored something to pin.
             if (
-                tool == "claude"
+                tool == AGENT_CLAUDE
                 and managed is not None
                 and provider == managed_provider_service(managed, tool)
             ):
@@ -3015,7 +3015,7 @@ def _launch_tool(
                     coding_agent_config_defaults = authored
         # Managed defaults choose models without limiting the selected source's catalog.
         should_fetch_claude_picker_catalog = (
-            tool == "claude"
+            tool == AGENT_CLAUDE
             and not relayed
             and (
                 bool(managed_parent_schema or managed_provider)
@@ -3050,19 +3050,19 @@ def _launch_tool(
             resolved_model = None
             managed_source_model = (
                 managed_launch_model(managed or {}, recommendation, tool)
-                if tool == "claude" and (managed_provider or managed_parent_schema)
+                if tool == AGENT_CLAUDE and (managed_provider or managed_parent_schema)
                 else None
             )
-            if tool == "claude" and managed_parent_schema:
+            if tool == AGENT_CLAUDE and managed_parent_schema:
                 # Native discovery supplies the catalog, but the managed policy still controls
                 # which model Claude starts on.
                 route_root_model = managed_source_model
             provider_launch_model = model
-            if tool == "claude" and managed_provider:
+            if tool == AGENT_CLAUDE and managed_provider:
                 # A CLI model still wins, followed by the budget recommendation and the managed
                 # default. Unmanaged providers retain their existing target-selection behavior.
                 provider_launch_model = provider_launch_model or managed_source_model
-            if provider and tool == "claude" and (provider_launch_model or provider_models):
+            if provider and tool == AGENT_CLAUDE and (provider_launch_model or provider_models):
                 if relayed:
                     # Resolve against a curated allowlist so the forwarded id is one the gateway
                     # allows; an allow_all relay declares none, so forward as-is.
@@ -3094,16 +3094,16 @@ def _launch_tool(
             # pinned as ANTHROPIC_MODEL (route_root_model); other agents take `resolved_model`,
             # which already holds it from resolve_launch_model above.
             if managed_model:
-                if tool == "claude":
+                if tool == AGENT_CLAUDE:
                     route_root_model = managed_model
                 else:
                     resolved_model = managed_model
             # An explicit `--model` is the user's own choice and outranks everything above (managed
             # default, smart-routing pick). Non-claude agents take it as the resolved model, which
             # Codex keeps an explicit --model in ctx.args and passes it to its CLI verbatim.
-            if model and tool != "claude":
+            if model and tool != AGENT_CLAUDE:
                 resolved_model = model
-        if model and tool == "claude" and not provider:
+        if model and tool == AGENT_CLAUDE and not provider:
             route_root_model = None
         if coding_agent_config_defaults and not state.get("claude_static_models") and not relayed:
             picker_catalog = claude_agent.default_model_picker_catalog(
@@ -3141,7 +3141,7 @@ def _launch_tool(
             refresh_downloaded_skills_on_launch(state)
         # Relayed = a Claude subscription: forward the model to Claude Code's own flag, like `-- --model X`.
         should_forward_relayed_model = (
-            tool == "claude"
+            tool == AGENT_CLAUDE
             and provider
             and relayed
             and relayed_forward_model
@@ -3167,10 +3167,10 @@ def _launch_tool(
             _print_budget_panel(recommendation, tool, managed)
         # The managed config's MCP servers and skills are both applied at `ug configure`, not here,
         # so the launch hot path makes no per-launch discovery calls for them.
-        if tool == "claude":
+        if tool == AGENT_CLAUDE:
             if provider:
                 state["_claude_launch_provider"] = provider
-        elif tool == "codex":
+        elif tool == AGENT_CODEX:
             if provider:
                 state["_codex_launch_provider"] = provider
             elif parent_schema:
@@ -3190,7 +3190,7 @@ def _launch_tool(
             True
             if managed_smart_routing_enabled
             and smart_routing_enabled
-            and not smart_routing_v2.smart_routing_enabled()
+            and not smart_routing_v2.smart_routing_enabled(None, default=False, agent=tool)
             else None,
             agent=tool,
         ):
@@ -3429,9 +3429,9 @@ def codex_cmd(
         print_err(str(exc))
         raise typer.Exit(1) from exc
     with _smart_routing_v2_flag(enable_smart_routing_flag, agent=AGENT_CODEX):
-        with _disable_smart_routing_for_subcommand("codex", ctx):
+        with _disable_smart_routing_for_subcommand(AGENT_CODEX, ctx):
             _launch_tool(
-                "codex",
+                AGENT_CODEX,
                 ctx,
                 provider=provider,
                 refresh=refresh,
@@ -3517,9 +3517,9 @@ def claude_cmd(
         print_err(str(exc))
         raise typer.Exit(1) from exc
     with _smart_routing_v2_flag(enable_smart_routing_flag, agent=AGENT_CLAUDE):
-        with _disable_smart_routing_for_subcommand("claude", ctx):
+        with _disable_smart_routing_for_subcommand(AGENT_CLAUDE, ctx):
             _launch_tool(
-                "claude",
+                AGENT_CLAUDE,
                 ctx,
                 provider=provider,
                 model=model,
