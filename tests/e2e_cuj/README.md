@@ -94,6 +94,10 @@ router's selected model. This tests requested delegation, not automatic orchestr
 Codex requires a matching completed turn and final parent answer, not just child notifications.
 Offline evidence regressions do not establish a live CUJ pass.
 Selector cases have separate TUI artifact names, and the session environment is restored afterward.
+Claude sessions start in auto mode; unless a routed first prompt switches the session to Haiku
+(which leaves it in manual mode), its classifier requests through the recording proxy trigger
+Claude's informational auto-mode classifier billing notice over the transcript. The CUJ terminal
+acknowledges that exact notice once with Enter (continue); any other dialog still fails.
 Each preset also runs public `ug revert` in cleanup, including after a failed assertion, so
 interactive launches' OS-managed settings cannot contaminate the next preset's configuration.
 The existing Claude explicit-model precedence case remains skipped; the routing-disabled case
