@@ -10,13 +10,32 @@ description: >-
 
 model: inherit
 argument-hint: "[task]"
+metadata:
+  version: "1.2.0"
 
 ---
 
 # Smart Router Orchestrator
 
+## Activation
+
+UG's prompt and compaction hooks activate this workflow only in an eligible
+smart-routing session launched with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1` while routing is on.
 Follow the latest UG activation context and successful Smart Router toggles;
-installed skill files and old context do not enable it.
+installed skill files and old context do not enable it. Use that context without
+running a separate pre-delegation check. Do not set flags or create a session to
+activate this workflow.
+
+Turning Smart Router off through its skill stops this workflow and supersedes
+earlier orchestration instructions. Do not start new automatic delegation or use
+Smart Router Orchestrator role models as a fallback. Continue in the root unless the user
+explicitly requests a subagent; honor that request using the native tool and normal harness
+model selection, without this workflow. Keep routing off
+and collect results from existing children. Turning Smart Router back on restores
+this workflow only if the session was launched with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`.
+Use the `smart-router` skill only when the user asks to change routing.
+
+## Workflow
 
 Follow user overrides. Keep the active root model and reasoning effort. The root
 owns the delegation choice, cross-deliverable integration, conflicts, and
@@ -176,3 +195,6 @@ respawning. Report unavailable models, tools, and substitutions.
 
 Finish with the concrete result, verification actually performed, and material
 remaining limitations. Do not claim cost or speed improvements without measurements.
+
+Use runtime evidence to identify the model that ran; submitting a delegation
+alone does not prove that its routing hook executed.
