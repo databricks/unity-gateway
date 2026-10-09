@@ -39,15 +39,27 @@ READ_ONLY_COMMANDS = {
     "test-path",
     "type",
 }
+# Pipeline stages that only filter or project: a property comparison or a property read.
+READ_ONLY_STAGE = re.compile(
+    r"(?i)(?:where-object|\?) \{ ?\$_\.\w+ -(?:eq|ne|like|match) '[^']*' ?\}"
+    r"|(?:foreach-object|%) \{ ?\$_\.\w+ ?\}"
+    r"|select-object(?: -(?:first|last) \d+| -expandproperty \w+)*"
+)
 
 
 def read_only_command(line: str) -> bool:
     """Whether a command shown in a Codex approval prompt only lists or reads files."""
     command = re.sub(r"^powershell(?:\.exe)? -NoProfile -Command\s+", "", line.strip(), flags=re.I)
     command = command.strip("\"'")
-    if not command or re.search(r"[;|&<>`]|\$\(", command):
+    if not command or re.search(r"[;&<>`]|\$\(", command):
         return False
-    return command.split()[0].lower() in READ_ONLY_COMMANDS
+    first, *stages = (stage.strip() for stage in command.split("|"))
+    return (
+        bool(first)
+        and first.split()[0].lower() in READ_ONLY_COMMANDS
+        and "{" not in first
+        and all(READ_ONLY_STAGE.fullmatch(stage) for stage in stages)
+    )
 
 
 class TerminalScreen(pyte.Screen):
