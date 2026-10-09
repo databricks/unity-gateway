@@ -62,7 +62,7 @@ def _routing_decisions(session, agent: str) -> list[dict]:
     return read_jsonl(session.home / ".ucode" / f"{agent}-smart-routing-decisions.jsonl")
 
 
-def _routing_banner_for_task(screen: str, marker: str) -> bool:
+def _routing_banner_for_task(screen: str, marker: str, *, orchestrator_on: bool) -> bool:
     """Whether the rendered router panel belongs to this uniquely tagged task."""
     lines = screen.splitlines()
     for index, line in enumerate(lines):
@@ -75,19 +75,33 @@ def _routing_banner_for_task(screen: str, marker: str) -> bool:
                 break
         # Rich can wrap the marker between any two characters in a narrow TUI.
         # Compare without rendered whitespace so the banner remains attributable.
-        if marker in "".join("\n".join(panel).split()):
+        text = "".join("\n".join(panel).split())
+        if marker in text and (not orchestrator_on or "[orchestratoron]" in text):
             return True
     return False
 
 
-def _run_calculation(tui, session, agent: str, expression: str, expected: str, *, routed: bool):
+def _run_calculation(
+    tui,
+    session,
+    agent: str,
+    expression: str,
+    expected: str,
+    orchestration_enabled: bool,
+    *,
+    routed: bool,
+):
     task = SubagentCalculation(expression, expected)
     before = _routing_decisions(session, agent)
     tui.submit(task.prompt)
 
     if routed:
         tui.wait_for(
-            lambda screen: _routing_banner_for_task(screen, task.marker),
+            lambda screen: _routing_banner_for_task(
+                screen,
+                task.marker,
+                orchestrator_on=orchestration_enabled,
+            ),
             f"the Smart Router subagent banner for {task.marker}",
             timeout=120,
         )
@@ -98,7 +112,9 @@ def _run_calculation(tui, session, agent: str, expression: str, expected: str, *
     after = _routing_decisions(session, agent)
     new_decisions = after[len(before) :]
     if not routed:
-        assert not _routing_banner_for_task(tui.visible, task.marker), tui.visible
+        assert not _routing_banner_for_task(tui.visible, task.marker, orchestrator_on=False), (
+            tui.visible
+        )
         assert not new_decisions, new_decisions
         return
 
@@ -113,7 +129,9 @@ def _run_calculation(tui, session, agent: str, expression: str, expected: str, *
     )
 
 
-def _toggle_with_skill(tui, session, agent: str, enabled: bool) -> None:
+def _toggle_with_skill(
+    tui, session, agent: str, enabled: bool, orchestration_enabled: bool
+) -> None:
     skill_root = session.home / SKILL_ROOTS[agent]
     ignored_skills = {".system"} if agent == "codex" else set()
     installed_skills = sorted(
@@ -122,9 +140,7 @@ def _toggle_with_skill(tui, session, agent: str, enabled: bool) -> None:
         if path.is_dir() and path.name not in ignored_skills
     )
     expected_skills = (
-        ["smart-router", "smart-router-orchestrator"]
-        if session.env.get("ENABLE_SMART_ROUTER_ORCHESTRATOR") == "1"
-        else ["smart-router"]
+        ["smart-router", "smart-router-orchestrator"] if orchestration_enabled else ["smart-router"]
     )
     assert installed_skills == expected_skills, installed_skills
 
@@ -138,6 +154,7 @@ def _toggle_with_skill(tui, session, agent: str, enabled: bool) -> None:
         else {
             "ENABLE_SMART_ROUTING_V2": "0",
             "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0",
+            "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
         }
     )
     assert json.loads(controls[0].read_text()) != expected
@@ -189,9 +206,28 @@ def _toggle_with_skill(tui, session, agent: str, enabled: bool) -> None:
 
 @pytest.mark.live
 @pytest.mark.claude
-def test_smart_routing_claude_route_subagent_hook(live_session, workspace):
-    """Scenario: with subagent-only routing enabled, Claude Code fires PreToolUse for an
-    Agent spawn, piping the payload to ``ug claude-router-hook route-subagent``.
+@pytest.mark.parametrize(
+    "SMART_ROUTER_CONFIG_VERSION",
+    [
+        None,
+        "first_prompt_and_subagent_no_orch_v0",
+        "subagent_only_v0",
+        "subagent_only_v1",
+        "subagent_orch_v0",
+    ],
+    ids=[
+        "legacy-env",
+        "first_prompt_and_subagent_no_orch_v0",
+        "subagent_only_v0",
+        "subagent_only_v1",
+        "subagent_orch_v0",
+    ],
+)
+def test_smart_routing_claude_route_subagent_hook(
+    live_session, workspace, SMART_ROUTER_CONFIG_VERSION
+):
+    """Scenario: legacy subagent routing or each supported selector makes Claude Code fire
+    PreToolUse for an Agent spawn, piping the payload to ``ug claude-router-hook route-subagent``.
 
     Expected: the hook allows the call against the real workspace router, drops the
     requested model in favor of a ``ucode-route-`` agent definition while preserving the
@@ -199,7 +235,10 @@ def test_smart_routing_claude_route_subagent_hook(live_session, workspace):
     hook contract is asserted; no agent decides to spawn.
     """
     session = live_session
-    session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
+    if SMART_ROUTER_CONFIG_VERSION is None:
+        session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
+    else:
+        session.env["SMART_ROUTER_CONFIG_VERSION"] = SMART_ROUTER_CONFIG_VERSION
     payload = {
         "session_id": "claude-route-subagent-hook",
         "tool_name": "Agent",
@@ -243,9 +282,28 @@ def test_smart_routing_claude_route_subagent_hook(live_session, workspace):
 
 @pytest.mark.live
 @pytest.mark.codex
-def test_smart_routing_codex_route_subagent_hook(live_session, workspace):
-    """Scenario: with subagent-only routing enabled, Codex fires PreToolUse for a
-    spawn_agent call, piping the payload to ``ug codex-router-hook route-subagent``.
+@pytest.mark.parametrize(
+    "SMART_ROUTER_CONFIG_VERSION",
+    [
+        None,
+        "first_prompt_and_subagent_no_orch_v0",
+        "subagent_only_v0",
+        "subagent_only_v1",
+        "subagent_orch_v0",
+    ],
+    ids=[
+        "legacy-env",
+        "first_prompt_and_subagent_no_orch_v0",
+        "subagent_only_v0",
+        "subagent_only_v1",
+        "subagent_orch_v0",
+    ],
+)
+def test_smart_routing_codex_route_subagent_hook(
+    live_session, workspace, SMART_ROUTER_CONFIG_VERSION
+):
+    """Scenario: legacy subagent routing or each supported selector makes Codex fire PreToolUse
+    for a spawn_agent call, piping the payload to ``ug codex-router-hook route-subagent``.
 
     Expected: the hook allows the call against the real workspace router, rewrites the
     requested model to the bundled catalog slug of an offered model while preserving the
@@ -253,7 +311,10 @@ def test_smart_routing_codex_route_subagent_hook(live_session, workspace):
     hook contract is asserted; no agent decides to spawn.
     """
     session = live_session
-    session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
+    if SMART_ROUTER_CONFIG_VERSION is None:
+        session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
+    else:
+        session.env["SMART_ROUTER_CONFIG_VERSION"] = SMART_ROUTER_CONFIG_VERSION
     payload = {
         "session_id": "codex-route-subagent-hook",
         "tool_name": "spawn_agent",
@@ -297,29 +358,47 @@ def test_smart_routing_codex_route_subagent_hook(live_session, workspace):
 @pytest.mark.claude
 @pytest.mark.managed_fixture
 @pytest.mark.parametrize(
-    "orchestration_enabled", [False, True], ids=["routing-only", "orchestration"]
+    "orchestration_enabled, SMART_ROUTER_CONFIG_VERSION",
+    [
+        (False, None),
+        (True, None),
+        (False, "subagent_only_v0"),
+        (False, "subagent_only_v1"),
+        (True, "subagent_orch_v0"),
+    ],
+    ids=[
+        "routing-only",
+        "orchestration",
+        "subagent_only_v0",
+        "subagent_only_v1",
+        "subagent_orch_v0",
+    ],
 )
 def test_smart_router_skill_toggles_claude_subagent_routing(
-    live_session, workspace, tmp_path, orchestration_enabled
+    live_session, workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
 ):
-    """Scenario: launch Claude with subagent routing enabled and orchestration unset
-    or opted in through ENABLE_SMART_ROUTER_ORCHESTRATOR=1, spawn a child, invoke the
-    installed Smart Router skill to turn routing off, spawn another child, turn routing
+    """Scenario: launch Claude with the legacy flags or a subagent selector, spawn a child, invoke
+    the installed Smart Router skill to turn routing off, spawn another child, turn routing
     back on through the skill, and spawn a third child in the same real TUI session.
 
-    Expected: only Smart Router is installed by default; opting in also installs smart-router-orchestrator.
-    Each invocation records the CLI confirmation in the native transcript and changes the saved
-    routing controls, even with collapsed terminal output; all three uniquely tagged
-    calculations complete in native child sessions; only the first and third show the
-    subagent-routing banner and produce live gateway decisions correlated with those children.
-    No first-prompt routing wrapper starts.
+    Expected: routing-only cases install Smart Router; enabling orchestration also installs
+    Smart Router Orchestrator. Each invocation records the CLI
+    confirmation in the native transcript and changes the saved routing controls, even with
+    collapsed terminal output; all three uniquely tagged calculations complete in native child
+    sessions; only the first and third show the subagent-routing banner and produce live gateway
+    decisions correlated with those children. Claude's native task view reports no running
+    tasks before /exit is submitted. No first-prompt routing wrapper starts.
+    With orchestration enabled, both routed banners must include [orchestrator on].
     """
     session = live_session
     session.env["TMPDIR"] = str(tmp_path)
-    session.env["ENABLE_SMART_ROUTING_V2"] = "1"
-    session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
-    if orchestration_enabled:
-        session.env["ENABLE_SMART_ROUTER_ORCHESTRATOR"] = "1"
+    if SMART_ROUTER_CONFIG_VERSION is None:
+        session.env["ENABLE_SMART_ROUTING_V2"] = "1"
+        session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
+        if orchestration_enabled:
+            session.env["ENABLE_SMART_ROUTER_ORCHESTRATOR"] = "1"
+    else:
+        session.env["SMART_ROUTER_CONFIG_VERSION"] = SMART_ROUTER_CONFIG_VERSION
     use_managed_config_fixture(session, "claude_smart_routing")
     session.run(
         "configure",
@@ -333,11 +412,24 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
         session, "claude", [str(session.binary), "claude"], "smart-router-skill-toggle"
     ) as tui:
         tui.boot()
-        _run_calculation(tui, session, "claude", "1+1", "2", routed=True)
-        _toggle_with_skill(tui, session, "claude", enabled=False)
-        _run_calculation(tui, session, "claude", "1+2", "3", routed=False)
-        _toggle_with_skill(tui, session, "claude", enabled=True)
-        _run_calculation(tui, session, "claude", "2+2", "4", routed=True)
+        _run_calculation(tui, session, "claude", "1+1", "2", orchestration_enabled, routed=True)
+        _toggle_with_skill(
+            tui,
+            session,
+            "claude",
+            enabled=False,
+            orchestration_enabled=orchestration_enabled,
+        )
+        _run_calculation(tui, session, "claude", "1+2", "3", False, routed=False)
+        _toggle_with_skill(
+            tui,
+            session,
+            "claude",
+            enabled=True,
+            orchestration_enabled=orchestration_enabled,
+        )
+        _run_calculation(tui, session, "claude", "2+2", "4", orchestration_enabled, routed=True)
+        tui.wait_for_background_tasks()
         tui.exit_normally()
         transcript = "".join(tui.output)
     assert SMART_ROUTING_BANNER not in transcript, transcript
@@ -350,29 +442,46 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
 @pytest.mark.codex
 @pytest.mark.managed_fixture
 @pytest.mark.parametrize(
-    "orchestration_enabled", [False, True], ids=["routing-only", "orchestration"]
+    "orchestration_enabled, SMART_ROUTER_CONFIG_VERSION",
+    [
+        (False, None),
+        (True, None),
+        (False, "subagent_only_v0"),
+        (False, "subagent_only_v1"),
+        (True, "subagent_orch_v0"),
+    ],
+    ids=[
+        "routing-only",
+        "orchestration",
+        "subagent_only_v0",
+        "subagent_only_v1",
+        "subagent_orch_v0",
+    ],
 )
 def test_smart_router_skill_toggles_codex_subagent_routing(
-    live_session, workspace, tmp_path, orchestration_enabled
+    live_session, workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
 ):
-    """Scenario: launch Codex with subagent routing enabled and orchestration unset
-    or opted in through ENABLE_SMART_ROUTER_ORCHESTRATOR=1, spawn a child, invoke the
-    installed Smart Router skill to turn routing off, spawn another child, turn routing
+    """Scenario: launch Codex with the legacy flags or a subagent selector, spawn a child, invoke
+    the installed Smart Router skill to turn routing off, spawn another child, turn routing
     back on through the skill, and spawn a third child in the same real TUI session.
 
-    Expected: only Smart Router is installed by default; opting in also installs smart-router-orchestrator.
-    Each invocation records the CLI confirmation in the native transcript and changes the saved
-    routing controls, even with collapsed terminal output; all three uniquely tagged
-    calculations complete in native child sessions; only the first and third show the
-    subagent-routing banner and produce live gateway decisions correlated with those children.
-    No first-prompt interposer starts.
+    Expected: routing-only cases install Smart Router; enabling orchestration also installs
+    Smart Router Orchestrator. Each invocation records the CLI
+    confirmation in the native transcript and changes the saved routing controls, even with
+    collapsed terminal output; all three uniquely tagged calculations complete in native child
+    sessions; only the first and third show the subagent-routing banner and produce live gateway
+    decisions correlated with those children. No first-prompt interposer starts.
+    With orchestration enabled, both routed banners must include [orchestrator on].
     """
     session = live_session
     session.env["TMPDIR"] = str(tmp_path)
-    session.env["ENABLE_SMART_ROUTING_V2"] = "1"
-    session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
-    if orchestration_enabled:
-        session.env["ENABLE_SMART_ROUTER_ORCHESTRATOR"] = "1"
+    if SMART_ROUTER_CONFIG_VERSION is None:
+        session.env["ENABLE_SMART_ROUTING_V2"] = "1"
+        session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
+        if orchestration_enabled:
+            session.env["ENABLE_SMART_ROUTER_ORCHESTRATOR"] = "1"
+    else:
+        session.env["SMART_ROUTER_CONFIG_VERSION"] = SMART_ROUTER_CONFIG_VERSION
     use_managed_config_fixture(session, "codex_smart_routing")
     session.run(
         "configure",
@@ -386,11 +495,23 @@ def test_smart_router_skill_toggles_codex_subagent_routing(
         session, "codex", [str(session.binary), "codex"], "smart-router-skill-toggle"
     ) as tui:
         tui.boot()
-        _run_calculation(tui, session, "codex", "1+1", "2", routed=True)
-        _toggle_with_skill(tui, session, "codex", enabled=False)
-        _run_calculation(tui, session, "codex", "1+2", "3", routed=False)
-        _toggle_with_skill(tui, session, "codex", enabled=True)
-        _run_calculation(tui, session, "codex", "2+2", "4", routed=True)
+        _run_calculation(tui, session, "codex", "1+1", "2", orchestration_enabled, routed=True)
+        _toggle_with_skill(
+            tui,
+            session,
+            "codex",
+            enabled=False,
+            orchestration_enabled=orchestration_enabled,
+        )
+        _run_calculation(tui, session, "codex", "1+2", "3", False, routed=False)
+        _toggle_with_skill(
+            tui,
+            session,
+            "codex",
+            enabled=True,
+            orchestration_enabled=orchestration_enabled,
+        )
+        _run_calculation(tui, session, "codex", "2+2", "4", orchestration_enabled, routed=True)
         tui.exit_normally()
         transcript = "".join(tui.output)
     assert SMART_ROUTING_BANNER not in transcript, transcript

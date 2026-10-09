@@ -18,7 +18,7 @@ from ucode.ui import normalize_workspace_url
 
 # The integration suite has its own configuration and subprocess-only fixtures.
 # Run it through scripts/run_integration.py, outside this fixture hierarchy.
-collect_ignore = ["integration", "e2e_cuj"]
+collect_ignore = ["integration", "e2e_cuj", "native_claude"]
 
 
 @pytest.fixture(autouse=True)
@@ -74,6 +74,8 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     # header-rendering tests. Clear them so routing stays off unless a test opts in.
     monkeypatch.delenv("ENABLE_SMART_ROUTING_V2", raising=False)
     monkeypatch.delenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", raising=False)
+    monkeypatch.delenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", raising=False)
+    monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
     monkeypatch.delenv("SMART_ROUTER_NAME", raising=False)
     # On Windows, resolve_command swaps a bare program name for whatever `shutil.which`
     # finds on the developer's PATH (e.g. a real `codex.CMD`). Rebind only the compatibility

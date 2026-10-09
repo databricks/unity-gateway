@@ -271,6 +271,10 @@ class TestV2Launch:
             captured["argv"] = argv
             plugin_dir = Path(argv[argv.index("--plugin-dir") + 1])
             captured["plugin_models"] = _plugin_agent_models(plugin_dir)
+            assert json.loads((plugin_dir / "hooks/hooks.json").read_text()) == {
+                "modules": ["./register.ts"]
+            }
+            assert (plugin_dir / "hooks/register.ts").is_file()
             assert "--agents" not in argv
             captured["routed_model"] = kwargs["route_prompt"]("fix the parser")
             generated = Path(argv[argv.index("--settings") + 1])
@@ -468,6 +472,10 @@ class TestV2Launch:
                 plugin_dir = Path(argv[argv.index("--plugin-dir") + 1])
                 captured["plugin_dir"] = plugin_dir
                 captured["plugin_models"] = _plugin_agent_models(plugin_dir)
+                assert json.loads((plugin_dir / "hooks/hooks.json").read_text()) == {
+                    "modules": ["./register.ts"]
+                }
+                assert (plugin_dir / "hooks/register.ts").is_file()
 
             def wait(self):
                 return 4
