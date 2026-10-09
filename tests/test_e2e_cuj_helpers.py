@@ -212,7 +212,8 @@ time.sleep(30)
 
 @requires_pty
 @pytest.mark.parametrize(
-    "view", ["empty", "completed", "running", "mixed", "scheduled", "partial", "transcript"]
+    "view",
+    ["empty", "completed", "resumed", "running", "mixed", "scheduled", "partial", "transcript"],
 )
 def test_claude_waits_for_background_task_completion_before_exit(tmp_path, view):
     """An offline terminal fixture requires /tasks, completion, Escape, then /exit."""
@@ -244,11 +245,13 @@ def test_claude_waits_for_background_task_completion_before_exit(tmp_path, view)
         ),
         "transcript": ("Background\n\n  Completed (1)\n✔ ug_subagent_one   done · Sonnet 5\n\n❯"),
     }
-    complete = view in ("empty", "completed")
+    views["resumed"] = views["mixed"]
+    complete = view in ("empty", "completed", "resumed")
     script = tmp_path / "ug"
     script.write_text(
         f"""#!{sys.executable}
 import sys
+import select
 import termios
 import time
 import tty
@@ -260,6 +263,10 @@ time.sleep(0.8)
 previous = termios.tcgetattr(sys.stdin.fileno())
 tty.setraw(sys.stdin.fileno())
 print("\\x1b[2J\\x1b[H" + {views[view]!r}.replace("\\n", "\\r\\n"), flush=True)
+if {view == "resumed"!r}:
+    time.sleep(0.8)
+    assert not select.select([sys.stdin], [], [], 0)[0], "Exited with a resumed child running"
+    print("\\x1b[2J\\x1b[H" + {views["completed"]!r}.replace("\\n", "\\r\\n"), flush=True)
 assert sys.stdin.read(1) == "\\x1b"
 termios.tcsetattr(sys.stdin.fileno(), termios.TCSANOW, previous)
 print("\\x1b[2J\\x1b[H❯", flush=True)
@@ -279,6 +286,9 @@ assert sys.stdin.readline().strip() == "/exit"
                 if action["reason"] == "close the completed background-task view"
             )
             assert views[view].splitlines()[0] in close["screen_before"]
+            if view == "resumed":
+                assert "Running (1)" not in close["screen_before"]
+                assert "Completed (2)" in close["screen_before"]
         else:
             with pytest.raises(AssertionError, match="task view reporting no running tasks"):
                 tui.wait_for_background_tasks(timeout=2)

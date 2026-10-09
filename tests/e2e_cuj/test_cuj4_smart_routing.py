@@ -344,6 +344,8 @@ class TestCujSmartRouting(BaseCujTest):
                     assert canonical_model(inference.payload["model"]) == canonical_model(
                         selections[0]["route_option"]["model"]
                     )
+                    if agent == CLAUDE:
+                        tui.wait_for_background_tasks()
                     tui.exit_normally()
         finally:
             if previous is None:

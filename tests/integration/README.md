@@ -55,6 +55,8 @@ after Escape before typing `/exit`. Offline PTY checks reject active/scheduled t
 lists, and completed-task text outside the native menu.
 It neither stops tasks nor confirms an exit dialog. Process exit retains its 30-second
 timeout. Offline PTY checks cover this ordering.
+The shared wait also runs before CUJ4's Claude preset sessions exit, after delegated-task
+evidence is checked, because Claude can resume a child after its first completed answer.
 
 `TestChildStdoutLaunch` in `../test_cli.py` covers clean Claude print-mode and
 Codex exec/app-server stdout, early launch errors, and forwarding through ug's `--`.

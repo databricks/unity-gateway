@@ -103,6 +103,9 @@ before continuing. Later occurrences are handled the same way; any other dialog 
 Claude's native peer hand-back remains part of the parent's turn only when its sender matches
 a successful Agent spawn in that turn. The hand-back alone cannot satisfy completion: the
 parent must still produce its own final answer with the hidden value.
+After verifying the delegated task, Claude sessions also wait in the native `/tasks` view
+until no background work remains, including a child resumed after its initial answer.
+Only then does the test close the task view and submit `/exit`.
 Each preset also runs public `ug revert` in cleanup, including after a failed assertion, so
 interactive launches' OS-managed settings cannot contaminate the next preset's configuration.
 The existing Claude explicit-model precedence case remains skipped; the routing-disabled case
