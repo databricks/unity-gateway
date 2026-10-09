@@ -904,6 +904,9 @@ def _refresh_windows_path() -> None:
         if expanded and normalized not in known:
             new_entries.append(expanded)
             known.add(normalized)
+    if not new_entries:
+        return
+    # Writing renames the inherited `Path` to `PATH` for child processes, so only write on change.
     os.environ["PATH"] = os.pathsep.join([*new_entries, *entries])
     clear_databricks_cli_cache()
 
