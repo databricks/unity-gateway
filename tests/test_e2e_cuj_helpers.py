@@ -169,6 +169,54 @@ def test_wait_until_lets_on_screen_answer_an_expected_dialog(tmp_path):
         assert "allowed" in tui.visible
 
 
+@requires_pty
+@pytest.mark.parametrize("complete", [True, False])
+def test_claude_waits_for_background_task_completion_before_exit(tmp_path, complete):
+    """An offline terminal fixture requires /tasks, completion, Escape, then /exit."""
+    script = tmp_path / "ug"
+    script.write_text(
+        f"""#!{sys.executable}
+import sys
+import termios
+import time
+import tty
+
+print("❯", flush=True)
+assert sys.stdin.readline().strip() == "/tasks"
+print("Background tasks: scheduled task · Runs once in 1m", flush=True)
+if not {complete!r}:
+    time.sleep(30)
+    raise SystemExit(1)
+time.sleep(0.8)
+previous = termios.tcgetattr(sys.stdin.fileno())
+tty.setraw(sys.stdin.fileno())
+print("\\x1b[2J\\x1b[HNo tasks currently running", flush=True)
+assert sys.stdin.read(1) == "\\x1b"
+termios.tcsetattr(sys.stdin.fileno(), termios.TCSANOW, previous)
+print("\\x1b[2J\\x1b[H❯", flush=True)
+assert sys.stdin.readline().strip() == "/exit"
+"""
+    )
+    script.chmod(0o755)
+    session = UserSession(tmp_path, script, tmp_path / "artifacts", "token")
+    with Terminal(session, "waits-before-exit", [], agent=CLAUDE) as tui:
+        if complete:
+            tui.wait_for_background_tasks(timeout=5)
+            tui.exit_normally()
+            assert tui.child.exitstatus == 0
+            close = next(
+                action
+                for action in tui.actions
+                if action["reason"] == "close the completed background-task view"
+            )
+            assert "No tasks currently running" in close["screen_before"]
+        else:
+            with pytest.raises(AssertionError, match="task view reporting no running tasks"):
+                tui.wait_for_background_tasks(timeout=0.3)
+            assert not tui.ended
+            assert not any("/exit" in action["keys"] for action in tui.actions)
+
+
 def test_mcp_list_poll_retries_a_failed_probe_until_rows_match(monkeypatch):
     monkeypatch.setattr(poll_module.time, "sleep", lambda seconds: None)
     healthy = "\n".join(

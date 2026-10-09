@@ -352,7 +352,8 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
     confirmation in the native transcript and changes the saved routing controls, even with
     collapsed terminal output; all three uniquely tagged calculations complete in native child
     sessions; only the first and third show the subagent-routing banner and produce live gateway
-    decisions correlated with those children. No first-prompt routing wrapper starts.
+    decisions correlated with those children. Claude's native task view reports no running
+    tasks before /exit is submitted. No first-prompt routing wrapper starts.
     """
     session = live_session
     session.env["TMPDIR"] = str(tmp_path)
@@ -393,6 +394,7 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
             orchestration_enabled=orchestration_enabled,
         )
         _run_calculation(tui, session, "claude", "2+2", "4", routed=True)
+        tui.wait_for_background_tasks()
         tui.exit_normally()
         transcript = "".join(tui.output)
     assert SMART_ROUTING_BANNER not in transcript, transcript

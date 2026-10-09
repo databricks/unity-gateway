@@ -38,9 +38,10 @@ or construct ug state files. The normal test suite checks these boundaries.
 The existing unit tests keep their fixtures. Integration has an independent
 pytest configuration and uses `--confcutdir` so those fixtures cannot leak in.
 It is not collected by the default `uv run pytest` command.
-After `/exit`, the TUI driver waits up to 120 seconds for Claude to exit normally,
-allowing more time for background work. It does not confirm the background-work
-dialog. A dialog that remains open still fails on timeout; Codex retains its 30-second wait.
+The Claude subagent skill-toggle journey opens `/tasks` after its final calculation
+and waits up to 180 seconds for "No tasks currently running" before submitting `/exit`.
+It neither stops tasks nor confirms an exit dialog. Process exit retains its 30-second
+timeout. Offline PTY checks cover this ordering; a live 2.1.290 run is still required.
 
 `TestChildStdoutLaunch` in `../test_cli.py` covers clean Claude print-mode and
 Codex exec/app-server stdout, early launch errors, and forwarding through ug's `--`.

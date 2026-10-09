@@ -400,6 +400,21 @@ class AgentTerminal(TerminalProcess):
         )
         task.assert_completed(self.session, self.agent)
 
+    def wait_for_background_tasks(self, timeout=180):
+        """Wait in Claude's native task view without stopping or detaching work."""
+        assert self.agent == "claude", self.agent
+        self.submit("/tasks")
+        self.wait_for(
+            lambda text: re.search(r"(?m)^\s*No tasks currently running\s*$", text),
+            "Claude's task view reporting no running tasks",
+            timeout=timeout,
+        )
+        self.send("\x1b", "close the completed background-task view")
+        self.wait_for(
+            lambda text: "No tasks currently running" not in text,
+            "the prompt after closing the background-task view",
+        )
+
     def exit_normally(self):
         self.submit("/exit")
-        self.finish(timeout=120 if self.agent == "claude" else 30)
+        self.finish(timeout=30)
