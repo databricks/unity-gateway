@@ -989,3 +989,12 @@ class TestV2HeadlessClaude:
 
         assert prompts == ["fix the parser"]
         assert "--model" not in launched["argv"]
+
+
+def test_routing_hook_command_uses_windows_quoting_on_windows(monkeypatch):
+    import ucode.databricks as db_mod
+    from ucode.smart_routing import claude_hooks
+
+    monkeypatch.setattr(db_mod.platform, "system", lambda: "Windows")
+    hook = claude_hooks._routing_command_hook([r"C:\Program Files\ug.EXE", "route-subagent"])
+    assert hook["command"] == r'"C:\Program Files\ug.EXE" route-subagent'
