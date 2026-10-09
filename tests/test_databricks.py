@@ -2196,6 +2196,26 @@ class TestGetDatabricksToken:
         assert db_mod.has_valid_databricks_auth(WS)
         assert profile_log.read_text() == ""
 
+    def test_check_auth_returns_none_when_cli_cannot_run(self, tmp_path, monkeypatch):
+        env = self._fake_databricks(tmp_path, "sys.exit(0)")
+        monkeypatch.setattr("os.environ", env)
+
+        def denied(*args, **kwargs):
+            raise PermissionError(13, "Access is denied")
+
+        monkeypatch.setattr(db_mod, "run", denied)
+
+        assert db_mod.check_databricks_auth(WS) is None
+        assert db_mod.has_valid_databricks_auth(WS) is False
+
+    def test_check_auth_returns_false_when_cli_rejects_credentials(self, tmp_path, monkeypatch):
+        env = self._fake_databricks(
+            tmp_path, 'print("token expired", file=sys.stderr); sys.exit(1)'
+        )
+        monkeypatch.setattr("os.environ", env)
+
+        assert db_mod.check_databricks_auth(WS) is False
+
     def test_reauths_and_retries_when_token_empty(self, tmp_path, monkeypatch):
         call_count = tmp_path / "calls"
         call_count.write_text("0")

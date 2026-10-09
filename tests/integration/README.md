@@ -42,6 +42,11 @@ This suite runs the **installed product** through subprocesses, against the same
 patch application functions, substitute agent executables, run a fake gateway,
 or construct ug state files. The normal test suite checks these boundaries.
 
+The Claude mod entry point has separate native component checks in
+`../native_claude/test_mod.py`. Claude 2.1.290 validates the module and runs its
+TypeScript event-forwarding test in a dedicated CI job. These checks do not submit
+inference requests or replace this suite's live gateway/TUI journeys.
+
 The existing unit tests keep their fixtures. Integration has an independent
 pytest configuration and uses `--confcutdir` so those fixtures cannot leak in.
 It is not collected by the default `uv run pytest` command.
@@ -336,6 +341,8 @@ driver accepts only the exact requested toggle command through the native permis
 dialog; unexpected commands fail, and sandbox settings are not changed.
 Collapsed terminal output is allowed; the answer need not repeat the CLI's exact wording.
 Each following child still verifies whether a routing decision occurred.
+With orchestration enabled through legacy flags or a preset, both routed children
+must show `[orchestrator on]` in their own subagent banner.
 Their off-phase child is an explicit user-requested delegation;
 these journeys do not establish automatic orchestration behavior. Root-only
 activation, compaction, retained skills in ineligible sessions,
