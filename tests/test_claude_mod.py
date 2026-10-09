@@ -1,6 +1,7 @@
 """Generated plugin contents for the native Claude mod entry point."""
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -52,3 +53,9 @@ def test_launch_options_preserve_empty_and_absent_values():
         "unset": ["ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "ENABLE_SMART_ROUTER_ORCHESTRATOR"],
         "recipe": "task_v3",
     }
+
+
+def test_mod_setters_cover_every_registered_routing_flag():
+    source = Path(v2.__file__).parents[1] / "agents/claude_mods/register.ts"
+    names = set(re.findall(r"\$\.env\.set\('([^']+)'", source.read_text()))
+    assert names - {"CLAUDE_CODE_EXTRA_BODY"} == set(SMART_ROUTING_ENV_KEYS)

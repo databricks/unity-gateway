@@ -8,9 +8,16 @@ from `src/ucode/agents/claude_mods/` and writes `hooks/hooks.json` into that plu
 routing launches use this path, and the existing temporary-directory lifecycle
 cleans up the files when Claude exits.
 
-The initial `session.start` handler forwards the event to Claude. Smart Router
-request metadata and native `/smart-router on|off` behavior are added in the next
-PR in the stack.
+The mod merges the launch recipe into `CLAUDE_CODE_EXTRA_BODY` and intercepts the
+existing skill's `/smart-router on|off` command locally, without inference or command
+registration. Off sets every routing flag to `0` and the recipe to `DISABLED`; on
+restores the original flags and recipe, including originally absent variables.
+Unrelated request fields are preserved. A failed write attempts to restore prior values
+and reports failure; the native environment API does not provide an atomic transaction.
+
+The baseline comes from native plugin options and survives `/clear`, `/compact`, and
+plugin reloads. Toggles affect future requests and newly spawned hooks; already running
+child processes retain their inherited environment. No toggle writes settings or snapshots.
 
 The `Claude mod · 2.1.290` CI job validates the packaged module and runs its
 TypeScript event-forwarding test. To run those checks locally:
