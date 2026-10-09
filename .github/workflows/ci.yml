@@ -46,7 +46,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-server-latest]
+        os: ${{ fromJSON((github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '["ubuntu-latest", "windows-server-latest"]' || '["ubuntu-latest"]') }}
     defaults:
       run:
         shell: bash
@@ -115,7 +115,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-server-latest]
+        os: ${{ fromJSON((github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '["ubuntu-latest", "windows-server-latest"]' || '["ubuntu-latest"]') }}
         group: [gateway, claude, codex, gemini, opencode, copilot, pi]
         include:
           - group: gateway
