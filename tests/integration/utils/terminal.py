@@ -19,6 +19,23 @@ import pyte
 from .evidence import agent_sessions, assert_no_terminal_api_error
 
 
+def codex_command_approval_pending(screen: str, expected_command: str) -> bool:
+    prompt = "Would you like to run the following command?"
+    if prompt not in screen or "Press enter to confirm or esc to cancel" not in screen:
+        return False
+    dialog = screen.rsplit(prompt, 1)[1]
+    command = re.search(
+        r"(?ms)^[ \t]*\$ (.*?)\n[ \t]*[›❯>][ \t]*1\. Yes, proceed \(y\)[ \t]*$",
+        dialog,
+    )
+    assert (
+        "Environment: local" in dialog
+        and command is not None
+        and command.group(1).strip() == expected_command
+    ), "Codex requested an unexpected command approval:\n" + dialog
+    return True
+
+
 def _claude_background_task_menu(text):
     return re.search(
         r"(?ms)^[ \t]*Background[ \t]*\n(.*?)"

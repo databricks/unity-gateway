@@ -282,6 +282,7 @@ test_ug_claude_commands.py              # command help forwarding
 test_ug_codex_commands.py               # command help and parser error forwarding
 test_ug_codex_app_server.py             # actual client/server initialize exchange
 test_ug_smart_routing_hooks.py           # live hook contract plus skill-driven subagent toggles
+test_ug_codex_v2_routing.py              # native v2 parent/child assignment routing CUJ
 test_ug_configure_claude_lifecycle.py   # repeat setup, revert, rejected credentials
 test_ug_configure_claude_workspace_switch.py # real skills MCP cleanup across two workspaces
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
@@ -343,6 +344,9 @@ for routing-only cases, and both `smart-router-orchestrator` and `smart-router` 
 is enabled. They verify the saved session controls, a new CLI confirmation in the native
 tool-result records, and a new
 assistant answer after each skill invocation.
+Fresh remote Codex sessions can require approval to write the session controls. The
+driver accepts only the exact requested toggle command through the native permission
+dialog; unexpected commands fail, and sandbox settings are not changed.
 Collapsed terminal output is allowed; the answer need not repeat the CLI's exact wording.
 Each following child still verifies whether a routing decision occurred.
 With orchestration enabled through legacy flags or a preset, both routed children
@@ -474,6 +478,16 @@ bearer; no second workspace or extra secret is involved.
 The 14 retained numbered scenarios comprise 24 explicit journeys: 12 managed and 12 unmanaged
 executions; the complete integration suite collects 121 executions. See the named coverage and gaps matrix in
 [../README.md](../README.md).
+
+The native v2 CUJ uses a bundled v2 catalog and a user-owned observer hook to verify
+the exact assignment at the native call, PreToolUse, and router decision. It checks
+managed-provider selection and completion on the selected child model; it does not
+exercise compaction. Append
+`-- -k test_ug_codex_native_v2_plain_assignment_routing` to the version-pinned runner.
+A before/after comparison additionally needs fresh sessions with identical Codex, parent
+model, workspace, catalog, and prompt, capturing the provider spawn, hook, and router
+inputs. Only an actually encrypted baseline establishes the bug; a crash, missing
+spawn, or plaintext baseline is inconclusive. Encrypted-history resume is a separate check.
 
 ```bash
 # Append one of these selections to the runner command:

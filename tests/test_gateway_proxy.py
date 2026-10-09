@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import gzip
 import io
 import json
 import os
@@ -11,6 +12,7 @@ import threading
 import time
 
 import httpx
+import pytest
 
 from ucode import gateway_proxy
 
@@ -149,11 +151,11 @@ class _BrokenPipeWriter(io.RawIOBase):
         raise BrokenPipeError(32, "Broken pipe")
 
 
-def _relay_handler(wfile) -> gateway_proxy._ProxyHandler:
+def _relay_handler(wfile, handler_type=gateway_proxy._ProxyHandler) -> gateway_proxy._ProxyHandler:
     # Bypass BaseHTTPRequestHandler.__init__ (which would service a socket);
     # we only exercise _relay_response's write path. Set the few attributes the
     # send_response/send_header machinery reads (normally populated by __init__).
-    handler = object.__new__(gateway_proxy._ProxyHandler)
+    handler = object.__new__(handler_type)
     handler.wfile = wfile
     handler.request_version = "HTTP/1.1"
     handler.requestline = "POST /v1/messages HTTP/1.1"
@@ -499,6 +501,142 @@ class TestRetryOn401:
         assert cache.refreshed == 1  # a refresh was attempted
         assert "databricks auth login" in capsys.readouterr().err
         assert b"401" in bytes(out.data)  # the response is still relayed
+
+
+class _ResponseChunks(httpx.SyncByteStream):
+    def __init__(self, data):
+        self.data = data
+
+    def __iter__(self):
+        for offset in range(0, len(self.data), 7):
+            yield self.data[offset : offset + 7]
+
+
+class TestCodexV2Proxy:
+    @pytest.mark.parametrize(
+        "streaming,path,status",
+        [
+            (False, "/v1/responses", 200),
+            (True, "/v1/responses", 200),
+            (False, "/v1/responses/compact", 200),
+            (True, "/v1/models", 200),
+            (True, "/v1/responses", 503),
+        ],
+    )
+    def test_gzip_framing_auth_refresh_and_passthrough(self, streaming, path, status):
+        item = {
+            "type": "function_call",
+            "name": "spawn_agent",
+            "namespace": "ucode_collaboration",
+            "arguments": '{"message":"Read the file.\\nPreserve punctuation: !?;"}',
+        }
+        event = {"type": "response.output_item.done", "item": item}
+        payload = json.dumps({"output": [item]}).encode()
+        if path == "/v1/responses/compact":
+            payload = json.dumps(
+                {
+                    "object": "response.compaction",
+                    "output": [{"type": "compaction", "encrypted_content": "opaque-summary"}],
+                }
+            ).encode()
+        if streaming:
+            data = b"\r\n".join(
+                b"data: " + line for line in json.dumps(event, indent=2).encode().splitlines()
+            )
+            payload = b": heartbeat\r\n\r\nid: evt-1\r\n" + data + b"\r\n\r\ndata: [DONE]\n\n"
+        requests = []
+
+        def upstream(request):
+            # Replace only the provider; httpx decodes actual gzip bytes.
+            requests.append(request)
+            return httpx.Response(
+                401 if len(requests) == 1 else status,
+                headers={
+                    "Content-Type": "text/event-stream" if streaming else "application/json",
+                    "Content-Encoding": "gzip",
+                },
+                stream=_ResponseChunks(gzip.compress(payload)),
+            )
+
+        body = b'{"tools":[{"type":"namespace","name":"collaboration","tools":[]}]}'
+        cache, out = _FakeCache(), _Collect()
+        with httpx.Client(
+            transport=httpx.MockTransport(upstream), base_url="https://gateway.test"
+        ) as client:
+            handler = _relay_handler(out, gateway_proxy._CodexV2ProxyHandler)
+            handler.client, handler.cache, handler.path = client, cache, path
+            handler.rfile = io.BytesIO(body)
+            handler.headers = {
+                "Content-Length": str(len(body)),
+                "Authorization": "Bearer stale",
+                gateway_proxy.AI_GATEWAY_TOKEN_HEADER: "Bearer competing",
+                gateway_proxy.MODEL_PROVIDER_SERVICE_HEADER: "main.provider",
+            }
+            handler._handle()
+
+        assert cache.refreshed == 1
+        assert [request.headers["Authorization"] for request in requests] == [
+            "Bearer tok1",
+            "Bearer tok2",
+        ]
+        for request in requests:
+            assert gateway_proxy.AI_GATEWAY_TOKEN_HEADER not in request.headers
+            assert request.headers[gateway_proxy.MODEL_PROVIDER_SERVICE_HEADER] == "main.provider"
+            expected_namespace = "collaboration" if path == "/v1/models" else "ucode_collaboration"
+            assert json.loads(request.content)["tools"][0]["name"] == expected_namespace
+        headers, wire = bytes(out.data).split(b"\r\n\r\n", 1)
+        assert f" {status} ".encode() in headers
+        if path == "/v1/models" or status != 200:
+            assert b"content-encoding: gzip" in headers.lower()
+            assert gzip.decompress(wire) == payload
+        else:
+            assert b"content-encoding" not in headers.lower()
+            assert b"content-length" not in headers.lower()
+            if path == "/v1/responses/compact":
+                assert wire == payload
+                return
+            if streaming:
+                assert b": heartbeat\r\n\r\nid: evt-1\r\n" in wire
+                assert wire.endswith(b"data: [DONE]\n\n")
+                data = next(line[6:] for line in wire.splitlines() if line.startswith(b"data: "))
+                rewritten = json.loads(data)["item"]
+            else:
+                rewritten = json.loads(wire)["output"][0]
+            assert rewritten == {
+                **item,
+                "namespace": "collaboration",
+                "encrypted_function_args": [],
+            }
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            b"event: response.output_item.done\ndata: not-json\n\n",
+            b'data: {"type":"response.output_item.done","item":{"type":"function_call",'
+            b'"name":"spawn_agent","namespace":"ucode_collaboration",'
+            b'"encrypted_function_args":["secret-ciphertext"]}}\n\n',
+            b'data: {"incomplete":',
+        ],
+    )
+    def test_invalid_stream_is_truncated_without_leaking_payload(
+        self, monkeypatch, capsys, payload
+    ):
+        monkeypatch.setenv(gateway_proxy._DIAGNOSTICS_ENV, "1")
+
+        out = _Collect()
+        handler = _relay_handler(out, gateway_proxy._CodexV2ProxyHandler)
+        handler._codex_v2_adapter_active = True
+        response = httpx.Response(
+            200,
+            headers={"Content-Type": "text/event-stream"},
+            stream=_ResponseChunks(b": heartbeat\r\n\r\n" + payload),
+        )
+        handler._relay_response(response)
+        response.close()
+        assert bytes(out.data).split(b"\r\n\r\n", 1)[1] == b": heartbeat\r\n\r\n"
+        diagnostic = capsys.readouterr().err
+        assert "response_protocol_error" in diagnostic
+        assert "secret-ciphertext" not in diagnostic
 
 
 class TestStartProxyPortFallback:

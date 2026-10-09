@@ -22,7 +22,7 @@ from utils.evidence import (
     tool_outputs,
 )
 from utils.managed import use_managed_config_fixture
-from utils.terminal import AgentTerminal
+from utils.terminal import AgentTerminal, codex_command_approval_pending
 
 SMART_ROUTING_BANNER = "Using Unity Gateway Smart Router."
 SMART_ROUTING_SUBAGENT_NOTICE = "Using Unity Gateway Smart Router - Subagent"
@@ -170,8 +170,22 @@ def _toggle_with_skill(
 
     before_answers, before_confirmations = completion_counts()
     tui.submit(invocation)
+    approval_sent = False
+    flag = "--enable-smart-routing" if enabled else "--disable-smart-routing"
+    command = f'"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex {flag}'
 
-    def toggled(_screen):
+    def toggled(screen):
+        nonlocal approval_sent
+        # Fresh remote Codex sessions can be read-only. Approve only this
+        # requested toggle through the native dialog, keeping the sandbox intact.
+        if (
+            agent == "codex"
+            and not approval_sent
+            and codex_command_approval_pending(screen, command)
+        ):
+            tui.send("\r", f"approve the session-local Smart Router toggle {state} once")
+            approval_sent = True
+            return False
         answers, confirmations = completion_counts()
         return (
             json.loads(controls[0].read_text()) == expected
@@ -452,7 +466,9 @@ def test_smart_router_skill_toggles_codex_subagent_routing(
     confirmation in the native transcript and changes the saved routing controls, even with
     collapsed terminal output; all three uniquely tagged calculations complete in native child
     sessions; only the first and third show the subagent-routing banner and produce live gateway
-    decisions correlated with those children. No first-prompt interposer starts.
+    decisions correlated with those children. The session transport starts without making a
+    first-prompt routing decision. Native permission prompts are approved only for the exact
+    requested toggle command.
     With orchestration enabled, both routed banners must include [orchestrator on].
     """
     session = live_session
@@ -497,4 +513,4 @@ def test_smart_router_skill_toggles_codex_subagent_routing(
         tui.exit_normally()
         transcript = "".join(tui.output)
     assert SMART_ROUTING_BANNER not in transcript, transcript
-    session.assert_not_routed()
+    assert "[ROUTE]" not in session.routing_log("codex")

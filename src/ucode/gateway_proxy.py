@@ -25,6 +25,7 @@ import base64
 import binascii
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -32,8 +33,14 @@ import uuid
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import cast
+from urllib.parse import urlsplit
 
 import httpx
+
+from ucode.smart_routing.codex_v2_transport import (
+    prepare_request,
+    transform_response_event,
+)
 
 # Header we overwrite with the freshly-minted Databricks credential. Any
 # client-supplied value is replaced, so a stale settings.json value can't leak.
@@ -75,6 +82,8 @@ _DEFAULT_TTL_S = 3600
 # and exception class names — never headers, bodies, or credentials.
 _DIAGNOSTICS_ENV = "UCODE_RELAYED_PROXY_DIAGNOSTICS"
 _DIAGNOSTICS_TRUE = frozenset({"1", "true", "yes", "on"})
+_CODEX_V2_RESPONSE_PATHS = frozenset({"/v1/responses", "/v1/responses/compact"})
+_CODEX_V2_MAX_SSE_EVENT_BYTES = 16 * 1024 * 1024
 
 
 def _diagnostics_enabled() -> bool:
@@ -191,6 +200,10 @@ class TokenCache:
         self._stop.set()
 
 
+class _CodexV2ProtocolError(RuntimeError):
+    """A malformed or unsafe native Codex v2 wire message."""
+
+
 def forwarded_request_headers(
     handler: BaseHTTPRequestHandler,
     token: str,
@@ -254,6 +267,19 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         except OSError:
             pass
 
+    def _prepare_request_body(self, body: bytes | None) -> bytes | None:
+        return body
+
+    def _response_headers(self, resp: httpx.Response) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            (key, value)
+            for key, value in resp.headers.items()
+            if key.lower() not in HOP_BY_HOP_HEADERS
+        )
+
+    def _iter_response_chunks(self, resp: httpx.Response):
+        yield from resp.iter_raw()
+
     def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
         return self.token_header, frozenset(), "forward"
 
@@ -263,6 +289,18 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0) or 0)
         body = self.rfile.read(length) if length else None
         url = self.path.lstrip("/")
+        try:
+            body = self._prepare_request_body(body)
+        except ValueError as exc:
+            # Adapter failures are deliberately sanitized: neither the request
+            # body nor credentials belong in diagnostics or the client error.
+            log_proxy_diagnostic(
+                "request_protocol_error",
+                request_id=diagnostic_id,
+                error_type=type(exc).__name__,
+            )
+            self._safe_send_error(400, "codex v2 request protocol error")
+            return
         token_header, extra_strip, route_label = self._forward_target(body)
         log_proxy_diagnostic(
             "request_start",
@@ -358,9 +396,8 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         first_byte_ms: int | None = None
         try:
             self.send_response(resp.status_code)
-            for key, value in resp.headers.items():
-                if key.lower() not in HOP_BY_HOP_HEADERS:
-                    self.send_header(key, value)
+            for key, value in self._response_headers(resp):
+                self.send_header(key, value)
             self.end_headers()
             # Do not pass a fixed chunk size here. httpx accumulates bytes until
             # that size is reached, which can hide small SSE heartbeat frames
@@ -368,7 +405,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             # With ``chunk_size=None`` (the default), raw upstream chunks are
             # yielded as they arrive and pings keep the downstream connection
             # alive even before the model produces a large content block.
-            for chunk in resp.iter_raw():
+            for chunk in self._iter_response_chunks(resp):
                 if chunk:
                     if first_byte_ms is None:
                         first_byte_ms = round((time.monotonic() - started) * 1000)
@@ -393,6 +430,19 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 "client_disconnect",
                 request_id=diagnostic_id,
                 phase="response",
+                chunks=chunks,
+                bytes=bytes_relayed,
+                elapsed_ms=round((time.monotonic() - started) * 1000),
+            )
+            return
+        except _CodexV2ProtocolError as exc:
+            # The status and headers are already committed for streaming; stop
+            # without relaying the malformed or unsafe event payload.
+            log_proxy_diagnostic(
+                "response_protocol_error",
+                request_id=diagnostic_id,
+                error_type=type(exc).__name__,
+                status=resp.status_code,
                 chunks=chunks,
                 bytes=bytes_relayed,
                 elapsed_ms=round((time.monotonic() - started) * 1000),
@@ -426,6 +476,132 @@ class _RelayProxyHandler(_ProxyHandler):
         if is_databricks_routed_model(_request_model(body)):
             return AUTHORIZATION_HEADER, _DATABRICKS_ROUTE_STRIP, "databricks"
         return self.token_header, frozenset(), "relay"
+
+
+class _CodexV2ProxyHandler(_ProxyHandler):
+    """Loopback adapter for native Codex v2 Responses traffic."""
+
+    def _prepare_request_body(self, body: bytes | None) -> bytes | None:
+        self._codex_v2_adapter_active = False
+        if (
+            self.command != "POST"
+            or urlsplit(self.path).path not in _CODEX_V2_RESPONSE_PATHS
+            or body is None
+        ):
+            return body
+        transformed, changed = prepare_request(body)
+        self._codex_v2_adapter_active = changed
+        return transformed
+
+    def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
+        # Use the same Databricks identity, without a competing swap credential.
+        return (
+            AUTHORIZATION_HEADER,
+            frozenset({AI_GATEWAY_TOKEN_HEADER.lower()}),
+            "codex-v2",
+        )
+
+    def _response_type(self, resp: httpx.Response) -> str:
+        if self._codex_v2_adapter_active and 200 <= resp.status_code < 300:
+            return resp.headers.get("content-type", "").lower()
+        return ""
+
+    def _response_headers(self, resp: httpx.Response) -> tuple[tuple[str, str], ...]:
+        content_type = self._response_type(resp)
+        decoded = "json" in content_type or "text/event-stream" in content_type
+        return tuple(
+            (key, value)
+            for key, value in super()._response_headers(resp)
+            if not (decoded and key.lower() == "content-encoding")
+        )
+
+    def _iter_response_chunks(self, resp: httpx.Response):
+        content_type = self._response_type(resp)
+        if "text/event-stream" in content_type:
+            yield from self._iter_sse_chunks(resp)
+            return
+        if "json" not in content_type:
+            yield from resp.iter_raw()
+            return
+
+        body = bytearray()
+        for chunk in resp.iter_bytes():
+            body.extend(chunk)
+            if len(body) > _CODEX_V2_MAX_SSE_EVENT_BYTES:
+                raise _CodexV2ProtocolError("Codex v2 JSON response exceeds the bounded limit")
+        if not body:
+            return
+        try:
+            event = json.loads(bytes(body))
+            transformed = transform_response_event(event)
+        except (TypeError, ValueError) as exc:
+            raise _CodexV2ProtocolError("Codex v2 JSON response failed adaptation") from exc
+        if transformed == event:
+            yield bytes(body)
+        else:
+            yield json.dumps(transformed, ensure_ascii=False, separators=(",", ":")).encode()
+
+    def _iter_sse_chunks(self, resp: httpx.Response):
+        buffer = bytearray()
+        for chunk in resp.iter_bytes():
+            buffer.extend(chunk)
+            while separator := re.search(rb"\r\n\r\n|\n\n", buffer):
+                frame_size = separator.end()
+                if frame_size > _CODEX_V2_MAX_SSE_EVENT_BYTES:
+                    raise _CodexV2ProtocolError("Codex v2 SSE event exceeds the bounded limit")
+                frame = bytes(buffer[:frame_size])
+                del buffer[:frame_size]
+                yield self._transform_sse_frame(frame)
+            if len(buffer) > _CODEX_V2_MAX_SSE_EVENT_BYTES:
+                raise _CodexV2ProtocolError("Codex v2 SSE event exceeds the bounded limit")
+        if buffer:
+            # Never execute a partial function call at EOF.
+            if buffer.strip(b"\r\n :"):
+                raise _CodexV2ProtocolError("Codex v2 SSE stream ended mid-event")
+            yield bytes(buffer)
+
+    @staticmethod
+    def _transform_sse_frame(frame: bytes) -> bytes:
+        lines = frame.splitlines(keepends=True)
+        event_type: str | None = None
+        data_indices: list[int] = []
+        for index, line in enumerate(lines):
+            if line.startswith(b"event:"):
+                try:
+                    event_type = line[6:].strip().decode("utf-8", "strict")
+                except UnicodeDecodeError as exc:
+                    raise _CodexV2ProtocolError("Codex v2 SSE event name is malformed") from exc
+            elif line.startswith(b"data:"):
+                data_indices.append(index)
+        if not data_indices:
+            return frame
+        payload = b"\n".join(lines[i][5:].rstrip(b"\r\n").lstrip() for i in data_indices)
+        if payload == b"[DONE]":
+            return frame
+        try:
+            event = json.loads(payload)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            if event_type is not None and event_type.startswith("response."):
+                raise _CodexV2ProtocolError("Codex v2 SSE response event is malformed") from exc
+            return frame
+        if not isinstance(event, dict):
+            if event_type is not None and event_type.startswith("response."):
+                raise _CodexV2ProtocolError("Codex v2 SSE response event is not an object")
+            return frame
+
+        try:
+            transformed = transform_response_event(event)
+        except (TypeError, ValueError) as exc:
+            raise _CodexV2ProtocolError("Codex v2 SSE response failed adaptation") from exc
+        if transformed == event:
+            return frame
+        serialized = json.dumps(transformed, ensure_ascii=False, separators=(",", ":")).encode()
+        first = data_indices[0]
+        ending = b"\r\n" if lines[first].endswith(b"\r\n") else b"\n"
+        lines[first] = b"data: " + serialized + ending
+        for index in data_indices[1:]:
+            lines[index] = b""
+        return b"".join(lines)
 
 
 class _LoopbackHTTPServer(ThreadingHTTPServer):
@@ -516,5 +692,21 @@ def start_otel_proxy(
         upstream_path="ai-gateway/otel/",
         token_header=AUTHORIZATION_HEADER,
         handler_type=_ProxyHandler,
+        force_refresh_near_expiry=True,
+    )
+
+
+def start_codex_v2_proxy(
+    workspace: str,
+    token_provider: Callable[[bool], str],
+) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
+    """Start the opt-in native Codex v2 plaintext adapter on a loopback port."""
+    return _start_proxy(
+        workspace,
+        token_provider,
+        0,
+        upstream_path="ai-gateway/codex/",
+        token_header=AUTHORIZATION_HEADER,
+        handler_type=_CodexV2ProxyHandler,
         force_refresh_near_expiry=True,
     )
