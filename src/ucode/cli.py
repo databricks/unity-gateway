@@ -792,6 +792,10 @@ def _setup_single_agent(
     state = configure_single_tool(tool, state, parent_schema=parent_schema)
     if apply_managed and not managed_enabled_tools(managed or {}):
         state = _record_unmanaged_configured_agents(state, [tool])
+    if apply_managed and tool == "claude":
+        from ucode.desktop_setup import configure_desktop_after_claude
+
+        configure_desktop_after_claude(state, parent_schema=parent_schema)
     install_databricks_ai_tools_for_agents(
         [tool], state, force_refresh=tool not in ("claude", "codex")
     )
@@ -999,6 +1003,10 @@ def _configure_workspace_command(
                 last = configured.get("last_configured_tools")
                 if last is None or tool_name in last:
                     configured_tools.append(tool_name)
+                    if tool_name == "claude":
+                        from ucode.desktop_setup import configure_desktop_after_claude
+
+                        configure_desktop_after_claude(configured, parent_schema=parent_schema)
         if not configured_tools:
             raise RuntimeError(
                 "None of the coding agents enabled by your workspace configuration "
@@ -1073,6 +1081,10 @@ def _configure_workspace_command(
     state = _record_unmanaged_configured_agents(
         state, [tool_name for tool_name in picked if tool_name in configured_set]
     )
+    if "claude" in configured_set and "claude" in picked:
+        from ucode.desktop_setup import configure_desktop_after_claude
+
+        configure_desktop_after_claude(state)
     summary_lines = [f"[bold]Workspace:[/bold] [cyan]{state['workspace']}[/cyan]"]
     for tool_name in picked:
         spec = TOOL_SPECS[tool_name]
@@ -1334,7 +1346,10 @@ def status() -> int:
 
 
 def revert() -> int:
+    from ucode.desktop_setup import revert_desktop
+
     state = load_state()
+    desktop_result = revert_desktop(state)
     managed_configs = state.get("managed_configs") or {}
     mcp_results = revert_mcp_configs(state)
     claude_managed_result = claude_agent.revert_managed_settings()
@@ -1352,7 +1367,8 @@ def revert() -> int:
     # Older Codex (< 0.134.0) had ucode edit the shared ~/.codex/config.toml in
     # place; restoring the per-profile file above does not undo that.
     legacy_codex_stripped = revert_legacy_shared_config()
-    clear_state()
+    if desktop_result != "failed":
+        clear_state()
 
     print_heading("Revert")
     print_kv("Workspace", state.get("workspace") or "none")
@@ -1361,6 +1377,7 @@ def revert() -> int:
     if legacy_codex_stripped:
         print_kv("Codex shared config", "ucode entries removed")
     print_kv("Claude Code OS-managed settings", claude_managed_result)
+    print_kv("Claude Desktop profile", desktop_result)
     print_kv("Codex OS-managed settings", codex_managed_result)
     print_kv("Pi settings", "restored" if pi_settings_restored else "unchanged")
     for client, spec in MCP_CLIENTS.items():
@@ -1368,6 +1385,9 @@ def revert() -> int:
             f"{spec['display']} MCP config",
             "restored" if mcp_results.get(client) else "unchanged",
         )
+    if desktop_result == "failed":
+        print_warning("ug state retained. Fix the Claude Desktop error and run ug revert again.")
+        return 1
     print_success("ug state cleared")
     return 0
 
