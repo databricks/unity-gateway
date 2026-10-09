@@ -524,9 +524,11 @@ def _availability_failure_detail(tool: str, state: dict) -> str:
     return " (" + "; ".join(parts) + ")"
 
 
-def configure_single_tool(tool: str, state: dict, *, parent_schema: str | None = None) -> dict:
+def configure_single_tool(
+    tool: str, state: dict, *, parent_schema: str | None = None, provider: str | None = None
+) -> dict:
     """Check availability, configure, and persist state for one tool only."""
-    provider = None if parent_schema else get_provider_service(state, tool)
+    provider = None if parent_schema else provider or get_provider_service(state, tool)
     # A Model Provider Service or parent schema routes through the same gateway and pins no
     # globally discovered Databricks model, so the availability check doesn't apply.
     if not provider and not parent_schema:
