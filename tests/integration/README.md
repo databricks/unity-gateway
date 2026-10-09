@@ -38,6 +38,11 @@ or construct ug state files. The normal test suite checks these boundaries.
 The existing unit tests keep their fixtures. Integration has an independent
 pytest configuration and uses `--confcutdir` so those fixtures cannot leak in.
 It is not collected by the default `uv run pytest` command.
+After `/exit`, the TUI driver handles Claude 2.1.290's background-work confirmation
+by pressing Enter only when "Exit and stop tasks" is visibly selected, then requires
+a zero process exit. Offline PTY regressions in `../test_e2e_cuj_helpers.py` cover that
+dialog, rejection of other selections, and ordinary Claude/Codex exits; live coverage
+still requires running the journeys.
 
 `TestChildStdoutLaunch` in `../test_cli.py` covers clean Claude print-mode and
 Codex exec/app-server stdout, early launch errors, and forwarding through ug's `--`.
