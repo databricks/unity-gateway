@@ -73,6 +73,7 @@ class _UgAgent(BaseInstalledAgent):
             **auth,
             # Lets Claude Code skip permissions as root inside the container.
             "IS_SANDBOX": "1",
+            "ENABLE_SMART_ROUTING_V2": "1",
             "UG_BENCH_INSTRUCTION": instruction,
         }
         if not self._resume:
