@@ -122,7 +122,11 @@ class ClaudeCujHelper(BaseCujHelper):
         responses = []
         for row in records[prompts[0] + 1 :]:
             msg = row.get("message", {})
-            if row.get("type") == "user" and isinstance(msg.get("content"), str):
+            if (
+                row.get("type") == "user"
+                and isinstance(msg.get("content"), str)
+                and row.get("origin", {}).get("kind") != "task-notification"
+            ):
                 break
             if row.get("type") == "assistant":
                 assert row.get("sessionId") == session_id and session_id

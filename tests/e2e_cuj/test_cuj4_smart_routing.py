@@ -316,6 +316,10 @@ class TestCujSmartRouting(BaseCujTest):
                 session.env.pop("SMART_ROUTER_CONFIG_VERSION", None)
             else:
                 session.env["SMART_ROUTER_CONFIG_VERSION"] = previous
+            session.revert_machine_wide(
+                f"{SMART_ROUTER_CONFIG_VERSION}-revert",
+                "Smart-router preset cleanup left machine-wide agent settings",
+            )
 
     @pytest.mark.parametrize("agent", AGENTS)
     def test_agent_completes_real_first_prompt_file_task_without_model_override(

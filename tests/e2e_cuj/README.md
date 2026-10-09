@@ -80,6 +80,8 @@ file task. Assertions require a native child transcript containing the value, th
 parent answer, a correlated spawn-routing decision, and successful child inference on the
 router's selected model. This tests requested delegation, not automatic orchestrator delegation.
 Selector cases have separate TUI artifact names, and the session environment is restored afterward.
+Each preset also runs public `ug revert` in cleanup, including after a failed assertion, so
+interactive launches' OS-managed settings cannot contaminate the next preset's configuration.
 The existing Claude explicit-model precedence case remains skipped; the routing-disabled case
 still requires a separately preconfigured workspace.
 

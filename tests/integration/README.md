@@ -15,6 +15,9 @@ managed-default and explicit-model cases unchanged. One additional test runs the
 `SMART_ROUTER_CONFIG_VERSION` values, checking both agents' first-prompt routing, orchestrator
 context in inference input, and completed explicitly requested routed subagents.
 This is not automatic orchestrator-delegation coverage. No workspace configuration is modified.
+Each preset cleans up interactive OS-managed settings with public `ug revert`, even on failure.
+Offline transcript tests check native Claude background-agent completion evidence;
+a completion notification alone is not treated as the parent's completed answer.
 
 The [catalog discovery journey](../e2e_cuj/README.md) uses the CUJ3 workspace to check
 agent-compatible pickers, schema exclusions, configured defaults, and real inference.

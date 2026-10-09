@@ -22,6 +22,9 @@ CUJs never republish configuration or create a remote reservation.
 CUJ helper tests also verify that unsupported agent names fail rather than defaulting to Codex.
 They cover Claude/Codex helper dispatch and rejection of routing decisions without
 the agent-specific prompt-submission evidence.
+Native evidence-reader regressions cover Claude's background-agent completion notifications;
+notifications alone cannot substitute for a final parent answer. These offline checks do not
+establish a live routing pass.
 The original smart-routing CUJ runs four fresh sessions: routed and explicit model for both
 Claude and Codex. One additional test has four `SMART_ROUTER_CONFIG_VERSION` cases.
 Each case exercises both agents and checks first-prompt routing, orchestrator context in

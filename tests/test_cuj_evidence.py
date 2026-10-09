@@ -101,6 +101,84 @@ def test_cuj_evidence_completed_native_turn(tmp_path, agent):
     assert result["selected_model"] == model
 
 
+def test_cuj_evidence_claude_async_notification_keeps_parent_turn():
+    task = SimpleNamespace(
+        prompt="Delegate reading the file to one subagent.", value="hidden-value"
+    )
+    prompt, answer = records(CLAUDE, task, "system.ai.claude-haiku-4-5")
+    delegation = copy.deepcopy(answer)
+    delegation["message"].update(
+        id="delegation",
+        stop_reason="tool_use",
+        content=[
+            {"type": "tool_use", "id": "tool", "name": "Agent", "input": {"prompt": task.prompt}}
+        ],
+    )
+    waiting = copy.deepcopy(answer)
+    waiting["message"].update(
+        id="waiting", content=[{"type": "text", "text": "Waiting for the child."}]
+    )
+    rows = [
+        prompt,
+        delegation,
+        {
+            "type": "user",
+            "sessionId": "session",
+            "message": {
+                "content": [{"type": "tool_result", "tool_use_id": "tool", "content": task.value}]
+            },
+        },
+        waiting,
+        {
+            "type": "user",
+            "sessionId": "session",
+            "origin": {"kind": "task-notification"},
+            "promptSource": "system",
+            "turnOrigin": "task_notification",
+            "message": {
+                "content": (
+                    "<task-notification>\n<status>completed</status>\n"
+                    f"<result>{task.value}</result>\n</task-notification>"
+                )
+            },
+        },
+        answer,
+    ]
+    assert completed_turn(CLAUDE, rows[:3], task) is None
+    assert completed_turn(CLAUDE, rows[:-1], task) is None
+    turn = completed_turn(CLAUDE, rows, task)
+    assert turn is not None
+    assert (turn.session_id, turn.turn_id, turn.answer) == ("session", "response", task.value)
+    assert turn.models == ["system.ai.claude-haiku-4-5"] * 3
+    child = copy.deepcopy(rows)
+    child[-1]["isSidechain"] = True
+    assert completed_turn(CLAUDE, child, task) is None
+    with pytest.raises(AssertionError, match="Prompt was submitted more than once"):
+        completed_turn(CLAUDE, [*rows, prompt], task)
+    missing_model = copy.deepcopy(rows)
+    del missing_model[3]["message"]["model"]
+    with pytest.raises(AssertionError, match="Missing inference model metadata"):
+        completed_turn(CLAUDE, missing_model, task)
+
+
+def test_cuj_evidence_claude_real_user_message_ends_parent_turn():
+    task = SimpleNamespace(
+        prompt="Delegate reading the file to one subagent.", value="hidden-value"
+    )
+    prompt, answer = records(CLAUDE, task, "system.ai.claude-haiku-4-5")
+    user = {
+        "type": "user",
+        "sessionId": "session",
+        "origin": {"kind": "human"},
+        "message": {"content": "A different task."},
+    }
+    assert completed_turn(CLAUDE, [prompt, user, answer], task) is None
+    user["message"]["content"] = (
+        f"<task-notification><result>{task.value}</result></task-notification>"
+    )
+    assert completed_turn(CLAUDE, [prompt, user, answer], task) is None
+
+
 @pytest.mark.parametrize("agent", [CLAUDE, CODEX])
 @pytest.mark.parametrize(
     "failure",
