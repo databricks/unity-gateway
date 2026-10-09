@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.e2e_cuj.helpers.constants import CLAUDE, CODEX
+from tests.e2e_cuj.helpers.constants import CLAUDE, CODEX, INFERENCE_PATHS
 from tests.e2e_cuj.helpers.evidence import (
     BaseCujHelper,
     ClaudeCujHelper,
@@ -16,6 +16,7 @@ from tests.e2e_cuj.helpers.evidence import (
     completed_turn,
     get_cuj_helper,
 )
+from tests.e2e_cuj.test_cuj4_smart_routing import _task_inference_request
 from tests.integration.utils.evidence import FileTask, read_jsonl
 
 
@@ -225,6 +226,275 @@ def test_cuj_evidence_codex_rejects_wrong_turn(tmp_path):
     wrong_turn = copy.deepcopy(rows)
     wrong_turn[-1]["payload"]["turn_id"] = "different-turn"
     assert completed_turn(CODEX, wrong_turn, task) is None
+
+
+def _codex_parent_delegation_records(initial_task, parent_task, model, child_marker):
+    rows = records(CODEX, initial_task, model)
+    rows.extend(
+        [
+            {
+                "type": "event_msg",
+                "payload": {"type": "user_message", "message": parent_task.prompt},
+            },
+            {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "delegate"}},
+            {
+                "type": "turn_context",
+                "payload": {"turn_id": "delegate", "model": model},
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                "<subagent_notification>\n"
+                                f'{{"agent_path":"child","status":{{"completed":"{child_marker}"}}}}\n'
+                                "</subagent_notification>"
+                            ),
+                        }
+                    ],
+                },
+                "internal_chat_message_metadata_passthrough": {
+                    "turn_id": "delegate",
+                    "content_item_kinds": ["multi_agent.subagent_notification"],
+                },
+            },
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "task_complete",
+                    "turn_id": "delegate",
+                    "last_agent_message": parent_task.value,
+                },
+            },
+        ]
+    )
+    return rows
+
+
+def test_cuj_evidence_codex_parent_turn_survives_child_notification(tmp_path):
+    initial_task = FileTask(SimpleNamespace(cwd=tmp_path))
+    parent_task = FileTask(SimpleNamespace(cwd=tmp_path))
+    parent_task.prompt = parent_task.delegate_prompt
+    rows = _codex_parent_delegation_records(
+        initial_task, parent_task, "gpt-6-sol", "child-random-marker"
+    )
+
+    turn = completed_turn(CODEX, rows, parent_task)
+
+    assert turn is not None
+    assert (turn.turn_id, turn.answer) == ("delegate", parent_task.value)
+
+
+def test_cuj_evidence_codex_child_notification_or_echo_is_not_parent_completion(tmp_path):
+    initial_task = FileTask(SimpleNamespace(cwd=tmp_path))
+    parent_task = FileTask(SimpleNamespace(cwd=tmp_path))
+    parent_task.prompt = parent_task.delegate_prompt
+    rows = _codex_parent_delegation_records(
+        initial_task, parent_task, "gpt-6-sol", "child-random-marker"
+    )
+    rows.pop()
+
+    assert completed_turn(CODEX, rows, parent_task) is None
+
+
+def test_cuj_evidence_codex_rejects_an_unrelated_later_parent_turn():
+    task = SimpleNamespace(prompt="target", value="answer")
+    rows = records(CODEX, task, "model")[:-1]
+    rows.extend(
+        [
+            {
+                "type": "event_msg",
+                "payload": {"type": "task_started", "turn_id": "unrelated"},
+            },
+            {
+                "type": "turn_context",
+                "payload": {"turn_id": "unrelated", "model": "model"},
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "different prompt"}],
+                },
+            },
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "task_complete",
+                    "turn_id": "unrelated",
+                    "last_agent_message": "answer",
+                },
+            },
+        ]
+    )
+
+    assert completed_turn(CODEX, rows, task) is None
+
+
+def test_cuj_evidence_codex_keeps_completed_turn_before_later_turn():
+    task = SimpleNamespace(prompt="target", value="answer")
+    rows = records(CODEX, task, "model")
+    rows.extend(
+        [
+            {
+                "type": "event_msg",
+                "payload": {"type": "task_started", "turn_id": "later"},
+            },
+            {
+                "type": "turn_context",
+                "payload": {"turn_id": "later", "model": "model"},
+            },
+            {
+                "type": "event_msg",
+                "payload": {"type": "user_message", "message": "different prompt"},
+            },
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "task_complete",
+                    "turn_id": "later",
+                    "last_agent_message": "different answer",
+                },
+            },
+        ]
+    )
+
+    turn = completed_turn(CODEX, rows, task)
+
+    assert turn is not None
+    assert (turn.turn_id, turn.answer) == ("turn", task.value)
+
+
+def test_cuj_evidence_codex_pending_prompt_representations_are_not_duplicate(tmp_path):
+    task = FileTask(SimpleNamespace(cwd=tmp_path))
+    rows = records(CODEX, task, "gpt-6-sol")[:-2]
+    rows.extend(
+        [
+            {
+                "type": "event_msg",
+                "payload": {"type": "user_message", "message": task.prompt},
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": task.prompt}],
+                },
+            },
+        ]
+    )
+
+    assert completed_turn(CODEX, rows, task) is None
+
+
+def test_cuj_evidence_codex_rejects_repeated_prompt_representation(tmp_path):
+    task = FileTask(SimpleNamespace(cwd=tmp_path))
+    rows = records(CODEX, task, "gpt-6-sol")[:-1]
+    rows.append(copy.deepcopy(rows[-1]))
+
+    with pytest.raises(AssertionError, match="Prompt was submitted more than once"):
+        completed_turn(CODEX, rows, task)
+
+
+def _inference_request(agent, sequence, payload):
+    return SimpleNamespace(
+        method="POST",
+        path=INFERENCE_PATHS[agent],
+        sequence=sequence,
+        payload=payload,
+    )
+
+
+def test_cuj_task_inference_selection_excludes_claude_title_and_helper_requests():
+    prompt = "Read input-file.txt using a tool. Reply with only its contents."
+    title = _inference_request(
+        CLAUDE,
+        1,
+        {
+            "model": "system.ai.claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": f"Name this session: {prompt}"}],
+            "tools": [],
+        },
+    )
+    helper = _inference_request(
+        CLAUDE,
+        2,
+        {
+            "model": "system.ai.claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": prompt}],
+            "tools": [],
+        },
+    )
+    task = _inference_request(
+        CLAUDE,
+        3,
+        {
+            "model": "system.ai.claude-haiku-4-5",
+            "messages": [{"role": "user", "content": prompt}],
+            "tools": [{"name": "Read"}],
+        },
+    )
+
+    selected = _task_inference_request(
+        [title, helper, task],
+        CLAUDE,
+        prompt,
+        native_turn=SimpleNamespace(answer="file-value"),
+    )
+
+    assert selected is task
+
+
+def test_cuj_child_inference_selection_excludes_codex_parent_continuation():
+    parent_prompt = "Delegate this task to one subagent."
+    child_prompt = "Read input-file.txt using a tool and return its contents."
+    parent_continuation = _inference_request(
+        CODEX,
+        4,
+        {
+            "model": "system.ai.gpt-6-sol",
+            "input": [
+                {"role": "user", "content": [{"type": "input_text", "text": parent_prompt}]},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "function_call",
+                            "name": "spawn_agent",
+                            "arguments": child_prompt,
+                        }
+                    ],
+                },
+                {"role": "tool", "content": "child result for input-file.txt"},
+            ],
+            "tools": [{"type": "function", "name": "spawn_agent"}],
+        },
+    )
+    child = _inference_request(
+        CODEX,
+        5,
+        {
+            "model": "system.ai.gpt-6-luna",
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": child_prompt}]}],
+            "tools": [{"type": "function", "name": "read_file"}],
+        },
+    )
+
+    selected = _task_inference_request(
+        [parent_continuation, child],
+        CODEX,
+        child_prompt,
+        native_turn=SimpleNamespace(answer="child-result"),
+        native_prompts=(child_prompt,),
+    )
+
+    assert selected is child
 
 
 def test_cuj_evidence_ignores_existing_session(tmp_path):

@@ -154,48 +154,118 @@ class CodexCujHelper(BaseCujHelper):
         meta = [row["payload"] for row in records if row.get("type") == "session_meta"]
         if len(meta) != 1 or isinstance(meta[0].get("source"), dict):
             return None
-        contexts, prompt_count, seen_prompt, active_turn = {}, 0, False, None
-        for row in records:
+        contexts, started, completed, aborted, current_turn = {}, set(), set(), set(), None
+        target_turn, prompt_sources, seen_prompt, final_answer = None, set(), False, None
+
+        def notification_text(row):
             payload = row.get("payload", {})
-            if row.get("type") == "turn_context":
-                contexts.setdefault(payload.get("turn_id"), []).append(payload.get("model"))
+            if row.get("type") == "event_msg" and payload.get("type") == "user_message":
+                return payload.get("message", "")
             if (
                 row.get("type") == "response_item"
                 and payload.get("type") == "message"
                 and payload.get("role") == "user"
             ):
+                return message_text(payload.get("content"))
+            return ""
+
+        def is_notification(row):
+            text = notification_text(row)
+            normalized = text.lower() if isinstance(text, str) else ""
+            return (
+                "<subagent_notification>" in normalized or "<subagent-notification>" in normalized
+            )
+
+        def row_turn(row):
+            payload = row.get("payload", {})
+            if payload.get("turn_id"):
+                return payload["turn_id"]
+            metadata = row.get("internal_chat_message_metadata_passthrough")
+            return metadata.get("turn_id") if isinstance(metadata, dict) else None
+
+        def handle_prompt(row, source):
+            nonlocal seen_prompt, target_turn
+            payload = row.get("payload", {})
+            if row.get("type") == "response_item":
                 prompt = message_text(payload.get("content"))
-                if prompt == task.prompt:
-                    prompt_count += 1
-                    assert prompt_count == 1, "Prompt was submitted more than once"
-                    seen_prompt = True
-                elif seen_prompt:
+            else:
+                prompt = payload.get("message")
+            if prompt != task.prompt:
+                return False
+            if source in prompt_sources:
+                raise AssertionError("Prompt was submitted more than once")
+            prompt_sources.add(source)
+            if not seen_prompt:
+                seen_prompt = True
+            prompt_turn = row_turn(row) or current_turn
+            if target_turn is None and prompt_turn not in completed | aborted:
+                target_turn = prompt_turn
+            elif target_turn is not None and prompt_turn is not None:
+                assert prompt_turn == target_turn, "Prompt was submitted more than once"
+            return True
+
+        for row in records:
+            payload = row.get("payload", {})
+            if row.get("type") == "turn_context":
+                turn_id = payload.get("turn_id")
+                contexts.setdefault(turn_id, []).append(payload.get("model"))
+                current_turn = turn_id
+                if seen_prompt and target_turn is None and turn_id not in completed | aborted:
+                    target_turn = turn_id
+                elif target_turn is not None and turn_id != target_turn:
+                    return None
+            if (
+                row.get("type") == "response_item"
+                and payload.get("type") == "message"
+                and payload.get("role") == "user"
+            ):
+                if handle_prompt(row, "response_item"):
+                    continue
+                if seen_prompt and not is_notification(row):
                     return None
             if row.get("type") != "event_msg":
                 continue
-            if payload.get("type") == "task_started":
-                if seen_prompt:
-                    return None
-                active_turn = payload.get("turn_id")
-            if payload.get("type") == "user_message":
-                if payload.get("message") == task.prompt:
-                    prompt_count += 1
-                    assert prompt_count == 1, "Prompt was submitted more than once"
-                    seen_prompt = True
-                elif seen_prompt:
-                    return None
-            if seen_prompt and payload.get("type") == "task_complete":
+            event_type = payload.get("type")
+            if event_type == "task_started":
                 turn_id = payload.get("turn_id")
-                answer = payload.get("last_agent_message") or ""
-                if (
-                    task.value in answer
-                    and turn_id
-                    and turn_id == active_turn
-                    and contexts.get(turn_id)
-                ):
-                    assert all(contexts[turn_id]), "Missing native turn model metadata"
-                    return CompletedTurn(meta[0]["id"], turn_id, contexts[turn_id], answer)
-        return None
+                if not turn_id:
+                    continue
+                started.add(turn_id)
+                current_turn = turn_id
+                if not seen_prompt:
+                    continue
+                if target_turn is None and turn_id not in completed | aborted:
+                    target_turn = turn_id
+                elif turn_id != target_turn:
+                    return None
+            elif event_type == "user_message":
+                if handle_prompt(row, "user_message"):
+                    continue
+                if seen_prompt and not is_notification(row):
+                    return None
+            elif event_type == "task_complete":
+                turn_id = payload.get("turn_id")
+                completed.add(turn_id)
+                if seen_prompt and turn_id == target_turn:
+                    final_answer = payload.get("last_agent_message") or ""
+                    break
+            elif event_type == "turn_aborted":
+                turn_id = payload.get("turn_id")
+                aborted.add(turn_id)
+                if turn_id == target_turn:
+                    return None
+
+        if (
+            not seen_prompt
+            or target_turn is None
+            or target_turn not in started
+            or final_answer is None
+        ):
+            return None
+        if task.value not in final_answer or not contexts.get(target_turn):
+            return None
+        assert all(contexts[target_turn]), "Missing native turn model metadata"
+        return CompletedTurn(meta[0]["id"], target_turn, contexts[target_turn], final_answer)
 
 
 def get_cuj_helper(agent):

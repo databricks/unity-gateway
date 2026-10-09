@@ -58,7 +58,7 @@ uv run pytest -c tests/e2e_cuj/pytest.ini --confcutdir=tests/e2e_cuj \
 ## Smart-routing CUJ
 
 `test_cuj4_smart_routing.py` uses its own read-only workspace with managed smart routing enabled.
-The original tests remain unchanged. One additional test has four
+The original tests remain unchanged. One additional test has five
 `SMART_ROUTER_CONFIG_VERSION` cases using the shared version constants; each launches Claude
 and Codex once.
 The independent expectation table is:
@@ -69,16 +69,23 @@ The independent expectation table is:
 | `subagent_only_v0` | No | No | No | Yes, routed |
 | `subagent_only_v1` | No | No | No | Yes, routed |
 | `subagent_orch_v0` | No | Yes | No | Yes, routed |
+| `subagent_orch_v1` | No | Yes | No | Yes, routed |
 
 First prompts explicitly forbid delegation to isolate first-prompt routing. Assertions require
 the expected presence/absence of a prompt-correlated router request, successful inference on
 the routed or configured default model, completed native file-task evidence, and no child session.
 Orchestrator presence means its activation context reached the real gateway inference input,
 not that an assistant echoed it or a skill merely existed on disk.
+Task inference is selected by its exact user prompt and tool-capable payload, not the first
+POST: session-title requests are excluded. Child requests use the routed prompt from the native
+child transcript, so parent continuations cannot stand in for child inference.
 Each preset session then explicitly requests one child for a separate hidden-value
 file task. Assertions require a native child transcript containing the value, the completed
 parent answer, a correlated spawn-routing decision, and successful child inference on the
 router's selected model. This tests requested delegation, not automatic orchestrator delegation.
+Codex completion evidence tolerates mirrored prompt records and child notifications but still
+requires the matching native completed turn and final parent answer. Offline regressions cover
+these transcript and request-selection cases; they do not establish a live CUJ pass.
 Selector cases have separate TUI artifact names, and the session environment is restored afterward.
 Each preset also runs public `ug revert` in cleanup, including after a failed assertion, so
 interactive launches' OS-managed settings cannot contaminate the next preset's configuration.

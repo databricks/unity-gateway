@@ -1333,10 +1333,7 @@ class _HelpOrderedGroup(TyperGroup):
         parent: _click.Context | None = None,
         **extra: Any,
     ) -> _click.Context:
-        try:
-            previous = smart_routing_v2.apply_config()
-        except RuntimeError as exc:
-            raise _click.ClickException(str(exc)) from None
+        previous = smart_routing_v2.apply_config()
         try:
             ctx = super().make_context(info_name, args, parent, **extra)
         except BaseException:
@@ -2306,15 +2303,11 @@ CAN_USE_CACHED_CONFIG_AGENTS = frozenset({"claude", "codex"})
 @contextmanager
 def _smart_routing_v2_flag(enabled: bool | None) -> Iterator[None]:
     """Apply an explicit routing choice without leaking into an embedding process."""
-    try:
-        previous = (
-            smart_routing_v2.apply_config()
-            if enabled is None
-            else smart_routing_v2.override_smart_routing(enabled)
-        )
-    except RuntimeError as exc:
-        print_err(str(exc))
-        raise typer.Exit(1) from None
+    previous = (
+        smart_routing_v2.apply_config()
+        if enabled is None
+        else smart_routing_v2.override_smart_routing(enabled)
+    )
     try:
         yield
     finally:

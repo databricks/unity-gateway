@@ -11,13 +11,17 @@ inference, and Claude inference. The config equality also accounts for the works
 skill name as data; skill download and invocation are not covered.
 
 The dedicated smart-routing CUJ in `../e2e_cuj/test_cuj_smart_routing.py` leaves the original
-managed-default and explicit-model cases unchanged. One additional test runs the four supported
+managed-default and explicit-model cases unchanged. One additional test runs the five supported
 `SMART_ROUTER_CONFIG_VERSION` values, checking both agents' first-prompt routing, orchestrator
 context in inference input, and completed explicitly requested routed subagents.
 This is not automatic orchestrator-delegation coverage. No workspace configuration is modified.
 Each preset cleans up interactive OS-managed settings with public `ug revert`, even on failure.
 Offline transcript tests check native Claude background-agent completion evidence;
 a completion notification alone is not treated as the parent's completed answer.
+Offline CUJ cases additionally cover Codex delegated-turn completion and reject incomplete
+or unrelated turns. Smart-routing requests are matched by exact task prompts and tool-capable
+payloads rather than the first inference POST, excluding session-title and parent-continuation
+traffic without weakening model, orchestrator-context, or paired-response assertions.
 
 The [catalog discovery journey](../e2e_cuj/README.md) uses the CUJ3 workspace to check
 agent-compatible pickers, schema exclusions, configured defaults, and real inference.
@@ -319,15 +323,21 @@ their original legacy-env or managed-default cases remain. Explicit-model select
 forwarding, app-server initialization, and catalog fallback retain their original legacy flags
 and on/off coverage; preset-specific behavior there is not covered.
 
-The unit/component `../test_smart_routing_config.py` is a 135-case Cartesian oracle over all
-three legacy routing flags (`None`, `0`, `1`) and five selector forms (`None` plus the four
+The unit/component `../test_smart_routing_config.py` includes a 162-case Cartesian oracle over all
+three legacy routing flags (`None`, `0`, `1`) and six selector forms (`None` plus the five
 supported presets, including the customer first-prompt-and-subagent mode). It independently hardcodes preset values and asserts exact
 `resolve_environment` and `apply_config` settings, true-unset omission, unrelated-key and
-input preservation, and valid-selector consumption. This file no longer covers blank,
-whitespace-padded, unsuffixed, or unsupported selectors; import-time schema validation, CLI
-startup ordering, snapshots/restoration, routing getters, native subcommands, hooks, session
+input preservation, and valid-selector consumption. Additional helper cases cover no-op behavior
+for unsupported selectors, valid-selector application/restoration, and unset/empty selectors.
+Component cases in `../test_cli.py` check token-only authentication, revert, and
+Claude/Codex/default launch dispatch with unknown selectors and environment preservation.
+Import-time schema validation,
+routing getters, native subcommands, hooks, session
 files, or managed launches are not established here. It does not claim live agent, hook, or
 gateway coverage.
+Three component cases additionally compare the equivalent legacy flags and presets for
+`subagent_only_v1`, `subagent_orch_v1`, and `first_prompt_and_subagent_no_orch_v0`;
+they verify routing activation, first-prompt behavior, orchestration, and router-name preservation.
 
 The portable `../test_claude_windows_smart_routing.py` checks the Windows
 subagent-only fallback without Unix imports. Native Windows TUI and hook execution

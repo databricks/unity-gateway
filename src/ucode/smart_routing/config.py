@@ -25,6 +25,9 @@ SUBAGENT_ONLY_V1 = "subagent_only_v1"
 # Route only subagents and inject the Smart Router Orchestrator workflow.
 SUBAGENT_ORCH_V0 = "subagent_orch_v0"
 
+# Route only subagents with V2, subagent-only, and orchestration all enabled.
+SUBAGENT_ORCH_V1 = "subagent_orch_v1"
+
 _VERSIONS = {
     FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
@@ -43,6 +46,11 @@ _VERSIONS = {
     },
     SUBAGENT_ORCH_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
+        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+    },
+    SUBAGENT_ORCH_V1: {
+        ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
     },
@@ -75,14 +83,7 @@ def resolve_environment(env: Mapping[str, str] | None = None) -> dict[str, str]:
     """Expand a version before applying any launch or session-specific overrides."""
     resolved = dict(os.environ if env is None else env)
     version = resolved.pop(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, "").strip()
-    if not version:
-        return resolved
-    if version not in _VERSIONS:
-        raise RuntimeError(
-            f"Unknown {SMART_ROUTER_CONFIG_VERSION_ENV_VAR} value {version!r}. "
-            f"Use one of: {', '.join(_VERSIONS)}, or unset it to use the legacy flags."
-        )
-    resolved.update(_VERSIONS[version])
+    resolved.update(_VERSIONS.get(version, {}))
     return resolved
 
 
@@ -90,11 +91,11 @@ def apply_config(env: MutableMapping[str, str] | None = None) -> dict[str, str |
     """Consume the launch selector, returning the values needed to restore its input."""
     target = os.environ if env is None else env
     version = target.get(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, "").strip()
-    if not version:
+    preset = _VERSIONS.get(version)
+    if preset is None:
         return {}
-    resolved = resolve_environment(target)
     keys = (*SMART_ROUTING_ENV_KEYS, SMART_ROUTER_CONFIG_VERSION_ENV_VAR)
     previous = {key: target.get(key) for key in keys}
-    target.update({key: resolved[key] for key in SMART_ROUTING_ENV_KEYS})
+    target.update(preset)
     target.pop(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, None)
     return previous

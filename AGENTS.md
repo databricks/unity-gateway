@@ -37,9 +37,10 @@ are registered in `SMART_ROUTING_ENV_KEYS` in `src/ucode/constants.py`.
 An unset or empty selector preserves legacy environment-flag behavior.
 A valid nonempty selector overrides every conflicting legacy value in that registry.
 Do not use `setdefault` or preserve inherited values for version-owned parameters.
-Resolve and materialize the selector at the CLI boundary before argument parsing or callbacks,
-including setup, session controls, authentication, and managed-config discovery. Invalid
-selectors must fail before those operations. Restore the inherited environment on every exit.
+Resolve and materialize valid selectors at the CLI boundary before argument parsing or callbacks.
+Unknown selectors are a no-op: do not apply a preset, mutate the inherited environment, or raise
+an error. Existing legacy flags and explicit launch/session controls retain their behavior.
+Restore the inherited environment on every exit.
 Explicit launch/session on/off controls still apply after version expansion.
 Managed routing defaults must not rewrite already-resolved version flags.
 

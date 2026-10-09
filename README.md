@@ -256,6 +256,7 @@ Use `SMART_ROUTER_CONFIG_VERSION` at launch to select a smart-routing configurat
 | `subagent_only_v0` | On | Off | Off |
 | `subagent_only_v1` | On | Off | Off |
 | `subagent_orch_v0` | On | Off | On |
+| `subagent_orch_v1` | On | Off | On |
 
 `first_prompt_and_subagent_no_orch_v0` is the customer configuration for first-prompt
 and subagent routing without orchestration: `ENABLE_SMART_ROUTING_V2=1`,
@@ -265,8 +266,30 @@ and subagent routing without orchestration: `ENABLE_SMART_ROUTING_V2=1`,
 `ENABLE_SMART_ROUTING_SUBAGENT_ONLY` to `"1"`. Subagent-only takes precedence,
 so first-prompt routing remains off; orchestration is also off.
 
+`subagent_orch_v1` enables all three legacy flags. Like `subagent_only_v1`, it routes
+subagents rather than the first prompt, and it additionally enables orchestration.
+
+The following pairs select equivalent routing settings. Set the variables on the same command
+line (or export them); separate unexported assignments joined by `&&` do not reliably reach UG.
+Use the same `SMART_ROUTER_NAME` on both sides to select the same router.
+
+```bash
+ENABLE_SMART_ROUTING_V2=1 ENABLE_SMART_ROUTING_SUBAGENT_ONLY=1 SMART_ROUTER_NAME=m2-r315-quality-20260929 uv run ug claude
+SMART_ROUTER_CONFIG_VERSION=subagent_only_v1 SMART_ROUTER_NAME=m2-r315-quality-20260929 uv run ug claude
+
+ENABLE_SMART_ROUTING_V2=1 ENABLE_SMART_ROUTING_SUBAGENT_ONLY=1 ENABLE_SMART_ROUTER_ORCHESTRATOR=1 SMART_ROUTER_NAME=m2-r315-quality-20260929 uv run ug claude
+SMART_ROUTER_CONFIG_VERSION=subagent_orch_v1 SMART_ROUTER_NAME=m2-r315-quality-20260929 uv run ug claude
+
+ENABLE_SMART_ROUTING_V2=1 uv run ug claude
+SMART_ROUTER_CONFIG_VERSION=first_prompt_and_subagent_no_orch_v0 uv run ug claude
+```
+
+These pairs assume other routing flags are unset or `"0"`. The version selector overrides
+inherited routing flags; legacy assignments leave unspecified flags inherited.
+The orchestration flag is `ENABLE_SMART_ROUTER_ORCHESTRATOR`, not `ENABLE_SMART_ROUTING_ORCH`.
+
 Smart-routed Claude and Codex sessions install `smart-router`. The `subagent_orch_v0`
-version also installs and activates the bundled `smart-router-orchestrator` skill.
+and `subagent_orch_v1` versions also install and activate the bundled `smart-router-orchestrator` skill.
 For example:
 
 ```bash
@@ -278,8 +301,8 @@ or running any command callbacks, UG expands it into
 `ENABLE_SMART_ROUTING_V2`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY`, and
 `ENABLE_SMART_ROUTER_ORCHESTRATOR` for the launched session. When the version is
 unset or empty, these legacy flags retain their existing behavior, including
-first-prompt routing through `ENABLE_SMART_ROUTING_V2=1`. Unknown versions produce
-an error listing the supported values before setup, authentication, or session changes.
+first-prompt routing through `ENABLE_SMART_ROUTING_V2=1`. Unknown versions are ignored:
+no preset is applied, the inherited environment is unchanged, and commands continue normally.
 Explicit launch/session on/off controls apply after expansion. Orchestration remains off by default.
 Workspace smart-routing defaults do not rewrite the selected version's flags.
 
