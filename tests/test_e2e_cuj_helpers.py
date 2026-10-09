@@ -213,7 +213,19 @@ time.sleep(30)
 @requires_pty
 @pytest.mark.parametrize(
     "view",
-    ["empty", "completed", "resumed", "running", "mixed", "scheduled", "partial", "transcript"],
+    [
+        "empty",
+        "completed",
+        "resumed",
+        "detail_completed",
+        "detail_resumed",
+        "detail_mixed",
+        "running",
+        "mixed",
+        "scheduled",
+        "partial",
+        "transcript",
+    ],
 )
 def test_claude_waits_for_background_task_completion_before_exit(tmp_path, view):
     """An offline terminal fixture requires /tasks, completion, Escape, then /exit."""
@@ -246,7 +258,17 @@ def test_claude_waits_for_background_task_completion_before_exit(tmp_path, view)
         "transcript": ("Background\n\n  Completed (1)\n✔ ug_subagent_one   done · Sonnet 5\n\n❯"),
     }
     views["resumed"] = views["mixed"]
-    complete = view in ("empty", "completed", "resumed")
+    detail = view.startswith("detail_")
+    detail_view = (
+        "Background task update waiting while this panel is open\n"
+        "agent › Read file contents\n"
+        "✔ Completed · 8s · 12.6k tokens · 2 tools · Haiku 4.5\n"
+        "← to go back · Esc/Enter/Space to close · f to foreground"
+    )
+    views["detail_completed"] = views["completed"]
+    views["detail_resumed"] = views["mixed"]
+    views["detail_mixed"] = views["mixed"]
+    complete = view in ("empty", "completed", "resumed", "detail_completed", "detail_resumed")
     script = tmp_path / "ug"
     script.write_text(
         f"""#!{sys.executable}
@@ -262,8 +284,13 @@ print("Background tasks: scheduled task · Runs once in 1m", flush=True)
 time.sleep(0.8)
 previous = termios.tcgetattr(sys.stdin.fileno())
 tty.setraw(sys.stdin.fileno())
-print("\\x1b[2J\\x1b[H" + {views[view]!r}.replace("\\n", "\\r\\n"), flush=True)
-if {view == "resumed"!r}:
+print("\\x1b[2J\\x1b[H" + {(detail_view if detail else views[view])!r}.replace("\\n", "\\r\\n"), flush=True)
+if {detail!r}:
+    assert sys.stdin.read(3) == "\\x1b[D", "Must return to the full task list"
+    time.sleep(0.4)
+    assert not select.select([sys.stdin], [], [], 0)[0], "Repeated navigation before redraw"
+    print("\\x1b[2J\\x1b[H" + {views[view]!r}.replace("\\n", "\\r\\n"), flush=True)
+if {view in ("resumed", "detail_resumed")!r}:
     time.sleep(0.8)
     assert not select.select([sys.stdin], [], [], 0)[0], "Exited with a resumed child running"
     print("\\x1b[2J\\x1b[H" + {views["completed"]!r}.replace("\\n", "\\r\\n"), flush=True)
@@ -286,7 +313,7 @@ assert sys.stdin.readline().strip() == "/exit"
                 if action["reason"] == "close the completed background-task view"
             )
             assert views[view].splitlines()[0] in close["screen_before"]
-            if view == "resumed":
+            if view in ("resumed", "detail_resumed"):
                 assert "Running (1)" not in close["screen_before"]
                 assert "Completed (2)" in close["screen_before"]
         else:

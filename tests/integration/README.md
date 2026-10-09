@@ -62,6 +62,9 @@ completed task rows before submitting `/exit`. Claude 2.1.290 retains finished c
 checkmarked `done` rows and no running or scheduled section. The helper observes menu dismissal
 after Escape before typing `/exit`. Offline PTY checks reject active/scheduled tasks, partial
 lists, and completed-task text outside the native menu.
+When `/tasks` opens a single agent's detail panel, the helper presses Left to return to
+the full task list before checking completion. Offline PTY cases cover completed details,
+a child that resumes, and another task that remains running.
 It neither stops tasks nor confirms an exit dialog. Process exit retains its 30-second
 timeout. Offline PTY checks cover this ordering.
 The shared wait also runs before CUJ4's Claude preset sessions exit, after delegated-task
