@@ -83,7 +83,7 @@ def test_ug_configure_managed_codex(live_session, workspace):
     bare_models = session.codex_model_ids(
         ["app-server", "--listen", "stdio://"],
         name="bare-managed-codex-models",
-        binary="codex",
+        binary=session.which("codex"),
     )
     assert bare_models == [MANAGED_CODEX_MODEL], bare_models
 

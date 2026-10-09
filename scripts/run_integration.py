@@ -7,6 +7,7 @@ or the developer's installed agents. Only the live workspace is shared with e2e.
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 import contextlib
 import datetime as dt
@@ -38,6 +39,10 @@ UV_INDEX_CREDENTIAL_ENV = (
 )
 NPM_TOKEN_ENV = "UG_INTEGRATION_NPM_TOKEN"
 INSTALLER_CREDENTIAL_ENV = (*UV_INDEX_CREDENTIAL_ENV, NPM_TOKEN_ENV)
+PTY_MODULES = {"pexpect", "pyte"}
+PTY_HELPERS = {"utils.terminal", "utils.mcp"}
+# Claude exports no spans on Windows, where ug writes no machine-wide Claude settings.
+WINDOWS_UNSUPPORTED_MODULES = {"test_ug_claude_tracing.py"}
 HEADLESS_TEST_NODES = {
     "claude": "test_ug_claude_headless.py::test_ug_claude_headless_prompt_argument",
     "codex": "test_ug_codex_headless.py::test_ug_codex_headless_prompt_argument",
@@ -160,7 +165,33 @@ def integration_test_targets(
         return targets
     if platform_name == "nt" and installation_only:
         return [str(suite / "test_installation.py")]
+    if platform_name == "nt":
+        return [
+            str(module)
+            for module in sorted(suite.glob("test_*.py"))
+            if module.name not in WINDOWS_UNSUPPORTED_MODULES and not uses_pty(module)
+        ]
     return [str(suite)]
+
+
+def uses_pty(module: Path) -> bool:
+    """Whether a suite module drives agents through the POSIX-only PTY helpers."""
+    imported_names = []
+    for node in ast.walk(ast.parse(module.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.ImportFrom):
+            imported_names.append(node.module or "")
+            imported_names.extend(
+                f"{node.module}.{alias.name}" if node.module else alias.name
+                for alias in node.names
+                if alias.name != "*"
+            )
+        elif isinstance(node, ast.Import):
+            imported_names.extend(alias.name for alias in node.names)
+    return any(
+        name.split(".")[0] in PTY_MODULES
+        or any(name == helper or name.endswith(f".{helper}") for helper in PTY_HELPERS)
+        for name in imported_names
+    )
 
 
 def process_group_options() -> dict:
@@ -359,11 +390,6 @@ def arguments(
         "pytest_args", nargs=argparse.REMAINDER, help="After --, pass pytest filters."
     )
     args = parser.parse_args(argv)
-    if platform_name != "posix" and not (args.installation_only or args.headless_only):
-        parser.error(
-            "Live agent/TUI integration requires POSIX PTY, managed-settings, and signal "
-            "support. Use --installation-only or --headless-only on Windows."
-        )
     # Only selection/early-stop controls are accepted. Pytest configuration,
     # plugins and report destinations are part of the suite's isolation contract.
     filters = argparse.ArgumentParser(add_help=False)
@@ -529,7 +555,8 @@ def main() -> int:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
         ) as proc:
             try:
                 stdout, stderr = proc.communicate(timeout=timeout)
@@ -793,7 +820,8 @@ def main() -> int:
                 ],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
+                encoding="utf-8",
+                errors="replace",
                 stdin=subprocess.DEVNULL,
             ) as auth:
                 auth_stdout, _ = auth.communicate(timeout=30)

@@ -25,6 +25,8 @@ from .helpers.skills import (
     skills_view,
 )
 
+CUJ_NAME = "CUJ 3 · UC skill discovery"
+
 SCHEMA_SKILLS = tuple(
     map(
         skill_name,

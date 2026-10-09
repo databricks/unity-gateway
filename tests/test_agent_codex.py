@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -764,7 +765,9 @@ class TestCodexRevertLegacySharedConfig:
         catalog_path = codex.CODEX_MODEL_CATALOG_PATH
         catalog_path.write_text("{}", encoding="utf-8")
         shared_path.write_text(
-            f'model_catalog_json = "{catalog_path}"\npersonality = "friendly"\n',
+            "model_catalog_json = "
+            + json.dumps(str(catalog_path))
+            + '\npersonality = "friendly"\n',
             encoding="utf-8",
         )
         assert codex.revert_legacy_shared_config() is True
@@ -836,7 +839,7 @@ class TestCodexAppCatalog:
         shared_path.write_text(
             original
             + (
-                f'model_catalog_json = "{codex.CODEX_MODEL_CATALOG_PATH}"\n'
+                "model_catalog_json = " + json.dumps(str(codex.CODEX_MODEL_CATALOG_PATH)) + "\n"
                 if previous_catalog
                 else ""
             ),
@@ -1004,7 +1007,10 @@ class TestCodexLaunch:
             shared_path.write_text(f'model_catalog_json = "{custom_catalog}"\n')
         profile_path = codex.CODEX_CONFIG_PATH
         profile_path.write_text(
-            f'model_catalog_json = "{codex.CODEX_MODEL_CATALOG_PATH}"\n' + profile_path.read_text()
+            "model_catalog_json = "
+            + json.dumps(str(codex.CODEX_MODEL_CATALOG_PATH))
+            + "\n"
+            + profile_path.read_text()
         )
         monkeypatch.setattr(
             codex,
@@ -1067,7 +1073,7 @@ class TestCodexLaunch:
         assert read_toml_safe(tmp_path / "config.toml")["model_catalog_json"] == str(
             app_catalog_path
         )
-        assert f'model_catalog_json="{catalog_path}"' in launches[0]
+        assert "model_catalog_json=" + json.dumps(str(catalog_path)) in launches[0]
         assert fetch_kwargs == {
             "source": codex.CodexCatalogSource.PROVIDER,
             "identifier": "main.default.openai",
@@ -1225,7 +1231,7 @@ class TestCodexLaunch:
         )
 
         assert catalog_path.exists()
-        assert f'model_catalog_json="{catalog_path}"' in launches[0]
+        assert "model_catalog_json=" + json.dumps(str(catalog_path)) in launches[0]
         assert fetch_kwargs == {
             "source": codex.CodexCatalogSource.PARENT_SCHEMA,
             "identifier": "main.default",
@@ -1467,7 +1473,7 @@ class TestCodexLaunch:
         path = tmp_path / "models.json"
         monkeypatch.setattr(codex.os, "replace", lambda *args: (_ for _ in ()).throw(OSError()))
 
-        with pytest.raises(RuntimeError, match=str(path)):
+        with pytest.raises(RuntimeError, match=re.escape(str(path))):
             codex._write_model_catalog(path, {"models": [{"slug": "gpt-mps"}]})
 
         assert list(tmp_path.glob(".models.json.*.tmp")) == []
@@ -1481,7 +1487,7 @@ class TestCodexLaunch:
             lambda *args, **kwargs: (_ for _ in ()).throw(OSError()),
         )
 
-        with pytest.raises(RuntimeError, match=str(path)):
+        with pytest.raises(RuntimeError, match=re.escape(str(path))):
             codex._write_model_catalog(path, {"models": [{"slug": "gpt-mps"}]})
 
     def test_injects_otel_config_when_tracing_enabled(self, tmp_path, monkeypatch):
@@ -1674,7 +1680,7 @@ class TestCodexManagedConfig:
         assert doc["approval_policy"] == "on-request"
         assert "model" not in doc
 
-    def _sudo_counting_env(self, tmp_path, monkeypatch):
+    def _sudo_counting_env(self, tmp_path, monkeypatch, *, non_interactive=False):
         """Real reconcile flow (semantic no-op check included) with sudo writes counted."""
         config_path = tmp_path / ".codex" / "ucode.config.toml"
         managed_path = tmp_path / "etc-codex" / "managed_config.toml"
@@ -1683,16 +1689,24 @@ class TestCodexManagedConfig:
         monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "codex-ucode-config.backup.toml")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.134.0")
         monkeypatch.setattr(codex, "save_state", lambda state: None)
-        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: not non_interactive)
         monkeypatch.setattr(codex, "codex_managed_config_path", lambda: managed_path)
         monkeypatch.setattr(managed_files, "managed_files_supported", lambda: True)
-        monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: not non_interactive)
         monkeypatch.setattr(managed_files, "MANAGED_BACKUP_DIR", tmp_path / "managed-backups")
         monkeypatch.setattr(
             managed_files, "MANAGED_BACKUP_MANIFEST_PATH", tmp_path / "managed-backups" / "m.json"
         )
 
+        if non_interactive:
+            monkeypatch.setattr(
+                managed_files,
+                "_print_managed_write_permission",
+                lambda *args: pytest.fail("headless repair must not ask for a password"),
+            )
+
         def _write(target, text):
+            assert target == managed_path
             sudo_writes.append(text)
             Path(target).parent.mkdir(parents=True, exist_ok=True)
             Path(target).write_text(text, encoding="utf-8")
@@ -1816,28 +1830,50 @@ class TestCodexManagedConfig:
         _, managed_path = self._patch(tmp_path, monkeypatch)
         monkeypatch.setattr(codex, "managed_writes_allowed", lambda: False)
         state = {"workspace": WS, "codex_models": ["gpt-5"]}
+
         codex.write_tool_config(state)
+
         assert not managed_path.exists()
 
-    def test_noninteractive_preserves_unrelated_managed_config(self, tmp_path, monkeypatch):
-        _, managed_path = self._patch(tmp_path, monkeypatch)
-        managed_path.parent.mkdir(parents=True, exist_ok=True)
+    def test_noninteractive_compatible_managed_config_is_read_only(self, tmp_path, monkeypatch):
+        managed_path, sudo_writes = self._sudo_counting_env(
+            tmp_path, monkeypatch, non_interactive=True
+        )
         original = 'approval_policy = "on-request"\n'
-        managed_path.write_text(original, encoding="utf-8")
-        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: False)
-
-        codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
-
-        assert managed_path.read_text(encoding="utf-8") == original
-
-    def test_noninteractive_fails_when_managed_config_conflicts(self, tmp_path, monkeypatch):
-        _, managed_path = self._patch(tmp_path, monkeypatch)
         managed_path.parent.mkdir(parents=True, exist_ok=True)
-        managed_path.write_text('model_provider = "enterprise"\n', encoding="utf-8")
-        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: False)
+        managed_path.write_text(original, encoding="utf-8")
+        before = managed_files.managed_file_fingerprint(managed_path)
+        state = {"workspace": WS, "codex_models": ["gpt-5"]}
 
-        with pytest.raises(RuntimeError, match="cannot be applied non-interactively"):
-            codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+        codex.write_tool_config(state)
+
+        assert read_toml_safe(codex.CODEX_CONFIG_PATH)["model_provider"] == "Databricks"
+        assert managed_files.read_managed_file(managed_path) == original
+        assert managed_files.managed_file_fingerprint(managed_path) == before
+        assert sudo_writes == []
+        assert not managed_files.MANAGED_BACKUP_DIR.exists()
+        assert state["managed_file_fingerprints"]["codex"]["scope"] == "local-compatible"
+        assert codex.managed_config_is_current(state)
+
+    def test_noninteractive_repairs_conflicting_managed_config_without_prompting(
+        self, tmp_path, monkeypatch
+    ):
+        managed_path, sudo_writes = self._sudo_counting_env(
+            tmp_path, monkeypatch, non_interactive=True
+        )
+        managed_path.parent.mkdir(parents=True, exist_ok=True)
+        original = 'model_provider = "enterprise"\napproval_policy = "on-request"\n'
+        managed_path.write_text(original, encoding="utf-8")
+        state = {"workspace": WS, "codex_models": ["gpt-5"]}
+
+        codex.write_tool_config(state)
+
+        written = read_toml_safe(managed_path)
+        local_provider = read_toml_safe(codex.CODEX_CONFIG_PATH)["model_providers"]["Databricks"]
+        assert written["model_provider"] == "Databricks"
+        assert written["approval_policy"] == "on-request"
+        assert written["model_providers"]["Databricks"] == local_provider
+        assert len(sudo_writes) == 1
 
     def test_invalid_managed_toml_is_not_modified(self, tmp_path, monkeypatch):
         _, managed_path = self._patch(tmp_path, monkeypatch)
@@ -1877,10 +1913,14 @@ class TestCodexManagedConfig:
         assert "continuing with local settings" in warnings[0]
         assert verified == [{"scope": "local-compatible"}]
 
-    def test_sudo_failure_remains_fatal_when_managed_config_conflicts(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("interactive", [False, True])
+    def test_sudo_failure_remains_fatal_when_managed_config_conflicts(
+        self, tmp_path, monkeypatch, interactive
+    ):
         _, managed_path = self._patch(tmp_path, monkeypatch)
         managed_path.parent.mkdir(parents=True, exist_ok=True)
         managed_path.write_text('model_provider = "enterprise"\n', encoding="utf-8")
+        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: interactive)
 
         def deny_managed_write(*args, **kwargs):
             raise managed_files.ManagedFileWriteUnavailable("sudo denied")

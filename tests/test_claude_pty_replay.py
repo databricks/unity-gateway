@@ -17,7 +17,12 @@ import threading
 import time
 from pathlib import Path
 
-from ucode.smart_routing import claude_pty
+import pytest
+
+if sys.platform != "win32":
+    from ucode.smart_routing import claude_pty
+
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="Claude PTY routing is POSIX-only")
 
 # ---------------------------------------------------------------------------
 # Helpers shared across tests
