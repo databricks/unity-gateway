@@ -199,7 +199,7 @@ def _provider_block(
         auth_argv = build_custom_auth_token_argv(workspace, custom_oauth)
     else:
         auth_argv = build_auth_token_argv(workspace, databricks_profile, use_pat=use_pat)
-    base_url = build_tool_base_url(AGENT_CODEX, workspace)
+    base_url = build_tool_base_url("codex", workspace)
     http_headers = {
         "User-Agent": f"ucode/{ug_version()} codex/{agent_version('codex')}",
     }
@@ -391,7 +391,7 @@ def configured_paths(state: dict) -> list[str]:
     if (
         isinstance(static_models, list)
         and static_models
-        and not get_provider_service(state, AGENT_CODEX)
+        and not get_provider_service(state, "codex")
     ):
         paths.append(str(CODEX_MODEL_CATALOG_PATH))
     return paths
@@ -448,7 +448,7 @@ def write_tool_config(
                 profiles[CODEX_PROFILE_NAME].pop(key, None)
         _set_provider_header(doc, None)
         write_toml_file(LEGACY_CODEX_CONFIG_PATH, doc)
-        state = mark_tool_managed(state, AGENT_CODEX, LEGACY_MANAGED_KEYS)
+        state = mark_tool_managed(state, "codex", LEGACY_MANAGED_KEYS)
         save_state(state)
         return state
 
@@ -469,7 +469,7 @@ def write_tool_config(
     # Back up only a file that predates ucode's management of the tool. A
     # re-configure would otherwise snapshot ucode's own generated file, and
     # revert would restore that snapshot instead of deleting the file.
-    if not is_tool_managed(state, AGENT_CODEX):
+    if not is_tool_managed(state, "codex"):
         backup_existing_file(CODEX_CONFIG_PATH, CODEX_BACKUP_PATH)
     overlay = render_overlay(
         workspace,
@@ -515,7 +515,7 @@ def write_tool_config(
     )
     write_toml_file(CODEX_CONFIG_PATH, doc)
     _reconcile_managed_config(state, lambda base: compose(base, include_catalog=False))
-    state = mark_tool_managed(state, AGENT_CODEX, MANAGED_KEYS)
+    state = mark_tool_managed(state, "codex", MANAGED_KEYS)
     save_state(state)
     return state
 
@@ -567,18 +567,18 @@ def managed_config_is_current(state: dict) -> bool:
     if path is None:
         return True
     required_scope = "managed" if managed_writes_allowed() else None
-    return managed_file_is_verified(state, AGENT_CODEX, path, required_scope=required_scope)
+    return managed_file_is_verified(state, "codex", path, required_scope=required_scope)
 
 
 def managed_config_status(state: dict) -> tuple[Path | None, str, str]:
     path = codex_managed_config_path()
-    status, backup = managed_file_status(state, AGENT_CODEX, path, parser=_parse_managed_config)
+    status, backup = managed_file_status(state, "codex", path, parser=_parse_managed_config)
     return path, status, backup
 
 
 def revert_managed_config() -> str:
     return revert_managed_file(
-        AGENT_CODEX,
+        "codex",
         display="Codex",
         parser=_parse_managed_config,
         dumper=tomlkit.dumps,
@@ -611,13 +611,13 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
     desired_doc = compose(existing)
     conflicts = managed_file_conflicts(managed_before, desired_doc, MANAGED_KEYS)
     if not managed_writes_allowed() and not conflicts:
-        mark_managed_file_verified(state, AGENT_CODEX, path, scope="local-compatible")
+        mark_managed_file_verified(state, "codex", path, scope="local-compatible")
         return
     try:
         reconcile_managed_file(
             path,
             tomlkit.dumps(desired_doc),
-            tool=AGENT_CODEX,
+            tool="codex",
             display="Codex",
             owned_paths=MANAGED_KEYS,
             parser=_parse_managed_config,
@@ -629,9 +629,9 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
             f"Codex OS-managed settings could not be updated at {path}; continuing with local "
             f"settings at {CODEX_CONFIG_PATH}."
         )
-        mark_managed_file_verified(state, AGENT_CODEX, path, scope="local-compatible")
+        mark_managed_file_verified(state, "codex", path, scope="local-compatible")
         return
-    mark_managed_file_verified(state, AGENT_CODEX, path)
+    mark_managed_file_verified(state, "codex", path)
 
 
 MANAGED_MCP_CONFIG_KEY = "mcp_servers"
@@ -774,7 +774,7 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
         reconcile_managed_file(
             path,
             tomlkit.dumps(existing),
-            tool=AGENT_CODEX,
+            tool="codex",
             display="Codex",
             owned_paths=[[MANAGED_MCP_CONFIG_KEY]],
             parser=_parse_managed_config,
@@ -783,9 +783,7 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
         return False
     # Preserve the scope the model reconcile recorded (e.g. relay-compatible); an MCP-only write only
     # refreshes the fingerprint, it does not change how the file relates to the model settings.
-    mark_managed_file_verified(
-        state, AGENT_CODEX, path, scope=managed_file_scope(state, AGENT_CODEX)
-    )
+    mark_managed_file_verified(state, "codex", path, scope=managed_file_scope(state, "codex"))
     return True
 
 
@@ -860,7 +858,7 @@ def clear_model_preferences(state: dict) -> bool:
     if changed:
         # Never snapshot ucode's own generated file here; revert would restore
         # the snapshot instead of deleting the file.
-        if not is_tool_managed(state, AGENT_CODEX):
+        if not is_tool_managed(state, "codex"):
             backup_existing_file(CODEX_CONFIG_PATH, CODEX_BACKUP_PATH)
         write_toml_file(CODEX_CONFIG_PATH, doc)
     return changed
@@ -1141,7 +1139,7 @@ def launch(
     # Launch-scoped admin routing wins over persisted developer configuration. A transient provider
     # is most specific; otherwise a transient UC parent must suppress a saved provider.
     provider = transient_provider or (
-        None if parent_schema else get_provider_service(state, AGENT_CODEX)
+        None if parent_schema else get_provider_service(state, "codex")
     )
     if workspace and (provider or parent_schema):
         _reject_managed_model_catalog()

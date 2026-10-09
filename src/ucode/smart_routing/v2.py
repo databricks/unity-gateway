@@ -366,7 +366,7 @@ def _request_claude_routing_decision(
         available.setdefault(_claude_router_model_id(model), model)
     if not available:
         return None, "Anthropic models endpoint returned no Claude models"
-    route_options = [(model, AGENT_CLAUDE) for model in available]
+    route_options = [(model, "claude") for model in available]
     return routing.select_route(
         workspace,
         token,
@@ -565,7 +565,7 @@ def launch_claude(
     sync_smart_routing_hooks(settings, routing_state, enabled=True)
     if route_first_prompt:
         sync_first_prompt_hook(settings, hook_executable)
-    orchestrator.sync_hooks(settings, agent=AGENT_CLAUDE)
+    orchestrator.sync_hooks(settings, agent="claude")
     model_setting = _ClaudeModelSettingGuard(user_settings_path)
 
     def route_prompt(prompt: str) -> claude_pty.FirstPromptRoute:
@@ -585,7 +585,7 @@ def launch_claude(
             plugin_dir = launch_dir / "plugin"
             if route_first_prompt:
                 env[FIRST_PROMPT_SOCKET_ENV] = str(socket_path)
-            session_path = _prepare_smart_router_session(AGENT_CLAUDE)
+            session_path = _prepare_smart_router_session("claude")
             env[SESSION_ENV_VAR] = str(session_path)
             env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
             try:
@@ -638,7 +638,7 @@ def _v2_hooks(state: dict, available_models: list[str]) -> dict:
             "PreToolUse": merge_pre_tool_use_hooks([], state, available_models=available_models),
         }
     }
-    orchestrator.sync_hooks(doc, agent=AGENT_CODEX)
+    orchestrator.sync_hooks(doc, agent="codex")
     return doc["hooks"]
 
 
@@ -682,7 +682,7 @@ def launch_codex(
         overlay["model_catalog_json"] = str(catalog_path)
     overlay["hooks"] = _v2_hooks(state, available_models)
     overlay["features.hooks"] = True
-    session_env_path = _prepare_smart_router_session(AGENT_CODEX)
+    session_env_path = _prepare_smart_router_session("codex")
     # Codex constructs tool subprocess environments through its shell policy.
     # Pass both the session marker and its launching interpreter through that policy.
     overlay[f"shell_environment_policy.set.{SESSION_ENV_VAR}"] = str(session_env_path)

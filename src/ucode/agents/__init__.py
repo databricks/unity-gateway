@@ -16,7 +16,6 @@ import subprocess
 from pathlib import Path
 
 from ucode.config_io import ToolSpec
-from ucode.constants import AGENT_CLAUDE, AGENT_CODEX
 from ucode.databricks import (
     AnthropicModelCatalog,
     get_databricks_token,
@@ -48,8 +47,8 @@ from .args import LaunchOptions as LaunchOptions
 from .args import explicit_model_arg_value as explicit_model_arg_value
 
 _MODULES = {
-    AGENT_CODEX: codex,
-    AGENT_CLAUDE: claude,
+    "codex": codex,
+    "claude": claude,
     "gemini": gemini,
     "opencode": opencode,
     "copilot": copilot,
@@ -64,9 +63,9 @@ TOOL_SPECS: dict[str, ToolSpec] = {name: module.SPEC for name, module in _MODULE
 # rejects it and the model-config paths never see it. The `configure`/MCP flows
 # handle "cursor" separately as an MCP-only client (see MCP_ONLY_CLIENTS).
 TOOL_ALIASES = {
-    AGENT_CODEX: AGENT_CODEX,
-    AGENT_CLAUDE: AGENT_CLAUDE,
-    "claude-code": AGENT_CLAUDE,
+    "codex": "codex",
+    "claude": "claude",
+    "claude-code": "claude",
     "gemini": "gemini",
     "gemini-cli": "gemini",
     "opencode": "opencode",
@@ -74,18 +73,18 @@ TOOL_ALIASES = {
     "pi": "pi",
 }
 
-DEFAULT_TOOL = AGENT_CODEX
+DEFAULT_TOOL = "codex"
 BUNDLE_VERSION = 1
-_MANAGED_SETTINGS_TOOLS = {AGENT_CLAUDE, AGENT_CODEX}
+_MANAGED_SETTINGS_TOOLS = {"claude", "codex"}
 _NATIVE_UPGRADE_COMMANDS = {
-    AGENT_CLAUDE: ["claude", "upgrade"],
-    AGENT_CODEX: ["codex", "update"],
+    "claude": ["claude", "upgrade"],
+    "codex": ["codex", "update"],
 }
 
 # ucode tool -> `databricks aitools` agent id. gemini/pi aren't supported.
 AITOOLS_AGENT_TOKENS = {
-    AGENT_CLAUDE: "claude-code",
-    AGENT_CODEX: "codex",
+    "claude": "claude-code",
+    "codex": "codex",
     "opencode": "opencode",
     "copilot": "copilot",
 }
@@ -138,7 +137,7 @@ def _update_installed_tool_binary(tool: str, version: str | None = None) -> bool
         command = ["npm", "install", "-g", target]
 
     print_note(f"Upgrading {spec['display']}...")
-    if tool == AGENT_CODEX:
+    if tool == "codex":
         # Detach potentially incompatible metadata until the next validated refresh.
         codex.detach_app_model_catalog()
     try:
@@ -231,7 +230,7 @@ def install_tool_binary(
 
     print_section("Bootstrap")
     print_warning(f"`{binary}` was not found. Installing {spec['display']}...")
-    if tool == AGENT_CODEX:
+    if tool == "codex":
         codex.detach_app_model_catalog()
     try:
         subprocess_cross_os.run(
@@ -308,7 +307,7 @@ def resolve_launch_model(
 ) -> tuple[dict, str | None]:
     model = explicit_model or default_model_for_tool(tool, state)
     # if model is not specified for codex, then launch with harness's default model.
-    if not model and tool != AGENT_CODEX:
+    if not model and tool != "codex":
         raise RuntimeError(
             f"No models available for {tool}. Run `ucode configure` to set up your workspace."
         )
@@ -346,7 +345,7 @@ def resolve_provider_models(
     # Only Claude pins per-family model ids. Codex ignores this map, and gemini resolves
     # its target through resolve_gemini_provider_model instead — so mapping their targets
     # through Claude-family logic would be meaningless (see docstring).
-    if tool != AGENT_CLAUDE:
+    if tool != "claude":
         return None, None, relayed
     return map_claude_family_models(service.get("targets") or []) or None, None, relayed
 
@@ -416,11 +415,11 @@ def configure_tool(
     previous = smart_routing_v2.apply_config(agent=tool)
     try:
         result: dict | tuple[dict, str]
-        if tool == AGENT_CODEX:
+        if tool == "codex":
             result = codex.write_tool_config(
                 state, model, provider=provider, parent_schema=parent_schema
             )
-        elif tool == AGENT_CLAUDE:
+        elif tool == "claude":
             # A Model Provider Service or parent schema routes by header and discovers models natively,
             # so the usual "model required" guard doesn't apply to either Claude source.
             if not model and not provider and not parent_schema:
@@ -489,11 +488,11 @@ def launch(
 
 def check_gateway_endpoint(state: dict, tool: str) -> bool:
     """V2-only: a tool is available iff we discovered models for it."""
-    if tool == AGENT_CLAUDE:
+    if tool == "claude":
         return bool(state.get("claude_models"))
     if tool == "opencode":
         return bool(state.get("opencode_models"))
-    if tool == AGENT_CODEX:
+    if tool == "codex":
         return bool(state.get("codex_models"))
     if tool == "gemini":
         return bool(state.get("gemini_models"))
@@ -571,8 +570,8 @@ def _configure_one(
         return configure_tool(
             tool, state, None, provider=provider, provider_models=provider_models, relayed=relayed
         )
-    if tool == AGENT_CODEX:
-        return configure_tool(AGENT_CODEX, state)
+    if tool == "codex":
+        return configure_tool("codex", state)
     state, model = resolve_launch_model(tool, state, None)
     return configure_tool(tool, state, model)
 
