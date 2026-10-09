@@ -88,7 +88,11 @@ def test_windows_live_runs_select_every_module_except_unsupported_ones(tmp_path)
         platform_name="nt",
         installation_only=False,
         headless_only=False,
-    ) == [str(tmp_path / "test_headless.py"), str(tmp_path / "test_tui.py")]
+    ) == [
+        str(tmp_path / "test_headless.py"),
+        str(tmp_path / "test_tui.py"),
+        *(f"--deselect={tmp_path / node}" for node in sorted(runner.WINDOWS_UNSUPPORTED_NODES)),
+    ]
     assert runner.integration_test_targets(
         tmp_path,
         ["claude"],

@@ -40,6 +40,10 @@ NPM_TOKEN_ENV = "UG_INTEGRATION_NPM_TOKEN"
 INSTALLER_CREDENTIAL_ENV = (*UV_INDEX_CREDENTIAL_ENV, NPM_TOKEN_ENV)
 # Claude exports no spans on Windows, where ug writes no machine-wide Claude settings.
 WINDOWS_UNSUPPORTED_MODULES = {"test_ug_claude_tracing.py"}
+# These seed machine-wide managed settings, which ug has no Windows path for.
+WINDOWS_UNSUPPORTED_NODES = {
+    "test_ug_configure_claude_lifecycle.py::test_unmanaged_claude_preserves_preexisting_family_defaults",
+}
 HEADLESS_TEST_NODES = {
     "claude": "test_ug_claude_headless.py::test_ug_claude_headless_prompt_argument",
     "codex": "test_ug_codex_headless.py::test_ug_codex_headless_prompt_argument",
@@ -163,11 +167,13 @@ def integration_test_targets(
     if platform_name == "nt" and installation_only:
         return [str(suite / "test_installation.py")]
     if platform_name == "nt":
-        return [
+        modules = [
             str(module)
             for module in sorted(suite.glob("test_*.py"))
             if module.name not in WINDOWS_UNSUPPORTED_MODULES
         ]
+        deselected = [f"--deselect={suite / node}" for node in sorted(WINDOWS_UNSUPPORTED_NODES)]
+        return [*modules, *deselected]
     return [str(suite)]
 
 

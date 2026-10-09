@@ -493,11 +493,28 @@ class AgentTerminal(TerminalProcess):
                     rf'(?m)^\s*find {project_root} -name ["\']{filename}["\'] 2>/dev/null\s*$',
                     screen,
                 )
-                first_yes = re.search(r"(?m)^\s*[›❯>]\s*1\.\s*Yes\s*$", screen)
+                first_yes = re.search(rf"(?m)^\s*{SELECTED}\s*1\.\s*Yes\s*$", screen)
                 assert self.agent == "claude" and safe_find and first_yes, (
                     "Agent requested an unrecognized tool permission:\n" + screen
                 )
                 self.send("\r", f"allow read-only search for {task.filename}")
+                permission_in_progress = True
+                return False
+            if "Would you like to run the following command?" in screen:
+                if permission_in_progress:
+                    return False
+                # Codex on Windows asks before reading files; approve only a plain fixture read.
+                filename = re.escape(task.filename)
+                safe_read = re.search(
+                    rf"(?m)^\s*\$ (?:type|cat|Get-Content(?: -Raw)?(?: -LiteralPath)?) "
+                    rf"[\"']?{filename}[\"']?\s*$",
+                    screen,
+                )
+                first_yes = re.search(rf"(?m)^\s*{SELECTED}\s*1\.\s*Yes, proceed", screen)
+                assert self.agent == "codex" and os.name == "nt" and safe_read and first_yes, (
+                    "Agent requested an unrecognized command approval:\n" + screen
+                )
+                self.send("\r", f"allow read-only read of {task.filename}")
                 permission_in_progress = True
                 return False
             permission_in_progress = False
