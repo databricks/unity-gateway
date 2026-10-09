@@ -438,3 +438,9 @@ no-mocking boundary and the Scenario/Expected docstring format.
 Native launch-option component tests (`native_claude/test_mod.py`) check two real Claude
 processes with different resolved routing baselines. Python cases cover Claude-specific presets,
 unknown selectors, and absent versus empty flags. These checks do not establish gateway/TUI coverage.
+
+Native Claude component checks exercise the installed smart-router skill with the mod:
+complete off/on restoration, process isolation, clear/reload, compaction, and real parent/Agent
+request payloads against a local fixture API. Mod unit cases cover absent/empty flags,
+invalid JSON and arguments, orchestration-only inactivity, and rollback after denied writes.
+These are not live gateway or interactive TUI results.
