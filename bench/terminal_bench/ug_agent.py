@@ -41,7 +41,7 @@ class _UgAgent(BaseInstalledAgent):
     async def install(self, environment: BaseEnvironment) -> None:
         wheel = Path(_required_env("UG_BENCH_WHEEL"))
         await self.ensure_system_dependencies(
-            environment, ("curl", "bash", "git", "ca_certificates", "procps")
+            environment, ("curl", "bash", "git", "ca_certificates", "procps", "unzip")
         )
         await environment.upload_file(wheel, str(INSTALL_DIR / wheel.name))
         await self.exec_as_root(
