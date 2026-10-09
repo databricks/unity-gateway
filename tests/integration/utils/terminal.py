@@ -27,6 +27,7 @@ SELECTED = "[›❯>]"
 READ_ONLY_COMMANDS = {
     "cat",
     "dir",
+    "echo",
     "gc",
     "gci",
     "get-childitem",
@@ -38,10 +39,10 @@ READ_ONLY_COMMANDS = {
     "test-path",
     "type",
 }
-# Pipeline stages that only filter or project: a property comparison or a property read.
+# Pipeline stages that only filter or project: a property comparison, read, or pass-through.
 READ_ONLY_STAGE = re.compile(
     r"(?i)(?:where-object|\?) \{ ?\$_\.\w+ -(?:eq|ne|like|match) '[^']*' ?\}"
-    r"|(?:foreach-object|%) \{ ?\$_\.\w+ ?\}"
+    r"|(?:foreach-object|%) \{ ?\$_(?:\.\w+)? ?\}"
     r"|select-object(?: -(?:first|last) \d+| -expandproperty \w+)*"
 )
 # A PowerShell host wrapper whose flags only change how the shell starts.
@@ -55,9 +56,14 @@ def read_only_command(line: str) -> bool:
     """Whether a command shown in a Codex approval prompt only lists or reads files."""
     command = POWERSHELL_WRAPPER.sub("", line.strip())
     command = command.strip("\"'")
-    if not command or re.search(r"[;&<>`]|\$\(", command):
+    # Sequenced commands (`;`, `&&`) must each be reads; redirects and subexpressions never are.
+    if not command or re.search(r"[<>`]|\$\(|\|\||(?<!&)&(?!&)", command):
         return False
-    first, *stages = (stage.strip() for stage in command.split("|"))
+    return all(_read_only_pipeline(part.strip()) for part in re.split(r";|&&", command))
+
+
+def _read_only_pipeline(pipeline: str) -> bool:
+    first, *stages = (stage.strip() for stage in pipeline.split("|"))
     return (
         bool(first)
         and first.split()[0].lower() in READ_ONLY_COMMANDS
