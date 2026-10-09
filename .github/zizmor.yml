@@ -1,0 +1,7 @@
+rules:
+  # CI installs the agent CLIs under test straight from npm; lockfiles don't apply.
+  adhoc-packages:
+    disable: true
+  # Keep `./` for local reusable workflows until `$/` support is confirmed on GHES/actionlint.
+  self-repository:
+    disable: true
