@@ -6,9 +6,12 @@ inspect what's configured (`cat ~/.copilot/.env`) and to give `revert` something
 to clean up; the values are also injected directly into the child process's
 environment at launch.
 
-We point Copilot CLI's `openai` provider at the Databricks MLflow gateway. GPT
-models with major version 6 or newer use Responses; other models use Chat
-Completions. Copilot fixes its wire API and model when it builds the native
+System Claude models (`system.ai.claude-*`) use Copilot CLI's `anthropic` provider against the gateway's
+Anthropic endpoint, with `COPILOT_PROVIDER_MODEL_ID` set to Copilot's catalog id
+for the model so Copilot sends Claude request settings. Other models use the
+`openai` provider against the Databricks MLflow gateway: GPT models with major
+version 5 or newer use Responses, because Copilot sends `temperature: 0` on Chat
+Completions and those models accept only the default; the rest use Chat Completions. Copilot fixes its wire API and model when it builds the native
 client, so changing models in the picker cannot change either mid-session.
 Relaunch Copilot after changing model families. Gemini is intentionally excluded
 — Databricks' Gemini translation layer rejects the `stream_options` field that
@@ -36,6 +39,7 @@ from ucode.config_io import (
 from ucode.databricks import (
     TOKEN_REFRESH_INTERVAL_SECONDS,
     build_copilot_base_url,
+    build_tool_base_url,
     get_databricks_token,
 )
 from ucode.os_compatibility import subprocess_cross_os
@@ -61,6 +65,7 @@ MANAGED_KEYS: list[str] = [
     "COPILOT_PROVIDER_TYPE",
     "COPILOT_PROVIDER_BASE_URL",
     "COPILOT_PROVIDER_WIRE_API",
+    "COPILOT_PROVIDER_MODEL_ID",
     "COPILOT_MODEL",
     "COPILOT_PROVIDER_BEARER_TOKEN",
     "COPILOT_OFFLINE",
@@ -74,10 +79,33 @@ LEGACY_ENV_KEYS = [
 _GPT_MODEL_MAJOR_PATTERN = re.compile(r"^(?:system\.ai\.)?(?:databricks-)?gpt-(\d+)(?=$|[.-])")
 
 
+_SYSTEM_CLAUDE_MODEL_PATTERN = re.compile(r"^system\.ai\.(claude-[^\[]+)(?:\[[^\]]*\])?$")
+_CLAUDE_DASHED_VERSION_PATTERN = re.compile(r"-(\d+)-(\d+)$")
+_CLAUDE_HAIKU_MAJOR_PATTERN = re.compile(r"^claude-haiku-(\d+)")
+
+
+def copilot_catalog_model_id(model: str) -> str | None:
+    """Copilot's catalog id for a system Claude model, e.g. ``system.ai.claude-sonnet-5-5`` -> ``claude-sonnet-5.5``.
+
+    Copilot applies Claude request settings to any ``claude-*`` id, so ids missing from its catalog still work.
+    Returns None for anything other than ``system.ai.claude-*``.
+    """
+    match = _SYSTEM_CLAUDE_MODEL_PATTERN.match(model)
+    if match is None:
+        return None
+    catalog_id = _CLAUDE_DASHED_VERSION_PATTERN.sub(r"-\1.\2", match.group(1))
+    # Copilot sends budget thinking for any Haiku it doesn't know, which Haiku 5+ rejects; Sonnet
+    # ids get the adaptive thinking those models require.
+    haiku = _CLAUDE_HAIKU_MAJOR_PATTERN.match(catalog_id)
+    if haiku and int(haiku.group(1)) >= 5:
+        catalog_id = catalog_id.replace("claude-haiku-", "claude-sonnet-", 1)
+    return catalog_id
+
+
 def model_uses_responses_api(model: str) -> bool:
     """Whether a supported GPT model id uses the Responses API."""
     match = _GPT_MODEL_MAJOR_PATTERN.match(model)
-    return match is not None and int(match.group(1)) >= 6
+    return match is not None and int(match.group(1)) >= 5
 
 
 def default_model(state: dict) -> str | None:
@@ -109,6 +137,17 @@ def render_env_overlay(
     override_model: str | None = None,
 ) -> dict[str, str]:
     request_model = override_model or selected_model
+    catalog_model_id = copilot_catalog_model_id(request_model)
+    if catalog_model_id is not None:
+        return {
+            "COPILOT_PROVIDER_TYPE": "anthropic",
+            "COPILOT_PROVIDER_BASE_URL": build_tool_base_url("claude", workspace),
+            "COPILOT_PROVIDER_MODEL_ID": catalog_model_id,
+            "COPILOT_MODEL": selected_model,
+            "COPILOT_PROVIDER_BEARER_TOKEN": token,
+            "COPILOT_OFFLINE": "true",
+            "OAUTH_TOKEN": token,
+        }
     wire_api = "responses" if model_uses_responses_api(request_model) else "completions"
     return {
         "COPILOT_PROVIDER_TYPE": "openai",
@@ -190,6 +229,10 @@ def write_tool_config(
     overlay = render_env_overlay(state["workspace"], model, token, override_model=override_model)
     for key in LEGACY_ENV_KEYS:
         existing.pop(key, None)
+    # Wire API is openai-only and the catalog id is anthropic-only; drop whichever this model doesn't use.
+    for key in ("COPILOT_PROVIDER_WIRE_API", "COPILOT_PROVIDER_MODEL_ID"):
+        if key not in overlay:
+            existing.pop(key, None)
     existing.update(overlay)
     write_dotenv(COPILOT_ENV_PATH, existing)
     state = mark_tool_managed(state, "copilot", MANAGED_KEYS)
