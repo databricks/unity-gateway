@@ -44,11 +44,16 @@ READ_ONLY_STAGE = re.compile(
     r"|(?:foreach-object|%) \{ ?\$_\.\w+ ?\}"
     r"|select-object(?: -(?:first|last) \d+| -expandproperty \w+)*"
 )
+# A PowerShell host wrapper whose flags only change how the shell starts.
+POWERSHELL_WRAPPER = re.compile(
+    r"(?i)^(?:powershell|pwsh)(?:\.exe)?"
+    r"(?: -(?:NoProfile|NonInteractive|NoLogo|ExecutionPolicy \w+))* -(?:Command|c)\s+"
+)
 
 
 def read_only_command(line: str) -> bool:
     """Whether a command shown in a Codex approval prompt only lists or reads files."""
-    command = re.sub(r"^powershell(?:\.exe)? -NoProfile -Command\s+", "", line.strip(), flags=re.I)
+    command = POWERSHELL_WRAPPER.sub("", line.strip())
     command = command.strip("\"'")
     if not command or re.search(r"[;&<>`]|\$\(", command):
         return False
