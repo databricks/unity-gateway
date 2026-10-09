@@ -178,6 +178,9 @@ class TerminalProcess:
         self.name = name
         self.command = command
         env = {**session.env, "TERM": "xterm-256color"}
+        if agent == "codex":
+            # Seed the sandbox choice so the Codex TUI skips its arrow-key picker.
+            session.choose_codex_windows_sandbox()
         self.child = spawn_pty(self.command, str(session.cwd), env, (60, 140))
         self.screen = TerminalScreen(140, 60, self.child.send)
         self.stream = pyte.Stream(self.screen)
@@ -268,7 +271,6 @@ class TerminalProcess:
         """Navigate the visible menu with arrow keys; never write its saved state."""
         self.wait_for(lambda text: prompt in text and self.selected_line(), prompt, timeout=120)
         visited = set()
-        repeats = 0
         for _ in range(100):
             current = self.selected_line()
             if label in current:
@@ -280,10 +282,7 @@ class TerminalProcess:
                     f"confirmation of {label}",
                 )
                 return
-            if current in visited:
-                # A redraw can swallow the arrow key; retry before deciding the option is absent.
-                repeats += 1
-                assert repeats <= 3, f"Menu does not offer {label}:\n{self.visible}"
+            assert current not in visited, f"Menu does not offer {label}:\n{self.visible}"
             visited.add(current)
             self.send("\x1b[B", f"move towards {label}")
             self.wait_for(
@@ -343,6 +342,7 @@ class AgentTerminal(TerminalProcess):
     def boot(self, timeout=120):
         """Handle only recognized visible onboarding; unknown screens fail."""
         handled = set()
+        answered = {}
         ready_since = None
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -354,10 +354,6 @@ class AgentTerminal(TerminalProcess):
                 continue
             if "Hooks need review" in text:
                 self.choose("Hooks need review", "Trust all and continue")
-                continue
-            if self.agent == "codex" and "Set up the Codex agent sandbox" in text:
-                # Matches the unelevated sandbox the harness configures for `codex exec`.
-                self.choose("Set up the Codex agent sandbox", "Use non-admin sandbox")
                 continue
             if (
                 "Update available" in text
@@ -419,9 +415,10 @@ class AgentTerminal(TerminalProcess):
             for label, shown, keys in dialogs:
                 if shown:
                     matched = True
-                    if label not in handled:
+                    # Startup can drop the first keypress; answer again if the dialog stays up.
+                    if time.monotonic() - answered.get(label, float("-inf")) > 10:
                         self.send(keys, label)
-                        handled.add(label)
+                        answered[label] = time.monotonic()
                     break
             if matched:
                 ready_since = None
@@ -511,10 +508,9 @@ class AgentTerminal(TerminalProcess):
         assert self.agent == "codex" and os.name == "nt", (
             "Agent requested an unrecognized command approval:\n" + screen
         )
-        if not self.approving:
-            # Codex on Windows asks before every shell command. Approve so these tests
-            # exercise ug instead of the model's choice of command.
-            assert re.search(rf"(?m)^\s*{SELECTED}\s*1\.\s*Yes, proceed", screen), screen
+        # Codex on Windows asks before every shell command. Approve so these tests
+        # exercise ug instead of the model's choice of command; wait until the options render.
+        if not self.approving and re.search(rf"(?m)^\s*{SELECTED}\s*1\.\s*Yes, proceed", screen):
             self.send("\r", "approve the Codex command prompt")
             self.approving = True
         return True

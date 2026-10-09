@@ -199,7 +199,9 @@ class UserSession:
             return
         config = self.home / ".codex/config.toml"
         config.parent.mkdir(parents=True, exist_ok=True)
-        config.write_text('[windows]\nsandbox = "unelevated"\n')
+        existing = config.read_text(encoding="utf-8") if config.is_file() else ""
+        if "[windows]" not in existing:
+            config.write_text(existing + '\n[windows]\nsandbox = "unelevated"\n', encoding="utf-8")
 
     def record(self, name: str, value: object) -> None:
         (self.artifacts / name).write_text(self.redact(json.dumps(value, indent=2)))
