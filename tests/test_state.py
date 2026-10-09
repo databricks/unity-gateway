@@ -9,18 +9,25 @@ import pytest
 
 import ucode.state as state_mod
 from ucode.state import (
+    SELF_MANAGED_AGENTS_KEY,
     STATE_VERSION,
+    add_self_managed_agent,
     build_agent_state,
     clear_state,
     get_applied_managed_update_time,
     get_provider_service,
     hydrate_state,
+    is_self_managed,
     load_full_state,
     load_state,
     mark_tool_managed,
+    remove_self_managed_agent,
     save_state,
+    self_managed_agents,
     set_applied_managed_update_time,
+    set_current_workspace,
     set_provider_service,
+    workspace_self_managed_agents,
 )
 
 FAKE_WS = "https://example.databricks.com"
@@ -335,3 +342,70 @@ class TestMarkToolManaged:
     def test_records_only_keys(self):
         result = mark_tool_managed({}, "codex", [["model"]])
         assert result["managed_configs"]["codex"] == {"keys": [["model"]]}
+
+
+class TestSelfManagedAgents:
+    """self_managed_agents / is_self_managed / add / remove round-trip through save/load."""
+
+    def test_round_trip(self):
+        state = {"workspace": FAKE_WS}
+        add_self_managed_agent(state, "opencode")
+        save_state(state)
+        loaded = load_state()
+        assert is_self_managed(loaded, "opencode")
+        assert not is_self_managed(loaded, "gemini")
+
+    def test_remove_persists(self):
+        state = {"workspace": FAKE_WS, SELF_MANAGED_AGENTS_KEY: ["opencode", "gemini"]}
+        save_state(state)
+        loaded = load_state()
+        remove_self_managed_agent(loaded, "opencode")
+        save_state(loaded)
+        reloaded = load_state()
+        assert not is_self_managed(reloaded, "opencode")
+        assert is_self_managed(reloaded, "gemini")
+
+    def test_key_absent_after_all_removed(self):
+        state = {"workspace": FAKE_WS, SELF_MANAGED_AGENTS_KEY: ["opencode"]}
+        save_state(state)
+        loaded = load_state()
+        remove_self_managed_agent(loaded, "opencode")
+        save_state(loaded)
+        reloaded = load_state()
+        assert self_managed_agents(reloaded) == []
+        # key absent from the raw state too (not persisted as empty list)
+        full = load_full_state()
+        ws_raw = full["workspaces"].get(FAKE_WS, {})
+        assert SELF_MANAGED_AGENTS_KEY not in ws_raw
+
+
+class TestSelfManagedWorkspaceIsolation:
+    """Each workspace's self-managed opt-in persists on its own block across switches.
+
+    The configure-switch logic that reads the destination's own list lives in
+    ``TestConfigureSharedStateWorkspaceIsolation`` (tests/test_agents_commands.py); this
+    exercises the underlying persistence that keeps the lists independent.
+    """
+
+    def test_a_to_b_to_a_round_trip_and_removal_stay_isolated(self):
+        a = "https://a.databricks.com"
+        b = "https://b.databricks.com"
+
+        # In A, opt into OpenCode.
+        save_state({"workspace": a, SELF_MANAGED_AGENTS_KEY: ["opencode"]})
+
+        # Switch to B: it has its own (empty) list, not A's; opt into a different agent there.
+        set_current_workspace(b)
+        assert self_managed_agents(load_state()) == []
+        save_state({"workspace": b, SELF_MANAGED_AGENTS_KEY: ["copilot"]})
+
+        # Switch back to A: A still carries only its own opt-in.
+        set_current_workspace(a)
+        assert self_managed_agents(load_state()) == ["opencode"]
+
+        # Removing the opt-in in A leaves B's list untouched.
+        state = load_state()
+        remove_self_managed_agent(state, "opencode")
+        save_state(state)
+        assert workspace_self_managed_agents(a) == []
+        assert workspace_self_managed_agents(b) == ["copilot"]

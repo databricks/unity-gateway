@@ -15,7 +15,7 @@ on:
         default: ug
       claude_version:
         description: Exact Claude Code version
-        default: 2.1.280
+        default: 2.1.290
         required: true
       codex_version:
         description: Exact Codex version
@@ -45,10 +45,13 @@ env:
   EXPECTED_WORKSPACE: https://eng-ml-inference-team-us-east-1.cloud.databricks.com
   UG_VERSION: ${{ inputs.ug_version || 'checkout' }}
   ENTRY_POINT: ${{ inputs.entry_point || 'ug' }}
-  CLAUDE_VERSION: ${{ inputs.claude_version || '2.1.280' }}
+  CLAUDE_VERSION: ${{ inputs.claude_version || '2.1.290' }}
   CODEX_VERSION: ${{ inputs.codex_version || '0.154.0' }}
   OPENCODE_VERSION: ${{ inputs.opencode_version || '1.18.31' }}
   PACKAGE_INDEX: ${{ inputs.default_index || 'https://pypi.org/simple' }}
+  # Windows runners install packages through the Databricks JFrog proxies.
+  WINDOWS_PACKAGE_INDEX: https://databricks.jfrog.io/artifactory/api/pypi/db-pypi/simple
+  WINDOWS_NPM_REGISTRY: https://databricks.jfrog.io/artifactory/api/npm/db-npm/
 
 jobs:
   installation:
@@ -85,12 +88,10 @@ jobs:
             ${{ runner.temp }}/ug-integration/artifacts/
             ${{ runner.temp }}/ug-integration/wheels/
 
-  # Advisory while the first native Windows failures are diagnosed. Once they
-  # are fixed, remove continue-on-error and add this job to the cujs required set.
   installation-windows:
     name: Windows installation tests
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: windows-server-latest
-    continue-on-error: true
     timeout-minutes: 20
     permissions:
       contents: read
@@ -175,13 +176,21 @@ jobs:
           PY
 
   smoke:
-    name: Smoke journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}
+    name: Smoke journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }} · ${{ matrix.os == 'windows-server-latest' && 'Windows' || 'Linux' }}
     needs: workspace
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    concurrency:
+      # Both OS variants use the same workspace; avoid overlapping same-agent runs.
+      group: integration-smoke-${{ github.run_id }}-${{ matrix.agent }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-22.04, windows-server-latest]
         agent: [claude, codex]
     env:
       UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
@@ -189,7 +198,7 @@ jobs:
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: ${{ matrix.agent }}
       TEST_MARKER: live and smoke and ${{ matrix.agent }}
-      ARTIFACT_NAME: integration-smoke-${{ matrix.agent }}
+      ARTIFACT_NAME: integration-smoke-${{ matrix.agent }}-${{ matrix.os }}
     steps: &live-steps
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
@@ -203,9 +212,31 @@ jobs:
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
         with:
           version: 1.17.0
-      - name: Run the selected live cases against the e2e workspace
+      - name: Expose the Databricks CLI on Windows
+        if: ${{ runner.os == 'Windows' }}
         shell: bash
         run: |
+          test -f "$RUNNER_TEMP/.bin/databricks.exe"
+          cygpath -w "$RUNNER_TEMP/.bin" >> "$GITHUB_PATH"
+      - name: Authenticate to JFrog with GitHub OIDC
+        id: jfrog
+        if: ${{ runner.os == 'Windows' }}
+        uses: jfrog/setup-jfrog-cli@279b1f629f43dd5bc658d8361ac4802a7ef8d2d5  # v4.9.1
+        env:
+          JF_URL: https://databricks.jfrog.io
+        with:
+          oidc-provider-name: github-actions
+      - name: Run the selected live cases against the e2e workspace
+        shell: bash
+        env:
+          UV_INDEX_DATABRICKS_PYPI_USERNAME: ${{ steps.jfrog.outputs.oidc-user }}
+          UV_INDEX_DATABRICKS_PYPI_PASSWORD: ${{ steps.jfrog.outputs.oidc-token }}
+          UG_INTEGRATION_NPM_TOKEN: ${{ steps.jfrog.outputs.oidc-token }}
+        run: |
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            PACKAGE_INDEX="databricks-pypi=$WINDOWS_PACKAGE_INDEX"
+            registry=(--npm-registry "$WINDOWS_NPM_REGISTRY")
+          fi
           case "$AGENT" in
             claude) args=(--claude-version "$CLAUDE_VERSION") ;;
             codex) args=(--codex-version "$CODEX_VERSION") ;;
@@ -217,7 +248,7 @@ jobs:
           uv run --no-project --python 3.12 python scripts/run_integration.py \
             --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
             --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
-            "${args[@]}" -- -m "$TEST_MARKER"
+            "${registry[@]}" "${args[@]}" -- -m "$TEST_MARKER"
       - name: Upload live test evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
@@ -236,7 +267,6 @@ jobs:
     name: Windows headless journey · Claude
     needs: workspace
     runs-on: windows-server-latest
-    continue-on-error: true
     timeout-minutes: 20
     permissions:
       contents: read
@@ -315,19 +345,26 @@ jobs:
             ${{ runner.temp }}/ug-integration/wheels/
 
   full:
-    name: Full journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}
+    name: Full journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }} · ${{ matrix.os == 'windows-server-latest' && 'Windows' || 'Linux' }}
     if: ${{ !cancelled() && needs.workspace.result == 'success' }}
     needs: [workspace, smoke]
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
+    concurrency:
+      # Keep the previous per-agent serialization across the new OS matrix.
+      group: integration-full-${{ github.run_id }}-${{ matrix.agent }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
     # The runner enforces its own 3600s pytest deadline; keep the job above it
     # so a slow run fails through the runner's report instead of a job kill.
     timeout-minutes: 70
     strategy:
       fail-fast: false
-      # One VM per agent: reuse its install and run its cases serially. Allow
-      # Claude and Codex to overlap, but never launch concurrent same-agent shards.
-      max-parallel: 2
+      # One runner per OS variant; concurrency above serializes variants per agent.
+      max-parallel: 4
       matrix:
+        os: [ubuntu-22.04, windows-server-latest]
         agent: [claude, codex]
     env:
       UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
@@ -336,17 +373,24 @@ jobs:
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: ${{ matrix.agent }}
       TEST_MARKER: live and ${{ matrix.agent }}
-      ARTIFACT_NAME: integration-full-${{ matrix.agent }}
+      ARTIFACT_NAME: integration-full-${{ matrix.agent }}-${{ matrix.os }}
     steps: *live-steps
 
   # Non-blocking: continue-on-error and absent from the cujs `needs`, so a flaky OpenCode
   # leg cannot block merges. Add it to cujs once the lane is stable.
   opencode:
-    name: Full journeys · OpenCode (non-blocking)
+    name: Full journeys · OpenCode · ${{ matrix.os == 'windows-server-latest' && 'Windows' || 'Linux' }} (non-blocking)
     if: ${{ !cancelled() && needs.workspace.result == 'success' }}
     needs: workspace
     continue-on-error: true
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-server-latest]
     timeout-minutes: 30
     env:
       UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
@@ -354,9 +398,67 @@ jobs:
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: opencode
       TEST_MARKER: live and opencode
-      ARTIFACT_NAME: integration-full-opencode
+      ARTIFACT_NAME: integration-full-opencode-${{ matrix.os }}
     steps: *live-steps
 
+  # Non-blocking pending stabilization: continue-on-error and absent from the cujs `needs`.
+  # Runs on the managed e2e workspace with an injected config that enables Claude/Codex but not
+  # OpenCode (a service principal authenticates it, like the `managed` lane).
+  managed-opencode:
+    name: Managed OpenCode self-managed (non-blocking)
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    continue-on-error: true
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      UCODE_TEST_WORKSPACE: ${{ secrets.E2E_ADMIN_WORKSPACE }}
+      DATABRICKS_CLIENT_ID: ${{ secrets.E2E_ADMIN_SP_CLIENT_ID }}
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.E2E_ADMIN_SP_CLIENT_SECRET }}
+      DEPENDENCY: ${{ inputs.dependency }}
+      TEST_MARKER: managed_fixture and opencode
+      ARTIFACT_NAME: integration-managed-opencode
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: 22.19.0
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          version: 0.9.8
+      - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
+        with:
+          version: 1.17.0
+      - name: Run the self-managed OpenCode journey against the managed workspace
+        shell: bash
+        run: |
+          # Bare `ug configure` applies the admin's Claude/Codex agents, and the journey launches
+          # OpenCode, so all three CLIs must be installed.
+          args=(--claude-version "$CLAUDE_VERSION" --codex-version "$CODEX_VERSION" --opencode-version "$OPENCODE_VERSION")
+          if [[ -n "$DEPENDENCY" ]]; then
+            args+=(--dependency "$DEPENDENCY")
+          fi
+          uv run --no-project --python 3.12 python scripts/run_integration.py \
+            --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
+            --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
+            "${args[@]}" -- -m "$TEST_MARKER"
+      - name: Upload managed OpenCode evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          include-hidden-files: true
+          path: |
+            ${{ runner.temp }}/ug-integration/*.json
+            ${{ runner.temp }}/ug-integration/*.txt
+            ${{ runner.temp }}/ug-integration/*.xml
+            ${{ runner.temp }}/ug-integration/*.log
+            ${{ runner.temp }}/ug-integration/artifacts/
+            ${{ runner.temp }}/ug-integration/wheels/
+
+  # managed and dedicated-cuj stay Linux-only: ug has no Windows managed-settings
+  # writer, and the CUJ suite drives agents through a POSIX PTY.
   managed:
     name: Managed config · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
@@ -392,8 +494,6 @@ jobs:
           UCODE_TEST_WORKSPACE: ${{ secrets.E2E_ADMIN_WORKSPACE }}
           DATABRICKS_CLIENT_ID: ${{ secrets.E2E_ADMIN_SP_CLIENT_ID }}
           DATABRICKS_CLIENT_SECRET: ${{ secrets.E2E_ADMIN_SP_CLIENT_SECRET }}
-          UG_MPS_DEFAULTS_CLIENT_SECRET: ${{ matrix.agent == 'claude' && secrets.UG_MPS_DEFAULTS_CLIENT_SECRET || '' }}
-          UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET: ${{ matrix.agent == 'claude' && secrets.UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET || '' }}
           UCODE_TEST_SECOND_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
           DATABRICKS_SECOND_BEARER: ${{ secrets.DATABRICKS_BEARER }}
         run: |
@@ -406,7 +506,7 @@ jobs:
           uv run --no-project --python 3.12 python scripts/run_integration.py \
             --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
             --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
-            "${args[@]}" -- -m "(managed or managed_fixture or workspace_switch) and $AGENT"
+            "${args[@]}" -- -m "(managed_fixture or workspace_switch) and $AGENT"
       - name: Upload managed test evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
@@ -421,16 +521,48 @@ jobs:
             ${{ runner.temp }}/ug-integration/artifacts/
             ${{ runner.temp }}/ug-integration/wheels/
 
-  dedicated-cuj:
-    name: E2E CUJs
-    # CUJ definitions: https://docs.google.com/document/d/1WKd1fdWD0Y4tAV1H9Si-SGx2UZFL7iZ2S3HtBjidmS0/edit?usp=drive_web&ouid=117446678071138243519
+  dedicated-cuj-plan:
+    name: Plan E2E CUJs
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      cujs: ${{ steps.discover.outputs.cujs }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - name: Discover every E2E CUJ file
+        id: discover
+        shell: bash
+        run: |
+          set -euo pipefail
+          cujs=$(for path in tests/e2e_cuj/test_*.py; do
+            name=$(sed -n 's/^CUJ_NAME = "\(.*\)"$/\1/p' "$path")
+            [ -n "$name" ] || { echo "$path must define CUJ_NAME" >&2; exit 1; }
+            jq -nc --arg test "${path##*/}" --arg name "$name" '{test: $test, name: $name}'
+          done | jq -sc .)
+          echo "cujs=$cujs" >> "$GITHUB_OUTPUT"
+
+  dedicated-cuj:
+    name: E2E CUJs · ${{ matrix.name }}
+    # CUJ definitions: https://docs.google.com/document/d/1WKd1fdWD0Y4tAV1H9Si-SGx2UZFL7iZ2S3HtBjidmS0/edit?usp=drive_web&ouid=117446678071138243519
+    # One runner per file: CUJs own separate workspaces but share machine-wide /etc agent settings.
+    needs: dedicated-cuj-plan
     runs-on: ubuntu-22.04
     timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.dedicated-cuj-plan.outputs.cujs) }}
     env:
       UV_INDEX_URL: https://pypi.org/simple
+      # Every CUJ runner installs from PyPI at once; ride out slow responses instead of failing a shard.
+      UV_HTTP_TIMEOUT: "120"
+      UV_HTTP_RETRIES: "6"
+      UG_CUJ1_WORKSPACE: ${{ secrets.UG_CUJ1_WORKSPACE }}
       UG_CUJ_SP_CLIENT_ID: ${{ secrets.UG_CUJ_SP_CLIENT_ID }}
       UG_CUJ_SP_CLIENT_SECRET: ${{ secrets.UG_CUJ_SP_CLIENT_SECRET }}
+      UG_BUDGET_CUJ_SP_CLIENT_ID: ${{ secrets.UG_BUDGET_CUJ_SP_CLIENT_ID }}
+      UG_BUDGET_CUJ_SP_CLIENT_SECRET: ${{ secrets.UG_BUDGET_CUJ_SP_CLIENT_SECRET }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
@@ -449,20 +581,23 @@ jobs:
           npm install -g \
             "@anthropic-ai/claude-code@$CLAUDE_VERSION" \
             "@openai/codex@$CODEX_VERSION"
-      - name: Run every E2E CUJ
+      - name: Run ${{ matrix.test }}
         run: |
-          if ! find tests/e2e_cuj -name 'test_*.py' -print -quit | grep -q .; then
-            echo "No E2E CUJs found."
-            exit 0
-          fi
           uv run --with pexpect==4.9.0 --with pyte==0.8.2 \
-            pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj -v
+            pytest --confcutdir=tests/e2e_cuj "tests/e2e_cuj/${{ matrix.test }}" -v --basetemp "$RUNNER_TEMP/cuj"
+      - name: Upload CUJ evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: e2e-cujs-${{ matrix.test }}
+          include-hidden-files: true
+          if-no-files-found: ignore
+          path: ${{ runner.temp }}/cuj/*/artifacts/
 
   cujs:
     name: All integration tests
     if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    # installation-windows remains advisory until its initial platform issues are fixed.
-    needs: [installation, workspace, smoke, full, managed, dedicated-cuj]
+    needs: [installation, installation-windows, headless-windows, workspace, smoke, full, managed, dedicated-cuj-plan, dedicated-cuj]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

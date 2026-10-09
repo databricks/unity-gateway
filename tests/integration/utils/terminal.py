@@ -19,6 +19,31 @@ import pyte
 from .evidence import agent_sessions, assert_no_terminal_api_error
 
 
+def _claude_background_task_menu(text):
+    return re.search(
+        r"(?ms)^[ \t]*Background[ \t]*\n(.*?)"
+        r"^[ \t]*↑/↓ to select · Enter to view · Esc to close[ \t]*\s*\Z",
+        text,
+    )
+
+
+def _claude_background_tasks_complete(text):
+    if re.search(r"(?m)^\s*No tasks currently running\s*$", text):
+        return True
+    menu = _claude_background_task_menu(text)
+    if menu is None:
+        return False
+    rows = [line.strip() for line in menu[1].splitlines() if line.strip()]
+    if not rows:
+        return False
+    completed = re.fullmatch(r"Completed \(([1-9][0-9]*)\)", rows[0])
+    return (
+        completed is not None
+        and len(rows) - 1 == int(completed[1])
+        and all(re.fullmatch(r"(?:❯\s*)?✔\s+.+\s+done\s+·\s+.+", row) for row in rows[1:])
+    )
+
+
 class TerminalScreen(pyte.Screen):
     def __init__(self, columns, lines, send):
         super().__init__(columns, lines)
@@ -233,6 +258,13 @@ class AgentTerminal(TerminalProcess):
             # onboarding state. Only the test's disposable project is trusted.
             dialogs = [
                 (
+                    "external-imports",
+                    "Allow external CLAUDE.md file imports?" in text
+                    and "No, disable external imports" in text
+                    and "Yes, allow external imports" in text,
+                    "\r",
+                ),
+                (
                     "theme",
                     "Choose the text style" in text and "Dark mode" in text,
                     "\r",
@@ -250,9 +282,22 @@ class AgentTerminal(TerminalProcess):
                 ),
                 (
                     "trust-directory",
-                    self.session.cwd.name in text
-                    and "trust" in text.lower()
-                    and bool(re.search(r"1[.)]\s+Yes, (?:continue|proceed)", text)),
+                    self.agent == "codex"
+                    and bool(
+                        re.search(
+                            rf"(?m)^\s*>\s+You are in "
+                            rf"{re.escape(str(self.session.cwd.parent))}/[^/\r\n]*$",
+                            text,
+                        )
+                    )
+                    and (
+                        "Do you trust the contents of this directory?" in text
+                        or "directory allows project-local config, hooks, and exec policies to load."
+                        in text
+                    )
+                    and bool(re.search(r"(?m)^\s*[›❯>]\s*1[.)]\s+Yes, continue\s*$", text))
+                    and bool(re.search(r"(?m)^\s*2[.)]\s+No, quit\s*$", text))
+                    and "Press enter to continue" in text,
                     "\r",
                 ),
             ]
@@ -265,6 +310,7 @@ class AgentTerminal(TerminalProcess):
                         handled.add(label)
                     break
             if matched:
+                ready_since = None
                 continue
             assert "Select login method:" not in text, (
                 "Configured ug launched Claude's account-login flow instead of its gateway session:\n"
@@ -278,6 +324,7 @@ class AgentTerminal(TerminalProcess):
             if (
                 title in text
                 and "loading" not in text.lower()
+                and not re.search(r"(?m)^\s*>\s+You are in\b", text)
                 and re.search(r"(?m)^\s*[❯›>]\s*(?!\d+[.)])", text)
             ):
                 ready_since = ready_since or time.monotonic()
@@ -307,7 +354,6 @@ class AgentTerminal(TerminalProcess):
             timeout=60,
         )
         if model_visible is not None:
-            # Native discovery can finish after the picker shell first renders.
             self.wait_for(model_visible, "a discovered model in the picker", timeout=60)
         screen = self.visible
         self.actions.append({"reason": "model-picker-visible", "screen": screen})
@@ -315,6 +361,31 @@ class AgentTerminal(TerminalProcess):
         self.wait_for(
             lambda text: "Select model" not in text,
             "the prompt after closing the model picker",
+        )
+        return screen
+
+    def open_codex_model_picker(self, *, model_visible):
+        """Capture Codex's native numbered /model menu, then dismiss it with Escape."""
+        assert self.agent == "codex", self.agent
+        self.submit("/model")
+        self.wait_for(
+            lambda text: (
+                "select model" in text.lower()
+                and re.search(r"(?m)^[ \t]*(?:[❯›>][ \t]*)?\d+[.)][ \t]+\S", text)
+            ),
+            "Codex's numbered model picker",
+            timeout=60,
+        )
+        self.wait_for(model_visible, "all scoped models in Codex's picker", timeout=60)
+        screen = self.visible
+        self.actions.append({"reason": "codex-model-picker-visible", "screen": screen})
+        self.send("\x1b", "close Codex's model picker without changing its default")
+        self.wait_for(
+            lambda text: (
+                "select model" not in text.lower()
+                and re.search(r"(?m)^\s*[❯›>]\s*(?!\d+[.)])", text)
+            ),
+            "the Codex prompt after closing the model picker",
         )
         return screen
 
@@ -353,6 +424,24 @@ class AgentTerminal(TerminalProcess):
             timeout=timeout,
         )
         task.assert_completed(self.session, self.agent)
+
+    def wait_for_background_tasks(self, timeout=180):
+        """Wait in Claude's native task view without stopping or detaching work."""
+        assert self.agent == "claude", self.agent
+        self.submit("/tasks")
+        self.wait_for(
+            _claude_background_tasks_complete,
+            "Claude's task view reporting no running tasks",
+            timeout=timeout,
+        )
+        self.send("\x1b", "close the completed background-task view")
+        self.wait_for(
+            lambda text: (
+                "No tasks currently running" not in text
+                and _claude_background_task_menu(text) is None
+            ),
+            "the prompt after closing the background-task view",
+        )
 
     def exit_normally(self):
         self.submit("/exit")

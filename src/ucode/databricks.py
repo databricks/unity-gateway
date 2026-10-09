@@ -696,6 +696,14 @@ def workspace_hostname(workspace: str) -> str:
     return parsed.hostname
 
 
+def workspace_origin(workspace: str) -> str:
+    """Return the workspace scheme and authority, preserving an explicit port."""
+    parsed = urlparse(normalize_workspace_url(workspace))
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise RuntimeError(f"Unable to derive origin from workspace URL: {workspace}")
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
 def _parse_databricks_cli_version(output: str) -> tuple[int, int, int] | None:
     # Example output: "Databricks CLI v0.299.2"
     match = re.search(r"v?(\d+)\.(\d+)\.(\d+)", output)
@@ -876,6 +884,7 @@ def _refresh_windows_path() -> None:
             new_entries.append(expanded)
             known.add(normalized)
     os.environ["PATH"] = os.pathsep.join([*new_entries, *entries])
+    clear_databricks_cli_cache()
 
 
 def _run_databricks_cli_installer(brew_subcommand: str = "install") -> None:
@@ -1106,6 +1115,15 @@ def save_databricks_cli_oauth_profile(workspace: str, profile: str, client_id: s
 
 
 def has_valid_databricks_auth(workspace: str, profile: str | None = None) -> bool:
+    return check_databricks_auth(workspace, profile) is True
+
+
+def check_databricks_auth(workspace: str, profile: str | None = None) -> bool | None:
+    """Whether the workspace has valid credentials, or None when the CLI could not be run to check.
+
+    None covers a CLI that fails to start (e.g. Windows `Access is denied` inside an agent sandbox)
+    or times out, so callers can tell "unchecked" from "rejected".
+    """
     # Auth owned elsewhere is valid by definition: skip the `databricks auth
     # token` shell-out (which only knows user-OAuth) and any login it triggers.
     if external_bearer_configured():
@@ -1159,9 +1177,12 @@ def has_valid_databricks_auth(workspace: str, profile: str | None = None) -> boo
                 return False
             _remember_token(memo_key, token, _token_lifetime_s(data), _token_epoch=epoch)
             return True
-        except (json.JSONDecodeError, OSError, subprocess.TimeoutExpired) as exc:
+        except json.JSONDecodeError as exc:
             _debug("has_valid_databricks_auth", f"exception: {type(exc).__name__}: {exc}")
             return False
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            _debug("has_valid_databricks_auth", f"exception: {type(exc).__name__}: {exc}")
+            return None
 
 
 def list_profile_entries() -> list[dict]:
@@ -2108,7 +2129,7 @@ def list_model_services(
         if cached is not None:
             return list(cached), None
 
-    hostname = workspace_hostname(workspace)
+    origin = workspace_origin(workspace)
     ids: list[str] = []
     page_token: str | None = None
     seen_tokens: set[str] = set()
@@ -2120,7 +2141,7 @@ def list_model_services(
         }
         if page_token:
             params["page_token"] = page_token
-        url = f"https://{hostname}/api/2.1/unity-catalog/model-services?{urlencode(params)}"
+        url = f"{origin}/api/2.1/unity-catalog/model-services?{urlencode(params)}"
         payload, reason = _get_model_services_page(url, token)
         if payload is None:
             # Surface the failure only if we have nothing yet; a mid-pagination
@@ -2310,8 +2331,7 @@ def _managed_config_user_agent() -> str:
 
 def fetch_managed_coding_agent_configs(workspace: str, token: str) -> tuple[list[dict], str | None]:
     """List the workspace's managed CodingAgentConfig(s) via the AI Gateway."""
-    hostname = workspace_hostname(workspace)
-    url = f"https://{hostname}{_CODING_AGENT_CONFIGS_API_PATH}"
+    url = f"{workspace_origin(workspace)}{_CODING_AGENT_CONFIGS_API_PATH}"
     payload, reason = _http_get_json(
         url, token, timeout=30, headers={"User-Agent": _managed_config_user_agent()}
     )
@@ -2334,8 +2354,7 @@ def fetch_model_recommendation(workspace: str, token: str) -> tuple[dict, str | 
     The request takes no parameters: the server matches the caller's live spend against the managed
     config's budget tiers and resolves the agent first, then that agent's model.
     """
-    hostname = workspace_hostname(workspace)
-    url = f"https://{hostname}{_CODING_AGENT_CONFIGS_API_PATH}:recommendModel"
+    url = f"{workspace_origin(workspace)}{_CODING_AGENT_CONFIGS_API_PATH}:recommendModel"
     payload, reason = _http_post_json(url, token, {}, timeout=30)
     if reason is not None:
         return {}, reason
@@ -2358,8 +2377,8 @@ def fetch_external_model_prices(workspace: str, token: str) -> tuple[list[dict],
     Returns ``(models, reason)`` with each model the raw API entry; ``reason`` is non-None on failure
     (callers omit cost rather than fail).
     """
-    hostname = workspace_hostname(workspace)
-    base_url = f"https://{hostname}{_EXTERNAL_PROVIDER_MODELS_API_PATH}"
+    origin = workspace_origin(workspace)
+    base_url = f"{origin}{_EXTERNAL_PROVIDER_MODELS_API_PATH}"
     models: list[dict] = []
     page_token: str | None = None
     seen_tokens: set[str] = set()
@@ -2603,22 +2622,24 @@ def build_skills_mcp_url(workspace: str, locations: list[str]) -> str:
 
 # Maps the gateway routing dialect a coding tool speaks to the Model Provider
 # Service `provider_type`s it can be backed by. claude speaks Anthropic's API,
-# which both the `anthropic` and `amazon_bedrock` provider types serve (Bedrock
-# just exposes different model ids); codex speaks OpenAI's, which the `openai`,
-# `azure_openai`, and `microsoft_foundry` provider types all serve (the gateway
-# fronts Azure OpenAI and Foundry with the OpenAI surface); gemini speaks
-# Google's, served by a Gemini Enterprise provider. Tags are the short form
-# produced by `_provider_type_tag` (e.g. `amazon_bedrock`).
+# which the `anthropic`, `amazon_bedrock`, and `bedrock_mantle` provider types
+# serve (Bedrock just exposes different model ids); codex speaks OpenAI's, which
+# the `openai`, `azure_openai`, `microsoft_foundry`, `amazon_bedrock`, and
+# `bedrock_mantle` provider types all serve (the gateway fronts them with the
+# OpenAI surface); gemini speaks Google's, served by a Gemini Enterprise
+# provider. Tags are the short form produced by `_provider_type_tag` (e.g.
+# `amazon_bedrock`).
 _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
-    "claude": ("anthropic", "amazon_bedrock"),
-    "codex": ("openai", "azure_openai", "microsoft_foundry"),
+    "claude": ("anthropic", "amazon_bedrock", "bedrock_mantle"),
+    "codex": ("openai", "azure_openai", "microsoft_foundry", "amazon_bedrock", "bedrock_mantle"),
     "gemini": ("gemini_enterprise",),
 }
 
 # Provider types that expose Bedrock-style model ids (e.g.
-# `us.anthropic.claude-sonnet-4-6`) instead of the agent's canonical model
-# names, so ucode must pin them explicitly.
-BEDROCK_PROVIDER_TYPES: tuple[str, ...] = ("amazon_bedrock",)
+# `us.anthropic.claude-sonnet-4-6`, or region-less `anthropic.claude-*` on
+# Mantle) instead of the agent's canonical model names, so ucode must pin them
+# explicitly.
+BEDROCK_PROVIDER_TYPES: tuple[str, ...] = ("amazon_bedrock", "bedrock_mantle")
 
 
 def tool_supports_provider_type(tool: str, provider_type: str) -> bool:
@@ -2677,7 +2698,7 @@ def list_model_provider_services(
             # reach the next.
             return [dict(service) for service in cached], None
 
-    origin = normalize_workspace_url(workspace)
+    origin = workspace_origin(workspace)
     services: list[dict] = []
     page_token: str | None = None
     seen_tokens: set[str] = set()
@@ -2761,7 +2782,7 @@ def get_model_provider_service(
     server-side filter) makes a service that plainly exists look absent. Addressing it directly
     removes that whole class of false negative.
     """
-    origin = normalize_workspace_url(workspace)
+    origin = workspace_origin(workspace)
     url = f"{origin}/api/2.1/unity-catalog/model-provider-services/{service_name}"
     payload, reason = _http_get_json(url, token, timeout=30)
     if payload is None:
@@ -2844,7 +2865,7 @@ def service_usable_for_tool(tool: str, service: dict) -> bool:
     provider_type = service.get("provider_type", "")
     if not tool_supports_provider_type(tool, provider_type):
         return False
-    if provider_type in BEDROCK_PROVIDER_TYPES:
+    if tool == "claude" and provider_type in BEDROCK_PROVIDER_TYPES:
         return bool(service.get("allow_all_targets")) or bool(
             map_claude_family_models(service.get("targets") or [])
         )
@@ -2888,7 +2909,8 @@ def resolve_provider_service(
             f"which {tool} can't route to (supported: {supported})."
         )
     if (
-        provider_type in BEDROCK_PROVIDER_TYPES
+        tool == "claude"
+        and provider_type in BEDROCK_PROVIDER_TYPES
         and not match.get("allow_all_targets")
         and not map_claude_family_models(match.get("targets") or [])
     ):
@@ -3247,7 +3269,7 @@ def _get_anthropic_models_json(
     parent_schema: str | None = None,
     provider: str | None = None,
 ) -> tuple[dict | list | None, str | None]:
-    origin = normalize_workspace_url(workspace)
+    origin = workspace_origin(workspace)
     headers = None
     if provider is not None:
         headers = {MODEL_PROVIDER_SERVICE_HEADER: provider}
@@ -3489,7 +3511,7 @@ _MODEL_SERVICE_EMPTY_DETAIL = (
 
 
 def _probe_model_services(workspace: str, token: str) -> GatewayProbe:
-    base = f"{normalize_workspace_url(workspace)}/api/2.1/unity-catalog/model-services"
+    base = f"{workspace_origin(workspace)}/api/2.1/unity-catalog/model-services"
     page_token: str | None = None
     for page in range(_MODEL_SERVICE_PROBE_MAX_PAGES):
         params: dict[str, object] = {"page_size": _MODEL_SERVICE_PROBE_PAGE_SIZE}

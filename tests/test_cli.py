@@ -97,7 +97,9 @@ class TestHelp:
 
     def test_help_groups_commands_by_workflow(self):
         result = runner.invoke(app, ["--help"])
-        output = _strip_ansi(result.output)
+        # Rich substitutes rounded box corners for square ones on legacy Windows
+        # consoles; normalize so the panel lookups below are platform-agnostic.
+        output = _strip_ansi(result.output).replace("┌", "╭")
 
         assert result.exit_code == 0
         panels = {
@@ -814,6 +816,8 @@ class TestSubcommandRouting:
         assert calls["launch"].call_args.kwargs["options"].user_pinned_model == (
             "main.default.claude-opus-5"
         )
+        assert "_claude_launch_default_model" not in calls["launch"].call_args.args[1]
+        assert "_claude_launch_custom_model" not in calls["launch"].call_args.args[1]
         assert calls["launch"].call_args.args[2] == []
 
     @pytest.mark.parametrize(
@@ -996,7 +1000,10 @@ class TestSubcommandRouting:
 
     def test_claude_v2_first_prompt_hook_is_disabled_without_flag(self, monkeypatch):
         monkeypatch.delenv("ENABLE_SMART_ROUTING_V2", raising=False)
-        with patch("ucode.smart_routing.claude_pty.request_first_prompt_route") as mock_request:
+        # A stub module keeps this check importable where the POSIX-only PTY module is not.
+        claude_pty_stub = MagicMock()
+        mock_request = claude_pty_stub.request_first_prompt_route
+        with patch.dict(sys.modules, {"ucode.smart_routing.claude_pty": claude_pty_stub}):
             result = runner.invoke(
                 app,
                 ["claude-router-hook", "route-first-prompt", "--socket", "/tmp/v2.sock"],
@@ -1505,12 +1512,73 @@ class TestClaudeModelFlag:
         ):
             result = runner.invoke(app, ["claude", "--model", "cat.schema.claude-opus-5"])
         assert result.exit_code == 0, result.output
-        # The model is passed through invocation-scoped LaunchOptions, not persisted in settings.
         assert mock_configure.call_args.kwargs["custom_model"] is None
         assert mock_configure.call_args.kwargs["route_root_model"] is None
+        assert "_claude_launch_custom_model" not in mock_launch.call_args.args[1]
         assert (
             mock_launch.call_args.kwargs["options"].user_pinned_model == "cat.schema.claude-opus-5"
         )
+
+    def test_explicit_model_clears_managed_default_route_root(self):
+        managed = {
+            "enabled_agents": {
+                "claude": {"model_config": {"default_model": "system.ai.claude-sonnet-5"}}
+            }
+        }
+        with _launch_policy_patches(managed) as calls:
+            result = runner.invoke(app, ["claude", "--model", "system.ai.claude-opus-4-8"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["configure"].call_args.kwargs["route_root_model"] is None
+        assert (
+            calls["launch"].call_args.kwargs["options"].user_pinned_model
+            == "system.ai.claude-opus-4-8"
+        )
+
+    @pytest.mark.parametrize("model", ["system.ai.claude-sonnet-4-5", "system.ai.gpt-5-6-luna"])
+    @pytest.mark.parametrize("equals_form", [False, True], ids=["separate", "equals"])
+    def test_unmanaged_claude_model_reaches_native_launcher(
+        self, monkeypatch, tmp_path, model, equals_form
+    ):
+        """No workspace policy/catalog: explicit IDs reach native --model, not opus aliases."""
+        from ucode.agents import claude
+
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
+        monkeypatch.setenv("ANTHROPIC_MODEL", "stale-model")
+        settings_path = tmp_path / "ucode-settings.json"
+        original_settings = {
+            "env": {
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": "system.ai.claude-opus-4-8[1m]",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL": "system.ai.claude-sonnet-5[1m]",
+            }
+        }
+        settings_path.write_text(json.dumps(original_settings))
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", settings_path)
+        monkeypatch.setattr(claude, "_resolve_launch_binary", lambda binary: binary)
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_: "token")
+        native_calls: list[list[str]] = []
+        monkeypatch.setattr(claude, "exec_or_spawn", native_calls.append)
+
+        with _launch_policy_patches(None) as calls:
+            calls["launch"].side_effect = lambda tool, state, args, *, options: claude.launch(
+                state, args, options=options
+            )
+            model_args = [f"--model={model}"] if equals_form else ["--model", model]
+            result = runner.invoke(app, ["claude", *model_args])
+
+        assert result.exit_code == 0, result.output
+        assert calls["launch"].call_args.kwargs["options"].launch_smart_routing is False
+        assert "_claude_launch_picker_models" not in calls["launch"].call_args.args[1]
+        assert "claude_static_models" not in calls["launch"].call_args.args[1]
+        assert calls["configure"].call_args.kwargs["custom_model"] is None
+        calls["list_catalog"].assert_not_called()
+        assert len(native_calls) == 1
+        assert native_calls[0][3:] == ["--model", model]
+        settings = json.loads(native_calls[0][2])
+        assert settings["env"]["ANTHROPIC_MODEL"] == model
+        for key, value in original_settings["env"].items():
+            assert settings["env"][key] == value
+        assert json.loads(settings_path.read_text()) == original_settings
 
     def test_v2_model_sets_transient_launch_override(self, monkeypatch):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
@@ -1807,7 +1875,11 @@ class TestAuthTokenCommand:
         else:
             os.environ["DATABRICKS_BEARER"] = original
 
-    def test_prints_only_the_token_to_stdout(self):
+    @pytest.mark.parametrize("selector", [None, "unsupported_v99"])
+    def test_prints_only_the_token_to_stdout(self, monkeypatch, selector):
+        if selector is not None:
+            monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", selector)
+        previous = dict(os.environ)
         with (
             patch("ucode.cli.load_state", return_value={"workspace": "https://ws"}),
             patch("ucode.cli.get_databricks_token", return_value="tok-123") as fetch,
@@ -1818,6 +1890,7 @@ class TestAuthTokenCommand:
         # or the consuming agent will treat the noise as part of the token.
         assert result.stdout == "tok-123\n"
         fetch.assert_called_once_with("https://ws", None, force_refresh=False)
+        assert dict(os.environ) == previous
 
     def test_host_and_profile_override_state(self):
         with (
@@ -1962,8 +2035,9 @@ class TestStatus:
         assert "Manage:" not in result.output
         assert "Config file" not in result.output
         assert "System settings" not in result.output
+        # Rounded corners render as square on legacy Windows consoles; accept either.
         panel_tops = [
-            line for line in _strip_ansi(result.output).splitlines() if line.startswith("╭")
+            line for line in _strip_ansi(result.output).splitlines() if line.startswith(("╭", "┌"))
         ]
         assert len({len(line) for line in panel_tops}) == 1
 
@@ -2775,6 +2849,17 @@ class TestStatusSkillsSection:
 
 
 class TestRevert:
+    def test_invalid_routing_config_does_not_block_revert(self, monkeypatch):
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "unsupported_v99")
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
+        previous = dict(os.environ)
+        with patch("ucode.cli.revert", return_value=0) as revert:
+            result = runner.invoke(app, ["revert"])
+
+        assert result.exit_code == 0, result.output
+        revert.assert_called_once_with()
+        assert dict(os.environ) == previous
+
     def test_reverts_mcp_configs_before_clearing_state(self):
         state = {
             **MINIMAL_STATE,
@@ -2800,6 +2885,28 @@ class TestRevert:
         assert reverted_mcp == [state]
         assert cleared == [True]
         assert "Claude Code MCP config: restored" in result.output
+
+
+@pytest.mark.parametrize("args", [[], ["claude"], ["codex"]])
+def test_unknown_routing_config_does_not_block_launch(monkeypatch, args):
+    monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "unsupported_v99")
+    previous = dict(os.environ)
+    with (
+        patch("ucode.cli._launch_tool") as launch,
+        patch("ucode.cli._launch_managed_default") as launch_default,
+        patch("ucode.cli.configure_shared_state") as configure,
+    ):
+        result = runner.invoke(app, args)
+
+    assert result.exit_code == 0, result.output
+    if args:
+        launch.assert_called_once()
+        launch_default.assert_not_called()
+    else:
+        launch.assert_not_called()
+        launch_default.assert_called_once()
+    configure.assert_not_called()
+    assert dict(os.environ) == previous
 
 
 class TestDoctorCommand:
@@ -3757,6 +3864,8 @@ class TestConfigureAgentsSelection:
         managed = {
             "enabled_agents": {"codex": {"model_config": {"unity_catalog_location": "main.models"}}}
         }
+        monkeypatch.setattr(cli_mod, "install_databricks_cli", MagicMock())
+        monkeypatch.setattr(cli_mod, "install_tool_binary", MagicMock())
         monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
         refresh = MagicMock(return_value=(managed, False))
         monkeypatch.setattr(cli_mod, "refresh_managed_config", refresh)

@@ -14,7 +14,14 @@ import pytest
 
 from ucode.agents import LaunchOptions, claude
 from ucode.databricks import AnthropicModelCatalog
-from ucode.smart_routing import claude_hooks, claude_pty, routing, v2
+from ucode.smart_routing import claude_hooks, routing, v2
+
+if sys.platform != "win32":
+    from ucode.smart_routing import claude_pty
+
+requires_pty = pytest.mark.skipif(
+    sys.platform == "win32", reason="Claude PTY routing is POSIX-only"
+)
 
 
 def _plugin_agent_models(plugin_dir: Path) -> set[str]:
@@ -88,6 +95,7 @@ class TestManagedModelPicker:
         assert catalog.model_ids == ["system.ai.claude-sonnet-5"]
 
 
+@requires_pty
 class TestDirectModelCommand:
     @pytest.mark.parametrize(
         "name",
@@ -102,6 +110,7 @@ class TestDirectModelCommand:
 
 
 class TestFirstPromptHook:
+    @requires_pty
     def test_renders_boxed_router_notice(self):
         model = "system.ai.claude-sonnet-4-6[1m]"
         reason = "Routed to Sonnet because the task is narrowly scoped."
@@ -114,6 +123,7 @@ class TestFirstPromptHook:
             "reason": v2.format_routing_notice(model, reason),
         }
 
+    @requires_pty
     def test_omits_reason_when_router_returns_none(self):
         result = claude_pty.first_prompt_hook_output(
             {"action": "block", "model": "system.ai.claude-sonnet-5"}
@@ -121,6 +131,7 @@ class TestFirstPromptHook:
 
         assert "Reason" not in result["reason"]
 
+    @requires_pty
     def test_displays_catalog_name_while_retaining_routable_model(self):
         result = claude_pty.first_prompt_hook_output(
             {
@@ -133,6 +144,7 @@ class TestFirstPromptHook:
         assert "Selected Model : GLM 5.3 Flash" in result["reason"]
         assert "anthropic-aigw-77df06ea" not in result["reason"]
 
+    @requires_pty
     def test_blocks_once_then_allows_replay(self, tmp_path):
         socket_path = tmp_path / "first.sock"
         blocked: list[tuple[str, str]] = []
@@ -220,6 +232,7 @@ class TestV2Launch:
 
         claude.exec_or_spawn.assert_not_called()
 
+    @requires_pty
     def test_restores_model_captured_immediately_before_switch(self, tmp_path, monkeypatch):
         ucode_settings = tmp_path / "ucode-settings.json"
         user_settings = tmp_path / "settings.json"
@@ -258,6 +271,10 @@ class TestV2Launch:
             captured["argv"] = argv
             plugin_dir = Path(argv[argv.index("--plugin-dir") + 1])
             captured["plugin_models"] = _plugin_agent_models(plugin_dir)
+            assert json.loads((plugin_dir / "hooks/hooks.json").read_text()) == {
+                "modules": ["./register.ts"]
+            }
+            assert (plugin_dir / "hooks/register.ts").is_file()
             assert "--agents" not in argv
             captured["routed_model"] = kwargs["route_prompt"]("fix the parser")
             generated = Path(argv[argv.index("--settings") + 1])
@@ -334,6 +351,7 @@ class TestV2Launch:
             "new": True,
         }
 
+    @requires_pty
     def test_does_not_restore_when_wrapper_never_switches(self, tmp_path, monkeypatch):
         user_settings = tmp_path / "settings.json"
         user_settings.write_text(json.dumps({"model": "opus"}))
@@ -366,6 +384,7 @@ class TestV2Launch:
 
         assert json.loads(user_settings.read_text()) == {"model": "user-selected"}
 
+    @requires_pty
     def test_restores_after_routed_model_persists_and_preserves_later_choice(
         self, tmp_path, monkeypatch
     ):
@@ -428,11 +447,12 @@ class TestV2Launch:
                 model_ids=["system.ai.claude-opus-4-8"], model_id_to_display_name={}
             ),
         )
-        monkeypatch.setattr(
-            claude_pty,
-            "run_claude_pty",
-            lambda *_args, **_kwargs: pytest.fail("subagent-only routing must not use the PTY"),
-        )
+        if sys.platform != "win32":
+            monkeypatch.setattr(
+                claude_pty,
+                "run_claude_pty",
+                lambda *_args, **_kwargs: pytest.fail("subagent-only routing must not use the PTY"),
+            )
         caller_args = [
             "--agents",
             json.dumps({"reviewer": {"description": "Review code", "prompt": "Review it."}}),
@@ -452,6 +472,10 @@ class TestV2Launch:
                 plugin_dir = Path(argv[argv.index("--plugin-dir") + 1])
                 captured["plugin_dir"] = plugin_dir
                 captured["plugin_models"] = _plugin_agent_models(plugin_dir)
+                assert json.loads((plugin_dir / "hooks/hooks.json").read_text()) == {
+                    "modules": ["./register.ts"]
+                }
+                assert (plugin_dir / "hooks/register.ts").is_file()
 
             def wait(self):
                 return 4
@@ -520,7 +544,13 @@ class TestV2ModelPickerDiscovery:
             )
 
         monkeypatch.setattr(v2, "list_anthropic_model_catalog", fake_discovery)
-        monkeypatch.setattr(claude_pty, "run_claude_pty", lambda _argv, **_kwargs: 0)
+        if sys.platform == "win32":
+            # Windows launches Claude directly instead of through the PTY wrapper.
+            monkeypatch.setattr(
+                v2.subprocess, "Popen", lambda *_args, **_kwargs: Mock(wait=lambda: 0)
+            )
+        else:
+            monkeypatch.setattr(claude_pty, "run_claude_pty", lambda _argv, **_kwargs: 0)
 
         with pytest.raises(SystemExit) as exc:
             v2.launch_claude(
@@ -610,6 +640,7 @@ class TestSubagentRouting:
         }
 
     def test_routes_agent_prompt_with_initialized_model_menu(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", "0")
         captured = {}
         decisions_path = tmp_path / "decisions.jsonl"
         monkeypatch.setattr(v2.claude_routing, "DECISIONS_PATH", decisions_path)
@@ -736,6 +767,7 @@ class TestSubagentRouting:
         assert json.loads(user_settings.read_text()) == {"model": "haiku"}
 
 
+@requires_pty
 class TestPtyFlow:
     def test_does_not_launch_when_socket_startup_fails(self, tmp_path, monkeypatch):
         class StoppedThread:

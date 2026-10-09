@@ -261,7 +261,7 @@ def test_external_configuration_preserves_saved_entry_and_ownership(
     monkeypatch.setattr(
         claude, "refresh_managed_config", lambda state: SimpleNamespace(manifest=None)
     )
-    monkeypatch.setattr(claude, "_reconcile_managed_settings", lambda *a: None)
+    monkeypatch.setattr(claude, "_reconcile_managed_settings", lambda *a, **kw: None)
     monkeypatch.setattr(
         claude,
         "_register_web_search_mcp",
@@ -304,7 +304,7 @@ def test_standalone_without_search_model_preserves_ownership_for_external_launch
     monkeypatch.setattr(
         claude, "refresh_managed_config", lambda state: SimpleNamespace(manifest=None)
     )
-    monkeypatch.setattr(claude, "_reconcile_managed_settings", lambda *a: None)
+    monkeypatch.setattr(claude, "_reconcile_managed_settings", lambda *a, **kw: None)
     monkeypatch.setattr(
         claude, "remove_claude_mcp_server", lambda *a: pytest.fail("removed installed search")
     )
@@ -340,7 +340,7 @@ def test_standalone_refresh_recovers_after_search_models_return(search_config, m
     monkeypatch.setattr(
         claude, "refresh_managed_config", lambda state: SimpleNamespace(manifest=None)
     )
-    monkeypatch.setattr(claude, "_reconcile_managed_settings", lambda *a: None)
+    monkeypatch.setattr(claude, "_reconcile_managed_settings", lambda *a, **kw: None)
     calls = []
 
     # Model only Claude's external CLI writes; ownership checks and persistence stay real.

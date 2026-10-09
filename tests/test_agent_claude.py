@@ -6,6 +6,7 @@ import json
 import os
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock
@@ -64,17 +65,17 @@ class TestClaudeSpec:
 
 
 class TestMinimumVersion:
-    @pytest.mark.parametrize("version", ["2.1.259", "2.1.260", "3.0.0"])
+    @pytest.mark.parametrize("version", ["2.1.290", "2.1.291", "3.0.0"])
     def test_supported_version(self, monkeypatch, version):
         monkeypatch.setattr(claude, "agent_version", lambda _binary: version)
 
         assert claude.minimum_version_error() is None
 
     def test_older_version_requires_update(self, monkeypatch):
-        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.1.258")
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.1.289")
 
         assert claude.minimum_version_error() == (
-            "ug requires Claude Code 2.1.259 or newer. Your current version is Claude Code 2.1.258."
+            "ug requires Claude Code 2.1.290 or newer. Your current version is Claude Code 2.1.289."
         )
 
     def test_unknown_version_does_not_block(self, monkeypatch):
@@ -1264,7 +1265,7 @@ class TestWriteToolConfigManagedSettings:
         )
         monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
         monkeypatch.setattr(claude, "managed_writes_allowed", lambda: True)
-        monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: True)
         monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
         monkeypatch.setattr(claude, "save_state", lambda state: None)
         monkeypatch.setattr(claude, "ug_version", lambda: "1.0")
@@ -1326,7 +1327,7 @@ class TestWriteToolConfigManagedSettings:
         monkeypatch.setattr(managed_files, "_sudo_remove", lambda *a: sudo_writes.append("remove"))
         monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
         monkeypatch.setattr(claude, "managed_writes_allowed", lambda: True)
-        monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: True)
         monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
         monkeypatch.setattr(claude, "save_state", lambda state: None)
         monkeypatch.setattr(claude, "ug_version", lambda: "1.0")
@@ -1369,6 +1370,222 @@ class TestWriteToolConfigManagedSettings:
         assert len(sudo_writes) == 1  # unrelated edit did not force a rewrite
         assert managed_path.read_bytes() == before
         assert json.loads(managed_path.read_text())["adminPolicy"] == {"z": 1, "a": 2}
+
+    def test_settings_passthrough_reapply_unchanged_invokes_no_sudo(self, tmp_path, monkeypatch):
+        managed_path, sudo_writes = self._sudo_counting_env(tmp_path, monkeypatch)
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            claude.SETTINGS_PASSTHROUGH_STATE_KEY: {
+                "allowManagedMcpServersOnly": True,
+                "permissions": {"deny": ["mcp__gdrive"]},
+            },
+        }
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        assert len(sudo_writes) == 1
+        first_bytes = managed_path.read_bytes()
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        assert len(sudo_writes) == 1
+        assert managed_path.read_bytes() == first_bytes
+
+    def test_settings_passthrough_shared_lists_keep_it_entries_and_withdraw_dropped_ones(
+        self, tmp_path, monkeypatch
+    ):
+        managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
+        it_hook = {"matcher": "Bash", "hooks": [{"type": "command", "command": "/usr/bin/audit"}]}
+        admin_hook = {"matcher": "Edit", "hooks": [{"type": "command", "command": "/opt/lint"}]}
+        managed_path.write_text(
+            json.dumps(
+                {"permissions": {"deny": ["Bash(rm:*)"]}, "hooks": {"PreToolUse": [it_hook]}}
+            ),
+            encoding="utf-8",
+        )
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            claude.SETTINGS_PASSTHROUGH_STATE_KEY: {
+                "permissions": {"deny": ["mcp__gdrive", "mcp__slack"]},
+                "hooks": {"PreToolUse": [admin_hook]},
+            },
+        }
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        managed = json.loads(managed_path.read_text())
+        assert managed["permissions"]["deny"] == ["Bash(rm:*)", "mcp__gdrive", "mcp__slack"]
+        assert managed["hooks"]["PreToolUse"] == [it_hook, admin_hook]
+
+        # IT adds a deny rule after ug's first write; ug re-saves it, but it is still IT's.
+        managed["permissions"]["deny"].append("WebFetch")
+        managed_path.write_text(json.dumps(managed), encoding="utf-8")
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        state[claude.SETTINGS_PASSTHROUGH_STATE_KEY] = {"permissions": {"deny": ["mcp__slack"]}}
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        managed = json.loads(managed_path.read_text())
+        assert managed["permissions"]["deny"] == ["Bash(rm:*)", "mcp__slack", "WebFetch"]
+        assert managed["hooks"]["PreToolUse"] == [it_hook]
+
+    def test_settings_passthrough_warnings_print_once_per_change(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        self._sudo_counting_env(tmp_path, monkeypatch)
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            claude.SETTINGS_PASSTHROUGH_STATE_KEY: {
+                "apiKeyHelper": "echo x",
+                "allowManagedHooksOnly": True,
+            },
+        }
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        first = " ".join(capsys.readouterr().out.split())
+        assert "apiKeyHelper" in first
+        assert "allowManagedHooksOnly" in first
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        relaunch = capsys.readouterr().out
+        assert "apiKeyHelper" not in relaunch
+        assert "allowManagedHooksOnly" not in relaunch
+
+        state[claude.SETTINGS_PASSTHROUGH_STATE_KEY]["otelHeadersHelper"] = "echo y"
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        assert "otelHeadersHelper" in " ".join(capsys.readouterr().out.split())
+
+    def test_settings_passthrough_withdrawn_end_to_end(self, tmp_path, monkeypatch):
+        managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
+        managed_path.write_text(json.dumps({"cleanupPeriodDays": 30}), encoding="utf-8")
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            claude.SETTINGS_PASSTHROUGH_STATE_KEY: {
+                "allowManagedMcpServersOnly": True,
+                "cleanupPeriodDays": 7,
+            },
+        }
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        assert json.loads(managed_path.read_text())["cleanupPeriodDays"] == 7
+
+        state.pop(claude.SETTINGS_PASSTHROUGH_STATE_KEY)
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        managed = json.loads(managed_path.read_text())
+        assert "allowManagedMcpServersOnly" not in managed
+        assert managed["cleanupPeriodDays"] == 30
+        assert (
+            managed_files.managed_file_snapshots("claude", json.loads).settings_passthrough is None
+        )
+
+    def test_settings_passthrough_mcp_allowlist_admits_ug_servers(self, tmp_path, monkeypatch):
+        managed_path, sudo_writes = self._sudo_counting_env(tmp_path, monkeypatch)
+        managed_path.write_text(
+            json.dumps({"managedMcpServers": {"system-ai-github": {"type": "http", "url": "u"}}}),
+            encoding="utf-8",
+        )
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            "managed_mcp_servers": [
+                {"name": "system-ai-genie", "clients": ["claude"]},
+                {"name": "system-ai-codex-only", "clients": ["codex"]},
+            ],
+            claude.SETTINGS_PASSTHROUGH_STATE_KEY: {
+                "allowManagedMcpServersOnly": True,
+                "allowedMcpServers": [{"serverName": "jira-internal"}],
+            },
+        }
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        allowed = json.loads(managed_path.read_text())["allowedMcpServers"]
+        assert allowed[0] == {"serverName": "jira-internal"}
+        names = {entry["serverName"] for entry in allowed}
+        assert {"system-ai-genie", "system-ai-github"} <= names
+        assert "system-ai-codex-only" not in names
+        # The admin's own list is what ug records, so its additions never become admin policy.
+        recorded = managed_files.managed_file_snapshots("claude", json.loads).settings_passthrough
+        assert [["allowedMcpServers"], [{"serverName": "jira-internal"}]] in recorded
+
+        writes = len(sudo_writes)
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        assert len(sudo_writes) == writes
+
+    def test_switching_workspace_withdraws_the_previous_workspaces_settings(
+        self, tmp_path, monkeypatch
+    ):
+        # The managed file is machine-wide, so a workspace without agent_native_settings must
+        # withdraw what ug delivered for the previous one.
+        managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
+        managed_path.write_text(
+            json.dumps({"cleanupPeriodDays": 30, "permissions": {"deny": ["Bash(rm:*)"]}}),
+            encoding="utf-8",
+        )
+        claude.write_tool_config(
+            {
+                "workspace": WS,
+                "codex_models": [],
+                claude.SETTINGS_PASSTHROUGH_STATE_KEY: {
+                    "allowManagedMcpServersOnly": True,
+                    "cleanupPeriodDays": 7,
+                    "permissions": {"deny": ["mcp__gdrive"]},
+                },
+            },
+            "databricks-claude-sonnet-4",
+        )
+
+        other_workspace = {"workspace": "https://other.cloud.databricks.com", "codex_models": []}
+        claude.write_tool_config(other_workspace, "databricks-claude-sonnet-4")
+
+        managed = json.loads(managed_path.read_text())
+        assert "allowManagedMcpServersOnly" not in managed
+        assert managed["cleanupPeriodDays"] == 30
+        assert managed["permissions"]["deny"] == ["Bash(rm:*)"]
+
+    def test_revert_removes_settings_passthrough_and_restores_baseline(self, tmp_path, monkeypatch):
+        managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
+        baseline = {"cleanupPeriodDays": 30, "permissions": {"deny": ["Bash(rm:*)"]}}
+        managed_path.write_text(json.dumps(baseline), encoding="utf-8")
+        claude.write_tool_config(
+            {
+                "workspace": WS,
+                "codex_models": [],
+                claude.SETTINGS_PASSTHROUGH_STATE_KEY: {
+                    "allowManagedMcpServersOnly": True,
+                    "allowedMcpServers": [{"serverName": "web_search"}],
+                    "cleanupPeriodDays": 7,
+                    "permissions": {"deny": ["mcp__gdrive"]},
+                },
+            },
+            "databricks-claude-sonnet-4",
+        )
+        assert json.loads(managed_path.read_text())["allowManagedMcpServersOnly"] is True
+
+        claude.revert_managed_settings()
+
+        assert json.loads(managed_path.read_text()) == baseline
+
+    def test_revert_keeps_settings_passthrough_value_edited_since(self, tmp_path, monkeypatch):
+        managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
+        managed_path.write_text(json.dumps({"cleanupPeriodDays": 30}), encoding="utf-8")
+        claude.write_tool_config(
+            {
+                "workspace": WS,
+                "codex_models": [],
+                claude.SETTINGS_PASSTHROUGH_STATE_KEY: {"allowManagedMcpServersOnly": True},
+            },
+            "databricks-claude-sonnet-4",
+        )
+        edited = json.loads(managed_path.read_text())
+        edited["allowManagedMcpServersOnly"] = False
+        managed_path.write_text(json.dumps(edited), encoding="utf-8")
+
+        claude.revert_managed_settings()
+
+        reverted = json.loads(managed_path.read_text())
+        assert reverted["allowManagedMcpServersOnly"] is False
+        assert reverted["cleanupPeriodDays"] == 30
+        assert "apiKeyHelper" not in reverted
 
     def test_foreign_picker_matching_last_write_invokes_no_sudo(self, tmp_path, monkeypatch):
         # Isaac re-adds its picker to the managed file. ug's merge preserved it into last-applied,
@@ -1968,20 +2185,29 @@ class TestWriteToolConfigManagedSettings:
 
         assert managed_writes == []
 
-    def test_noninteractive_fails_when_managed_file_conflicts(self, monkeypatch):
+    def test_noninteractive_repairs_conflicting_managed_settings_without_prompting(
+        self, monkeypatch
+    ):
         private_writes: list = []
         managed_writes: list = []
         existing = {
-            str(FAKE_MANAGED_PATH): {"env": {"ANTHROPIC_BASE_URL": "https://other.example.com"}}
+            str(FAKE_MANAGED_PATH): {
+                "apiKeyHelper": "isaac auth token",
+                "env": {"ANTHROPIC_BASE_URL": "https://other.example.com", "ISAAC_ONLY": "keep"},
+                "permissions": {"deny": ["Read(secret.txt)"]},
+            }
         }
         self._patch(monkeypatch, private_writes, managed_writes, existing)
         monkeypatch.setattr(claude, "managed_writes_allowed", lambda: False)
-        state = {"workspace": WS, "codex_models": []}
 
-        with pytest.raises(RuntimeError, match="cannot be applied non-interactively"):
-            claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        claude.write_tool_config({"workspace": WS, "codex_models": []}, None)
 
-        assert managed_writes == []
+        assert len(managed_writes) == 1
+        written = json.loads(managed_writes[0][1])
+        assert written["apiKeyHelper"] == private_writes[0][1]["apiKeyHelper"]
+        assert written["env"]["ANTHROPIC_BASE_URL"] == f"{WS}/ai-gateway/anthropic"
+        assert written["env"]["ISAAC_ONLY"] == "keep"
+        assert "Read(secret.txt)" in written["permissions"]["deny"]
 
     def test_headless_isaac_headers_and_telemetry_are_compatible(self, monkeypatch):
         private_writes: list = []
@@ -2065,7 +2291,12 @@ class TestWriteToolConfigManagedSettings:
         )
         monkeypatch.setattr(claude, "managed_writes_allowed", lambda: False)
 
-        with pytest.raises(RuntimeError, match="env.OTEL_TRACES_EXPORTER"):
+        def deny_managed_write(*args, **kwargs):
+            raise managed_files.ManagedFileWriteUnavailable("sudo denied")
+
+        monkeypatch.setattr(claude, "reconcile_managed_file", deny_managed_write)
+
+        with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="sudo denied"):
             claude.write_tool_config(
                 {"workspace": WS, "codex_models": [], "claude_otel_tracing": True}, None
             )
@@ -2103,13 +2334,15 @@ class TestWriteToolConfigManagedSettings:
         assert "continuing with local settings" in warnings[0]
         assert verified == [{"scope": "local-compatible"}]
 
-    def test_sudo_failure_remains_fatal_when_managed_file_conflicts(self, monkeypatch):
+    @pytest.mark.parametrize("interactive", [False, True])
+    def test_sudo_failure_remains_fatal_when_managed_file_conflicts(self, monkeypatch, interactive):
         private_writes: list = []
         managed_writes: list = []
         existing = {
             str(FAKE_MANAGED_PATH): {"env": {"ANTHROPIC_BASE_URL": "https://other.example.com"}}
         }
         self._patch(monkeypatch, private_writes, managed_writes, existing)
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: interactive)
 
         def deny_managed_write(*args, **kwargs):
             raise managed_files.ManagedFileWriteUnavailable("sudo denied")
@@ -2157,6 +2390,115 @@ class TestWriteToolConfigManagedSettings:
         managed_content = json.loads(managed_writes[0][1])
         assert "availableModels" not in managed_content
         assert "modelPicker" not in managed_content
+
+    def test_settings_passthrough_lands_in_managed_file_only(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+        recorded: list = []
+        monkeypatch.setattr(
+            claude, "record_settings_passthrough", lambda tool, leaves: recorded.append(leaves)
+        )
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            claude.SETTINGS_PASSTHROUGH_STATE_KEY: {
+                "allowManagedMcpServersOnly": True,
+                "env": {"DISABLE_AUTOUPDATER": "1"},
+            },
+        }
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        managed = json.loads(managed_writes[0][1])
+        assert managed["allowManagedMcpServersOnly"] is True
+        assert managed["env"]["DISABLE_AUTOUPDATER"] == "1"
+        assert managed["env"]["ANTHROPIC_BASE_URL"]
+        assert "allowManagedMcpServersOnly" not in private_writes[0][1]
+        assert recorded == [
+            [[["allowManagedMcpServersOnly"], True], [["env", "DISABLE_AUTOUPDATER"], "1"]]
+        ]
+
+    def test_settings_passthrough_skips_ug_owned_leaves(self, monkeypatch, capsys):
+        private_writes: list = []
+        managed_writes: list = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            claude.SETTINGS_PASSTHROUGH_STATE_KEY: {
+                "apiKeyHelper": "echo stolen",
+                "env": {"ANTHROPIC_BASE_URL": "https://evil", "MY_VAR": "ok"},
+                "availableModels": ["x"],
+                "managedMcpServers": {"gdrive": {"url": "https://x"}},
+            },
+        }
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        managed = json.loads(managed_writes[0][1])
+        assert managed["apiKeyHelper"] != "echo stolen"
+        assert managed["env"]["ANTHROPIC_BASE_URL"].startswith(WS)
+        assert managed["env"]["MY_VAR"] == "ok"
+        assert "availableModels" not in managed
+        assert "managedMcpServers" not in managed
+        out = " ".join(capsys.readouterr().out.split())
+        for skipped in (
+            "apiKeyHelper",
+            "env.ANTHROPIC_BASE_URL",
+            "availableModels",
+            "managedMcpServers.gdrive.url",
+        ):
+            assert skipped in out
+
+    def test_settings_passthrough_merges_into_permission_denies(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        existing = {str(FAKE_MANAGED_PATH): {"permissions": {"deny": ["Bash(rm:*)"]}}}
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            claude.SETTINGS_PASSTHROUGH_STATE_KEY: {
+                "permissions": {"deny": ["mcp__gdrive", "Bash(rm:*)"]}
+            },
+        }
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        managed = json.loads(managed_writes[0][1])
+        assert managed["permissions"]["deny"] == ["Bash(rm:*)", "mcp__gdrive"]
+
+    def test_dropped_settings_passthrough_is_withdrawn(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        live = {"allowManagedMcpServersOnly": True, "cleanupPeriodDays": 7}
+        self._patch(monkeypatch, private_writes, managed_writes, {str(FAKE_MANAGED_PATH): live})
+        monkeypatch.setattr(
+            claude,
+            "managed_file_snapshots",
+            lambda tool, parser: managed_files.ManagedFileSnapshots(
+                {"cleanupPeriodDays": 30},
+                dict(live),
+                settings_passthrough=[
+                    [["allowManagedMcpServersOnly"], True],
+                    [["cleanupPeriodDays"], 7],
+                ],
+            ),
+        )
+        recorded: list = []
+        monkeypatch.setattr(
+            claude, "record_settings_passthrough", lambda tool, leaves: recorded.append(leaves)
+        )
+
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+        )
+
+        managed = json.loads(managed_writes[0][1])
+        assert "allowManagedMcpServersOnly" not in managed
+        assert managed["cleanupPeriodDays"] == 30
+        assert recorded == [[]]
 
 
 class TestAddClaudeMcpServer:
@@ -2288,6 +2630,11 @@ class TestRegisterWebSearchMcp:
     def isolate_mcp_config(self, tmp_path, monkeypatch):
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="shutil.which returns `ug.EXE` (PATHEXT), which the case-sensitive "
+        "_generated_search_entry binary-name check rejects; product fix tracked separately",
+    )
     def test_configuration_uses_saved_custom_oauth_profile(self, monkeypatch):
         # Isolate config writes and Claude CLI registration; execute the actual config writer.
         prior_entry = claude._web_search_mcp_entry(WS, "search-model", "workspace-profile")
@@ -2478,6 +2825,20 @@ class TestResolveLaunchBinary:
 
 
 class TestClaudeLaunch:
+    @pytest.fixture(autouse=True)
+    def _claude_on_windows_path(self, monkeypatch):
+        if sys.platform != "win32":
+            return
+        # Windows resolves Claude through PATH; keep the bare name so argv stays host-independent.
+        which = claude.shutil.which
+        monkeypatch.setattr(
+            claude.shutil,
+            "which",
+            lambda name, *args, **kwargs: (
+                name if name == "claude" else which(name, *args, **kwargs)
+            ),
+        )
+
     def test_gateway_discovery_enabled_for_relayed_provider(self, monkeypatch):
         calls: list[tuple[dict, str, list[str]]] = []
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")
@@ -2635,6 +2996,82 @@ class TestClaudeLaunch:
         assert calls[0][:2] == ["claude", "--settings"]
         settings = json.loads(calls[0][2])
         assert settings["env"]["ANTHROPIC_MODEL"] == "cat.schema.model"
+
+    def test_launch_custom_model_uses_native_model(self, monkeypatch, tmp_path):
+        calls: list[list[str]] = []
+        monkeypatch.setenv("ANTHROPIC_MODEL", "stale-model")
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+        settings_path = tmp_path / "ucode-settings.json"
+        saved_model = "system.ai.claude-haiku-4-5"
+        settings_path.write_text(
+            json.dumps({"model": saved_model, "env": {"USER_SETTING": "keep"}})
+        )
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", settings_path)
+        original_settings = settings_path.read_bytes()
+
+        custom_model = "system.ai.claude-opus-4-8"
+        claude.launch(
+            {"workspace": WS},
+            ["--debug"],
+            options=LaunchOptions(user_pinned_model=custom_model),
+        )
+
+        assert os.environ["ANTHROPIC_MODEL"] == custom_model
+        assert calls[0][0:2] == ["claude", "--settings"]
+        settings = json.loads(calls[0][2])
+        assert settings["model"] == saved_model
+        assert settings["env"] == {"USER_SETTING": "keep", "ANTHROPIC_MODEL": custom_model}
+        assert calls[0][3:] == ["--model", custom_model, "--debug"]
+        assert settings_path.read_bytes() == original_settings
+
+    def test_launch_custom_model_preserves_forwarded_native_model(self, monkeypatch):
+        calls: list[list[str]] = []
+        monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+
+        claude.launch(
+            {"workspace": WS},
+            ["--model", "claude-sonnet-5"],
+            options=LaunchOptions(user_pinned_model="system.ai.claude-opus-4-8"),
+        )
+
+        assert calls[0][3:] == ["--model", "claude-sonnet-5"]
+
+    def test_launch_managed_custom_model_uses_native_model_over_stale_settings(
+        self, monkeypatch, tmp_path
+    ):
+        calls: list[list[str]] = []
+        monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+        settings_path = tmp_path / "settings.json"
+        original_settings = {
+            "model": "system.ai.claude-haiku-4-5",
+            "availableModels": ["system.ai.claude-opus-4-8", "system.ai.claude-haiku-4-5"],
+            "enforceAvailableModels": True,
+        }
+        settings_path.write_text(json.dumps(original_settings))
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", settings_path)
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+
+        custom_model = "system.ai.claude-opus-4-8"
+        claude.launch(
+            {
+                "workspace": WS,
+                "claude_static_models": ["system.ai.claude-opus-4-8", "system.ai.claude-haiku-4-5"],
+            },
+            [],
+            options=LaunchOptions(user_pinned_model=custom_model),
+        )
+
+        assert calls[0][1] == "--settings"
+        launch_settings = json.loads(calls[0][2])
+        assert launch_settings["model"] == original_settings["model"]
+        assert launch_settings["availableModels"] == original_settings["availableModels"]
+        assert launch_settings["enforceAvailableModels"] is True
+        assert json.loads(settings_path.read_text()) == original_settings
+        assert calls[0][-2:] == ["--model", custom_model]
 
     def test_launch_default_model_is_inherited_by_smart_routing(self, monkeypatch):
         monkeypatch.delenv("ANTHROPIC_DEFAULT_MODEL", raising=False)
@@ -3360,6 +3797,55 @@ class TestClaudeReconcileManagedMcp:
         assert doc["apiKeyHelper"] == "ug auth-token"
         assert captured["owned_paths"] == [["managedMcpServers"]]
         assert captured["tool"] == "claude"
+
+    def test_admin_mcp_allowlist_admits_every_server_ug_registers(self, monkeypatch):
+        # The allowlist is rebuilt from the admin's own entries, so a server ug no longer
+        # registers (system-ai-old) drops out while this run's servers are admitted.
+        captured: dict = {}
+        admin = [{"serverName": "jira-internal"}]
+        existing = json.dumps(
+            {"allowedMcpServers": [*admin, {"serverName": "system-ai-old"}], "env": {"X": "1"}}
+        )
+        self._wire(monkeypatch, existing, captured)
+        monkeypatch.setattr(
+            claude,
+            "managed_file_snapshots",
+            lambda tool, parser: managed_files.ManagedFileSnapshots(
+                None, None, settings_passthrough=[[["allowedMcpServers"], admin]]
+            ),
+        )
+        state = {claude.WEB_SEARCH_MCP_STATE_KEY: {"name": claude.WEB_SEARCH_MCP_NAME}}
+
+        claude.reconcile_managed_mcp(
+            state,
+            {"system-ai-github": claude.managed_mcp_entry(GH_URL)},
+            also_registered=["system-ai-genie"],
+        )
+
+        doc = json.loads(captured["text"])
+        assert doc["allowedMcpServers"] == [
+            {"serverName": "jira-internal"},
+            {"serverName": "system-ai-genie"},
+            {"serverName": "system-ai-github"},
+            {"serverName": claude.WEB_SEARCH_MCP_NAME},
+        ]
+        assert ["allowedMcpServers"] in captured["owned_paths"]
+
+    def test_mcp_allowlist_not_from_agent_native_settings_is_left_alone(self, monkeypatch):
+        captured: dict = {}
+        existing = json.dumps({"allowedMcpServers": [{"serverName": "jira-internal"}]})
+        self._wire(monkeypatch, existing, captured)
+        monkeypatch.setattr(
+            claude,
+            "managed_file_snapshots",
+            lambda tool, parser: managed_files.ManagedFileSnapshots(None, None),
+        )
+
+        claude.reconcile_managed_mcp({}, {"system-ai-github": claude.managed_mcp_entry(GH_URL)})
+
+        assert json.loads(captured["text"])["allowedMcpServers"] == [
+            {"serverName": "jira-internal"}
+        ]
 
     def test_empty_map_clears_key_preserving_other_keys(self, monkeypatch):
         captured: dict = {}

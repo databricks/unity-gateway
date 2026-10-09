@@ -1,5 +1,6 @@
 """Validation helpers for model-discovery evidence."""
 
+import hashlib
 import re
 
 _CLAUDE_GATEWAY_ALIAS = re.compile(r"^anthropic-aigw-[0-9a-fA-F]{8}-(?P<model>.*)$")
@@ -9,7 +10,18 @@ _CLAUDE_NATIVE_PICKER_LABELS = {
     "claude-opus-5": ("Opus", "Opus 5"),
     "claude-sonnet-5": ("Sonnet", "Sonnet 5"),
 }
+_CLAUDE_DEFAULT_PICKER_ROW = re.compile(
+    r"^Default(?: \(recommended\))?[ \t]+Use the default model\b"
+)
 _SYSTEM_AI_PREFIX = "system.ai."
+
+
+def claude_discovery_model_id(model_id: str) -> str:
+    """Encode the exact wire ID expected by Claude's gateway discovery feature."""
+    if "claude" in model_id.lower() or "anthropic" in model_id.lower():
+        return model_id
+    checksum = hashlib.sha256(model_id.encode("utf-8")).hexdigest()[:8]
+    return f"anthropic-aigw-{checksum}-{model_id}"
 
 
 def claude_model_in_picker(screen: str, model_id: str, display_name: str | None) -> bool:
@@ -70,3 +82,45 @@ def claude_system_model_ids(models: list[dict]) -> list[str]:
         ), f"Expected a system.ai model id: {model_id!r}"
         canonical_ids.append(canonical_id)
     return canonical_ids
+
+
+def codex_model_in_picker(screen: str, model_id: str, display_name: str) -> bool:
+    """Match native numbered picker rows, not banners, prompt text, or footers."""
+    rows = re.findall(r"(?m)^[ \t]*(?:[❯›>][ \t]*)?\d+[.)][ \t]+([^\n]+)$", screen)
+    return any(_picker_row_matches(row, model_id, display_name) for row in rows)
+
+
+def _picker_row_matches(label: str, model_id: str, display_name: str | None) -> bool:
+    return any(
+        re.search(rf"(?<![\w.-]){re.escape(candidate)}(?![\w.-])", label)
+        for candidate in (model_id, display_name)
+        if candidate
+    )
+
+
+def assert_picker_inventory(screen: str, agent: str, display_names: dict[str, str | None]) -> None:
+    """Require exactly one unambiguous numbered native row per expected model."""
+    assert agent in {"claude", "codex"}, agent
+    assert display_names, "Expected a nonempty provider model inventory"
+    rows = re.findall(r"(?m)^[ \t]*(?:[❯›>][ \t]*)?\d+[.)](?:[ \t]+([^\n]*))?$", screen)
+    assert rows, f"No numbered {agent} picker rows:\n{screen}"
+    observed: list[str] = []
+    for label in rows:
+        if agent == "claude" and _CLAUDE_DEFAULT_PICKER_ROW.match(label):
+            continue
+        matched = {
+            model
+            for model, display_name in display_names.items()
+            if _picker_row_matches(label, model, display_name)
+        }
+        assert len(matched) == 1, (
+            f"Unmatched or ambiguous {agent} picker row {label!r}: {sorted(matched)}"
+        )
+        model = matched.pop()
+        assert model not in observed, f"Duplicate {agent} picker model row: {model}"
+        observed.append(model)
+    assert set(observed) == set(display_names), {
+        "agent": agent,
+        "expected": sorted(display_names),
+        "observed": observed,
+    }

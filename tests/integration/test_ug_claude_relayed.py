@@ -90,7 +90,9 @@ def test_ug_claude_relayed_serves_subscription_and_databricks_models(
         return result
 
     # Relay path: a bare Anthropic id, served directly by the subscription.
-    relay = relayed_file_task("haiku")
+    # The family alias "haiku" can resolve to a configured gateway model. Use
+    # the exact subscription model ID to exercise the bare-model relay route.
+    relay = relayed_file_task("claude-haiku-4-5-20251001")
     assert '"route":"relay"' in relay.stderr, (
         f"Relayed launch did not use the subscription relay path for a bare model:\n{relay.stderr}"
     )

@@ -1096,8 +1096,21 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
             if is_eligible
             else {}
         )
+        # Claude also needs every server ug registers elsewhere, so an admin MCP allowlist keeps them.
+        extra = (
+            {
+                "also_registered": [
+                    n
+                    for s in working
+                    if "claude" in _mcp_server_clients(s)
+                    if (n := _server_name(s))
+                ]
+            }
+            if agent == "claude"
+            else {}
+        )
         try:
-            written = module.reconcile_managed_mcp(state, entries)
+            written = module.reconcile_managed_mcp(state, entries, **extra)
         except RuntimeError as exc:
             print_warning(f"Could not update {MCP_CLIENTS[agent]['display']} managed MCP: {exc}")
             written = False
@@ -2493,6 +2506,42 @@ def _row_status(
     )
 
 
+def configured_mcp_servers_by_name(
+    state: dict, agents: set[str] | None = None
+) -> dict[str, dict[str, Any]]:
+    """Merge the developer- and workspace-managed MCP servers ug has configured, keyed by
+    registered name, unioning the agents each is on. Skills connections are excluded (they are
+    reported/handled separately). ``agents`` drops agents outside that scope, and a server left
+    with no in-scope agent is omitted. Each value is ``{"server", "clients", "managed"}``.
+
+    Managed servers (the ``managed_mcp_servers`` fallback state and each agent's OS-managed file)
+    come from the shared ``managed_mcp_servers`` helper, so this stays in agreement with ``ug mcp
+    list`` and the ``ug mcp add`` picker. Used by ``ug mcp list`` and ``ug status`` so both see the
+    same configured-server set regardless of how a managed server was delivered."""
+    configured: dict[str, dict[str, Any]] = {}
+
+    def _collect(server: dict, *, managed: bool) -> None:
+        name = _server_name(server)
+        if not name or server.get("kind") == SKILLS_MCP_KIND:
+            return
+        clients = [
+            client for client in _mcp_server_clients(server) if agents is None or client in agents
+        ]
+        if not clients:
+            return
+        entry = configured.setdefault(name, {"server": server, "clients": [], "managed": managed})
+        entry["clients"] = _merge_clients(entry["clients"], clients)
+        entry["managed"] = entry["managed"] or managed
+
+    for server in state.get("mcp_servers") or []:
+        _collect(server, managed=False)
+    # Fallback ``managed_mcp_servers`` state + each agent's OS-managed file, via the shared helper
+    # (keeps the isinstance guard and _MANAGED_FILE_AGENTS set, so this can't drift from `ug mcp list`).
+    for server in managed_mcp_servers(state, agents):
+        _collect(server, managed=True)
+    return configured
+
+
 def list_mcp_command(agents: set[str] | None = None) -> int:
     """`ug mcp list`: show the Databricks MCP servers ug has configured and their live
     connection status in each coding agent, one row per server.
@@ -2524,28 +2573,10 @@ def list_mcp_command(agents: set[str] | None = None) -> int:
 
     live = _query_live_statuses(probe_clients)
 
-    # Merge developer- and workspace-managed servers by registered name, unioning their agents.
-    # ``--agents`` drops agents outside the scope, and a server left with no in-scope agent is
-    # omitted. The skills connection is intentionally excluded — it's reported by the skill commands.
-    configured: dict[str, dict[str, Any]] = {}
-
-    def _collect(server: dict, *, managed: bool) -> None:
-        name = _server_name(server)
-        if not name or server.get("kind") == SKILLS_MCP_KIND:
-            return
-        clients = [
-            client for client in _mcp_server_clients(server) if agents is None or client in agents
-        ]
-        if not clients:
-            return
-        entry = configured.setdefault(name, {"server": server, "clients": [], "managed": managed})
-        entry["clients"] = _merge_clients(entry["clients"], clients)
-        entry["managed"] = entry["managed"] or managed
-
-    for server in state.get("mcp_servers") or []:
-        _collect(server, managed=False)
-    for server in managed_mcp_servers(state, agents):
-        _collect(server, managed=True)
+    # Merge developer- and workspace-managed servers by registered name, unioning their agents
+    # (shared with `ug status` so both see the same configured-server set, including the servers
+    # delivered through the agents' OS-managed files).
+    configured = configured_mcp_servers_by_name(state, agents)
 
     if configured:
         table = Table(box=None, pad_edge=False, header_style="bold")

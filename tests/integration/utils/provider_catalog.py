@@ -13,6 +13,7 @@ _ANTHROPIC_MODELS_PATH = "/ai-gateway/anthropic/v1/models"
 _CODEX_MODELS_PATH = "/ai-gateway/codex/v1/models"
 _PROVIDER_HEADER = "Databricks-Model-Provider-Service"
 _PARENT_SCHEMA_HEADER = "Databricks-Model-Service-Parent-Schema"
+MODEL_SERVICE_PARENT_SCHEMA_HEADER = _PARENT_SCHEMA_HEADER
 _ANTHROPIC_VERSION = "2023-06-01"
 _ANTHROPIC_PAGE_SIZE = 1000
 _ANTHROPIC_MAX_PAGES = 20

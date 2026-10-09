@@ -56,9 +56,9 @@ model for one launch. OpenCode's `provider/model` form is also accepted.
 Unknown Databricks models produce an error; this option does not add models
 to discovery or change ug's saved default.
 
-`ug copilot` uses the Responses API for GPT-6 and newer model IDs, and Chat
-Completions for other models. The model selected at launch (including `--model`)
-determines the API. An inherited `COPILOT_PROVIDER_WIRE_MODEL` takes precedence
+`ug copilot` uses the Anthropic Messages API for Claude model IDs, the Responses
+API for GPT-5 and newer model IDs, and Chat Completions for other models. The
+model selected at launch (including `--model`) determines the API. An inherited `COPILOT_PROVIDER_WIRE_MODEL` takes precedence
 because it overrides the model sent to the gateway. Restart Copilot through `ug`
 to change the wire model or API; in-session model selection does not rebuild its
 provider configuration.
@@ -219,6 +219,9 @@ ug skills remove --location main.default --via mcp
 | `ug mcp add` | Add MCP servers without removing existing registrations |
 | `ug mcp remove` | Unregister configured MCP servers |
 | `ug mcp list` | List configured MCP servers and connection status |
+| `ug agents add <agent>` | Allow a non-admin-enabled agent to run self-managed |
+| `ug agents remove <agent>` | Remove an agent from your self-managed list |
+| `ug agents list` | Show the admin-managed and self-managed agents |
 | `ug skills` | Set up the Databricks skills MCP so agents can create and manage skills |
 | `ug skills list` | List configured skills and how each was configured |
 | `ug skills add` | Add skill MCP scopes or download skills |
@@ -245,6 +248,84 @@ On Windows, Claude smart routing uses subagent hooks only. If first-prompt routi
 is enabled, ug warns and falls back to subagent routing because the first-prompt
 wrapper requires a Unix terminal.
 The generated shell hooks expect Git Bash; PowerShell-only setups are not covered.
+
+### Smart Router Orchestrator
+
+Use `SMART_ROUTER_CONFIG_VERSION` at launch to select a smart-routing configuration:
+
+| Version | Subagent routing | First-prompt routing | Orchestrator |
+| --- | --- | --- | --- |
+| `first_prompt_and_subagent_no_orch_v0` | On | On | Off |
+| `subagent_only_v0` | On | Off | Off |
+| `subagent_only_v1` | On | Off | Off |
+| `subagent_orch_v0` | On | Off | On |
+| `subagent_orch_v1` | On | Off | On |
+
+`first_prompt_and_subagent_no_orch_v0` is the customer configuration for first-prompt
+and subagent routing without orchestration: `ENABLE_SMART_ROUTING_V2=1`,
+`ENABLE_SMART_ROUTING_SUBAGENT_ONLY=0`, and `ENABLE_SMART_ROUTER_ORCHESTRATOR=0`.
+
+`subagent_only_v1` sets both `ENABLE_SMART_ROUTING_V2` and
+`ENABLE_SMART_ROUTING_SUBAGENT_ONLY` to `"1"`. Subagent-only takes precedence,
+so first-prompt routing remains off; orchestration is also off.
+
+`subagent_orch_v1` enables all three legacy flags. Like `subagent_only_v1`, it routes
+subagents rather than the first prompt, and it additionally enables orchestration.
+
+`SMART_ROUTER_NAME` still selects the router independently of the preset.
+
+Smart-routed Claude and Codex sessions install `smart-router`. The `subagent_orch_v0`
+and `subagent_orch_v1` versions also install and activate the bundled `smart-router-orchestrator` skill.
+For example:
+
+```bash
+SMART_ROUTER_CONFIG_VERSION=subagent_orch_v0 ug claude
+```
+
+The version takes precedence over conflicting legacy flags. Before parsing command options
+or running any command callbacks, UG expands it into
+`ENABLE_SMART_ROUTING_V2`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY`, and
+`ENABLE_SMART_ROUTER_ORCHESTRATOR` for the launched session. When the version is
+unset or empty, these legacy flags retain their existing behavior, including
+first-prompt routing through `ENABLE_SMART_ROUTING_V2=1`. Unknown versions are ignored:
+no preset is applied, the inherited environment is unchanged, and commands continue normally.
+Explicit launch/session on/off controls apply after expansion. Orchestration remains off by default.
+Workspace smart-routing defaults do not rewrite the selected version's flags.
+
+Version names require an explicit suffix. Future revisions use new `_v1`, `_v2`,
+etc. names without changing existing versions.
+
+Version definitions fail validation at module import if any flag in
+`SMART_ROUTING_ENV_KEYS` is missing, has a value other than `"0"` or `"1"`,
+or an unknown flag is present. Register new managed flags in that tuple and
+explicitly set them in every version.
+
+Use `ug codex` in the same command for Codex. Smart Router Orchestrator assigns bounded work
+to explorer, researcher, worker, tester, and reviewer roles while the root plans,
+integrates, and verifies results. Easy tasks and explicit requests not to delegate
+stay in the root.
+
+Claude and Codex routing panels add `[orchestrator on]` to the `Subagent` line
+only when orchestration is active. When it is off, they show the normal subagent
+name. The label reports the session mode; it does not identify whether a particular
+delegation came from the workflow or an explicit user request.
+
+Once opted in, orchestration follows the existing smart-routing launch eligibility
+and session controls. Turning Smart Router off through its skill stops new automatic delegation;
+turning it on restores orchestration only in opted-in sessions. Explicit user
+requests for subagents still use normal harness behavior while routing is off.
+Stored skill files do not activate orchestration without an opted-in configuration,
+or in non-routed sessions. Existing Isaac pilot gating
+and UG launch exclusions still apply.
+
+Hooks refresh orchestration state before each prompt and after compaction. A
+state change made outside the conversation is observed at the next hook; model
+routing still checks the controls for each subagent.
+
+UG supplies its own hooks; Codex combines them with existing hooks and applies
+project trust. Smart routing selects subagent models; separate role-model
+preferences are ignored and their files are left untouched. See the bundled
+[Smart Router Orchestrator documentation](skills/smart-router-orchestrator/README.md) for details.
 
 ## Managed Files
 
