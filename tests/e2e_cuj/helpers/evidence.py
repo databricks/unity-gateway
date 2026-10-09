@@ -6,6 +6,8 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
 
+import httpx
+
 from tests.integration.utils.evidence import FileTask, read_jsonl
 
 from .constants import CLAUDE, CODEX, NATIVE_MODEL_ALIASES
@@ -38,6 +40,10 @@ def assert_served(recorder, request, model):
         "status": response.status_code,
         "model": request.payload["model"],
         "output_config": request.payload.get("output_config"),
+        "thinking": request.payload.get("thinking"),
+        "response_body": httpx.Response(
+            response.status_code, headers=response.headers, content=response.body
+        ).text[:2000],
     }
     assert response.body, "Inference response was empty"
 

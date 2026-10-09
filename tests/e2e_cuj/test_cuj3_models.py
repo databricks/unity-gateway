@@ -2,6 +2,7 @@
 
 import json
 
+import httpx
 import pytest
 
 from tests.integration.utils.agents import claude, codex
@@ -104,6 +105,23 @@ def _request_contains_task(request, agent, task):
     return False
 
 
+def _is_thinking_display_rejection(response):
+    """Recognize the observed gateway rejection, including compressed error bodies."""
+    if response.status_code != 400:
+        return False
+    try:
+        error = httpx.Response(
+            response.status_code, headers=response.headers, content=response.body
+        ).json()
+        if not isinstance(error, dict) or error.get("error_code") != "BAD_REQUEST":
+            return False
+        return json.loads(error.get("message", "")) == {
+            "message": "thinking.adaptive.display: Input should be 'summarized', 'omitted'"
+        }
+    except (ValueError, TypeError):
+        return False
+
+
 def _assert_inference_evidence(recorder, checkpoint, agent, task, expected):
     expected_wire_model = claude.discovery_model_id(expected) if agent == CLAUDE else expected
     requests = recorder.requests_after(checkpoint)
@@ -121,7 +139,28 @@ def _assert_inference_evidence(recorder, checkpoint, agent, task, expected):
         request for request in inference_requests if _request_contains_task(request, agent, task)
     ]
     assert task_requests, "No inference request contained the submitted task prompt"
-    for request in task_requests:
+    # Claude 2.1.290 sends thinking.display="updates" to custom endpoints;
+    # 2.1.280 restricted it to Anthropic's first-party base URL. This workspace
+    # rejects "updates" with 400. Claude retries without it and completes with
+    # effort="high" unchanged. Accept only this rejection paired with a successful
+    # retry of the same payload with display removed; all other requests must return 200.
+    # Live A/B: https://github.com/databricks/unity-gateway/actions/runs/37865757991
+    # TODO: Remove this workaround once we add thinking-display-updates-2026-08-18
+    # to accepted betas on Bedrock passthrough.
+    for index, request in enumerate(task_requests):
+        if (
+            agent == CLAUDE
+            and request.payload.get("thinking") == {"type": "adaptive", "display": "updates"}
+            and _is_thinking_display_rejection(recorder.response_for(request, timeout=240))
+        ):
+            assert index + 1 < len(task_requests), "Thinking display rejection had no retry"
+            retry = task_requests[index + 1]
+            assert retry.payload == {**request.payload, "thinking": {"type": "adaptive"}}, (
+                "Thinking display retry changed more than display",
+                retry.payload,
+            )
+            assert_served(recorder, retry, expected_wire_model)
+            continue
         assert_served(recorder, request, expected_wire_model)
 
 

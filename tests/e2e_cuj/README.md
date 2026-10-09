@@ -30,7 +30,9 @@ expected answers are withheld from prompts. Claude headless results also require
 tokens in `modelUsage`; Codex joins the completed answer to its client-selected turn model.
 Claude transcript model IDs name the backing model, not the service. TUI tasks reject unexpected
 permission prompts. These checks do not prove the gateway's backing destination. Only live passes
-establish coverage.
+establish coverage. Claude 2.1.290 may receive a 400 rejecting `thinking.display: "updates"`;
+CUJ3 accepts it only if the next task request removes that field, changes nothing else in the
+payload, and receives a non-empty HTTP 200. Other failures remain test failures.
 
 The test class selects the CUJ3 workspace, `https://dbc-bbdd5508-648e.cloud.databricks.com`.
 The shared `cuj` fixture supplies its authenticated SDK client and isolated local session;

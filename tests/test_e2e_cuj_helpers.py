@@ -1,5 +1,6 @@
 """Offline checks for CUJ bearer minting, leak reporting, terminal waits, and task helpers."""
 
+import gzip
 import json
 import sys
 from pathlib import Path
@@ -12,7 +13,13 @@ from tests.e2e_cuj import test_cuj2_mps_mcp as cuj2
 from tests.e2e_cuj import test_cuj3_mcp as mcp_registration
 from tests.e2e_cuj.base import bearer
 from tests.e2e_cuj.helpers import poll as poll_module
-from tests.e2e_cuj.helpers.constants import CLAUDE, CLAUDE_HAIKU_MODEL, CODEX, CodingAgent
+from tests.e2e_cuj.helpers.constants import (
+    CLAUDE,
+    CLAUDE_HAIKU_MODEL,
+    CODEX,
+    INFERENCE_PATHS,
+    CodingAgent,
+)
 from tests.e2e_cuj.helpers.evidence import assert_models, claude_file_task
 from tests.e2e_cuj.helpers.poll import poll
 from tests.e2e_cuj.helpers.session import (
@@ -23,7 +30,7 @@ from tests.e2e_cuj.helpers.session import (
 )
 from tests.e2e_cuj.helpers.terminal import Terminal
 from tests.e2e_cuj.helpers.workspace import Workspace
-from tests.e2e_cuj.test_cuj3_models import _catalog_display_names
+from tests.e2e_cuj.test_cuj3_models import _assert_inference_evidence, _catalog_display_names
 
 
 def _client(headers):
@@ -242,6 +249,105 @@ def test_catalog_display_names_rejects_repeated_pages(pages, message):
     workspace, _ = _catalog_workspace(pages)
     with pytest.raises(AssertionError, match=message):
         _catalog_display_names(workspace, CLAUDE, "ug_e2e.models")
+
+
+@pytest.fixture
+def thinking_display_exchange():
+    model = "ug_e2e.models.claude_sonnet"
+    task = SimpleNamespace(prompt="Read the task file")
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": task.prompt}],
+        "thinking": {"type": "adaptive", "display": "updates"},
+        "output_config": {"effort": "high"},
+    }
+    requests = [
+        SimpleNamespace(method="POST", path=INFERENCE_PATHS[CLAUDE], payload=payload),
+        SimpleNamespace(
+            method="POST",
+            path=INFERENCE_PATHS[CLAUDE],
+            payload={**payload, "thinking": {"type": "adaptive"}},
+        ),
+    ]
+    error = json.dumps(
+        {
+            "error_code": "BAD_REQUEST",
+            "message": json.dumps(
+                {"message": "thinking.adaptive.display: Input should be 'summarized', 'omitted'"}
+            ),
+        }
+    ).encode()
+    responses = [
+        SimpleNamespace(status_code=400, headers={}, body=error),
+        SimpleNamespace(status_code=200, headers={}, body=b"successful stream"),
+    ]
+    recorder = SimpleNamespace(
+        requests_after=lambda checkpoint: requests,
+        response_for=lambda request, timeout: responses[requests.index(request)],
+    )
+    return recorder, requests, responses, task, model
+
+
+@pytest.mark.parametrize("compressed", [False, True])
+def test_catalog_inference_accepts_verified_thinking_display_recovery(
+    thinking_display_exchange, compressed
+):
+    recorder, _, responses, task, model = thinking_display_exchange
+    if compressed:
+        responses[0].body = gzip.compress(responses[0].body)
+        responses[0].headers = {"content-encoding": "gzip"}
+    _assert_inference_evidence(recorder, 0, CLAUDE, task, model)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "unrelated_400",
+        "malformed_error",
+        "server_error",
+        "missing_retry",
+        "failed_retry",
+        "empty_retry",
+        "changed_model",
+        "changed_effort",
+        "changed_prompt",
+        "display_retained",
+        "wrong_display",
+        "codex",
+    ],
+)
+def test_catalog_inference_rejects_unverified_recovery(thinking_display_exchange, failure):
+    recorder, requests, responses, task, model = thinking_display_exchange
+    agent = CLAUDE
+    if failure == "unrelated_400":
+        responses[0].body = responses[0].body.replace(b"thinking.adaptive.display", b"other.field")
+    elif failure == "malformed_error":
+        responses[0].body = b"not JSON"
+    elif failure == "server_error":
+        responses[0].status_code = 500
+    elif failure == "missing_retry":
+        requests.pop()
+    elif failure == "failed_retry":
+        responses[1].status_code = 400
+    elif failure == "empty_retry":
+        responses[1].body = b""
+    elif failure == "changed_model":
+        requests[1].payload["model"] = "ug_e2e.models.claude_haiku"
+    elif failure == "changed_effort":
+        requests[1].payload["output_config"] = {}
+    elif failure == "changed_prompt":
+        requests[1].payload["messages"] = [{"role": "user", "content": "A different task"}]
+    elif failure == "display_retained":
+        requests[1].payload["thinking"] = {"type": "adaptive", "display": "updates"}
+    elif failure == "wrong_display":
+        requests[0].payload["thinking"] = {"type": "adaptive", "display": "summarized"}
+    elif failure == "codex":
+        agent = CODEX
+        for request in requests:
+            request.path = INFERENCE_PATHS[CODEX]
+            request.payload["input"] = task.prompt
+    with pytest.raises(AssertionError):
+        _assert_inference_evidence(recorder, 0, agent, task, model)
 
 
 def test_assert_models_maps_native_aliases():
