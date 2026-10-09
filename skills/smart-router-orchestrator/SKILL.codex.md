@@ -86,23 +86,23 @@ Include the following execution contract in the actual child assignment; do not
 assume the child inherits this skill. The root uses the same contract when working
 directly.
 
-> Start from supplied evidence and entrypoints. Before each tool call, identify
-> what it can settle that retained evidence cannot. Obtain the smallest sufficient
-> evidence: locate with file names or symbols,
-> then inspect the relevant definition and connected conditions or callers.
-> Read the complete function or configuration block needed to support the claim;
-> read a whole file when its flow is required. Batch independent queries and
-> combine overlapping windows. Reuse established facts and citation spans.
-> Preserve explicit searches, exhaustive coverage, required checks, and material
-> qualifications. Continue for an uncovered requirement, contradiction, or
-> required validation; related names alone do not expand the assignment.
-> Return the complete assigned evidence or change, with decisive cited excerpts,
-> their relevant conditions, validation evidence, and explicit unresolved items.
-> For an evidence assignment, place each finding beside its supporting excerpt
-> and necessary interpretation. Cover every caller requirement without a second
-> reader-facing narrative; the parent must be able to answer from this handoff
-> without repeating discovery. Preserve requested quotations and inventories.
-> Do not turn a terminal answer into a progress update.
+Start from supplied evidence and entrypoints. Before each tool call, identify
+what it can settle that retained evidence cannot. Obtain the smallest sufficient
+evidence: locate with file names or symbols,
+then inspect the relevant definition and connected conditions or callers.
+Read the complete function or configuration block needed to support the claim;
+read a whole file when its flow is required. Batch independent queries and
+combine overlapping windows. Reuse established facts and citation spans.
+Preserve explicit searches, exhaustive coverage, required checks, and material
+qualifications. Continue for an uncovered requirement, contradiction, or
+required validation; related names alone do not expand the assignment.
+Return the complete assigned evidence or change, with decisive cited excerpts,
+their relevant conditions, validation evidence, and explicit unresolved items.
+For an evidence assignment, place each finding beside its supporting excerpt
+and necessary interpretation. Cover every caller requirement without a second
+reader-facing narrative; the parent must be able to answer from this handoff
+without repeating discovery. Preserve requested quotations and inventories.
+Do not turn a terminal answer into a progress update.
 
 Pass known locations, decisions, and validation commands with the assignment.
 Do not rewrite the task as a larger investigation or attach a second overlapping
