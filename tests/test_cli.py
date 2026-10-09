@@ -1875,7 +1875,11 @@ class TestAuthTokenCommand:
         else:
             os.environ["DATABRICKS_BEARER"] = original
 
-    def test_prints_only_the_token_to_stdout(self):
+    @pytest.mark.parametrize("selector", [None, "unsupported_v99"])
+    def test_prints_only_the_token_to_stdout(self, monkeypatch, selector):
+        if selector is not None:
+            monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", selector)
+        previous = dict(os.environ)
         with (
             patch("ucode.cli.load_state", return_value={"workspace": "https://ws"}),
             patch("ucode.cli.get_databricks_token", return_value="tok-123") as fetch,
@@ -1886,6 +1890,7 @@ class TestAuthTokenCommand:
         # or the consuming agent will treat the noise as part of the token.
         assert result.stdout == "tok-123\n"
         fetch.assert_called_once_with("https://ws", None, force_refresh=False)
+        assert dict(os.environ) == previous
 
     def test_host_and_profile_override_state(self):
         with (
@@ -2844,6 +2849,17 @@ class TestStatusSkillsSection:
 
 
 class TestRevert:
+    def test_invalid_routing_config_does_not_block_revert(self, monkeypatch):
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "unsupported_v99")
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
+        previous = dict(os.environ)
+        with patch("ucode.cli.revert", return_value=0) as revert:
+            result = runner.invoke(app, ["revert"])
+
+        assert result.exit_code == 0, result.output
+        revert.assert_called_once_with()
+        assert dict(os.environ) == previous
+
     def test_reverts_mcp_configs_before_clearing_state(self):
         state = {
             **MINIMAL_STATE,
@@ -2869,6 +2885,28 @@ class TestRevert:
         assert reverted_mcp == [state]
         assert cleared == [True]
         assert "Claude Code MCP config: restored" in result.output
+
+
+@pytest.mark.parametrize("args", [[], ["claude"], ["codex"]])
+def test_unknown_routing_config_does_not_block_launch(monkeypatch, args):
+    monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "unsupported_v99")
+    previous = dict(os.environ)
+    with (
+        patch("ucode.cli._launch_tool") as launch,
+        patch("ucode.cli._launch_managed_default") as launch_default,
+        patch("ucode.cli.configure_shared_state") as configure,
+    ):
+        result = runner.invoke(app, args)
+
+    assert result.exit_code == 0, result.output
+    if args:
+        launch.assert_called_once()
+        launch_default.assert_not_called()
+    else:
+        launch.assert_not_called()
+        launch_default.assert_called_once()
+    configure.assert_not_called()
+    assert dict(os.environ) == previous
 
 
 class TestDoctorCommand:

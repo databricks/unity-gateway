@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import re
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
+
+import httpx
 
 from tests.integration.utils.evidence import FileTask, read_jsonl
 
@@ -38,8 +41,77 @@ def assert_served(recorder, request, model):
         "status": response.status_code,
         "model": request.payload["model"],
         "output_config": request.payload.get("output_config"),
+        "thinking": request.payload.get("thinking"),
+        "response_body": httpx.Response(
+            response.status_code, headers=response.headers, content=response.body
+        ).text[:2000],
     }
     assert response.body, "Inference response was empty"
+
+
+def served_inference_request(recorder, requests, request, agent):
+    """Require HTTP 200 or verified native Claude compatibility retries."""
+    model = request.payload["model"]
+    # Claude 2.1.290 may remove display, then safeguards after separate Bedrock
+    # validation errors. Inspect recorded traffic only; never replay or edit it.
+    # Each field may disappear once, and the full task/model/budget/effort must survive.
+    for _ in range(3):
+        payload = request.payload
+        thinking = payload.get("thinking", {})
+        thinking_type = thinking.get("type")
+        response = recorder.response_for(request, timeout=240)
+        error_message = None
+        if agent == CLAUDE and response.status_code == 400:
+            try:
+                error = httpx.Response(
+                    response.status_code, headers=response.headers, content=response.body
+                ).json()
+                if isinstance(error, dict) and error.get("error_code") == "BAD_REQUEST":
+                    detail = json.loads(error.get("message", ""))
+                    if isinstance(detail, dict) and set(detail) == {"message"}:
+                        error_message = detail["message"]
+            except (ValueError, TypeError):
+                pass
+        expected_retry = None
+        if (
+            thinking_type in {"adaptive", "enabled"}
+            and thinking.get("display") == "updates"
+            and error_message
+            == f"thinking.{thinking_type}.display: Input should be 'summarized', 'omitted'"
+        ):
+            expected_retry = {
+                **payload,
+                "thinking": {key: value for key, value in thinking.items() if key != "display"},
+            }
+        elif (
+            "safeguards" in payload
+            and error_message == "safeguards: Extra inputs are not permitted"
+        ):
+            expected_retry = {key: value for key, value in payload.items() if key != "safeguards"}
+        if expected_retry is None:
+            assert_served(recorder, request, model)
+            return request
+        following = requests[requests.index(request) + 1 :]
+        # Parent and child traffic can interleave on the same endpoint.
+        retry = next(
+            (
+                candidate
+                for candidate in following
+                if candidate.method == request.method
+                and candidate.path == request.path
+                and candidate.payload.get("system") == payload.get("system")
+                and candidate.payload.get("metadata") == payload.get("metadata")
+            ),
+            None,
+        )
+        assert retry is not None, "Claude compatibility rejection had no retry"
+        assert retry.payload == expected_retry, (
+            "Claude compatibility retry changed more than the rejected field",
+            error_message,
+            retry.payload,
+        )
+        request = retry
+    raise AssertionError("Claude compatibility retries did not reach a successful response")
 
 
 def claude_file_task(session):
@@ -150,48 +222,77 @@ class CodexCujHelper(BaseCujHelper):
         meta = [row["payload"] for row in records if row.get("type") == "session_meta"]
         if len(meta) != 1 or isinstance(meta[0].get("source"), dict):
             return None
-        contexts, prompt_count, seen_prompt, active_turn = {}, 0, False, None
+        contexts, active_turn, target_turn = {}, None, None
+        started_turn, aborted_turn, answer, prompt_sources = None, None, None, set()
         for row in records:
             payload = row.get("payload", {})
+            metadata = row.get("internal_chat_message_metadata_passthrough") or {}
+            if "multi_agent.subagent_notification" in metadata.get(
+                "content_item_kinds", ()
+            ) or "<subagent_notification>" in str(
+                payload.get("content") or payload.get("message")
+            ).replace("-", "_"):
+                continue
+            row_turn = payload.get("turn_id")
             if row.get("type") == "turn_context":
-                contexts.setdefault(payload.get("turn_id"), []).append(payload.get("model"))
-            if (
+                contexts.setdefault(row_turn, []).append(payload.get("model"))
+                if target_turn and row_turn != target_turn:
+                    return None
+                active_turn = row_turn
+                continue
+            source = None
+            if row.get("type") == "event_msg" and payload.get("type") == "user_message":
+                source, prompt = "event", payload.get("message")
+            elif (
                 row.get("type") == "response_item"
                 and payload.get("type") == "message"
                 and payload.get("role") == "user"
             ):
-                prompt = message_text(payload.get("content"))
+                source, prompt = "response", message_text(payload.get("content"))
+            if source:
                 if prompt == task.prompt:
-                    prompt_count += 1
-                    assert prompt_count == 1, "Prompt was submitted more than once"
-                    seen_prompt = True
-                elif seen_prompt:
+                    assert source not in prompt_sources, "Prompt was submitted more than once"
+                    prompt_sources.add(source)
+                    if target_turn and row_turn and row_turn != target_turn:
+                        return None
+                    target_turn = target_turn or row_turn or active_turn
+                elif prompt_sources:
                     return None
+                continue
             if row.get("type") != "event_msg":
                 continue
-            if payload.get("type") == "task_started":
-                if seen_prompt:
-                    return None
-                active_turn = payload.get("turn_id")
-            if payload.get("type") == "user_message":
-                if payload.get("message") == task.prompt:
-                    prompt_count += 1
-                    assert prompt_count == 1, "Prompt was submitted more than once"
-                    seen_prompt = True
-                elif seen_prompt:
-                    return None
-            if seen_prompt and payload.get("type") == "task_complete":
+            event_type = payload.get("type")
+            if event_type == "task_started":
                 turn_id = payload.get("turn_id")
-                answer = payload.get("last_agent_message") or ""
-                if (
-                    task.value in answer
-                    and turn_id
-                    and turn_id == active_turn
-                    and contexts.get(turn_id)
-                ):
-                    assert all(contexts[turn_id]), "Missing native turn model metadata"
-                    return CompletedTurn(meta[0]["id"], turn_id, contexts[turn_id], answer)
-        return None
+                if not turn_id or turn_id == aborted_turn:
+                    return None
+                if target_turn and turn_id != target_turn:
+                    return None
+                active_turn = started_turn = turn_id
+                if prompt_sources and target_turn is None:
+                    target_turn = turn_id
+            elif event_type == "task_complete":
+                turn_id = payload.get("turn_id")
+                if target_turn:
+                    if turn_id != target_turn:
+                        return None
+                    answer = payload.get("last_agent_message") or ""
+                    break
+                if turn_id == active_turn:
+                    active_turn = started_turn = None
+            elif event_type == "turn_aborted":
+                aborted_turn = payload.get("turn_id")
+                if aborted_turn == target_turn:
+                    return None
+                if aborted_turn == active_turn:
+                    active_turn = started_turn = None
+        if not prompt_sources or not target_turn or started_turn != target_turn or answer is None:
+            return None
+        models = contexts.get(target_turn)
+        if task.value not in answer or not models:
+            return None
+        assert all(models), "Missing native turn model metadata"
+        return CompletedTurn(meta[0]["id"], target_turn, models, answer)
 
 
 def get_cuj_helper(agent):

@@ -10,18 +10,57 @@ CUJ2 adds three separately collected cases for exact published MPS/MCP configura
 inference, and Claude inference. The config equality also accounts for the workspace's fixture
 skill name as data; skill download and invocation are not covered.
 
+The dedicated smart-routing CUJ in `../e2e_cuj/test_cuj4_smart_routing.py` leaves the original
+managed-default and explicit-model cases unchanged. One additional test runs the five supported
+`SMART_ROUTER_CONFIG_VERSION` values, checking both agents' first-prompt routing, orchestrator
+context in inference input, and completed explicitly requested routed subagents.
+This is not automatic orchestrator-delegation coverage. No workspace configuration is modified.
+CUJ3 and CUJ4 require a non-empty HTTP 200 for inference. Claude 2.1.290's known
+thinking-display 400 is accepted only when the next inference request with the same system
+context and session metadata removes `display`,
+preserves every other payload field, and succeeds; adaptive and enabled thinking are covered.
+The native retry may also encounter `safeguards: Extra inputs are not permitted`; that
+requires the next recorded attempt to remove only `safeguards` and reach a non-empty 200.
+Offline regressions check both CUJs and reject changes to the model, prompt, budget, or effort.
+Each preset cleans up interactive OS-managed settings with public `ug revert`, even on failure.
+Delegated CUJ tasks wait for the native child's hidden file value, independently of the parent's
+final turn. Offline checks reject parent-only answers. First-prompt tasks retain parent-turn evidence.
+The CUJ terminal waits for stable billing-notice rendering before Enter and observes dismissal;
+an offline PTY regression also exercises a later notice during child work.
+Claude child HTTP prompts may carry one appended newline after the route-selection checkpoint;
+offline cases reject any other prompt changes and retain exact Codex matching.
+Offline CUJ cases also cover Codex delegated-turn completion and task-request matching;
+see `../e2e_cuj/README.md` for the evidence requirements.
+
 The [catalog discovery journey](../e2e_cuj/README.md) uses the CUJ3 workspace to check
 agent-compatible pickers, schema exclusions, configured defaults, and real inference.
-CI collects it through the shared `dedicated-cuj` job.
+CI collects it through the shared `dedicated-cuj` job. Its request checks accept the known
+Claude thinking-display 400 only with a successful, otherwise identical native retry.
 
 This suite runs the **installed product** through subprocesses, against the same
 `UCODE_TEST_WORKSPACE` used by the existing e2e tests. It does not import `ucode`,
 patch application functions, substitute agent executables, run a fake gateway,
 or construct ug state files. The normal test suite checks these boundaries.
 
+The Claude mod entry point has separate native component checks in
+`../native_claude/test_mod.py`. Claude 2.1.290 validates the module and runs its
+TypeScript event-forwarding test in a dedicated CI job. These checks do not submit
+inference requests or replace this suite's live gateway/TUI journeys.
+
 The existing unit tests keep their fixtures. Integration has an independent
 pytest configuration and uses `--confcutdir` so those fixtures cannot leak in.
 It is not collected by the default `uv run pytest` command.
+The Claude subagent skill-toggle journey opens `/tasks` after its final calculation
+and waits up to 180 seconds for "No tasks currently running" or a native menu containing only
+completed task rows before submitting `/exit`. Claude 2.1.290 retains finished children in a
+`Completed (N)` list, so the empty-state message is not required when the list has exactly N
+checkmarked `done` rows and no running or scheduled section. The helper observes menu dismissal
+after Escape before typing `/exit`. Offline PTY checks reject active/scheduled tasks, partial
+lists, and completed-task text outside the native menu.
+It neither stops tasks nor confirms an exit dialog. Process exit retains its 30-second
+timeout. Offline PTY checks cover this ordering.
+The shared wait also runs before CUJ4's Claude preset sessions exit, after delegated-task
+evidence is checked, because Claude can resume a child after its first completed answer.
 
 `../test_startup_imports.py` covers the bare version fast path, deferred imports,
 metadata fallback, and other-argument dispatch as component checks. Installation
@@ -297,19 +336,39 @@ PATH conflicts for the Smart Router skill have subprocess/component coverage in
 `ug` first in PATH. The live journeys above do not inject a second installation or
 establish PowerShell command execution.
 
-The toggle journeys run with `ENABLE_SMART_ROUTER_ORCHESTRATOR` unset and with
-`ENABLE_SMART_ROUTER_ORCHESTRATOR=1`. They require only `smart-router` by default and both
-`smart-router-orchestrator` and `smart-router` when opted in. They verify the saved session
-controls, a new CLI confirmation in the native tool-result records, and a new
+The toggle journeys retain the legacy routing-only and orchestration cases and add each of
+the three subagent-only `SMART_ROUTER_CONFIG_VERSION` presets. They require only `smart-router`
+for routing-only cases, and both `smart-router-orchestrator` and `smart-router` when orchestration
+is enabled. They verify the saved session controls, a new CLI confirmation in the native
+tool-result records, and a new
 assistant answer after each skill invocation.
 Collapsed terminal output is allowed; the answer need not repeat the CLI's exact wording.
 Each following child still verifies whether a routing decision occurred.
+With orchestration enabled through legacy flags or a preset, both routed children
+must show `[orchestrator on]` in their own subagent banner.
 Their off-phase child is an explicit user-requested delegation;
 these journeys do not establish automatic orchestration behavior. Root-only
 activation, compaction, retained skills in ineligible sessions,
 role-contract preservation, and isolation from legacy preference files
 lack dedicated regression coverage. Codex's native hook merging, project trust,
 and execution of pre-existing hooks are not exercised by this integration suite.
+
+Preset parameterization augments only routing hooks, skill toggles, and first-prompt routing;
+their original legacy-env or managed-default cases remain. Explicit-model selection, command
+forwarding, app-server initialization, and catalog fallback retain their original legacy flags
+and on/off coverage; preset-specific behavior there is not covered.
+
+The unit/component `../test_smart_routing_config.py` includes a 162-case Cartesian oracle over all
+three legacy routing flags (`None`, `0`, `1`) and six selector forms (`None` plus the five
+supported presets, including the customer first-prompt-and-subagent mode). It independently
+hardcodes preset values and asserts exact
+`resolve_environment` and `apply_config` settings, true-unset omission, unrelated-key and
+input preservation, valid-selector consumption, and environment restoration.
+Absent/unknown selectors are no-ops; CLI checks cover auth, revert, and launch dispatch.
+These component checks do not establish live agent, hook, or gateway behavior.
+Three component cases additionally compare the equivalent legacy flags and presets for
+`subagent_only_v1`, `subagent_orch_v1`, and `first_prompt_and_subagent_no_orch_v0`;
+they verify routing activation, first-prompt behavior, orchestration, and router-name preservation.
 
 The portable `../test_claude_windows_smart_routing.py` checks the Windows
 subagent-only fallback without Unix imports. Native Windows TUI and hook execution
@@ -392,10 +451,10 @@ startup banners and footer text cannot satisfy discovery assertions. Cases 7–1
 they only configure, list models, and open/close the picker. Other live CUJs perform
 real model tasks.
 
-There are **64 live cases** (including 12 marked TUI journeys) and **7 installation
+There are **80 live cases** (including 14 marked TUI journeys) and **7 installation
 checks** with Claude and Codex; selecting OpenCode adds one live headless case. One
 **`workspace_switch` case** uses two real workspaces and checks skills MCP cleanup and a completed
-Claude task. A further **33 `managed_fixture` cases** (two of them also `live`) run on the
+Claude task. A further **43 `managed_fixture` cases** (ten of them also `live`) run on the
 managed workspace with a checked-in JSON CodingAgentConfig from `tests/fixtures/managed_config/`
 injected through `UCODE_MANAGED_CONFIG_STUB`; there are no cases that read a published config.
 Twelve explicit configured/fresh Claude and Codex discovery and source-override journeys use the
@@ -412,7 +471,7 @@ catalog discovery with overall defaults, family defaults, or both, along with ex
 selection and preservation of static model lists. Both cases run on the managed workspace's own
 bearer; no second workspace or extra secret is involved.
 The 14 retained numbered scenarios comprise 24 explicit journeys: 12 managed and 12 unmanaged
-executions; the complete integration suite collects 103 executions. See the named coverage and gaps matrix in
+executions; the complete integration suite collects 121 executions. See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
 ```bash
@@ -555,18 +614,23 @@ each test; only explicit-model scenarios choose and record a discovered
 Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
-two agent jobs). Full runs all 64 live cases, including those smoke cases, in two
+two agent jobs). Full runs all 80 live cases, including those smoke cases, in two
 disjoint agent lanes:
 
 | Agent lane | Marker | Cases |
 | --- | --- | --- |
-| Claude | `live and claude` | 30 |
-| Codex | `live and codex` | 34 |
+| Claude | `live and claude` | 38 |
+| Codex | `live and codex` | 42 |
 
 A non-blocking **OpenCode** job (`live and opencode`, one case) runs alongside them with
 `continue-on-error` and is not part of the required `cujs` gate until it is stable.
+A second non-blocking job, **Managed OpenCode self-managed** (`managed_fixture and opencode`, two cases
+in `test_ug_agents_self_managed.py`), installs Claude, Codex and OpenCode and runs against the
+managed e2e workspace (`E2E_ADMIN_WORKSPACE`) with the injected `managed_workspace_default` config,
+which enables Claude/Codex but not OpenCode. It is likewise outside `cujs`.
 
-Each lane installs only its agent CLI, once, and runs all its configure, headless,
+Each lane installs only the agent CLIs it needs (one, except the managed OpenCode lane's
+three), once, and runs all its configure, headless,
 commands, lifecycle, and applicable app-server journeys. Cases remain serial
 inside each fresh VM because configure/revert can touch machine-level settings;
 separate runners isolate those writes as well as the PTYs. Claude and Codex run
@@ -634,15 +698,15 @@ Codex state comparisons exclude `.codex/tmp/arg0`, the disposable executable lin
 recreated by version checks, while continuing to compare persistent agent files.
 In addition, `test_ug_configure_managed_codex_catalog_fallback` injects the intentionally nonexistent
 `system.ai.gpt-99`, keeping it out of the real workspace while launching Codex through that
-workspace on the valid default model `system.ai.gpt-5-6-sol`. With smart routing enabled, it opens
-the real Codex `/models` picker and requires that injected custom-catalog model to be listed. The
-same picker assertion also runs with smart routing disabled to cover both launch paths.
+workspace on the valid default model `system.ai.gpt-5-6-sol`. With legacy smart routing off and
+on, it opens the real Codex `/models` picker and requires that injected custom-catalog model
+to be listed. The fixture itself has no managed smart-routing setting.
 
 The smart-routing banner journeys inject static Claude and Codex model lists with
 `smart_routing` enabled in the agent config, run `ug configure`, then launch the real TUI and
-submit one small file task. Each asserts the "Using Unity Gateway Smart Router." banner naming
-the selected model appears in the TUI, the routed answer completes the file task, and the
-session exits normally.
+submit one small file task. Each runs once with the selector unset (managed default) and once
+with `first_prompt_and_subagent_no_orch_v0`, asserting the "Using Unity Gateway Smart Router."
+banner naming the selected model, a routed answer completing the file task, and normal exit.
 
 That workspace authenticates as a service principal, so CI mints a short-lived token per run from
 these same-repository secrets rather than storing a long-lived bearer:
@@ -865,7 +929,7 @@ uv run --no-project --python 3.12 python scripts/run_integration.py \
 unset DATABRICKS_BEARER
 ```
 
-This runs all 64 live cases. For the seven installation checks, run the same
+This runs all 80 live cases. For the seven installation checks, run the same
 runner/version/index arguments with `--installation-only` and omit `-- -m live`;
 no bearer or workspace is needed. Results remain under `.integration-runs/`.
 Each invocation needs a new output directory; an existing one is rejected.

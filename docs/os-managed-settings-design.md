@@ -88,6 +88,24 @@ An existing managed file is reconciled even when it does not currently conflict.
 ucode-required value exists at the highest-precedence scope and avoids separate behavior for absent,
 partial, and conflicting files.
 
+## Admin Settings Passthrough
+
+An admin can put Claude Code settings in the coding agent config under `agent_native_settings`.
+ucode copies them as-is into Claude Code's managed file. The server decides which keys are allowed.
+Codex isn't supported yet.
+
+- **ucode's own keys win.** A setting that would overwrite something ucode writes (gateway URL,
+  auth, models, MCP servers) is skipped with a warning.
+- **Shared lists are merged.** `permissions.deny` and hooks keep entries IT added; ucode only adds
+  and removes its own.
+- **ucode's MCP servers stay allowed.** If the admin sets `allowedMcpServers`, ucode adds the
+  servers it registers, so the allowlist doesn't block them.
+- **Removed settings are cleaned up.** When the admin drops a setting, or the developer switches to a
+  workspace without it, ucode removes it, unless someone edited it by hand. `ucode revert` removes
+  everything ucode wrote.
+- **Managed file only.** Settings never go into the private ucode file. Where the managed file can't
+  be written (unsupported platform, relayed launch), they aren't applied.
+
 ## Privileged Write Transaction
 
 The shared writer handles ordinary MDM-installed and root-owned files rather than treating them as
