@@ -37,6 +37,7 @@ The shared recovery check covers both adaptive and enabled thinking, preserving 
 Claude may then receive `safeguards: Extra inputs are not permitted`. Recovery must remove
 only that field in the next native attempt and end with a non-empty HTTP 200. The checks
 inspect recorded traffic without modifying or replaying requests.
+Retries match system context and session metadata to exclude concurrent parent traffic.
 
 The test class selects the CUJ3 workspace, `https://dbc-bbdd5508-648e.cloud.databricks.com`.
 The shared `cuj` fixture supplies its authenticated SDK client and isolated local session;

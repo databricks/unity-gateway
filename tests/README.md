@@ -32,6 +32,7 @@ the agent-specific prompt-submission evidence.
 CUJ3 and CUJ4 also verify Claude's native recovery from the known thinking-display 400:
 the same payload without display must receive a non-empty 200 for adaptive or enabled thinking.
 If the next attempt rejects `safeguards`, only its native removal is accepted before the final 200.
+Retries match system context and session metadata so concurrent parent traffic is excluded.
 Offline regressions reject missing/failed retries and changes to the model, prompt, budget, or effort.
 Delegated tasks wait for the native child's answer, independently of the parent's final turn.
 Offline checks require the child's hidden file value; a parent-only answer cannot satisfy the wait.

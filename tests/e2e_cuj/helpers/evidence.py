@@ -92,11 +92,15 @@ def served_inference_request(recorder, requests, request, agent):
             assert_served(recorder, request, model)
             return request
         following = requests[requests.index(request) + 1 :]
+        # Parent and child traffic can interleave on the same endpoint.
         retry = next(
             (
                 candidate
                 for candidate in following
-                if candidate.method == request.method and candidate.path == request.path
+                if candidate.method == request.method
+                and candidate.path == request.path
+                and candidate.payload.get("system") == payload.get("system")
+                and candidate.payload.get("metadata") == payload.get("metadata")
             ),
             None,
         )

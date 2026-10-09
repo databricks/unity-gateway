@@ -16,7 +16,8 @@ managed-default and explicit-model cases unchanged. One additional test runs the
 context in inference input, and completed explicitly requested routed subagents.
 This is not automatic orchestrator-delegation coverage. No workspace configuration is modified.
 CUJ3 and CUJ4 require a non-empty HTTP 200 for inference. Claude 2.1.290's known
-thinking-display 400 is accepted only when the next inference request removes `display`,
+thinking-display 400 is accepted only when the next inference request with the same system
+context and session metadata removes `display`,
 preserves every other payload field, and succeeds; adaptive and enabled thinking are covered.
 The native retry may also encounter `safeguards: Extra inputs are not permitted`; that
 requires the next recorded attempt to remove only `safeguards` and reach a non-empty 200.

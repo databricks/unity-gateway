@@ -514,6 +514,29 @@ def test_served_inference_request_keeps_successful_first_attempt(thinking_displa
     assert served_inference_request(recorder, requests, requests[0], agent) is requests[0]
 
 
+@pytest.mark.parametrize("context", ["system", "metadata"])
+@pytest.mark.parametrize("changed_model", [False, True])
+def test_served_inference_matches_retry_despite_interleaved_traffic(
+    thinking_display_exchange, context, changed_model
+):
+    recorder, requests, responses, _, _ = thinking_display_exchange
+    rejected, retry = requests
+    unrelated = SimpleNamespace(
+        sequence=2,
+        method=rejected.method,
+        path=rejected.path,
+        payload={**retry.payload, context: "parent context"},
+    )
+    requests.insert(1, unrelated)
+    responses.insert(1, SimpleNamespace(status_code=200, headers={}, body=b"parent stream"))
+    if changed_model:
+        retry.payload["model"] = "wrong model"
+        with pytest.raises(AssertionError, match="changed more than the rejected field"):
+            served_inference_request(recorder, requests, rejected, CLAUDE)
+    else:
+        assert served_inference_request(recorder, requests, rejected, CLAUDE) is retry
+
+
 @pytest.fixture
 def safeguards_exchange(thinking_display_exchange):
     recorder, requests, responses, task, model = thinking_display_exchange
