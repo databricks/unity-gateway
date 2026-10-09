@@ -174,6 +174,7 @@ def test_ug_codex_headless_fresh_workspace(live_session, workspace):
     value after using the workspace model; the command exits successfully without routing.
     """
     session = live_session
+    session.choose_codex_windows_sandbox()
     task = FileTask(session)
 
     result = session.run(
