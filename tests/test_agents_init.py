@@ -28,7 +28,6 @@ from ucode.agents import (
     resolve_launch_model,
 )
 from ucode.agents.args import has_explicit_model_arg
-from ucode.constants import AGENT_CODEX
 from ucode.managed_config import ManagedConfigResult
 from ucode.ui import redirect_output_to_stderr
 
@@ -1112,17 +1111,3 @@ class TestConfiguredPaths:
         paths = configured_paths("codex", state)
         assert str(CODEX_CONFIG_PATH).replace(str(CODEX_CONFIG_PATH.home()), "~", 1) in paths
         assert "/etc/codex/managed_config.toml" in paths
-
-
-def test_configure_restores_routing_environment_when_writer_fails(monkeypatch):
-    monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "subagent_orch_v0")
-    monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "0")
-    before = os.environ.copy()
-    monkeypatch.setattr(
-        agents_mod.codex, "write_tool_config", MagicMock(side_effect=RuntimeError("write failed"))
-    )
-
-    with pytest.raises(RuntimeError, match="write failed"):
-        agents_mod.configure_tool(AGENT_CODEX, {}, model="model")
-
-    assert os.environ == before

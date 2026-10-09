@@ -28,7 +28,6 @@ from ucode.databricks import (
 from ucode.managed_config import refresh_managed_config
 from ucode.managed_files import managed_write_batch
 from ucode.os_compatibility import subprocess_cross_os
-from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.state import get_provider_service, load_state, save_state
 from ucode.telemetry import agent_version
 from ucode.ui import (
@@ -413,49 +412,45 @@ def configure_tool(
     parent_schema: str | None = None,
     picker_catalog: AnthropicModelCatalog | None = None,
 ) -> dict:
-    previous = smart_routing_v2.apply_config(agent=tool)
-    try:
-        result: dict | tuple[dict, str]
-        if tool == AGENT_CODEX:
-            result = codex.write_tool_config(
-                state, model, provider=provider, parent_schema=parent_schema
-            )
-        elif tool == AGENT_CLAUDE:
-            # A Model Provider Service or parent schema routes by header and discovers models natively,
-            # so the usual "model required" guard doesn't apply to either Claude source.
-            if not model and not provider and not parent_schema:
-                raise RuntimeError(f"A {tool} model must be selected before configuration.")
-            result = claude.write_tool_config(
-                state,
-                model,
-                provider=provider,
-                provider_models=provider_models,
-                relayed=relayed,
-                route_root_model=route_root_model,
-                custom_model=custom_model,
-                coding_agent_config_defaults=coding_agent_config_defaults,
-                parent_schema=parent_schema,
-                picker_catalog=picker_catalog,
-            )
+    result: dict | tuple[dict, str]
+    if tool == AGENT_CODEX:
+        result = codex.write_tool_config(
+            state, model, provider=provider, parent_schema=parent_schema
+        )
+    elif tool == AGENT_CLAUDE:
+        # A Model Provider Service or parent schema routes by header and discovers models natively,
+        # so the usual "model required" guard doesn't apply to either Claude source.
+        if not model and not provider and not parent_schema:
+            raise RuntimeError(f"A {tool} model must be selected before configuration.")
+        result = claude.write_tool_config(
+            state,
+            model,
+            provider=provider,
+            provider_models=provider_models,
+            relayed=relayed,
+            route_root_model=route_root_model,
+            custom_model=custom_model,
+            coding_agent_config_defaults=coding_agent_config_defaults,
+            parent_schema=parent_schema,
+            picker_catalog=picker_catalog,
+        )
+    else:
+        # Every tool in this branch needs a model — including gemini under a provider,
+        # which still pins the service's target model in the URL.
+        if not model:
+            raise RuntimeError(f"A {tool} model must be selected before configuration.")
+        if tool == "gemini":
+            result = gemini.write_tool_config(state, model, provider=provider)
+        elif tool == "copilot":
+            result = copilot.write_tool_config(state, model)
+        elif tool == "pi":
+            result = pi.write_tool_config(state, model)
         else:
-            # Every tool in this branch needs a model — including gemini under a provider,
-            # which still pins the service's target model in the URL.
-            if not model:
-                raise RuntimeError(f"A {tool} model must be selected before configuration.")
-            if tool == "gemini":
-                result = gemini.write_tool_config(state, model, provider=provider)
-            elif tool == "copilot":
-                result = copilot.write_tool_config(state, model)
-            elif tool == "pi":
-                result = pi.write_tool_config(state, model)
-            else:
-                result = opencode.write_tool_config(state, model)
-        # gemini/opencode/copilot/pi return (state, token); codex/claude return state
-        if isinstance(result, tuple):
-            return result[0]
-        return result
-    finally:
-        smart_routing_v2.restore_smart_routing_env(previous)
+            result = opencode.write_tool_config(state, model)
+    # gemini/opencode/copilot/pi return (state, token); codex/claude return state
+    if isinstance(result, tuple):
+        return result[0]
+    return result
 
 
 def configured_paths(tool: str, state: dict) -> list[str]:

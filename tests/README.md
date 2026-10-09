@@ -36,8 +36,8 @@ answer does not prove that a resumed child has stopped running.
 They cover Claude/Codex helper dispatch and rejection of routing decisions without
 the agent-specific prompt-submission evidence.
 Agent-specific smart-routing preset component checks cover shared base presets, explicit agent mappings,
-complete per-agent validation, session precedence, configuration failure restoration,
-and preserving the preset selector until managed-default agent selection.
+complete per-agent validation, session precedence, and preserving the preset selector
+until managed-default agent selection.
 These checks do not establish live agent coverage.
 
 CUJ3 and CUJ4 also verify Claude's native recovery from the known thinking-display 400:
