@@ -88,7 +88,10 @@ def _run_session(session, recorder, agent, task, launch_args):
 
 
 def _task_inference_request(requests, agent, prompt, *, after=0):
-    """Match the task payload, not the expected model or orchestrator context."""
+    """Match the task payload, allowing Claude's single child-prompt newline."""
+    prompts = {prompt}
+    if agent == CLAUDE and after:
+        prompts.add(prompt + "\n")
     for request in requests:
         if (
             request.sequence <= after
@@ -102,7 +105,7 @@ def _task_inference_request(requests, agent, prompt, *, after=0):
             continue
         entries = payload.get("messages" if agent == CLAUDE else "input", [])
         if isinstance(entries, str):
-            if entries == prompt:
+            if entries in prompts:
                 return request
             continue
         if not isinstance(entries, list):
@@ -112,12 +115,13 @@ def _task_inference_request(requests, agent, prompt, *, after=0):
                 continue
             content = entry.get("content", [])
             if isinstance(content, str):
-                if content == prompt:
+                if content in prompts:
                     return request
             elif isinstance(content, list) and any(
                 isinstance(part, dict)
                 and part.get("type") in {"text", "input_text"}
-                and part.get("text") == prompt
+                and isinstance(part.get("text"), str)
+                and part.get("text") in prompts
                 for part in content
             ):
                 return request

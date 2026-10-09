@@ -170,6 +170,47 @@ def test_wait_until_lets_on_screen_answer_an_expected_dialog(tmp_path):
 
 
 @requires_pty
+def test_wait_until_acknowledges_ready_billing_notices_and_observes_dismissal(tmp_path):
+    """A rendered notice can precede its input handler and appear again for a child."""
+    done = tmp_path / "done"
+    script = tmp_path / "ug"
+    script.write_text(
+        f"""#!{sys.executable}
+import sys
+import termios
+import time
+import tty
+from pathlib import Path
+
+tty.setraw(sys.stdin.fileno())
+for _ in range(2):
+    print("\\x1b[2J\\x1b[HWe're changing auto mode to no longer charge for classifier requests", flush=True)
+    print("Nothing breaks: auto mode keeps working", flush=True)
+    print("Enter to continue · Esc to cancel", flush=True)
+    time.sleep(0.2)
+    termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+    assert sys.stdin.read(1) == "\\r"
+    print("\\x1b[2J\\x1b[HWorking", flush=True)
+    time.sleep(0.8)
+Path({str(done)!r}).touch()
+time.sleep(30)
+"""
+    )
+    script.chmod(0o755)
+    session = UserSession(tmp_path, script, tmp_path / "artifacts", "token")
+    with Terminal(session, "billing-notices", [], agent=CLAUDE) as tui:
+        tui.wait_until(done.exists, "completed work after both billing notices", timeout=10)
+        acknowledgements = [
+            action
+            for action in tui.actions
+            if action["reason"] == "acknowledge auto-mode classifier billing notice"
+        ]
+        assert len(acknowledgements) == 2
+        assert all(action["keys"] == "\r" for action in acknowledgements)
+        assert "Enter to continue" not in tui.visible
+
+
+@requires_pty
 @pytest.mark.parametrize("complete", [True, False])
 def test_claude_waits_for_background_task_completion_before_exit(tmp_path, complete):
     """An offline terminal fixture requires /tasks, completion, Escape, then /exit."""

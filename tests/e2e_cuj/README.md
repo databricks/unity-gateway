@@ -83,7 +83,8 @@ the routed or configured default model, completed native file-task evidence, and
 Orchestrator presence means its activation context reached the real gateway inference input,
 not that an assistant echoed it or a skill merely existed on disk.
 Task inference must contain the exact task/routed prompt and tools, excluding Claude title
-requests and parent continuations from child-inference checks.
+requests and parent continuations from child-inference checks. Only Claude child requests
+after the routing checkpoint may append one transport newline to that exact prompt.
 Parent and child requests use the same verified thinking-display recovery as CUJ3:
 only known display/safeguards rejections followed by native removal of the rejected field
 and a final non-empty 200 are accepted. Model, prompt, budget, and effort must remain unchanged.
@@ -97,7 +98,11 @@ Selector cases have separate TUI artifact names, and the session environment is 
 Claude sessions start in auto mode; unless a routed first prompt switches the session to Haiku
 (which leaves it in manual mode), its classifier requests through the recording proxy trigger
 Claude's informational auto-mode classifier billing notice over the transcript. The CUJ terminal
-acknowledges that exact notice once with Enter (continue); any other dialog still fails.
+waits for that exact notice to render stably, presses Enter (continue), and observes dismissal
+before continuing. Later occurrences are handled the same way; any other dialog still fails.
+Claude's native peer hand-back remains part of the parent's turn only when its sender matches
+a successful Agent spawn in that turn. The hand-back alone cannot satisfy completion: the
+parent must still produce its own final answer with the hidden value.
 Each preset also runs public `ug revert` in cleanup, including after a failed assertion, so
 interactive launches' OS-managed settings cannot contaminate the next preset's configuration.
 The existing Claude explicit-model precedence case remains skipped; the routing-disabled case

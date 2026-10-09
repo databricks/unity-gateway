@@ -24,6 +24,12 @@ Offline regressions check both CUJs and reject changes to the model, prompt, bud
 Each preset cleans up interactive OS-managed settings with public `ug revert`, even on failure.
 Offline transcript tests check native Claude background-agent completion evidence;
 a completion notification alone is not treated as the parent's completed answer.
+Native peer hand-backs also remain in the parent turn when correlated with a successful
+Agent spawn; the parent must still answer. Offline negative controls reject unrelated reports.
+The CUJ terminal waits for stable billing-notice rendering before Enter and observes dismissal;
+an offline PTY regression also exercises a later notice during child work.
+Claude child HTTP prompts may carry one appended newline after the route-selection checkpoint;
+offline cases reject any other prompt changes and retain exact Codex matching.
 Offline CUJ cases also cover Codex delegated-turn completion and task-request matching;
 see `../e2e_cuj/README.md` for the evidence requirements.
 

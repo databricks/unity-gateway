@@ -181,6 +181,63 @@ def test_cuj_evidence_claude_real_user_message_ends_parent_turn():
     assert completed_turn(CLAUDE, [prompt, user, answer], task) is None
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [
+        None,
+        "no_answer",
+        "unknown_child",
+        "wrong_sender",
+        "wrong_session",
+        "not_handback",
+        "failed_spawn",
+        "unrelated_tool",
+    ],
+)
+def test_cuj_evidence_claude_spawned_child_handback_keeps_parent_turn(failure):
+    task = SimpleNamespace(prompt="Delegate reading the file.", value="hidden-value")
+    prompt, answer = records(CLAUDE, task, "system.ai.claude-sonnet-4-6")
+    delegation = copy.deepcopy(answer)
+    delegation["message"].update(
+        id="delegation",
+        stop_reason="tool_use",
+        content=[{"type": "tool_use", "id": "spawn", "name": "Agent", "input": {}}],
+    )
+    spawned = {
+        "type": "user",
+        "sessionId": "session",
+        "message": {"content": [{"type": "tool_result", "tool_use_id": "spawn"}]},
+        "toolUseResult": {"status": "async_launched", "isAsync": True, "agentId": "child"},
+    }
+    handback = {
+        "type": "user",
+        "sessionId": "session",
+        "origin": {"kind": "peer", "handback": True, "from": "child", "senderTaskId": "child"},
+        "message": {"content": f"Another Claude session sent a message: {task.value}"},
+    }
+    if failure == "unknown_child":
+        handback["origin"].update({"from": "other", "senderTaskId": "other"})
+    elif failure == "wrong_sender":
+        handback["origin"]["senderTaskId"] = "other"
+    elif failure == "wrong_session":
+        handback["sessionId"] = "other"
+    elif failure == "not_handback":
+        handback["origin"]["handback"] = False
+    elif failure == "failed_spawn":
+        spawned["message"]["content"][0]["is_error"] = True
+    elif failure == "unrelated_tool":
+        delegation["message"]["content"][0]["name"] = "Read"
+    rows = [prompt, delegation, spawned, handback]
+    if failure != "no_answer":
+        rows.append(answer)
+    turn = completed_turn(CLAUDE, rows, task)
+    if failure is None:
+        assert turn is not None
+        assert (turn.turn_id, turn.answer) == ("response", task.value)
+    else:
+        assert turn is None
+
+
 @pytest.mark.parametrize("agent", [CLAUDE, CODEX])
 @pytest.mark.parametrize(
     "failure",
@@ -327,6 +384,19 @@ def test_cuj_task_inference_selection_uses_exact_tool_prompt():
     assert _task_inference_request([parent, child], CODEX, child_prompt, after=3) is child
     with pytest.raises(AssertionError, match="No tool-capable"):
         _task_inference_request([parent, child], CODEX, child_prompt, after=5)
+
+
+@pytest.mark.parametrize("agent", [CLAUDE, CODEX])
+@pytest.mark.parametrize("after", [0, 1])
+@pytest.mark.parametrize("suffix", ["\n", "\n\n", " ", "\nDifferent task."])
+def test_cuj_task_inference_only_allows_claude_child_transport_newline(agent, after, suffix):
+    prompt = "Read input-file.txt using a tool and return its contents."
+    request = _inference_request(agent, 2, prompt + suffix, [{"name": "Read"}])
+    if agent == CLAUDE and after and suffix == "\n":
+        assert _task_inference_request([request], agent, prompt, after=after) is request
+    else:
+        with pytest.raises(AssertionError, match="No tool-capable"):
+            _task_inference_request([request], agent, prompt, after=after)
 
 
 def test_cuj_evidence_ignores_existing_session(tmp_path):

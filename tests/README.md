@@ -32,6 +32,12 @@ Offline regressions reject missing/failed retries and changes to the model, prom
 Native evidence-reader regressions cover Claude's background-agent completion notifications;
 notifications alone cannot substitute for a final parent answer. These offline checks do not
 establish a live routing pass.
+Claude peer hand-backs are correlated with successful Agent spawns in the same parent turn;
+unknown senders, mismatched sessions, failed spawns, and reports without a final parent answer
+are rejected. Offline PTY checks cover billing-notice input readiness, observed dismissal,
+and a later notice for child work.
+Child HTTP matching accepts Claude's single appended transport newline after the routing
+checkpoint; additional text, whitespace, and Codex prompt changes remain rejected.
 Offline CUJ regressions cover Codex delegated-turn completion and exact task-request matching;
 notifications alone, Claude title requests, and parent continuations do not qualify.
 Unrelated and pre-checkpoint request bodies are excluded before JSON decoding.
