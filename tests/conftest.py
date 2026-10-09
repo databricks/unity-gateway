@@ -93,6 +93,9 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     # process; a real resolution (or a prior test's patched one) must not leak
     # into a test that assumes a bare "databricks" or a specific fake CLI.
     databricks_mod.clear_databricks_cli_cache()
+    # Tokens and token failures are memoized for the process; a fake CLI's answer
+    # in one test must not satisfy (or fail) a fetch in the next.
+    databricks_mod.clear_databricks_token_cache()
 
 
 def _workspace() -> str:

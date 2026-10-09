@@ -10,6 +10,7 @@ import subprocess
 
 import pytest
 
+from ucode import databricks as db_mod
 from ucode import mcp_connection_login as mcl
 
 WS = "https://ws.staging.cloud.databricks.com"
@@ -107,6 +108,32 @@ class TestRunConnectionLogin:
         ok, message = mcl.run_connection_login(AIGW_URL, WS)
         assert not ok and "could not run" in message
 
+    @pytest.mark.parametrize("outcome", ["success", "nonzero", "timeout", "oserror"])
+    def test_login_attempt_clears_shared_tokens_and_failures(self, monkeypatch, outcome):
+        token_key = db_mod._token_memo_key(WS, "p")
+        failure_key = db_mod._token_memo_key(WS, "failed-profile")
+        db_mod._remember_token(token_key, "before-login", 3600)
+        db_mod._remember_token_failure(failure_key, "invalid refresh token")
+        assert db_mod._memoized_token(token_key) is not None
+        assert db_mod._memoized_token(failure_key) is not None
+
+        def fake_run(argv, **kwargs):
+            if "--help" in argv:
+                return subprocess.CompletedProcess(argv, 0, "--resource", "")
+            if outcome == "timeout":
+                raise subprocess.TimeoutExpired(argv, 300)
+            if outcome == "oserror":
+                raise OSError("not found")
+            return subprocess.CompletedProcess(argv, 0 if outcome == "success" else 1)
+
+        monkeypatch.setattr(mcl.subprocess, "run", fake_run)
+
+        ok, _ = mcl.run_connection_login(AIGW_URL, WS, profile="p")
+
+        assert ok == (outcome == "success")
+        assert db_mod._memoized_token(token_key) is None
+        assert db_mod._memoized_token(failure_key) is None
+
     def test_old_cli_without_resource_flag_reports_clearly(self, monkeypatch):
         # `auth login --help` lacking `--resource` => an old CLI (no databricks/cli#6621).
         # We must report that clearly and never attempt the login (the flag would error).
@@ -118,6 +145,9 @@ class TestRunConnectionLogin:
             raise AssertionError("login must not run when --resource is unsupported")
 
         monkeypatch.setattr(mcl.subprocess, "run", _run)
+        token_key = db_mod._token_memo_key(WS, "p")
+        db_mod._remember_token(token_key, "unchanged", 3600)
         ok, message = mcl.run_connection_login(AIGW_URL, WS)
         assert not ok
         assert "--resource" in message and "Upgrade" in message
+        assert db_mod._memoized_token(token_key) is not None

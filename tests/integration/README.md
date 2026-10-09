@@ -132,6 +132,15 @@ tests in `../test_claude_search_discovery.py`, including legacy catalog fallback
 an explicit model override, and no available GPT model. Live search remains
 outside this integration suite.
 
+CLI token memoization and capability-gated `--no-browser` re-auth are covered by
+component tests in `../test_databricks.py` and `../test_mcp_web_search.py`, including
+wall/monotonic expiry across suspend or clock rollback, forced refresh, concurrent
+fetches, login invalidation, confirmed credential-error caching, and transient-failure
+recovery. Connection-login component tests also check invalidation on every login
+attempt and fresh tokens on async proxy retries. This suite
+does not assert live token-fetch counts, stale-profile recovery, or launch-time
+savings; credential/profile routing is unchanged.
+
 The sudo-session regression checks live in `../test_managed_files.py` and `../test_cli.py`.
 They cover shared-worker invocation counts, shutdown/cancellation, and temporary-file failure
 handling without sudo.
