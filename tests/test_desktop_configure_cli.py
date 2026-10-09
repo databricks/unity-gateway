@@ -121,3 +121,18 @@ def test_desktop_failure_preserves_successful_configure_exit(
         == 0
     )
     assert "Desktop profile is not writable" in capsys.readouterr().out
+
+
+def test_desktop_revert_failure_retains_state_for_retry(configuration, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "load_state", lambda: configuration)
+    monkeypatch.setattr(cli, "revert_mcp_configs", lambda *a: {})
+    monkeypatch.setattr(cli.claude_agent, "revert_managed_settings", lambda: "unchanged")
+    monkeypatch.setattr(cli.codex_agent, "revert_managed_config", lambda: "unchanged")
+    monkeypatch.setattr(cli, "restore_file", lambda *a: False)
+    monkeypatch.setattr(cli, "revert_legacy_shared_config", lambda: False)
+    monkeypatch.setattr(desktop_setup, "revert_desktop", lambda *a: "failed")
+    clear = Mock()
+    monkeypatch.setattr(cli, "clear_state", clear)
+    assert cli.revert() == 1
+    clear.assert_not_called()
+    assert "ug state retained" in capsys.readouterr().out
