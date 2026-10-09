@@ -12,6 +12,7 @@ import shlex
 from pathlib import Path, PurePosixPath
 
 import bench_auth
+from harbor.agents.capabilities import AgentCapabilities
 from harbor.agents.installed.base import BaseInstalledAgent
 from harbor.agents.installed.node_install import nvm_node_install_snippet
 from harbor.environments.base import BaseEnvironment
@@ -31,11 +32,14 @@ def _required_env(name: str) -> str:
 
 class _UgAgent(BaseInstalledAgent):
     AGENT = ""
+    PROMPT_ON_STDIN = False
+    capabilities = AgentCapabilities(resume=True)
 
     async def _install_agent_cli(self, environment: BaseEnvironment) -> None:
         raise NotImplementedError
 
-    def _launch_args(self) -> str:
+    def _launch_args(self, resume: bool) -> str:
+        """Agent args after ug's `--`. Without PROMPT_ON_STDIN they pass $UG_BENCH_INSTRUCTION."""
         raise NotImplementedError
 
     async def install(self, environment: BaseEnvironment) -> None:
@@ -71,22 +75,24 @@ class _UgAgent(BaseInstalledAgent):
             "IS_SANDBOX": "1",
             "UG_BENCH_INSTRUCTION": instruction,
         }
-        await self.exec_as_agent(
-            environment,
-            command=(
-                f"{SHELL_PREFIX}{UG} configure --agents {self.AGENT} "
-                f"--workspace {shlex.quote(workspace)} --skip-validate --skip-upgrade "
-                "--disable-databricks-ai-tools </dev/null"
-            ),
-            env=env,
-        )
+        if not self._resume:
+            await self.exec_as_agent(
+                environment,
+                command=(
+                    f"{SHELL_PREFIX}{UG} configure --agents {self.AGENT} "
+                    f"--workspace {shlex.quote(workspace)} --skip-validate --skip-upgrade "
+                    "--disable-databricks-ai-tools </dev/null"
+                ),
+                env=env,
+            )
         model = f"--model {shlex.quote(self.model_name)} " if self.model_name else ""
         log = self.environment_logs_dir / f"ug-{self.AGENT}.txt"
+        stdin = 'printf "%s" "$UG_BENCH_INSTRUCTION" | ' if self.PROMPT_ON_STDIN else ""
         await self.exec_as_agent(
             environment,
             command=(
-                f'{SHELL_PREFIX}printf "%s" "$UG_BENCH_INSTRUCTION" | '
-                f"{UG} {self.AGENT} {model}-- {self._launch_args()} 2>&1 | tee {log.as_posix()}"
+                f"{SHELL_PREFIX}{stdin}{UG} {self.AGENT} {model}-- {self._launch_args(self._resume)} "
+                f"2>&1 | tee -a {log.as_posix()}"
             ),
             env=env,
         )
@@ -94,6 +100,7 @@ class _UgAgent(BaseInstalledAgent):
 
 class UgClaude(_UgAgent):
     AGENT = "claude"
+    PROMPT_ON_STDIN = True
 
     @staticmethod
     def name() -> str:
@@ -110,8 +117,9 @@ class UgClaude(_UgAgent):
             ),
         )
 
-    def _launch_args(self) -> str:
-        return "-p --verbose --output-format stream-json --dangerously-skip-permissions"
+    def _launch_args(self, resume: bool) -> str:
+        args = "-p --verbose --output-format stream-json --dangerously-skip-permissions"
+        return f"{args} --continue" if resume else args
 
 
 class UgCodex(_UgAgent):
@@ -132,5 +140,8 @@ class UgCodex(_UgAgent):
             env={"NVM_NODEJS_ORG_MIRROR": "https://nodejs.org/dist"},
         )
 
-    def _launch_args(self) -> str:
-        return "exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --json --enable unified_exec -"
+    def _launch_args(self, resume: bool) -> str:
+        return (
+            f"exec {'resume --last ' if resume else ''}--dangerously-bypass-approvals-and-sandbox "
+            '--skip-git-repo-check --json --enable unified_exec -- "$UG_BENCH_INSTRUCTION" </dev/null'
+        )
