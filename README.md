@@ -57,7 +57,7 @@ Unknown Databricks models produce an error; this option does not add models
 to discovery or change ug's saved default.
 
 `ug copilot` uses the Anthropic Messages API for Claude model IDs, the Responses
-API for GPT-6 and newer model IDs, and Chat Completions for other models. The
+API for GPT-5 and newer model IDs, and Chat Completions for other models. The
 model selected at launch (including `--model`) determines the API. An inherited `COPILOT_PROVIDER_WIRE_MODEL` takes precedence
 because it overrides the model sent to the gateway. Restart Copilot through `ug`
 to change the wire model or API; in-session model selection does not rebuild its

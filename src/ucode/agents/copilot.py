@@ -10,7 +10,8 @@ System Claude models (`system.ai.claude-*`) use Copilot CLI's `anthropic` provid
 Anthropic endpoint, with `COPILOT_PROVIDER_MODEL_ID` set to Copilot's catalog id
 for the model so Copilot sends Claude request settings. Other models use the
 `openai` provider against the Databricks MLflow gateway: GPT models with major
-version 6 or newer use Responses; the rest use Chat Completions. Copilot fixes its wire API and model when it builds the native
+version 5 or newer use Responses, because Copilot sends `temperature: 0` on Chat
+Completions and those models accept only the default; the rest use Chat Completions. Copilot fixes its wire API and model when it builds the native
 client, so changing models in the picker cannot change either mid-session.
 Relaunch Copilot after changing model families. Gemini is intentionally excluded
 — Databricks' Gemini translation layer rejects the `stream_options` field that
@@ -104,7 +105,7 @@ def copilot_catalog_model_id(model: str) -> str | None:
 def model_uses_responses_api(model: str) -> bool:
     """Whether a supported GPT model id uses the Responses API."""
     match = _GPT_MODEL_MAJOR_PATTERN.match(model)
-    return match is not None and int(match.group(1)) >= 6
+    return match is not None and int(match.group(1)) >= 5
 
 
 def default_model(state: dict) -> str | None:

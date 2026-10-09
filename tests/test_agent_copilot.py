@@ -68,10 +68,11 @@ class TestRenderEnvOverlay:
         ("selected_model", "override_model", "expected_api"),
         [
             ("gpt-6.1-sol", None, "responses"),
-            ("system.ai.gpt-6-astra", "gpt-5", "completions"),
+            ("system.ai.gpt-6-astra", "gpt-4.1", "completions"),
             ("system.ai.gpt-5-6-sol", "databricks-gpt-6-1-sol", "responses"),
             ("system.ai.gpt-6-astra", "", "responses"),
-            ("gpt-5", "", "completions"),
+            ("gpt-5", "", "responses"),
+            ("gpt-4.1", "", "completions"),
         ],
     )
     def test_selects_wire_api_from_override_and_keeps_selected_model(
@@ -98,14 +99,14 @@ class TestBuildRuntimeEnv:
         assert env["OAUTH_TOKEN"] == "tok"
 
     def test_inherited_wire_model_overrides_route_without_being_cleared(self, monkeypatch):
-        monkeypatch.setenv("COPILOT_PROVIDER_WIRE_MODEL", "gpt-5")
+        monkeypatch.setenv("COPILOT_PROVIDER_WIRE_MODEL", "gpt-4.1")
         monkeypatch.setenv("COPILOT_PROVIDER_WIRE_API", "responses")
         monkeypatch.setenv("COPILOT_PROVIDER_MODEL_ID", "user-model-id")
         monkeypatch.setenv("COPILOT_PROVIDER_MODEL_LIMITS_ID", "user-model-limits")
 
         env = copilot.build_runtime_env(WS, "system.ai.gpt-6-astra", "tok")
 
-        assert env["COPILOT_PROVIDER_WIRE_MODEL"] == "gpt-5"
+        assert env["COPILOT_PROVIDER_WIRE_MODEL"] == "gpt-4.1"
         assert env["COPILOT_PROVIDER_WIRE_API"] == "completions"
         assert env["COPILOT_PROVIDER_MODEL_ID"] == "user-model-id"
         assert env["COPILOT_PROVIDER_MODEL_LIMITS_ID"] == "user-model-limits"
@@ -271,6 +272,9 @@ class TestCopilotCatalogModelId:
 class TestModelUsesResponsesApi:
     def test_numeric_gpt_majors_and_gateway_aliases_use_responses(self):
         for model in (
+            "gpt-5",
+            "databricks-gpt-5-mini",
+            "system.ai.gpt-5-4",
             "gpt-6",
             "gpt-6.1-sol",
             "system.ai.gpt-6-astra",
@@ -280,10 +284,10 @@ class TestModelUsesResponsesApi:
         ):
             assert copilot.model_uses_responses_api(model), model
 
-    def test_older_non_gpt_and_unsupported_alias_shapes_use_completions(self):
+    def test_pre_gpt5_non_gpt_and_unsupported_alias_shapes_use_completions(self):
         for model in (
-            "gpt-5",
-            "gpt-5.10-sol",
+            "gpt-4.1",
+            "gpt-4o",
             "claude-sonnet-4-6",
             "my-gpt-6-model",
             "gpt6",
@@ -355,7 +359,7 @@ class TestLaunch:
         ("tool_args", "pinned_model", "default", "expected_model", "expected_api"),
         [
             (["--model", "gpt-6.1-sol"], "gpt-5", "gpt-5", "gpt-6.1-sol", "responses"),
-            ([], "system.ai.gpt-5-6-sol", "gpt-6", "system.ai.gpt-5-6-sol", "completions"),
+            ([], "system.ai.gpt-4-1", "gpt-6", "system.ai.gpt-4-1", "completions"),
             ([], None, "system.ai.gpt-10", "system.ai.gpt-10", "responses"),
         ],
     )
