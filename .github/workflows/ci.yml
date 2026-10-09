@@ -177,7 +177,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
-      - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
+      - uses: databricks/setup-cli@9230f12203ef173d0b901846f62a55ce997efef7  # v1.19.0
       - name: Expose the Databricks CLI on Windows
         if: ${{ runner.os == 'Windows' }}
         run: |
