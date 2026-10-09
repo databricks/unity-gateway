@@ -21,8 +21,7 @@ import pyte
 
 from .evidence import agent_sessions, assert_no_terminal_api_error
 
-# ConPTY can deliver the menu selection glyph as U+FFFD.
-SELECTED = "[›❯>\ufffd]"
+SELECTED = "[›❯>]"
 
 
 READ_ONLY_COMMANDS = {
