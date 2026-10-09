@@ -63,7 +63,7 @@ dev = [
     # Pinned so local and CI lint with the identical formatter/type-checker;
     # ruff/ty output shifts between releases, so bump these deliberately.
     "ruff==0.16.5",
-    "ty==0.0.75",
+    "ty==0.0.84",
 ]
 
 [tool.pytest.ini_options]
