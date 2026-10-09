@@ -31,8 +31,10 @@ running" or a native task menu containing only completed rows before sending `/e
 stopping tasks or confirming an exit dialog. Running/scheduled sections, incomplete row counts,
 and completed-task text outside the native menu cannot satisfy the wait.
 The live Claude subagent skill-toggle journey uses this wait after its final calculation.
-CUJ4's Claude preset sessions also use it after verifying delegated file tasks: a completed
-answer does not prove that a resumed child has stopped running.
+CUJ4's preset sessions verify the child's answer and routed inference, then require
+the parent's completed native turn containing the delegated result and a normal `/exit`.
+They do not parse the `/tasks` menu. Offline evidence checks reject child answers,
+notifications, and parent tool calls as substitutes for the parent's final result.
 They cover Claude/Codex helper dispatch and rejection of routing decisions without
 the agent-specific prompt-submission evidence.
 Agent-specific smart-routing preset component checks cover shared base presets, explicit agent mappings,

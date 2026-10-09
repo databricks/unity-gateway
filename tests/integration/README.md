@@ -64,8 +64,10 @@ after Escape before typing `/exit`. Offline PTY checks reject active/scheduled t
 lists, and completed-task text outside the native menu.
 It neither stops tasks nor confirms an exit dialog. Process exit retains its 30-second
 timeout. Offline PTY checks cover this ordering.
-The shared wait also runs before CUJ4's Claude preset sessions exit, after delegated-task
-evidence is checked, because Claude can resume a child after its first completed answer.
+CUJ4's preset journey instead verifies delegated child evidence, waits for the
+parent's completed native turn containing the result, and requires normal `/exit`.
+Its routing assertions are independent of `/tasks` presentation. Offline checks reject
+child-only results, completion notifications, and parent tool calls as final parent answers.
 
 Agent-specific bundled instruction selection and prompt/compaction hook content
 are covered in `../test_skills.py`; those component checks do not run live agents.

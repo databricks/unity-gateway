@@ -93,7 +93,8 @@ Each preset session then explicitly requests one child for a separate hidden-val
 file task. Assertions require a new native child transcript containing the value,
 a correlated spawn-routing decision, and successful child inference on the
 router's selected model. This tests requested delegation, not automatic orchestrator delegation.
-The wait uses the child's answer directly; parent-answer reconstruction is reserved for first-prompt tasks.
+Child inference evidence uses the child's answer directly. Both agents also wait for the
+parent's completed native turn containing the delegated result before exiting.
 Offline checks reject parent-only answers and accept child answers before the parent replies.
 Offline evidence regressions do not establish a live CUJ pass.
 Selector cases have separate TUI artifact names, and the session environment is restored afterward.
@@ -102,9 +103,10 @@ Claude sessions start in auto mode; unless a routed first prompt switches the se
 Claude's informational auto-mode classifier billing notice over the transcript. The CUJ terminal
 waits for that exact notice to render stably, presses Enter (continue), and observes dismissal
 before continuing. Later occurrences are handled the same way; any other dialog still fails.
-After verifying the delegated task, Claude sessions also wait in the native `/tasks` view
-until no background work remains, including a child resumed after its initial answer.
-Only then does the test close the task view and submit `/exit`.
+After verifying the delegated task, both agents require the parent's final answer with
+the file value and a normal `/exit`, without visiting `/tasks`. Native task notifications
+can precede that answer but cannot satisfy it; parent tool calls do not count as completion.
+This covers the delegation-and-reply journey rather than the background-task management UI.
 Each preset also runs public `ug revert` in cleanup, including after a failed assertion, so
 interactive launches' OS-managed settings cannot contaminate the next preset's configuration.
 The existing Claude explicit-model precedence case remains skipped; the routing-disabled case
