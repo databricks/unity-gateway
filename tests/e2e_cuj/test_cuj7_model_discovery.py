@@ -3,6 +3,7 @@
 import json
 import os
 import shutil
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -46,6 +47,74 @@ CUJ_NAME = "CUJ 7 · Unmanaged model discovery"
 
 pytestmark = [pytest.mark.live, pytest.mark.workspace_isolated]
 
+CLAUDE_FAMILY_DEFAULTS = {
+    f"ANTHROPIC_DEFAULT_{family}_MODEL": (
+        CLAUDE_SONNET_MODEL_SERVICE if family == "SONNET" else CLAUDE_HAIKU_MODEL_SERVICE
+    )
+    for family in ("FABLE", "OPUS", "SONNET", "HAIKU")
+}
+# Inert admin-owned Codex settings outside ug's owned keys: a sibling provider and a display key.
+CODEX_ADMIN_CONFIG = """file_opener = "none"
+
+[model_providers.AdminProvider]
+name = "Admin provider"
+base_url = "https://admin-provider.invalid/v1"
+wire_api = "responses"
+"""
+MANAGED_INPUT = {
+    CLAUDE: (MANAGED_PATHS[0], json.dumps({"env": CLAUDE_FAMILY_DEFAULTS})),
+    CODEX: (MANAGED_PATHS[1], CODEX_ADMIN_CONFIG),
+}
+# Only an interactive launch rewrites the OS-managed file; ug's gateway base URL proves it did.
+MANAGED_BASE_URL = {
+    CLAUDE: (("env", "ANTHROPIC_BASE_URL"), "/ai-gateway/anthropic"),
+    CODEX: (("model_providers", "Databricks", "base_url"), "/ai-gateway/codex/v1"),
+}
+
+
+def _selected_agent(request):
+    agents = [agent for agent in (CLAUDE, CODEX) if request.node.get_closest_marker(agent)]
+    assert len(agents) == 1, "CUJ7 cases must select exactly one agent"
+    return agents[0]
+
+
+def _parse_managed(agent, text):
+    return json.loads(text) if agent == CLAUDE else tomllib.loads(text)
+
+
+def _read_managed(session, agent):
+    path = MANAGED_INPUT[agent][0]
+    return _parse_managed(agent, session.run(str(path), binary="cat", timeout=30).stdout)
+
+
+def _assert_contains(document, seeded, path=()):
+    """Every seeded leaf survives unchanged at its original path."""
+    for key, value in seeded.items():
+        location = ".".join((*path, key))
+        assert isinstance(document, dict) and key in document, f"Missing seeded {location}"
+        if isinstance(value, dict):
+            _assert_contains(document[key], value, (*path, key))
+        else:
+            assert document[key] == value, {
+                "path": location,
+                "seeded": value,
+                "observed": document[key],
+            }
+
+
+def _assert_rewritten(document, agent, recorder):
+    keys, suffix = MANAGED_BASE_URL[agent]
+    value = document
+    for key in keys:
+        value = value.get(key) if isinstance(value, dict) else None
+    assert value == f"{recorder.url}{suffix}", value
+
+
+def _assert_revert_restores(session, agent, seeded, name):
+    with TerminalProcess(session, "ug", [str(session.binary), "revert"], name) as terminal:
+        terminal.finish()
+    assert _read_managed(session, agent) == seeded
+
 
 class TestUnmanagedModelDiscovery(BaseCujTest):
     WORKSPACE_URL = "https://dbc-14e376e8-6541.cloud.databricks.com"
@@ -75,9 +144,7 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         )
         binary = shutil.which("ug")
         assert binary, "Install ug before running CUJ7"
-        agents = [agent for agent in (CLAUDE, CODEX) if request.node.get_closest_marker(agent)]
-        assert len(agents) == 1, "CUJ7 cases must select exactly one agent"
-        for tool in (*agents, "databricks"):
+        for tool in (_selected_agent(request), "databricks"):
             assert shutil.which(tool), f"Install the required CLI before running CUJ7: {tool}"
         session = UserSession(
             tmp_path,
@@ -101,26 +168,20 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
             yield recorder
 
     @pytest.fixture
-    def family_defaults(self, live_session):
-        """Seed local family-default input; stop recording before guarded revert and removal."""
+    def managed_input(self, live_session, request):
+        """Seed the selected agent's OS-managed input; stop recording before guarded revert."""
         session = live_session
-        defaults = {
-            f"ANTHROPIC_DEFAULT_{family}_MODEL": (
-                CLAUDE_SONNET_MODEL_SERVICE if family == "SONNET" else CLAUDE_HAIKU_MODEL_SERVICE
-            )
-            for family in ("FABLE", "OPUS", "SONNET", "HAIKU")
-        }
-        managed_path = str(MANAGED_PATHS[0])
-        managed_directory = MANAGED_PATHS[0].parent
+        agent = _selected_agent(request)
+        path, text = MANAGED_INPUT[agent]
+        managed_path = str(path)
+        managed_directory = path.parent
         directory_existed = managed_directory.exists()
         try:
             if not directory_existed:
                 session.run("install", "-d", "-m", "0755", str(managed_directory), binary="sudo")
-            session.run(
-                "tee", managed_path, binary="sudo", input_text=json.dumps({"env": defaults})
-            )
+            session.run("tee", managed_path, binary="sudo", input_text=text)
             with TuiRequestRecorder(self.workspace.config.host) as recorder:
-                yield defaults, recorder
+                yield _parse_managed(agent, text), recorder
         finally:
             try:
                 # Revert restores our seeded input; revert_machine_wide would reject that file.
@@ -228,7 +289,7 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
     @pytest.mark.claude
     @pytest.mark.parametrize("model_owner", ["ug", "claude"])
     def test_ug_claude_preserves_preexisting_managed_family_defaults(
-        self, live_session, family_defaults, model_owner
+        self, live_session, managed_input, model_owner
     ):
         """Scenario: select Sonnet before/after ug's separator over OS-managed defaults.
 
@@ -239,7 +300,7 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         task = claude_file_task(session)
         model = CLAUDE_SONNET_MODEL_SERVICE
         model_args = ["--model", "sonnet"]
-        defaults, recorder = family_defaults
+        seeded, recorder = managed_input
         evidence = SessionEvidence(session.home, CLAUDE)
         result = session.run(
             CLAUDE,
@@ -260,9 +321,41 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         assert evidence.completed(task), "No completed native turn matched the file task"
         assert_claude_headless_model(result, model)
         assert_inference_evidence(recorder, 0, CLAUDE, task, model)
-        settings = json.loads(session.run(str(MANAGED_PATHS[0]), binary="cat", timeout=30).stdout)
-        assert {key: settings.get("env", {}).get(key) for key in defaults} == defaults
+        _assert_contains(_read_managed(session, CLAUDE), seeded)
         session.assert_not_routed()
+
+    @pytest.mark.claude
+    @pytest.mark.tui
+    def test_ug_claude_tui_rewrites_managed_settings_preserving_family_defaults(
+        self, live_session, managed_input
+    ):
+        """Scenario: select Sonnet in an interactive launch over OS-managed defaults.
+
+        Expected: unlike headless launches, the TTY lets ug rewrite the OS-managed file; the
+        rewrite keeps every family default, the TUI task reaches the preconfigured Sonnet service,
+        and revert restores the seeded file.
+        """
+        session = live_session
+        task = claude_file_task(session)
+        model = CLAUDE_SONNET_MODEL_SERVICE
+        seeded, recorder = managed_input
+        evidence = SessionEvidence(session.home, CLAUDE)
+        with Terminal(
+            session,
+            "family-defaults-tui",
+            [CLAUDE, "--workspace", recorder.url, "--model", "sonnet"],
+        ) as tui:
+            tui.boot()
+            tui.submit(task.prompt)
+            tui.task(evidence, task)
+            tui.exit_normally()
+        task.assert_completed(session, CLAUDE)
+        assert_inference_evidence(recorder, 0, CLAUDE, task, model)
+        settings = _read_managed(session, CLAUDE)
+        _assert_rewritten(settings, CLAUDE, recorder)
+        _assert_contains(settings, seeded)
+        session.assert_not_routed()
+        _assert_revert_restores(session, CLAUDE, seeded, "family-defaults-tui-revert")
 
     @pytest.mark.codex
     @pytest.mark.parametrize("model_position", ["before_separator", "exec"])
@@ -301,3 +394,87 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
             request_recorder, 0, CODEX, task, model, parent_schema=MODEL_SERVICE_SCHEMA
         )
         session.assert_not_routed()
+
+    @pytest.mark.codex
+    @pytest.mark.parametrize("model_position", ["before_separator", "exec"])
+    def test_ug_codex_preserves_preexisting_managed_config(
+        self, live_session, managed_input, model_position
+    ):
+        """Scenario: select GPT Luna before ug's separator or in exec over OS-managed admin config.
+
+        Expected: ug preserves every admin setting, and the scoped Luna service completes a
+        file task without routing.
+        """
+        session = live_session
+        task = FileTask(session)
+        model = CODEX_LUNA_MODEL_SERVICE
+        model_args = ["--model", model]
+        seeded, recorder = managed_input
+        evidence = SessionEvidence(session.home, CODEX)
+        result = session.run(
+            CODEX,
+            "--workspace",
+            recorder.url,
+            "--model-location",
+            MODEL_SERVICE_SCHEMA,
+            *(model_args if model_position == "before_separator" else []),
+            "--",
+            "exec",
+            "--skip-git-repo-check",
+            "--json",
+            *(model_args if model_position == "exec" else []),
+            task.prompt,
+            timeout=240,
+        )
+        task.assert_headless_answer(CODEX, result)
+        turn = evidence.completed(task)
+        assert turn and set(turn.models) == {model}, turn
+        assert_inference_evidence(
+            recorder, 0, CODEX, task, model, parent_schema=MODEL_SERVICE_SCHEMA
+        )
+        _assert_contains(_read_managed(session, CODEX), seeded)
+        session.assert_not_routed()
+
+    @pytest.mark.codex
+    @pytest.mark.tui
+    def test_ug_codex_tui_rewrites_managed_config_preserving_admin_settings(
+        self, live_session, managed_input
+    ):
+        """Scenario: select scoped GPT Luna in an interactive launch over OS-managed admin config.
+
+        Expected: unlike headless launches, the TTY lets ug rewrite the OS-managed file; the
+        rewrite keeps every admin setting, the TUI task reaches the scoped Luna service, and
+        revert restores the seeded file.
+        """
+        session = live_session
+        task = FileTask(session)
+        model = CODEX_LUNA_MODEL_SERVICE
+        seeded, recorder = managed_input
+        evidence = SessionEvidence(session.home, CODEX)
+        with Terminal(
+            session,
+            "managed-config-tui",
+            [
+                CODEX,
+                "--workspace",
+                recorder.url,
+                "--model-location",
+                MODEL_SERVICE_SCHEMA,
+                "--model",
+                model,
+            ],
+        ) as tui:
+            tui.boot()
+            tui.submit(task.prompt)
+            tui.task(evidence, task)
+            tui.exit_normally()
+        turn = evidence.completed(task)
+        assert turn and set(turn.models) == {model}, turn
+        assert_inference_evidence(
+            recorder, 0, CODEX, task, model, parent_schema=MODEL_SERVICE_SCHEMA
+        )
+        config = _read_managed(session, CODEX)
+        _assert_rewritten(config, CODEX, recorder)
+        _assert_contains(config, seeded)
+        session.assert_not_routed()
+        _assert_revert_restores(session, CODEX, seeded, "managed-config-tui-revert")

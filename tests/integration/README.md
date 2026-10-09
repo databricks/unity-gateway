@@ -609,9 +609,10 @@ Claude lane also passes `CLAUDE_CODE_OAUTH_TOKEN` (the same secret the e2e workf
 uses) for the relayed hybrid CUJ. Fork PRs run installation checks only because they
 cannot receive those secrets.
 
-CUJ7's five journeys collect eight cases in `tests/e2e_cuj/test_cuj7_model_discovery.py`: configured
-Claude picker and Codex app-server discovery, fresh Claude/Codex model-location file
-tasks, and Claude managed-family-default preservation on launch. The class pins `WORKSPACE_URL` to
+CUJ7's eight journeys collect twelve cases, six per agent, in `tests/e2e_cuj/test_cuj7_model_discovery.py`:
+configured Claude picker and Codex app-server discovery, fresh Claude/Codex model-location file
+tasks, and preservation of pre-existing OS-managed input (Claude family defaults, Codex admin
+settings) on headless and interactive launch. The class pins `WORKSPACE_URL` to
 `https://dbc-14e376e8-6541.cloud.databricks.com`; the required
 `E2E CUJs · CUJ 7 · Unmanaged model discovery` shard uses
 the shared `UG_CUJ_SP_CLIENT_ID` / `UG_CUJ_SP_CLIENT_SECRET` credentials, not a workspace
@@ -620,7 +621,7 @@ models, and retain the existing models `ug_e2e.models.claude_haiku`,
 `ug_e2e.models.claude_sonnet`, and `ug_e2e.models.gpt_luna`; the shared service principal
 needs read/use privileges on all three.
 The task journeys exercise model selection before and after ug's separator, including
-Claude's UG-owned `--model` and its native option. All eight cases reuse the CUJ
+Claude's UG-owned `--model` and its native option. All twelve cases reuse the CUJ
 session/terminal helpers and check that the workspace remains unmanaged; they never
 change remote configuration. Function-scoped sessions keep every launch fresh, mint
 a bearer per case, and use shared `revert_machine_wide` cleanup.
@@ -633,6 +634,14 @@ clean-runner preflight, verifies Sonnet inference and unchanged defaults, then r
 and removes that input. Recording stops before guarded revert; fixture teardown keeps
 cleanup failures separate from task failures. An accidental Opus fallback cannot satisfy
 the Sonnet assertion.
+Headless launches have no TTY, so ug leaves the OS-managed file untouched unless it conflicts;
+only an interactive launch rewrites it. Each agent has a matching headless and interactive
+preservation pair over a shared seeded-file fixture. Claude seeds distinct family defaults;
+Codex seeds a sibling `AdminProvider` model provider and `file_opener`, both outside ug's owned
+keys. Every case requires each seeded leaf unchanged plus task-correlated inference through the
+recorder (Codex also with the parent-schema header). The interactive cases additionally require
+ug's gateway base URL in the rewritten file, proving the write happened, and require `ug revert`
+to restore the seeded document.
 
 The workspace check requires the secret to match
 `https://eng-ml-inference-team-us-east-1.cloud.databricks.com` (a trailing slash
