@@ -133,4 +133,4 @@ class UgCodex(_UgAgent):
         )
 
     def _launch_args(self) -> str:
-        return "exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --json -"
+        return "exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --json --enable unified_exec -"
