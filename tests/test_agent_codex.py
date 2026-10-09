@@ -10,7 +10,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from ucode import managed_files
+from ucode import gateway_proxy, managed_files
 from ucode.agents import LaunchOptions, codex
 from ucode.config_io import read_toml_safe
 from ucode.smart_routing import codex_routing
@@ -1504,7 +1504,7 @@ class TestCodexLaunch:
             assert token_provider(False) == "tok"
             return server, cache, client
 
-        monkeypatch.setattr(codex.gateway_proxy, "start_otel_proxy", start_otel_proxy)
+        monkeypatch.setattr(gateway_proxy, "start_otel_proxy", start_otel_proxy)
         monkeypatch.setattr(codex.subprocess_cross_os, "popen", popen)
 
         with pytest.raises(SystemExit) as exc:

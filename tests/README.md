@@ -58,8 +58,15 @@ preconfigured workspace is assigned.
 
 `test_entry_points.py` also runs both installed console scripts (`ug` and `ucode`)
 and checks their version output against the `unity-gateway` distribution metadata.
+`test_startup_imports.py` guards the bare `--version` / `-V` fast path and deferred
+command-specific imports in fresh interpreters. Component tests cover metadata lookup,
+version suffixes, fallback, and unchanged dispatch for other arguments; they do not
+claim a live agent launch or end-to-end startup timing. An isolated interpreter
+without site packages also proves that intact metadata can produce version output
+while `--help` fails on a missing CLI startup dependency.
 `TestUpgrade` in `test_cli.py` covers both command names before, during, and after
-the distribution rename with mocked installer calls, including failure recovery guidance.
+the distribution rename with mocked installer calls, including `--help` verification
+of the full CLI import path and failure recovery guidance.
 `test_subprocess_cross_os.py` covers Windows npm shim resolution, native and Node targets,
 literal argument preservation, and the shared `subprocess_cross_os.run` / `subprocess_cross_os.popen`
 entry points, including UTF-8 text decoding, explicit encoding/error overrides, and unchanged

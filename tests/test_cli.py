@@ -195,8 +195,8 @@ class TestProjectScripts:
             "project"
         ]["scripts"]
 
-        assert scripts["ug"] == "ucode.cli:main"
-        assert scripts["ucode"] == "ucode.cli:main"
+        assert scripts["ug"] == "ucode.entrypoint:main"
+        assert scripts["ucode"] == "ucode.entrypoint:main"
 
 
 class TestUpgrade:
@@ -267,13 +267,13 @@ class TestUpgrade:
             call(["uv", "tool", "uninstall", "ucode"], check=True),
             call(["uv", "tool", "install", "--force", git_url], check=True),
             call(
-                ["/tools/ug", "--version"],
+                ["/tools/ug", "--help"],
                 check=False,
                 capture_output=True,
                 text=True,
             ),
             call(
-                ["/tools/ucode", "--version"],
+                ["/tools/ucode", "--help"],
                 check=False,
                 capture_output=True,
                 text=True,
