@@ -315,6 +315,7 @@ class TerminalProcess:
         """Navigate the visible menu with arrow keys; never write its saved state."""
         self.wait_for(lambda text: prompt in text and self.selected_line(), prompt, timeout=120)
         visited = set()
+        repeats = 0
         for _ in range(100):
             current = self.selected_line()
             if label in current:
@@ -326,7 +327,10 @@ class TerminalProcess:
                     f"confirmation of {label}",
                 )
                 return
-            assert current not in visited, f"Menu does not offer {label}:\n{self.visible}"
+            if current in visited:
+                # A redraw can swallow the arrow key; retry before deciding the option is absent.
+                repeats += 1
+                assert repeats <= 3, f"Menu does not offer {label}:\n{self.visible}"
             visited.add(current)
             self.send("\x1b[B", f"move towards {label}")
             self.wait_for(
