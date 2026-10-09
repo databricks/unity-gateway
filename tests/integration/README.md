@@ -42,6 +42,11 @@ This suite runs the **installed product** through subprocesses, against the same
 patch application functions, substitute agent executables, run a fake gateway,
 or construct ug state files. The normal test suite checks these boundaries.
 
+The Claude mod entry point has separate native component checks in
+`../native_claude/test_mod.py`. Claude 2.1.290 validates the module and runs its
+TypeScript event-forwarding test in a dedicated CI job. These checks do not submit
+inference requests or replace this suite's live gateway/TUI journeys.
+
 The existing unit tests keep their fixtures. Integration has an independent
 pytest configuration and uses `--confcutdir` so those fixtures cannot leak in.
 It is not collected by the default `uv run pytest` command.
