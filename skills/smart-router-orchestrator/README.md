@@ -33,6 +33,19 @@ Role instructions belong in each task prompt because routing may replace the
 requested Claude role or Codex model. Hook approval in the native `/hooks` UI
 is still required where the harness prompts for it.
 
+## Task ownership
+
+Give each cohesive task one owner for planning, discovery, implementation, checks,
+and an integration-ready result. Split work only when the deliverables are
+independent or a concrete risk needs independent verification. The root integrates
+the evidence and checks specific acceptance gaps instead of repeating the child's
+investigation or reserving parallel work for itself.
+
+Children return consolidated results with compact citations and explicit unresolved
+items. Keep ownership stable, batch substantive follow-ups, and use native completion
+notifications or waits instead of status polling. Preserve the full report until
+the parent confirms receipt; later amendments retain its other findings and limits.
+
 ## Model selection
 
 Separate role-model preferences are not used by the UG workflow. Existing
@@ -43,7 +56,9 @@ model selection and requires no preference setup, locking, or recovery.
 
 ## Attribution
 
-Migrated from the Databricks `model-orchestrator` plugin 0.4.10 by Arnav Singhvi.
+Migrated from the Databricks `model-orchestrator` plugin by Arnav Singhvi, with
+workflow updates through version 0.4.21 (source commit
+`474b08e5809205d0aa9abbd059b82d5ab541ca92`). The UG skill version is 1.2.0.
 Originally adapted from
 [donvito/codex-astra-luna-orchestrator](https://github.com/donvito/codex-astra-luna-orchestrator/tree/21710352ec201f8634874d8298e0eca694e298a8)
 under Apache-2.0; see [LICENSE.upstream](LICENSE.upstream). UG changes add shared
