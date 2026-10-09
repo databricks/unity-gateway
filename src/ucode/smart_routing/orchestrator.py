@@ -13,7 +13,11 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from ucode import skills
-from ucode.constants import ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR
+from ucode.constants import (
+    AGENT_CLAUDE,
+    AGENT_CODEX,
+    ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
+)
 from ucode.smart_routing.config import resolve_environment
 from ucode.smart_routing.hooks import sync_managed_hooks
 from ucode.smart_routing.session_env import effective_environment, session_env_path
@@ -68,7 +72,7 @@ def sync_hooks(doc: dict, *, agent: str) -> None:
             "command": shlex.join(argv),
             "timeout": 5,
         }
-        if agent == "codex":
+        if agent == AGENT_CODEX:
             hook["command_windows"] = subprocess.list2cmdline(argv)
         groups = {
             "UserPromptSubmit": [{"hooks": [hook]}],
@@ -101,7 +105,7 @@ def hook_output(payload: object, *, agent: str) -> dict | None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--agent", choices=("claude", "codex"), required=True)
+    parser.add_argument("--agent", choices=(AGENT_CLAUDE, AGENT_CODEX), required=True)
     args = parser.parse_args()
     try:
         payload = json.load(sys.stdin)
