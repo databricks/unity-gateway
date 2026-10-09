@@ -172,7 +172,8 @@ def integration_test_targets(
             for module in sorted(suite.glob("test_*.py"))
             if module.name not in WINDOWS_UNSUPPORTED_MODULES
         ]
-        deselected = [f"--deselect={suite / node}" for node in sorted(WINDOWS_UNSUPPORTED_NODES)]
+        # pytest matches --deselect against node IDs relative to the suite's pytest.ini.
+        deselected = [f"--deselect={node}" for node in sorted(WINDOWS_UNSUPPORTED_NODES)]
         return [*modules, *deselected]
     return [str(suite)]
 

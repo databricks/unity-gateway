@@ -9,6 +9,8 @@ Smart Router skill and spawn real children before and after its session-local to
 """
 
 import json
+import os
+import re
 from pathlib import Path
 
 import pytest
@@ -22,7 +24,7 @@ from utils.evidence import (
     tool_outputs,
 )
 from utils.managed import use_managed_config_fixture
-from utils.terminal import AgentTerminal
+from utils.terminal import SELECTED, AgentTerminal
 
 SMART_ROUTING_BANNER = "Using Unity Gateway Smart Router."
 SMART_ROUTING_SUBAGENT_NOTICE = "Using Unity Gateway Smart Router - Subagent"
@@ -153,8 +155,24 @@ def _toggle_with_skill(tui, session, agent: str, enabled: bool) -> None:
 
     before_answers, before_confirmations = completion_counts()
     tui.submit(invocation)
+    approved = False
 
-    def toggled(_screen):
+    def toggled(screen):
+        nonlocal approved
+        if "Would you like to run the following command?" in screen and not approved:
+            # Codex on Windows asks before running the skill's own ug toggle; approve only that.
+            toggle = re.search(
+                r'(?m)^\s*\$ & "\$env:UCODE_SMART_ROUTER_PYTHON" -m ucode\.cli codex '
+                r"--(?:enable|disable)-smart-routing(?: --[a-z-]+)*\s*$",
+                screen,
+            )
+            first_yes = re.search(rf"(?m)^\s*{SELECTED}\s*1\.\s*Yes, proceed", screen)
+            assert agent == "codex" and os.name == "nt" and toggle and first_yes, (
+                "Agent requested an unrecognized command approval:\n" + screen
+            )
+            tui.send("\r", "allow the Smart Router skill's ug toggle")
+            approved = True
+            return False
         answers, confirmations = completion_counts()
         return (
             json.loads(controls[0].read_text()) == expected

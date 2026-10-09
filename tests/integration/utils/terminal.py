@@ -506,8 +506,9 @@ class AgentTerminal(TerminalProcess):
                 # Codex on Windows asks before reading files; approve only a plain fixture read.
                 filename = re.escape(task.filename)
                 safe_read = re.search(
-                    rf"(?m)^\s*\$ (?:type|cat|Get-Content(?: -Raw)?(?: -LiteralPath)?) "
-                    rf"[\"']?{filename}[\"']?\s*$",
+                    rf"(?m)^\s*\$ (?:powershell(?:\.exe)? -NoProfile -Command \")?"
+                    rf"(?:type|cat|Get-Content(?: -Raw)?(?: -LiteralPath)?) "
+                    rf"[\"']?{filename}[\"']?\"?\s*$",
                     screen,
                 )
                 first_yes = re.search(rf"(?m)^\s*{SELECTED}\s*1\.\s*Yes, proceed", screen)
