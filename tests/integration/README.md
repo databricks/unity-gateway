@@ -559,8 +559,13 @@ disjoint agent lanes:
 
 A non-blocking **OpenCode** job (`live and opencode`, one case) runs alongside them with
 `continue-on-error` and is not part of the required `cujs` gate until it is stable.
+A second non-blocking job, **Managed OpenCode self-managed** (`managed_fixture and opencode`, two cases
+in `test_ug_agents_self_managed.py`), installs Claude, Codex and OpenCode and runs against the
+managed e2e workspace (`E2E_ADMIN_WORKSPACE`) with the injected `managed_workspace_default` config,
+which enables Claude/Codex but not OpenCode. It is likewise outside `cujs`.
 
-Each lane installs only its agent CLI, once, and runs all its configure, headless,
+Each lane installs only the agent CLIs it needs (one, except the managed OpenCode lane's
+three), once, and runs all its configure, headless,
 commands, lifecycle, and applicable app-server journeys. Cases remain serial
 inside each fresh VM because configure/revert can touch machine-level settings;
 separate runners isolate those writes as well as the PTYs. Claude and Codex run

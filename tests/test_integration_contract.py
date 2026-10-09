@@ -135,6 +135,7 @@ SKIPPED_ON_FORK_PRS = {
     "full",
     "opencode",
     "managed",
+    "managed-opencode",
     "dedicated-cuj-plan",
     "dedicated-cuj",
     "cujs",
