@@ -35,12 +35,18 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     import ucode.managed_files as managed_files_mod
     import ucode.os_compatibility.subprocess_cross_os as subprocess_cross_os_mod
     import ucode.state as state_mod
+    from ucode import desktop_auth as desktop_auth_mod
+    from ucode import desktop_setup as desktop_setup_mod
+    from ucode.agents import claude_desktop as desktop_mod
     from ucode.agents import codex as codex_mod
 
     state_dir = tmp_path / ".ucode"
     state_dir.mkdir()
     monkeypatch.setattr(state_mod, "STATE_PATH", state_dir / "state.json")
     monkeypatch.setattr(config_io_mod, "APP_DIR", state_dir)
+    monkeypatch.setattr(desktop_mod, "APP_DIR", state_dir)
+    monkeypatch.setattr(desktop_auth_mod, "_AUTH_LOCK_PATH", state_dir / "claude-desktop-auth.lock")
+    monkeypatch.setattr(desktop_setup_mod, "claude_desktop_directory", lambda: None)
     # MANAGED_CONFIG_PATH is bound from APP_DIR at import, so patching APP_DIR alone doesn't move it;
     # rebind it or save_managed_state writes to the developer's real ~/.ucode/managed-config.json.
     monkeypatch.setattr(
