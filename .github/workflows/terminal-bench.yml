@@ -91,8 +91,11 @@ jobs:
         env:
           AGENT_VERSION: ${{ matrix.agent == 'claude' && env.CLAUDE_VERSION || env.CODEX_VERSION }}
         run: |
+          includes=()
+          while read -r task; do includes+=(-i "$task"); done \
+            < <(python3 bench/terminal_bench/bench_tasks.py "${{ matrix.agent }}")
           uvx --python 3.12 --from "harbor==$HARBOR_VERSION" harbor run -y \
-            -p bench/terminal_bench/tasks \
+            -p bench/terminal_bench/tasks "${includes[@]}" --resume-trajectory \
             -a "ug_agent:$AGENT_CLASS" --ak "version=$AGENT_VERSION" \
             ${MODEL:+-m "$MODEL"} -n 3 -o "$RUNNER_TEMP/harbor-jobs/ug"
       - name: Summarize

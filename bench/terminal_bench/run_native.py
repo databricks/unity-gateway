@@ -19,39 +19,40 @@ import tomllib
 from pathlib import Path
 
 import bench_auth
+from bench_tasks import TASKS_DIR, names_for
 
 from ucode.os_compatibility.subprocess_cross_os import popen, run
 
-TASKS_DIR = Path(__file__).resolve().parent / "tasks"
 
-
-def agent_command(agent: str, ug: str, model: str | None, task_dir: Path) -> list[str]:
+def agent_command(
+    agent: str, ug: str, model: str | None, step_dir: Path, instruction: str, resume: bool
+) -> tuple[list[str], str | None]:
+    """Return argv plus the stdin to send. Codex takes the prompt as an argument."""
     model_args = ["--model", model] if model else []
     if agent == "claude":
-        return [
-            ug,
-            "claude",
-            *model_args,
-            "--",
-            "-p",
-            "--verbose",
-            "--output-format",
-            "stream-json",
-            "--dangerously-skip-permissions",
-        ]
+        argv = [ug, "claude", *model_args, "--", "-p", "--verbose", "--output-format"]
+        argv += ["stream-json", "--dangerously-skip-permissions"]
+        return argv + (["--continue"] if resume else []), instruction
     if agent == "codex":
-        return [
-            ug,
-            "codex",
-            *model_args,
-            "--",
-            "exec",
-            "--dangerously-bypass-approvals-and-sandbox",
-            "--skip-git-repo-check",
-            "--json",
-            "-",
-        ]
-    return [sys.executable, str(task_dir / "solution" / "solve.py")]
+        argv = [ug, "codex", *model_args, "--", "exec", *(["resume", "--last"] if resume else [])]
+        argv += ["--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", "--json"]
+        return argv + ["--enable", "unified_exec", "--", instruction], None
+    return [sys.executable, str(step_dir / "solution" / "solve.py")], None
+
+
+def task_steps(task_dir: Path, config: dict) -> list[tuple[str, Path, float]]:
+    """(name, dir holding instruction.md/tests/solution, agent timeout) for each step."""
+    default = config.get("agent", {}).get("timeout_sec", 600)
+    if not config.get("steps"):
+        return [("agent", task_dir, default)]
+    return [
+        (
+            step["name"],
+            task_dir / "steps" / step["name"],
+            step.get("agent", {}).get("timeout_sec", default),
+        )
+        for step in config["steps"]
+    ]
 
 
 def kill_tree(proc: subprocess.Popen) -> None:
@@ -75,9 +76,45 @@ def prepare(task_dir: Path, workdir: Path) -> None:
         run([sys.executable, str(setup), str(workdir)], check=True)
 
 
+def run_agent(
+    argv: list[str], stdin: str | None, workdir: Path, env: dict, log_path: Path, timeout: float
+) -> tuple[subprocess.Popen, bool]:
+    with log_path.open("w", encoding="utf-8") as log:
+        proc = popen(
+            argv,
+            cwd=workdir,
+            env=env,
+            stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            text=True,
+            start_new_session=os.name != "nt",
+        )
+        try:
+            proc.communicate(stdin, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            kill_tree(proc)
+            return proc, True
+    return proc, False
+
+
+def verify(step_dir: Path, workdir: Path, env: dict, timeout: float) -> tuple[bool, str]:
+    try:
+        verifier = run(
+            [sys.executable, str(step_dir / "tests" / "test_outputs.py")],
+            cwd=workdir,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"verifier timed out after {timeout}s\n"
+    return verifier.returncode == 0, verifier.stdout + verifier.stderr
+
+
 def run_task(args: argparse.Namespace, task_dir: Path, out: Path) -> dict:
     config = tomllib.loads((task_dir / "task.toml").read_text())
-    agent_timeout = config.get("agent", {}).get("timeout_sec", 600)
     verifier_timeout = config.get("verifier", {}).get("timeout_sec", 120)
     workdir = out / "work" / task_dir.name
     logs = out / "logs" / task_dir.name
@@ -85,55 +122,34 @@ def run_task(args: argparse.Namespace, task_dir: Path, out: Path) -> dict:
     prepare(task_dir, workdir)
 
     env = {**os.environ, "TASK_APP_DIR": str(workdir), "IS_SANDBOX": "1"}
-    if args.agent != "oracle":
-        env = bench_auth.agent_env(env)
+    if args.agent == "oracle":
+        # Checks that read the agent transcript have nothing to read for the oracle.
+        env["TASK_ORACLE"] = "1"
     # Tasks say "run it with Python", so put this interpreter first on PATH.
     env["PATH"] = os.pathsep.join([str(Path(sys.executable).parent), env.get("PATH", "")])
-    instruction = (task_dir / "instruction.md").read_text()
     started = time.monotonic()
-    timed_out = False
-    with (logs / "agent.log").open("w", encoding="utf-8") as log:
-        proc = popen(
-            agent_command(args.agent, args.ug, args.model, task_dir),
-            cwd=workdir,
-            env=env,
-            stdin=subprocess.PIPE,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            text=True,
-            start_new_session=os.name != "nt",
+    result = {"task": task_dir.name, "passed": True, "agent_exit": None, "timed_out": False}
+    for index, (name, step_dir, agent_timeout) in enumerate(task_steps(task_dir, config)):
+        if args.agent != "oracle":
+            env = bench_auth.agent_env(env)
+        log_path = logs / f"{name}.log"
+        env["TASK_AGENT_LOG"] = str(log_path)
+        instruction = (step_dir / "instruction.md").read_text()
+        argv, stdin = agent_command(
+            args.agent, args.ug, args.model, step_dir, instruction, resume=index > 0
         )
-        try:
-            proc.communicate(instruction, timeout=agent_timeout)
-        except subprocess.TimeoutExpired:
-            timed_out = True
+        proc, timed_out = run_agent(argv, stdin, workdir, env, log_path, agent_timeout)
+        # Verify before cleanup so a server the agent left running still counts against it.
+        passed, verifier_log = verify(step_dir, workdir, env, verifier_timeout)
+        (logs / f"{name}.verifier.log").write_text(verifier_log, encoding="utf-8")
+        if not timed_out and os.name != "nt":
             kill_tree(proc)
-    duration = time.monotonic() - started
-
-    # Verify before cleanup so a server the agent left running still counts against it.
-    try:
-        verifier = run(
-            [sys.executable, str(task_dir / "tests" / "test_outputs.py")],
-            cwd=workdir,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=verifier_timeout,
-        )
-        passed = verifier.returncode == 0
-        verifier_log = verifier.stdout + verifier.stderr
-    except subprocess.TimeoutExpired:
-        passed, verifier_log = False, f"verifier timed out after {verifier_timeout}s\n"
-    (logs / "verifier.log").write_text(verifier_log, encoding="utf-8")
-    if not timed_out and os.name != "nt":
-        kill_tree(proc)
-    return {
-        "task": task_dir.name,
-        "passed": passed,
-        "agent_exit": proc.returncode,
-        "timed_out": timed_out,
-        "duration_sec": round(duration, 1),
-    }
+        result.update(agent_exit=proc.returncode, timed_out=timed_out)
+        if not passed:
+            result.update(passed=False, failed_step=name)
+            break
+    result["duration_sec"] = round(time.monotonic() - started, 1)
+    return result
 
 
 def write_summary(args: argparse.Namespace, results: list[dict], out: Path) -> None:
@@ -164,7 +180,7 @@ def main() -> int:
     parser.add_argument("--model")
     args = parser.parse_args()
 
-    names = args.task or sorted(p.name for p in TASKS_DIR.iterdir() if p.is_dir())
+    names = args.task or names_for(args.agent)
     out = args.output.resolve()
     if (out / "work").exists():
         shutil.rmtree(out / "work")
