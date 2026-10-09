@@ -10,6 +10,10 @@ The existing `ENABLE_SMART_ROUTER_ORCHESTRATOR=1` opt-in remains supported when
 `SMART_ROUTER_CONFIG_VERSION` is unset; `subagent_only_v0` explicitly leaves orchestration off.
 The feature is off by default; routing alone installs only `smart-router`.
 
+`SKILL.claude.md` and `SKILL.codex.md` hold each agent's instructions. UG installs
+the selected file as `SKILL.md` and injects that same version through the hooks.
+Role definitions and other bundle resources remain shared.
+
 The workflow is injected before root prompts and after compaction. The hook checks
 the feature flag, UG session, and current routing controls. The skill uses that
 activation context without running a separate check before delegation.

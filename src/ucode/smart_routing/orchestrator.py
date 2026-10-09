@@ -13,7 +13,11 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from ucode import skills
-from ucode.constants import ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR
+from ucode.constants import (
+    AGENT_CLAUDE,
+    AGENT_CODEX,
+    ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
+)
 from ucode.smart_routing.config import resolve_environment
 from ucode.smart_routing.hooks import sync_managed_hooks
 from ucode.smart_routing.session_env import effective_environment, session_env_path
@@ -62,13 +66,13 @@ def add_claude_agents(plugin_dir: Path) -> None:
 def sync_hooks(doc: dict, *, agent: str) -> None:
     groups = {}
     if feature_enabled():
-        argv = [sys.executable, "-m", HOOK_MODULE]
+        argv = [sys.executable, "-m", HOOK_MODULE, "--agent", agent]
         hook = {
             "type": "command",
             "command": shlex.join(argv),
             "timeout": 5,
         }
-        if agent == "codex":
+        if agent == AGENT_CODEX:
             hook["command_windows"] = subprocess.list2cmdline(argv)
         groups = {
             "UserPromptSubmit": [{"hooks": [hook]}],
@@ -77,7 +81,7 @@ def sync_hooks(doc: dict, *, agent: str) -> None:
     sync_managed_hooks(doc, HOOK_MODULE, groups)
 
 
-def hook_output(payload: object) -> dict | None:
+def hook_output(payload: object, *, agent: str) -> dict | None:
     if not isinstance(payload, dict) or payload.get("agent_id"):
         return None
     event = payload.get("hook_event_name")
@@ -89,7 +93,7 @@ def hook_output(payload: object) -> dict | None:
     if enabled():
         directory = skill_directory()
         try:
-            workflow = (directory / "SKILL.md").read_text(encoding="utf-8")
+            workflow = skills.skill_entrypoint(directory, agent).read_text(encoding="utf-8")
         except (OSError, UnicodeError):
             return None
         context = (
@@ -100,12 +104,14 @@ def hook_output(payload: object) -> dict | None:
 
 
 def main() -> None:
-    argparse.ArgumentParser(description=__doc__).parse_args()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--agent", choices=(AGENT_CLAUDE, AGENT_CODEX), required=True)
+    args = parser.parse_args()
     try:
         payload = json.load(sys.stdin)
     except (OSError, UnicodeError, ValueError):
         return
-    output = hook_output(payload)
+    output = hook_output(payload, agent=args.agent)
     if output is not None:
         print(json.dumps(output))
 

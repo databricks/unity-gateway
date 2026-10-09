@@ -62,6 +62,9 @@ timeout. Offline PTY checks cover this ordering.
 The shared wait also runs before CUJ4's Claude preset sessions exit, after delegated-task
 evidence is checked, because Claude can resume a child after its first completed answer.
 
+Agent-specific bundled instruction selection and prompt/compaction hook content
+are covered in `../test_skills.py`; those component checks do not run live agents.
+
 `TestChildStdoutLaunch` in `../test_cli.py` covers clean Claude print-mode and
 Codex exec/app-server stdout, early launch errors, and forwarding through ug's `--`.
 Token membership before the agent's `--` intentionally also matches option values and prompt
