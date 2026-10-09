@@ -33,7 +33,10 @@ def main(app: Path) -> None:
     xref = len(pdf)
     pdf += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1)
     pdf += b"".join(b"%010d 00000 n \n" % offset for offset in offsets)
-    pdf += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objects) + 1, xref)
+    pdf += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (
+        len(objects) + 1,
+        xref,
+    )
     app.mkdir(parents=True, exist_ok=True)
     (app / "invoice.pdf").write_bytes(bytes(pdf))
 

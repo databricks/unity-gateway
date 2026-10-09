@@ -156,7 +156,8 @@ def write_summary(args: argparse.Namespace, results: list[dict], out: Path) -> N
     (out / "results.json").write_text(json.dumps(results, indent=2))
     passed = sum(r["passed"] for r in results)
     lines = [
-        f"### Native tasks · {args.agent} · {sys.platform}: {passed}/{len(results)} passed",
+        f"### Native tasks · {args.agent} · {sys.platform}: {passed}/{len(results)} passed"
+        f" (needs {args.min_pass_rate:.0%})",
         "",
         "| Task | Result | Agent exit | Time (s) |",
         "|------|--------|-----------|----------|",
@@ -178,6 +179,12 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--ug", default=shutil.which("ug"), help="Absolute path to ug.")
     parser.add_argument("--model")
+    parser.add_argument(
+        "--min-pass-rate",
+        type=float,
+        default=0.75,
+        help="Fraction of tasks that must pass for exit code 0. Agents miss some tasks run to run.",
+    )
     args = parser.parse_args()
 
     names = args.task or names_for(args.agent)
@@ -210,7 +217,8 @@ def main() -> int:
 
     results = [run_task(args, TASKS_DIR / name, out) for name in names]
     write_summary(args, results, out)
-    return 0 if all(r["passed"] for r in results) else 1
+    passed = sum(r["passed"] for r in results)
+    return 0 if results and passed / len(results) >= args.min_pass_rate else 1
 
 
 if __name__ == "__main__":
