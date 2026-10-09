@@ -395,7 +395,7 @@ class AgentTerminal(TerminalProcess):
                     self.agent == "codex"
                     and bool(
                         re.search(
-                            rf"(?m)^\s*>\s+You are in ",
+                            r"(?m)^\s*>\s+You are in ",
                             text,
                         )
                     )
