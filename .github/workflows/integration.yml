@@ -111,7 +111,7 @@ jobs:
           version: 0.9.8
       - name: Authenticate to JFrog with GitHub OIDC
         id: jfrog
-        uses: jfrog/setup-jfrog-cli@279b1f629f43dd5bc658d8361ac4802a7ef8d2d5  # v4.9.1
+        uses: jfrog/setup-jfrog-cli@68c0efdc951dd2359bbbfa15c48bc67b3ae8e4d6  # v5.2.0
         env:
           JF_URL: https://databricks.jfrog.io
         with:
@@ -221,7 +221,7 @@ jobs:
       - name: Authenticate to JFrog with GitHub OIDC
         id: jfrog
         if: ${{ runner.os == 'Windows' }}
-        uses: jfrog/setup-jfrog-cli@279b1f629f43dd5bc658d8361ac4802a7ef8d2d5  # v4.9.1
+        uses: jfrog/setup-jfrog-cli@68c0efdc951dd2359bbbfa15c48bc67b3ae8e4d6  # v5.2.0
         env:
           JF_URL: https://databricks.jfrog.io
         with:
@@ -301,7 +301,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Authenticate to JFrog with GitHub OIDC
         id: jfrog
-        uses: jfrog/setup-jfrog-cli@279b1f629f43dd5bc658d8361ac4802a7ef8d2d5  # v4.9.1
+        uses: jfrog/setup-jfrog-cli@68c0efdc951dd2359bbbfa15c48bc67b3ae8e4d6  # v5.2.0
         env:
           JF_URL: https://databricks.jfrog.io
         with:
