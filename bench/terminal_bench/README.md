@@ -53,6 +53,8 @@ sequenceDiagram
 	env-->>host: Exit code 0 is a pass
 ```
 
+Every launch runs with smart routing on (`ENABLE_SMART_ROUTING_V2=1`). On Linux, ug routes Claude's first prompt and its subagents. On Windows, ug routes only Claude's subagents, because the first-prompt router needs a Unix PTY. Codex sends ug's router header on every model call.
+
 The Harbor lane runs `ug configure` in each container. The native lane runs it once at the start of the job.
 
 A multi-step task launches the agent again for each step, with that step's instruction and a new token. The new launch resumes the previous session with `--continue` for Claude or `exec resume --last` for Codex, and the verifier runs after each step. All TB2 tasks have one step. `resume-session` is the only multi-step task here.
@@ -66,7 +68,6 @@ The bench treats ug as a black box. It installs ug from this checkout, runs `ug 
 - The CUJ1 workspace's managed config lists no MCP servers, so ug registers none.
 - The harness installs a pinned Claude Code or Codex before ug starts, so ug's agent install doesn't run for that agent. It can still run for the other one. In a Claude job, ug tries to install Codex because the CUJ1 managed config enables both.
 - Claude runs with `--dangerously-skip-permissions` and Codex with `--dangerously-bypass-approvals-and-sandbox`. Permission prompts and the Codex sandbox don't run.
-- Smart routing is off.
 
 ## Run the workflow with other tasks or a model
 
