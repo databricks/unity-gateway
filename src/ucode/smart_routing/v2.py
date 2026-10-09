@@ -634,7 +634,6 @@ def _v2_hooks(state: dict, available_models: list[str]) -> dict:
             "PreToolUse": merge_pre_tool_use_hooks([], state, available_models=available_models),
         }
     }
-    orchestrator.sync_hooks(doc, agent="codex")
     return doc["hooks"]
 
 

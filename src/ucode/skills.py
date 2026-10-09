@@ -110,15 +110,9 @@ def uninstall_skill(skill_name: str, home: Path | None = None) -> list[Path]:
 
     base = Path.home() if home is None else home
     roots = (*_SKILL_ROOTS.values(), *_LEGACY_SKILL_ROOTS)
-    destinations = [base / root / skill_name for root in roots]
-    for key in ("CLAUDE_CONFIG_DIR", "CODEX_HOME"):
-        if os.environ.get(key):
-            destination = Path(os.environ[key]).expanduser() / "skills" / skill_name
-            if destination not in destinations:
-                destinations.append(destination)
-
     removed: list[Path] = []
-    for destination in destinations:
+    for root in roots:
+        destination = base / root / skill_name
         if _remove_skill_path(destination):
             removed.append(destination)
     return removed

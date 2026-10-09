@@ -123,25 +123,17 @@ def codex_launch_args(
     tool_args: list[str], doc: dict, *, session_path: Path | None = None
 ) -> list[str]:
     """Apply the flag after caller config overrides, preserving their other skills/hooks."""
-    insertion = 0
     before_prompt = tool_args[: tool_args.index("--")] if "--" in tool_args else tool_args
-    for index, arg in enumerate(before_prompt):
-        if arg in ("-c", "--config") and index + 1 < len(before_prompt):
-            value = before_prompt[index + 1]
-            insertion = index + 2
-        elif arg.startswith("--config="):
-            value = arg.removeprefix("--config=")
-            insertion = index + 1
-        elif arg.startswith("-c") and arg != "-c":
-            value = arg[2:].removeprefix("=")
-            insertion = index + 1
-        else:
-            continue
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    parser.add_argument("-c", "--config", action="append", default=[])
+    options, remaining = parser.parse_known_args(before_prompt)
+    for value in options.config:
         if value.partition("=")[0].partition(".")[0].strip('"') in {"skills", "hooks"}:
             config_io.deep_merge_dict(doc, tomlkit.parse(value))
             doc.pop("skills.config", None)
     sync_launch_config(doc, agent=AGENT_CODEX, session_path=session_path)
-    return [*tool_args[:insertion], *codex_config_args(doc), *tool_args[insertion:]]
+    caller_config = [arg for value in options.config for arg in ("-c", value)]
+    return [*caller_config, *codex_config_args(doc), *remaining, *tool_args[len(before_prompt) :]]
 
 
 def skill_directory() -> Path:

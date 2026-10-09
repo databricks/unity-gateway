@@ -20,6 +20,8 @@ covered by a follow-up change. See [the mod guide](../docs/claude-mod.md).
 
 `test_orchestrator.py` checks both agents' flag transitions, repeated configuration,
 activation after compaction, installation failures, and preservation of unrelated settings.
+The transition cases also cover custom config homes; native checks reuse the existing
+process harness rather than maintaining a separate app-server client.
 Caller settings and Codex CLI overrides cannot reverse the launch flag.
 Its native checks query Codex's skill loader and Claude's command list, and require
 Claude to reject explicit invocation when disabled. CI runs these without inference or

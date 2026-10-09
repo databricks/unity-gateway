@@ -395,7 +395,7 @@ class TestLaunchCodex:
         with pytest.raises(SystemExit) as exc:
             v2.launch_codex(
                 {"workspace": WS, "codex_models": ["system.ai.gpt-5-6-sol"]},
-                ["--search"],
+                ["--config", 'model="user-model"', "--search"],
                 binary="codex",
                 start_model="gpt-start",
                 render_overlay=codex.render_overlay,
@@ -406,6 +406,7 @@ class TestLaunchCodex:
         assert argv[0] == "codex"
         assert argv[-1] == "--search"
         assert 'model="gpt-start"' in argv
+        assert argv.index('model="user-model"') > argv.index('model="gpt-start"')
         skill_override = next(arg for arg in argv if arg.startswith("skills.config="))
         assert f"enabled = {str(orchestrator_flag == '1').lower()}" in skill_override
         assert any("hooks.UserPromptSubmit=" in arg for arg in argv) == (orchestrator_flag == "1")
