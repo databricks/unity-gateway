@@ -2101,7 +2101,7 @@ def _build_claude_argv(
     merged = _merge_claude_settings(caller_settings, read_json_safe(CLAUDE_SETTINGS_PATH))
     if settings_override is not None:
         merged = _merge_claude_settings(merged, settings_override)
-    orchestrator.sync_launch_config(merged, agent=AGENT_CLAUDE)
+    orchestrator.claude_launch_settings(merged)
     merged_env = merged.get("env")
     if isinstance(merged_env, dict):
         merged_env.pop("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", None)

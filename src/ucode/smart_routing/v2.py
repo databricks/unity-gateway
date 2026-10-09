@@ -583,7 +583,7 @@ def launch_claude(
             session_path = _prepare_smart_router_session(AGENT_CLAUDE)
             env[SESSION_ENV_VAR] = str(session_path)
             env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
-            orchestrator.sync_launch_config(settings, agent=AGENT_CLAUDE, session_path=session_path)
+            orchestrator.claude_launch_settings(settings, session_path=session_path)
             try:
                 write_json_file(settings_path, settings)
                 _write_routed_claude_plugin(plugin_dir, model_ids)

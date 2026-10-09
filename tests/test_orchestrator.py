@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import shutil
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -45,13 +46,18 @@ def test_flag_transitions_are_idempotent_and_preserve_other_settings(home, monke
         "skillOverrides": {"other": "off"},
         "skills": {"config": [other_skill]},
     }
+    configure = (
+        partial(orchestrator.codex_launch_args, [])
+        if agent == AGENT_CODEX
+        else orchestrator.claude_launch_settings
+    )
     for flag in ("0", "0", "1", "1", "0"):
         monkeypatch.setenv(ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR, flag)
-        orchestrator.sync_launch_config(doc, agent=agent, session_path=marker)
+        configure(doc, session_path=marker)
         installed = config_home / "skills" / NAME / "SKILL.md"
         before = copy.deepcopy(doc)
         modified = installed.stat().st_mtime_ns if installed.exists() else None
-        orchestrator.sync_launch_config(doc, agent=agent, session_path=marker)
+        configure(doc, session_path=marker)
         assert doc == before
         assert (installed.stat().st_mtime_ns if installed.exists() else None) == modified
         assert doc["hooks"]["UserPromptSubmit"][0] == other_hook
@@ -90,9 +96,9 @@ def test_enabled_launch_fails_if_the_skill_cannot_be_installed(home, monkeypatch
     monkeypatch.setattr(skills, "install_skill", fail_install)
     monkeypatch.setenv(ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR, "1")
     with pytest.raises(OSError, match="read-only"):
-        orchestrator.sync_launch_config({}, agent=agent)
+        orchestrator.prepare_launch(agent=agent)
     monkeypatch.setenv(ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR, "0")
-    orchestrator.sync_launch_config({}, agent=agent)
+    orchestrator.prepare_launch(agent=agent)
 
 
 @pytest.mark.parametrize("source", ["config.toml", "ucode.config.toml"])
@@ -108,7 +114,7 @@ def test_codex_preserves_existing_skill_config_and_overrides_old_orchestrator_en
     path.write_text(tomlkit.dumps({"skills": {"config": [other, previous]}}))
     original = path.read_bytes()
     doc = {}
-    orchestrator.sync_launch_config(doc, agent=AGENT_CODEX)
+    orchestrator.codex_launch_args([], doc)
     assert doc["skills.config"][0] == other
     assert {"path": previous["path"], "enabled": False} in doc["skills.config"]
     assert path.read_bytes() == original
