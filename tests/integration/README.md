@@ -4,6 +4,12 @@ Claude answer delivery has offline transcript and subprocess coverage in
 `../test_claude_answer_delivery.py`. Live model/gateway selection and capability-hook
 activation are not covered here; interactive selection is unsupported.
 
+Claude Desktop has component coverage, not an implemented native integration
+lane. The [native testing plan](../../docs/claude-desktop-integration-testing.md)
+includes fixed-profile configure/reconfigure/revert behavior, preservation of unrelated
+profiles, Cowork tasks, model switching, and browser authentication. Its macOS/Windows
+GUI and virtualization prerequisites are not satisfied by the headless suite.
+
 The separate [dedicated-workspace CUJ](../e2e_cuj/AGENTS.md) lives in `tests/e2e_cuj/`
 and runs directly with pytest. It does not use this suite's runner or config fixtures.
 It reuses the session, terminal, file-task, and transcript helpers in `utils/`.
