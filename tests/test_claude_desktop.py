@@ -502,3 +502,40 @@ def test_each_write_failure_preserves_existing_files(tmp_path, monkeypatch, fail
         _configure(directory, state_path)
     assert {path.name: path.read_bytes() for path in directory.iterdir()} == before
     assert not state_path.exists()
+
+
+def test_revert_without_ownership_creates_no_desktop_files(tmp_path):
+    directory = tmp_path / "missing-desktop"
+    state_path = tmp_path / "missing-ownership.json"
+    result = desktop.revert_claude_desktop(
+        "https://workspace.example", directory=directory, state_path=state_path
+    )
+    assert not result.changed
+    assert not directory.exists()
+    assert not state_path.exists()
+    _write_json(state_path, {"version": desktop.MANIFEST_VERSION, "profiles": {}})
+    result = desktop.revert_claude_desktop(
+        "https://workspace.example", directory=directory, state_path=state_path
+    )
+    assert not result.changed
+    assert not directory.exists()
+
+
+def test_revert_missing_renamed_profile_reports_conflict_and_preserves_metadata(tmp_path):
+    directory = tmp_path / "Claude-3p"
+    state_path = tmp_path / "state.json"
+    _seed_metadata(directory)
+    configured = _configure(directory, state_path)
+    metadata = _read(configured.metadata_path)
+    next(entry for entry in metadata["entries"] if entry["id"] == configured.profile_id)["name"] = (
+        "Personal"
+    )
+    _write_json(configured.metadata_path, metadata)
+    configured.profile_path.unlink()
+    before = configured.metadata_path.read_bytes()
+    with pytest.raises(desktop.ClaudeDesktopConflictError, match="profile file is missing"):
+        desktop.revert_claude_desktop(
+            "https://workspace.example", directory=directory, state_path=state_path
+        )
+    assert configured.metadata_path.read_bytes() == before
+    assert _read(state_path)["profiles"]

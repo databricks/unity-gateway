@@ -27,6 +27,19 @@ These are component checks, not live Windows coverage for every agent.
 Agent configuration tests also verify `ug` auth/MCP helper commands, including
 quoted executable paths and replacement of legacy `ucode` routing/web-search helpers.
 
+Claude Desktop component coverage lives in `test_desktop_auth.py`,
+`test_desktop_auth_cli.py`, `test_claude_desktop.py`, `test_desktop_setup.py`, and
+`test_desktop_configure_cli.py`. These cover token-only output, interactive-only
+browser recovery, bounded authentication, native profile rendering, ownership,
+repeat configure/revert, complete model catalogs, inherited routing headers,
+dry-run safety, and warn-only configure failures. External authentication and
+discovery boundaries are mocked; temporary profile files use the real adapter.
+These are not native GUI/Cowork inference tests. Windows profile writing,
+fresh-install activation, and inherited default selection remain gaps. The
+[native integration plan](../docs/claude-desktop-integration-testing.md) describes
+the dedicated interactive Windows/macOS lanes; no Desktop integration cases are
+currently implemented or claimed in the CUJ matrix below.
+
 `test_mcp_web_search.py` and `test_agent_claude.py` cover custom OAuth search
 registration, stale registration repair, SDK cache reuse/refresh, CLI profile
 selection, and errors without browser consent through the MCP handler. These
