@@ -32,6 +32,7 @@ jobs:
         run: |
           uv lock
           uv tool install ./baseline-ug
+          echo "UG_AB_BASELINE_BINARY=$(command -v ug)" >> "$GITHUB_ENV"
           npm install -g "@openai/codex@0.154.0"
           for version in 2.1.280 2.1.290; do
             npm install --prefix "$RUNNER_TEMP/claude-$version" "@anthropic-ai/claude-code@$version"

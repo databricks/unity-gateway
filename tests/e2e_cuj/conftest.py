@@ -55,7 +55,7 @@ def cuj(request, setup_workspace, tmp_path_factory):
         workspace = Workspace(request.cls.workspace)
         with TuiRequestRecorder(workspace.url) as recorder:
             session = UserSession(
-                Path(temporary), Path(shutil.which("ug")), artifacts, class_bearer
+                Path(temporary), Path(os.environ["UG_AB_BASELINE_BINARY"]), artifacts, class_bearer
             )
             try:
                 published = workspace.config()
