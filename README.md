@@ -56,9 +56,9 @@ model for one launch. OpenCode's `provider/model` form is also accepted.
 Unknown Databricks models produce an error; this option does not add models
 to discovery or change ug's saved default.
 
-`ug copilot` uses the Responses API for GPT-6 and newer model IDs, and Chat
-Completions for other models. The model selected at launch (including `--model`)
-determines the API. An inherited `COPILOT_PROVIDER_WIRE_MODEL` takes precedence
+`ug copilot` uses the Anthropic Messages API for Claude model IDs, the Responses
+API for GPT-5 and newer model IDs, and Chat Completions for other models. The
+model selected at launch (including `--model`) determines the API. An inherited `COPILOT_PROVIDER_WIRE_MODEL` takes precedence
 because it overrides the model sent to the gateway. Restart Copilot through `ug`
 to change the wire model or API; in-session model selection does not rebuild its
 provider configuration.
@@ -225,6 +225,9 @@ ug skills remove --location main.default --via mcp
 | `ug mcp add` | Add MCP servers without removing existing registrations |
 | `ug mcp remove` | Unregister configured MCP servers |
 | `ug mcp list` | List configured MCP servers and connection status |
+| `ug agents add <agent>` | Allow a non-admin-enabled agent to run self-managed |
+| `ug agents remove <agent>` | Remove an agent from your self-managed list |
+| `ug agents list` | Show the admin-managed and self-managed agents |
 | `ug skills` | Set up the Databricks skills MCP so agents can create and manage skills |
 | `ug skills list` | List configured skills and how each was configured |
 | `ug skills add` | Add skill MCP scopes or download skills |

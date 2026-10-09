@@ -117,6 +117,25 @@ class TestHttpHeaders:
         }
 
 
+class TestSettingsPassthrough:
+    def test_state_override_carries_settings_for_claude(self):
+        managed = {"enabled_agents": {"claude": {"agent_native_settings": {"a": {"b": 1}}}}}
+        assert managed_state_overrides(managed, "claude")["claude_settings_passthrough"] == {
+            "a": {"b": 1}
+        }
+
+    @pytest.mark.parametrize("tool", ["codex", "gemini"])
+    def test_other_agents_get_no_override(self, tool):
+        managed = {"enabled_agents": {tool: {"agent_native_settings": {"a": 1}}}}
+        assert f"{tool}_settings_passthrough" not in managed_state_overrides(managed, tool)
+
+    def test_resolve_state_keeps_settings_out_of_persisted_state(self):
+        managed = {"enabled_agents": {"claude": {"agent_native_settings": {"a": 1}}}}
+        resolved = resolve_state(managed, _state(), "claude")
+        assert resolved["claude_settings_passthrough"] == {"a": 1}
+        assert resolved[MANAGED_OVERLAY_KEY]["claude_settings_passthrough"] is None
+
+
 class TestClaudeModels:
     def test_proto_slots_map_to_families(self):
         # The manifest keeps proto spelling (`default_opus_model`); render_overlay reads `opus`.
