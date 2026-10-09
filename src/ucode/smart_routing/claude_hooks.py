@@ -9,7 +9,8 @@ emits Claude Code's settings.json hook shape.
 
 from __future__ import annotations
 
-from ucode.databricks import build_auth_token_argv, shell_command
+from ucode.databricks import build_auth_token_argv
+from ucode.os_compatibility.subprocess_cross_os import shell_command
 from ucode.smart_routing import hooks
 
 ROUTING_HOOK_COMMAND_MARKER = "claude-router-hook"
@@ -101,7 +102,6 @@ def _routing_hook_argv(state: dict, event: str) -> list[str]:
 def _routing_command_hook(argv: list[str], *, status: str | None = None) -> dict:
     hook = {
         "type": "command",
-        # Same quoting as Claude's apiKeyHelper: POSIX single quotes break cmd.exe on Windows.
         "command": shell_command(argv),
         "timeout": 35,
     }

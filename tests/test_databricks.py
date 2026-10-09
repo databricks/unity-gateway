@@ -5590,18 +5590,6 @@ class TestRunStdin:
         assert "stdin" not in seen
 
 
-class TestShellCommand:
-    def test_windows_uses_cmd_quoting(self, monkeypatch):
-        monkeypatch.setattr(db_mod.platform, "system", lambda: "Windows")
-        assert db_mod.shell_command([r"C:\Program Files\ug.EXE", "route"]) == (
-            r'"C:\Program Files\ug.EXE" route'
-        )
-
-    def test_posix_uses_shell_quoting(self, monkeypatch):
-        monkeypatch.setattr(db_mod.platform, "system", lambda: "Linux")
-        assert db_mod.shell_command(["/opt/my ug/ug", "route"]) == "'/opt/my ug/ug' route"
-
-
 def test_importing_the_cli_does_not_load_the_databricks_sdk():
     # The SDK costs ~1 s to import, and every `ug` command (including each auth-token refresh)
     # imports the CLI.

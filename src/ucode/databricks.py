@@ -1992,13 +1992,6 @@ def build_mcp_proxy_argv(
     return argv
 
 
-def shell_command(argv: list[str]) -> str:
-    """Quote ``argv`` as one command string for the platform's shell."""
-    if platform.system() == "Windows":
-        return subprocess.list2cmdline(argv)
-    return shlex.join(argv)
-
-
 def build_auth_shell_command(
     workspace: str, profile: str | None = None, *, use_pat: bool = False
 ) -> str:
@@ -2007,7 +2000,9 @@ def build_auth_shell_command(
     Used where a tool wants the helper as one command *string* (Claude Code's
     `apiKeyHelper`). On every platform this resolves to the `ug auth-token`
     executable rather than a POSIX shell pipeline, so no `sh`/`jq` is required."""
-    return shell_command(build_auth_token_argv(workspace, profile, use_pat=use_pat))
+    return subprocess_cross_os.shell_command(
+        build_auth_token_argv(workspace, profile, use_pat=use_pat)
+    )
 
 
 def build_otel_headers_argv(
@@ -2026,7 +2021,9 @@ def build_otel_headers_shell_command(
     workspace: str, profile: str | None = None, *, use_pat: bool = False
 ) -> str:
     """Shell-quoted form of :func:`build_otel_headers_argv`."""
-    return shell_command(build_otel_headers_argv(workspace, profile, use_pat=use_pat))
+    return subprocess_cross_os.shell_command(
+        build_otel_headers_argv(workspace, profile, use_pat=use_pat)
+    )
 
 
 # A model-service's `name` is `model-services/system.ai.<model-name>`; the

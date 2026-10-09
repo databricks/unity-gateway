@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shlex
 import shutil
 import subprocess
 import sys
@@ -18,7 +17,7 @@ from ucode.constants import (
     AGENT_CODEX,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
 )
-from ucode.databricks import shell_command
+from ucode.os_compatibility.subprocess_cross_os import shell_command
 from ucode.smart_routing.config import resolve_environment
 from ucode.smart_routing.hooks import sync_managed_hooks
 from ucode.smart_routing.session_env import effective_environment, session_env_path
@@ -72,7 +71,7 @@ def sync_hooks(doc: dict, *, agent: str) -> None:
         argv = [sys.executable, "-m", HOOK_MODULE, "--agent", agent]
         hook = {
             "type": "command",
-            "command": shlex.join(argv) if agent == "codex" else shell_command(argv),
+            "command": shell_command(argv),
             "timeout": 5,
         }
         if agent == AGENT_CODEX:

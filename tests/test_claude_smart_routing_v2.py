@@ -992,9 +992,9 @@ class TestV2HeadlessClaude:
 
 
 def test_routing_hook_command_uses_windows_quoting_on_windows(monkeypatch):
-    import ucode.databricks as db_mod
+    from ucode.os_compatibility import subprocess_cross_os
     from ucode.smart_routing import claude_hooks
 
-    monkeypatch.setattr(db_mod.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(subprocess_cross_os.platform, "system", lambda: "Windows")
     hook = claude_hooks._routing_command_hook([r"C:\Program Files\ug.EXE", "route-subagent"])
     assert hook["command"] == r'"C:\Program Files\ug.EXE" route-subagent'
