@@ -25,6 +25,31 @@ from .evidence import agent_sessions, assert_no_terminal_api_error
 SELECTED = "[›❯>\ufffd]"
 
 
+READ_ONLY_COMMANDS = {
+    "cat",
+    "dir",
+    "gc",
+    "gci",
+    "get-childitem",
+    "get-content",
+    "get-item",
+    "get-location",
+    "ls",
+    "pwd",
+    "test-path",
+    "type",
+}
+
+
+def read_only_command(line: str) -> bool:
+    """Whether a command shown in a Codex approval prompt only lists or reads files."""
+    command = re.sub(r"^powershell(?:\.exe)? -NoProfile -Command\s+", "", line.strip(), flags=re.I)
+    command = command.strip("\"'")
+    if not command or re.search(r"[;|&<>`]|\$\(", command):
+        return False
+    return command.split()[0].lower() in READ_ONLY_COMMANDS
+
+
 class TerminalScreen(pyte.Screen):
     def __init__(self, columns, lines, send):
         super().__init__(columns, lines)
@@ -503,20 +528,14 @@ class AgentTerminal(TerminalProcess):
             if "Would you like to run the following command?" in screen:
                 if permission_in_progress:
                     return False
-                # Codex on Windows asks before reading files. Approve only a plain fixture read;
-                # the whole line must match, so chained or redirected commands fail.
-                filename = re.escape(task.filename)
-                read = r"(?:type|cat|Get-Content(?: -(?:Raw|LiteralPath|Path|Encoding [\w-]+))*)"
-                path = rf"[\"']?(?:\.(?:\\{{1,2}}|/))?{filename}[\"']?"
-                safe_read = re.search(
-                    rf"(?m)^\s*\$ (?:powershell(?:\.exe)? -NoProfile -Command \"?)?{read} {path}\"?\s*$",
-                    screen,
-                )
+                # Codex on Windows asks before every shell command; approve only reads and listings.
+                commands = re.findall(r"(?m)^\s*\$ (.+?)\s*$", screen)
+                safe_read = bool(commands) and read_only_command(commands[-1])
                 first_yes = re.search(rf"(?m)^\s*{SELECTED}\s*1\.\s*Yes, proceed", screen)
                 assert self.agent == "codex" and os.name == "nt" and safe_read and first_yes, (
                     "Agent requested an unrecognized command approval:\n" + screen
                 )
-                self.send("\r", f"allow read-only read of {task.filename}")
+                self.send("\r", f"allow read-only command while finding {task.filename}")
                 permission_in_progress = True
                 return False
             permission_in_progress = False
