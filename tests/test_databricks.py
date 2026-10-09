@@ -4587,3 +4587,50 @@ class TestRunDecodesUtf8:
         script = r"import sys; sys.stdout.buffer.write(b'\xff')"
         result = db_mod.run([sys.executable, "-c", script], capture_output=True)
         assert result.stdout == b"\xff"
+
+
+class TestRunStdin:
+    def _capture_kwargs(self, monkeypatch) -> dict:
+        seen: dict = {}
+
+        def fake_run(args, **kwargs):
+            seen.update(kwargs)
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        monkeypatch.setattr(db_mod.subprocess_cross_os, "run", fake_run)
+        return seen
+
+    def test_captured_commands_do_not_inherit_stdin(self, monkeypatch):
+        # A child sharing a stdin pipe that another thread is reading hangs on Windows.
+        seen = self._capture_kwargs(monkeypatch)
+        db_mod.run(["databricks", "auth", "token"], capture_output=True, text=True)
+        assert seen["stdin"] is subprocess.DEVNULL
+
+    def test_interactive_commands_keep_stdin(self, monkeypatch):
+        seen = self._capture_kwargs(monkeypatch)
+        db_mod.run(["databricks", "auth", "login"])
+        assert "stdin" not in seen
+
+
+class TestShellCommand:
+    def test_windows_uses_cmd_quoting(self, monkeypatch):
+        monkeypatch.setattr(db_mod.platform, "system", lambda: "Windows")
+        assert db_mod.shell_command([r"C:\Program Files\ug.EXE", "route"]) == (
+            r'"C:\Program Files\ug.EXE" route'
+        )
+
+    def test_posix_uses_shell_quoting(self, monkeypatch):
+        monkeypatch.setattr(db_mod.platform, "system", lambda: "Linux")
+        assert db_mod.shell_command(["/opt/my ug/ug", "route"]) == "'/opt/my ug/ug' route"
+
+
+def test_importing_the_cli_does_not_load_the_databricks_sdk():
+    # The SDK costs ~1 s to import, and every `ug` command (including each auth-token refresh)
+    # imports the CLI.
+    result = subprocess.run(
+        [sys.executable, "-c", "import sys, ucode.cli; print('databricks.sdk' in sys.modules)"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip() == "False"
