@@ -3384,6 +3384,18 @@ class TestRunDatabricksCliInstaller:
 
         assert os.environ["PATH"].split(os.pathsep).count(links_dir) == 1
 
+    def test_windows_appends_persisted_paths_after_the_current_path(self, monkeypatch, tmp_path):
+        links_dir = str(tmp_path / "Microsoft" / "WinGet" / "Links")
+        running = str(tmp_path / "venv" / "Scripts")
+        installed = str(tmp_path / ".local" / "bin")
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        monkeypatch.setenv("PATH", running)
+        monkeypatch.setattr(db_mod, "_windows_user_path", lambda: installed)
+
+        db_mod._refresh_windows_path()
+
+        assert os.environ["PATH"].split(os.pathsep) == [links_dir, running, installed]
+
     def test_windows_without_winget_is_actionable(self, monkeypatch):
         monkeypatch.setattr(db_mod.platform, "system", lambda: "Windows")
         monkeypatch.setattr(db_mod.shutil, "which", lambda cmd: None)
