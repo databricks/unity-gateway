@@ -89,16 +89,17 @@ def _run_session(session, recorder, agent, task, launch_args):
 def _task_inference_request(requests, agent, prompt, *, after=0):
     """Match the task payload, not the expected model or orchestrator context."""
     for request in requests:
-        tools = request.payload.get("tools")
         if (
             request.sequence <= after
             or request.method != "POST"
             or request.path != INFERENCE_PATHS[agent]
-            or not isinstance(tools, list)
-            or not tools
         ):
             continue
-        entries = request.payload.get("messages" if agent == CLAUDE else "input", [])
+        payload = request.payload
+        tools = payload.get("tools")
+        if not isinstance(tools, list) or not tools:
+            continue
+        entries = payload.get("messages" if agent == CLAUDE else "input", [])
         if isinstance(entries, str):
             if entries == prompt:
                 return request

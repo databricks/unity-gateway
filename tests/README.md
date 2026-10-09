@@ -27,6 +27,7 @@ notifications alone cannot substitute for a final parent answer. These offline c
 establish a live routing pass.
 Offline CUJ regressions cover Codex delegated-turn completion and exact task-request matching;
 notifications alone, Claude title requests, and parent continuations do not qualify.
+Unrelated and pre-checkpoint request bodies are excluded before JSON decoding.
 The original smart-routing CUJ runs four fresh sessions: routed and explicit model for both
 Claude and Codex. One additional test has five `SMART_ROUTER_CONFIG_VERSION` cases.
 Each case exercises both agents and checks first-prompt routing, orchestrator context in

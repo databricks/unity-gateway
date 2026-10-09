@@ -16,6 +16,7 @@ from tests.e2e_cuj.helpers.evidence import (
     completed_turn,
     get_cuj_helper,
 )
+from tests.e2e_cuj.helpers.tui_request_recorder import RecordedRequest
 from tests.e2e_cuj.test_cuj4_smart_routing import _task_inference_request
 from tests.integration.utils.evidence import FileTask, read_jsonl
 
@@ -297,6 +298,17 @@ def _inference_request(agent, sequence, prompt, tools):
         sequence=sequence,
         payload={field: [{"role": "user", "content": content}], "tools": tools},
     )
+
+
+@pytest.mark.parametrize("agent", [CLAUDE, CODEX])
+@pytest.mark.parametrize(
+    ("method", "path", "sequence"),
+    [("GET", None, 2), ("POST", "/models", 2), ("POST", None, 1)],
+)
+def test_cuj_task_inference_skips_unrelated_empty_bodies(agent, method, path, sequence):
+    unrelated = RecordedRequest(sequence, method, path or INFERENCE_PATHS[agent], {}, b"")
+    task = _inference_request(agent, 3, "task prompt", [{"name": "Read"}])
+    assert _task_inference_request([unrelated, task], agent, "task prompt", after=1) is task
 
 
 def test_cuj_task_inference_selection_uses_exact_tool_prompt():
