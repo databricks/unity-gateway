@@ -35,6 +35,11 @@ CUJ4's Claude preset sessions also use it after verifying delegated file tasks: 
 answer does not prove that a resumed child has stopped running.
 They cover Claude/Codex helper dispatch and rejection of routing decisions without
 the agent-specific prompt-submission evidence.
+Agent-specific smart-routing preset component checks cover shared base presets, explicit agent mappings,
+complete per-agent validation, session precedence, and preserving the preset selector
+until managed-default agent selection.
+These checks do not establish live agent coverage.
+
 CUJ3 and CUJ4 also verify Claude's native recovery from the known thinking-display 400:
 the same payload without display must receive a non-empty 200 for adaptive or enabled thinking.
 If the next attempt rejects `safeguards`, only its native removal is accepted before the final 200.

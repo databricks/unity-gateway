@@ -31,16 +31,16 @@ DISABLED_CONTEXT = (
 )
 
 
-def feature_enabled(env: Mapping[str, str] | None = None) -> bool:
-    source = resolve_environment(env)
+def feature_enabled(env: Mapping[str, str] | None = None, *, agent: str) -> bool:
+    source = resolve_environment(env, agent=agent)
     return source.get(ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR) == "1"
 
 
-def enabled(env: Mapping[str, str] | None = None) -> bool:
+def enabled(env: Mapping[str, str] | None = None, *, agent: str) -> bool:
     from ucode.smart_routing.v2 import smart_routing_enabled
 
     source = os.environ if env is None else env
-    if not feature_enabled(source):
+    if not feature_enabled(source, agent=agent):
         return False
     if source.get("ISAAC_LAUNCH_MODE", "").strip().lower() == "omni":
         return False
@@ -50,7 +50,9 @@ def enabled(env: Mapping[str, str] | None = None) -> bool:
             return False
     except (RuntimeError, OSError):
         return False
-    return smart_routing_enabled(effective_environment(source))
+    return smart_routing_enabled(
+        effective_environment(source, agent=agent), default=False, agent=agent
+    )
 
 
 def skill_directory() -> Path:
@@ -59,13 +61,13 @@ def skill_directory() -> Path:
 
 def add_claude_agents(plugin_dir: Path) -> None:
     """Load roles alongside the router's exact-model agents, only for this launch."""
-    if feature_enabled():
+    if feature_enabled(agent=AGENT_CLAUDE):
         shutil.copytree(skill_directory() / "agents", plugin_dir / "agents", dirs_exist_ok=True)
 
 
 def sync_hooks(doc: dict, *, agent: str) -> None:
     groups = {}
-    if feature_enabled():
+    if feature_enabled(agent=agent):
         argv = [sys.executable, "-m", HOOK_MODULE, "--agent", agent]
         hook = {
             "type": "command",
@@ -90,7 +92,7 @@ def hook_output(payload: object, *, agent: str) -> dict | None:
     ):
         return None
     context = DISABLED_CONTEXT
-    if enabled():
+    if enabled(agent=agent):
         directory = skill_directory()
         try:
             workflow = skills.skill_entrypoint(directory, agent).read_text(encoding="utf-8")

@@ -16,6 +16,7 @@ import subprocess
 from pathlib import Path
 
 from ucode.config_io import ToolSpec
+from ucode.constants import AGENT_CLAUDE, AGENT_CODEX
 from ucode.databricks import (
     AnthropicModelCatalog,
     get_databricks_token,
@@ -412,11 +413,11 @@ def configure_tool(
     picker_catalog: AnthropicModelCatalog | None = None,
 ) -> dict:
     result: dict | tuple[dict, str]
-    if tool == "codex":
+    if tool == AGENT_CODEX:
         result = codex.write_tool_config(
             state, model, provider=provider, parent_schema=parent_schema
         )
-    elif tool == "claude":
+    elif tool == AGENT_CLAUDE:
         # A Model Provider Service or parent schema routes by header and discovers models natively,
         # so the usual "model required" guard doesn't apply to either Claude source.
         if not model and not provider and not parent_schema:
