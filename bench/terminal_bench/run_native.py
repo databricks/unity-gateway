@@ -143,6 +143,10 @@ def run_task(args: argparse.Namespace, task_dir: Path, out: Path) -> dict:
         # Verify before cleanup so a server the agent left running still counts against it.
         passed, verifier_log = verify(step_dir, workdir, env, verifier_timeout)
         (logs / f"{name}.verifier.log").write_text(verifier_log, encoding="utf-8")
+        # ug's routing wrappers log under ~/.ucode; keep them as evidence that routing ran.
+        for ucode_log in (Path.home() / ".ucode").glob("*.log"):
+            (logs / f"{name}.ucode").mkdir(exist_ok=True)
+            shutil.copy2(ucode_log, logs / f"{name}.ucode" / ucode_log.name)
         if not timed_out and os.name != "nt":
             kill_tree(proc)
         result.update(agent_exit=proc.returncode, timed_out=timed_out)
