@@ -30,6 +30,9 @@ SUBAGENT_ORCH_V0 = "subagent_orch_v0"
 # Route only subagents with V2, subagent-only, and orchestration all enabled.
 SUBAGENT_ORCH_V1 = "subagent_orch_v1"
 
+# Preserve subagent_orch_v0 for Claude, with all Codex routing flags disabled.
+SUBAGENT_ORCH_V0_CLAUDE_ONLY = "subagent_orch_v0_claude_only"
+
 _BASE_VERSIONS = {
     FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
@@ -60,7 +63,35 @@ _BASE_VERSIONS = {
 
 # Agents share the base preset unless explicitly changed; comment any intentional difference.
 _VERSIONS = {
-    version: {AGENT_CLAUDE: flags, AGENT_CODEX: flags} for version, flags in _BASE_VERSIONS.items()
+    FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0: {
+        AGENT_CLAUDE: _BASE_VERSIONS[FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0],
+        AGENT_CODEX: _BASE_VERSIONS[FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0],
+    },
+    SUBAGENT_ONLY_V0: {
+        AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ONLY_V0],
+        AGENT_CODEX: _BASE_VERSIONS[SUBAGENT_ONLY_V0],
+    },
+    SUBAGENT_ONLY_V1: {
+        AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ONLY_V1],
+        AGENT_CODEX: _BASE_VERSIONS[SUBAGENT_ONLY_V1],
+    },
+    SUBAGENT_ORCH_V0: {
+        AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ORCH_V0],
+        AGENT_CODEX: _BASE_VERSIONS[SUBAGENT_ORCH_V0],
+    },
+    SUBAGENT_ORCH_V1: {
+        AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ORCH_V1],
+        AGENT_CODEX: _BASE_VERSIONS[SUBAGENT_ORCH_V1],
+    },
+    # Codex opts out of routing and orchestration; Claude keeps subagent_orch_v0.
+    SUBAGENT_ORCH_V0_CLAUDE_ONLY: {
+        AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ORCH_V0],
+        AGENT_CODEX: {
+            ENABLE_SMART_ROUTING_ENV_VAR: "0",
+            ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+            ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        },
+    },
 }
 
 

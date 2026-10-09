@@ -11,10 +11,15 @@ inference, and Claude inference. The config equality also accounts for the works
 skill name as data; skill download and invocation are not covered.
 
 The dedicated smart-routing CUJ in `../e2e_cuj/test_cuj4_smart_routing.py` leaves the original
-managed-default and explicit-model cases unchanged. One additional test runs the five supported
+managed-default and explicit-model cases unchanged. One parameterized test runs all six
 `SMART_ROUTER_CONFIG_VERSION` values, checking both agents' first-prompt routing, orchestrator
-context in inference input, and completed explicitly requested routed subagents.
+context in inference input, and completed explicitly requested native subagents.
 This is not automatic orchestrator-delegation coverage. No workspace configuration is modified.
+The shared preset CUJ runs both agents for every version and derives routing and
+orchestration assertions from each agent's resolved flags. Both must complete a native
+child task. `subagent_orch_v0_claude_only` routes Claude's child; Codex uses the managed
+default without routing requests, new router decisions, recipe headers, or orchestrator context.
+
 Agent-specific smart-routing preset component checks cover shared base presets, explicit agent mappings,
 complete per-agent validation, session precedence, and preserving the preset selector
 until managed-default agent selection.
