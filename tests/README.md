@@ -162,6 +162,10 @@ that Claude settings and Codex's shell policy carry the interpreter and session 
 These are component checks; they do not establish native skill permission matching or
 PowerShell execution.
 
+`test_skills.py` checks agent-specific instruction installation, bundle updates,
+and matching prompt/compaction hook content for Claude and Codex. It also covers
+shared `SKILL.md` bundles. These are component checks, not live agent execution.
+
 `test_smart_routing_config.py` includes a 162-case Cartesian component oracle: all three legacy
 routing flags take unset, `0`, and `1`, while the selector takes unset or one of the five
 supported presets, including the customer first-prompt-and-subagent mode. It uses the named
