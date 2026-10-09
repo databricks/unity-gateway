@@ -9,9 +9,7 @@
 
 This directory runs Terminal Bench tasks through `ug claude` and `ug codex`. It checks that an agent keeps working when ug configures and launches it. The `Terminal Bench` workflow in `.github/workflows/terminal-bench.yml` runs every night at 07:00 UTC and on manual dispatch.
 
-The workflow has two lanes because Harbor needs Linux containers. Harbor runs each task in its own Docker container, and [Terminal Bench 2](https://www.tbench.ai/) tasks depend on the images they ship with. GitHub's Windows runners can't run Linux containers.
-
-The Harbor lane runs on Linux. It runs a TB2 subset and the tasks in `tasks/`, and `ug_agent.py` installs ug in each container. The native lane is how ug gets tested on Windows. `run_native.py` runs the tasks in `tasks/` directly on Linux and Windows runners. Those tasks use only the Python standard library so they run on both.
+The workflow runs tasks in two lanes. The Harbor lane runs a [Terminal Bench 2](https://www.tbench.ai/) subset and the tasks in `tasks/` in Docker containers on Linux. The native lane runs the tasks in `tasks/` directly on Linux and Windows runners.
 
 ```mermaid
 flowchart LR
@@ -22,7 +20,17 @@ flowchart LR
 	native --> own
 ```
 
-Each lane runs every task for Claude and for Codex. [TASKS.md](TASKS.md) describes the task format and lists every task.
+Each lane runs its tasks for Claude and for Codex. [TASKS.md](TASKS.md) describes the task format and lists every task.
+
+## Why there are two lanes
+
+Each lane tests something the other can't.
+
+The Harbor lane exists for real TB2 tasks. Each TB2 task ships a Linux Docker image with the services, packages, and root access it needs. Harbor starts a fresh container per trial, so a task can't change the runner or another trial. `ug_agent.py` installs ug, the Databricks CLI, and the agent CLI in each container.
+
+The native lane exists for Windows. GitHub's Windows runners can't run Linux containers, and TB2 has no Windows images, so Harbor can't test ug on Windows. `run_native.py` runs the tasks in `tasks/` on the runner itself instead. Those tasks use only the Python standard library so they run on both operating systems.
+
+The native Linux job overlaps with Harbor. It adds one thing: ug running outside a container, on a machine with a normal user home.
 
 ## How a task runs
 
@@ -59,7 +67,7 @@ The workflow also takes `tb2_dataset`, `claude_version`, and `codex_version`. Gi
 
 Each job writes a table of task results to its run summary.
 
-A Harbor job fails only when a trial hits a harness error, such as a failed agent install or an API error. A task with reward 0 doesn't fail the job, because TB2 tasks are meant to be hard. A native job fails when any task fails, so a native job is often red while the Harbor jobs in the same run pass.
+A Harbor job fails only when a trial hits a harness error, such as a failed agent install or an API error. A task with reward 0 doesn't fail the job, because TB2 tasks are meant to be hard. A native job fails when fewer than 75% of its tasks pass. Agents miss a different task or two from run to run, so one miss doesn't fail the job. Change the bar with `run_native.py --min-pass-rate`.
 
 Each job uploads its files as an artifact named `terminal-bench-harbor-<agent>` or `terminal-bench-native-<agent>-<os>`. `scrub_secrets.py` replaces bearer tokens in those files before upload.
 
