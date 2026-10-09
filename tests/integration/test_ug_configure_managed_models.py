@@ -221,22 +221,35 @@ def test_ug_configure_managed_codex_catalog_fallback(live_session, workspace, ro
 
 @pytest.mark.managed_fixture
 @pytest.mark.claude
-def test_managed_fixture_claude_smart_routing_banner(live_session, workspace):
-    """Scenario: an admin config lists Claude models and enables smart routing for Claude.
+@pytest.mark.parametrize(
+    "SMART_ROUTER_CONFIG_VERSION",
+    [None, "first_prompt_and_subagent_no_orch_v0"],
+    ids=["managed-default", "first_prompt_and_subagent_no_orch_v0"],
+)
+def test_managed_fixture_claude_smart_routing_banner(
+    live_session, workspace, SMART_ROUTER_CONFIG_VERSION
+):
+    """Scenario: an admin config lists Claude models and launch uses its default or the
+    customer first-prompt-and-subagent selector.
 
-    Expected: `ug configure` applies the config without the personal agent selector, and
-    `ug claude` routes the first real prompt: the TUI shows the Unity Gateway Smart Router
-    banner naming the selected model, the routed answer completes the file task, and the
-    session exits normally.
+    Expected: `ug configure` applies the config without the personal agent selector, and both
+    launch modes route the first real prompt: the TUI shows the Unity Gateway Smart Router
+    banner naming the selected model, the routed answer completes the file task, and the session
+    exits normally.
     """
     session = live_session
     task = FileTask(session)
     use_managed_config_fixture(session, "claude_smart_routing")
     result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
     assert "Select coding agents to configure:" not in result.stdout, result.stdout
+    if SMART_ROUTER_CONFIG_VERSION is not None:
+        session.env["SMART_ROUTER_CONFIG_VERSION"] = SMART_ROUTER_CONFIG_VERSION
 
     with AgentTerminal(
-        session, "claude", [str(session.binary), "claude"], "managed-smart-routing"
+        session,
+        "claude",
+        [str(session.binary), "claude"],
+        f"managed-smart-routing-{SMART_ROUTER_CONFIG_VERSION or 'managed-default'}",
     ) as tui:
         tui.boot()
         tui.submit(task.prompt)
@@ -253,22 +266,35 @@ def test_managed_fixture_claude_smart_routing_banner(live_session, workspace):
 
 @pytest.mark.managed_fixture
 @pytest.mark.codex
-def test_managed_fixture_codex_smart_routing_banner(live_session, workspace):
-    """Scenario: an admin config lists Codex models and enables smart routing for Codex.
+@pytest.mark.parametrize(
+    "SMART_ROUTER_CONFIG_VERSION",
+    [None, "first_prompt_and_subagent_no_orch_v0"],
+    ids=["managed-default", "first_prompt_and_subagent_no_orch_v0"],
+)
+def test_managed_fixture_codex_smart_routing_banner(
+    live_session, workspace, SMART_ROUTER_CONFIG_VERSION
+):
+    """Scenario: an admin config lists Codex models and launch uses its default or the
+    customer first-prompt-and-subagent selector.
 
-    Expected: `ug configure` applies the config without the personal agent selector, and
-    `ug codex` routes the first real prompt: the TUI shows the Unity Gateway Smart Router
-    banner naming the selected model, the routed answer completes the file task, and the
-    session exits normally.
+    Expected: `ug configure` applies the config without the personal agent selector, and both
+    launch modes route the first real prompt: the TUI shows the Unity Gateway Smart Router
+    banner naming the selected model, the routed answer completes the file task, and the session
+    exits normally.
     """
     session = live_session
     task = FileTask(session)
     use_managed_config_fixture(session, "codex_smart_routing")
     result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
     assert "Select coding agents to configure:" not in result.stdout, result.stdout
+    if SMART_ROUTER_CONFIG_VERSION is not None:
+        session.env["SMART_ROUTER_CONFIG_VERSION"] = SMART_ROUTER_CONFIG_VERSION
 
     with AgentTerminal(
-        session, "codex", [str(session.binary), "codex"], "managed-smart-routing"
+        session,
+        "codex",
+        [str(session.binary), "codex"],
+        f"managed-smart-routing-{SMART_ROUTER_CONFIG_VERSION or 'managed-default'}",
     ) as tui:
         tui.boot()
         tui.submit(task.prompt)
