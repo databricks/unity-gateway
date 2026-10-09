@@ -62,7 +62,7 @@ dev = [
     "pyte>=0.8.2",
     # Pinned so local and CI lint with the identical formatter/type-checker;
     # ruff/ty output shifts between releases, so bump these deliberately.
-    "ruff==0.16.5",
+    "ruff==0.16.10",
     "ty==0.0.75",
 ]
 
