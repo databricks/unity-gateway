@@ -33,13 +33,10 @@ CUJ3 and CUJ4 also verify Claude's native recovery from the known thinking-displ
 the same payload without display must receive a non-empty 200 for adaptive or enabled thinking.
 If the next attempt rejects `safeguards`, only its native removal is accepted before the final 200.
 Offline regressions reject missing/failed retries and changes to the model, prompt, budget, or effort.
-Native evidence-reader regressions cover Claude's background-agent completion notifications;
-notifications alone cannot substitute for a final parent answer. These offline checks do not
-establish a live routing pass.
-Claude peer hand-backs are correlated with successful Agent spawns in the same parent turn;
-unknown senders, mismatched sessions, failed spawns, and reports without a final parent answer
-are rejected. Offline PTY checks cover billing-notice input readiness, observed dismissal,
-and a later notice for child work.
+Delegated tasks wait for the native child's answer, independently of the parent's final turn.
+Offline checks require the child's hidden file value; a parent-only answer cannot satisfy the wait.
+First-prompt tasks retain completed parent-turn evidence. Offline PTY checks cover billing-notice
+input readiness, observed dismissal, and a later notice for child work.
 Child HTTP matching accepts Claude's single appended transport newline after the routing
 checkpoint; additional text, whitespace, and Codex prompt changes remain rejected.
 Offline CUJ regressions cover Codex delegated-turn completion and exact task-request matching;

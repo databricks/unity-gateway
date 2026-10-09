@@ -22,10 +22,8 @@ The native retry may also encounter `safeguards: Extra inputs are not permitted`
 requires the next recorded attempt to remove only `safeguards` and reach a non-empty 200.
 Offline regressions check both CUJs and reject changes to the model, prompt, budget, or effort.
 Each preset cleans up interactive OS-managed settings with public `ug revert`, even on failure.
-Offline transcript tests check native Claude background-agent completion evidence;
-a completion notification alone is not treated as the parent's completed answer.
-Native peer hand-backs also remain in the parent turn when correlated with a successful
-Agent spawn; the parent must still answer. Offline negative controls reject unrelated reports.
+Delegated CUJ tasks wait for the native child's hidden file value, independently of the parent's
+final turn. Offline checks reject parent-only answers. First-prompt tasks retain parent-turn evidence.
 The CUJ terminal waits for stable billing-notice rendering before Enter and observes dismissal;
 an offline PTY regression also exercises a later notice during child work.
 Claude child HTTP prompts may carry one appended newline after the route-selection checkpoint;

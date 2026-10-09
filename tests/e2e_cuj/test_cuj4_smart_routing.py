@@ -298,14 +298,13 @@ class TestCujSmartRouting(BaseCujTest):
                     )
                     decision_count = len(read_jsonl(decisions_path))
                     checkpoint = recorder.checkpoint()
+                    existing_sessions = set(agent_sessions(session, agent))
                     tui.submit(child_task.prompt)
-                    tui.task(evidence, child_task)
-                    tui.wait_for(
-                        lambda screen, task=child_task, agent=agent: task.completed(
+                    tui.wait_until(
+                        lambda task=child_task, agent=agent: task.completed(
                             session, agent, child=True
                         ),
                         "completed native subagent file task",
-                        timeout=240,
                     )
                     children = {
                         path: records

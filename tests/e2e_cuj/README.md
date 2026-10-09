@@ -89,10 +89,11 @@ Parent and child requests use the same verified thinking-display recovery as CUJ
 only known display/safeguards rejections followed by native removal of the rejected field
 and a final non-empty 200 are accepted. Model, prompt, budget, and effort must remain unchanged.
 Each preset session then explicitly requests one child for a separate hidden-value
-file task. Assertions require a native child transcript containing the value, the completed
-parent answer, a correlated spawn-routing decision, and successful child inference on the
+file task. Assertions require a new native child transcript containing the value,
+a correlated spawn-routing decision, and successful child inference on the
 router's selected model. This tests requested delegation, not automatic orchestrator delegation.
-Codex requires a matching completed turn and final parent answer, not just child notifications.
+The wait uses the child's answer directly; parent-answer reconstruction is reserved for first-prompt tasks.
+Offline checks reject parent-only answers and accept child answers before the parent replies.
 Offline evidence regressions do not establish a live CUJ pass.
 Selector cases have separate TUI artifact names, and the session environment is restored afterward.
 Claude sessions start in auto mode; unless a routed first prompt switches the session to Haiku
@@ -100,9 +101,6 @@ Claude sessions start in auto mode; unless a routed first prompt switches the se
 Claude's informational auto-mode classifier billing notice over the transcript. The CUJ terminal
 waits for that exact notice to render stably, presses Enter (continue), and observes dismissal
 before continuing. Later occurrences are handled the same way; any other dialog still fails.
-Claude's native peer hand-back remains part of the parent's turn only when its sender matches
-a successful Agent spawn in that turn. The hand-back alone cannot satisfy completion: the
-parent must still produce its own final answer with the hidden value.
 After verifying the delegated task, Claude sessions also wait in the native `/tasks` view
 until no background work remains, including a child resumed after its initial answer.
 Only then does the test close the task view and submit `/exit`.

@@ -188,52 +188,13 @@ class ClaudeCujHelper(BaseCujHelper):
         first = records[prompts[0]]
         session_id = first.get("sessionId")
         responses = []
-        spawn_tools = set()
-        spawned_children = set()
         for row in records[prompts[0] + 1 :]:
             msg = row.get("message", {})
-            origin = row.get("origin", {})
-            child_report = (
-                origin.get("kind") == "peer"
-                and origin.get("handback") is True
-                and origin.get("from") in spawned_children
-                and origin.get("senderTaskId") == origin.get("from")
-                and row.get("sessionId") == session_id
-            )
-            if (
-                row.get("type") == "user"
-                and isinstance(msg.get("content"), str)
-                and origin.get("kind") != "task-notification"
-                and not child_report
-            ):
+            if row.get("type") == "user" and isinstance(msg.get("content"), str):
                 break
-            if row.get("type") == "user" and isinstance(msg.get("content"), list):
-                result = row.get("toolUseResult", {})
-                if (
-                    row.get("sessionId") == session_id
-                    and result.get("status") == "async_launched"
-                    and result.get("isAsync") is True
-                    and isinstance(result.get("agentId"), str)
-                    and result["agentId"]
-                    and any(
-                        part.get("type") == "tool_result"
-                        and part.get("tool_use_id") in spawn_tools
-                        and not part.get("is_error")
-                        for part in msg["content"]
-                    )
-                ):
-                    spawned_children.add(result["agentId"])
             if row.get("type") == "assistant":
                 assert row.get("sessionId") == session_id and session_id
                 responses.append(msg)
-                spawn_tools.update(
-                    part["id"]
-                    for part in msg.get("content", [])
-                    if part.get("type") == "tool_use"
-                    and part.get("name") == "Agent"
-                    and isinstance(part.get("id"), str)
-                    and part["id"]
-                )
         if not responses:
             return None
         last = responses[-1]
