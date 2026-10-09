@@ -1387,6 +1387,22 @@ _HELP_COMMAND_ORDER = (
 class _HelpOrderedGroup(TyperGroup):
     """Keep top-level help organized across commands and nested Typer apps."""
 
+    def make_context(
+        self,
+        info_name: str | None,
+        args: list[str],
+        parent: _click.Context | None = None,
+        **extra: Any,
+    ) -> _click.Context:
+        previous = smart_routing_v2.apply_config()
+        try:
+            ctx = super().make_context(info_name, args, parent, **extra)
+        except BaseException:
+            smart_routing_v2.restore_smart_routing_env(previous)
+            raise
+        ctx.call_on_close(lambda: smart_routing_v2.restore_smart_routing_env(previous))
+        return ctx
+
     def list_commands(self, ctx: _click.Context) -> list[str]:
         commands = super().list_commands(ctx)
         order = {name: index for index, name in enumerate(_HELP_COMMAND_ORDER)}
@@ -2478,10 +2494,11 @@ CAN_USE_CACHED_CONFIG_AGENTS = frozenset({"claude", "codex"})
 @contextmanager
 def _smart_routing_v2_flag(enabled: bool | None) -> Iterator[None]:
     """Apply an explicit routing choice without leaking into an embedding process."""
-    if enabled is None:
-        yield
-        return
-    previous = smart_routing_v2.override_smart_routing(enabled)
+    previous = (
+        smart_routing_v2.apply_config()
+        if enabled is None
+        else smart_routing_v2.override_smart_routing(enabled)
+    )
     try:
         yield
     finally:
@@ -3180,7 +3197,11 @@ def _launch_tool(
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
         with _smart_routing_v2_flag(
-            True if managed_smart_routing_enabled and smart_routing_enabled else None
+            True
+            if managed_smart_routing_enabled
+            and smart_routing_enabled
+            and not smart_routing_v2.smart_routing_enabled()
+            else None
         ):
             launch_agent(tool, state, ctx.args, options=launch_options)
     except RuntimeError as exc:
@@ -3276,9 +3297,10 @@ def default(
         return
     set_dry_run(dry_run)
     try:
-        _launch_managed_default(
-            ctx, dry_run=dry_run, skip_preflight=skip_preflight, workspace=workspace
-        )
+        with _smart_routing_v2_flag(None):
+            _launch_managed_default(
+                ctx, dry_run=dry_run, skip_preflight=skip_preflight, workspace=workspace
+            )
     except typer.Exit:
         # `typer.Exit` subclasses RuntimeError, so it has to be re-raised ahead of the handler
         # below. Otherwise a launch that already reported its own error is followed by

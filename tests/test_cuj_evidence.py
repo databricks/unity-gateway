@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.e2e_cuj.helpers.constants import CLAUDE, CODEX
+from tests.e2e_cuj.helpers.constants import CLAUDE, CODEX, INFERENCE_PATHS
 from tests.e2e_cuj.helpers.evidence import (
     BaseCujHelper,
     ClaudeCujHelper,
@@ -16,6 +16,8 @@ from tests.e2e_cuj.helpers.evidence import (
     completed_turn,
     get_cuj_helper,
 )
+from tests.e2e_cuj.helpers.tui_request_recorder import RecordedRequest
+from tests.e2e_cuj.test_cuj4_smart_routing import _task_inference_request
 from tests.integration.utils.evidence import FileTask, read_jsonl
 
 
@@ -101,6 +103,24 @@ def test_cuj_evidence_completed_native_turn(tmp_path, agent):
     assert result["selected_model"] == model
 
 
+def test_cuj_evidence_claude_real_user_message_ends_parent_turn():
+    task = SimpleNamespace(
+        prompt="Delegate reading the file to one subagent.", value="hidden-value"
+    )
+    prompt, answer = records(CLAUDE, task, "system.ai.claude-haiku-4-5")
+    user = {
+        "type": "user",
+        "sessionId": "session",
+        "origin": {"kind": "human"},
+        "message": {"content": "A different task."},
+    }
+    assert completed_turn(CLAUDE, [prompt, user, answer], task) is None
+    user["message"]["content"] = (
+        f"<task-notification><result>{task.value}</result></task-notification>"
+    )
+    assert completed_turn(CLAUDE, [prompt, user, answer], task) is None
+
+
 @pytest.mark.parametrize("agent", [CLAUDE, CODEX])
 @pytest.mark.parametrize(
     "failure",
@@ -147,6 +167,119 @@ def test_cuj_evidence_codex_rejects_wrong_turn(tmp_path):
     wrong_turn = copy.deepcopy(rows)
     wrong_turn[-1]["payload"]["turn_id"] = "different-turn"
     assert completed_turn(CODEX, wrong_turn, task) is None
+
+
+def _tagged_codex_notification(row):
+    notification = copy.deepcopy(row)
+    notification["payload"]["content"] = [{"type": "input_text", "text": "<subagent_notification>"}]
+    notification["internal_chat_message_metadata_passthrough"] = {
+        "content_item_kinds": ["multi_agent.subagent_notification"]
+    }
+    return notification
+
+
+def _codex_parent_delegation_records(task, model):
+    rows = records(CODEX, SimpleNamespace(prompt="initial", value="initial"), model)
+    target = records(CODEX, task, model)[1:]
+    for row in target:
+        if row["type"] != "response_item":
+            row["payload"]["turn_id"] = "delegate"
+    rows.extend(
+        [
+            {"type": "event_msg", "payload": {"type": "user_message", "message": task.prompt}},
+            *target[:3],
+            _tagged_codex_notification(target[2]),
+            target[3],
+        ]
+    )
+    return rows
+
+
+def test_cuj_evidence_codex_delegated_parent_turn(tmp_path):
+    task = FileTask(SimpleNamespace(cwd=tmp_path))
+    task.prompt = task.delegate_prompt
+    rows = _codex_parent_delegation_records(task, "gpt-6-sol")
+    later = records(CODEX, SimpleNamespace(prompt="later", value="later"), "gpt-6-sol")[1:]
+    for row in later:
+        if row["type"] != "response_item":
+            row["payload"]["turn_id"] = "later"
+    rows.extend(later)
+    turn = completed_turn(CODEX, rows, task)
+    assert turn is not None
+    assert (turn.turn_id, turn.answer) == ("delegate", task.value)
+
+
+@pytest.mark.parametrize("case", ["aborted", "later", "notification", "duplicate"])
+def test_cuj_evidence_codex_rejects_follow_up_false_positives(tmp_path, case):
+    task = FileTask(SimpleNamespace(cwd=tmp_path))
+    rows = records(CODEX, task, "gpt-6-sol")
+    if case == "aborted":
+        rows[-1]["payload"]["type"] = "turn_aborted"
+    elif case == "later":
+        rows.pop()
+        rows.append({"type": "event_msg", "payload": {"type": "task_started", "turn_id": "later"}})
+    elif case == "notification":
+        rows[3] = _tagged_codex_notification(rows[3])
+    else:
+        rows.insert(-1, copy.deepcopy(rows[3]))
+    if case == "duplicate":
+        with pytest.raises(AssertionError, match="Prompt was submitted more than once"):
+            completed_turn(CODEX, rows, task)
+    else:
+        assert completed_turn(CODEX, rows, task) is None
+
+
+def _inference_request(agent, sequence, prompt, tools):
+    field = "messages" if agent == CLAUDE else "input"
+    content = prompt if agent == CLAUDE else [{"type": "input_text", "text": prompt}]
+    return SimpleNamespace(
+        method="POST",
+        path=INFERENCE_PATHS[agent],
+        sequence=sequence,
+        payload={field: [{"role": "user", "content": content}], "tools": tools},
+    )
+
+
+@pytest.mark.parametrize("agent", [CLAUDE, CODEX])
+@pytest.mark.parametrize(
+    ("method", "path", "sequence"),
+    [("GET", None, 2), ("POST", "/models", 2), ("POST", None, 1)],
+)
+def test_cuj_task_inference_skips_unrelated_empty_bodies(agent, method, path, sequence):
+    unrelated = RecordedRequest(sequence, method, path or INFERENCE_PATHS[agent], {}, b"")
+    task = _inference_request(agent, 3, "task prompt", [{"name": "Read"}])
+    assert _task_inference_request([unrelated, task], agent, "task prompt", after=1) is task
+
+
+def test_cuj_task_inference_selection_uses_exact_tool_prompt():
+    prompt = "Read input-file.txt using a tool. Reply with only its contents."
+    claude = [
+        _inference_request(CLAUDE, 1, f"Name this session: {prompt}", []),
+        _inference_request(CLAUDE, 2, prompt, []),
+        _inference_request(CLAUDE, 3, prompt, [{"name": "Read"}]),
+    ]
+    assert _task_inference_request(claude, CLAUDE, prompt) is claude[2]
+    child_prompt = "Read input-file.txt using a tool and return its contents."
+    parent = _inference_request(
+        CODEX, 4, "Delegate this task to one subagent.", [{"name": "spawn_agent"}]
+    )
+    child = _inference_request(CODEX, 5, child_prompt, [{"name": "read_file"}])
+    assert _task_inference_request([parent, child], CODEX, child_prompt, after=3) is child
+    with pytest.raises(AssertionError, match="No tool-capable"):
+        _task_inference_request([parent, child], CODEX, child_prompt, after=5)
+
+
+@pytest.mark.parametrize("agent", [CLAUDE, CODEX])
+@pytest.mark.parametrize("after", [0, 1])
+@pytest.mark.parametrize("suffix", ["\n", "\n\n", " ", "\nDifferent task."])
+def test_cuj_task_inference_only_allows_claude_child_transport_newline(agent, after, suffix):
+    prompt = "Read input-file.txt using a tool and return its contents."
+    request = _inference_request(agent, 2, prompt + suffix, [{"name": "Read"}])
+    if agent == CLAUDE and after and suffix == "\n":
+        assert _task_inference_request([request], agent, prompt, after=after) is request
+    else:
+        with pytest.raises(AssertionError, match="No tool-capable"):
+            _task_inference_request([request], agent, prompt, after=after)
 
 
 def test_cuj_evidence_ignores_existing_session(tmp_path):

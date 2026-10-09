@@ -251,14 +251,54 @@ The generated shell hooks expect Git Bash; PowerShell-only setups are not covere
 
 ### Smart Router Orchestrator
 
-Smart-routed Claude and Codex sessions install `smart-router`. Set
-`ENABLE_SMART_ROUTER_ORCHESTRATOR=1` at launch to also install and activate Smart Router
-Orchestrator through the bundled `smart-router-orchestrator` skill; orchestration is off by
-default. For example:
+Use `SMART_ROUTER_CONFIG_VERSION` at launch to select a smart-routing configuration:
+
+| Version | Subagent routing | First-prompt routing | Orchestrator |
+| --- | --- | --- | --- |
+| `first_prompt_and_subagent_no_orch_v0` | On | On | Off |
+| `subagent_only_v0` | On | Off | Off |
+| `subagent_only_v1` | On | Off | Off |
+| `subagent_orch_v0` | On | Off | On |
+| `subagent_orch_v1` | On | Off | On |
+
+`first_prompt_and_subagent_no_orch_v0` is the customer configuration for first-prompt
+and subagent routing without orchestration: `ENABLE_SMART_ROUTING_V2=1`,
+`ENABLE_SMART_ROUTING_SUBAGENT_ONLY=0`, and `ENABLE_SMART_ROUTER_ORCHESTRATOR=0`.
+
+`subagent_only_v1` sets both `ENABLE_SMART_ROUTING_V2` and
+`ENABLE_SMART_ROUTING_SUBAGENT_ONLY` to `"1"`. Subagent-only takes precedence,
+so first-prompt routing remains off; orchestration is also off.
+
+`subagent_orch_v1` enables all three legacy flags. Like `subagent_only_v1`, it routes
+subagents rather than the first prompt, and it additionally enables orchestration.
+
+`SMART_ROUTER_NAME` still selects the router independently of the preset.
+
+Smart-routed Claude and Codex sessions install `smart-router`. The `subagent_orch_v0`
+and `subagent_orch_v1` versions also install and activate the bundled `smart-router-orchestrator` skill.
+For example:
 
 ```bash
-ENABLE_SMART_ROUTER_ORCHESTRATOR=1 ENABLE_SMART_ROUTING_SUBAGENT_ONLY=1 ug claude
+SMART_ROUTER_CONFIG_VERSION=subagent_orch_v0 ug claude
 ```
+
+The version takes precedence over conflicting legacy flags. Before parsing command options
+or running any command callbacks, UG expands it into
+`ENABLE_SMART_ROUTING_V2`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY`, and
+`ENABLE_SMART_ROUTER_ORCHESTRATOR` for the launched session. When the version is
+unset or empty, these legacy flags retain their existing behavior, including
+first-prompt routing through `ENABLE_SMART_ROUTING_V2=1`. Unknown versions are ignored:
+no preset is applied, the inherited environment is unchanged, and commands continue normally.
+Explicit launch/session on/off controls apply after expansion. Orchestration remains off by default.
+Workspace smart-routing defaults do not rewrite the selected version's flags.
+
+Version names require an explicit suffix. Future revisions use new `_v1`, `_v2`,
+etc. names without changing existing versions.
+
+Version definitions fail validation at module import if any flag in
+`SMART_ROUTING_ENV_KEYS` is missing, has a value other than `"0"` or `"1"`,
+or an unknown flag is present. Register new managed flags in that tuple and
+explicitly set them in every version.
 
 Use `ug codex` in the same command for Codex. Smart Router Orchestrator assigns bounded work
 to explorer, researcher, worker, tester, and reviewer roles while the root plans,
@@ -274,8 +314,8 @@ Once opted in, orchestration follows the existing smart-routing launch eligibili
 and session controls. Turning Smart Router off through its skill stops new automatic delegation;
 turning it on restores orchestration only in opted-in sessions. Explicit user
 requests for subagents still use normal harness behavior while routing is off.
-Stored skill files do not activate orchestration when the feature flag is unset or
-`ENABLE_SMART_ROUTER_ORCHESTRATOR=0`, or in non-routed sessions. Existing Isaac pilot gating
+Stored skill files do not activate orchestration without an opted-in configuration,
+or in non-routed sessions. Existing Isaac pilot gating
 and UG launch exclusions still apply.
 
 Hooks refresh orchestration state before each prompt and after compaction. A

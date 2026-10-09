@@ -11,6 +11,7 @@ from pathlib import Path
 
 from ucode.config_io import atomic_write_json
 from ucode.constants import SMART_ROUTING_ENV_KEYS
+from ucode.smart_routing.config import resolve_environment
 
 SESSION_ENV_VAR = "UCODE_SESSION_ENV_FILE"
 SESSION_PYTHON_ENV_VAR = "UCODE_SMART_ROUTER_PYTHON"
@@ -53,7 +54,7 @@ def _read(path: Path) -> dict[str, str]:
 
 def effective_environment(env: Mapping[str, str] | None = None) -> dict[str, str]:
     """Overlay the latest session controls on the hook process environment."""
-    effective = dict(os.environ if env is None else env)
+    effective = resolve_environment(env)
     try:
         path = session_env_path(effective)
     except RuntimeError:

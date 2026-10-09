@@ -31,6 +31,7 @@ from ucode.constants import (
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
     LOOPBACK_HOST,
+    SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
 )
 from ucode.custom_oauth import custom_oauth_cli_enabled, get_custom_client_token
@@ -55,6 +56,7 @@ from ucode.smart_routing.claude_hooks import (
     sync_smart_routing_hooks,
 )
 from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
+from ucode.smart_routing.config import apply_config, resolve_environment
 from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
 from ucode.ui import print_warning
 
@@ -152,8 +154,10 @@ def _model_picker_catalog() -> AnthropicModelCatalog | None:
 def smart_routing_enabled(
     env: MutableMapping[str, str] | None = None, *, default: bool = False
 ) -> bool:
-    source = os.environ if env is None else env
-    values = [source.get(var) for var in SMART_ROUTING_ENV_KEYS]
+    source = resolve_environment(env)
+    values = [
+        source.get(var) for var in (ENABLE_SMART_ROUTING_ENV_VAR, ENABLE_SUBAGENT_ROUTING_ENV_VAR)
+    ]
     if "1" in values:
         return True
     if "0" in values:
@@ -163,7 +167,7 @@ def smart_routing_enabled(
 
 def first_prompt_routing_enabled(env: MutableMapping[str, str] | None = None) -> bool:
     """Whether the first prompt is routed. Subagent-only wins over the full V2 flag."""
-    source = os.environ if env is None else env
+    source = resolve_environment(env)
     return (
         source.get(ENABLE_SMART_ROUTING_ENV_VAR) == "1"
         and source.get(ENABLE_SUBAGENT_ROUTING_ENV_VAR) != "1"
@@ -174,10 +178,7 @@ def enable_smart_routing(
     env: MutableMapping[str, str] | None = None,
 ) -> dict[str, str | None]:
     """Set the full smart-routing env var and return the prior value of every routing var."""
-    target = os.environ if env is None else env
-    previous = {var: target.get(var) for var in SMART_ROUTING_ENV_KEYS}
-    target[ENABLE_SMART_ROUTING_ENV_VAR] = "1"
-    return previous
+    return override_smart_routing(True, env)
 
 
 def override_smart_routing(
@@ -187,6 +188,7 @@ def override_smart_routing(
     """Set an explicit launch-scoped routing choice and return the prior values."""
     target = os.environ if env is None else env
     previous = {var: target.get(var) for var in SMART_ROUTING_ENV_KEYS}
+    previous.update(apply_config(target))
     if enabled:
         target[ENABLE_SMART_ROUTING_ENV_VAR] = "1"
     else:
@@ -211,7 +213,12 @@ def disable_smart_routing(
 ) -> dict[str, str | None]:
     """Temporarily remove the smart-routing env vars and return their prior values."""
     target = os.environ if env is None else env
-    return {var: target.pop(var, None) for var in SMART_ROUTING_ENV_KEYS}
+    previous = {var: target.pop(var, None) for var in SMART_ROUTING_ENV_KEYS}
+    if SMART_ROUTER_CONFIG_VERSION_ENV_VAR in target:
+        previous[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = target.pop(
+            SMART_ROUTER_CONFIG_VERSION_ENV_VAR
+        )
+    return previous
 
 
 def _loopback_websocket_url(port: int) -> str:
