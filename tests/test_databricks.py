@@ -1899,6 +1899,10 @@ class TestBuildAuthTokenArgv:
     def test_no_use_pat_flag_by_default(self):
         assert "--use-pat" not in build_auth_token_argv(WS)
 
+    def test_browser_login_flag(self):
+        assert "--browser-login" in build_auth_token_argv(WS, browser_login=True)
+        assert "--browser-login" not in build_auth_token_argv(WS)
+
 
 class TestBuildAuthShellCommand:
     def test_contains_workspace(self):
@@ -2212,6 +2216,76 @@ class TestGetDatabricksToken:
         monkeypatch.setattr("os.environ", env)
         token = get_databricks_token(WS)
         assert token == "refreshed-token"
+
+    def test_browser_login_signs_in_when_refresh_token_is_invalid(
+        self, tmp_path, monkeypatch, capfd
+    ):
+        # A desktop app's helper has no terminal, so an invalid refresh token
+        # (reported as JSON on stdout) opens a browser login, not `--no-browser`.
+        signed_in = tmp_path / "signed-in"
+        login_argv = tmp_path / "login-argv"
+        env = self._fake_databricks(
+            tmp_path,
+            'case "$*" in\n'
+            f'  *"auth login"*) printf "%s\\n" "$@" > {login_argv}; echo "opening browser"; '
+            f": > {signed_in}; exit 0 ;;\n"
+            "esac\n"
+            f"if [ -f {signed_in} ]; then\n"
+            '  echo \'{"access_token": "signed-in-token", "token_type": "Bearer"}\'\n'
+            "else\n"
+            '  echo \'{"message": "refresh token is invalid. Run: databricks auth login"}\'\n'
+            "  exit 1\n"
+            "fi",
+        )
+        monkeypatch.setattr("os.environ", env)
+        monkeypatch.setattr(db_mod, "_BROWSER_LOGIN_LOCK_PATH", tmp_path / "auth-login.lock")
+        token = get_databricks_token(WS, browser_login=True)
+        assert token == "signed-in-token"
+        assert "--no-browser" not in login_argv.read_text().splitlines()
+        # The login's output must not reach stdout, which carries the token.
+        out, err = capfd.readouterr()
+        assert "opening browser" not in out
+        assert "opening browser" in err
+
+    def test_browser_login_skips_browser_when_workspace_unreachable(self, tmp_path, monkeypatch):
+        # The CLI appends its generic `auth login` trailer to network failures
+        # too; those must fail fast instead of opening a browser.
+        login_called = tmp_path / "login-called"
+        env = self._fake_databricks(
+            tmp_path,
+            'case "$*" in\n'
+            f'  *"auth login"*) : > {login_called}; exit 0 ;;\n'
+            "esac\n"
+            'echo "Error: token refresh: dial tcp: lookup example.com: no such host. '
+            "Try logging in again with \\`databricks auth login --profile p\\` before "
+            'retrying." >&2\n'
+            "exit 1",
+        )
+        monkeypatch.setattr("os.environ", env)
+        monkeypatch.setattr(db_mod, "_BROWSER_LOGIN_LOCK_PATH", tmp_path / "auth-login.lock")
+        with pytest.raises(RuntimeError, match="no access token"):
+            get_databricks_token(WS, browser_login=True)
+        assert not login_called.exists()
+
+    def test_browser_login_reuses_token_from_concurrent_sign_in(self, tmp_path, monkeypatch):
+        # A helper that waited on the lock fetches first: the holder may have signed in.
+        monkeypatch.setattr(db_mod, "_BROWSER_LOGIN_LOCK_PATH", tmp_path / "auth-login.lock")
+        monkeypatch.setattr(
+            db_mod.subprocess_cross_os, "run", lambda *_a, **_k: pytest.fail("login ran")
+        )
+        assert db_mod._browser_login(WS, None, {}, lambda: ("fresh-token", "")) == "fresh-token"
+
+    def test_browser_login_skips_login_once_lock_wait_spends_the_budget(
+        self, tmp_path, monkeypatch
+    ):
+        # A login started this late would outlive the agent's helper timeout and
+        # be orphaned holding the callback port.
+        monkeypatch.setattr(db_mod, "_BROWSER_LOGIN_LOCK_PATH", tmp_path / "auth-login.lock")
+        monkeypatch.setattr(db_mod, "_BROWSER_LOGIN_TIMEOUT_SECONDS", 0)
+        monkeypatch.setattr(
+            db_mod.subprocess_cross_os, "run", lambda *_a, **_k: pytest.fail("login ran")
+        )
+        assert db_mod._browser_login(WS, None, {}, lambda: ("", "")) == ""
 
     def test_retries_on_cache_lock_contention(self, tmp_path, monkeypatch):
         # Concurrent `databricks auth token` calls racing on the shared token

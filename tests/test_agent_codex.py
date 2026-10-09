@@ -139,7 +139,7 @@ class TestRenderOverlay:
 
     @pytest.mark.parametrize("render", [codex.render_overlay, codex.render_legacy_overlay])
     @pytest.mark.parametrize("custom", [False, True])
-    def test_auth_timeout_allows_custom_browser_login_only(self, render, custom):
+    def test_auth_timeout_allows_browser_login(self, render, custom):
         config = (
             {
                 "client_id": "custom-client",
@@ -151,7 +151,15 @@ class TestRenderOverlay:
         )
         overlay = render(WS, custom_oauth=config)
         auth = overlay["model_providers"][codex.CODEX_MODEL_PROVIDER_NAME]["auth"]
-        assert auth["timeout_ms"] == (180_000 if custom else 5000)
+        assert auth["timeout_ms"] == 180_000
+        assert ("--browser-login" in auth["args"]) is not custom
+
+    @pytest.mark.parametrize("render", [codex.render_overlay, codex.render_legacy_overlay])
+    def test_pat_auth_skips_browser_login(self, render):
+        overlay = render(WS, use_pat=True)
+        auth = overlay["model_providers"][codex.CODEX_MODEL_PROVIDER_NAME]["auth"]
+        assert auth["timeout_ms"] == 5000
+        assert "--browser-login" not in auth["args"]
 
     def test_provider_adds_routing_header(self):
         overlay = codex.render_overlay(WS, provider="main.aarushi.aarushi-openai")
