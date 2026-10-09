@@ -80,7 +80,7 @@ jobs:
       - run: uv run --no-sync pytest --ignore=tests/test_e2e.py
 
   claude-mod:
-    name: Claude mod · 2.1.290
+    name: Native agents · Claude 2.1.290 / Codex 0.154.0
     runs-on: ubuntu-latest
     needs: lint
     timeout-minutes: 10
@@ -93,12 +93,12 @@ jobs:
         with:
           node-version: 22
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
-      - run: npm install -g @anthropic-ai/claude-code@2.1.290
+      - run: npm install -g @anthropic-ai/claude-code@2.1.290 @openai/codex@0.154.0
       - run: uv lock
-      - name: Validate and test the mod entry point
+      - name: Validate the mod and native skill gating
         run: |
           export UCODE_TEST_CLAUDE_BINARY="$(command -v claude)"
-          uv run pytest tests/native_claude/test_mod.py -q
+          uv run pytest tests/native_claude/test_mod.py tests/test_orchestrator.py -q
 
   e2e-shards:
     name: ${{ matrix.name }} · ${{ matrix.os == 'windows-server-latest' && 'Windows' || 'Linux' }}

@@ -23,8 +23,9 @@ If this workflow is truncated and the full instructions are not already in
 context, read `SKILL.codex.md` from the skill directory shown in the activation
 context before proceeding.
 
-UG's prompt and compaction hooks activate this workflow only in an eligible
-smart-routing session launched with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1` while routing is on.
+UG enables this skill and activates its workflow through prompt and compaction
+hooks when launched with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`. With `=0`, UG
+disables the skill in the harness configuration.
 Follow the latest UG activation context and successful Smart Router toggles;
 installed skill files and old context do not enable it. Use that context without
 running a separate pre-delegation check. Do not set flags or create a session to

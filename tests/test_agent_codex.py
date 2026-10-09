@@ -1591,7 +1591,9 @@ class TestCodexLaunch:
 
         codex.launch(state, tool_args, options=LaunchOptions())
 
-        assert launches == [["codex", "--profile", "ucode", *tool_args]]
+        assert launches[0][:3] == ["codex", "--profile", "ucode"]
+        if tool_args:
+            assert launches[0][-len(tool_args) :] == tool_args
         assert launches[0][:3] == codex.validate_cmd("codex")[:3]
         warning = " ".join(capsys.readouterr().err.split())
         assert f"Codex {version} is outdated" in warning

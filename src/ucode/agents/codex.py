@@ -71,6 +71,7 @@ from ucode.managed_files import (
     revert_managed_file,
 )
 from ucode.os_compatibility import subprocess_cross_os
+from ucode.smart_routing import orchestrator
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.codex_hooks import (
     remove_smart_routing_hooks,
@@ -1103,9 +1104,12 @@ def _run_codex(
     workspace: str | None,
 ) -> None:
     """Launch Codex — via the loopback proxy when OTLP tracing is on, else exec-replace."""
+    profile = read_toml_safe(CODEX_CONFIG_PATH)
+    overlay = {key: profile[key] for key in ("skills", "hooks") if key in profile}
     if tool_args[:1] == ["update"]:
         # exec replaces ug, so reattach only on a later validated refresh.
         detach_app_model_catalog()
+    tool_args = orchestrator.codex_launch_args(tool_args, overlay)
     if otel_tracing and workspace:
         _launch_codex_with_otel_proxy(state, base_argv, tool_args, workspace)
     else:

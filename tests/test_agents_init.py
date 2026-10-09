@@ -1093,8 +1093,14 @@ class TestConfigureSelectedTools:
 
 
 class TestConfiguredPaths:
-    def test_claude_reports_its_settings_file_home_abbreviated(self):
-        from ucode.agents import configured_paths
+    def test_claude_reports_its_settings_file_home_abbreviated(self, monkeypatch):
+        from ucode.agents import claude, configured_paths
+
+        monkeypatch.setattr(
+            claude,
+            "CLAUDE_SETTINGS_PATH",
+            claude.CLAUDE_SETTINGS_PATH.home() / ".claude" / "ucode-settings.json",
+        )
         from ucode.agents.claude import CLAUDE_SETTINGS_PATH
 
         paths = configured_paths("claude", {})

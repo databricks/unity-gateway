@@ -2952,7 +2952,9 @@ class TestClaudeLaunch:
 
         assert os.environ["OAUTH_TOKEN"] == "token"
         assert "ANTHROPIC_DEFAULT_MODEL" not in os.environ
-        assert calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), "--debug"]]
+        assert calls[0][:2] == ["claude", "--settings"]
+        assert json.loads(calls[0][2])["skillOverrides"]["smart-router-orchestrator"] == "off"
+        assert calls[0][3:] == ["--debug"]
 
     def test_windows_launch_preserves_prompt_as_literal_argv(self, monkeypatch, tmp_path):
         native_binary = tmp_path / "Claude Code" / "claude.exe"
@@ -2964,15 +2966,9 @@ class TestClaudeLaunch:
 
         claude.launch({}, ["--print", prompt], options=LaunchOptions())
 
-        assert calls == [
-            [
-                str(native_binary),
-                "--settings",
-                str(claude.CLAUDE_SETTINGS_PATH),
-                "--print",
-                prompt,
-            ]
-        ]
+        assert len(calls) == 1
+        assert calls[0][:2] == [str(native_binary), "--settings"]
+        assert calls[0][3:] == ["--print", prompt]
 
     def test_launch_model_is_only_set_for_current_process(self, monkeypatch):
         calls: list[list[str]] = []
@@ -3021,7 +3017,12 @@ class TestClaudeLaunch:
         assert calls[0][0:2] == ["claude", "--settings"]
         settings = json.loads(calls[0][2])
         assert settings["model"] == saved_model
-        assert settings["env"] == {"USER_SETTING": "keep", "ANTHROPIC_MODEL": custom_model}
+        assert settings["env"] == {
+            "USER_SETTING": "keep",
+            "ANTHROPIC_MODEL": custom_model,
+            "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
+            "SMART_ROUTER_CONFIG_VERSION": "",
+        }
         assert calls[0][3:] == ["--model", custom_model, "--debug"]
         assert settings_path.read_bytes() == original_settings
 
@@ -3146,7 +3147,9 @@ class TestClaudeLaunch:
             options=LaunchOptions(),
         )
 
-        assert calls == [["claude", "--settings", str(settings_path)]]
+        assert calls[0][:2] == ["claude", "--settings"]
+        assert "model" not in json.loads(calls[0][2])
+        assert calls[0][3:] == []
         assert user_settings_path.read_text() == user_settings
         assert settings_path.read_text() == settings
 
@@ -3216,7 +3219,8 @@ class TestClaudeLaunch:
 
         claude.launch({"workspace": WS}, tool_args, options=LaunchOptions())
 
-        assert calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), *tool_args]]
+        assert calls[0][:2] == ["claude", "--settings"]
+        assert calls[0][3:] == tool_args
         v2.launch_claude.assert_not_called()
 
     @pytest.mark.parametrize("tool_args", [["fix this bug"], ["--", "fix this bug"]])
@@ -3254,7 +3258,9 @@ class TestClaudeLaunch:
 
         assert os.environ["OAUTH_TOKEN"] == "token"
         assert os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
-        assert calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), "--debug"]]
+        assert calls[0][:2] == ["claude", "--settings"]
+        assert json.loads(calls[0][2])["skillOverrides"]["smart-router-orchestrator"] == "off"
+        assert calls[0][3:] == ["--debug"]
 
     def test_gateway_discovery_enabled_under_provider(self, monkeypatch):
         calls: list[list[str]] = []
@@ -3275,7 +3281,9 @@ class TestClaudeLaunch:
         )
 
         assert os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
-        assert calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), "--debug"]]
+        assert calls[0][:2] == ["claude", "--settings"]
+        assert json.loads(calls[0][2])["skillOverrides"]["smart-router-orchestrator"] == "off"
+        assert calls[0][3:] == ["--debug"]
 
 
 class TestWriteToolConfigPrunesStaleModelEnv:
@@ -3414,7 +3422,11 @@ class TestBuildClaudeArgv:
             "deny": ["mcp__web-search__web_search", "WebSearch", "Bash(rm:*)"],
             "allow": ["Read"],
         }
-        assert merged["env"] == {"PER_LAUNCH": "preserved"}
+        assert merged["env"] == {
+            "PER_LAUNCH": "preserved",
+            "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
+            "SMART_ROUTER_CONFIG_VERSION": "",
+        }
         assert override == {"permissions": {"deny": []}, "env": {"PER_LAUNCH": "preserved"}}
 
     @pytest.mark.parametrize("permissions", [{}, {"deny": []}, {"allow": ["Read"]}])
@@ -3433,10 +3445,12 @@ class TestBuildClaudeArgv:
         assert merged["permissions"]["deny"] == ["WebSearch"]
         assert merged["permissions"].get("allow") == permissions.get("allow")
 
-    def test_no_caller_settings_uses_ucode_file(self, monkeypatch):
+    def test_no_caller_settings_preserves_ucode_settings(self, monkeypatch):
         monkeypatch.setattr(claude, "read_json_safe", lambda p: {"apiKeyHelper": "u"})
         argv = claude._build_claude_argv("claude", ["-p", "hi"])
-        assert argv == ["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), "-p", "hi"]
+        assert argv[:2] == ["claude", "--settings"]
+        assert json.loads(argv[2])["apiKeyHelper"] == "u"
+        assert argv[3:] == ["-p", "hi"]
 
     def test_non_relayed_does_not_set_setting_sources(self, monkeypatch):
         # Normal launches must keep loading user settings (hooks/permissions) —
@@ -3454,9 +3468,14 @@ class TestBuildClaudeArgv:
         src = argv[argv.index("--setting-sources") + 1]
         assert src == claude._RELAYED_SETTING_SOURCES
         assert "user" not in src
-        # ucode's own settings file is still passed.
+        # UG's launch-scoped settings are still passed.
         assert "--settings" in argv
-        assert str(claude.CLAUDE_SETTINGS_PATH) in argv
+        assert (
+            json.loads(argv[argv.index("--settings") + 1])["env"][
+                "ENABLE_SMART_ROUTER_ORCHESTRATOR"
+            ]
+            == "0"
+        )
 
     def test_relayed_with_caller_settings_keeps_setting_sources(self, monkeypatch):
         # Even when composing a caller --settings, relayed still excludes user scope.
