@@ -21,6 +21,7 @@ from tests.e2e_cuj.helpers.constants import (
     CodingAgent,
 )
 from tests.e2e_cuj.helpers.evidence import (
+    assert_inference_evidence,
     assert_models,
     claude_file_task,
     served_inference_request,
@@ -35,7 +36,7 @@ from tests.e2e_cuj.helpers.session import (
 )
 from tests.e2e_cuj.helpers.terminal import Terminal
 from tests.e2e_cuj.helpers.workspace import Workspace
-from tests.e2e_cuj.test_cuj3_models import _assert_inference_evidence, _catalog_display_names
+from tests.e2e_cuj.test_cuj3_models import _catalog_display_names
 from tests.e2e_cuj.test_cuj4_smart_routing import _task_inference_request
 
 
@@ -442,7 +443,7 @@ def test_cuj_inference_accepts_verified_thinking_display_recovery(
         responses[0].body = gzip.compress(responses[0].body)
         responses[0].headers = {"content-encoding": "gzip"}
     if contract == "catalog":
-        _assert_inference_evidence(recorder, 0, CLAUDE, task, model)
+        assert_inference_evidence(recorder, 0, CLAUDE, task, model)
     else:
         inference = _task_inference_request(requests, CLAUDE, task.prompt)
         assert served_inference_request(recorder, requests, inference, CLAUDE) is requests[1]
@@ -501,7 +502,7 @@ def test_cuj_inference_rejects_unverified_recovery(thinking_display_exchange, fa
             request.payload["input"] = task.prompt
     with pytest.raises(AssertionError):
         if contract == "catalog":
-            _assert_inference_evidence(recorder, 0, agent, task, model)
+            assert_inference_evidence(recorder, 0, agent, task, model)
         else:
             inference = _task_inference_request(requests, agent, task.prompt)
             served_inference_request(recorder, requests, inference, agent)
@@ -575,7 +576,7 @@ def test_cuj_inference_accepts_chained_native_compatibility_recovery(
             response.body = gzip.compress(response.body)
             response.headers = {"content-encoding": "gzip"}
     if contract == "catalog":
-        _assert_inference_evidence(recorder, 0, CLAUDE, task, model)
+        assert_inference_evidence(recorder, 0, CLAUDE, task, model)
     else:
         inference = _task_inference_request(requests, CLAUDE, task.prompt)
         assert served_inference_request(recorder, requests, inference, CLAUDE) is requests[2]
@@ -638,7 +639,7 @@ def test_cuj_inference_rejects_unverified_safeguards_recovery(
             request.payload["input"] = task.prompt
     with pytest.raises(AssertionError):
         if contract == "catalog":
-            _assert_inference_evidence(recorder, 0, agent, task, model)
+            assert_inference_evidence(recorder, 0, agent, task, model)
         else:
             inference = _task_inference_request(requests, agent, task.prompt)
             served_inference_request(recorder, requests, inference, agent)
