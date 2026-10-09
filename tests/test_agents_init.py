@@ -7,7 +7,6 @@ import os
 import subprocess
 import sys
 from contextlib import contextmanager, nullcontext, redirect_stdout
-from copy import deepcopy
 from unittest.mock import MagicMock
 
 import pytest
@@ -1125,9 +1124,8 @@ def test_configure_dispatch_scopes_agent_presets(monkeypatch, order, fail_write)
     from ucode.smart_routing import config
 
     version = config.SUBAGENT_ORCH_V0
-    agents = deepcopy(config._VERSIONS[version])
-    agents[AGENT_CODEX] = dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
-    monkeypatch.setitem(config._VERSIONS, version, agents)
+    codex_flags = dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
+    monkeypatch.setitem(config._AGENT_OVERRIDES, version, {AGENT_CODEX: codex_flags})
     monkeypatch.setenv(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, version)
     before = {
         key: os.environ.get(key)
@@ -1136,7 +1134,9 @@ def test_configure_dispatch_scopes_agent_presets(monkeypatch, order, fail_write)
     for agent in order:
 
         def write(state, *args, agent=agent, **kwargs):
-            assert {key: os.environ.get(key) for key in SMART_ROUTING_ENV_KEYS} == agents[agent]
+            assert {key: os.environ.get(key) for key in SMART_ROUTING_ENV_KEYS} == (
+                codex_flags if agent == AGENT_CODEX else config._VERSIONS[version]
+            )
             assert SMART_ROUTER_CONFIG_VERSION_ENV_VAR not in os.environ
             if fail_write:
                 raise RuntimeError("write failed")

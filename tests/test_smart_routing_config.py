@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
-
 import pytest
 
 from ucode.constants import (
@@ -148,30 +146,32 @@ def test_legacy_preset_equivalence(version, expected_routing):
         ) == expected_routing
 
 
-@pytest.mark.parametrize(
-    "failure", ["missing_agent", "unknown_agent", "missing_flag", "unknown_flag", "invalid_value"]
-)
-def test_agent_presets_require_complete_valid_configuration(failure):
-    agents = deepcopy(config._VERSIONS[config.SUBAGENT_ORCH_V0])
-    if failure == "missing_agent":
-        agents.pop(AGENT_CODEX)
-    elif failure == "unknown_agent":
-        agents["other"] = agents[AGENT_CODEX].copy()
-    elif failure == "missing_flag":
-        agents[AGENT_CODEX].pop(ENABLE_SMART_ROUTING_ENV_VAR)
-    elif failure == "unknown_flag":
-        agents[AGENT_CODEX]["UNKNOWN_FLAG"] = "0"
-    else:
-        agents[AGENT_CODEX][ENABLE_SMART_ROUTING_ENV_VAR] = "yes"
+@pytest.mark.parametrize("scope", ["shared", "override"])
+@pytest.mark.parametrize("failure", ["unknown_flag", "invalid_value"])
+def test_presets_reject_invalid_flags(scope, failure):
+    shared = config._VERSIONS[config.SUBAGENT_ORCH_V0].copy()
+    override = {ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0"}
+    values = shared if scope == "shared" else override
+    values["UNKNOWN_FLAG" if failure == "unknown_flag" else ENABLE_SMART_ROUTING_ENV_VAR] = "yes"
     with pytest.raises(ValueError, match="Invalid smart-routing version"):
-        config._validate_versions({"invalid_v0": agents})
+        config._validate_versions({"invalid_v0": shared}, {"invalid_v0": {AGENT_CODEX: override}})
 
 
-def test_existing_agent_presets_are_equal_and_independent():
-    for version, expected in _EXPECTED_PRESETS.items():
-        agents = config._VERSIONS[version]
-        assert agents[AGENT_CLAUDE] == agents[AGENT_CODEX] == expected
-        assert agents[AGENT_CLAUDE] is not agents[AGENT_CODEX]
+def test_shared_presets_require_all_flags():
+    shared = config._VERSIONS[config.SUBAGENT_ORCH_V0].copy()
+    shared.pop(ENABLE_SMART_ROUTING_ENV_VAR)
+    with pytest.raises(ValueError, match="missing env vars"):
+        config._validate_versions({"invalid_v0": shared}, {})
+
+
+@pytest.mark.parametrize(
+    "version, agent", [("unknown_v0", AGENT_CODEX), (config.SUBAGENT_ORCH_V0, "other")]
+)
+def test_overrides_reject_unknown_versions_and_agents(version, agent):
+    with pytest.raises(ValueError, match="unknown version or agent"):
+        config._validate_versions(
+            config._VERSIONS, {version: {agent: {ENABLE_SMART_ROUTING_ENV_VAR: "0"}}}
+        )
 
 
 @pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
@@ -179,12 +179,20 @@ def test_agent_resolution_and_session_controls(monkeypatch, agent, tmp_path):
     from ucode.smart_routing import session_env
 
     version = config.SUBAGENT_ORCH_V0
-    agents = deepcopy(config._VERSIONS[version])
-    agents[AGENT_CODEX] = dict.fromkeys(agents[AGENT_CODEX], "0")
-    monkeypatch.setitem(config._VERSIONS, version, agents)
+    # Codex differs only in subagent routing and orchestration; V2 inherits the shared value.
+    override = {ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0", ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0"}
+    monkeypatch.setitem(config._AGENT_OVERRIDES, version, {AGENT_CODEX: override})
     source = {SMART_ROUTER_CONFIG_VERSION_ENV_VAR: version}
-    expected = agents[agent]
+    expected = {**_EXPECTED_PRESETS[version], **(override if agent == AGENT_CODEX else {})}
+    resolved = config.resolve_environment(source, agent=agent)
+    assert resolved == expected
+    resolved[ENABLE_SMART_ROUTING_ENV_VAR] = "1"
     assert config.resolve_environment(source, agent=agent) == expected
+    applied = source.copy()
+    previous = config.apply_config(applied, agent=agent)
+    assert applied == expected
+    v2.restore_smart_routing_env(previous, applied)
+    assert applied == source
     assert v2.smart_routing_enabled(source, default=True, agent=agent) == (agent == AGENT_CLAUDE)
     assert orchestrator.feature_enabled(source, agent=agent) == (agent == AGENT_CLAUDE)
     control = tmp_path / "session.json"

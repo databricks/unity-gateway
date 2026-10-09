@@ -35,8 +35,8 @@ CUJ4's Claude preset sessions also use it after verifying delegated file tasks: 
 answer does not prove that a resumed child has stopped running.
 They cover Claude/Codex helper dispatch and rejection of routing decisions without
 the agent-specific prompt-submission evidence.
-Agent-specific smart-routing preset component checks cover identical existing mappings,
-complete per-agent validation, configure order, bootstrap and managed-default launch
+Agent-specific smart-routing preset component checks cover shared existing presets, sparse agent overrides,
+complete flag validation, configure order, bootstrap and managed-default launch
 selection, session controls, and restoration after configuration/launch failures.
 These checks do not establish live agent coverage.
 
