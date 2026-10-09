@@ -112,7 +112,13 @@ Use `ug mcp add` to add servers without removing existing registrations:
 ug mcp add --location system.ai
 ug mcp add --names system.ai.slack,system.ai.github
 ug mcp add --agents claude,codex --location system.ai
+ug mcp add --agents cursor --names system.ai.github --workspace https://first.databricks.com
+ug mcp add --agents codex --names system.ai.github --profile DEFAULT
 ```
+
+With `--agents`, agents that aren't set up yet are set up first. Pass `--workspace`
+or `--profile` to pick the workspace instead of the picker; it becomes the current
+workspace.
 
 Remove configured servers:
 
