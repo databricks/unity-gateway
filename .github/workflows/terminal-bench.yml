@@ -1,6 +1,9 @@
 name: Terminal Bench
 
 on:
+  # TEMP: run from PR #1074 while smart routing is verified. Remove before merge.
+  push:
+    branches: [max-rozen-oss-db/stack/terminal-bench]
   schedule:
     - cron: '0 7 * * *'
   workflow_dispatch:

@@ -89,14 +89,21 @@ class _UgAgent(BaseInstalledAgent):
         model = f"--model {shlex.quote(self.model_name)} " if self.model_name else ""
         log = self.environment_logs_dir / f"ug-{self.AGENT}.txt"
         stdin = 'printf "%s" "$UG_BENCH_INSTRUCTION" | ' if self.PROMPT_ON_STDIN else ""
-        await self.exec_as_agent(
-            environment,
-            command=(
-                f"{SHELL_PREFIX}{stdin}{UG} {self.AGENT} {model}-- {self._launch_args(self._resume)} "
-                f"2>&1 | tee -a {log.as_posix()}"
-            ),
-            env=env,
-        )
+        try:
+            await self.exec_as_agent(
+                environment,
+                command=(
+                    f"{SHELL_PREFIX}{stdin}{UG} {self.AGENT} {model}-- {self._launch_args(self._resume)} "
+                    f"2>&1 | tee -a {log.as_posix()}"
+                ),
+                env=env,
+            )
+        finally:
+            # ug's routing wrappers log under ~/.ucode; keep them as evidence that routing ran.
+            ucode_logs = (self.environment_logs_dir / "ucode").as_posix()
+            await environment.exec(
+                command=f'mkdir -p {ucode_logs} && cp "$HOME"/.ucode/*.log {ucode_logs}/ 2>/dev/null || true'
+            )
 
 
 class UgClaude(_UgAgent):
