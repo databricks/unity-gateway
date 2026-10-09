@@ -22,8 +22,9 @@ CUJs never republish configuration or create a remote reservation.
 CUJ helper tests also verify that unsupported agent names fail rather than defaulting to Codex.
 They cover Claude/Codex helper dispatch and rejection of routing decisions without
 the agent-specific prompt-submission evidence.
-CUJ3 also verifies Claude's native recovery from the known thinking-display 400:
-the same payload without display must receive 200.
+CUJ3 and CUJ4 also verify Claude's native recovery from the known thinking-display 400:
+the same payload without display must receive a non-empty 200 for adaptive or enabled thinking.
+Offline regressions reject missing/failed retries and changes to the model, prompt, budget, or effort.
 Native evidence-reader regressions cover Claude's background-agent completion notifications;
 notifications alone cannot substitute for a final parent answer. These offline checks do not
 establish a live routing pass.

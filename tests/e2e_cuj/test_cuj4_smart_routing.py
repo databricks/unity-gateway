@@ -27,6 +27,7 @@ from .helpers.evidence import (
     SessionObservation,
     canonical_model,
     claude_file_task,
+    served_inference_request,
 )
 from .helpers.terminal import Terminal
 from .helpers.tui_request_recorder import RecordedRequest, RecordedResponse
@@ -178,6 +179,7 @@ def run_smart_routing_journeys(cuj) -> SmartRoutingSessionResults:
         )
         route_response = recorder.response_for(route_request)
         inference_request = _task_inference_request(requests, agent, task.prompt)
+        inference_request = served_inference_request(recorder, requests, inference_request, agent)
         no_model_override[agent] = SessionCase(
             agent=agent,
             launch_args=(agent,),
@@ -194,6 +196,7 @@ def run_smart_routing_journeys(cuj) -> SmartRoutingSessionResults:
         launch_args = (agent, "--model", overrides[agent])
         observation, requests = _run_session(session, recorder, agent, task, launch_args)
         inference_request = _task_inference_request(requests, agent, task.prompt)
+        inference_request = served_inference_request(recorder, requests, inference_request, agent)
         with_model_override[agent] = SessionCase(
             agent=agent,
             launch_args=launch_args,
@@ -270,7 +273,7 @@ class TestCujSmartRouting(BaseCujTest):
                         assert len(selections) == 1
                         expected_model = selections[0]["route_option"]["model"]
                     inference = _task_inference_request(requests, agent, task.prompt)
-                    assert recorder.response_for(inference).status_code == 200
+                    inference = served_inference_request(recorder, requests, inference, agent)
                     assert canonical_model(inference.payload["model"]) == canonical_model(
                         expected_model
                     )
@@ -333,7 +336,7 @@ class TestCujSmartRouting(BaseCujTest):
                         route_prompt,
                         after=routes[0].sequence,
                     )
-                    assert recorder.response_for(inference).status_code == 200
+                    inference = served_inference_request(recorder, requests, inference, agent)
                     assert canonical_model(inference.payload["model"]) == canonical_model(
                         selections[0]["route_option"]["model"]
                     )

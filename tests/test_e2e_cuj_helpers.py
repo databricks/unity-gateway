@@ -20,7 +20,11 @@ from tests.e2e_cuj.helpers.constants import (
     INFERENCE_PATHS,
     CodingAgent,
 )
-from tests.e2e_cuj.helpers.evidence import assert_models, claude_file_task
+from tests.e2e_cuj.helpers.evidence import (
+    assert_models,
+    claude_file_task,
+    served_inference_request,
+)
 from tests.e2e_cuj.helpers.poll import poll
 from tests.e2e_cuj.helpers.session import (
     MACHINE_WIDE_LEAK,
@@ -31,6 +35,7 @@ from tests.e2e_cuj.helpers.session import (
 from tests.e2e_cuj.helpers.terminal import Terminal
 from tests.e2e_cuj.helpers.workspace import Workspace
 from tests.e2e_cuj.test_cuj3_models import _assert_inference_evidence, _catalog_display_names
+from tests.e2e_cuj.test_cuj4_smart_routing import _task_inference_request
 
 
 def _client(headers):
@@ -251,29 +256,40 @@ def test_catalog_display_names_rejects_repeated_pages(pages, message):
         _catalog_display_names(workspace, CLAUDE, "ug_e2e.models")
 
 
-@pytest.fixture
-def thinking_display_exchange():
+@pytest.fixture(params=["adaptive", "enabled"])
+def thinking_display_exchange(request):
     model = "ug_e2e.models.claude_sonnet"
     task = SimpleNamespace(prompt="Read the task file")
+    thinking = {"type": request.param, "display": "updates"}
+    if request.param == "enabled":
+        thinking["budget_tokens"] = 31999
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": task.prompt}],
-        "thinking": {"type": "adaptive", "display": "updates"},
+        "tools": [{"name": "Read"}],
+        "thinking": thinking,
         "output_config": {"effort": "high"},
     }
     requests = [
-        SimpleNamespace(method="POST", path=INFERENCE_PATHS[CLAUDE], payload=payload),
+        SimpleNamespace(sequence=1, method="POST", path=INFERENCE_PATHS[CLAUDE], payload=payload),
         SimpleNamespace(
+            sequence=2,
             method="POST",
             path=INFERENCE_PATHS[CLAUDE],
-            payload={**payload, "thinking": {"type": "adaptive"}},
+            payload={
+                **payload,
+                "thinking": {key: value for key, value in thinking.items() if key != "display"},
+            },
         ),
     ]
     error = json.dumps(
         {
             "error_code": "BAD_REQUEST",
             "message": json.dumps(
-                {"message": "thinking.adaptive.display: Input should be 'summarized', 'omitted'"}
+                {
+                    "message": f"thinking.{request.param}.display: "
+                    "Input should be 'summarized', 'omitted'"
+                }
             ),
         }
     ).encode()
@@ -288,15 +304,20 @@ def thinking_display_exchange():
     return recorder, requests, responses, task, model
 
 
+@pytest.mark.parametrize("contract", ["catalog", "routing"])
 @pytest.mark.parametrize("compressed", [False, True])
-def test_catalog_inference_accepts_verified_thinking_display_recovery(
-    thinking_display_exchange, compressed
+def test_cuj_inference_accepts_verified_thinking_display_recovery(
+    thinking_display_exchange, compressed, contract
 ):
-    recorder, _, responses, task, model = thinking_display_exchange
+    recorder, requests, responses, task, model = thinking_display_exchange
     if compressed:
         responses[0].body = gzip.compress(responses[0].body)
         responses[0].headers = {"content-encoding": "gzip"}
-    _assert_inference_evidence(recorder, 0, CLAUDE, task, model)
+    if contract == "catalog":
+        _assert_inference_evidence(recorder, 0, CLAUDE, task, model)
+    else:
+        inference = _task_inference_request(requests, CLAUDE, task.prompt)
+        assert served_inference_request(recorder, requests, inference, CLAUDE) is requests[1]
 
 
 @pytest.mark.parametrize(
@@ -310,17 +331,19 @@ def test_catalog_inference_accepts_verified_thinking_display_recovery(
         "empty_retry",
         "changed_model",
         "changed_effort",
+        "changed_budget",
         "changed_prompt",
         "display_retained",
         "wrong_display",
         "codex",
     ],
 )
-def test_catalog_inference_rejects_unverified_recovery(thinking_display_exchange, failure):
+@pytest.mark.parametrize("contract", ["catalog", "routing"])
+def test_cuj_inference_rejects_unverified_recovery(thinking_display_exchange, failure, contract):
     recorder, requests, responses, task, model = thinking_display_exchange
     agent = CLAUDE
     if failure == "unrelated_400":
-        responses[0].body = responses[0].body.replace(b"thinking.adaptive.display", b"other.field")
+        responses[0].body = responses[0].body.replace(b".display", b".other_field")
     elif failure == "malformed_error":
         responses[0].body = b"not JSON"
     elif failure == "server_error":
@@ -335,6 +358,8 @@ def test_catalog_inference_rejects_unverified_recovery(thinking_display_exchange
         requests[1].payload["model"] = "ug_e2e.models.claude_haiku"
     elif failure == "changed_effort":
         requests[1].payload["output_config"] = {}
+    elif failure == "changed_budget":
+        requests[1].payload["thinking"]["budget_tokens"] = 1000
     elif failure == "changed_prompt":
         requests[1].payload["messages"] = [{"role": "user", "content": "A different task"}]
     elif failure == "display_retained":
@@ -347,7 +372,19 @@ def test_catalog_inference_rejects_unverified_recovery(thinking_display_exchange
             request.path = INFERENCE_PATHS[CODEX]
             request.payload["input"] = task.prompt
     with pytest.raises(AssertionError):
-        _assert_inference_evidence(recorder, 0, agent, task, model)
+        if contract == "catalog":
+            _assert_inference_evidence(recorder, 0, agent, task, model)
+        else:
+            inference = _task_inference_request(requests, agent, task.prompt)
+            served_inference_request(recorder, requests, inference, agent)
+
+
+@pytest.mark.parametrize("agent", [CLAUDE, CODEX])
+def test_served_inference_request_keeps_successful_first_attempt(thinking_display_exchange, agent):
+    recorder, requests, responses, _, _ = thinking_display_exchange
+    responses[0].status_code = 200
+    responses[0].body = b"successful stream"
+    assert served_inference_request(recorder, requests, requests[0], agent) is requests[0]
 
 
 def test_assert_models_maps_native_aliases():

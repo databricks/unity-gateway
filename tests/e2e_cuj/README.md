@@ -33,6 +33,7 @@ permission prompts. These checks do not prove the gateway's backing destination.
 establish coverage. Claude 2.1.290 may receive a 400 rejecting `thinking.display: "updates"`;
 CUJ3 accepts it only if the next task request removes that field, changes nothing else in the
 payload, and receives a non-empty HTTP 200. Other failures remain test failures.
+The shared recovery check covers both adaptive and enabled thinking, preserving any token budget.
 
 The test class selects the CUJ3 workspace, `https://dbc-bbdd5508-648e.cloud.databricks.com`.
 The shared `cuj` fixture supplies its authenticated SDK client and isolated local session;
@@ -60,7 +61,7 @@ uv run pytest -c tests/e2e_cuj/pytest.ini --confcutdir=tests/e2e_cuj \
 ## Smart-routing CUJ
 
 `test_cuj4_smart_routing.py` uses its own read-only workspace with managed smart routing enabled.
-The original tests remain unchanged. One additional test has five
+It runs the original routed/explicit-model journeys and five
 `SMART_ROUTER_CONFIG_VERSION` cases using the shared version constants; each launches Claude
 and Codex once.
 The independent expectation table is:
@@ -80,6 +81,8 @@ Orchestrator presence means its activation context reached the real gateway infe
 not that an assistant echoed it or a skill merely existed on disk.
 Task inference must contain the exact task/routed prompt and tools, excluding Claude title
 requests and parent continuations from child-inference checks.
+Parent and child requests use the same verified thinking-display recovery as CUJ3:
+only the known 400 followed by an otherwise identical native retry with a non-empty 200 is accepted.
 Each preset session then explicitly requests one child for a separate hidden-value
 file task. Assertions require a native child transcript containing the value, the completed
 parent answer, a correlated spawn-routing decision, and successful child inference on the

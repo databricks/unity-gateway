@@ -10,11 +10,15 @@ CUJ2 adds three separately collected cases for exact published MPS/MCP configura
 inference, and Claude inference. The config equality also accounts for the workspace's fixture
 skill name as data; skill download and invocation are not covered.
 
-The dedicated smart-routing CUJ in `../e2e_cuj/test_cuj_smart_routing.py` leaves the original
+The dedicated smart-routing CUJ in `../e2e_cuj/test_cuj4_smart_routing.py` leaves the original
 managed-default and explicit-model cases unchanged. One additional test runs the five supported
 `SMART_ROUTER_CONFIG_VERSION` values, checking both agents' first-prompt routing, orchestrator
 context in inference input, and completed explicitly requested routed subagents.
 This is not automatic orchestrator-delegation coverage. No workspace configuration is modified.
+CUJ3 and CUJ4 require a non-empty HTTP 200 for inference. Claude 2.1.290's known
+thinking-display 400 is accepted only when the next inference request removes `display`,
+preserves every other payload field, and succeeds; adaptive and enabled thinking are covered.
+Offline regressions check both CUJs and reject changes to the model, prompt, budget, or effort.
 Each preset cleans up interactive OS-managed settings with public `ug revert`, even on failure.
 Offline transcript tests check native Claude background-agent completion evidence;
 a completion notification alone is not treated as the parent's completed answer.
