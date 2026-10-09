@@ -1,85 +1,71 @@
-# Terminal Bench
+# Terminal Bench for ug
 
-Runs Terminal Bench-style tasks through `ug claude` and `ug codex`. The
-`Terminal Bench` workflow runs nightly and on demand.
+This directory runs Terminal Bench tasks through `ug claude` and `ug codex`. It checks that an agent keeps working when ug configures and launches it. The `Terminal Bench` workflow in `.github/workflows/terminal-bench.yml` runs every night at 07:00 UTC and on manual dispatch.
 
-There are two lanes:
+The workflow has two lanes. The Harbor lane runs on Linux. It runs a subset of [Terminal Bench 2](https://www.tbench.ai/) and the tasks in `tasks/` inside Harbor's Docker containers, and `ug_agent.py` installs ug in each container. The native lane runs on Linux and Windows. GitHub's Windows runners can't run Linux containers, so `run_native.py` runs the tasks in `tasks/` directly on the runner.
 
-- Harbor (Linux). Runs real [Terminal Bench 2](https://www.tbench.ai/) tasks
-  plus the tasks in `tasks/` inside Harbor's Docker containers.
-  `ug_agent.py` installs the ug wheel, the Databricks CLI, and the agent CLI in
-  each container, then launches the agent headlessly through ug.
-- Native (Linux and Windows). GitHub's Windows runners can't run Linux
-  containers, so `run_native.py` runs the tasks in `tasks/` on the host.
+[TASKS.md](TASKS.md) describes the task format and lists every task.
 
-The default TB2 subset is a small set of realistic tasks that go through the
-same paths: images, documents, a long text edit, system services, and a
-background server. Change it with the workflow's `tb2_tasks` input.
+## Run the workflow with other tasks or a model
 
-## Tasks
+To change the TB2 tasks or pin a model, dispatch the workflow with inputs:
 
-Each task follows the Harbor layout: `task.toml`, `instruction.md`,
-`environment/` (a Dockerfile, plus `app/` fixtures or a `setup.py`),
-`tests/test_outputs.py`, and `solution/solve.py`. The verifier and solution read
-the task dir from `TASK_APP_DIR` (default `/app`) so the same files work in
-both lanes. Keep them standard-library Python so they run on Windows too.
+```sh
+gh workflow run terminal-bench.yml -f tb2_tasks=fix-git,code-from-image -f model=<model>
+```
 
-Most tasks check one agent feature that should keep working when the agent
-runs through ug. Each one leaves evidence only that feature can produce, such as
-a hook log, an MCP call log, or a subagent's model in the transcript. Tasks that
-only one agent supports list it in `[metadata] agents`. `bench_tasks.py <agent>`
-prints the tasks for an agent.
+The workflow also takes `tb2_dataset`, `claude_version`, and `codex_version`. GitHub can dispatch the workflow only from a file that is already on `main`.
 
-| Task | Exercises | Agents |
-|------|-----------|--------|
-| `user-hooks` | Project `UserPromptSubmit` and `PostToolUse` hooks still run | Claude |
-| `mcp-server` | A project stdio MCP server is loaded and called | Claude |
-| `project-instructions` | `CLAUDE.md` / `AGENTS.md` conventions are followed | Both |
-| `subagent-model` | A custom subagent pinned to `model: haiku` runs on haiku, or on the fallback a workspace policy names | Claude |
-| `image-code` | Reading an image through the gateway | Both |
-| `web-fetch` | Fetching a pinned URL | Both |
-| `resume-session` | Two steps: the second resumes the first session and recalls a value | Both |
-| `project-skill` | A project skill's procedure is followed, including its script | Claude |
-| `background-shell` | A job longer than the default command timeout is run in the background and its output captured | Both |
-| `pdf-extract` | Reading a value from a PDF with a compressed text stream | Both |
-| `log-triage` | Independent per-service work that can fan out to subagents | Both |
-| `fix-failing-tests` | Run tests, edit, rerun | Both |
-| `scrub-git-secret` | Destructive git history rewrite across branches | Both |
-| `background-service` | Start a background process, query it, shut it down | Both |
+## Read the results
 
-Multi-step tasks put `instruction.md`, `tests/`, and `solution/` under
-`steps/<name>/`. Harbor runs them with `--resume-trajectory`, and `run_native.py`
-resumes with `--continue` or `exec resume --last`.
+Each job writes a table of task results to its run summary.
 
-## Running locally
+A Harbor job fails only when a trial hits a harness error, such as a failed agent install or an API error. A task with reward 0 doesn't fail the job, because TB2 tasks are meant to be hard. A native job fails when any task fails, so a native job is often red while the Harbor jobs in the same run pass.
 
-Check tasks with the reference solutions (no gateway needed):
+Each job uploads its files as an artifact named `terminal-bench-harbor-<agent>` or `terminal-bench-native-<agent>-<os>`. `scrub_secrets.py` replaces bearer tokens in those files before upload.
+
+To tell a ug problem from an agent mistake, read the verifier output first and the agent log second:
+
+- In a Harbor artifact, read `<job>/<trial>/verifier/test-stdout.txt`, then `<job>/<trial>/agent/ug-<agent>.txt`.
+- In a native artifact, read `logs/<task>/<step>.verifier.log`, then `logs/<task>/<step>.log`. A single-step task names its step `agent`.
+
+## Run tasks locally
+
+To check the tasks without a gateway, run the reference solutions. Every task passes.
 
 ```sh
 uv run python bench/terminal_bench/run_native.py --agent oracle --output /tmp/tb
 ```
 
-## Auth
+Add `--task <name>` to run one task.
 
-`bench_auth.py` picks the credentials. With `UG_BENCH_CLIENT_ID`,
-`UG_BENCH_CLIENT_SECRET`, and `UG_BENCH_SP_WORKSPACE` set, it mints a fresh
-OAuth M2M token on the host before each task. Only that token reaches the agent,
-never the SP secret. Otherwise it uses `DATABRICKS_BEARER` against
-`UCODE_TEST_WORKSPACE`. CI uses the CUJ service principal and `UG_CUJ1_WORKSPACE`.
-
-Uploaded artifacts have tokens redacted by `scrub_secrets.py`.
-
-Run the tasks through ug with either set of credentials exported. This rewrites
-your `ug configure` state for the agent:
+To run the tasks through ug, export credentials as described in [Credentials](#credentials) and pick an agent. The runner calls `ug configure` for that agent, so it replaces your own configuration for it.
 
 ```sh
 uv run python bench/terminal_bench/run_native.py --agent claude --output /tmp/tb
 ```
 
-Harbor needs Docker, `UG_BENCH_WHEEL`, and the same credentials:
+To run in Harbor, you need Docker. Build a ug wheel, point `UG_BENCH_WHEEL` at it, and start a job:
 
 ```sh
-uv build --wheel --out-dir /tmp/dist && export UG_BENCH_WHEEL=$(ls /tmp/dist/*.whl)
+uv build --wheel --out-dir /tmp/dist
+export UG_BENCH_WHEEL=$(ls /tmp/dist/*.whl)
 PYTHONPATH=bench/terminal_bench uvx --python 3.12 --from harbor==0.23.0 harbor run -y \
-  -d terminal-bench@2.0 -i fix-git -a ug_agent:UgClaude -o /tmp/harbor-jobs
+	-d terminal-bench@2.0 -i fix-git -a ug_agent:UgClaude -o /tmp/harbor-jobs
 ```
+
+For Codex, use `ug_agent:UgCodex`. To run ug's own tasks, replace `-d terminal-bench@2.0` with `-p bench/terminal_bench/tasks --resume-trajectory`.
+
+## Credentials
+
+`bench_auth.py` picks the credentials for each task. If `UG_BENCH_CLIENT_ID`, `UG_BENCH_CLIENT_SECRET`, and `UG_BENCH_SP_WORKSPACE` are set, it mints a new OAuth M2M token on the host before each task. The agent gets that token and never the service principal secret, because the agent has a full shell. If those variables aren't set, it uses `DATABRICKS_BEARER` against `UCODE_TEST_WORKSPACE`.
+
+CI uses the `UG_CUJ_SP_CLIENT_ID` service principal against `UG_CUJ1_WORKSPACE`. That workspace publishes a managed coding-agent config, so its model policy applies to every CI run. The policy doesn't allow haiku, for example.
+
+## Add a task
+
+1. Copy the task in `tasks/` that is closest to yours. [TASKS.md](TASKS.md) describes each file.
+2. Write `tests/test_outputs.py` so it checks evidence that only the feature can produce, such as a hook log or an MCP call log, as well as the answer. An agent can read every file in the task, so the answer alone is easy to fake.
+3. If only one agent supports the feature, set `agents` under `[metadata]` in `task.toml`.
+4. Run `run_native.py --agent oracle --task <name>` and confirm the task passes.
+5. Confirm the verifier fails when the agent does nothing. Copy `environment/app/` into an empty directory, or run `environment/setup.py <dir>`. Then run `tests/test_outputs.py` with `TASK_APP_DIR` set to that directory.
