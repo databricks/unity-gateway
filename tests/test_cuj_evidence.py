@@ -121,6 +121,40 @@ def test_cuj_evidence_claude_real_user_message_ends_parent_turn():
     assert completed_turn(CLAUDE, [prompt, user, answer], task) is None
 
 
+def test_claude_delegated_journey_requires_parent_result_after_child_notification(tmp_path):
+    task = FileTask(SimpleNamespace(cwd=tmp_path))
+    task.prompt = task.delegate_prompt
+    evidence = SessionEvidence(tmp_path, CLAUDE)
+    parent = evidence.directory / "session.jsonl"
+    child = evidence.directory / "session" / "subagents" / "agent-child.jsonl"
+    prompt, answer = records(CLAUDE, task, "system.ai.claude-sonnet-4-6")
+    child_rows = records(CLAUDE, task, "system.ai.claude-haiku-4-5")
+    for row in child_rows:
+        row["isSidechain"] = True
+    write_rows(child, child_rows)
+    notification = {
+        "type": "user",
+        "sessionId": "session",
+        "origin": {"kind": "task-notification", "producer": "session-task"},
+        "message": {
+            "content": f"<task-notification><result>{task.value}</result></task-notification>"
+        },
+    }
+    write_rows(parent, [prompt, notification])
+    assert evidence.completed(task) is None
+
+    working = copy.deepcopy(answer)
+    working["message"]["stop_reason"] = "tool_use"
+    working["message"]["content"].append({"type": "tool_use", "name": "SendMessage"})
+    write_rows(parent, [prompt, notification, working])
+    assert evidence.completed(task) is None
+
+    write_rows(parent, [prompt, notification, working, answer])
+    turn = evidence.completed(task)
+    assert turn is not None
+    assert turn.answer == task.value
+
+
 @pytest.mark.parametrize("agent", [CLAUDE, CODEX])
 @pytest.mark.parametrize(
     "failure",

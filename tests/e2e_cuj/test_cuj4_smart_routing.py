@@ -245,7 +245,8 @@ class TestCujSmartRouting(BaseCujTest):
         """Scenario: launch both agents with a preset, then explicitly request a subagent.
 
         Expected: first-prompt routing and orchestrator context match the preset;
-        one routed native child completes the delegated task.
+        one routed native child completes the delegated task, the parent returns
+        its result, and the interactive session exits normally.
         """
         session, workspace, recorder = cuj
         previous = session.env.get("SMART_ROUTER_CONFIG_VERSION")
@@ -306,6 +307,7 @@ class TestCujSmartRouting(BaseCujTest):
                         ),
                         "completed native subagent file task",
                     )
+                    tui.task(evidence, child_task)
                     children = {
                         path: records
                         for path, records in agent_sessions(session, agent).items()
@@ -343,8 +345,6 @@ class TestCujSmartRouting(BaseCujTest):
                     assert canonical_model(inference.payload["model"]) == canonical_model(
                         selections[0]["route_option"]["model"]
                     )
-                    if agent == CLAUDE:
-                        tui.wait_for_background_tasks()
                     tui.exit_normally()
         finally:
             if previous is None:
