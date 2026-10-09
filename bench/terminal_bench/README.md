@@ -1,8 +1,17 @@
 # Terminal Bench for ug
 
+```text
+ _                 _           _   _                 _
+| |_ ___ _ _ _ __ (_)_ _  __ _| | | |__  ___ _ _  __| |_
+|  _/ -_) '_| '  \| | ' \/ _` | | | '_ \/ -_) ' \/ _| ' \
+ \__\___|_| |_|_|_|_|_||_\__,_|_| |_.__/\___|_||_\__|_||_|
+```
+
 This directory runs Terminal Bench tasks through `ug claude` and `ug codex`. It checks that an agent keeps working when ug configures and launches it. The `Terminal Bench` workflow in `.github/workflows/terminal-bench.yml` runs every night at 07:00 UTC and on manual dispatch.
 
-The workflow has two lanes. The Harbor lane runs on Linux. It runs a subset of [Terminal Bench 2](https://www.tbench.ai/) and the tasks in `tasks/` inside Harbor's Docker containers, and `ug_agent.py` installs ug in each container. The native lane runs on Linux and Windows. GitHub's Windows runners can't run Linux containers, so `run_native.py` runs the tasks in `tasks/` directly on the runner.
+The workflow has two lanes because Harbor needs Linux containers. Harbor runs each task in its own Docker container, and [Terminal Bench 2](https://www.tbench.ai/) tasks depend on the images they ship with. GitHub's Windows runners can't run Linux containers.
+
+The Harbor lane runs on Linux. It runs a TB2 subset and the tasks in `tasks/`, and `ug_agent.py` installs ug in each container. The native lane is how ug gets tested on Windows. `run_native.py` runs the tasks in `tasks/` directly on Linux and Windows runners. Those tasks use only the Python standard library so they run on both.
 
 ```mermaid
 flowchart LR
