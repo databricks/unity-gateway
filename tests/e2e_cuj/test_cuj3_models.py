@@ -145,6 +145,8 @@ def _assert_inference_evidence(recorder, checkpoint, agent, task, expected):
     # effort="high" unchanged. Accept only this rejection paired with a successful
     # retry of the same payload with display removed; all other requests must return 200.
     # Live A/B: https://github.com/databricks/unity-gateway/actions/runs/37865757991
+    # TODO: Remove this workaround once we add thinking-display-updates-2026-08-18
+    # to accepted betas on Bedrock passthrough.
     for index, request in enumerate(task_requests):
         if (
             agent == CLAUDE
