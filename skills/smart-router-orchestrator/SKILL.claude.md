@@ -19,6 +19,10 @@ metadata:
 
 ## Activation
 
+If this workflow is truncated and the full instructions are not already in
+context, read `SKILL.claude.md` from the skill directory shown in the activation
+context before proceeding.
+
 UG's prompt and compaction hooks activate this workflow only in an eligible
 smart-routing session launched with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1` while routing is on.
 Follow the latest UG activation context and successful Smart Router toggles;
