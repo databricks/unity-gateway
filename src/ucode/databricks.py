@@ -870,6 +870,9 @@ def _refresh_windows_path() -> None:
         if expanded and normalized not in known:
             new_entries.append(expanded)
             known.add(normalized)
+    if not new_entries:
+        return
+    # Writing renames the inherited `Path` to `PATH` for child processes, so only write on change.
     os.environ["PATH"] = os.pathsep.join([*new_entries, *entries])
     clear_databricks_cli_cache()
 
@@ -1421,8 +1424,11 @@ def get_databricks_token(
         + f" profile={profile or '<none>'}",
     )
 
+    timed_out = False
+
     def _fetch() -> tuple[str, str]:
         """Return (access_token, stderr). token is '' on any failure."""
+        nonlocal timed_out
         try:
             result = run(
                 cmd,
@@ -1438,6 +1444,7 @@ def get_databricks_token(
             return "", result.stderr or ""
         except (subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
             _debug("auth token", f"exception: {type(exc).__name__}: {exc}")
+            timed_out = timed_out or isinstance(exc, subprocess.TimeoutExpired)
             return "", str(exc)
 
     def _fetch_with_lock_retry() -> str:
@@ -1484,6 +1491,12 @@ def get_databricks_token(
             _debug("auth login", f"exception: {type(exc).__name__}: {exc}")
         token = _fetch_with_lock_retry()
 
+    if not token and timed_out:
+        # A hung CLI says nothing about the credentials, so don't suggest logging out of them.
+        raise RuntimeError(
+            f"The Databricks CLI timed out fetching an access token for {workspace}. "
+            "Check that `databricks auth token` completes when run on its own."
+        )
     if not token:
         profile_name = profile or find_profile_name_for_host(workspace)
         stale_profile_hint = ""

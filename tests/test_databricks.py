@@ -2196,6 +2196,21 @@ class TestGetDatabricksToken:
         assert db_mod.has_valid_databricks_auth(WS)
         assert profile_log.read_text() == ""
 
+    def test_timeout_does_not_suggest_logging_out(self, tmp_path, monkeypatch):
+        env = self._fake_databricks(tmp_path, "sys.exit(0)")
+        monkeypatch.setattr("os.environ", env)
+
+        def hung(args, **kwargs):
+            if "token" in args:
+                raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
+            return subprocess.CompletedProcess(args, 1, "", "")
+
+        monkeypatch.setattr(db_mod, "run", hung)
+
+        with pytest.raises(RuntimeError, match="timed out") as exc_info:
+            get_databricks_token(WS, "my-profile")
+        assert "logout" not in str(exc_info.value)
+
     def test_reauths_and_retries_when_token_empty(self, tmp_path, monkeypatch):
         call_count = tmp_path / "calls"
         call_count.write_text("0")
@@ -3383,6 +3398,23 @@ class TestRunDatabricksCliInstaller:
         db_mod._refresh_windows_path()
 
         assert os.environ["PATH"].split(os.pathsep).count(links_dir) == 1
+
+    def test_windows_leaves_path_untouched_when_nothing_is_new(self, monkeypatch, tmp_path):
+        links_dir = str(tmp_path / "Microsoft" / "WinGet" / "Links")
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        monkeypatch.setenv("PATH", os.pathsep.join([links_dir, "/windows/system32"]))
+        monkeypatch.setattr(db_mod, "_windows_user_path", lambda: links_dir)
+        writes = []
+        real_setitem = type(os.environ).__setitem__
+        monkeypatch.setattr(
+            type(os.environ),
+            "__setitem__",
+            lambda env, key, value: (writes.append(key), real_setitem(env, key, value)),
+        )
+
+        db_mod._refresh_windows_path()
+
+        assert writes == []
 
     def test_windows_without_winget_is_actionable(self, monkeypatch):
         monkeypatch.setattr(db_mod.platform, "system", lambda: "Windows")
