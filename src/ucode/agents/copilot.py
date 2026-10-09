@@ -81,6 +81,7 @@ _GPT_MODEL_MAJOR_PATTERN = re.compile(r"^(?:system\.ai\.)?(?:databricks-)?gpt-(\
 _CLAUDE_MODEL_PATTERN = re.compile(r"(?:^|[./-])(claude-.+)$")
 _CLAUDE_VERSION_SUFFIX_PATTERN = re.compile(r"(?:\[[^\]]*\]|-v\d+(?::\d+)?|-\d{8})+$")
 _CLAUDE_DASHED_VERSION_PATTERN = re.compile(r"-(\d+)-(\d+)$")
+_CLAUDE_HAIKU_MAJOR_PATTERN = re.compile(r"^claude-haiku-(\d+)")
 
 
 def copilot_catalog_model_id(model: str) -> str | None:
@@ -93,7 +94,13 @@ def copilot_catalog_model_id(model: str) -> str | None:
     if match is None:
         return None
     catalog_id = _CLAUDE_VERSION_SUFFIX_PATTERN.sub("", match.group(1))
-    return _CLAUDE_DASHED_VERSION_PATTERN.sub(r"-\1.\2", catalog_id)
+    catalog_id = _CLAUDE_DASHED_VERSION_PATTERN.sub(r"-\1.\2", catalog_id)
+    # Copilot sends budget thinking for any Haiku it doesn't know, which Haiku 5+ rejects; Sonnet
+    # ids get the adaptive thinking those models require.
+    haiku = _CLAUDE_HAIKU_MAJOR_PATTERN.match(catalog_id)
+    if haiku and int(haiku.group(1)) >= 5:
+        catalog_id = catalog_id.replace("claude-haiku-", "claude-sonnet-", 1)
+    return catalog_id
 
 
 def model_uses_responses_api(model: str) -> bool:

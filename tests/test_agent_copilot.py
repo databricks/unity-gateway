@@ -244,6 +244,8 @@ class TestCopilotCatalogModelId:
             ("system.ai.claude-opus-5-5[1m]", "claude-opus-5.5"),
             ("databricks-claude-opus-4-7", "claude-opus-4.7"),
             ("claude-haiku-4-5", "claude-haiku-4.5"),
+            ("system.ai.claude-haiku-5-5", "claude-sonnet-5.5"),
+            ("claude-haiku-6", "claude-sonnet-6"),
             ("claude-sonnet-5", "claude-sonnet-5"),
             ("global.anthropic.claude-opus-4-8", "claude-opus-4.8"),
             ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", "claude-sonnet-4.5"),
