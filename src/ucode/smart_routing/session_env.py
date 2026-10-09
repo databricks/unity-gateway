@@ -52,9 +52,9 @@ def _read(path: Path) -> dict[str, str]:
     return _validate(json.loads(path.read_text(encoding="utf-8")))
 
 
-def effective_environment(env: Mapping[str, str] | None = None) -> dict[str, str]:
+def effective_environment(env: Mapping[str, str] | None = None, *, agent: str) -> dict[str, str]:
     """Overlay the latest session controls on the hook process environment."""
-    effective = resolve_environment(env)
+    effective = resolve_environment(env, agent=agent)
     try:
         path = session_env_path(effective)
     except RuntimeError:

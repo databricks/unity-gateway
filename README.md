@@ -251,7 +251,9 @@ The generated shell hooks expect Git Bash; PowerShell-only setups are not covere
 
 ### Smart Router Orchestrator
 
-Use `SMART_ROUTER_CONFIG_VERSION` at launch to select a smart-routing configuration:
+Use `SMART_ROUTER_CONFIG_VERSION` at launch to select a smart-routing configuration.
+Each version defines separate Claude Code and Codex flag mappings; the existing versions
+use identical mappings for both agents:
 
 | Version | Subagent routing | First-prompt routing | Orchestrator |
 | --- | --- | --- | --- |
@@ -282,8 +284,8 @@ For example:
 SMART_ROUTER_CONFIG_VERSION=subagent_orch_v0 ug claude
 ```
 
-The version takes precedence over conflicting legacy flags. Before parsing command options
-or running any command callbacks, UG expands it into
+The version takes precedence over conflicting legacy flags. Once the agent is selected,
+UG expands its mapping into
 `ENABLE_SMART_ROUTING_V2`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY`, and
 `ENABLE_SMART_ROUTER_ORCHESTRATOR` for the launched session. When the version is
 unset or empty, these legacy flags retain their existing behavior, including
@@ -295,10 +297,10 @@ Workspace smart-routing defaults do not rewrite the selected version's flags.
 Version names require an explicit suffix. Future revisions use new `_v1`, `_v2`,
 etc. names without changing existing versions.
 
-Version definitions fail validation at module import if any flag in
+Version definitions require both Claude and Codex mappings and fail validation at module import if any flag in
 `SMART_ROUTING_ENV_KEYS` is missing, has a value other than `"0"` or `"1"`,
 or an unknown flag is present. Register new managed flags in that tuple and
-explicitly set them in every version.
+explicitly set them for both agents in every version.
 
 Use `ug codex` in the same command for Codex. Smart Router Orchestrator assigns bounded work
 to explorer, researcher, worker, tester, and reviewer roles while the root plans,

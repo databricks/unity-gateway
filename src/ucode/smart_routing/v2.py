@@ -29,6 +29,8 @@ from ucode.config_io import (
     write_text_file,
 )
 from ucode.constants import (
+    AGENT_CLAUDE,
+    AGENT_CODEX,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
@@ -88,7 +90,7 @@ class ClaudeRoutingSetupError(RuntimeError):
 
 def _prepare_smart_router_session(agent: str) -> Path:
     skills = [SMART_ROUTER_SKILL]
-    if orchestrator.feature_enabled():
+    if orchestrator.feature_enabled(agent=agent):
         skills.append(SMART_ROUTER_ORCHESTRATOR_SKILL)
     for skill in skills:
         try:
@@ -155,9 +157,9 @@ def _model_picker_catalog() -> AnthropicModelCatalog | None:
 
 
 def smart_routing_enabled(
-    env: MutableMapping[str, str] | None = None, *, default: bool = False
+    env: MutableMapping[str, str] | None, *, default: bool, agent: str
 ) -> bool:
-    source = resolve_environment(env)
+    source = resolve_environment(env, agent=agent)
     values = [
         source.get(var) for var in (ENABLE_SMART_ROUTING_ENV_VAR, ENABLE_SUBAGENT_ROUTING_ENV_VAR)
     ]
@@ -168,9 +170,11 @@ def smart_routing_enabled(
     return default
 
 
-def first_prompt_routing_enabled(env: MutableMapping[str, str] | None = None) -> bool:
+def first_prompt_routing_enabled(
+    env: MutableMapping[str, str] | None = None, *, agent: str
+) -> bool:
     """Whether the first prompt is routed. Subagent-only wins over the full V2 flag."""
-    source = resolve_environment(env)
+    source = resolve_environment(env, agent=agent)
     return (
         source.get(ENABLE_SMART_ROUTING_ENV_VAR) == "1"
         and source.get(ENABLE_SUBAGENT_ROUTING_ENV_VAR) != "1"
@@ -178,20 +182,22 @@ def first_prompt_routing_enabled(env: MutableMapping[str, str] | None = None) ->
 
 
 def enable_smart_routing(
-    env: MutableMapping[str, str] | None = None,
+    env: MutableMapping[str, str] | None = None, *, agent: str
 ) -> dict[str, str | None]:
     """Set the full smart-routing env var and return the prior value of every routing var."""
-    return override_smart_routing(True, env)
+    return override_smart_routing(True, env, agent=agent)
 
 
 def override_smart_routing(
     enabled: bool,
     env: MutableMapping[str, str] | None = None,
+    *,
+    agent: str,
 ) -> dict[str, str | None]:
     """Set an explicit launch-scoped routing choice and return the prior values."""
     target = os.environ if env is None else env
     previous = {var: target.get(var) for var in SMART_ROUTING_ENV_KEYS}
-    previous.update(apply_config(target))
+    previous.update(apply_config(target, agent=agent))
     if enabled:
         target[ENABLE_SMART_ROUTING_ENV_VAR] = "1"
     else:
@@ -426,7 +432,7 @@ def route_claude_pre_tool_use(
             route.routed_model,
         )
     agent_name = claude_routing.SUBAGENT_NOTICE_CONFIG.name(route.tool_input) or "subagent"
-    if orchestrator.enabled():
+    if orchestrator.enabled(agent=AGENT_CLAUDE):
         agent_name += " [orchestrator on]"
     routing_message = claude_routing.SUBAGENT_NOTICE_CONFIG.message(
         route.decision,
@@ -527,7 +533,7 @@ def launch_claude(
         )
     model_ids = catalog.model_ids
 
-    route_first_prompt = first_prompt_routing_enabled()
+    route_first_prompt = first_prompt_routing_enabled(agent=AGENT_CLAUDE)
     # TODO: Restore first-prompt routing on Windows after replacing the Unix-only PTY wrapper:
     # https://databricks.atlassian.net/browse/AIGTWY-4385
     if route_first_prompt and os.name == "nt":
@@ -544,7 +550,9 @@ def launch_claude(
     if not isinstance(env, dict):
         raise RuntimeError("Claude settings 'env' must be an object for smart routing.")
     env.pop("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", None)
-    env[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] = "1" if orchestrator.feature_enabled() else "0"
+    env[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] = (
+        "1" if orchestrator.feature_enabled(agent=AGENT_CLAUDE) else "0"
+    )
     if route_first_prompt:
         env[ENABLE_SMART_ROUTING_ENV_VAR] = "1"
     else:
@@ -757,7 +765,7 @@ def _run_codex_session(
             app_server_url,
             model_provider=overlay["model_provider"],
             available_models=available_models,
-            workspace=workspace if first_prompt_routing_enabled() else None,
+            workspace=workspace if first_prompt_routing_enabled(agent=AGENT_CODEX) else None,
             token_provider=lambda: _launch_token(state, workspace),
             switch_message_fn=format_routing_notice,
             log_path=CODEX_INTERPOSER_LOG,

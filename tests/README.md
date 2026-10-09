@@ -35,6 +35,11 @@ CUJ4's Claude preset sessions also use it after verifying delegated file tasks: 
 answer does not prove that a resumed child has stopped running.
 They cover Claude/Codex helper dispatch and rejection of routing decisions without
 the agent-specific prompt-submission evidence.
+Agent-specific smart-routing preset component checks cover shared base presets, explicit agent mappings,
+complete per-agent validation, session precedence, and preserving the preset selector
+until managed-default agent selection.
+These checks do not establish live agent coverage.
+
 CUJ3 and CUJ4 also verify Claude's native recovery from the known thinking-display 400:
 the same payload without display must receive a non-empty 200 for adaptive or enabled thinking.
 If the next attempt rejects `safeguards`, only its native removal is accepted before the final 200.
@@ -169,6 +174,10 @@ must update the session controls through the launching installation. Launch test
 that Claude settings and Codex's shell policy carry the interpreter and session marker.
 These are component checks; they do not establish native skill permission matching or
 PowerShell execution.
+
+`test_skills.py` checks agent-specific instruction installation, bundle updates,
+and matching prompt/compaction hook content for Claude and Codex. It also covers
+shared `SKILL.md` bundles. These are component checks, not live agent execution.
 
 `test_smart_routing_config.py` includes a 162-case Cartesian component oracle: all three legacy
 routing flags take unset, `0`, and `1`, while the selector takes unset or one of the five

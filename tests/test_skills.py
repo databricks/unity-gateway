@@ -1,10 +1,12 @@
 """Tests for skills shipped with Unity Gateway."""
 
+import shlex
 from pathlib import Path
 
 import pytest
 
 from ucode import skills
+from ucode.smart_routing import orchestrator, session_env
 
 
 def _write_skill(root: Path, name: str, content: str = "version one") -> Path:
@@ -28,24 +30,34 @@ def bundled_skill(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     ("agent", "root"), [("claude", ".claude/skills"), ("codex", ".codex/skills")]
 )
-def test_copies_named_skill_to_agent_directory(bundled_skill, agent, root):
+@pytest.mark.parametrize("agent_specific", [False, True])
+def test_copies_named_skill_to_agent_directory(bundled_skill, agent, root, agent_specific):
     source_skill, home = bundled_skill
     _write_skill(source_skill.parent, "second-skill")
+    if agent_specific:
+        source_skill.joinpath("SKILL.md").unlink()
+        for name in ("claude", "codex"):
+            source_skill.joinpath(f"SKILL.{name}.md").write_text(f"{name} instructions")
 
     installed = skills.install_skill(skills.SMART_ROUTER_SKILL, agent, home)
 
     assert installed == home / root / "smart-router"
-    assert installed.joinpath("SKILL.md").read_text() == "version one"
+    expected = f"{agent} instructions" if agent_specific else "version one"
+    assert installed.joinpath("SKILL.md").read_text() == expected
     assert installed.joinpath("references/details.md").read_text() == "details"
     assert not home.joinpath(root, "second-skill").exists()
 
 
-def test_reinstall_replaces_changed_bundle_and_skips_unchanged_bundle(bundled_skill, monkeypatch):
+@pytest.mark.parametrize("entrypoint", ["SKILL.md", "SKILL.codex.md"])
+def test_reinstall_replaces_changed_bundle_and_skips_unchanged_bundle(
+    bundled_skill, monkeypatch, entrypoint
+):
     source_skill, home = bundled_skill
+    source_skill.joinpath(entrypoint).write_text("version one")
     installed = skills.install_skill(skills.SMART_ROUTER_SKILL, "codex", home)
 
     installed.joinpath("stale.txt").write_text("remove me")
-    source_skill.joinpath("SKILL.md").write_text("version two")
+    source_skill.joinpath(entrypoint).write_text("version two")
 
     installed = skills.install_skill(skills.SMART_ROUTER_SKILL, "codex", home)
 
@@ -61,6 +73,39 @@ def test_reinstall_replaces_changed_bundle_and_skips_unchanged_bundle(bundled_sk
     installed_again = skills.install_skill(skills.SMART_ROUTER_SKILL, "codex", home)
 
     assert installed_again == installed
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"hook_event_name": "UserPromptSubmit"},
+        {"hook_event_name": "SessionStart", "source": "compact"},
+    ],
+)
+def test_orchestrator_injects_the_installed_agent_instructions(
+    bundled_skill, monkeypatch, agent, payload
+):
+    source_skill, home = bundled_skill
+    source = _write_skill(source_skill.parent, skills.SMART_ROUTER_ORCHESTRATOR_SKILL)
+    source.joinpath("SKILL.md").unlink()
+    for name in ("claude", "codex"):
+        source.joinpath(f"SKILL.{name}.md").write_text(f"{name} instructions")
+    installed = skills.install_skill(skills.SMART_ROUTER_ORCHESTRATOR_SKILL, agent, home)
+    monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", "1")
+    monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "1")
+    session_env.start_session()
+
+    settings = {}
+    orchestrator.sync_hooks(settings, agent=agent)
+    hook = settings["hooks"][payload["hook_event_name"]][0]["hooks"][0]
+    assert shlex.split(hook["command"])[-2:] == ["--agent", agent]
+    output = orchestrator.hook_output(payload, agent=agent)
+
+    assert output is not None
+    context = output["hookSpecificOutput"]["additionalContext"]
+    assert context.endswith(f"\n\n{agent} instructions")
+    assert context.endswith(installed.joinpath("SKILL.md").read_text())
 
 
 def test_uninstalls_one_skill_from_agent_roots(bundled_skill):
