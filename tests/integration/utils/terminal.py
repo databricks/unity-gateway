@@ -503,12 +503,13 @@ class AgentTerminal(TerminalProcess):
             if "Would you like to run the following command?" in screen:
                 if permission_in_progress:
                     return False
-                # Codex on Windows asks before reading files; approve only a plain fixture read.
+                # Codex on Windows asks before reading files. Approve only a plain fixture read;
+                # the whole line must match, so chained or redirected commands fail.
                 filename = re.escape(task.filename)
+                read = r"(?:type|cat|Get-Content(?: -(?:Raw|LiteralPath|Path|Encoding [\w-]+))*)"
+                path = rf"[\"']?(?:\.(?:\\{{1,2}}|/))?{filename}[\"']?"
                 safe_read = re.search(
-                    rf"(?m)^\s*\$ (?:powershell(?:\.exe)? -NoProfile -Command \")?"
-                    rf"(?:type|cat|Get-Content(?: -Raw)?(?: -LiteralPath)?) "
-                    rf"[\"']?{filename}[\"']?\"?\s*$",
+                    rf"(?m)^\s*\$ (?:powershell(?:\.exe)? -NoProfile -Command \"?)?{read} {path}\"?\s*$",
                     screen,
                 )
                 first_yes = re.search(rf"(?m)^\s*{SELECTED}\s*1\.\s*Yes, proceed", screen)
