@@ -110,6 +110,10 @@ def test_clean_teardown_records_no_leak(tmp_path, monkeypatch):
     )
 
 
+# These fakes are shebang scripts that drive the tty with termios, which Windows lacks.
+requires_pty = pytest.mark.skipif(sys.platform == "win32", reason="fake ug needs POSIX termios")
+
+
 def _fake_ug(tmp_path, body):
     """A real executable standing in for `ug`, so the real PTY driver runs offline."""
     (tmp_path / "fake_ug.py").write_text(body)
