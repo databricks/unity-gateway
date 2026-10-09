@@ -18,7 +18,7 @@ from ucode.ui import normalize_workspace_url
 
 # The integration suite has its own configuration and subprocess-only fixtures.
 # Run it through scripts/run_integration.py, outside this fixture hierarchy.
-collect_ignore = ["integration", "e2e_cuj"]
+collect_ignore = ["integration", "e2e_cuj", "native_claude"]
 
 
 @pytest.fixture(autouse=True)
