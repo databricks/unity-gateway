@@ -1,4 +1,4 @@
-"""Packaging for the native Claude mod entry point."""
+"""Generated plugin contents for the native Claude mod entry point."""
 
 import json
 from pathlib import Path
@@ -6,7 +6,7 @@ from pathlib import Path
 from ucode.smart_routing import v2
 
 
-def test_mod_entry_point_is_packaged(tmp_path):
+def test_plugin_contains_mod_entry_point(tmp_path):
     v2._write_routed_claude_plugin(tmp_path, [])
 
     assert json.loads((tmp_path / "hooks/hooks.json").read_text()) == {"modules": ["./register.ts"]}
