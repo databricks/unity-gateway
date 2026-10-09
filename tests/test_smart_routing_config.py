@@ -214,7 +214,7 @@ def test_claude_only_preset_overrides_inherited_flags_and_managed_default(agent,
         for key, value in zip(SMART_ROUTING_ENV_KEYS, inherited, strict=True)
         if value is not None
     }
-    source[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = config.CLAUDE_ONLY_SUBAGENT_ORCH_V0
+    source[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = config.SUBAGENT_ORCH_V0_CLAUDE_ONLY
     original = source.copy()
     expected = (
         _EXPECTED_PRESETS[config.SUBAGENT_ORCH_V0]

@@ -13,11 +13,11 @@ from tests.integration.utils.evidence import (
     read_jsonl,
 )
 from ucode.smart_routing.config import (
-    CLAUDE_ONLY_SUBAGENT_ORCH_V0,
     FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
     SUBAGENT_ONLY_V0,
     SUBAGENT_ONLY_V1,
     SUBAGENT_ORCH_V0,
+    SUBAGENT_ORCH_V0_CLAUDE_ONLY,
     SUBAGENT_ORCH_V1,
 )
 
@@ -238,7 +238,7 @@ class TestCujSmartRouting(BaseCujTest):
             (SUBAGENT_ONLY_V1, False, False),
             (SUBAGENT_ORCH_V0, False, True),
             (SUBAGENT_ORCH_V1, False, True),
-            (CLAUDE_ONLY_SUBAGENT_ORCH_V0, False, True),
+            (SUBAGENT_ORCH_V0_CLAUDE_ONLY, False, True),
         ],
     )
     def test_smart_router_config_version(
@@ -257,7 +257,7 @@ class TestCujSmartRouting(BaseCujTest):
             configs = _assert_published_config_matches_expectations(workspace.config())
             recorder.configure_session(session, ["configure", "--disable-databricks-ai-tools"])
             agents = (
-                (CLAUDE,) if SMART_ROUTER_CONFIG_VERSION == CLAUDE_ONLY_SUBAGENT_ORCH_V0 else AGENTS
+                (CLAUDE,) if SMART_ROUTER_CONFIG_VERSION == SUBAGENT_ORCH_V0_CLAUDE_ONLY else AGENTS
             )
             for agent in agents:
                 supported = workspace.model_ids(agent)
@@ -370,7 +370,7 @@ class TestCujSmartRouting(BaseCujTest):
         """
         session, workspace, recorder = cuj
         previous = session.env.get("SMART_ROUTER_CONFIG_VERSION")
-        session.env["SMART_ROUTER_CONFIG_VERSION"] = CLAUDE_ONLY_SUBAGENT_ORCH_V0
+        session.env["SMART_ROUTER_CONFIG_VERSION"] = SUBAGENT_ORCH_V0_CLAUDE_ONLY
         try:
             configs = _assert_published_config_matches_expectations(workspace.config())
             recorder.configure_session(session, ["configure", "--disable-databricks-ai-tools"])

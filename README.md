@@ -262,7 +262,7 @@ use identical mappings for both agents. The Claude-only version disables routing
 | `subagent_only_v1` | Claude, Codex | On | Off | Off |
 | `subagent_orch_v0` | Claude, Codex | On | Off | On |
 | `subagent_orch_v1` | Claude, Codex | On | Off | On |
-| `claude_only_subagent_orch_v0` | Claude | On | Off | On |
+| `subagent_orch_v0_claude_only` | Claude | On | Off | On |
 
 `first_prompt_and_subagent_no_orch_v0` is the customer configuration for first-prompt
 and subagent routing without orchestration: `ENABLE_SMART_ROUTING_V2=1`,
@@ -275,7 +275,7 @@ so first-prompt routing remains off; orchestration is also off.
 `subagent_orch_v1` enables all three legacy flags. Like `subagent_only_v1`, it routes
 subagents rather than the first prompt, and it additionally enables orchestration.
 
-`claude_only_subagent_orch_v0` keeps Claude's `subagent_orch_v0` flags (`0`, `1`, `1`)
+`subagent_orch_v0_claude_only` keeps Claude's `subagent_orch_v0` flags (`0`, `1`, `1`)
 and sets all three flags to `"0"` for Codex. Codex uses its ordinary launch and
 managed default model, without routing or orchestration. Explicit launch/session
 on/off controls retain their existing precedence over presets.

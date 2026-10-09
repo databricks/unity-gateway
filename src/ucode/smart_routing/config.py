@@ -31,7 +31,7 @@ SUBAGENT_ORCH_V0 = "subagent_orch_v0"
 SUBAGENT_ORCH_V1 = "subagent_orch_v1"
 
 # Preserve subagent_orch_v0 for Claude, with all Codex routing flags disabled.
-CLAUDE_ONLY_SUBAGENT_ORCH_V0 = "claude_only_subagent_orch_v0"
+SUBAGENT_ORCH_V0_CLAUDE_ONLY = "subagent_orch_v0_claude_only"
 
 _BASE_VERSIONS = {
     FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0: {
@@ -84,7 +84,7 @@ _VERSIONS = {
         AGENT_CODEX: _BASE_VERSIONS[SUBAGENT_ORCH_V1],
     },
     # Codex opts out of routing and orchestration; Claude keeps subagent_orch_v0.
-    CLAUDE_ONLY_SUBAGENT_ORCH_V0: {
+    SUBAGENT_ORCH_V0_CLAUDE_ONLY: {
         AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ORCH_V0],
         AGENT_CODEX: {
             ENABLE_SMART_ROUTING_ENV_VAR: "0",

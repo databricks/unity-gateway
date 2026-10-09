@@ -119,7 +119,7 @@ uv run --with pexpect==4.9.0 --with pyte==0.8.2 pytest \
 ```
 
 
-CUJ4 additionally covers `claude_only_subagent_orch_v0`: Claude retains
+CUJ4 additionally covers `subagent_orch_v0_claude_only`: Claude retains
 `subagent_orch_v0` behavior and completes a routed child file task; Codex completes
 a file task on the managed default without routing requests, new decisions,
 a recipe header, or orchestrator context. Workspace configuration remains read-only.
