@@ -19,6 +19,31 @@ import pyte
 from .evidence import agent_sessions, assert_no_terminal_api_error
 
 
+def _claude_background_task_menu(text):
+    return re.search(
+        r"(?ms)^[ \t]*Background[ \t]*\n(.*?)"
+        r"^[ \t]*↑/↓ to select · Enter to view · Esc to close[ \t]*\s*\Z",
+        text,
+    )
+
+
+def _claude_background_tasks_complete(text):
+    if re.search(r"(?m)^\s*No tasks currently running\s*$", text):
+        return True
+    menu = _claude_background_task_menu(text)
+    if menu is None:
+        return False
+    rows = [line.strip() for line in menu[1].splitlines() if line.strip()]
+    if not rows:
+        return False
+    completed = re.fullmatch(r"Completed \(([1-9][0-9]*)\)", rows[0])
+    return (
+        completed is not None
+        and len(rows) - 1 == int(completed[1])
+        and all(re.fullmatch(r"(?:❯\s*)?✔\s+.+\s+done\s+·\s+.+", row) for row in rows[1:])
+    )
+
+
 class TerminalScreen(pyte.Screen):
     def __init__(self, columns, lines, send):
         super().__init__(columns, lines)
@@ -405,13 +430,16 @@ class AgentTerminal(TerminalProcess):
         assert self.agent == "claude", self.agent
         self.submit("/tasks")
         self.wait_for(
-            lambda text: re.search(r"(?m)^\s*No tasks currently running\s*$", text),
+            _claude_background_tasks_complete,
             "Claude's task view reporting no running tasks",
             timeout=timeout,
         )
         self.send("\x1b", "close the completed background-task view")
         self.wait_for(
-            lambda text: "No tasks currently running" not in text,
+            lambda text: (
+                "No tasks currently running" not in text
+                and _claude_background_task_menu(text) is None
+            ),
             "the prompt after closing the background-task view",
         )
 

@@ -21,7 +21,9 @@ The live fixture compares configuration before and after the journey, even on fa
 CUJs never republish configuration or create a remote reservation.
 CUJ helper tests also verify that unsupported agent names fail rather than defaulting to Codex.
 Offline PTY checks verify that the Claude background-task wait observes "No tasks currently
-running" before sending `/exit`, without stopping tasks or confirming an exit dialog.
+running" or a native task menu containing only completed rows before sending `/exit`, without
+stopping tasks or confirming an exit dialog. Running/scheduled sections, incomplete row counts,
+and completed-task text outside the native menu cannot satisfy the wait.
 The live Claude subagent skill-toggle journey uses this wait after its final calculation.
 They cover Claude/Codex helper dispatch and rejection of routing decisions without
 the agent-specific prompt-submission evidence.

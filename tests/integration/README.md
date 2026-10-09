@@ -47,9 +47,14 @@ The existing unit tests keep their fixtures. Integration has an independent
 pytest configuration and uses `--confcutdir` so those fixtures cannot leak in.
 It is not collected by the default `uv run pytest` command.
 The Claude subagent skill-toggle journey opens `/tasks` after its final calculation
-and waits up to 180 seconds for "No tasks currently running" before submitting `/exit`.
+and waits up to 180 seconds for "No tasks currently running" or a native menu containing only
+completed task rows before submitting `/exit`. Claude 2.1.290 retains finished children in a
+`Completed (N)` list, so the empty-state message is not required when the list has exactly N
+checkmarked `done` rows and no running or scheduled section. The helper observes menu dismissal
+after Escape before typing `/exit`. Offline PTY checks reject active/scheduled tasks, partial
+lists, and completed-task text outside the native menu.
 It neither stops tasks nor confirms an exit dialog. Process exit retains its 30-second
-timeout. Offline PTY checks cover this ordering; a live 2.1.290 run is still required.
+timeout. Offline PTY checks cover this ordering.
 
 `TestChildStdoutLaunch` in `../test_cli.py` covers clean Claude print-mode and
 Codex exec/app-server stdout, early launch errors, and forwarding through ug's `--`.

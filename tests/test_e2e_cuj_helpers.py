@@ -211,9 +211,40 @@ time.sleep(30)
 
 
 @requires_pty
-@pytest.mark.parametrize("complete", [True, False])
-def test_claude_waits_for_background_task_completion_before_exit(tmp_path, complete):
+@pytest.mark.parametrize(
+    "view", ["empty", "completed", "running", "mixed", "scheduled", "partial", "transcript"]
+)
+def test_claude_waits_for_background_task_completion_before_exit(tmp_path, view):
     """An offline terminal fixture requires /tasks, completion, Escape, then /exit."""
+    views = {
+        "empty": "No tasks currently running",
+        "completed": (
+            "Background\n\n  Completed (2)\n"
+            "❯ ✔ ug_subagent_two   done · Haiku 4.5\n"
+            "  ✔ ug_subagent_one   done · Sonnet 5\n\n"
+            "↑/↓ to select · Enter to view · Esc to close"
+        ),
+        "running": (
+            "Background\n\n  Running (1)\n❯ ug_subagent_one   running · Sonnet 5\n\n"
+            "↑/↓ to select · Enter to view · Esc to close"
+        ),
+        "mixed": (
+            "Background\n\n  Running (1)\n❯ ug_subagent_one   running · Sonnet 5\n"
+            "  Completed (1)\n  ✔ ug_subagent_two   done · Haiku 4.5\n\n"
+            "↑/↓ to select · Enter to view · Esc to close"
+        ),
+        "scheduled": (
+            "Background\n\n  Scheduled (1)\n❯ scheduled task · Runs once in 1m\n"
+            "  Completed (1)\n  ✔ ug_subagent_two   done · Haiku 4.5\n\n"
+            "↑/↓ to select · Enter to view · Esc to close"
+        ),
+        "partial": (
+            "Background\n\n  Completed (2)\n❯ ✔ ug_subagent_one   done · Sonnet 5\n\n"
+            "↑/↓ to select · Enter to view · Esc to close"
+        ),
+        "transcript": ("Background\n\n  Completed (1)\n✔ ug_subagent_one   done · Sonnet 5\n\n❯"),
+    }
+    complete = view in ("empty", "completed")
     script = tmp_path / "ug"
     script.write_text(
         f"""#!{sys.executable}
@@ -225,13 +256,10 @@ import tty
 print("❯", flush=True)
 assert sys.stdin.readline().strip() == "/tasks"
 print("Background tasks: scheduled task · Runs once in 1m", flush=True)
-if not {complete!r}:
-    time.sleep(30)
-    raise SystemExit(1)
 time.sleep(0.8)
 previous = termios.tcgetattr(sys.stdin.fileno())
 tty.setraw(sys.stdin.fileno())
-print("\\x1b[2J\\x1b[HNo tasks currently running", flush=True)
+print("\\x1b[2J\\x1b[H" + {views[view]!r}.replace("\\n", "\\r\\n"), flush=True)
 assert sys.stdin.read(1) == "\\x1b"
 termios.tcsetattr(sys.stdin.fileno(), termios.TCSANOW, previous)
 print("\\x1b[2J\\x1b[H❯", flush=True)
@@ -250,10 +278,10 @@ assert sys.stdin.readline().strip() == "/exit"
                 for action in tui.actions
                 if action["reason"] == "close the completed background-task view"
             )
-            assert "No tasks currently running" in close["screen_before"]
+            assert views[view].splitlines()[0] in close["screen_before"]
         else:
             with pytest.raises(AssertionError, match="task view reporting no running tasks"):
-                tui.wait_for_background_tasks(timeout=0.3)
+                tui.wait_for_background_tasks(timeout=2)
             assert not tui.ended
             assert not any("/exit" in action["keys"] for action in tui.actions)
 
