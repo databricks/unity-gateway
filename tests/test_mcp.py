@@ -3477,8 +3477,9 @@ class TestReconcileManagedMcpServers:
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
 
-        def claude_reconcile(state, servers):
+        def claude_reconcile(state, servers, *, also_registered=()):
             captured["claude"] = servers
+            captured["claude_also_registered"] = sorted(also_registered)
             return claude_delivered
 
         def codex_reconcile(state, servers):
@@ -3586,6 +3587,8 @@ class TestReconcileManagedMcpServers:
             {"mcp_servers": {"names": ["system.ai.github"]}}, {"claude", "codex"}
         )
         assert captured["claude"] == {}
+        # The user-scope fallback is still a server ug registers, so a Claude allowlist must admit it.
+        assert captured["claude_also_registered"] == ["sg"]
         assert "sg" in captured["codex"]
         assert applied["working"] == [{"name": "sg", "url": "u", "clients": ["claude"]}]
         assert saved["managed_mcp_servers"] == [{"name": "sg", "url": "u", "clients": ["claude"]}]

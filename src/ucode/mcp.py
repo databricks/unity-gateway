@@ -1114,8 +1114,21 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
             if is_eligible
             else {}
         )
+        # Claude also needs every server ug registers elsewhere, so an admin MCP allowlist keeps them.
+        extra = (
+            {
+                "also_registered": [
+                    n
+                    for s in working
+                    if "claude" in _mcp_server_clients(s)
+                    if (n := _server_name(s))
+                ]
+            }
+            if agent == "claude"
+            else {}
+        )
         try:
-            written = module.reconcile_managed_mcp(state, entries)
+            written = module.reconcile_managed_mcp(state, entries, **extra)
         except RuntimeError as exc:
             print_warning(f"Could not update {MCP_CLIENTS[agent]['display']} managed MCP: {exc}")
             written = False

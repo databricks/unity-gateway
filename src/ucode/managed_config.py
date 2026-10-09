@@ -154,6 +154,8 @@ class AgentConfig:
     models: AgentModels | None = None
     smart_routing_enabled: bool = False
     otel_tracing_enabled: bool | None = None
+    # Harness-native settings delivered verbatim into the agent's managed settings file.
+    settings: dict | None = None
 
     @classmethod
     def from_wire(cls, config: object) -> AgentConfig:
@@ -169,6 +171,7 @@ class AgentConfig:
             models=agent_models,
             smart_routing_enabled=smart_routing.get("enabled") is True,
             otel_tracing_enabled=_tracing_enabled(config_dict.get("tracing")),
+            settings=_as_dict(config_dict.get("agent_native_settings")) or None,
         )
 
     def to_internal(self) -> dict:
@@ -183,6 +186,8 @@ class AgentConfig:
             result["model_config"] = model_config
         if self.otel_tracing_enabled is not None:
             result["otel_tracing_enabled"] = self.otel_tracing_enabled
+        if self.settings:
+            result["agent_native_settings"] = self.settings
         return result
 
 
