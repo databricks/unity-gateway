@@ -12,9 +12,9 @@ There are two lanes:
 - Native (Linux and Windows). GitHub's Windows runners can't run Linux
   containers, so `run_native.py` runs the tasks in `tasks/` on the host.
 
-The default TB2 subset was picked to make the agent spawn subagents, use a range
-of tools, and touch system state (services, global installs, git history
-rewrites). Change it with the workflow's `tb2_tasks` input.
+The default TB2 subset is a small set of realistic tasks that go through the
+same paths: images, documents, a long text edit, system services, and a
+background server. Change it with the workflow's `tb2_tasks` input.
 
 ## Tasks
 
@@ -39,6 +39,9 @@ prints the tasks for an agent.
 | `image-code` | Reading an image through the gateway | Both |
 | `web-fetch` | Fetching a pinned URL | Both |
 | `resume-session` | Two steps: the second resumes the first session and recalls a value | Both |
+| `project-skill` | A project skill's procedure is followed, including its script | Claude |
+| `background-shell` | A job longer than the default command timeout is run in the background and its output captured | Both |
+| `pdf-extract` | Reading a value from a PDF with a compressed text stream | Both |
 | `log-triage` | Independent per-service work that can fan out to subagents | Both |
 | `fix-failing-tests` | Run tests, edit, rerun | Both |
 | `scrub-git-secret` | Destructive git history rewrite across branches | Both |

@@ -10,7 +10,7 @@ on:
     inputs:
       tb2_tasks:
         description: Comma-separated Terminal Bench 2 task names for the Linux Harbor lane
-        default: git-multibranch,financial-document-processor,hf-model-inference,nginx-request-logging,sanitize-git-repo,git-leak-recovery,multi-source-data-merger,kv-store-grpc
+        default: fix-git,financial-document-processor,code-from-image,chess-best-move,git-multibranch,kv-store-grpc,large-scale-text-editing
         required: true
       tb2_dataset:
         description: Harbor dataset for the TB2 lane
@@ -38,7 +38,7 @@ concurrency:
 
 env:
   PYTHONUTF8: 1
-  TB2_TASKS: ${{ inputs.tb2_tasks || 'git-multibranch,financial-document-processor,hf-model-inference,nginx-request-logging,sanitize-git-repo,git-leak-recovery,multi-source-data-merger,kv-store-grpc' }}
+  TB2_TASKS: ${{ inputs.tb2_tasks || 'fix-git,financial-document-processor,code-from-image,chess-best-move,git-multibranch,kv-store-grpc,large-scale-text-editing' }}
   TB2_DATASET: ${{ inputs.tb2_dataset || 'terminal-bench@2.0' }}
   MODEL: ${{ inputs.model }}
   CLAUDE_VERSION: ${{ inputs.claude_version || '2.1.290' }}
