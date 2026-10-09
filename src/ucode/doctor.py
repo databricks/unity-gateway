@@ -22,6 +22,7 @@ from ucode.agents import (
 )
 from ucode.databricks import (
     MIN_DATABRICKS_CLI_VERSION,
+    check_databricks_auth,
     databricks_cli_installed,
     databricks_cli_version,
     has_valid_databricks_auth,
@@ -196,9 +197,16 @@ def _check_databricks_auth() -> Check | None:
         return None
     profile = state.get("profile")
     with spinner("Verifying Databricks credentials..."):
-        ok = has_valid_databricks_auth(workspace, profile)
+        ok = check_databricks_auth(workspace, profile)
     if ok:
         return Check("Databricks auth", "ok", "credentials are valid")
+    if ok is None:
+        # Logging in would hit the same unrunnable CLI, so offer no fix.
+        return Check(
+            "Databricks auth",
+            "warn",
+            "could not run the Databricks CLI to check credentials",
+        )
 
     def _login() -> bool:
         try:

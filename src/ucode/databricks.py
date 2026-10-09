@@ -1093,6 +1093,15 @@ def save_databricks_cli_oauth_profile(workspace: str, profile: str, client_id: s
 
 
 def has_valid_databricks_auth(workspace: str, profile: str | None = None) -> bool:
+    return check_databricks_auth(workspace, profile) is True
+
+
+def check_databricks_auth(workspace: str, profile: str | None = None) -> bool | None:
+    """Whether the workspace has valid credentials, or None when the CLI could not be run to check.
+
+    None covers a CLI that fails to start (e.g. Windows `Access is denied` inside an agent sandbox)
+    or times out, so callers can tell "unchecked" from "rejected".
+    """
     # Auth owned elsewhere is valid by definition: skip the `databricks auth
     # token` shell-out (which only knows user-OAuth) and any login it triggers.
     if external_bearer_configured():
@@ -1129,9 +1138,12 @@ def has_valid_databricks_auth(workspace: str, profile: str | None = None) -> boo
             return False
         data = json.loads(result.stdout or "{}")
         return bool(data.get("access_token"))
-    except (json.JSONDecodeError, OSError, subprocess.TimeoutExpired) as exc:
+    except json.JSONDecodeError as exc:
         _debug("has_valid_databricks_auth", f"exception: {type(exc).__name__}: {exc}")
         return False
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        _debug("has_valid_databricks_auth", f"exception: {type(exc).__name__}: {exc}")
+        return None
 
 
 def list_profile_entries() -> list[dict]:

@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import subprocess
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from enum import StrEnum
@@ -4145,7 +4147,16 @@ def _verify_upgraded_commands() -> None:
             )
 
 
+def _replace_unencodable_output() -> None:
+    # Redirected Windows output defaults to a legacy code page (e.g. cp1252) that can't encode the
+    # UI's check marks; replace those characters instead of crashing.
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper) and stream.errors == "strict":
+            stream.reconfigure(errors="replace")
+
+
 def main() -> None:
+    _replace_unencodable_output()
     app()
 
 

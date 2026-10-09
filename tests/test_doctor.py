@@ -151,7 +151,7 @@ class TestDatabricksAuthCheck:
     def test_ok_when_valid(self):
         with (
             patch.object(doctor_mod, "load_state", return_value={"workspace": "https://ws"}),
-            patch.object(doctor_mod, "has_valid_databricks_auth", return_value=True),
+            patch.object(doctor_mod, "check_databricks_auth", return_value=True),
         ):
             check = _check_databricks_auth()
         assert check.status == "ok"
@@ -160,18 +160,29 @@ class TestDatabricksAuthCheck:
     def test_warn_and_login_suggestion_when_invalid(self):
         with (
             patch.object(doctor_mod, "load_state", return_value={"workspace": "https://ws"}),
-            patch.object(doctor_mod, "has_valid_databricks_auth", return_value=False),
+            patch.object(doctor_mod, "check_databricks_auth", return_value=False),
         ):
             check = _check_databricks_auth()
         assert check.status == "warn"
         assert check.suggestion is not None
         assert "Log in" in check.suggestion.prompt
 
+    def test_unrunnable_cli_is_not_reported_as_invalid_credentials(self):
+        with (
+            patch.object(doctor_mod, "load_state", return_value={"workspace": "https://ws"}),
+            patch.object(doctor_mod, "check_databricks_auth", return_value=None),
+        ):
+            check = _check_databricks_auth()
+        assert check.status == "warn"
+        assert "could not run" in check.detail
+        assert "no valid credentials" not in check.detail
+        assert check.suggestion is None
+
     def test_login_fix_reports_success(self):
         with (
             patch.object(doctor_mod, "load_state", return_value={"workspace": "https://ws"}),
-            # invalid at first, then valid after login
-            patch.object(doctor_mod, "has_valid_databricks_auth", side_effect=[False, True]),
+            patch.object(doctor_mod, "check_databricks_auth", return_value=False),
+            patch.object(doctor_mod, "has_valid_databricks_auth", return_value=True),
             patch.object(doctor_mod, "run_databricks_login") as login,
         ):
             check = _check_databricks_auth()
@@ -181,7 +192,7 @@ class TestDatabricksAuthCheck:
     def test_login_fix_reports_failure_when_login_raises(self):
         with (
             patch.object(doctor_mod, "load_state", return_value={"workspace": "https://ws"}),
-            patch.object(doctor_mod, "has_valid_databricks_auth", return_value=False),
+            patch.object(doctor_mod, "check_databricks_auth", return_value=False),
             patch.object(doctor_mod, "run_databricks_login", side_effect=RuntimeError("nope")),
         ):
             check = _check_databricks_auth()
