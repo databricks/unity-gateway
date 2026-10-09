@@ -24,54 +24,6 @@ from .evidence import agent_sessions, assert_no_terminal_api_error
 SELECTED = "[›❯>]"
 
 
-READ_ONLY_COMMANDS = {
-    "cat",
-    "dir",
-    "echo",
-    "gc",
-    "gci",
-    "get-childitem",
-    "get-content",
-    "get-item",
-    "get-location",
-    "ls",
-    "pwd",
-    "test-path",
-    "type",
-}
-# Pipeline stages that only filter or project: a property comparison, read, or pass-through.
-READ_ONLY_STAGE = re.compile(
-    r"(?i)(?:where-object|\?) \{ ?\$_\.\w+ -(?:eq|ne|like|match) '[^']*' ?\}"
-    r"|(?:foreach-object|%) \{ ?\$_(?:\.\w+)? ?\}"
-    r"|select-object(?: -(?:first|last) \d+| -expandproperty \w+)*"
-)
-# A PowerShell host wrapper whose flags only change how the shell starts.
-POWERSHELL_WRAPPER = re.compile(
-    r"(?i)^(?:powershell|pwsh)(?:\.exe)?"
-    r"(?: -(?:NoProfile|NonInteractive|NoLogo|ExecutionPolicy \w+))* -(?:Command|c)\s+"
-)
-
-
-def read_only_command(line: str) -> bool:
-    """Whether a command shown in a Codex approval prompt only lists or reads files."""
-    command = POWERSHELL_WRAPPER.sub("", line.strip())
-    command = command.strip("\"'")
-    # Sequenced commands (`;`, `&&`) must each be reads; redirects and subexpressions never are.
-    if not command or re.search(r"[<>`]|\$\(|\|\||(?<!&)&(?!&)", command):
-        return False
-    return all(_read_only_pipeline(part.strip()) for part in re.split(r";|&&", command))
-
-
-def _read_only_pipeline(pipeline: str) -> bool:
-    first, *stages = (stage.strip() for stage in pipeline.split("|"))
-    return (
-        bool(first)
-        and first.split()[0].lower() in READ_ONLY_COMMANDS
-        and "{" not in first
-        and all(READ_ONLY_STAGE.fullmatch(stage) for stage in stages)
-    )
-
-
 def _claude_background_task_menu(text):
     return re.search(
         r"(?ms)^[ \t]*Background[ \t]*\n(.*?)"
@@ -232,6 +184,7 @@ class TerminalProcess:
         self.output = []
         self.actions = []
         self.ended = False
+        self.approving = False
 
     @property
     def visible(self):
@@ -550,6 +503,22 @@ class AgentTerminal(TerminalProcess):
         )
         return screen
 
+    def approve_windows_command(self, screen):
+        """Approve a Codex-on-Windows command prompt once; return whether one is showing."""
+        if "Would you like to run the following command?" not in screen:
+            self.approving = False
+            return False
+        assert self.agent == "codex" and os.name == "nt", (
+            "Agent requested an unrecognized command approval:\n" + screen
+        )
+        if not self.approving:
+            # Codex on Windows asks before every shell command. Approve so these tests
+            # exercise ug instead of the model's choice of command.
+            assert re.search(rf"(?m)^\s*{SELECTED}\s*1\.\s*Yes, proceed", screen), screen
+            self.send("\r", "approve the Codex command prompt")
+            self.approving = True
+        return True
+
     def wait_for_task(self, task, timeout=180):
         permission_in_progress = False
 
@@ -576,18 +545,7 @@ class AgentTerminal(TerminalProcess):
                 self.send("\r", f"allow read-only search for {task.filename}")
                 permission_in_progress = True
                 return False
-            if "Would you like to run the following command?" in screen:
-                if permission_in_progress:
-                    return False
-                # Codex on Windows asks before every shell command; approve only reads and listings.
-                commands = re.findall(r"(?m)^\s*\$ (.+?)\s*$", screen)
-                safe_read = bool(commands) and read_only_command(commands[-1])
-                first_yes = re.search(rf"(?m)^\s*{SELECTED}\s*1\.\s*Yes, proceed", screen)
-                assert self.agent == "codex" and os.name == "nt" and safe_read and first_yes, (
-                    "Agent requested an unrecognized command approval:\n" + screen
-                )
-                self.send("\r", f"allow read-only command while finding {task.filename}")
-                permission_in_progress = True
+            if self.approve_windows_command(screen):
                 return False
             permission_in_progress = False
             return task.completed(self.session, self.agent)
