@@ -15,6 +15,11 @@ managed-default and explicit-model cases unchanged. One additional test runs the
 `SMART_ROUTER_CONFIG_VERSION` values, checking both agents' first-prompt routing, orchestrator
 context in inference input, and completed explicitly requested routed subagents.
 This is not automatic orchestrator-delegation coverage. No workspace configuration is modified.
+Agent-specific smart-routing preset component checks cover identical existing mappings,
+complete per-agent validation, configure order, bootstrap and managed-default launch
+selection, session controls, and restoration after configuration/launch failures.
+These checks do not establish live agent coverage.
+
 CUJ3 and CUJ4 require a non-empty HTTP 200 for inference. Claude 2.1.290's known
 thinking-display 400 is accepted only when the next inference request with the same system
 context and session metadata removes `display`,

@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 import pytest
 
 from ucode.constants import (
+    AGENT_CLAUDE,
+    AGENT_CODEX,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
@@ -62,6 +66,7 @@ def test_absent_or_unknown_selector_is_a_no_op(selector):
     assert applied == original
 
 
+@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
 @pytest.mark.parametrize("ENABLE_SMART_ROUTING_V2", [None, "0", "1"])
 @pytest.mark.parametrize("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", [None, "0", "1"])
 @pytest.mark.parametrize("ENABLE_SMART_ROUTER_ORCHESTRATOR", [None, "0", "1"])
@@ -77,6 +82,7 @@ def test_absent_or_unknown_selector_is_a_no_op(selector):
     ],
 )
 def test_smart_routing_config_cartesian_grid(
+    agent,
     ENABLE_SMART_ROUTING_V2,
     ENABLE_SMART_ROUTING_SUBAGENT_ONLY,
     ENABLE_SMART_ROUTER_ORCHESTRATOR,
@@ -101,13 +107,13 @@ def test_smart_routing_config_cartesian_grid(
     if SMART_ROUTER_CONFIG_VERSION is not None:
         expected.update(_EXPECTED_PRESETS[SMART_ROUTER_CONFIG_VERSION])
 
-    resolved = config.resolve_environment(source)
+    resolved = config.resolve_environment(source, agent=agent)
 
     assert resolved == expected
     assert source == original
 
     applied = source.copy()
-    previous = config.apply_config(applied)
+    previous = config.apply_config(applied, agent=agent)
 
     assert applied == expected
     v2.restore_smart_routing_env(previous, applied)
@@ -140,3 +146,52 @@ def test_legacy_preset_equivalence(version, expected_routing):
             v2.first_prompt_routing_enabled(environment),
             orchestrator.feature_enabled(environment),
         ) == expected_routing
+
+
+@pytest.mark.parametrize(
+    "failure", ["missing_agent", "unknown_agent", "missing_flag", "unknown_flag", "invalid_value"]
+)
+def test_agent_presets_require_complete_valid_configuration(failure):
+    agents = deepcopy(config._VERSIONS[config.SUBAGENT_ORCH_V0])
+    if failure == "missing_agent":
+        agents.pop(AGENT_CODEX)
+    elif failure == "unknown_agent":
+        agents["other"] = agents[AGENT_CODEX].copy()
+    elif failure == "missing_flag":
+        agents[AGENT_CODEX].pop(ENABLE_SMART_ROUTING_ENV_VAR)
+    elif failure == "unknown_flag":
+        agents[AGENT_CODEX]["UNKNOWN_FLAG"] = "0"
+    else:
+        agents[AGENT_CODEX][ENABLE_SMART_ROUTING_ENV_VAR] = "yes"
+    with pytest.raises(ValueError, match="Invalid smart-routing version"):
+        config._validate_versions({"invalid_v0": agents})
+
+
+def test_existing_agent_presets_are_equal_and_independent():
+    for version, expected in _EXPECTED_PRESETS.items():
+        agents = config._VERSIONS[version]
+        assert agents[AGENT_CLAUDE] == agents[AGENT_CODEX] == expected
+        assert agents[AGENT_CLAUDE] is not agents[AGENT_CODEX]
+
+
+@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
+def test_agent_resolution_and_session_controls(monkeypatch, agent, tmp_path):
+    from ucode.smart_routing import session_env
+
+    version = config.SUBAGENT_ORCH_V0
+    agents = deepcopy(config._VERSIONS[version])
+    agents[AGENT_CODEX] = dict.fromkeys(agents[AGENT_CODEX], "0")
+    monkeypatch.setitem(config._VERSIONS, version, agents)
+    source = {SMART_ROUTER_CONFIG_VERSION_ENV_VAR: version}
+    expected = agents[agent]
+    assert config.resolve_environment(source, agent=agent) == expected
+    assert v2.smart_routing_enabled(source, default=True, agent=agent) == (agent == AGENT_CLAUDE)
+    assert orchestrator.feature_enabled(source, agent=agent) == (agent == AGENT_CLAUDE)
+    control = tmp_path / "session.json"
+    control.write_text('{"ENABLE_SMART_ROUTER_ORCHESTRATOR":"0"}')
+    source[session_env.SESSION_ENV_VAR] = str(control)
+    assert session_env.effective_environment(source, agent=agent) == {
+        **expected,
+        session_env.SESSION_ENV_VAR: str(control),
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+    }

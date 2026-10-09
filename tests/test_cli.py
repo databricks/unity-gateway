@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 import tomllib
+from copy import deepcopy
 from importlib import metadata
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
@@ -24,8 +25,15 @@ from typer.testing import CliRunner
 import ucode.cli as cli_mod
 import ucode.databricks as db_mod
 from ucode.cli import app
+from ucode.constants import (
+    AGENT_CLAUDE,
+    AGENT_CODEX,
+    SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
+    SMART_ROUTING_ENV_KEYS,
+)
 from ucode.databricks import GatewayProbe
 from ucode.managed_config import normalize_managed_config
+from ucode.smart_routing import config as routing_config
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -495,6 +503,49 @@ def _launch_policy_patches(
             "launch": launch,
             "state": launch_state,
         }
+
+
+@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
+@pytest.mark.parametrize("bare", [False, True])
+@pytest.mark.parametrize("fail_launch", [False, True])
+def test_agent_preset_reaches_bootstrap_and_launch_and_is_restored(
+    monkeypatch, agent, bare, fail_launch
+):
+    version = routing_config.SUBAGENT_ORCH_V0
+    agents = deepcopy(routing_config._VERSIONS[version])
+    agents[AGENT_CODEX] = dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
+    monkeypatch.setitem(routing_config._VERSIONS, version, agents)
+    monkeypatch.setenv(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, version)
+    before = {
+        key: os.environ.get(key)
+        for key in (*SMART_ROUTING_ENV_KEYS, SMART_ROUTER_CONFIG_VERSION_ENV_VAR)
+    }
+    managed = {"default_agent": agent, "enabled_agents": {agent: {"smart_routing_enabled": True}}}
+    observed = []
+
+    def capture_launch(tool, state, args, *, options):
+        observed.append({key: os.environ.get(key) for key in SMART_ROUTING_ENV_KEYS})
+        assert options.launch_smart_routing == (agent == AGENT_CLAUDE)
+        if fail_launch:
+            raise RuntimeError("launch failed")
+
+    with _launch_policy_patches(managed) as calls:
+        calls["launch"].side_effect = capture_launch
+        monkeypatch.setattr(
+            cli_mod,
+            "ensure_bootstrap_dependencies",
+            lambda *args, **kwargs: observed.append(
+                {key: os.environ.get(key) for key in SMART_ROUTING_ENV_KEYS}
+            ),
+        )
+        monkeypatch.setattr(cli_mod, "install_databricks_cli", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            cli_mod, "refresh_managed_config", lambda *args, **kwargs: (managed, False)
+        )
+        result = runner.invoke(app, [] if bare else [agent])
+    assert result.exit_code == (1 if fail_launch else 0), result.output
+    assert observed == [agents[agent], agents[agent]]
+    assert {key: os.environ.get(key) for key in before} == before
 
 
 class TestSubcommandRouting:

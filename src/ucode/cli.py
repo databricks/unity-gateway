@@ -46,7 +46,7 @@ from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
-from ucode.constants import SMART_ROUTING_ENV_KEYS
+from ucode.constants import AGENT_CLAUDE, AGENT_CODEX, SMART_ROUTING_ENV_KEYS
 from ucode.custom_oauth import (
     CUSTOM_OAUTH_CLI_ENV_VAR,
     custom_oauth_cli_enabled,
@@ -1387,22 +1387,6 @@ _HELP_COMMAND_ORDER = (
 class _HelpOrderedGroup(TyperGroup):
     """Keep top-level help organized across commands and nested Typer apps."""
 
-    def make_context(
-        self,
-        info_name: str | None,
-        args: list[str],
-        parent: _click.Context | None = None,
-        **extra: Any,
-    ) -> _click.Context:
-        previous = smart_routing_v2.apply_config()
-        try:
-            ctx = super().make_context(info_name, args, parent, **extra)
-        except BaseException:
-            smart_routing_v2.restore_smart_routing_env(previous)
-            raise
-        ctx.call_on_close(lambda: smart_routing_v2.restore_smart_routing_env(previous))
-        return ctx
-
     def list_commands(self, ctx: _click.Context) -> list[str]:
         commands = super().list_commands(ctx)
         order = {name: index for index, name in enumerate(_HELP_COMMAND_ORDER)}
@@ -2296,7 +2280,9 @@ def codex_router_hook_cmd(
     import json
     import sys
 
-    if not smart_routing_v2.smart_routing_enabled(effective_environment()):
+    if not smart_routing_v2.smart_routing_enabled(
+        effective_environment(agent=AGENT_CODEX), agent=AGENT_CODEX
+    ):
         return
 
     from ucode.smart_routing.codex_routing import (
@@ -2375,7 +2361,9 @@ def claude_router_hook_cmd(
     import json
     import sys
 
-    if not smart_routing_v2.smart_routing_enabled(effective_environment()):
+    if not smart_routing_v2.smart_routing_enabled(
+        effective_environment(agent=AGENT_CLAUDE), agent=AGENT_CLAUDE
+    ):
         return
 
     from ucode.smart_routing.claude_routing import (
@@ -2492,12 +2480,12 @@ CAN_USE_CACHED_CONFIG_AGENTS = frozenset({"claude", "codex"})
 
 
 @contextmanager
-def _smart_routing_v2_flag(enabled: bool | None) -> Iterator[None]:
+def _smart_routing_v2_flag(enabled: bool | None, *, agent: str) -> Iterator[None]:
     """Apply an explicit routing choice without leaking into an embedding process."""
     previous = (
-        smart_routing_v2.apply_config()
+        smart_routing_v2.apply_config(agent=agent)
         if enabled is None
-        else smart_routing_v2.override_smart_routing(enabled)
+        else smart_routing_v2.override_smart_routing(enabled, agent=agent)
     )
     try:
         yield
@@ -2820,8 +2808,10 @@ def _launch_tool(
     parent_schema: str | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
 ) -> None:
+    previous = {}
     try:
         tool = normalize_tool(tool_name)
+        previous = smart_routing_v2.apply_config(agent=tool)
         if not custom_oauth_cli_enabled(custom_oauth):
             os.environ.pop(CUSTOM_OAUTH_CLI_ENV_VAR, None)
         # Before any status print: a stdio-protocol subcommand owns stdout, so
@@ -3201,7 +3191,8 @@ def _launch_tool(
             if managed_smart_routing_enabled
             and smart_routing_enabled
             and not smart_routing_v2.smart_routing_enabled()
-            else None
+            else None,
+            agent=tool,
         ):
             launch_agent(tool, state, ctx.args, options=launch_options)
     except RuntimeError as exc:
@@ -3210,6 +3201,8 @@ def _launch_tool(
     except KeyboardInterrupt:
         print_err("Interrupted.")
         raise typer.Exit(130) from None
+    finally:
+        smart_routing_v2.restore_smart_routing_env(previous)
 
 
 # Launch-only escape hatch for managed/headless launchers (e.g. omnigent) that
@@ -3297,10 +3290,9 @@ def default(
         return
     set_dry_run(dry_run)
     try:
-        with _smart_routing_v2_flag(None):
-            _launch_managed_default(
-                ctx, dry_run=dry_run, skip_preflight=skip_preflight, workspace=workspace
-            )
+        _launch_managed_default(
+            ctx, dry_run=dry_run, skip_preflight=skip_preflight, workspace=workspace
+        )
     except typer.Exit:
         # `typer.Exit` subclasses RuntimeError, so it has to be re-raised ahead of the handler
         # below. Otherwise a launch that already reported its own error is followed by
@@ -3436,7 +3428,7 @@ def codex_cmd(
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from exc
-    with _smart_routing_v2_flag(enable_smart_routing_flag):
+    with _smart_routing_v2_flag(enable_smart_routing_flag, agent=AGENT_CODEX):
         with _disable_smart_routing_for_subcommand("codex", ctx):
             _launch_tool(
                 "codex",
@@ -3524,7 +3516,7 @@ def claude_cmd(
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from exc
-    with _smart_routing_v2_flag(enable_smart_routing_flag):
+    with _smart_routing_v2_flag(enable_smart_routing_flag, agent=AGENT_CLAUDE):
         with _disable_smart_routing_for_subcommand("claude", ctx):
             _launch_tool(
                 "claude",

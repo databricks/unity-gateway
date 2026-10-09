@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 from contextlib import contextmanager, nullcontext, redirect_stdout
+from copy import deepcopy
 from unittest.mock import MagicMock
 
 import pytest
@@ -1111,3 +1112,40 @@ class TestConfiguredPaths:
         paths = configured_paths("codex", state)
         assert str(CODEX_CONFIG_PATH).replace(str(CODEX_CONFIG_PATH.home()), "~", 1) in paths
         assert "/etc/codex/managed_config.toml" in paths
+
+
+@pytest.mark.parametrize("order", [("claude", "codex"), ("codex", "claude")])
+@pytest.mark.parametrize("fail_write", [False, True])
+def test_configure_dispatch_scopes_agent_presets(monkeypatch, order, fail_write):
+    from ucode.constants import (
+        AGENT_CODEX,
+        SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
+        SMART_ROUTING_ENV_KEYS,
+    )
+    from ucode.smart_routing import config
+
+    version = config.SUBAGENT_ORCH_V0
+    agents = deepcopy(config._VERSIONS[version])
+    agents[AGENT_CODEX] = dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
+    monkeypatch.setitem(config._VERSIONS, version, agents)
+    monkeypatch.setenv(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, version)
+    before = {
+        key: os.environ.get(key)
+        for key in (*SMART_ROUTING_ENV_KEYS, SMART_ROUTER_CONFIG_VERSION_ENV_VAR)
+    }
+    for agent in order:
+
+        def write(state, *args, agent=agent, **kwargs):
+            assert {key: os.environ.get(key) for key in SMART_ROUTING_ENV_KEYS} == agents[agent]
+            assert SMART_ROUTER_CONFIG_VERSION_ENV_VAR not in os.environ
+            if fail_write:
+                raise RuntimeError("write failed")
+            return state
+
+        monkeypatch.setattr(agents_mod._MODULES[agent], "write_tool_config", write)
+        if fail_write:
+            with pytest.raises(RuntimeError, match="write failed"):
+                agents_mod.configure_tool(agent, {}, model="model")
+        else:
+            assert agents_mod.configure_tool(agent, {}, model="model") == {}
+        assert {key: os.environ.get(key) for key in before} == before
