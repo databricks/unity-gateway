@@ -2443,7 +2443,9 @@ def claude_router_hook_cmd(
         sys.stdout.write(json.dumps(output))
 
 
-def _auto_configure_tool(tool: str, custom_oauth: CustomOAuthConfig | None = None) -> None:
+def _auto_configure_tool(
+    tool: str, custom_oauth: CustomOAuthConfig | None = None, provider: str | None = None
+) -> None:
     """Configure a tool for launch without sending a separate validation prompt.
 
     The real agent session follows immediately; explicit configure retains the
@@ -2457,7 +2459,7 @@ def _auto_configure_tool(tool: str, custom_oauth: CustomOAuthConfig | None = Non
     configure_kwargs = {"custom_oauth": custom_oauth} if custom_oauth is not None else {}
     state = configure_shared_state(workspace, profile=profile, tools=[tool], **configure_kwargs)
 
-    state = configure_single_tool(tool, state)
+    state = configure_single_tool(tool, state, provider=provider)
 
     spec = TOOL_SPECS[tool]
     console.print(
@@ -2855,10 +2857,12 @@ def _launch_tool(
             skip_cli_version_check=skip_preflight,
         )
         if needs_auto_configure:
+            # Configure through this launch's --provider: a default-gateway setup would write the
+            # managed auth keys that a relayed provider's launch then refuses to start over.
             if custom_oauth is None:
-                _auto_configure_tool(tool)
+                _auto_configure_tool(tool, provider=provider)
             else:
-                _auto_configure_tool(tool, custom_oauth=custom_oauth)
+                _auto_configure_tool(tool, custom_oauth=custom_oauth, provider=provider)
         state = ensure_provider_state(tool)
         # Remembered before the fallback below collapses the two cases: a managed config may not
         # silently override a provider the user typed on the command line (it errors instead).
