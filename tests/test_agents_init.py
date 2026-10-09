@@ -1125,7 +1125,9 @@ def test_configure_dispatch_scopes_agent_presets(monkeypatch, order, fail_write)
 
     version = config.SUBAGENT_ORCH_V0
     codex_flags = dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
-    monkeypatch.setitem(config._AGENT_OVERRIDES, version, {AGENT_CODEX: codex_flags})
+    monkeypatch.setitem(
+        config._VERSIONS, version, {**config._VERSIONS[version], AGENT_CODEX: codex_flags}
+    )
     monkeypatch.setenv(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, version)
     before = {
         key: os.environ.get(key)
@@ -1135,7 +1137,7 @@ def test_configure_dispatch_scopes_agent_presets(monkeypatch, order, fail_write)
 
         def write(state, *args, agent=agent, **kwargs):
             assert {key: os.environ.get(key) for key in SMART_ROUTING_ENV_KEYS} == (
-                codex_flags if agent == AGENT_CODEX else config._VERSIONS[version]
+                codex_flags if agent == AGENT_CODEX else config._BASE_VERSIONS[version]
             )
             assert SMART_ROUTER_CONFIG_VERSION_ENV_VAR not in os.environ
             if fail_write:

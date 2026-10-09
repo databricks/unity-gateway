@@ -30,7 +30,7 @@ SUBAGENT_ORCH_V0 = "subagent_orch_v0"
 # Route only subagents with V2, subagent-only, and orchestration all enabled.
 SUBAGENT_ORCH_V1 = "subagent_orch_v1"
 
-_VERSIONS = {
+_BASE_VERSIONS = {
     FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
@@ -58,28 +58,23 @@ _VERSIONS = {
     },
 }
 
-# Only intentional agent differences belong here; omitted flags inherit the shared preset.
-# Comment each override with the reason that agent differs.
-_AGENT_OVERRIDES: dict[str, dict[str, dict[str, str]]] = {}
+# Agents share the base preset unless explicitly changed; comment any intentional difference.
+_VERSIONS = {
+    version: {AGENT_CLAUDE: flags, AGENT_CODEX: flags} for version, flags in _BASE_VERSIONS.items()
+}
 
 
-def _validate_versions(
-    versions: Mapping[str, Mapping[str, str]],
-    overrides: Mapping[str, Mapping[str, Mapping[str, str]]],
-) -> None:
-    """Require complete shared presets and valid, sparse agent overrides."""
+def _validate_versions(versions: Mapping[str, Mapping[str, Mapping[str, str]]]) -> None:
+    """Require both agents and a complete, explicit flag set for each."""
+    expected_agents = {AGENT_CLAUDE, AGENT_CODEX}
     expected = set(SMART_ROUTING_ENV_KEYS)
-    for version, agents in overrides.items():
-        if version not in versions or agents.keys() - {AGENT_CLAUDE, AGENT_CODEX}:
+    for version, agents in versions.items():
+        if agents.keys() != expected_agents:
             raise ValueError(
-                f"Invalid smart-routing version {version!r}: unknown version or agent."
+                f"Invalid smart-routing version {version!r}: "
+                f"expected agents {sorted(expected_agents)}, got {sorted(agents)}."
             )
-    for version, shared in versions.items():
-        configs = {"shared": shared}
-        configs.update(
-            {agent: {**shared, **values} for agent, values in overrides.get(version, {}).items()}
-        )
-        for agent, values in configs.items():
+        for agent, values in agents.items():
             missing = expected - values.keys()
             unexpected = values.keys() - expected
             if missing or unexpected:
@@ -95,21 +90,14 @@ def _validate_versions(
                     )
 
 
-_validate_versions(_VERSIONS, _AGENT_OVERRIDES)
-
-
-def _version_config(version: str, *, agent: str) -> dict[str, str] | None:
-    shared = _VERSIONS.get(version)
-    if shared is None or agent not in (AGENT_CLAUDE, AGENT_CODEX):
-        return None
-    return {**shared, **_AGENT_OVERRIDES.get(version, {}).get(agent, {})}
+_validate_versions(_VERSIONS)
 
 
 def resolve_environment(env: Mapping[str, str] | None = None, *, agent: str) -> dict[str, str]:
     """Expand a version before applying any launch or session-specific overrides."""
     resolved = dict(os.environ if env is None else env)
     version = resolved.pop(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, "").strip()
-    resolved.update(_version_config(version, agent=agent) or {})
+    resolved.update(_VERSIONS.get(version, {}).get(agent, {}))
     return resolved
 
 
@@ -119,7 +107,7 @@ def apply_config(
     """Consume the launch selector, returning the values needed to restore its input."""
     target = os.environ if env is None else env
     version = target.get(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, "").strip()
-    preset = _version_config(version, agent=agent)
+    preset = _VERSIONS.get(version, {}).get(agent)
     if preset is None:
         return {}
     keys = (*SMART_ROUTING_ENV_KEYS, SMART_ROUTER_CONFIG_VERSION_ENV_VAR)

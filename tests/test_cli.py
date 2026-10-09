@@ -512,7 +512,11 @@ def test_agent_preset_reaches_bootstrap_and_launch_and_is_restored(
 ):
     version = routing_config.SUBAGENT_ORCH_V0
     codex_flags = dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
-    monkeypatch.setitem(routing_config._AGENT_OVERRIDES, version, {AGENT_CODEX: codex_flags})
+    monkeypatch.setitem(
+        routing_config._VERSIONS,
+        version,
+        {**routing_config._VERSIONS[version], AGENT_CODEX: codex_flags},
+    )
     monkeypatch.setenv(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, version)
     before = {
         key: os.environ.get(key)
@@ -542,7 +546,7 @@ def test_agent_preset_reaches_bootstrap_and_launch_and_is_restored(
         )
         result = runner.invoke(app, [] if bare else [agent])
     assert result.exit_code == (1 if fail_launch else 0), result.output
-    expected = codex_flags if agent == AGENT_CODEX else routing_config._VERSIONS[version]
+    expected = codex_flags if agent == AGENT_CODEX else routing_config._BASE_VERSIONS[version]
     assert observed == [expected, expected]
     assert {key: os.environ.get(key) for key in before} == before
 
