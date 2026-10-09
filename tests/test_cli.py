@@ -97,7 +97,9 @@ class TestHelp:
 
     def test_help_groups_commands_by_workflow(self):
         result = runner.invoke(app, ["--help"])
-        output = _strip_ansi(result.output)
+        # Rich substitutes rounded box corners for square ones on legacy Windows
+        # consoles; normalize so the panel lookups below are platform-agnostic.
+        output = _strip_ansi(result.output).replace("┌", "╭")
 
         assert result.exit_code == 0
         panels = {
@@ -998,7 +1000,10 @@ class TestSubcommandRouting:
 
     def test_claude_v2_first_prompt_hook_is_disabled_without_flag(self, monkeypatch):
         monkeypatch.delenv("ENABLE_SMART_ROUTING_V2", raising=False)
-        with patch("ucode.smart_routing.claude_pty.request_first_prompt_route") as mock_request:
+        # A stub module keeps this check importable where the POSIX-only PTY module is not.
+        claude_pty_stub = MagicMock()
+        mock_request = claude_pty_stub.request_first_prompt_route
+        with patch.dict(sys.modules, {"ucode.smart_routing.claude_pty": claude_pty_stub}):
             result = runner.invoke(
                 app,
                 ["claude-router-hook", "route-first-prompt", "--socket", "/tmp/v2.sock"],
@@ -2025,8 +2030,9 @@ class TestStatus:
         assert "Manage:" not in result.output
         assert "Config file" not in result.output
         assert "System settings" not in result.output
+        # Rounded corners render as square on legacy Windows consoles; accept either.
         panel_tops = [
-            line for line in _strip_ansi(result.output).splitlines() if line.startswith("╭")
+            line for line in _strip_ansi(result.output).splitlines() if line.startswith(("╭", "┌"))
         ]
         assert len({len(line) for line in panel_tops}) == 1
 
@@ -3820,6 +3826,8 @@ class TestConfigureAgentsSelection:
         managed = {
             "enabled_agents": {"codex": {"model_config": {"unity_catalog_location": "main.models"}}}
         }
+        monkeypatch.setattr(cli_mod, "install_databricks_cli", MagicMock())
+        monkeypatch.setattr(cli_mod, "install_tool_binary", MagicMock())
         monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
         refresh = MagicMock(return_value=(managed, False))
         monkeypatch.setattr(cli_mod, "refresh_managed_config", refresh)

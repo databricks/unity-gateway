@@ -92,6 +92,7 @@ def test_dedicated_cuj_ci_runs_each_discovered_file_on_its_own_runner():
     assert "test_cuj" not in job
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="dedicated-cuj-plan runs on Linux")
 def test_every_cuj_file_is_discovered_with_a_unique_check_name(tmp_path):
     root = Path(__file__).parent.parent
     entries, stderr = _discover_cujs(root, tmp_path / "github-output")
@@ -108,6 +109,7 @@ def test_every_cuj_file_is_discovered_with_a_unique_check_name(tmp_path):
         assert entry["name"].startswith(f"CUJ {number.group(1)} · "), entry
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="dedicated-cuj-plan runs on Linux")
 def test_cuj_discovery_fails_for_a_file_without_a_check_name(tmp_path):
     cujs = tmp_path / "tests/e2e_cuj"
     cujs.mkdir(parents=True)
@@ -133,6 +135,7 @@ SKIPPED_ON_FORK_PRS = {
     "full",
     "opencode",
     "managed",
+    "managed-opencode",
     "dedicated-cuj-plan",
     "dedicated-cuj",
     "cujs",
@@ -175,7 +178,7 @@ def test_windows_integration_ci_uses_shared_claude_version():
     workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
     contents = workflow.read_text()
 
-    assert "  CLAUDE_VERSION: ${{ inputs.claude_version || '2.1.280' }}" in contents
+    assert "  CLAUDE_VERSION: ${{ inputs.claude_version || '2.1.290' }}" in contents
     assert contents.count('"--claude-version", $env:CLAUDE_VERSION,') == 2
 
 
@@ -183,6 +186,8 @@ def test_windows_integration_ci_uses_shared_claude_version():
     "failed_job",
     [
         "installation",
+        "installation-windows",
+        "headless-windows",
         "workspace",
         "smoke",
         "full",
@@ -201,6 +206,8 @@ def test_integration_ci_gate_requires_every_job(failed_job, job_result):
         job: {"result": "success"}
         for job in (
             "installation",
+            "installation-windows",
+            "headless-windows",
             "workspace",
             "smoke",
             "full",

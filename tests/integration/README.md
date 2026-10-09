@@ -6,12 +6,14 @@ It reuses the session, terminal, file-task, and transcript helpers in `utils/`.
 Its Claude/Codex evidence helpers keep scenario-specific assertions separate from shared mechanics.
 Workspace config/catalog reads use its base class's Databricks SDK client. Configuration
 is read-only and checked for changes at teardown; concurrent readers need no reservation.
-CUJ2 adds three separately collected cases for exact MPS/MCP configuration, Codex inference,
-and Claude inference.
+CUJ2 adds three separately collected cases for exact published MPS/MCP configuration, Codex
+inference, and Claude inference. The config equality also accounts for the workspace's fixture
+skill name as data; skill download and invocation are not covered.
 
 The [catalog discovery journey](../e2e_cuj/README.md) uses the CUJ3 workspace to check
 agent-compatible pickers, schema exclusions, configured defaults, and real inference.
-CI collects it through the shared `dedicated-cuj` job.
+CI collects it through the shared `dedicated-cuj` job. Its request checks accept the known
+Claude thinking-display 400 only with a successful, otherwise identical native retry.
 
 This suite runs the **installed product** through subprocesses, against the same
 `UCODE_TEST_WORKSPACE` used by the existing e2e tests. It does not import `ucode`,
@@ -557,8 +559,13 @@ disjoint agent lanes:
 
 A non-blocking **OpenCode** job (`live and opencode`, one case) runs alongside them with
 `continue-on-error` and is not part of the required `cujs` gate until it is stable.
+A second non-blocking job, **Managed OpenCode self-managed** (`managed_fixture and opencode`, two cases
+in `test_ug_agents_self_managed.py`), installs Claude, Codex and OpenCode and runs against the
+managed e2e workspace (`E2E_ADMIN_WORKSPACE`) with the injected `managed_workspace_default` config,
+which enables Claude/Codex but not OpenCode. It is likewise outside `cujs`.
 
-Each lane installs only its agent CLI, once, and runs all its configure, headless,
+Each lane installs only the agent CLIs it needs (one, except the managed OpenCode lane's
+three), once, and runs all its configure, headless,
 commands, lifecycle, and applicable app-server journeys. Cases remain serial
 inside each fresh VM because configure/revert can touch machine-level settings;
 separate runners isolate those writes as well as the PTYs. Claude and Codex run

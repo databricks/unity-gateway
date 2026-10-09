@@ -1,6 +1,8 @@
 """Offline checks for CUJ bearer minting, leak reporting, terminal waits, and task helpers."""
 
+import gzip
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,7 +13,13 @@ from tests.e2e_cuj import test_cuj2_mps_mcp as cuj2
 from tests.e2e_cuj import test_cuj3_mcp as mcp_registration
 from tests.e2e_cuj.base import bearer
 from tests.e2e_cuj.helpers import poll as poll_module
-from tests.e2e_cuj.helpers.constants import CLAUDE, CLAUDE_HAIKU_MODEL, CODEX, CodingAgent
+from tests.e2e_cuj.helpers.constants import (
+    CLAUDE,
+    CLAUDE_HAIKU_MODEL,
+    CODEX,
+    INFERENCE_PATHS,
+    CodingAgent,
+)
 from tests.e2e_cuj.helpers.evidence import assert_models, claude_file_task
 from tests.e2e_cuj.helpers.poll import poll
 from tests.e2e_cuj.helpers.session import (
@@ -22,7 +30,7 @@ from tests.e2e_cuj.helpers.session import (
 )
 from tests.e2e_cuj.helpers.terminal import Terminal
 from tests.e2e_cuj.helpers.workspace import Workspace
-from tests.e2e_cuj.test_cuj3_models import _catalog_display_names
+from tests.e2e_cuj.test_cuj3_models import _assert_inference_evidence, _catalog_display_names
 
 
 def _client(headers):
@@ -84,7 +92,7 @@ def test_teardown_leak_names_the_culprit(tmp_path, monkeypatch):
     assert paths[0].exists(), "Leak handling must not touch machine-wide files"
     message = dirty_runner_message(leak)
     assert "TestLeaky" in message
-    assert str(paths[0]) in message
+    assert repr(str(paths[0])) in message
 
 
 def test_clean_teardown_records_no_leak(tmp_path, monkeypatch):
@@ -95,6 +103,9 @@ def test_clean_teardown_records_no_leak(tmp_path, monkeypatch):
     assert dirty_runner_message(leak) == (
         "Existing machine-wide agent settings; use a clean disposable runner. Nothing was changed."
     )
+
+
+requires_pty = pytest.mark.skipif(sys.platform == "win32", reason="Terminal needs a POSIX PTY")
 
 
 def _fake_ug(tmp_path, body):
@@ -115,6 +126,7 @@ def test_terminal_rejects_a_missing_unsupported_or_mismatched_agent(tmp_path, ar
         Terminal(session, "rejected", args, agent=agent)
 
 
+@requires_pty
 def test_wait_until_rejects_a_permission_prompt(tmp_path):
     session = _fake_ug(tmp_path, "echo 'Do you want to proceed?'\nsleep 30\n")
     with Terminal(session, "rejects", [], agent=CLAUDE) as tui:
@@ -122,6 +134,7 @@ def test_wait_until_rejects_a_permission_prompt(tmp_path):
             tui.wait_until(lambda: False, "never", timeout=10)
 
 
+@requires_pty
 def test_wait_until_completes_when_done(tmp_path):
     done = tmp_path / "done"
     session = _fake_ug(tmp_path, f"echo working\ntouch '{done}'\nsleep 30\n")
@@ -130,6 +143,7 @@ def test_wait_until_completes_when_done(tmp_path):
         assert "working" in tui.visible
 
 
+@requires_pty
 def test_wait_until_lets_on_screen_answer_an_expected_dialog(tmp_path):
     done = tmp_path / "done"
     session = _fake_ug(
@@ -237,6 +251,105 @@ def test_catalog_display_names_rejects_repeated_pages(pages, message):
         _catalog_display_names(workspace, CLAUDE, "ug_e2e.models")
 
 
+@pytest.fixture
+def thinking_display_exchange():
+    model = "ug_e2e.models.claude_sonnet"
+    task = SimpleNamespace(prompt="Read the task file")
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": task.prompt}],
+        "thinking": {"type": "adaptive", "display": "updates"},
+        "output_config": {"effort": "high"},
+    }
+    requests = [
+        SimpleNamespace(method="POST", path=INFERENCE_PATHS[CLAUDE], payload=payload),
+        SimpleNamespace(
+            method="POST",
+            path=INFERENCE_PATHS[CLAUDE],
+            payload={**payload, "thinking": {"type": "adaptive"}},
+        ),
+    ]
+    error = json.dumps(
+        {
+            "error_code": "BAD_REQUEST",
+            "message": json.dumps(
+                {"message": "thinking.adaptive.display: Input should be 'summarized', 'omitted'"}
+            ),
+        }
+    ).encode()
+    responses = [
+        SimpleNamespace(status_code=400, headers={}, body=error),
+        SimpleNamespace(status_code=200, headers={}, body=b"successful stream"),
+    ]
+    recorder = SimpleNamespace(
+        requests_after=lambda checkpoint: requests,
+        response_for=lambda request, timeout: responses[requests.index(request)],
+    )
+    return recorder, requests, responses, task, model
+
+
+@pytest.mark.parametrize("compressed", [False, True])
+def test_catalog_inference_accepts_verified_thinking_display_recovery(
+    thinking_display_exchange, compressed
+):
+    recorder, _, responses, task, model = thinking_display_exchange
+    if compressed:
+        responses[0].body = gzip.compress(responses[0].body)
+        responses[0].headers = {"content-encoding": "gzip"}
+    _assert_inference_evidence(recorder, 0, CLAUDE, task, model)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "unrelated_400",
+        "malformed_error",
+        "server_error",
+        "missing_retry",
+        "failed_retry",
+        "empty_retry",
+        "changed_model",
+        "changed_effort",
+        "changed_prompt",
+        "display_retained",
+        "wrong_display",
+        "codex",
+    ],
+)
+def test_catalog_inference_rejects_unverified_recovery(thinking_display_exchange, failure):
+    recorder, requests, responses, task, model = thinking_display_exchange
+    agent = CLAUDE
+    if failure == "unrelated_400":
+        responses[0].body = responses[0].body.replace(b"thinking.adaptive.display", b"other.field")
+    elif failure == "malformed_error":
+        responses[0].body = b"not JSON"
+    elif failure == "server_error":
+        responses[0].status_code = 500
+    elif failure == "missing_retry":
+        requests.pop()
+    elif failure == "failed_retry":
+        responses[1].status_code = 400
+    elif failure == "empty_retry":
+        responses[1].body = b""
+    elif failure == "changed_model":
+        requests[1].payload["model"] = "ug_e2e.models.claude_haiku"
+    elif failure == "changed_effort":
+        requests[1].payload["output_config"] = {}
+    elif failure == "changed_prompt":
+        requests[1].payload["messages"] = [{"role": "user", "content": "A different task"}]
+    elif failure == "display_retained":
+        requests[1].payload["thinking"] = {"type": "adaptive", "display": "updates"}
+    elif failure == "wrong_display":
+        requests[0].payload["thinking"] = {"type": "adaptive", "display": "summarized"}
+    elif failure == "codex":
+        agent = CODEX
+        for request in requests:
+            request.path = INFERENCE_PATHS[CODEX]
+            request.payload["input"] = task.prompt
+    with pytest.raises(AssertionError):
+        _assert_inference_evidence(recorder, 0, agent, task, model)
+
+
 def test_assert_models_maps_native_aliases():
     alias = "anthropic.claude-haiku-4-5-20251001-v1:0"
     assert_models([alias, CLAUDE_HAIKU_MODEL], CLAUDE_HAIKU_MODEL)
@@ -290,16 +403,17 @@ def test_mcp_completion_accepts_a_fenced_reply(monkeypatch):
 
 
 def test_cuj2_mcp_listing_retries_a_banner_only_claude_listing(tmp_path, monkeypatch):
+    suffix = ".EXE" if sys.platform == "win32" else ""
     for agent in (CLAUDE, CODEX):
-        (tmp_path / agent).write_text("#!/bin/sh\n")
-        (tmp_path / agent).chmod(0o755)
+        (tmp_path / f"{agent}{suffix}").write_text("#!/bin/sh\n")
+        (tmp_path / f"{agent}{suffix}").chmod(0o755)
     banner = "Checking MCP server health…\n\n\n"
     rows = f"{cuj2.registered_name(cuj2.SANDBOX_MCP_SERVICE_NAME)}: ug mcp-proxy - ✓ Connected\n"
     outputs = {CLAUDE: [banner, rows], CODEX: [rows]}
     calls = []
 
     def run(*args, binary, timeout):
-        agent = Path(binary).name
+        agent = Path(binary).stem
         calls.append(agent)
         return SimpleNamespace(stdout=outputs[agent].pop(0), stderr="")
 

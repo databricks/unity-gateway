@@ -24,7 +24,7 @@ def test_ug_codex_app_help(live_session, workspace, routing):
         "--disable-databricks-ai-tools",
     )
     session.env["ENABLE_SMART_ROUTING_V2"] = routing
-    expected = session.run("app", "--help", binary="codex").stdout.strip()
+    expected = session.run("app", "--help", binary=session.which("codex")).stdout.strip()
     actual = session.run("codex", "--", "app", "--help").stdout
     assert expected and expected in actual, actual
     session.assert_not_routed()
@@ -49,7 +49,7 @@ def test_ug_codex_app_server_help(live_session, workspace, routing):
         "--disable-databricks-ai-tools",
     )
     session.env["ENABLE_SMART_ROUTING_V2"] = routing
-    expected = session.run("app-server", "--help", binary="codex").stdout.strip()
+    expected = session.run("app-server", "--help", binary=session.which("codex")).stdout.strip()
     actual = session.run("codex", "--", "app-server", "--help").stdout
     assert expected and expected in actual, actual
     session.assert_not_routed()
@@ -74,7 +74,7 @@ def test_ug_codex_exec_help(live_session, workspace, routing):
         "--disable-databricks-ai-tools",
     )
     session.env["ENABLE_SMART_ROUTING_V2"] = routing
-    expected = session.run("exec", "--help", binary="codex").stdout.strip()
+    expected = session.run("exec", "--help", binary=session.which("codex")).stdout.strip()
     actual = session.run("codex", "--", "exec", "--help").stdout
     assert expected and expected in actual, actual
     session.assert_not_routed()
@@ -99,7 +99,7 @@ def test_ug_codex_mcp_help(live_session, workspace, routing):
         "--disable-databricks-ai-tools",
     )
     session.env["ENABLE_SMART_ROUTING_V2"] = routing
-    expected = session.run("mcp", "--help", binary="codex").stdout.strip()
+    expected = session.run("mcp", "--help", binary=session.which("codex")).stdout.strip()
     actual = session.run("codex", "--", "mcp", "--help").stdout
     assert expected and expected in actual, actual
     session.assert_not_routed()
@@ -125,7 +125,7 @@ def test_ug_codex_app_reports_unknown_argument(live_session, workspace, routing)
     )
     session.env["ENABLE_SMART_ROUTING_V2"] = routing
     args = ["app", "--ug-integration-unknown-option"]
-    expected = session.run(*args, binary="codex", ok=False)
+    expected = session.run(*args, binary=session.which("codex"), ok=False)
     actual = session.run("codex", *args, ok=False)
     assert expected.returncode != 0 and "error:" in expected.stderr
     assert actual.returncode == expected.returncode

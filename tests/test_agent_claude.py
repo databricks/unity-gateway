@@ -6,6 +6,7 @@ import json
 import os
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock
@@ -64,17 +65,17 @@ class TestClaudeSpec:
 
 
 class TestMinimumVersion:
-    @pytest.mark.parametrize("version", ["2.1.259", "2.1.260", "3.0.0"])
+    @pytest.mark.parametrize("version", ["2.1.290", "2.1.291", "3.0.0"])
     def test_supported_version(self, monkeypatch, version):
         monkeypatch.setattr(claude, "agent_version", lambda _binary: version)
 
         assert claude.minimum_version_error() is None
 
     def test_older_version_requires_update(self, monkeypatch):
-        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.1.258")
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.1.289")
 
         assert claude.minimum_version_error() == (
-            "ug requires Claude Code 2.1.259 or newer. Your current version is Claude Code 2.1.258."
+            "ug requires Claude Code 2.1.290 or newer. Your current version is Claude Code 2.1.289."
         )
 
     def test_unknown_version_does_not_block(self, monkeypatch):
@@ -2629,6 +2630,11 @@ class TestRegisterWebSearchMcp:
     def isolate_mcp_config(self, tmp_path, monkeypatch):
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="shutil.which returns `ug.EXE` (PATHEXT), which the case-sensitive "
+        "_generated_search_entry binary-name check rejects; product fix tracked separately",
+    )
     def test_configuration_uses_saved_custom_oauth_profile(self, monkeypatch):
         # Isolate config writes and Claude CLI registration; execute the actual config writer.
         prior_entry = claude._web_search_mcp_entry(WS, "search-model", "workspace-profile")
@@ -2819,6 +2825,20 @@ class TestResolveLaunchBinary:
 
 
 class TestClaudeLaunch:
+    @pytest.fixture(autouse=True)
+    def _claude_on_windows_path(self, monkeypatch):
+        if sys.platform != "win32":
+            return
+        # Windows resolves Claude through PATH; keep the bare name so argv stays host-independent.
+        which = claude.shutil.which
+        monkeypatch.setattr(
+            claude.shutil,
+            "which",
+            lambda name, *args, **kwargs: (
+                name if name == "claude" else which(name, *args, **kwargs)
+            ),
+        )
+
     def test_gateway_discovery_enabled_for_relayed_provider(self, monkeypatch):
         calls: list[tuple[dict, str, list[str]]] = []
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")

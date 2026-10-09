@@ -24,7 +24,7 @@ def test_ug_claude_auth_help(live_session, workspace, routing):
         "--disable-databricks-ai-tools",
     )
     session.env["ENABLE_SMART_ROUTING_V2"] = routing
-    expected = session.run("auth", "--help", binary="claude").stdout.strip()
+    expected = session.run("auth", "--help", binary=session.which("claude")).stdout.strip()
     actual = session.run("claude", "--", "auth", "--help").stdout
     assert expected and expected in actual, actual
     session.assert_not_routed()
@@ -49,7 +49,7 @@ def test_ug_claude_mcp_help(live_session, workspace, routing):
         "--disable-databricks-ai-tools",
     )
     session.env["ENABLE_SMART_ROUTING_V2"] = routing
-    expected = session.run("mcp", "--help", binary="claude").stdout.strip()
+    expected = session.run("mcp", "--help", binary=session.which("claude")).stdout.strip()
     actual = session.run("claude", "--", "mcp", "--help").stdout
     assert expected and expected in actual, actual
     session.assert_not_routed()
