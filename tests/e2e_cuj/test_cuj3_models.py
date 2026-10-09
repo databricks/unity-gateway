@@ -121,6 +121,11 @@ def _assert_inference_evidence(recorder, checkpoint, agent, task, expected):
         request for request in inference_requests if _request_contains_task(request, agent, task)
     ]
     assert task_requests, "No inference request contained the submitted task prompt"
+    # Claude 2.1.290 sends thinking.display="updates" to custom endpoints;
+    # 2.1.280 restricted it to Anthropic's first-party base URL. This workspace
+    # rejects "updates" with 400. Claude retries without it and completes with
+    # effort="high" unchanged, but we still require every task request to return 200.
+    # Live A/B: https://github.com/databricks/unity-gateway/actions/runs/37865757991
     for request in task_requests:
         assert_served(recorder, request, expected_wire_model)
 
