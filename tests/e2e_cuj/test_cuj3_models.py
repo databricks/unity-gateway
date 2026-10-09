@@ -26,7 +26,13 @@ from .catalog_discovery_expectations import (
     OTHER_MODEL_SCHEMA,
 )
 from .helpers.constants import CLAUDE, CODEX, INFERENCE_PATHS
-from .helpers.evidence import SessionEvidence, assert_served, claude_file_task, message_text
+from .helpers.evidence import (
+    SessionEvidence,
+    assert_served,
+    claude_file_task,
+    message_text,
+    served_inference_request,
+)
 from .helpers.terminal import Terminal
 
 CUJ_NAME = "CUJ 3 · UC model discovery"
@@ -122,7 +128,8 @@ def _assert_inference_evidence(recorder, checkpoint, agent, task, expected):
     ]
     assert task_requests, "No inference request contained the submitted task prompt"
     for request in task_requests:
-        assert_served(recorder, request, expected_wire_model)
+        served = served_inference_request(recorder, task_requests, request, agent)
+        assert_served(recorder, served, expected_wire_model)
 
 
 @pytest.fixture(autouse=True)

@@ -29,6 +29,56 @@ Tests live in `tests/`.
 - Add or update focused tests for behavior changes.
 - Do not modify generated or lock files unless the dependency graph intentionally changes.
 
+## Smart-routing configuration
+
+`SMART_ROUTER_CONFIG_VERSION` is the external selector. Version definitions live in
+`src/ucode/smart_routing/config.py` under `_VERSIONS`; their managed environment keys
+are registered in `SMART_ROUTING_ENV_KEYS` in `src/ucode/constants.py`.
+An unset or empty selector preserves legacy environment-flag behavior.
+A valid nonempty selector overrides every conflicting legacy value in that registry.
+Do not use `setdefault` or preserve inherited values for version-owned parameters.
+Resolve and materialize valid selectors at the CLI boundary before argument parsing or callbacks.
+Unknown selectors are a no-op: do not apply a preset, mutate the inherited environment, or raise
+an error. Existing legacy flags and explicit launch/session controls retain their behavior.
+Restore the inherited environment on every exit.
+Explicit launch/session on/off controls still apply after version expansion.
+Managed routing defaults must not rewrite already-resolved version flags.
+
+### Adding a parameter
+
+1. Define its environment-variable constant in `src/ucode/constants.py` and add it to
+   `SMART_ROUTING_ENV_KEYS`.
+2. Set an explicit value for it in **every** `_VERSIONS` entry, including existing versions.
+   Choose values that preserve existing versions' behavior. Current parameters accept only
+   the strings `"0"` and `"1"`; do not use booleans, empty strings, or omitted keys.
+3. Add its consumer in the appropriate routing module. Use `resolve_environment` for
+   config-aware reads, or the legacy flags materialized by `apply_config` at launch.
+   Keep launch-scoped changes restorable and preserve legacy behavior without a selector.
+4. `SMART_ROUTING_ENV_KEYS` controls environment snapshots, restoration, and launch/session
+   off overrides. Keep routing activation limited to the V2 and subagent-only flags:
+   orchestration alone must not enable routing. Add regression tests for the new parameter's
+   controls. Session overrides must apply after version resolution.
+
+`_validate_versions` runs at module import and rejects missing keys, unknown keys, and
+invalid values. Do not weaken the complete-key check or infer required keys from `_VERSIONS`.
+If a new parameter needs nonbinary values, add parameter-specific validation and tests.
+
+### Adding a config type or revision
+
+1. Add a complete mapping to `_VERSIONS` with an explicit suffix, such as `new_mode_v0`.
+   For a changed existing mode, add `existing_mode_v1` rather than changing its `_v0` behavior.
+   Do not add unsuffixed names or version aliases.
+2. Define every key in `SMART_ROUTING_ENV_KEYS`; never rely on the caller's
+   inherited environment to fill missing values.
+3. Update the version table and examples in `README.md` and any affected bundled-skill docs.
+4. Extend `tests/test_smart_routing_config.py` for the new mode, precedence over legacy flags,
+   environment restoration, validation failures, and applicable session/launch behavior.
+   Update unknown-version tests when a previously rejected version becomes supported.
+   Follow `tests/AGENTS.md` and update its coverage READMEs.
+
+Run `uv run pytest tests/test_smart_routing_config.py` plus relevant routing/CLI tests,
+then `just lint`. These component checks do not establish live agent or gateway coverage.
+
 ## Style
 
 - Keep user-facing CLI errors actionable.
@@ -70,6 +120,7 @@ Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file 
 | Tracing | Ignore | Create/replace | The seven `CLAUDE_CODE_*`/`OTEL_*` trace keys and `otelHeadersHelper`; only when the config enables tracing |
 | `managedMcpServers` | Ignore | Merge | Add/update the config's MCP server entries; other entries left alone |
 | Smart-routing hooks | Merge | Merge | `PreToolUse`, `SessionStart`, `SubagentStart`; only `ug`'s own marked handlers, other hooks left alone |
+| Admin `agent_native_settings` | Ignore | Create/replace | Managed file only; copied as-is. Keys `ug` owns are skipped, `permissions.deny` and hooks are merged, and `ug`'s MCP servers are added to an admin `allowedMcpServers`. Removed when the admin drops them, unless edited by hand |
 | Smart Router Orchestrator hooks | Merge | Merge | Launch-only `UserPromptSubmit` and compact `SessionStart` handlers for smart-routed sessions with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`; read the same session controls as routing |
 
 </details>
