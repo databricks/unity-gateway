@@ -873,3 +873,9 @@ The runner returns nonzero on installation or test failure.
 Do not drop the mirror flags if public registries resolve to `127.0.0.1` or return
 `ECONNREFUSED`. The runner deliberately ignores host `.npmrc` and resolver settings.
 Outside the Databricks network, use reachable package indexes explicitly instead.
+
+`test_session_settings.py` covers the agent-independent session JSON store: nested merges,
+explicit removals, session isolation, malformed-state rejection, atomic write failure,
+concurrent readers, and concurrent process writers. Existing Smart Router controls retain
+their allowlist and file format through this store. These are component checks; storage
+updates alone do not prove native agent reload or live gateway behavior.
