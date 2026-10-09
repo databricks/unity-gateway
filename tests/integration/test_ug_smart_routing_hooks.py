@@ -79,7 +79,16 @@ def _routing_banner_for_task(screen: str, marker: str, *, orchestrator_on: bool)
     return False
 
 
-def _run_calculation(tui, session, agent: str, expression: str, expected: str, *, routed: bool):
+def _run_calculation(
+    tui,
+    session,
+    agent: str,
+    expression: str,
+    expected: str,
+    orchestration_enabled: bool,
+    *,
+    routed: bool,
+):
     task = SubagentCalculation(expression, expected)
     before = _routing_decisions(session, agent)
     tui.submit(task.prompt)
@@ -89,7 +98,7 @@ def _run_calculation(tui, session, agent: str, expression: str, expected: str, *
             lambda screen: _routing_banner_for_task(
                 screen,
                 task.marker,
-                orchestrator_on=session.env.get("ENABLE_SMART_ROUTER_ORCHESTRATOR") == "1",
+                orchestrator_on=orchestration_enabled,
             ),
             f"the Smart Router subagent banner for {task.marker}",
             timeout=120,
@@ -385,7 +394,7 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
         session, "claude", [str(session.binary), "claude"], "smart-router-skill-toggle"
     ) as tui:
         tui.boot()
-        _run_calculation(tui, session, "claude", "1+1", "2", routed=True)
+        _run_calculation(tui, session, "claude", "1+1", "2", orchestration_enabled, routed=True)
         _toggle_with_skill(
             tui,
             session,
@@ -393,7 +402,7 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
             enabled=False,
             orchestration_enabled=orchestration_enabled,
         )
-        _run_calculation(tui, session, "claude", "1+2", "3", routed=False)
+        _run_calculation(tui, session, "claude", "1+2", "3", False, routed=False)
         _toggle_with_skill(
             tui,
             session,
@@ -401,7 +410,7 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
             enabled=True,
             orchestration_enabled=orchestration_enabled,
         )
-        _run_calculation(tui, session, "claude", "2+2", "4", routed=True)
+        _run_calculation(tui, session, "claude", "2+2", "4", orchestration_enabled, routed=True)
         tui.wait_for_background_tasks()
         tui.exit_normally()
         transcript = "".join(tui.output)
@@ -468,7 +477,7 @@ def test_smart_router_skill_toggles_codex_subagent_routing(
         session, "codex", [str(session.binary), "codex"], "smart-router-skill-toggle"
     ) as tui:
         tui.boot()
-        _run_calculation(tui, session, "codex", "1+1", "2", routed=True)
+        _run_calculation(tui, session, "codex", "1+1", "2", orchestration_enabled, routed=True)
         _toggle_with_skill(
             tui,
             session,
@@ -476,7 +485,7 @@ def test_smart_router_skill_toggles_codex_subagent_routing(
             enabled=False,
             orchestration_enabled=orchestration_enabled,
         )
-        _run_calculation(tui, session, "codex", "1+2", "3", routed=False)
+        _run_calculation(tui, session, "codex", "1+2", "3", False, routed=False)
         _toggle_with_skill(
             tui,
             session,
@@ -484,7 +493,7 @@ def test_smart_router_skill_toggles_codex_subagent_routing(
             enabled=True,
             orchestration_enabled=orchestration_enabled,
         )
-        _run_calculation(tui, session, "codex", "2+2", "4", routed=True)
+        _run_calculation(tui, session, "codex", "2+2", "4", orchestration_enabled, routed=True)
         tui.exit_normally()
         transcript = "".join(tui.output)
     assert SMART_ROUTING_BANNER not in transcript, transcript
