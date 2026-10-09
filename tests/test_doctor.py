@@ -278,3 +278,30 @@ class TestDoctorFlow:
         ):
             doctor()
         prompt.assert_not_called()
+
+
+class TestLegacyEncodingOutput:
+    def test_cp1252_console_renders_ascii_badges_instead_of_raising(self):
+        import io
+
+        from rich.console import Console
+
+        import ucode.ui as ui_mod
+
+        buffer = io.BytesIO()
+        cp1252_console = Console(file=io.TextIOWrapper(buffer, encoding="cp1252"), highlight=False)
+        checks = [
+            doctor_mod.Check("uv", "ok", "found on PATH"),
+            doctor_mod.Check("npm", "error", "not installed"),
+        ]
+        with (
+            patch.object(ui_mod, "console", cp1252_console),
+            patch.object(doctor_mod, "console", cp1252_console),
+            patch.object(doctor_mod, "_gather_checks", return_value=checks),
+        ):
+            doctor_mod.doctor()
+        cp1252_console.file.flush()
+
+        output = buffer.getvalue().decode("cp1252")
+        assert "+ uv: found on PATH" in output
+        assert "x npm: not installed" in output

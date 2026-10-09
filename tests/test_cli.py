@@ -5852,21 +5852,3 @@ class TestChildStdoutLaunch:
         captured = capfd.readouterr()
         assert captured.out == '{"result":"child output"}\n'
         assert "Gateway status" in captured.err
-
-
-class TestReplaceUnencodableOutput:
-    def test_cp1252_stream_replaces_check_marks_instead_of_raising(self, monkeypatch):
-        import io
-
-        from ucode import cli
-
-        buffer = io.BytesIO()
-        stream = io.TextIOWrapper(buffer, encoding="cp1252")
-        monkeypatch.setattr(cli.sys, "stdout", stream)
-        monkeypatch.setattr(cli.sys, "stderr", stream)
-
-        cli._replace_unencodable_output()
-        stream.write("\u2713 ok")
-        stream.flush()
-
-        assert buffer.getvalue() == b"? ok"
