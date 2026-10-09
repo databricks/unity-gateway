@@ -35,16 +35,23 @@ is still required where the harness prompts for it.
 
 ## Task ownership
 
-Give each cohesive task one owner for planning, discovery, implementation, checks,
-and an integration-ready result. Split work only when the deliverables are
-independent or a concrete risk needs independent verification. The root integrates
-the evidence and checks specific acceptance gaps instead of repeating the child's
-investigation or reserving parallel work for itself.
+Both workflows keep easy work in the root and delegate only when a child can own
+a useful assignment. Split work only when the deliverables are independent or a
+concrete risk needs independent verification. The agent-specific instructions
+differ in how they divide discovery and the final answer:
 
-Children return consolidated results with compact citations and explicit unresolved
+- **Claude:** keep a connected investigation in the root when briefing and review
+  would repeat the same work. A delegated owner handles planning, discovery,
+  execution, checks, and an integration-ready result.
+- **Codex:** choose who will synthesize the final answer before delegating. When
+  the root must deliver a delegated read-only investigation's answer, one owner
+  acquires the complete evidence and the root synthesizes it. Implementation
+  owners handle the complete edit, test, and fix loop.
+
+Children return decisive evidence with compact citations and explicit unresolved
 items. Keep ownership stable, batch substantive follow-ups, and use native completion
-notifications or waits instead of status polling. Preserve the full report until
-the parent confirms receipt; later amendments retain its other findings and limits.
+notifications or waits instead of status polling. Amendments update the retained
+findings without repeating the full report or restarting the same investigation.
 
 ## Model selection
 
@@ -56,9 +63,10 @@ model selection and requires no preference setup, locking, or recovery.
 
 ## Attribution
 
-Migrated from the Databricks `model-orchestrator` plugin by Arnav Singhvi, with
-workflow updates through version 0.4.21 (source commit
-`474b08e5809205d0aa9abbd059b82d5ab541ca92`). The UG skill version is 1.2.0.
+Migrated from the Databricks `model-orchestrator` plugin by Arnav Singhvi. The base
+workflow came from version 0.4.21 (source commit
+`474b08e5809205d0aa9abbd059b82d5ab541ca92`); the Claude and Codex workflows now carry
+separate refinements. The UG skill version is 1.2.0.
 Originally adapted from
 [donvito/codex-astra-luna-orchestrator](https://github.com/donvito/codex-astra-luna-orchestrator/tree/21710352ec201f8634874d8298e0eca694e298a8)
 under Apache-2.0; see [LICENSE.upstream](LICENSE.upstream). UG changes add shared

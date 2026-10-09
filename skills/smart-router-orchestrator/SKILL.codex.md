@@ -31,56 +31,35 @@ Use the `smart-router` skill only when the user asks to change routing.
 
 Follow user overrides. Keep the active root model and reasoning effort. The root
 owns the delegation choice, cross-deliverable integration, conflicts, and
-acceptance; a delegated owner owns task-level planning, discovery, execution,
-checks, and the draft result. Smart routing selects child models;
+acceptance; a delegated owner owns its complete discovery or implementation
+assignment and its checks. Choose who synthesizes the final answer before
+assigning the work. Smart routing selects child models;
 do not apply separate role-model preferences or reasoning-effort overrides.
 Never change providers, credentials, permissions, sandbox, unrelated settings,
 or concurrency limits.
 Report conflicts with existing mandatory orchestration rules or model policies.
 
-Before delegating, describe the task split in at most one short sentence, then
-launch ready work. Explain adapter details only
-when requested or needed to explain a failure or blocker. Keep later updates
-focused on findings, blockers, and results.
-
 ## Delegation gate
 
-Delegate to save the root's context and overall cost: cheaper children return
-concise results instead of raw tool output. Give them the bulk of broad searches,
-multi-area investigations, implementation, external research, and verification.
-Keep latency low by running independent children in parallel and easy work in the
-root.
-Users need not mention this skill or request agents.
+Choose direct execution or a delegated owner for each complete deliverable.
+Direct execution fits work the root can finish from available evidence and a
+small amount of checking. Knowing the task's vocabulary or file locations does
+not mean its investigation is already done. For substantial discovery, consider
+one owner for the complete investigation and answer, including its dependent
+questions. Compare that owner's work plus acceptance with doing it in the root.
+A natural zero-child outcome remains valid; an explicit no-delegation request
+takes precedence.
 
-Keep a task in the root when briefing, waiting for, and integrating a child would
-take longer: a self-contained answer, mechanical edit, explanation or review of a
-small file already read, small single-scope change with obvious verification, or
-quick check. These save little cost and add little root context.
-An explicit request not to delegate takes precedence. If spawning is unavailable
-or policy prevents it, explain and continue locally within the user's instructions.
-Do not invent work to increase the agent count.
-
-Before substantive work, identify the complete root work the child would replace.
-For a cohesive task, give one owner the original request, acceptance criteria,
-constraints, and authority to discover, check, and draft the result. Keep a
-connected reasoning path with that owner even when it crosses directories or
-layers; do not pre-solve it in the parent. Split only when each result is useful
-and verifiable without first resolving the other child's findings, or a concrete
-risk requires independent verification. Numbered questions, files, and languages
-alone do not make independent deliverables.
-Do not reserve broad discovery for the root merely to give it work while waiting.
-A delegated owner replaces the broad discovery, execution, and checks assigned to
-it. While the child owns that scope, root work is limited to cross-deliverable
-integration and targeted acceptance-gap checks; do not create an automatic
-parallel root scope. After a complete report arrives, consume it as the owner's
-evidence and do not restart broad discovery or reread the same area; read or
-execute only what is needed to check a concrete acceptance gap or contradiction.
-When no such independent check is ready, finalize or use a native wait for other
-assigned work; do not invent root work to fill the interval. Use the lightest
-sufficient delegation and allow a natural zero-child outcome when the root can
-cover the task.
-Avoid serial chains when inputs exist. Do not add a reviewer or tester to a trivial
-fix or require a fixed pipeline; size fan-out to the work.
+For a connected read-only investigation whose final answer the root must deliver,
+assign the complete evidence acquisition to one owner and keep the final synthesis
+in the root. The owner traces the relevant conditions and dependencies and returns
+the decisive evidence for every caller requirement; it need not write a second
+polished answer. The root does not retain a parallel source investigation. For
+implementation, transfer the complete edit, test, and fix loop with the change.
+Split only assignments that can each be accepted independently, or a required
+independent check. Launch ready independent assignments together.
+If spawning is unavailable or prohibited, continue within the caller's instructions.
+Reuse complete instructions already received and recover only missing portions.
 
 | Role | Scope |
 | --- | --- |
@@ -92,115 +71,88 @@ fix or require a fixed pipeline; size fan-out to the work.
 
 ## Assign and coordinate
 
-Brief each owner on the outcome, context, scope, constraints, authority,
-acceptance criteria, evidence, and delivery rule below. Include role constraints
-and these research rules so they survive routing. Start from the user's named
-symbols, entrypoints, files, and result surfaces; locate each and trace the
-relationships needed for the requested conclusion before expanding into adjacent
-areas. Keep any unlocated target explicit rather than substituting a related
-surface. Use filenames and counts to find unknown locations, then scoped symbols
-and line windows; refine truncated queries, reuse evidence, and read whole files
-when the flow requires it. Requested inventories still require full coverage.
-Use workers for implementation, one writer per file; the root must not duplicate
-their work.
+Brief each owner on the caller's deliverables, context, authority, role constraints,
+acceptance criteria, and established evidence. Preserve the caller's scope without
+adding optional inventories, background surveys, or speculative requirements.
+Include the following execution contract in the actual child assignment; do not
+assume the child inherits this skill. The root uses the same contract when working
+directly.
 
-Each child assignment includes a return contract: own the bounded assignment through
-its named checks, map every original acceptance item to an answer with the minimal
-cited evidence, and mark unresolved items. For a cohesive delegation covering the
-whole caller request, return an integration-ready draft that satisfies the original
-caller contract, including its requested presentation, with concise separate notes
-for unresolved issues or evidence gaps. For a partial delegation, return only the
-assigned part in the presentation needed for the parent to integrate it, with
-concise unresolved notes. Do not make the parent reconstruct the requested draft
-from raw findings. Return one consolidated, decision-relevant result; do not
-require duplicate full reports or mandatory verbosity. Keep broad searches and
-full-source reading in the owning child context; the parent requests scoped
-excerpts needed for integration or verification without hiding required proof.
-Do not request an interim answer solely for a progress update; report the known
-state while the child finishes and wait for its consolidated result. Do not return
-raw search dumps unless they expose a blocker or plan-changing evidence. Preserve
-every requested deliverable and verification step.
+> Start from supplied evidence and entrypoints. Before each tool call, identify
+> what it can settle that retained evidence cannot. Obtain the smallest sufficient
+> evidence: locate with file names or symbols,
+> then inspect the relevant definition and connected conditions or callers.
+> Read the complete function or configuration block needed to support the claim;
+> read a whole file when its flow is required. Batch independent queries and
+> combine overlapping windows. Reuse established facts and citation spans.
+> Preserve explicit searches, exhaustive coverage, required checks, and material
+> qualifications. Continue for an uncovered requirement, contradiction, or
+> required validation; related names alone do not expand the assignment.
+> Return the complete assigned evidence or change, with decisive cited excerpts,
+> their relevant conditions, validation evidence, and explicit unresolved items.
+> For an evidence assignment, place each finding beside its supporting excerpt
+> and necessary interpretation. Cover every caller requirement without a second
+> reader-facing narrative; the parent must be able to answer from this handoff
+> without repeating discovery. Preserve requested quotations and inventories.
+> Do not turn a terminal answer into a progress update.
+
+Pass known locations, decisions, and validation commands with the assignment.
+Do not rewrite the task as a larger investigation or attach a second overlapping
+checklist. Use workers for implementation and one writer per file. The parent
+must not repeat work that remains assigned to a child.
+
+Assign common prerequisites to one discovery owner and share its concise cited
+findings with dependent owners. Merge assignments that would reconstruct the same
+investigation; preserve targeted checks rather than banning shared file reads.
+
+Keep the assigned research or edit/test/fix loop with its owner. An evidence owner
+returns the complete findings and support needed for the root's final synthesis;
+an implementation owner returns the completed change and validation. Preserve
+decisive excerpts, citations, relevant conditions, and explicit unresolved issues.
+Use one finding-with-evidence handoff rather than both a polished draft answer
+and an evidence report. Raw search transcripts alone are not a complete handoff.
+The brief must request this evidence, rather than asking for conclusions and links
+alone. Preserve requested quotations and complete caller coverage.
+Check that each important claim follows from its evidence before returning; a
+nearby symbol or default is not proof of an entire execution path. Continue only
+for a missing caller requirement, material contradiction, or required validation.
+A terminal reply delivers the finished result, not a progress update; if blocked,
+state completed coverage, the dependency, and explicit partial status. Preserve
+the requested presentation and all required checks.
 
 Keep private inter-agent source references lossless but compact. When parent and
-child share an unambiguous workspace root, declare that root once in the handoff
-and cite relative paths with the necessary line numbers instead of repeating the
-full root in every citation. Preserve complete evidence, quotations, conclusions,
-and unresolved limits; this changes reference encoding, not coverage. Use qualified
-roots when files span workspaces or a relative reference would be ambiguous.
-For final output, preserve required paths and citation format. Where that format
-permits, introduce one clickable file link for a local group or table of findings
-from that file, retaining each finding's precise line numbers. Keep separate
-anchored links when required or needed to avoid ambiguity. Use concise labels;
-avoid repeating the same findings in an additional source catalog. Shorten path
-repetition and exposition while preserving every requested inventory, distinct
-piece of evidence, and qualification. Follow higher-priority handoff formats too.
+child share an unambiguous workspace root, declare it once and cite relative paths
+with necessary line numbers; this changes reference encoding, not coverage. Preserve
+complete evidence, quotations, conclusions, unresolved limits, distinct evidence,
+and qualifications; use qualified roots when files span workspaces. Preserve
+required paths and citation formats in final output, use concise clickable anchored
+links where permitted, avoid repeating findings in a second source catalog, and
+follow higher-priority handoff formats.
 
-Assign one owner to each independent investigation question, including read-only
-work. While that child owns its scope, the parent does not run a parallel broad
-investigation there; parent work stays independent, integrative, or targeted to
-correctness. The parent accepts sufficient cited evidence and reopens only an
-explicit missing claim, contradiction, or required check. Transfer a missing
-question once to one owner rather than repeatedly reopening completed scope.
-Keep ownership stable while a report is pending. For a necessary transfer, reuse
-evidence already delivered or accessible, identify the remaining gap, and stop
-the prior owner's work on that question if it is still active. Request missing
-handoff evidence only when needed and the owner can respond. If the owner has
-failed or is unavailable, continue authorized work from available evidence and
-record what is missing instead of waiting for a handoff; the recovery rules below
-still apply. Reuse completed discovery. Narrow independent checks of a concrete
-correctness or integration risk remain allowed.
+Use the owner's current state to choose the next action:
 
-Batch independent coordination. Let an active owner finish before sending
-non-blocking findings or requests for progress or extra checks. Send earlier
-messages only for a concrete blocker, changed requirement, or time-sensitive
-dependency. Elapsed time alone is not evidence of a stall. Give required user
-updates from the last known state without asking the child for a status report.
+| Owner state | Parent action |
+| --- | --- |
+| Running | Work on an independent deliverable or handle a concrete dependency. Otherwise wait for completion. |
+| Returned | Check requested coverage and decisive evidence. Accept supported conclusions and integrate the answer. |
+| Correction assigned | Send the missing claim, evidence to check, and completion condition together. That claim remains owned by the child until its amendment returns. |
+| Unavailable | Explicitly take over using retained evidence and record unresolved gaps. |
 
-When only child completion remains, use automatic native completion notifications
-if the host supports them. Otherwise use one native wait for the outstanding
-children, with the longest supported duration allowed by the next user update or
-actionable deadline. A wrapping execution call must cover that duration within
-its own supported limits. For a host exposing the first-line `// @exec` pragma
-and `tools.multi_agent_v1__wait_agent`, when 45 seconds fits both limits and the
-next required update, the matching call is:
+During a pending correction, do not concurrently reconstruct that same claim.
+Required independent verification remains a separate, explicitly scoped check.
+Return only the amendment on a follow-up; do not regenerate an accepted report.
+Send early messages only for a changed requirement, blocker, or time-sensitive
+dependency. An elapsed timeout alone is not such a dependency.
 
-```js
-// @exec: {"yield_time_ms": 45000}
-text(await tools.multi_agent_v1__wait_agent({
-  targets: ["<returned-child-id>"], timeout_ms: 45000
-}));
-```
-
-Use the actual returned child ID and the host's available wait tool. Shorten both
-durations together if a bound is sooner. After an early outer yield, resume the
-exact returned `cell_id` under the same bounds; do not start another inner wait,
-fabricate IDs, or alter output limits to simulate progress. Do not insert status
-queries or new investigation between empty wait results. Preserve independent
-work, targeted acceptance checks, required updates, and immediate blocker handling.
-
-Preserve the owed deliverable across follow-ups. Do not send scope reminders
-that merely restate an active assignment without new evidence or a changed
-requirement. Substantive follow-ups remain owed; acknowledgment or progress is not the result.
-Until the parent explicitly confirms receipt of the full report or access to its
-artifact, put that report, with later requests folded in, in the final response
-itself. An earlier child final is not proof of delivery. Reuse existing evidence.
-The parent includes that confirmation in an existing substantive follow-up when
-requesting an amendment; do not add a confirmation-only round trip. After that
-confirmation, the child returns only the requested amendment; the parent integrates
-it with the retained report, preserving every acceptance item. Require neither a
-new file nor repetition of a report the parent has confirmed receiving or accessing.
-Explicit cancellation, replacement of the assignment, or a caller request for
-acknowledgment alone governs the remaining deliverable.
-
-Every follow-up names the user-required decision that remains unresolved, the
-question and evidence to check, and the stop condition. A follow-up supplements
-the original assignment unless explicitly rescoping it; batch independent
-unresolved questions into one message per child, and transfer each missing question
-once to a single owner. Accept a complete report without a status request or extra
-confirmation; use the native wait when only completion is outstanding. Preserve
-targeted correctness verification and every requested deliverable. Finalize once
-the requested coverage and checks are complete; do not add unrequested
-investigation.
+Use one pending completion wait for the actual returned child IDs. Start with
+the longest documented wait that fits the next required update or actionable
+deadline; omit short readiness probes before it. Where the host requires polling
+and supports a tool-side loop, keep those readiness checks inside that operation
+and return on completion, a concrete error, or the update deadline. Never busy-loop.
+Match the outer tool's wait duration to the pending inner operation. If the outer
+call yields, resume its exact returned cell ID before starting another wait.
+Do not re-enter investigation or alter output limits because a wait yielded.
+Preserve required progress updates, immediate blocker handling, and acceptance.
 
 Research needs sources and a deadline or request budget. Name tools exactly,
 with verified capability/auth status; children discover deferred tools in their
@@ -217,20 +169,6 @@ results with evidence, checks, and limitations. Reuse children for follow-ups wh
 supported; no recursive teams. Return architectural, API, security, scope, or
 ambiguous decisions to the root for integration, conflict resolution, and final
 verification.
-
-### Claude Code adapter
-
-Use native `Agent` (`Task` on older hosts) with `subagent_type="ug-smart-router:<role>"`.
-**Omit `model`**: the routing hook selects it. Include role scope and task contract
-in `prompt`, because routing may replace the requested agent definition. Run
-independent children in the background when supported. Use native result/wait
-tools and resume the same agent for follow-ups when available.
-
-Omitted role tool lists inherit parent tools, including deferred MCP tools;
-parent permissions and hooks still apply. Read-only scope is instructional.
-Report missing bundled definitions as requiring reload/restart; do not substitute
-custom agents with saved model preferences. Managed forced-model policy takes
-precedence; report conflicts without clearing it.
 
 ### Codex adapter
 
@@ -252,25 +190,39 @@ replacement for the same assignment.
 
 ## Integrate and verify
 
-Build the final answer from the draft and amendments. Reconcile every original
-acceptance item against the evidence before reopening sources. Preserve conditions,
-exceptions, and limitations that change what the caller can conclude or do; make
-these distinctions explicit rather than leaving them implicit in an excerpt or
-table label. A scoped amendment updates that part of the retained report without
-discarding its other findings.
+Maintain one mapping from the caller's required deliverables to their current
+owner and returned evidence. Use it to check coverage; it need not be an extra
+user-facing checklist or a new artifact. A completed child covers its assignment,
+not automatically the entire request.
 
-Read child evidence, inspect worker diffs, and spot-check cited paths without
-redoing a broad child-owned scope. Accept sufficient cited evidence and run only
-the targeted correctness or risk checks needed by the requested outcome. Keep any
-additional check independent of the child work or tied to a concrete integration
-risk. Resolve conflicts and findings before handoff. Account for every required
-child; a launch or success-shaped summary alone is not completion. For empty or
-unrelated results, or an already-supplied task request, clarify once with the same
-child. Verify its evidence; if still unusable, report the unmet assignment without
-respawning. Report unavailable models, tools, and substitutions.
+Collect ready child results without publishing each as a separate full answer.
+Progress updates report progress and concrete dependencies. At finalization,
+assemble one complete answer from all accepted results and necessary amendments.
+Earlier progress text does not substitute for content required in the final answer.
+Preserve the caller's requested presentation, evidence, conditions, and exceptions.
 
-Finish with the concrete result, verification actually performed, and material
-remaining limitations. Do not claim cost or speed improvements without measurements.
+Review the returned evidence before deciding whether another tool call is needed.
+For each important conclusion, check that the quoted source conditions, actual diff,
+or validation result support its scope and that the caller's requirement is covered.
+A bare conclusion or citation without sufficient supporting evidence is a gap;
+ask the owner for that evidence or retrieve the specific missing source window.
+When the returned evidence is sufficient, accept it without fetching the same
+implementation again. Retrieving every cited file is not a default review phase.
+Reopen a concrete contradiction, missing condition, changed input, or required check.
+Keep explicitly required independent verification and substantive tests. Add another
+reviewer only for a distinct risk or a requested independent check. Integrate accepted
+components without repeating their discovery or generating a second full draft.
+
+Before delivery, check the assembled answer against the complete caller request
+and every accepted handoff. Correct missing or conflicting components with their
+owners. If a component cannot be completed, state the exact gap and explicit
+partial status; do not imply that the latest returned component completes the task.
+For an empty or unrelated result, clarify once with the same child and verify the
+amendment. If it remains unusable, report the unmet assignment without respawning.
+Account for each required child and report unavailable tools or substitutions.
+
+Finish with the concrete result, verification performed, and material remaining
+limitations. Do not claim cost or speed improvements without measurements.
 
 Use runtime evidence to identify the model that ran; submitting a delegation
 alone does not prove that its routing hook executed.
