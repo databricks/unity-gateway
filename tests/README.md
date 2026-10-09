@@ -320,8 +320,8 @@ The existing e2e workflow runs seven parallel shards: gateway checks plus one fo
 each of Claude, Codex, Gemini, OpenCode, Copilot, and Pi. Each agent shard installs
 its own CLI. Configure-subset checks run in the Claude shard because configuration
 invokes the Claude CLI. The `All agent tests` check requires every shard to pass.
-Copilot's per-model greeting smoke uses Responses for GPT-6+ and Chat Completions
-for other models. GPT-6 Astra/Luna/Sol and GPT-6.1 Sol are eligible; existing GPT-5,
+Copilot's per-model greeting smoke uses Anthropic Messages for Claude, Responses for
+GPT-5+, and Chat Completions for other models. Existing
 Codex-specific, and Grok exclusions remain. `test_agent_copilot.py` covers API
 selection, model-override precedence, persisted configuration, and token refresh
 locally; it does not establish live inference or in-session model switching.

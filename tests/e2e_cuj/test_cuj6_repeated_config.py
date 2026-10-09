@@ -792,3 +792,101 @@ class TestCujRepeatedConfig(BaseCujTest):
             "mcp", "get", USER_MCP, binary=journey.agent_binary(CLAUDE)
         ).stdout
         assert "Connected" in health, health
+
+
+# Phase A's published config denies this Claude MCP name through agent_native_settings; phase B's
+# sets none. A denylist, not an allowlist, so the shared admin setting can't block CUJ 6's own MCPs.
+DENIED_MCP = "ug-e2e-denied"
+NATIVE_SETTINGS = {"deniedMcpServers": [{"serverName": DENIED_MCP}]}
+CLAUDE_OS_MANAGED_SETTINGS = MANAGED_PATHS[0]
+BLOCKED_BY_POLICY = "blocked by enterprise policy"
+
+
+@dataclass(frozen=True)
+class NativeSettingsPhase:
+    managed: dict
+    add_output: str
+    claude_mcp: dict
+
+
+class TestCujAgentNativeSettings(BaseCujTest):
+    """CUJ 6: admin agent_native_settings reach Claude and are withdrawn on a workspace switch.
+
+    Only a terminal configure writes the machine-wide file, so both phases configure in one. The
+    shared `cuj` teardown runs `ug revert` and fails if any machine-wide file remains, which covers
+    removing what was delivered.
+    """
+
+    WORKSPACE_URL = TestCujRepeatedConfig.WORKSPACE_URL
+    PHASE_B_URL = TestCujRepeatedConfig.PHASE_B_URL
+
+    @pytest.fixture(scope="class")
+    def journey(self, cuj):
+        session, workspace_a, _ = cuj
+        workspace_b = Workspace(
+            make_workspace_client(self.PHASE_B_URL, self.CLIENT_ID_ENV, self.CLIENT_SECRET_ENV)
+        )
+        published_b = workspace_b.config()
+        try:
+            yield session, {"a": workspace_a, "b": workspace_b}
+        finally:
+            workspace_b.assert_unchanged(published_b)
+
+    @staticmethod
+    def configure_and_add_denied_mcp(session, workspace, name) -> NativeSettingsPhase:
+        session.env["DATABRICKS_BEARER"] = bearer(workspace.client)
+        command = [str(session.binary), *CONFIGURE_ARGS, "--workspace", workspace.url]
+        with TerminalProcess(session, "ug", command, name) as terminal:
+            terminal.finish(timeout=300)
+        # A blocked add still exits 0, so its message is the evidence.
+        added = session.run(
+            "mcp",
+            "add",
+            "-s",
+            "user",
+            DENIED_MCP,
+            "--",
+            sys.executable,
+            "-c",
+            "pass",
+            binary=shutil.which(CLAUDE, path=session.env["PATH"]),
+            ok=False,
+        )
+        return NativeSettingsPhase(
+            managed=read_json(CLAUDE_OS_MANAGED_SETTINGS),
+            add_output=added.stdout + added.stderr,
+            claude_mcp=read_json(session.home / ".claude/.claude.json").get("mcpServers", {}),
+        )
+
+    @pytest.fixture(scope="class")
+    def phase_a(self, journey):
+        session, workspaces = journey
+        return self.configure_and_add_denied_mcp(session, workspaces["a"], "native-settings-a")
+
+    @pytest.fixture(scope="class")
+    def phase_b(self, journey, phase_a):
+        session, workspaces = journey
+        return self.configure_and_add_denied_mcp(session, workspaces["b"], "native-settings-b")
+
+    def test_workspaces_publish_the_expected_native_settings(self, journey):
+        _, workspaces = journey
+        phase_a = Workspace.agent_configs(workspaces["a"].config())[CodingAgent.CLAUDE_CODE]
+        assert phase_a.get("agent_native_settings") == NATIVE_SETTINGS
+        for agent, config in Workspace.agent_configs(workspaces["b"].config()).items():
+            assert "agent_native_settings" not in config, agent
+
+    def test_phase_a_delivers_settings_into_the_machine_wide_file(self, phase_a):
+        assert phase_a.managed["deniedMcpServers"] == NATIVE_SETTINGS["deniedMcpServers"]
+        assert phase_a.managed["apiKeyHelper"], phase_a.managed
+
+    def test_phase_a_claude_enforces_the_denied_server(self, phase_a):
+        assert BLOCKED_BY_POLICY in phase_a.add_output, phase_a.add_output
+        assert DENIED_MCP not in phase_a.claude_mcp
+
+    def test_phase_b_withdraws_phase_a_settings(self, phase_b):
+        assert "deniedMcpServers" not in phase_b.managed, phase_b.managed
+        assert phase_b.managed["apiKeyHelper"], phase_b.managed
+
+    def test_phase_b_claude_accepts_the_previously_denied_server(self, phase_b):
+        assert BLOCKED_BY_POLICY not in phase_b.add_output, phase_b.add_output
+        assert DENIED_MCP in phase_b.claude_mcp
