@@ -627,9 +627,8 @@ class TestBootstrapStdout:
                     available[binary] = True
                     updated.add(binary)
             kwargs["timeout"] = 10
-            return subprocess.run(
-                [sys.executable, "-c", script], stdin=subprocess.DEVNULL, **kwargs
-            )
+            kwargs.setdefault("stdin", subprocess.DEVNULL)
+            return subprocess.run([sys.executable, "-c", script], **kwargs)
 
         monkeypatch.setattr(agents_mod.shutil, "which", which)
         monkeypatch.setattr(

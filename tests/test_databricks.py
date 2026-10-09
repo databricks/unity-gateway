@@ -2196,6 +2196,21 @@ class TestGetDatabricksToken:
         assert db_mod.has_valid_databricks_auth(WS)
         assert profile_log.read_text() == ""
 
+    def test_timeout_does_not_suggest_logging_out(self, tmp_path, monkeypatch):
+        env = self._fake_databricks(tmp_path, "sys.exit(0)")
+        monkeypatch.setattr("os.environ", env)
+
+        def hung(args, **kwargs):
+            if "token" in args:
+                raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
+            return subprocess.CompletedProcess(args, 1, "", "")
+
+        monkeypatch.setattr(db_mod, "run", hung)
+
+        with pytest.raises(RuntimeError, match="timed out") as exc_info:
+            get_databricks_token(WS, "my-profile")
+        assert "logout" not in str(exc_info.value)
+
     def test_reauths_and_retries_when_token_empty(self, tmp_path, monkeypatch):
         call_count = tmp_path / "calls"
         call_count.write_text("0")
@@ -3383,6 +3398,23 @@ class TestRunDatabricksCliInstaller:
         db_mod._refresh_windows_path()
 
         assert os.environ["PATH"].split(os.pathsep).count(links_dir) == 1
+
+    def test_windows_leaves_path_untouched_when_nothing_is_new(self, monkeypatch, tmp_path):
+        links_dir = str(tmp_path / "Microsoft" / "WinGet" / "Links")
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        monkeypatch.setenv("PATH", os.pathsep.join([links_dir, "/windows/system32"]))
+        monkeypatch.setattr(db_mod, "_windows_user_path", lambda: links_dir)
+        writes = []
+        real_setitem = type(os.environ).__setitem__
+        monkeypatch.setattr(
+            type(os.environ),
+            "__setitem__",
+            lambda env, key, value: (writes.append(key), real_setitem(env, key, value)),
+        )
+
+        db_mod._refresh_windows_path()
+
+        assert writes == []
 
     def test_windows_without_winget_is_actionable(self, monkeypatch):
         monkeypatch.setattr(db_mod.platform, "system", lambda: "Windows")
@@ -4587,3 +4619,50 @@ class TestRunDecodesUtf8:
         script = r"import sys; sys.stdout.buffer.write(b'\xff')"
         result = db_mod.run([sys.executable, "-c", script], capture_output=True)
         assert result.stdout == b"\xff"
+
+
+class TestRunStdin:
+    def _capture_kwargs(self, monkeypatch) -> dict:
+        seen: dict = {}
+
+        def fake_run(args, **kwargs):
+            seen.update(kwargs)
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        monkeypatch.setattr(db_mod.subprocess_cross_os, "run", fake_run)
+        return seen
+
+    def test_captured_commands_do_not_inherit_stdin(self, monkeypatch):
+        # A child sharing a stdin pipe that another thread is reading hangs on Windows.
+        seen = self._capture_kwargs(monkeypatch)
+        db_mod.run(["databricks", "auth", "token"], capture_output=True, text=True)
+        assert seen["stdin"] is subprocess.DEVNULL
+
+    def test_interactive_commands_keep_stdin(self, monkeypatch):
+        seen = self._capture_kwargs(monkeypatch)
+        db_mod.run(["databricks", "auth", "login"])
+        assert "stdin" not in seen
+
+
+class TestShellCommand:
+    def test_windows_uses_cmd_quoting(self, monkeypatch):
+        monkeypatch.setattr(db_mod.platform, "system", lambda: "Windows")
+        assert db_mod.shell_command([r"C:\Program Files\ug.EXE", "route"]) == (
+            r'"C:\Program Files\ug.EXE" route'
+        )
+
+    def test_posix_uses_shell_quoting(self, monkeypatch):
+        monkeypatch.setattr(db_mod.platform, "system", lambda: "Linux")
+        assert db_mod.shell_command(["/opt/my ug/ug", "route"]) == "'/opt/my ug/ug' route"
+
+
+def test_importing_the_cli_does_not_load_the_databricks_sdk():
+    # The SDK costs ~1 s to import, and every `ug` command (including each auth-token refresh)
+    # imports the CLI.
+    result = subprocess.run(
+        [sys.executable, "-c", "import sys, ucode.cli; print('databricks.sdk' in sys.modules)"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip() == "False"

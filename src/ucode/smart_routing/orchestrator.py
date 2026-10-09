@@ -14,6 +14,7 @@ from pathlib import Path
 
 from ucode import skills
 from ucode.constants import ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR
+from ucode.databricks import shell_command
 from ucode.smart_routing.hooks import sync_managed_hooks
 from ucode.smart_routing.session_env import effective_environment, session_env_path
 
@@ -64,7 +65,7 @@ def sync_hooks(doc: dict, *, agent: str) -> None:
         argv = [sys.executable, "-m", HOOK_MODULE]
         hook = {
             "type": "command",
-            "command": shlex.join(argv),
+            "command": shlex.join(argv) if agent == "codex" else shell_command(argv),
             "timeout": 5,
         }
         if agent == "codex":
