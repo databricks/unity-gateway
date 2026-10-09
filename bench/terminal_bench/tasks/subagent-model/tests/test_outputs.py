@@ -4,6 +4,7 @@ import glob
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 
 APP = Path(os.environ.get("TASK_APP_DIR", "/app"))
@@ -14,8 +15,9 @@ def agent_log() -> Path:
     return next(Path(p) for p in paths if p and Path(p).exists())
 
 
-def subagent_models(log: Path) -> set[str]:
-    models = set()
+def read_transcript(log: Path) -> tuple[set[str], list[str]]:
+    """Models subagents ran on, and any notices that their requested model was restricted."""
+    models, restricted = set(), []
     for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
         try:
             event = json.loads(line)
@@ -23,7 +25,9 @@ def subagent_models(log: Path) -> set[str]:
             continue
         if event.get("type") == "assistant" and event.get("parent_tool_use_id"):
             models.add(event.get("message", {}).get("model", ""))
-    return models
+        if str(event.get("key", "")).startswith("agent-model-restricted-checksum-auditor"):
+            restricted.append(event.get("text", ""))
+    return models, restricted
 
 
 def main() -> None:
@@ -34,9 +38,16 @@ def main() -> None:
     if os.environ.get("TASK_ORACLE"):
         print("ok (oracle: skipped subagent check)")
         return
-    models = subagent_models(agent_log())
-    assert any("haiku" in m for m in models), f"no subagent ran on a haiku model: {models}"
-    print("ok", models)
+    models, restricted = read_transcript(agent_log())
+    assert models, "no subagent ran"
+    if any("haiku" in m for m in models):
+        print("ok", models)
+        return
+    # A workspace policy can disallow haiku; then the subagent must run on the named fallback.
+    assert restricted, f"subagent ignored model: haiku without a policy notice: {models}"
+    fallback = re.search(r"Using (\S+?) instead", restricted[0])[1]
+    assert all(fallback.endswith(m) for m in models), {"fallback": fallback, "models": models}
+    print("ok (haiku restricted by policy)", fallback, models)
 
 
 if __name__ == "__main__":
