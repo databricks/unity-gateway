@@ -35,7 +35,7 @@ prints the tasks for an agent.
 | `user-hooks` | Project `UserPromptSubmit` and `PostToolUse` hooks still run | Claude |
 | `mcp-server` | A project stdio MCP server is loaded and called | Claude |
 | `project-instructions` | `CLAUDE.md` / `AGENTS.md` conventions are followed | Both |
-| `subagent-model` | A custom subagent pinned to `model: haiku` runs on the gateway's haiku model | Claude |
+| `subagent-model` | A custom subagent pinned to `model: haiku` runs on haiku, or on the fallback a workspace policy names | Claude |
 | `image-code` | Reading an image through the gateway | Both |
 | `web-fetch` | Fetching a pinned URL | Both |
 | `resume-session` | Two steps: the second resumes the first session and recalls a value | Both |
