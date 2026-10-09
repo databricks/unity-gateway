@@ -73,6 +73,14 @@ Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file 
 
 </details>
 
+Claude Desktop third-party profiles live in
+`~/Library/Application Support/Claude-3p/configLibrary` on macOS. UG creates its
+own UUID profile and merges only its metadata entry and applied selection. It
+owns gateway/provider/auth-helper fields, `inferenceModels`, and the headers it
+writes. Ownership is recorded in `~/.ucode/claude-desktop.json`; other profiles and
+unknown fields are preserved. Desktop setup is configure-only and best-effort.
+See `docs/claude-desktop.md` for native validation limits and revert behavior.
+
 <details>
 <summary>Codex</summary>
 
