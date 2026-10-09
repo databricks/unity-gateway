@@ -27,6 +27,7 @@ They cover Claude/Codex helper dispatch and rejection of routing decisions witho
 the agent-specific prompt-submission evidence.
 CUJ3 and CUJ4 also verify Claude's native recovery from the known thinking-display 400:
 the same payload without display must receive a non-empty 200 for adaptive or enabled thinking.
+If the next attempt rejects `safeguards`, only its native removal is accepted before the final 200.
 Offline regressions reject missing/failed retries and changes to the model, prompt, budget, or effort.
 Native evidence-reader regressions cover Claude's background-agent completion notifications;
 notifications alone cannot substitute for a final parent answer. These offline checks do not

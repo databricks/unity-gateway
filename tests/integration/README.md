@@ -18,6 +18,8 @@ This is not automatic orchestrator-delegation coverage. No workspace configurati
 CUJ3 and CUJ4 require a non-empty HTTP 200 for inference. Claude 2.1.290's known
 thinking-display 400 is accepted only when the next inference request removes `display`,
 preserves every other payload field, and succeeds; adaptive and enabled thinking are covered.
+The native retry may also encounter `safeguards: Extra inputs are not permitted`; that
+requires the next recorded attempt to remove only `safeguards` and reach a non-empty 200.
 Offline regressions check both CUJs and reject changes to the model, prompt, budget, or effort.
 Each preset cleans up interactive OS-managed settings with public `ug revert`, even on failure.
 Offline transcript tests check native Claude background-agent completion evidence;

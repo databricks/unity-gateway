@@ -50,55 +50,64 @@ def assert_served(recorder, request, model):
 
 
 def served_inference_request(recorder, requests, request, agent):
-    """Require HTTP 200, or Claude's exact native retry without thinking.display."""
-    thinking = request.payload.get("thinking", {})
-    thinking_type = thinking.get("type")
-    response = recorder.response_for(request, timeout=240)
-    known_rejection = False
-    if (
-        agent == CLAUDE
-        and thinking_type in {"adaptive", "enabled"}
-        and thinking.get("display") == "updates"
-        and response.status_code == 400
-    ):
-        try:
-            error = httpx.Response(
-                response.status_code, headers=response.headers, content=response.body
-            ).json()
-            known_rejection = (
-                isinstance(error, dict)
-                and error.get("error_code") == "BAD_REQUEST"
-                and json.loads(error.get("message", ""))
-                == {
-                    "message": f"thinking.{thinking_type}.display: "
-                    "Input should be 'summarized', 'omitted'"
-                }
-            )
-        except (ValueError, TypeError):
-            pass
-    if not known_rejection:
-        assert_served(recorder, request, request.payload["model"])
-        return request
-
-    # Claude 2.1.290 retries once per model/process when Bedrock rejects updates.
-    # Require the next inference to preserve the full task, model, budget and effort.
-    # TODO: Remove when Bedrock passthrough accepts thinking-display-updates-2026-08-18.
-    following = requests[requests.index(request) + 1 :]
-    retry = next(
-        (
-            candidate
-            for candidate in following
-            if candidate.method == request.method and candidate.path == request.path
-        ),
-        None,
-    )
-    assert retry is not None, "Thinking display rejection had no retry"
-    assert retry.payload == {
-        **request.payload,
-        "thinking": {key: value for key, value in thinking.items() if key != "display"},
-    }, ("Thinking display retry changed more than display", retry.payload)
-    assert_served(recorder, retry, request.payload["model"])
-    return retry
+    """Require HTTP 200 or verified native Claude compatibility retries."""
+    model = request.payload["model"]
+    # Claude 2.1.290 may remove display, then safeguards after separate Bedrock
+    # validation errors. Inspect recorded traffic only; never replay or edit it.
+    # Each field may disappear once, and the full task/model/budget/effort must survive.
+    for _ in range(3):
+        payload = request.payload
+        thinking = payload.get("thinking", {})
+        thinking_type = thinking.get("type")
+        response = recorder.response_for(request, timeout=240)
+        error_message = None
+        if agent == CLAUDE and response.status_code == 400:
+            try:
+                error = httpx.Response(
+                    response.status_code, headers=response.headers, content=response.body
+                ).json()
+                if isinstance(error, dict) and error.get("error_code") == "BAD_REQUEST":
+                    detail = json.loads(error.get("message", ""))
+                    if isinstance(detail, dict) and set(detail) == {"message"}:
+                        error_message = detail["message"]
+            except (ValueError, TypeError):
+                pass
+        expected_retry = None
+        if (
+            thinking_type in {"adaptive", "enabled"}
+            and thinking.get("display") == "updates"
+            and error_message
+            == f"thinking.{thinking_type}.display: Input should be 'summarized', 'omitted'"
+        ):
+            expected_retry = {
+                **payload,
+                "thinking": {key: value for key, value in thinking.items() if key != "display"},
+            }
+        elif (
+            "safeguards" in payload
+            and error_message == "safeguards: Extra inputs are not permitted"
+        ):
+            expected_retry = {key: value for key, value in payload.items() if key != "safeguards"}
+        if expected_retry is None:
+            assert_served(recorder, request, model)
+            return request
+        following = requests[requests.index(request) + 1 :]
+        retry = next(
+            (
+                candidate
+                for candidate in following
+                if candidate.method == request.method and candidate.path == request.path
+            ),
+            None,
+        )
+        assert retry is not None, "Claude compatibility rejection had no retry"
+        assert retry.payload == expected_retry, (
+            "Claude compatibility retry changed more than the rejected field",
+            error_message,
+            retry.payload,
+        )
+        request = retry
+    raise AssertionError("Claude compatibility retries did not reach a successful response")
 
 
 def claude_file_task(session):

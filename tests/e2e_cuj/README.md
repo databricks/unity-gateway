@@ -34,6 +34,9 @@ establish coverage. Claude 2.1.290 may receive a 400 rejecting `thinking.display
 CUJ3 accepts it only if the next task request removes that field, changes nothing else in the
 payload, and receives a non-empty HTTP 200. Other failures remain test failures.
 The shared recovery check covers both adaptive and enabled thinking, preserving any token budget.
+Claude may then receive `safeguards: Extra inputs are not permitted`. Recovery must remove
+only that field in the next native attempt and end with a non-empty HTTP 200. The checks
+inspect recorded traffic without modifying or replaying requests.
 
 The test class selects the CUJ3 workspace, `https://dbc-bbdd5508-648e.cloud.databricks.com`.
 The shared `cuj` fixture supplies its authenticated SDK client and isolated local session;
@@ -82,7 +85,8 @@ not that an assistant echoed it or a skill merely existed on disk.
 Task inference must contain the exact task/routed prompt and tools, excluding Claude title
 requests and parent continuations from child-inference checks.
 Parent and child requests use the same verified thinking-display recovery as CUJ3:
-only the known 400 followed by an otherwise identical native retry with a non-empty 200 is accepted.
+only known display/safeguards rejections followed by native removal of the rejected field
+and a final non-empty 200 are accepted. Model, prompt, budget, and effort must remain unchanged.
 Each preset session then explicitly requests one child for a separate hidden-value
 file task. Assertions require a native child transcript containing the value, the completed
 parent answer, a correlated spawn-routing decision, and successful child inference on the

@@ -435,6 +435,112 @@ def test_served_inference_request_keeps_successful_first_attempt(thinking_displa
     assert served_inference_request(recorder, requests, requests[0], agent) is requests[0]
 
 
+@pytest.fixture
+def safeguards_exchange(thinking_display_exchange):
+    recorder, requests, responses, task, model = thinking_display_exchange
+    requests[0].payload["safeguards"] = {"enabled": True}
+    requests[1].payload["safeguards"] = {"enabled": True}
+    responses[1].status_code = 400
+    responses[1].body = json.dumps(
+        {
+            "error_code": "BAD_REQUEST",
+            "message": json.dumps({"message": "safeguards: Extra inputs are not permitted"}),
+        }
+    ).encode()
+    requests.append(
+        SimpleNamespace(
+            sequence=3,
+            method="POST",
+            path=INFERENCE_PATHS[CLAUDE],
+            payload={
+                key: value for key, value in requests[1].payload.items() if key != "safeguards"
+            },
+        )
+    )
+    responses.append(SimpleNamespace(status_code=200, headers={}, body=b"successful stream"))
+    return recorder, requests, responses, task, model
+
+
+@pytest.mark.parametrize("contract", ["catalog", "routing"])
+@pytest.mark.parametrize("compressed", [False, True])
+def test_cuj_inference_accepts_chained_native_compatibility_recovery(
+    safeguards_exchange, contract, compressed
+):
+    recorder, requests, responses, task, model = safeguards_exchange
+    if compressed:
+        for response in responses[:2]:
+            response.body = gzip.compress(response.body)
+            response.headers = {"content-encoding": "gzip"}
+    if contract == "catalog":
+        _assert_inference_evidence(recorder, 0, CLAUDE, task, model)
+    else:
+        inference = _task_inference_request(requests, CLAUDE, task.prompt)
+        assert served_inference_request(recorder, requests, inference, CLAUDE) is requests[2]
+
+
+def test_served_inference_accepts_safeguards_recovery_without_display_rejection(
+    safeguards_exchange,
+):
+    recorder, requests, _, _, _ = safeguards_exchange
+    assert served_inference_request(recorder, requests, requests[1], CLAUDE) is requests[2]
+
+
+@pytest.mark.parametrize("contract", ["catalog", "routing"])
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "missing_retry",
+        "failed_retry",
+        "empty_retry",
+        "changed_model",
+        "changed_effort",
+        "changed_budget",
+        "changed_prompt",
+        "safeguards_retained",
+        "unrelated_error",
+        "missing_safeguards",
+        "codex",
+    ],
+)
+def test_cuj_inference_rejects_unverified_safeguards_recovery(
+    safeguards_exchange, contract, failure
+):
+    recorder, requests, responses, task, model = safeguards_exchange
+    agent = CLAUDE
+    if failure == "missing_retry":
+        requests.pop()
+    elif failure == "failed_retry":
+        responses[2].status_code = 400
+    elif failure == "empty_retry":
+        responses[2].body = b""
+    elif failure == "changed_model":
+        requests[2].payload["model"] = "different-model"
+    elif failure == "changed_effort":
+        requests[2].payload["output_config"] = {}
+    elif failure == "changed_budget":
+        requests[2].payload["thinking"] = {"type": "enabled", "budget_tokens": 1000}
+    elif failure == "changed_prompt":
+        requests[2].payload["messages"] = [{"role": "user", "content": "different task"}]
+    elif failure == "safeguards_retained":
+        requests[2].payload["safeguards"] = requests[1].payload["safeguards"]
+    elif failure == "unrelated_error":
+        responses[1].body = responses[1].body.replace(b"safeguards:", b"unrelated:")
+    elif failure == "missing_safeguards":
+        for request in requests:
+            request.payload.pop("safeguards", None)
+    elif failure == "codex":
+        agent = CODEX
+        for request in requests:
+            request.path = INFERENCE_PATHS[CODEX]
+            request.payload["input"] = task.prompt
+    with pytest.raises(AssertionError):
+        if contract == "catalog":
+            _assert_inference_evidence(recorder, 0, agent, task, model)
+        else:
+            inference = _task_inference_request(requests, agent, task.prompt)
+            served_inference_request(recorder, requests, inference, agent)
+
+
 def test_assert_models_maps_native_aliases():
     alias = "anthropic.claude-haiku-4-5-20251001-v1:0"
     assert_models([alias, CLAUDE_HAIKU_MODEL], CLAUDE_HAIKU_MODEL)
