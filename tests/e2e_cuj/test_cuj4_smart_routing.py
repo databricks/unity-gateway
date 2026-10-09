@@ -19,6 +19,7 @@ from ucode.smart_routing.config import (
     SUBAGENT_ORCH_V0,
     SUBAGENT_ORCH_V0_CLAUDE_ONLY,
     SUBAGENT_ORCH_V1,
+    resolve_environment,
 )
 
 from .base import BaseCujTest
@@ -231,24 +232,22 @@ class TestCujSmartRouting(BaseCujTest):
     WORKSPACE_URL = "https://dbc-1a9622fc-2e91.cloud.databricks.com/"
 
     @pytest.mark.parametrize(
-        "SMART_ROUTER_CONFIG_VERSION, first_prompt_routed, orchestrator_enabled",
+        "SMART_ROUTER_CONFIG_VERSION",
         [
-            (FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0, True, False),
-            (SUBAGENT_ONLY_V0, False, False),
-            (SUBAGENT_ONLY_V1, False, False),
-            (SUBAGENT_ORCH_V0, False, True),
-            (SUBAGENT_ORCH_V1, False, True),
-            (SUBAGENT_ORCH_V0_CLAUDE_ONLY, False, True),
+            FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
+            SUBAGENT_ONLY_V0,
+            SUBAGENT_ONLY_V1,
+            SUBAGENT_ORCH_V0,
+            SUBAGENT_ORCH_V1,
+            SUBAGENT_ORCH_V0_CLAUDE_ONLY,
         ],
     )
-    def test_smart_router_config_version(
-        self, cuj, SMART_ROUTER_CONFIG_VERSION, first_prompt_routed, orchestrator_enabled
-    ):
+    def test_smart_router_config_version(self, cuj, SMART_ROUTER_CONFIG_VERSION):
         """Scenario: launch both agents with a preset, then explicitly request a subagent.
 
-        Expected: first-prompt routing and orchestrator context match the preset;
-        one routed native child completes the delegated task. The Claude-only preset
-        exercises Claude here; Codex's disabled path has its own file-task case.
+        Expected: each agent's resolved flags determine first-prompt routing,
+        orchestration, and child routing. One native child completes the delegated
+        task even when routing is disabled.
         """
         session, workspace, recorder = cuj
         previous = session.env.get("SMART_ROUTER_CONFIG_VERSION")
@@ -256,13 +255,22 @@ class TestCujSmartRouting(BaseCujTest):
         try:
             configs = _assert_published_config_matches_expectations(workspace.config())
             recorder.configure_session(session, ["configure", "--disable-databricks-ai-tools"])
-            agents = (
-                (CLAUDE,) if SMART_ROUTER_CONFIG_VERSION == SUBAGENT_ORCH_V0_CLAUDE_ONLY else AGENTS
-            )
-            for agent in agents:
+            for agent in AGENTS:
+                expected_env = resolve_environment(
+                    {"SMART_ROUTER_CONFIG_VERSION": SMART_ROUTER_CONFIG_VERSION}, agent=agent
+                )
+                v2_enabled = expected_env["ENABLE_SMART_ROUTING_V2"] == "1"
+                subagent_only = expected_env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] == "1"
+                subagent_routed = v2_enabled or subagent_only
+                first_prompt_routed = v2_enabled and not subagent_only
+                orchestrator_enabled = (
+                    expected_env["ENABLE_SMART_ROUTER_ORCHESTRATOR"] == "1" and subagent_routed
+                )
                 supported = workspace.model_ids(agent)
                 evidence = SessionEvidence(session.home, agent)
                 existing_sessions = set(agent_sessions(session, agent))
+                decisions_path = session.home / ".ucode" / f"{agent}-smart-routing-decisions.jsonl"
+                original_decisions = read_jsonl(decisions_path)
                 task = FileTask(session)
                 task.prompt += " Do not delegate."
                 checkpoint = recorder.checkpoint()
@@ -289,6 +297,9 @@ class TestCujSmartRouting(BaseCujTest):
                     )
                     evidence.assert_applied(task, supported, expected=expected_model)
                     assert (
+                        "databricks-smart-router-recipe" in inference.headers
+                    ) == subagent_routed, agent
+                    assert (
                         ORCHESTRATOR_CONTEXT.encode() in inference.body
                     ) == orchestrator_enabled, agent
                     assert not any(
@@ -299,9 +310,6 @@ class TestCujSmartRouting(BaseCujTest):
 
                     child_task = FileTask(session)
                     child_task.prompt = child_task.delegate_prompt
-                    decisions_path = (
-                        session.home / ".ucode" / f"{agent}-smart-routing-decisions.jsonl"
-                    )
                     decision_count = len(read_jsonl(decisions_path))
                     checkpoint = recorder.checkpoint()
                     existing_sessions = set(agent_sessions(session, agent))
@@ -324,31 +332,40 @@ class TestCujSmartRouting(BaseCujTest):
                         for answer in assistant_answers(agent, records)
                     ), agent
                     decisions = read_jsonl(decisions_path)[decision_count:]
-                    assert_subagent_routed(
-                        session,
-                        agent,
-                        child_task,
-                        decision_ids={decision["decision_id"] for decision in decisions},
-                    )
                     requests = recorder.requests_after(checkpoint)
                     routes = [request for request in requests if request.path == ROUTING_PATH]
-                    assert len(routes) == 1, (agent, routes)
-                    route_prompt = routes[0].payload["task"]["prompt"]
-                    assert child_task.filename in route_prompt
-                    response = recorder.response_for(routes[0])
-                    assert response.status_code == 200
-                    selections = response.payload["route_selection"]
-                    assert len(selections) == 1
-                    inference = _task_inference_request(
-                        requests,
-                        agent,
-                        route_prompt,
-                        after=routes[0].sequence,
-                    )
-                    inference = served_inference_request(recorder, requests, inference, agent)
-                    assert canonical_model(inference.payload["model"]) == canonical_model(
-                        selections[0]["route_option"]["model"]
-                    )
+                    assert len(routes) == int(subagent_routed), (agent, routes)
+                    if subagent_routed:
+                        assert_subagent_routed(
+                            session,
+                            agent,
+                            child_task,
+                            decision_ids={decision["decision_id"] for decision in decisions},
+                        )
+                        route_prompt = routes[0].payload["task"]["prompt"]
+                        assert child_task.filename in route_prompt
+                        response = recorder.response_for(routes[0])
+                        assert response.status_code == 200
+                        selections = response.payload["route_selection"]
+                        assert len(selections) == 1
+                        inference = _task_inference_request(
+                            requests,
+                            agent,
+                            route_prompt,
+                            after=routes[0].sequence,
+                        )
+                        inference = served_inference_request(recorder, requests, inference, agent)
+                        assert canonical_model(inference.payload["model"]) == canonical_model(
+                            selections[0]["route_option"]["model"]
+                        )
+                        assert "databricks-smart-router-recipe" in inference.headers
+                    else:
+                        assert read_jsonl(decisions_path) == original_decisions
+                        assert not any(
+                            "databricks-smart-router-recipe" in request.headers
+                            or ORCHESTRATOR_CONTEXT.encode() in request.body
+                            for request in requests
+                        ), agent
                     if agent == CLAUDE:
                         tui.wait_for_background_tasks()
                     tui.exit_normally()
@@ -360,49 +377,6 @@ class TestCujSmartRouting(BaseCujTest):
             session.revert_machine_wide(
                 f"{SMART_ROUTER_CONFIG_VERSION}-revert",
                 "Smart-router preset cleanup left machine-wide agent settings",
-            )
-
-    def test_claude_only_preset_disables_codex_routing(self, cuj):
-        """Scenario: select the Claude-only preset and complete a Codex file task.
-
-        Expected: real inference uses the managed default, with no routing requests,
-        router decisions, recipe header, or orchestrator context.
-        """
-        session, workspace, recorder = cuj
-        previous = session.env.get("SMART_ROUTER_CONFIG_VERSION")
-        session.env["SMART_ROUTER_CONFIG_VERSION"] = SUBAGENT_ORCH_V0_CLAUDE_ONLY
-        try:
-            configs = _assert_published_config_matches_expectations(workspace.config())
-            recorder.configure_session(session, ["configure", "--disable-databricks-ai-tools"])
-            task = _file_task(session, CODEX)
-            evidence = SessionEvidence(session.home, CODEX)
-            decisions = session.home / ".ucode" / "codex-smart-routing-decisions.jsonl"
-            before = read_jsonl(decisions)
-            checkpoint = recorder.checkpoint()
-            recorder.prepare_launch()
-            with Terminal(session, "claude-only-codex", [CODEX]) as tui:
-                tui.boot(timeout=150)
-                tui.submit(task.prompt)
-                tui.task(evidence, task)
-                tui.exit_normally()
-            requests = recorder.requests_after(checkpoint)
-            assert not any(request.path == ROUTING_PATH for request in requests)
-            assert read_jsonl(decisions) == before
-            inference = _task_inference_request(requests, CODEX, task.prompt)
-            inference = served_inference_request(recorder, requests, inference, CODEX)
-            expected = configs[CODEX]["default_models"]["default_model"]
-            assert canonical_model(inference.payload["model"]) == canonical_model(expected)
-            evidence.assert_applied(task, workspace.model_ids(CODEX), expected=expected)
-            assert "databricks-smart-router-recipe" not in inference.headers
-            assert ORCHESTRATOR_CONTEXT.encode() not in inference.body
-        finally:
-            if previous is None:
-                session.env.pop("SMART_ROUTER_CONFIG_VERSION", None)
-            else:
-                session.env["SMART_ROUTER_CONFIG_VERSION"] = previous
-            session.revert_machine_wide(
-                "claude-only-codex-revert",
-                "Claude-only preset cleanup left machine-wide agent settings",
             )
 
     @pytest.mark.parametrize("agent", AGENTS)

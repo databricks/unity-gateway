@@ -65,10 +65,11 @@ uv run pytest -c tests/e2e_cuj/pytest.ini --confcutdir=tests/e2e_cuj \
 ## Smart-routing CUJ
 
 `test_cuj4_smart_routing.py` uses its own read-only workspace with managed smart routing enabled.
-It runs the original routed/explicit-model journeys and five
+It runs the original routed/explicit-model journeys and six
 `SMART_ROUTER_CONFIG_VERSION` cases using the shared version constants; each launches Claude
 and Codex once.
-The independent expectation table is:
+The CUJ derives routing and orchestration assertions from each agent's resolved preset flags.
+Component tests independently verify the preset values. The resulting expectations are:
 
 | Selector | First prompt routed | Orchestrator context | Child on first prompt | Explicitly requested child |
 | --- | --- | --- | --- | --- |
@@ -77,6 +78,7 @@ The independent expectation table is:
 | `subagent_only_v1` | No | No | No | Yes, routed |
 | `subagent_orch_v0` | No | Yes | No | Yes, routed |
 | `subagent_orch_v1` | No | Yes | No | Yes, routed |
+| `subagent_orch_v0_claude_only` | No | Claude only | No | Yes for both; only Claude routed |
 
 First prompts explicitly forbid delegation to isolate first-prompt routing. Assertions require
 the expected presence/absence of a prompt-correlated router request, successful inference on
@@ -91,8 +93,9 @@ only known display/safeguards rejections followed by native removal of the rejec
 and a final non-empty 200 are accepted. Model, prompt, budget, and effort must remain unchanged.
 Each preset session then explicitly requests one child for a separate hidden-value
 file task. Assertions require a new native child transcript containing the value,
-a correlated spawn-routing decision, and successful child inference on the
-router's selected model. This tests requested delegation, not automatic orchestrator delegation.
+a correlated spawn-routing decision and successful child inference on the
+router's selected model when routing is enabled. Disabled routing requires no router
+requests, new routing decisions, recipe headers, or orchestrator context. This tests requested delegation, not automatic orchestrator delegation.
 The wait uses the child's answer directly; parent-answer reconstruction is reserved for first-prompt tasks.
 Offline checks reject parent-only answers and accept child answers before the parent replies.
 Offline evidence regressions do not establish a live CUJ pass.
@@ -117,9 +120,3 @@ uv run --with pexpect==4.9.0 --with pyte==0.8.2 pytest \
   --confcutdir=tests/e2e_cuj tests/e2e_cuj/test_cuj4_smart_routing.py \
   -k test_smart_router_config_version -v
 ```
-
-
-CUJ4 additionally covers `subagent_orch_v0_claude_only`: Claude retains
-`subagent_orch_v0` behavior and completes a routed child file task; Codex completes
-a file task on the managed default without routing requests, new decisions,
-a recipe header, or orchestrator context. Workspace configuration remains read-only.

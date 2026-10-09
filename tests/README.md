@@ -35,9 +35,10 @@ CUJ4's Claude preset sessions also use it after verifying delegated file tasks: 
 answer does not prove that a resumed child has stopped running.
 They cover Claude/Codex helper dispatch and rejection of routing decisions without
 the agent-specific prompt-submission evidence.
-The `subagent_orch_v0_claude_only` CUJ also requires a completed routed Claude
-subagent and a completed Codex file task using the managed default without routing
-requests, new router decisions, a recipe header, or orchestrator context.
+The shared preset CUJ runs both agents for every version and derives routing and
+orchestration assertions from each agent's resolved flags. Both must complete a native
+child task. `subagent_orch_v0_claude_only` routes Claude's child; Codex uses the managed
+default without routing requests, new router decisions, recipe headers, or orchestrator context.
 Component checks cover conflicting inherited flags and managed routing defaults.
 
 Agent-specific smart-routing preset component checks cover shared base presets, explicit agent mappings,
