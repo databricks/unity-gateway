@@ -6,7 +6,7 @@ inspect what's configured (`cat ~/.copilot/.env`) and to give `revert` something
 to clean up; the values are also injected directly into the child process's
 environment at launch.
 
-Claude models use Copilot CLI's `anthropic` provider against the gateway's
+System Claude models (`system.ai.claude-*`) use Copilot CLI's `anthropic` provider against the gateway's
 Anthropic endpoint, with `COPILOT_PROVIDER_MODEL_ID` set to Copilot's catalog id
 for the model so Copilot sends Claude request settings. Other models use the
 `openai` provider against the Databricks MLflow gateway: GPT models with major
@@ -78,23 +78,21 @@ LEGACY_ENV_KEYS = [
 _GPT_MODEL_MAJOR_PATTERN = re.compile(r"^(?:system\.ai\.)?(?:databricks-)?gpt-(\d+)(?=$|[.-])")
 
 
-_CLAUDE_MODEL_PATTERN = re.compile(r"(?:^|[./-])(claude-.+)$")
-_CLAUDE_VERSION_SUFFIX_PATTERN = re.compile(r"(?:\[[^\]]*\]|-v\d+(?::\d+)?|-\d{8})+$")
+_SYSTEM_CLAUDE_MODEL_PATTERN = re.compile(r"^system\.ai\.(claude-[^\[]+)(?:\[[^\]]*\])?$")
 _CLAUDE_DASHED_VERSION_PATTERN = re.compile(r"-(\d+)-(\d+)$")
 _CLAUDE_HAIKU_MAJOR_PATTERN = re.compile(r"^claude-haiku-(\d+)")
 
 
 def copilot_catalog_model_id(model: str) -> str | None:
-    """Copilot's catalog id for a Claude model id, e.g. ``system.ai.claude-sonnet-5-5`` -> ``claude-sonnet-5.5``.
+    """Copilot's catalog id for a system Claude model, e.g. ``system.ai.claude-sonnet-5-5`` -> ``claude-sonnet-5.5``.
 
     Copilot applies Claude request settings to any ``claude-*`` id, so ids missing from its catalog still work.
-    Returns None for non-Claude models.
+    Returns None for anything other than ``system.ai.claude-*``.
     """
-    match = _CLAUDE_MODEL_PATTERN.search(model)
+    match = _SYSTEM_CLAUDE_MODEL_PATTERN.match(model)
     if match is None:
         return None
-    catalog_id = _CLAUDE_VERSION_SUFFIX_PATTERN.sub("", match.group(1))
-    catalog_id = _CLAUDE_DASHED_VERSION_PATTERN.sub(r"-\1.\2", catalog_id)
+    catalog_id = _CLAUDE_DASHED_VERSION_PATTERN.sub(r"-\1.\2", match.group(1))
     # Copilot sends budget thinking for any Haiku it doesn't know, which Haiku 5+ rejects; Sonnet
     # ids get the adaptive thinking those models require.
     haiku = _CLAUDE_HAIKU_MAJOR_PATTERN.match(catalog_id)

@@ -242,21 +242,29 @@ class TestCopilotCatalogModelId:
         [
             ("system.ai.claude-sonnet-5-5", "claude-sonnet-5.5"),
             ("system.ai.claude-opus-5-5[1m]", "claude-opus-5.5"),
-            ("databricks-claude-opus-4-7", "claude-opus-4.7"),
-            ("claude-haiku-4-5", "claude-haiku-4.5"),
+            ("system.ai.claude-opus-4-7", "claude-opus-4.7"),
+            ("system.ai.claude-sonnet-5", "claude-sonnet-5"),
+            ("system.ai.claude-haiku-4-5", "claude-haiku-4.5"),
             ("system.ai.claude-haiku-5-5", "claude-sonnet-5.5"),
-            ("claude-haiku-6", "claude-sonnet-6"),
-            ("claude-sonnet-5", "claude-sonnet-5"),
-            ("global.anthropic.claude-opus-4-8", "claude-opus-4.8"),
-            ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", "claude-sonnet-4.5"),
-            ("anthropic.claude-haiku-4-5-20251001-v1:0", "claude-haiku-4.5"),
+            ("system.ai.claude-haiku-6", "claude-sonnet-6"),
         ],
     )
     def test_maps_claude_ids(self, model, expected):
         assert copilot.copilot_catalog_model_id(model) == expected
 
-    @pytest.mark.parametrize("model", ["gpt-5", "system.ai.gpt-6-astra", "myclaude-model"])
-    def test_non_claude_ids_return_none(self, model):
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "gpt-5",
+            "system.ai.gpt-6-astra",
+            "claude-sonnet-4-6",
+            "databricks-claude-opus-4-7",
+            "global.anthropic.claude-opus-4-8",
+            "main.schema.my-claude-finetune",
+            "system.ai.myclaude-model",
+        ],
+    )
+    def test_non_system_claude_ids_return_none(self, model):
         assert copilot.copilot_catalog_model_id(model) is None
 
 
