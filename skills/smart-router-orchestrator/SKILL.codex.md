@@ -71,11 +71,11 @@ Reuse complete instructions already received and recover only missing portions.
 
 | Role | Scope | Codex default |
 | --- | --- | --- |
-| explorer | Read code and callers; map existing patterns/tests; no edits | Luna, max |
-| researcher | Verify external/API facts with primary sources; no edits | Luna, max |
-| worker | Implement one bounded change in explicitly owned files | Luna, max |
-| tester | Independently run checks and report failures; edit tests only if assigned | Luna, max |
-| reviewer | Review the actual diff for correctness, regressions, security, and missing tests; no edits | Luna, max |
+| explorer | Read code and callers; map existing patterns/tests; no edits | Luna |
+| researcher | Verify external/API facts with primary sources; no edits | Luna |
+| worker | Implement one bounded change in explicitly owned files | Luna |
+| tester | Independently run checks and report failures; edit tests only if assigned | Luna |
+| reviewer | Review the actual diff for correctness, regressions, security, and missing tests; no edits | Luna |
 
 ## Assign and coordinate
 
@@ -181,9 +181,8 @@ verification.
 ### Codex adapter
 
 By default, every initial native `spawn_agent` call must explicitly carry
-`model="gpt-5.6-luna"` and `reasoning_effort="max"`.
-This also applies when a routing hook replaces the model: do not omit these
-fields and inherit the root's defaults.
+`model="gpt-5.6-luna"`. Omit `reasoning_effort` so the model selected by
+routing uses its supported default.
 Attempt this model even if absent from the tool's partial preview. Do not retry
 another spelling, invent aliases, or substitute a successor. Send the role scope
 and contract in `message`; use `fork_turns="none"` if overrides require fresh context. Use the

@@ -28,8 +28,8 @@ User instructions take precedence, and easy tasks remain in the root.
 
 Claude loads the bundled roles as `ug-smart-router:<role>` in its temporary
 routing plugin. Claude omits model overrides; its bundled roles default to Sonnet.
-Codex requests Luna with max reasoning effort. The routing hook can replace the
-requested model.
+Codex requests Luna without a reasoning effort override. The routing hook can
+replace the requested model.
 Role instructions belong in each task prompt because routing may replace the
 requested Claude role or Codex model. Hook approval in the native `/hooks` UI
 is still required where the harness prompts for it.
