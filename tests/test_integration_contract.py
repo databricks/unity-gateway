@@ -213,6 +213,7 @@ def test_fork_integration_runs_only_member_requested_pr_heads():
 HEAD = "0123456789abcdef0123456789abcdef01234567"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="the authorize step runs bash on Linux")
 @pytest.mark.parametrize(
     ("comment", "head_repo", "accepted", "reason"),
     [
