@@ -16,7 +16,7 @@ managed-default and explicit-model cases unchanged. One additional test runs the
 context in inference input, and completed explicitly requested routed subagents.
 This is not automatic orchestrator-delegation coverage. No workspace configuration is modified.
 Agent-specific smart-routing preset component checks cover shared base presets, explicit agent mappings,
-complete per-agent validation, configure order, bootstrap and managed-default launch
+complete per-agent validation, configure dispatch, bootstrap and managed-default launch
 selection, session controls, and restoration after configuration/launch failures.
 These checks do not establish live agent coverage.
 

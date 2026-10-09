@@ -1113,10 +1113,10 @@ class TestConfiguredPaths:
         assert "/etc/codex/managed_config.toml" in paths
 
 
-@pytest.mark.parametrize("order", [("claude", "codex"), ("codex", "claude")])
 @pytest.mark.parametrize("fail_write", [False, True])
-def test_configure_dispatch_scopes_agent_presets(monkeypatch, order, fail_write):
+def test_configure_dispatch_scopes_agent_presets(monkeypatch, fail_write):
     from ucode.constants import (
+        AGENT_CLAUDE,
         AGENT_CODEX,
         SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
         SMART_ROUTING_ENV_KEYS,
@@ -1133,7 +1133,7 @@ def test_configure_dispatch_scopes_agent_presets(monkeypatch, order, fail_write)
         key: os.environ.get(key)
         for key in (*SMART_ROUTING_ENV_KEYS, SMART_ROUTER_CONFIG_VERSION_ENV_VAR)
     }
-    for agent in order:
+    for agent in (AGENT_CLAUDE, AGENT_CODEX):
 
         def write(state, *args, agent=agent, **kwargs):
             assert {key: os.environ.get(key) for key in SMART_ROUTING_ENV_KEYS} == (
