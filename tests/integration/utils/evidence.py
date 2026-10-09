@@ -11,12 +11,13 @@ _AGENT_HELPERS = {"claude": claude, "codex": codex}
 
 
 def assert_no_terminal_api_error(screen: str) -> None:
-    """Fail on definitive client errors, not an in-progress transient retry."""
+    """Recognize client error lines without mistaking review prose for an API failure."""
     error = re.search(
-        r"unexpected status (?:400|401|403|404|405|409|422)\b|PERMISSION_DENIED"
-        r"|exceeded retry limit",
+        r"^[ \t]*(?:[■⎿][ \t]*)?"
+        r"(?:(?:unexpected status|API Error:)[ \t]*(?:400|401|403|404|405|409|422)\b"
+        r"|exceeded retry limit\b)",
         screen,
-        re.IGNORECASE,
+        re.IGNORECASE | re.MULTILINE,
     )
     assert error is None, "Agent returned a terminal API error:\n" + screen
 
@@ -51,6 +52,58 @@ def agent_sessions(session, agent: str) -> dict[str, list[dict]]:
 def assistant_answers(agent: str, records: list[dict]) -> list[str]:
     helper = _AGENT_HELPERS.get(agent)
     return helper.assistant_answers(records) if helper is not None else []
+
+
+def completed_answers(agent: str, records: list[dict]) -> list[str]:
+    """Exclude Claude's intermediate commentary from task-completion evidence."""
+    if agent == "claude":
+        records = [
+            row for row in records if row.get("message", {}).get("stop_reason") == "end_turn"
+        ]
+    return assistant_answers(agent, records)
+
+
+def completed_child_answers(session, agent: str) -> dict[str, list[str]]:
+    """Do not count parent turns copied into a Codex child's rollout as child work."""
+    sessions = agent_sessions(session, agent)
+    parent_turns = {
+        row["payload"]["turn_id"]
+        for path, records in sessions.items()
+        if not is_child_session(agent, path, records)
+        for row in records
+        if row.get("type") == "turn_context" and row.get("payload", {}).get("turn_id")
+    }
+    return {
+        path: completed_answers(
+            agent,
+            [row for row in records if row.get("payload", {}).get("turn_id") not in parent_turns],
+        )
+        for path, records in sessions.items()
+        if is_child_session(agent, path, records)
+    }
+
+
+def orchestrator_contexts(agent: str, records: list[dict]) -> list[str]:
+    """Read delivered hook context, excluding user text and assistant claims."""
+    contexts = []
+    for row in records:
+        if agent == "claude":
+            attachment = row.get("attachment", {})
+            if attachment.get("type") == "hook_additional_context":
+                contexts.extend(attachment.get("content", []))
+        elif row.get("type") == "response_item":
+            payload = row.get("payload", {})
+            if payload.get("type") == "message" and payload.get("role") == "developer":
+                contexts.extend(part.get("text", "") for part in payload.get("content", []))
+    return [
+        text
+        for text in contexts
+        if isinstance(text, str)
+        and text.startswith("Smart Router Orchestrator is on for this session.")
+        and "## Workflow" in text
+        and "### Claude Code adapter" in text
+        and "### Codex adapter" in text
+    ]
 
 
 def tool_outputs(agent: str, records: list[dict]) -> list[str]:

@@ -10,6 +10,9 @@ from tests.integration.utils.evidence import (
     SubagentCalculation,
     assert_no_terminal_api_error,
     assistant_answer_contains,
+    completed_answers,
+    completed_child_answers,
+    orchestrator_contexts,
     tool_outputs,
 )
 
@@ -65,6 +68,8 @@ def _write_answer(home, agent, *, child, value):
         "■ exceeded retry limit, last status: 429 Too Many Requests",
         "■ unexpected status 403 Forbidden: PERMISSION_DENIED",
         "■ unexpected status 401 Unauthorized",
+        '  ⎿ API Error: 403 {"error_code": "PERMISSION_DENIED"}',
+        'Review complete.\n\n  ⎿ API Error: 403\n{"error_code": "PERMISSION_DENIED"}',
     ],
 )
 def test_terminal_api_failure_reports_the_actual_error(screen):
@@ -85,6 +90,18 @@ def test_transient_retries_and_running_tasks_are_not_terminal_errors(screen):
     assert_no_terminal_api_error(screen)
 
 
+@pytest.mark.parametrize(
+    "screen",
+    [
+        "  3. PERMISSION_DENIED silently swallowed when there's no cached fallback.\n❯",
+        "The code raises 'unexpected status 403' when access is denied.",
+        "The handler returns 'exceeded retry limit' after repeated errors.",
+    ],
+)
+def test_error_mentions_in_review_text_are_not_terminal_errors(screen):
+    assert_no_terminal_api_error(screen)
+
+
 @pytest.mark.parametrize("agent", ["claude", "codex"])
 def test_tagged_calculation_requires_the_native_child_answer(tmp_path, agent):
     session = _Session(tmp_path)
@@ -101,6 +118,88 @@ def test_tagged_calculation_requires_the_native_child_answer(tmp_path, agent):
     assert task.marker in task.prompt
     assert f'task name "{task.marker}"' in task.prompt
     assert "1+1" in task.prompt
+
+
+def test_completed_answers_excludes_claude_intermediate_commentary():
+    records = [
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "stop_reason": reason,
+                "content": [{"type": "text", "text": answer}],
+            },
+        }
+        for reason, answer in [("tool_use", "I will inspect the module"), ("end_turn", "Reviewed")]
+    ]
+    assert completed_answers("claude", records) == ["Reviewed"]
+
+
+def test_completed_child_answers_excludes_inherited_codex_parent_work(tmp_path):
+    parent = [
+        {"type": "turn_context", "payload": {"turn_id": "parent-turn"}},
+        {
+            "type": "event_msg",
+            "payload": {
+                "type": "task_complete",
+                "turn_id": "parent-turn",
+                "last_agent_message": "Parent answer",
+            },
+        },
+    ]
+    child = [
+        {"type": "session_meta", "payload": {"source": {"subagent": "spawn"}}},
+        *parent,
+        {
+            "type": "event_msg",
+            "payload": {
+                "type": "task_complete",
+                "turn_id": "child-turn",
+                "last_agent_message": "Child answer",
+            },
+        },
+    ]
+    session = _transcript_session(tmp_path, "codex", {"parent.jsonl": parent, "child.jsonl": child})
+    assert completed_child_answers(session, "codex") == {"child.jsonl": ["Child answer"]}
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_orchestrator_context_requires_native_delivery_not_echoed_text(agent):
+    context = (
+        "Smart Router Orchestrator is on for this session.\n"
+        "## Workflow\n### Claude Code adapter\n### Codex adapter"
+    )
+    records = [
+        {"type": "user", "message": {"content": context}},
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": context}],
+            },
+        },
+    ]
+    assert orchestrator_contexts(agent, records) == []
+    if agent == "claude":
+        records.append(
+            {
+                "type": "attachment",
+                "attachment": {"type": "hook_additional_context", "content": [context]},
+            }
+        )
+    else:
+        records.append(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "developer",
+                    "content": [{"type": "input_text", "text": context}],
+                },
+            }
+        )
+    assert orchestrator_contexts(agent, records) == [context]
 
 
 def test_codex_model_identity_uses_only_the_completed_answer_turn():
