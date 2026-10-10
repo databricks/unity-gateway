@@ -59,11 +59,13 @@ from ucode.databricks import (
 from ucode.launcher import exec_or_spawn
 from ucode.managed_files import (
     ManagedFileWriteUnavailable,
+    managed_conflict_message,
     managed_file_conflicts,
     managed_file_is_verified,
     managed_file_scope,
     managed_file_status,
     managed_files_supported,
+    managed_settings_disabled,
     managed_writes_allowed,
     mark_managed_file_verified,
     read_managed_file,
@@ -610,6 +612,8 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
     managed_before = copy.deepcopy(existing)
     desired_doc = compose(existing)
     conflicts = managed_file_conflicts(managed_before, desired_doc, MANAGED_KEYS)
+    if managed_settings_disabled() and conflicts:
+        raise RuntimeError(managed_conflict_message("Codex", "codex", path, conflicts))
     if not managed_writes_allowed() and not conflicts:
         mark_managed_file_verified(state, "codex", path, scope="local-compatible")
         return
