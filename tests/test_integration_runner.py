@@ -40,11 +40,11 @@ def test_installer_environment_scopes_registry_credentials():
 
 
 def test_npm_user_config_references_token_environment_without_embedding_it():
-    config = runner.npm_user_config("https://databricks.jfrog.io/artifactory/api/npm/db-npm/")
+    config = runner.npm_user_config("https://registry.example.invalid/api/npm/db-npm/")
 
     assert config == (
-        "registry=https://databricks.jfrog.io/artifactory/api/npm/db-npm/\n"
-        "//databricks.jfrog.io/artifactory/api/npm/db-npm/:_authToken="
+        "registry=https://registry.example.invalid/api/npm/db-npm/\n"
+        "//registry.example.invalid/api/npm/db-npm/:_authToken="
         "${UG_INTEGRATION_NPM_TOKEN}\n"
         "always-auth=true\n"
     )

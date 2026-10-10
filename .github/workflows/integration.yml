@@ -49,9 +49,6 @@ env:
   CODEX_VERSION: ${{ inputs.codex_version || '0.154.0' }}
   OPENCODE_VERSION: ${{ inputs.opencode_version || '1.18.31' }}
   PACKAGE_INDEX: ${{ inputs.default_index || 'https://pypi.org/simple' }}
-  # Windows runners install packages through the Databricks JFrog proxies.
-  WINDOWS_PACKAGE_INDEX: https://databricks.jfrog.io/artifactory/api/pypi/db-pypi/simple
-  WINDOWS_NPM_REGISTRY: https://databricks.jfrog.io/artifactory/api/npm/db-npm/
 
 jobs:
   installation:
@@ -90,15 +87,8 @@ jobs:
 
   installation-windows:
     name: Windows installation tests
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: windows-server-latest
+    runs-on: windows-latest
     timeout-minutes: 20
-    permissions:
-      contents: read
-      id-token: write
-    env:
-      PACKAGE_INDEX: https://databricks.jfrog.io/artifactory/api/pypi/db-pypi/simple
-      NPM_REGISTRY: https://databricks.jfrog.io/artifactory/api/npm/db-npm/
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
@@ -109,22 +99,8 @@ jobs:
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
         with:
           version: 0.9.8
-      - name: Authenticate to JFrog with GitHub OIDC
-        id: jfrog
-        uses: jfrog/setup-jfrog-cli@279b1f629f43dd5bc658d8361ac4802a7ef8d2d5  # v4.9.1
-        env:
-          JF_URL: https://databricks.jfrog.io
-        with:
-          oidc-provider-name: github-actions
       - name: Test a fresh installed package without workspace credentials
         shell: pwsh
-        env:
-          # uv 0.9.8 resolves credentials for the named default index from
-          # UV_INDEX_<NAME>_USERNAME/PASSWORD without placing them in its URL.
-          UV_DEFAULT_INDEX: databricks-pypi=${{ env.PACKAGE_INDEX }}
-          UV_INDEX_DATABRICKS_PYPI_USERNAME: ${{ steps.jfrog.outputs.oidc-user }}
-          UV_INDEX_DATABRICKS_PYPI_PASSWORD: ${{ steps.jfrog.outputs.oidc-token }}
-          UG_INTEGRATION_NPM_TOKEN: ${{ steps.jfrog.outputs.oidc-token }}
         run: |
           $output = Join-Path $env:RUNNER_TEMP "ug-integration"
           $runnerArgs = @(
@@ -132,8 +108,7 @@ jobs:
             "--ug-version", $env:UG_VERSION,
             "--entry-point", $env:ENTRY_POINT,
             "--claude-version", $env:CLAUDE_VERSION,
-            "--default-index", $env:UV_DEFAULT_INDEX,
-            "--npm-registry", $env:NPM_REGISTRY,
+            "--default-index", $env:PACKAGE_INDEX,
             "--installation-only",
             "--output", $output
           )
@@ -176,7 +151,7 @@ jobs:
           PY
 
   smoke:
-    name: Smoke journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }} · ${{ matrix.os == 'windows-server-latest' && 'Windows' || 'Linux' }}
+    name: Smoke journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}
     needs: workspace
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
@@ -184,13 +159,10 @@ jobs:
       # Both OS variants use the same workspace; avoid overlapping same-agent runs.
       group: integration-smoke-${{ github.run_id }}-${{ matrix.agent }}
       cancel-in-progress: false
-    permissions:
-      contents: read
-      id-token: write
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, windows-server-latest]
+        os: [ubuntu-22.04, windows-latest]
         agent: [claude, codex]
     env:
       UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
@@ -218,25 +190,9 @@ jobs:
         run: |
           test -f "$RUNNER_TEMP/.bin/databricks.exe"
           cygpath -w "$RUNNER_TEMP/.bin" >> "$GITHUB_PATH"
-      - name: Authenticate to JFrog with GitHub OIDC
-        id: jfrog
-        if: ${{ runner.os == 'Windows' }}
-        uses: jfrog/setup-jfrog-cli@279b1f629f43dd5bc658d8361ac4802a7ef8d2d5  # v4.9.1
-        env:
-          JF_URL: https://databricks.jfrog.io
-        with:
-          oidc-provider-name: github-actions
       - name: Run the selected live cases against the e2e workspace
         shell: bash
-        env:
-          UV_INDEX_DATABRICKS_PYPI_USERNAME: ${{ steps.jfrog.outputs.oidc-user }}
-          UV_INDEX_DATABRICKS_PYPI_PASSWORD: ${{ steps.jfrog.outputs.oidc-token }}
-          UG_INTEGRATION_NPM_TOKEN: ${{ steps.jfrog.outputs.oidc-token }}
         run: |
-          if [[ "$RUNNER_OS" == Windows ]]; then
-            PACKAGE_INDEX="databricks-pypi=$WINDOWS_PACKAGE_INDEX"
-            registry=(--npm-registry "$WINDOWS_NPM_REGISTRY")
-          fi
           case "$AGENT" in
             claude) args=(--claude-version "$CLAUDE_VERSION") ;;
             codex) args=(--codex-version "$CODEX_VERSION") ;;
@@ -248,7 +204,7 @@ jobs:
           uv run --no-project --python 3.12 python scripts/run_integration.py \
             --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
             --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
-            "${registry[@]}" "${args[@]}" -- -m "$TEST_MARKER"
+            "${args[@]}" -- -m "$TEST_MARKER"
       - name: Upload live test evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
@@ -266,14 +222,9 @@ jobs:
   headless-windows:
     name: Windows headless journey · Claude
     needs: workspace
-    runs-on: windows-server-latest
+    runs-on: windows-latest
     timeout-minutes: 20
-    permissions:
-      contents: read
-      id-token: write
     env:
-      PACKAGE_INDEX: https://databricks.jfrog.io/artifactory/api/pypi/db-pypi/simple
-      NPM_REGISTRY: https://databricks.jfrog.io/artifactory/api/npm/db-npm/
       DEPENDENCY: ${{ inputs.dependency }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
@@ -299,22 +250,11 @@ jobs:
             Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           & $databricks version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Authenticate to JFrog with GitHub OIDC
-        id: jfrog
-        uses: jfrog/setup-jfrog-cli@279b1f629f43dd5bc658d8361ac4802a7ef8d2d5  # v4.9.1
-        env:
-          JF_URL: https://databricks.jfrog.io
-        with:
-          oidc-provider-name: github-actions
       - name: Configure and complete a real headless gateway task
         shell: pwsh
         env:
           UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
           DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
-          UV_DEFAULT_INDEX: databricks-pypi=${{ env.PACKAGE_INDEX }}
-          UV_INDEX_DATABRICKS_PYPI_USERNAME: ${{ steps.jfrog.outputs.oidc-user }}
-          UV_INDEX_DATABRICKS_PYPI_PASSWORD: ${{ steps.jfrog.outputs.oidc-token }}
-          UG_INTEGRATION_NPM_TOKEN: ${{ steps.jfrog.outputs.oidc-token }}
         run: |
           $output = Join-Path $env:RUNNER_TEMP "ug-integration"
           $runnerArgs = @(
@@ -322,8 +262,7 @@ jobs:
             "--ug-version", $env:UG_VERSION,
             "--entry-point", $env:ENTRY_POINT,
             "--claude-version", $env:CLAUDE_VERSION,
-            "--default-index", $env:UV_DEFAULT_INDEX,
-            "--npm-registry", $env:NPM_REGISTRY,
+            "--default-index", $env:PACKAGE_INDEX,
             "--headless-only",
             "--output", $output
           )
@@ -345,7 +284,7 @@ jobs:
             ${{ runner.temp }}/ug-integration/wheels/
 
   full:
-    name: Full journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }} · ${{ matrix.os == 'windows-server-latest' && 'Windows' || 'Linux' }}
+    name: Full journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}
     if: ${{ !cancelled() && needs.workspace.result == 'success' }}
     needs: [workspace, smoke]
     runs-on: ${{ matrix.os }}
@@ -353,9 +292,6 @@ jobs:
       # Keep the previous per-agent serialization across the new OS matrix.
       group: integration-full-${{ github.run_id }}-${{ matrix.agent }}
       cancel-in-progress: false
-    permissions:
-      contents: read
-      id-token: write
     # The runner enforces its own 3600s pytest deadline; keep the job above it
     # so a slow run fails through the runner's report instead of a job kill.
     timeout-minutes: 70
@@ -364,7 +300,7 @@ jobs:
       # One runner per OS variant; concurrency above serializes variants per agent.
       max-parallel: 4
       matrix:
-        os: [ubuntu-22.04, windows-server-latest]
+        os: [ubuntu-22.04, windows-latest]
         agent: [claude, codex]
     env:
       UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
@@ -379,18 +315,15 @@ jobs:
   # Non-blocking: continue-on-error and absent from the cujs `needs`, so a flaky OpenCode
   # leg cannot block merges. Add it to cujs once the lane is stable.
   opencode:
-    name: Full journeys · OpenCode · ${{ matrix.os == 'windows-server-latest' && 'Windows' || 'Linux' }} (non-blocking)
+    name: Full journeys · OpenCode · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
     if: ${{ !cancelled() && needs.workspace.result == 'success' }}
     needs: workspace
     continue-on-error: true
     runs-on: ${{ matrix.os }}
-    permissions:
-      contents: read
-      id-token: write
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, windows-server-latest]
+        os: [ubuntu-22.04, windows-latest]
     timeout-minutes: 30
     env:
       UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
