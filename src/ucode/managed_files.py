@@ -32,6 +32,9 @@ from ucode.ui import console, print_note, print_success, print_warning
 
 # Absolute path so a stripped PATH (desktop/GUI launchers) still finds it.
 _SUDO = "/usr/bin/sudo"
+# Opt out of all OS-managed settings work (read, conflict check, and the privileged sudo write).
+SKIP_OS_SETTINGS_ENV = "UG_SKIP_OS_SETTINGS"
+_TRUE_VALUES = {"1", "true", "yes", "on"}
 MANAGED_BACKUP_DIR = APP_DIR / "managed-backups"
 MANAGED_BACKUP_MANIFEST_PATH = MANAGED_BACKUP_DIR / "manifest.json"
 MANAGED_FINGERPRINT_VERSION = 1
@@ -86,12 +89,29 @@ def current_os() -> OS:
     return OS.OTHER
 
 
+def managed_settings_skipped() -> bool:
+    """Whether the developer opted out of OS-managed settings via ``UG_SKIP_OS_SETTINGS``.
+
+    Set the variable to ``1``/``true``/``yes``/``on`` to make ucode neither read nor update the
+    root-owned managed files (Claude Code ``managed-settings.json``, Codex ``managed_config.toml``).
+    ucode then relies solely on its per-user settings, which is enough for a single-user setup that
+    always launches through ``ug`` and never needs a bare ``claude``/``codex`` to reach the gateway.
+    Skips the privileged ``sudo`` step entirely, so an interactive run is never prompted for a
+    password and never hits the "OS-managed settings could not be updated" failure on hosts where
+    that write is blocked.
+    """
+    return os.environ.get(SKIP_OS_SETTINGS_ENV, "").strip().lower() in _TRUE_VALUES
+
+
 def managed_files_supported() -> bool:
     """True on the platforms whose managed-settings write path is implemented (Linux, macOS).
 
     The write path needs `sudo` (`sudo cp`, `chattr`/`chflags`), which is Unix-only — so Windows and
-    any other platform are unsupported.
+    any other platform are unsupported. ``UG_SKIP_OS_SETTINGS`` also opts out entirely, which
+    routes managed MCP servers to the user scope instead of the sudo-backed OS-managed file.
     """
+    if managed_settings_skipped():
+        return False
     return current_os() in (OS.LINUX, OS.MACOS)
 
 
