@@ -1,0 +1,204 @@
+name: Terminal Bench
+
+on:
+  # TEMP: run from PR #1074 while smart routing is verified. Remove before merge.
+  push:
+    branches: [max-rozen-oss-db/stack/terminal-bench, max-rozen-oss-db/stack/claude-headless-routing]
+  schedule:
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+    inputs:
+      tb2_tasks:
+        description: Comma-separated Terminal Bench 2 task names for the Linux Harbor lane
+        default: fix-git,financial-document-processor,code-from-image,chess-best-move,git-multibranch,kv-store-grpc,large-scale-text-editing
+        required: true
+      tb2_dataset:
+        description: Harbor dataset for the TB2 lane
+        default: terminal-bench@2.0
+        required: true
+      model:
+        description: Optional model passed to ug --model (blank uses ug's default)
+        default: ''
+        required: false
+      claude_version:
+        description: Exact Claude Code version
+        default: 2.1.290
+        required: true
+      codex_version:
+        description: Exact Codex version
+        default: 0.154.0
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: terminal-bench-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONUTF8: 1
+  TB2_TASKS: ${{ inputs.tb2_tasks || 'fix-git,financial-document-processor,code-from-image,chess-best-move,git-multibranch,kv-store-grpc,large-scale-text-editing' }}
+  TB2_DATASET: ${{ inputs.tb2_dataset || 'terminal-bench@2.0' }}
+  MODEL: ${{ inputs.model }}
+  CLAUDE_VERSION: ${{ inputs.claude_version || '2.1.290' }}
+  CODEX_VERSION: ${{ inputs.codex_version || '0.154.0' }}
+  HARBOR_VERSION: 0.23.0
+  WINDOWS_PACKAGE_INDEX: https://databricks.jfrog.io/artifactory/api/pypi/db-pypi/simple
+  WINDOWS_NPM_REGISTRY: https://databricks.jfrog.io/artifactory/api/npm/db-npm/
+
+jobs:
+  # Real TB2 tasks run in Harbor's Linux containers, with ug installed inside each one.
+  harbor:
+    name: Harbor · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }} · Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        agent: [claude, codex]
+    env:
+      UV_INDEX_URL: https://pypi.org/simple
+      # bench_auth.py mints a fresh token per task from the CUJ service principal when
+      # its secrets are set, and otherwise falls back to the pre-fetched e2e bearer.
+      UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+      DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+      UG_BENCH_SP_WORKSPACE: ${{ secrets.UG_CUJ1_WORKSPACE }}
+      UG_BENCH_CLIENT_ID: ${{ secrets.UG_CUJ_SP_CLIENT_ID }}
+      UG_BENCH_CLIENT_SECRET: ${{ secrets.UG_CUJ_SP_CLIENT_SECRET }}
+      PYTHONPATH: ${{ github.workspace }}/bench/terminal_bench
+      AGENT_CLASS: ${{ matrix.agent == 'claude' && 'UgClaude' || 'UgCodex' }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+      - name: Build the ug wheel installed into each task container
+        run: |
+          uv build --wheel --out-dir "$RUNNER_TEMP/dist"
+          echo "UG_BENCH_WHEEL=$(ls "$RUNNER_TEMP"/dist/*.whl)" >> "$GITHUB_ENV"
+      - name: Run TB2 tasks
+        env:
+          AGENT_VERSION: ${{ matrix.agent == 'claude' && env.CLAUDE_VERSION || env.CODEX_VERSION }}
+        run: |
+          includes=()
+          IFS=, read -ra tasks <<< "$TB2_TASKS"
+          for task in "${tasks[@]}"; do includes+=(-i "$task"); done
+          uvx --python 3.12 --from "harbor==$HARBOR_VERSION" harbor run -y \
+            -d "$TB2_DATASET" "${includes[@]}" \
+            -a "ug_agent:$AGENT_CLASS" --ak "version=$AGENT_VERSION" \
+            ${MODEL:+-m "$MODEL"} -n 3 -o "$RUNNER_TEMP/harbor-jobs/tb2"
+      - name: Run ug's own tasks
+        if: ${{ !cancelled() }}
+        env:
+          AGENT_VERSION: ${{ matrix.agent == 'claude' && env.CLAUDE_VERSION || env.CODEX_VERSION }}
+        run: |
+          includes=()
+          while read -r task; do includes+=(-i "$task"); done \
+            < <(python3 bench/terminal_bench/bench_tasks.py "${{ matrix.agent }}")
+          uvx --python 3.12 --from "harbor==$HARBOR_VERSION" harbor run -y \
+            -p bench/terminal_bench/tasks "${includes[@]}" --resume-trajectory \
+            -a "ug_agent:$AGENT_CLASS" --ak "version=$AGENT_VERSION" \
+            ${MODEL:+-m "$MODEL"} -n 3 -o "$RUNNER_TEMP/harbor-jobs/ug"
+      - name: Summarize
+        if: ${{ !cancelled() }}
+        run: |
+          status=0
+          python3 bench/terminal_bench/summarize_harbor.py "$RUNNER_TEMP/harbor-jobs/tb2" "TB2 · ${{ matrix.agent }}" || status=1
+          python3 bench/terminal_bench/summarize_harbor.py "$RUNNER_TEMP/harbor-jobs/ug" "ug tasks in Harbor · ${{ matrix.agent }}" || status=1
+          exit $status
+      - name: Scrub the bearer token from job output
+        if: ${{ !cancelled() }}
+        run: python3 bench/terminal_bench/scrub_secrets.py "$RUNNER_TEMP/harbor-jobs"
+      - name: Upload Harbor jobs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: terminal-bench-harbor-${{ matrix.agent }}
+          path: ${{ runner.temp }}/harbor-jobs/
+
+  # Windows runners can't run Linux containers, so ug's own tasks also run on the host.
+  native:
+    name: Native · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }} · ${{ matrix.os == 'windows-server-latest' && 'Windows' || 'Linux' }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-server-latest]
+        agent: [claude, codex]
+    env:
+      UV_INDEX_URL: https://pypi.org/simple
+      # bench_auth.py mints a fresh token per task from the CUJ service principal when
+      # its secrets are set, and otherwise falls back to the pre-fetched e2e bearer.
+      UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+      DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+      UG_BENCH_SP_WORKSPACE: ${{ secrets.UG_CUJ1_WORKSPACE }}
+      UG_BENCH_CLIENT_ID: ${{ secrets.UG_CUJ_SP_CLIENT_ID }}
+      UG_BENCH_CLIENT_SECRET: ${{ secrets.UG_CUJ_SP_CLIENT_SECRET }}
+      AGENT: ${{ matrix.agent }}
+      AGENT_PACKAGE: ${{ matrix.agent == 'claude' && '@anthropic-ai/claude-code' || '@openai/codex' }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: 22.19.0
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+      - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
+      - name: Expose the Databricks CLI on Windows
+        if: ${{ runner.os == 'Windows' }}
+        run: |
+          test -f "$RUNNER_TEMP/.bin/databricks.exe"
+          cygpath -w "$RUNNER_TEMP/.bin" >> "$GITHUB_PATH"
+      - name: Authenticate to JFrog with GitHub OIDC
+        id: jfrog
+        if: ${{ runner.os == 'Windows' }}
+        uses: jfrog/setup-jfrog-cli@279b1f629f43dd5bc658d8361ac4802a7ef8d2d5  # v4.9.1
+        env:
+          JF_URL: https://databricks.jfrog.io
+        with:
+          oidc-provider-name: github-actions
+      - name: Install the agent CLI
+        env:
+          NPM_TOKEN: ${{ steps.jfrog.outputs.oidc-token }}
+          AGENT_VERSION: ${{ matrix.agent == 'claude' && env.CLAUDE_VERSION || env.CODEX_VERSION }}
+        run: |
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            npmrc="$RUNNER_TEMP/jfrog.npmrc"
+            printf 'registry=%s\n//%s:_authToken=%s\n' \
+              "$WINDOWS_NPM_REGISTRY" "${WINDOWS_NPM_REGISTRY#https://}" "$NPM_TOKEN" > "$npmrc"
+            npm install -g --userconfig "$npmrc" "$AGENT_PACKAGE@$AGENT_VERSION"
+            rm "$npmrc"
+          else
+            npm install -g "$AGENT_PACKAGE@$AGENT_VERSION"
+          fi
+      - name: Install ug
+        env:
+          UV_INDEX_DATABRICKS_PYPI_USERNAME: ${{ steps.jfrog.outputs.oidc-user }}
+          UV_INDEX_DATABRICKS_PYPI_PASSWORD: ${{ steps.jfrog.outputs.oidc-token }}
+        run: |
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            unset UV_INDEX_URL
+            export UV_DEFAULT_INDEX="databricks-pypi=$WINDOWS_PACKAGE_INDEX"
+          fi
+          uv lock
+          uv tool install .
+          uv sync
+      - name: Run ug's own tasks on the host
+        run: uv run --no-sync python bench/terminal_bench/run_native.py --agent "$AGENT" --output "$RUNNER_TEMP/tb-native" ${MODEL:+--model "$MODEL"} < /dev/null
+      - name: Scrub the bearer token from task output
+        if: ${{ !cancelled() }}
+        run: uv run --no-sync python bench/terminal_bench/scrub_secrets.py "$RUNNER_TEMP/tb-native"
+      - name: Upload native results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: terminal-bench-native-${{ matrix.agent }}-${{ matrix.os }}
+          include-hidden-files: true
+          path: |
+            ${{ runner.temp }}/tb-native/results.json
+            ${{ runner.temp }}/tb-native/logs/
