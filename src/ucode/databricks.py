@@ -849,19 +849,24 @@ def _refresh_windows_path() -> None:
     path = os.environ.get("PATH", "")
     entries = path.split(os.pathsep) if path else []
     persisted_path = _windows_user_path()
-    candidates = persisted_path.split(os.pathsep) if persisted_path else []
-    if local_app_data:
-        candidates.insert(0, str(Path(local_app_data) / "Microsoft" / "WinGet" / "Links"))
+    links = [str(Path(local_app_data) / "Microsoft" / "WinGet" / "Links")] if local_app_data else []
+    persisted = persisted_path.split(os.pathsep) if persisted_path else []
 
     known = {os.path.normcase(entry) for entry in entries}
-    new_entries = []
-    for entry in candidates:
-        expanded = os.path.expandvars(entry)
-        normalized = os.path.normcase(expanded)
-        if expanded and normalized not in known:
-            new_entries.append(expanded)
-            known.add(normalized)
-    os.environ["PATH"] = os.pathsep.join([*new_entries, *entries])
+
+    def missing(candidates: list[str]) -> list[str]:
+        added = []
+        for entry in candidates:
+            expanded = os.path.expandvars(entry)
+            normalized = os.path.normcase(expanded)
+            if expanded and normalized not in known:
+                added.append(expanded)
+                known.add(normalized)
+        return added
+
+    # A fresh winget alias must win, but other saved entries go last so the running ug
+    # and the agents already on PATH keep resolving first.
+    os.environ["PATH"] = os.pathsep.join([*missing(links), *entries, *missing(persisted)])
     clear_databricks_cli_cache()
 
 
