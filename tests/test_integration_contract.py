@@ -291,6 +291,16 @@ def test_user_journey_gate_runs_for_in_repo_prs_or_a_member_command():
     assert "concurrency:" not in workflow.split("\njobs:\n", 1)[0]
 
 
+def test_user_journey_fork_report_uses_the_evaluated_commit():
+    report = _workflow("user-journey-test-required.yml").split(
+        "Report the result on the fork PR", 1
+    )[1]
+
+    assert "SHA: ${{ steps.gate.outputs.sha }}" in report
+    assert "repos/$GITHUB_REPOSITORY/statuses/$sha" in report
+    assert "/pulls/" not in report and ".head.sha" not in report
+
+
 def test_ug_review_runs_only_on_member_command_from_the_default_branch():
     workflow = _workflow("ug-review.yml")
 
