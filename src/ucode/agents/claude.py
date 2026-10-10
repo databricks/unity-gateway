@@ -47,6 +47,7 @@ from ucode.databricks import (
     build_otel_headers_shell_command,
     build_otel_traces_endpoint,
     build_tool_base_url,
+    claude_has_1m_context,
     get_databricks_token,
     ug_binary,
 )
@@ -164,11 +165,6 @@ def _resolve_web_search_model(state: dict) -> str | None:
 
 
 WEB_SEARCH_MCP_NAME = "web_search"
-# Matches both the AI Gateway form (`databricks-claude-opus-4-8`) and the UC
-# model-services form (`system.ai.claude-opus-4-8`).
-_CLAUDE_MODEL_RE = re.compile(
-    r"^(?:system\.ai\.)?(?:databricks-)?claude-(opus|sonnet)-(\d+)(?:-(\d+))?(.*)$"
-)
 
 # OTLP trace-export keys owned by the managed configuration path.
 CLAUDE_OTEL_TRACE_ENV_KEYS = (
@@ -628,17 +624,7 @@ def _picker_option(model: str, label: str, description: str | None = None) -> di
 def _maybe_add_1m_suffix(model: str) -> str:
     if model.endswith("[1m]"):
         return model
-    match = _CLAUDE_MODEL_RE.match(model)
-    if not match:
-        return model
-
-    family, major_raw, minor_raw, _ = match.groups()
-    major = int(major_raw)
-    minor = int(minor_raw or 0)
-    should_suffix = (family == "opus" and (major, minor) >= (4, 6)) or (
-        family == "sonnet" and (major, minor) >= (4, 6)
-    )
-    return f"{model}[1m]" if should_suffix else model
+    return f"{model}[1m]" if claude_has_1m_context(model) else model
 
 
 def default_model_picker_catalog(
