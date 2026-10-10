@@ -7,7 +7,7 @@ import os
 import shutil
 import subprocess
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
 from enum import StrEnum
 from importlib import metadata
 from typing import Annotated, Any
@@ -2105,6 +2105,28 @@ def mcp_proxy_cmd(
         raise typer.Exit(1)
     profile = profile or state.get("profile")
     serve(url, workspace, profile, use_pat=use_pat or bool(state.get("use_pat")))
+
+
+@app.command("claude-desktop-auth", hidden=True)
+def claude_desktop_auth_cmd(
+    host: Annotated[str, typer.Option("--host", help="Configured workspace URL.")],
+    profile: Annotated[str, typer.Option("--profile", help="Configured Databricks CLI profile.")],
+) -> None:
+    """Print a Desktop credential, allowing browser login only for interactive requests."""
+    import sys
+
+    from ucode.desktop_auth import get_claude_desktop_token
+
+    try:
+        with redirect_stdout(sys.stderr):
+            token = get_claude_desktop_token(host, profile)
+    except (RuntimeError, ValueError) as exc:
+        print_err(str(exc))
+        raise typer.Exit(1) from None
+    except KeyboardInterrupt:
+        print_err("Databricks sign-in cancelled. Start a new Cowork task to try again.")
+        raise typer.Exit(130) from None
+    sys.stdout.write(token + "\n")
 
 
 @app.command("auth-token", hidden=True)
