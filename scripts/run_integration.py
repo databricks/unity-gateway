@@ -7,7 +7,6 @@ or the developer's installed agents. Only the live workspace is shared with e2e.
 from __future__ import annotations
 
 import argparse
-import ast
 import base64
 import contextlib
 import datetime as dt
@@ -39,10 +38,14 @@ UV_INDEX_CREDENTIAL_ENV = (
 )
 NPM_TOKEN_ENV = "UG_INTEGRATION_NPM_TOKEN"
 INSTALLER_CREDENTIAL_ENV = (*UV_INDEX_CREDENTIAL_ENV, NPM_TOKEN_ENV)
-PTY_MODULES = {"pexpect", "pyte"}
-PTY_HELPERS = {"utils.terminal", "utils.mcp"}
 # Claude exports no spans on Windows, where ug writes no machine-wide Claude settings.
 WINDOWS_UNSUPPORTED_MODULES = {"test_ug_claude_tracing.py"}
+WINDOWS_UNSUPPORTED_NODES = {
+    # Seeds machine-wide managed settings, which ug has no Windows path for.
+    "test_ug_configure_claude_lifecycle.py::test_unmanaged_claude_preserves_preexisting_family_defaults",
+    # Codex's Windows sandbox can't read ug's owner-only session-env dir yet.
+    "test_ug_smart_routing_hooks.py::test_smart_router_skill_toggles_codex_subagent_routing",
+}
 HEADLESS_TEST_NODES = {
     "claude": "test_ug_claude_headless.py::test_ug_claude_headless_prompt_argument",
     "codex": "test_ug_codex_headless.py::test_ug_codex_headless_prompt_argument",
@@ -166,32 +169,15 @@ def integration_test_targets(
     if platform_name == "nt" and installation_only:
         return [str(suite / "test_installation.py")]
     if platform_name == "nt":
-        return [
+        modules = [
             str(module)
             for module in sorted(suite.glob("test_*.py"))
-            if module.name not in WINDOWS_UNSUPPORTED_MODULES and not uses_pty(module)
+            if module.name not in WINDOWS_UNSUPPORTED_MODULES
         ]
+        # pytest matches --deselect against node IDs relative to the suite's pytest.ini.
+        deselected = [f"--deselect={node}" for node in sorted(WINDOWS_UNSUPPORTED_NODES)]
+        return [*modules, *deselected]
     return [str(suite)]
-
-
-def uses_pty(module: Path) -> bool:
-    """Whether a suite module drives agents through the POSIX-only PTY helpers."""
-    imported_names = []
-    for node in ast.walk(ast.parse(module.read_text(encoding="utf-8"))):
-        if isinstance(node, ast.ImportFrom):
-            imported_names.append(node.module or "")
-            imported_names.extend(
-                f"{node.module}.{alias.name}" if node.module else alias.name
-                for alias in node.names
-                if alias.name != "*"
-            )
-        elif isinstance(node, ast.Import):
-            imported_names.extend(alias.name for alias in node.names)
-    return any(
-        name.split(".")[0] in PTY_MODULES
-        or any(name == helper or name.endswith(f".{helper}") for helper in PTY_HELPERS)
-        for name in imported_names
-    )
 
 
 def process_group_options() -> dict:
@@ -840,8 +826,8 @@ def main() -> int:
                 bearer = mint_m2m_token(args.workspace, client_id, client_secret)
 
         test_dependencies = ["pytest==9.0.3"]
-        if os.name == "posix":
-            test_dependencies.extend(["pexpect==4.9.0", "pyte==0.8.2"])
+        test_dependencies.append("pyte==0.8.2")
+        test_dependencies.append("pexpect==4.9.0" if os.name == "posix" else "pywinpty==3.0.5")
         run(
             [
                 uv,

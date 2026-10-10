@@ -173,7 +173,7 @@ through them without changing existing journey commands or completion assertions
 ## Run a specific combination
 
 Prerequisites: Python 3.12+, uv, and Node/npm. Live runs also require Databricks
-CLI 1.17.0. Full live/TUI runs require a POSIX host; Windows supports the explicit
+CLI 1.17.0. Windows drives TUIs through ConPTY (pywinpty) and supports the explicit
 headless subset described below. The runner installs the requested agents into a new
 npm prefix and ug into a new virtualenv. Pytest and, for live runs, the PTY/screen
 libraries (pexpect and pyte) live in a different virtualenv, so they cannot accidentally

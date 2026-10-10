@@ -8,15 +8,20 @@ from __future__ import annotations
 
 import contextlib
 import os
+import queue
 import re
+import shutil
 import signal
+import subprocess
+import threading
 import time
 import uuid
 
-import pexpect
 import pyte
 
 from .evidence import agent_sessions, assert_no_terminal_api_error
+
+SELECTED = "[›❯>]"
 
 
 def _claude_background_task_menu(text):
@@ -55,6 +60,117 @@ class TerminalScreen(pyte.Screen):
         self.send(data)
 
 
+class PosixPty:
+    """pexpect-backed PTY; `read` returns None on timeout and raises EOFError at end."""
+
+    def __init__(self, command, cwd, env, dimensions):
+        import pexpect
+
+        self._pexpect = pexpect
+        self.child = pexpect.spawn(
+            command[0],
+            command[1:],
+            cwd=cwd,
+            env=env,
+            encoding="utf-8",
+            codec_errors="replace",
+            dimensions=dimensions,
+            timeout=120,
+        )
+
+    def read(self, timeout):
+        try:
+            return self.child.read_nonblocking(size=65536, timeout=timeout)
+        except self._pexpect.TIMEOUT:
+            return None
+        except self._pexpect.EOF:
+            raise EOFError from None
+
+    def send(self, keys):
+        self.child.send(keys)
+
+    def kill(self):
+        # pexpect creates a new session with a controlling terminal. Clean up
+        # its process group even if the ug leader exited before its children.
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(self.child.pid, signal.SIGTERM)
+        self.child.close(force=True)
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(self.child.pid, signal.SIGKILL)
+
+    def close(self):
+        self.child.close(force=False)
+
+    @property
+    def exitstatus(self):
+        return self.child.exitstatus
+
+    @property
+    def signalstatus(self):
+        return self.child.signalstatus
+
+
+class ConPty:
+    """pywinpty (ConPTY) backend; a daemon thread feeds the blocking `read` into a queue."""
+
+    def __init__(self, command, cwd, env, dimensions):
+        import winpty  # ty: ignore[unresolved-import]
+
+        # ConPTY launches executables only; batch wrappers need cmd.exe.
+        argv = [shutil.which(command[0]) or command[0], *command[1:]]
+        if argv[0].lower().endswith((".cmd", ".bat")):
+            argv = [os.environ.get("COMSPEC", "cmd.exe"), "/c", *argv]
+        self.child = winpty.PtyProcess.spawn(argv, cwd=cwd, env=env, dimensions=dimensions)
+        self._chunks = queue.Queue()
+        threading.Thread(target=self._pump, daemon=True).start()
+
+    def _pump(self):
+        try:
+            while chunk := self.child.read(65536):
+                self._chunks.put(chunk)
+        except Exception:  # noqa: BLE001 - EOFError or a closed pty both mean the stream ended
+            pass
+        self._chunks.put(None)
+
+    def read(self, timeout):
+        try:
+            chunk = self._chunks.get(timeout=timeout)
+        except queue.Empty:
+            return None
+        if chunk is None:
+            self._chunks.put(None)
+            raise EOFError
+        return chunk
+
+    def send(self, keys):
+        self.child.write(keys)
+
+    def kill(self):
+        # terminate() ends only the leader; taskkill /T takes its descendants too.
+        subprocess.run(
+            ["taskkill", "/T", "/F", "/PID", str(self.child.pid)],
+            capture_output=True,
+            check=False,
+        )
+        with contextlib.suppress(Exception):
+            self.child.terminate(force=True)
+
+    def close(self):
+        with contextlib.suppress(Exception):
+            self.child.wait()
+
+    @property
+    def exitstatus(self):
+        return self.child.exitstatus
+
+    signalstatus = None
+
+
+def spawn_pty(command, cwd, env, dimensions):
+    backend = ConPty if os.name == "nt" else PosixPty
+    return backend(command, cwd, env, dimensions)
+
+
 class TerminalProcess:
     def __init__(self, session, agent, command, name):
         self.session = session
@@ -62,21 +178,16 @@ class TerminalProcess:
         self.name = name
         self.command = command
         env = {**session.env, "TERM": "xterm-256color"}
-        self.child = pexpect.spawn(
-            self.command[0],
-            self.command[1:],
-            cwd=str(session.cwd),
-            env=env,
-            encoding="utf-8",
-            codec_errors="replace",
-            dimensions=(60, 140),
-            timeout=120,
-        )
+        if agent == "codex":
+            # Seed the sandbox choice so the Codex TUI skips its arrow-key picker.
+            session.choose_codex_windows_sandbox()
+        self.child = spawn_pty(self.command, str(session.cwd), env, (60, 140))
         self.screen = TerminalScreen(140, 60, self.child.send)
         self.stream = pyte.Stream(self.screen)
         self.output = []
         self.actions = []
         self.ended = False
+        self.approving = False
 
     @property
     def visible(self):
@@ -86,13 +197,7 @@ class TerminalProcess:
         return self
 
     def __exit__(self, exc_type, exc, traceback):
-        # pexpect creates a new session with a controlling terminal. Clean up
-        # its process group even if the ug leader exited before its children.
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(self.child.pid, signal.SIGTERM)
-        self.child.close(force=True)
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(self.child.pid, signal.SIGKILL)
+        self.child.kill()
         routing_log = (
             self.session.home
             / ".ucode"
@@ -118,11 +223,11 @@ class TerminalProcess:
 
     def read(self):
         try:
-            chunk = self.child.read_nonblocking(size=65536, timeout=0.2)
-        except pexpect.TIMEOUT:
-            return
-        except pexpect.EOF:
+            chunk = self.child.read(timeout=0.2)
+        except EOFError:
             self.ended = True
+            return
+        if chunk is None:
             return
         self.output.append(chunk)
         self.stream.feed(chunk)
@@ -154,7 +259,11 @@ class TerminalProcess:
 
     def selected_line(self):
         return next(
-            (line.strip() for line in self.visible.splitlines() if re.match(r"^\s*[›❯>]", line)),
+            (
+                line.strip()
+                for line in self.visible.splitlines()
+                if re.match(rf"^\s*{SELECTED}", line)
+            ),
             "",
         )
 
@@ -194,7 +303,7 @@ class TerminalProcess:
         while not self.ended and time.monotonic() < deadline:
             self.read()
         assert self.ended, f"Process did not exit within {timeout}s:\n{self.visible}"
-        self.child.close(force=False)
+        self.child.close()
         assert self.child.exitstatus == 0, (
             f"exit={self.child.exitstatus}, signal={self.child.signalstatus}:\n{self.visible}"
         )
@@ -233,6 +342,7 @@ class AgentTerminal(TerminalProcess):
     def boot(self, timeout=120):
         """Handle only recognized visible onboarding; unknown screens fail."""
         handled = set()
+        answered = {}
         ready_since = None
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -286,7 +396,7 @@ class AgentTerminal(TerminalProcess):
                     and bool(
                         re.search(
                             rf"(?m)^\s*>\s+You are in "
-                            rf"{re.escape(str(self.session.cwd.parent))}/[^/\r\n]*$",
+                            rf"{re.escape(str(self.session.cwd.parent))}[\\/][^\\/\r\n]*$",
                             text,
                         )
                     )
@@ -295,7 +405,7 @@ class AgentTerminal(TerminalProcess):
                         or "directory allows project-local config, hooks, and exec policies to load."
                         in text
                     )
-                    and bool(re.search(r"(?m)^\s*[›❯>]\s*1[.)]\s+Yes, continue\s*$", text))
+                    and bool(re.search(rf"(?m)^\s*{SELECTED}\s*1[.)]\s+Yes, continue\s*$", text))
                     and bool(re.search(r"(?m)^\s*2[.)]\s+No, quit\s*$", text))
                     and "Press enter to continue" in text,
                     "\r",
@@ -305,9 +415,10 @@ class AgentTerminal(TerminalProcess):
             for label, shown, keys in dialogs:
                 if shown:
                     matched = True
-                    if label not in handled:
+                    # Startup can drop the first keypress; answer again if the dialog stays up.
+                    if time.monotonic() - answered.get(label, float("-inf")) > 10:
                         self.send(keys, label)
-                        handled.add(label)
+                        answered[label] = time.monotonic()
                     break
             if matched:
                 ready_since = None
@@ -389,6 +500,21 @@ class AgentTerminal(TerminalProcess):
         )
         return screen
 
+    def approve_windows_command(self, screen):
+        """Approve a Codex-on-Windows command prompt once; return whether one is showing."""
+        if "Would you like to run the following command?" not in screen:
+            self.approving = False
+            return False
+        assert self.agent == "codex" and os.name == "nt", (
+            "Agent requested an unrecognized command approval:\n" + screen
+        )
+        # Codex on Windows asks before every shell command. Approve so these tests
+        # exercise ug instead of the model's choice of command; wait until the options render.
+        if not self.approving and re.search(rf"(?m)^\s*{SELECTED}\s*1\.\s*Yes, proceed", screen):
+            self.send("\r", "approve the Codex command prompt")
+            self.approving = True
+        return True
+
     def wait_for_task(self, task, timeout=180):
         permission_in_progress = False
 
@@ -408,12 +534,14 @@ class AgentTerminal(TerminalProcess):
                     rf'(?m)^\s*find {project_root} -name ["\']{filename}["\'] 2>/dev/null\s*$',
                     screen,
                 )
-                first_yes = re.search(r"(?m)^\s*[›❯>]\s*1\.\s*Yes\s*$", screen)
+                first_yes = re.search(rf"(?m)^\s*{SELECTED}\s*1\.\s*Yes\s*$", screen)
                 assert self.agent == "claude" and safe_find and first_yes, (
                     "Agent requested an unrecognized tool permission:\n" + screen
                 )
                 self.send("\r", f"allow read-only search for {task.filename}")
                 permission_in_progress = True
+                return False
+            if self.approve_windows_command(screen):
                 return False
             permission_in_progress = False
             return task.completed(self.session, self.agent)

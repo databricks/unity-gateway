@@ -171,10 +171,17 @@ def _toggle_with_skill(
     before_answers, before_confirmations = completion_counts()
     tui.submit(invocation)
 
-    def toggled(_screen):
+    def toggled(screen):
+        if tui.approve_windows_command(screen):
+            return False
+        try:
+            controls_now = json.loads(controls[0].read_text())
+        except PermissionError:
+            # Windows denies reads while ug replaces the controls file; try again next frame.
+            return False
         answers, confirmations = completion_counts()
         return (
-            json.loads(controls[0].read_text()) == expected
+            controls_now == expected
             and confirmations > before_confirmations
             and answers > before_answers
         )

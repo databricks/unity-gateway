@@ -2,10 +2,12 @@
 
 import configparser
 import json
-import shlex
+import os
+from pathlib import Path
 from urllib.parse import urlparse
 
 import pytest
+from utils.harness import split_command
 from utils.terminal import AgentTerminal
 
 pytestmark = [pytest.mark.live, pytest.mark.tui, pytest.mark.claude]
@@ -49,11 +51,16 @@ def test_ug_claude_custom_oauth_cli_boots(live_session, workspace):
     assert profile == f"ug-oauth-{hostname}-{CLIENT_ID}"
     assert profiles[profile]["client_id"] == CLIENT_ID
 
-    managed_settings = json.loads(
-        session.run(MANAGED_SETTINGS_PATH, binary=session.which("cat"), timeout=30).stdout
-    )
-    assert shlex.split(managed_settings["apiKeyHelper"]) == [
-        str(session.binary.with_name("ug")),
+    if os.name == "nt":
+        # ug has no Windows managed-settings writer, so the helper lands in user settings.
+        settings_text = (session.home / ".claude/ucode-settings.json").read_text()
+    else:
+        settings_text = session.run(
+            MANAGED_SETTINGS_PATH, binary=session.which("cat"), timeout=30
+        ).stdout
+    helper = split_command(json.loads(settings_text)["apiKeyHelper"])
+    assert Path(helper[0]).with_suffix("") == session.binary.with_name("ug")
+    assert helper[1:] == [
         "auth-token",
         "--host",
         workspace,
