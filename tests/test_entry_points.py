@@ -19,14 +19,7 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 @pytest.mark.parametrize(
     "flag",
     [
-        pytest.param(
-            "--help",
-            marks=pytest.mark.skipif(
-                sys.platform == "win32",
-                reason="Click derives the prog name from argv[0], so --help shows `ug.EXE`; "
-                "product fix tracked separately",
-            ),
-        ),
+        "--help",
         "--version",
     ],
 )
@@ -50,4 +43,6 @@ def test_installed_console_script_runs_with_its_invoked_name(command: str, flag:
     if flag == "--version":
         assert _ANSI_RE.sub("", result.stdout).strip() == version("unity-gateway")
     else:
-        assert f"Usage: {command} " in _ANSI_RE.sub("", output)
+        # On Windows `shutil.which` returns `ug.EXE`, which Click echoes from argv[0].
+        usage = rf"Usage: {command}(\.exe)? "
+        assert re.search(usage, _ANSI_RE.sub("", output), re.IGNORECASE), output
