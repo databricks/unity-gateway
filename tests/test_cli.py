@@ -3043,7 +3043,7 @@ class TestAutoConfigureOnFirstRun:
             result = runner.invoke(app, [tool])
 
         assert result.exit_code == 0, result.output
-        mock_configure.assert_called_once_with(tool, configured_state)
+        mock_configure.assert_called_once_with(tool, configured_state, provider=None)
         mock_restore.assert_not_called()
         mock_launch.assert_called_once()
         assert mock_launch.call_args.args[:2] == (tool, configured_state)
@@ -3072,7 +3072,7 @@ class TestAutoConfigureOnFirstRun:
             result = runner.invoke(app, ["claude"])
         assert result.exit_code == 0, result.output
         mock_bootstrap.assert_called_once_with("claude", skip_cli_version_check=False)
-        mock_auto.assert_called_once_with("claude")
+        mock_auto.assert_called_once_with("claude", provider=None)
 
     def test_triggers_when_tool_not_in_available_tools(self):
         """Auto-configure runs when workspace exists but the tool wasn't configured."""
@@ -3097,7 +3097,34 @@ class TestAutoConfigureOnFirstRun:
             result = runner.invoke(app, ["claude"])
         assert result.exit_code == 0, result.output
         mock_bootstrap.assert_called_once_with("claude", skip_cli_version_check=False)
-        mock_auto.assert_called_once_with("claude")
+        mock_auto.assert_called_once_with("claude", provider=None)
+
+    def test_first_run_configures_through_launch_provider(self):
+        """A default-gateway first-run setup would write the managed auth keys that a relayed
+        provider's launch then refuses to start over."""
+        with (
+            _launch_policy_patches(None) as calls,
+            patch("ucode.cli.load_state", return_value={}),
+            patch("ucode.cli._auto_configure_tool") as mock_auto,
+        ):
+            calls["resolve_provider"].return_value = (None, None, True)
+            result = runner.invoke(app, ["claude", "--provider", "main.default.relay"])
+
+        assert result.exit_code == 0, result.output
+        mock_auto.assert_called_once_with("claude", provider="main.default.relay")
+        assert calls["configure"].call_args.kwargs["relayed"] is True
+
+    def test_auto_configure_forwards_provider(self):
+        with (
+            patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
+            patch("ucode.cli.configure_shared_state", return_value=MINIMAL_STATE),
+            patch("ucode.cli.configure_single_tool", return_value=MINIMAL_STATE) as mock_configure,
+        ):
+            cli_mod._auto_configure_tool("claude", provider="main.default.relay")
+
+        mock_configure.assert_called_once_with(
+            "claude", MINIMAL_STATE, provider="main.default.relay"
+        )
 
     def test_skipped_when_already_configured(self):
         """Auto-configure is skipped when workspace and tool are already set up."""
