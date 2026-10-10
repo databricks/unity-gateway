@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import shlex
 import shutil
 import subprocess
@@ -39,20 +38,22 @@ def feature_enabled(env: Mapping[str, str] | None = None, *, agent: str) -> bool
 def enabled(env: Mapping[str, str] | None = None, *, agent: str) -> bool:
     from ucode.smart_routing.v2 import smart_routing_enabled
 
-    source = os.environ if env is None else env
+    source = (
+        resolve_environment(env, agent=agent)
+        if agent == AGENT_CLAUDE
+        else effective_environment(env, agent=agent)
+    )
     if not feature_enabled(source, agent=agent):
         return False
     if source.get("ISAAC_LAUNCH_MODE", "").strip().lower() == "omni":
         return False
-    try:
-        # The marker is created only after UG selects a supported routing launch.
-        if not session_env_path(source).is_file():
+    if agent == AGENT_CODEX:
+        try:
+            if not session_env_path(source).is_file():
+                return False
+        except (RuntimeError, OSError):
             return False
-    except (RuntimeError, OSError):
-        return False
-    return smart_routing_enabled(
-        effective_environment(source, agent=agent), default=False, agent=agent
-    )
+    return smart_routing_enabled(source, default=False, agent=agent)
 
 
 def skill_directory() -> Path:

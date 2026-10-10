@@ -2361,9 +2361,7 @@ def claude_router_hook_cmd(
     import json
     import sys
 
-    if not smart_routing_v2.smart_routing_enabled(
-        effective_environment(agent=AGENT_CLAUDE), default=False, agent=AGENT_CLAUDE
-    ):
+    if not smart_routing_v2.smart_routing_enabled(None, default=False, agent=AGENT_CLAUDE):
         return
 
     from ucode.smart_routing.claude_routing import (
@@ -3504,13 +3502,11 @@ def claude_cmd(
         bool | None,
         typer.Option(
             "--enable-smart-routing/--disable-smart-routing",
-            help="Enable or disable AI Gateway model routing for this Claude Code launch or session.",
+            help="Enable or disable AI Gateway model routing for this Claude Code launch.",
         ),
     ] = None,
 ) -> None:
     """Launch Claude Code via Databricks."""
-    if _toggle_current_smart_routing_session(enable_smart_routing_flag):
-        return
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
     except RuntimeError as exc:

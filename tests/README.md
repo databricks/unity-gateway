@@ -12,11 +12,14 @@ mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 | Integration CUJs | `integration/test_*.py` | Public configure, TUI, script, command, protocol, and lifecycle journeys |
 | Installation | `integration/test_installation.py` | Fresh installed package, CLI, and local helpers without credentials on Linux and advisory native Windows |
 
-Claude mod entry-point coverage lives in `test_claude_mod.py` (generated plugin contents),
-`test_claude_smart_routing_v2.py` (launch wiring), and the explicitly selected
-`native_claude/test_mod.py` suite. Claude 2.1.290 validates the module and runs its
-TypeScript event-forwarding test in CI. Request metadata and toggle behavior are
-covered by a follow-up change. See [the mod guide](../docs/claude-mod.md).
+Claude routing component coverage lives in `test_claude_mod.py` (Claude-specific resolved native options),
+`test_claude_smart_routing_v2.py` (launch wiring), `test_smart_router.py` (hook controls),
+and the explicitly selected `native_claude/test_mod.py` suite. The native checks cover
+on/off restoration, absent/empty flags, errors and rollback, independent processes,
+clear/reload, compaction, actual hook environments, and parent/Agent request bodies
+against a local fixture API using the existing skill. Codex retains file-based controls;
+Claude ignores obsolete override files. See [the mod guide](../docs/claude-mod.md).
+These component results do not establish live gateway or interactive TUI coverage.
 
 Dedicated CUJs reuse `integration/utils` session/terminal mechanics and file-task
 and transcript readers, not its config stubs or pytest fixtures. Prompt/model
@@ -434,13 +437,3 @@ See [integration/README.md](integration/README.md) for commands, CI, artifacts,
 and reproduction. Follow [AGENTS.md](AGENTS.md) and [CLAUDE.md](CLAUDE.md) when
 adding, modifying, or removing tests. The ordinary suite enforces both the
 no-mocking boundary and the Scenario/Expected docstring format.
-
-Native launch-option component tests (`native_claude/test_mod.py`) check two real Claude
-processes with different resolved routing baselines. Python cases cover Claude-specific presets,
-unknown selectors, and absent versus empty flags. These checks do not establish gateway/TUI coverage.
-
-Native Claude component checks exercise the installed smart-router skill with the mod:
-complete off/on restoration, process isolation, clear/reload, compaction, and real parent/Agent
-request payloads against a local fixture API. Mod unit cases cover absent/empty flags,
-invalid JSON and arguments, orchestration-only inactivity, and rollback after denied writes.
-These are not live gateway or interactive TUI results.

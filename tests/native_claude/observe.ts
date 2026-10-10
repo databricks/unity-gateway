@@ -3,10 +3,6 @@ import { register as router } from '../hooks/register';
 
 export const register: Register = (on, options) => {
   router(on, options);
-  on('session.start', {isInteractive: false}, async ($, e, next) => {
-    await $.command.register({name: 'routing-probe', description: 'Observe routing', immediate: true});
-    return next(e);
-  });
   on('command.run', {command: 'routing-probe'}, async ($) => ({text: JSON.stringify({
     revision: 'initial', options,
     environment: {

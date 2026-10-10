@@ -87,7 +87,7 @@ class ClaudeRoutingSetupError(RuntimeError):
     """Routing files could not be written; the caller can launch Claude normally."""
 
 
-def _prepare_smart_router_session(agent: str) -> Path:
+def _prepare_smart_router_session(agent: str) -> Path | None:
     skills = [SMART_ROUTER_SKILL]
     if orchestrator.feature_enabled(agent=agent):
         skills.append(SMART_ROUTER_ORCHESTRATOR_SKILL)
@@ -96,7 +96,7 @@ def _prepare_smart_router_session(agent: str) -> Path:
             install_skill(skill, agent, config_io.APP_DIR.parent)
         except (OSError, RuntimeError) as exc:
             print_warning(f"Could not install the {skill} skill: {exc}")
-    return start_session()
+    return start_session() if agent == "codex" else None
 
 
 def _launch_token(state: dict, workspace: str) -> str:
@@ -614,9 +614,10 @@ def launch_claude(
             plugin_dir = launch_dir / "plugin"
             if route_first_prompt:
                 env[FIRST_PROMPT_SOCKET_ENV] = str(socket_path)
-            session_path = _prepare_smart_router_session("claude")
-            env[SESSION_ENV_VAR] = str(session_path)
-            env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
+            _prepare_smart_router_session("claude")
+            # A nested launch must not inherit another session's file-based controls.
+            env[SESSION_ENV_VAR] = ""
+            env[SESSION_PYTHON_ENV_VAR] = ""
             settings.setdefault("pluginConfigs", {}).setdefault(CLAUDE_ROUTING_PLUGIN_NAME, {})[
                 "options"
             ] = _claude_mod_launch_options({**resolve_environment(agent=AGENT_CLAUDE), **env})

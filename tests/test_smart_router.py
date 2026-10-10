@@ -13,7 +13,7 @@ from typer.testing import CliRunner
 
 from ucode import cli, config_io, skills
 from ucode.skills import SMART_ROUTER_SKILL
-from ucode.smart_routing import session_env, v2
+from ucode.smart_routing import config, orchestrator, session_env, v2
 
 runner = CliRunner()
 
@@ -29,19 +29,27 @@ def test_smart_routed_session_installs_skill(tmp_path, monkeypatch, agent):
     monkeypatch.delenv(session_env.SESSION_ENV_VAR, raising=False)
     monkeypatch.setenv("UCODE_SMART_ROUTER_PYTHON", "/older/install/python")
 
+    if agent == "claude":
+        monkeypatch.setattr(
+            v2, "start_session", lambda: pytest.fail("Claude must not create an override file")
+        )
     session_path = v2._prepare_smart_router_session(agent)
 
     home = config_io.APP_DIR.parent
     assert home.joinpath(f".{agent}/skills/{SMART_ROUTER_SKILL}/SKILL.md").is_file()
     assert not home.joinpath(f".agents/skills/{SMART_ROUTER_SKILL}").exists()
-    assert session_path == Path(os.environ[session_env.SESSION_ENV_VAR])
-    assert Path(os.environ[session_env.SESSION_ENV_VAR]).is_file()
-    assert os.environ["UCODE_SMART_ROUTER_PYTHON"] == sys.executable
+    if agent == "claude":
+        assert session_path is None
+        assert session_env.SESSION_ENV_VAR not in os.environ
+    else:
+        assert session_path == Path(os.environ[session_env.SESSION_ENV_VAR])
+        assert session_path.is_file()
+        assert os.environ["UCODE_SMART_ROUTER_PYTHON"] == sys.executable
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Exercises the skill's POSIX shell commands")
-@pytest.mark.parametrize("agent", ["claude", "codex"])
-def test_skill_toggles_with_launch_installation_despite_shadowed_path(tmp_path, monkeypatch, agent):
+def test_codex_skill_toggles_with_launch_installation_despite_shadowed_path(tmp_path, monkeypatch):
+    agent = "codex"
     # Keep the venv path (including spaces), not its resolved system Python symlink.
     installation = tmp_path / "launch installation"
     installation.symlink_to(sys.prefix, target_is_directory=True)
@@ -110,3 +118,45 @@ def test_launcher_flags_control_routing_hook(tmp_path, monkeypatch):
     assert runner.invoke(cli.app, ["codex", "--enable-smart-routing"], env=env).exit_code == 0
     assert runner.invoke(cli.app, hook_args, input=payload, env=env).exit_code == 0
     route.assert_called_once()
+
+
+def test_claude_hook_uses_process_flags_despite_stale_file(tmp_path, monkeypatch):
+    session_file = tmp_path / "env.json"
+    session_file.write_text(json.dumps(dict.fromkeys(config.SMART_ROUTING_ENV_KEYS, "0")))
+    env = {
+        **config._VERSIONS[config.SUBAGENT_ORCH_V0]["claude"],
+        session_env.SESSION_ENV_VAR: str(session_file),
+        "DATABRICKS_BEARER": "token",
+    }
+    route = Mock(return_value=None)
+    monkeypatch.setattr(v2, "route_claude_pre_tool_use", route)
+    args = [
+        "claude-router-hook",
+        "route-subagent",
+        "--host",
+        "https://example.com",
+        "--model",
+        "system.ai.claude-sonnet-4-6",
+    ]
+    payload = '{"tool_name":"Agent","tool_input":{"prompt":"fix it"}}'
+    for enabled in [True, False, True]:
+        current = {**env, **({} if enabled else dict.fromkeys(config.SMART_ROUTING_ENV_KEYS, "0"))}
+        route.reset_mock()
+        assert runner.invoke(cli.app, args, input=payload, env=current).exit_code == 0
+        assert route.called is enabled
+        assert orchestrator.enabled(current, agent="claude") is enabled
+        assert not orchestrator.enabled(current, agent="codex")
+    assert json.loads(session_file.read_text()) == dict.fromkeys(config.SMART_ROUTING_ENV_KEYS, "0")
+
+
+def test_claude_launch_flags_do_not_toggle_inherited_codex_session(tmp_path, monkeypatch):
+    path = tmp_path / "env.json"
+    path.write_text("{}")
+    launch = Mock()
+    monkeypatch.setattr(cli, "_launch_tool", launch)
+    result = runner.invoke(
+        cli.app, ["claude", "--disable-smart-routing"], env={session_env.SESSION_ENV_VAR: str(path)}
+    )
+    assert result.exit_code == 0
+    launch.assert_called_once()
+    assert path.read_text() == "{}"
