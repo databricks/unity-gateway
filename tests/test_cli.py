@@ -2027,7 +2027,7 @@ class TestStatus:
         with (
             patch(
                 "ucode.cli._live_status_model_state",
-                side_effect=lambda state, _tools: (state, "live"),
+                side_effect=lambda state, _tools, **_kwargs: (state, "live"),
             ),
             patch(
                 "ucode.cli._live_status_managed_state",
@@ -2252,6 +2252,135 @@ class TestStatusLiveModels:
 
         assert resolved is state
         assert freshness == "cached"
+
+
+class TestStatusManagedScopedModels:
+    @staticmethod
+    def _state():
+        return {
+            **MINIMAL_STATE,
+            "profile": "explicit-profile",
+            "available_tools": ["claude", "codex"],
+            "claude_models": {"sonnet": "system.ai.claude-sonnet"},
+            "codex_models": ["system.ai.gpt-5"],
+            "claude_static_models": ["cached-claude-static"],
+            "codex_static_models": ["cached-codex-static"],
+        }
+
+    @staticmethod
+    def _managed():
+        return {
+            "enabled_agents": {
+                "claude": {
+                    "model_config": {
+                        "unity_catalog_location": "ug_e2e.models",
+                        "default_model": "ug_e2e.models.claude_sonnet",
+                        "default_models_by_model_family": {
+                            "default_sonnet_model": "ug_e2e.models.claude_sonnet"
+                        },
+                    }
+                },
+                "codex": {
+                    "model_config": {
+                        "unity_catalog_location": "ug_e2e.models",
+                        "default_model": "ug_e2e.models.gpt_luna",
+                    }
+                },
+            }
+        }
+
+    def test_status_uses_scoped_catalogs_instead_of_global_models_or_defaults(self):
+        state = self._state()
+        managed = self._managed()
+        claude_catalog = db_mod.AnthropicModelCatalog(
+            model_ids=[
+                "ug_e2e.models.claude_sonnet",
+                "ug_e2e.models.claude_haiku",
+                "ug_e2e.models.kimi",
+            ],
+            model_id_to_display_name={},
+        )
+        with (
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.load_managed_state", return_value=managed),
+            patch("ucode.cli._live_status_managed_state", return_value=(managed, "live")),
+            patch("ucode.cli.get_databricks_token", return_value="token"),
+            patch("ucode.cli.discover_model_services") as global_discovery,
+            patch("ucode.cli.list_anthropic_model_catalog", return_value=claude_catalog) as claude,
+            patch(
+                "ucode.cli._fetch_codex_model_catalog",
+                return_value={
+                    "models": [
+                        {"slug": "ug_e2e.models.gpt_luna"},
+                        {"slug": "ug_e2e.models.kimi"},
+                    ]
+                },
+            ) as codex,
+        ):
+            result = runner.invoke(app, ["status"])
+
+        output = re.sub(r"\s+", " ", _strip_ansi(result.output))
+        assert result.exit_code == 0, result.output
+        assert "Models (3, live): ug_e2e.models.claude_sonnet" in output
+        assert "ug_e2e.models.claude_haiku" in output
+        assert "ug_e2e.models.kimi" in output
+        assert "Models (2, live): ug_e2e.models.gpt_luna, ug_e2e.models.kimi" in output
+        assert "Default model: ug_e2e.models.claude_sonnet" in output
+        assert "Default model: ug_e2e.models.gpt_luna" in output
+        assert "system.ai.claude-sonnet" not in output
+        assert "system.ai.gpt-5" not in output
+        assert "cached-claude-static" not in output
+        assert "cached-codex-static" not in output
+        global_discovery.assert_not_called()
+        claude.assert_called_once_with(state["workspace"], "token", parent_schema="ug_e2e.models")
+        codex.assert_called_once_with(
+            state["workspace"],
+            "token",
+            source=db_mod.CodexCatalogSource.PARENT_SCHEMA,
+            identifier="ug_e2e.models",
+        )
+
+    def test_scoped_catalog_failure_does_not_fall_back_to_global_models(self):
+        state = self._state()
+        managed = self._managed()
+        claude_catalog = db_mod.AnthropicModelCatalog(
+            model_ids=[],
+            model_id_to_display_name={},
+            error_msg="scoped catalog unavailable",
+        )
+        with (
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.load_managed_state", return_value=managed),
+            patch("ucode.cli._live_status_managed_state", return_value=(managed, "live")),
+            patch("ucode.cli.get_databricks_token", return_value="token"),
+            patch("ucode.cli.discover_model_services") as global_discovery,
+            patch("ucode.cli.list_anthropic_model_catalog", return_value=claude_catalog),
+            patch(
+                "ucode.cli._fetch_codex_model_catalog",
+                side_effect=RuntimeError("scoped catalog unavailable"),
+            ),
+        ):
+            result = runner.invoke(app, ["status"])
+
+        output = re.sub(r"\s+", " ", _strip_ansi(result.output))
+        assert result.exit_code == 0, result.output
+        assert output.count("Models (live): none available") == 2
+        assert "system.ai.claude-sonnet" not in output
+        assert "system.ai.gpt-5" not in output
+        assert "showing no scoped models" in output
+        assert "scoped catalog unavailable" in output
+        global_discovery.assert_not_called()
+
+    def test_no_workspace_still_masks_scoped_cached_inventory(self):
+        state = self._state()
+        state.pop("workspace")
+
+        live, freshness = cli_mod._live_status_model_state(
+            state, {"claude", "codex"}, self._managed()
+        )
+
+        assert freshness == "cached"
+        assert live["_status_scoped_models"] == {"claude": [], "codex": []}
 
 
 class TestStatusLiveManagedConfig:
