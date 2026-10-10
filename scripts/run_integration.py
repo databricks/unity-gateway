@@ -40,9 +40,11 @@ NPM_TOKEN_ENV = "UG_INTEGRATION_NPM_TOKEN"
 INSTALLER_CREDENTIAL_ENV = (*UV_INDEX_CREDENTIAL_ENV, NPM_TOKEN_ENV)
 # Claude exports no spans on Windows, where ug writes no machine-wide Claude settings.
 WINDOWS_UNSUPPORTED_MODULES = {"test_ug_claude_tracing.py"}
-# These seed machine-wide managed settings, which ug has no Windows path for.
 WINDOWS_UNSUPPORTED_NODES = {
+    # Seeds machine-wide managed settings, which ug has no Windows path for.
     "test_ug_configure_claude_lifecycle.py::test_unmanaged_claude_preserves_preexisting_family_defaults",
+    # Codex's Windows sandbox can't read ug's owner-only session-env dir yet.
+    "test_ug_smart_routing_hooks.py::test_smart_router_skill_toggles_codex_subagent_routing",
 }
 HEADLESS_TEST_NODES = {
     "claude": "test_ug_claude_headless.py::test_ug_claude_headless_prompt_argument",
