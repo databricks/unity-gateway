@@ -56,7 +56,7 @@ from ucode.smart_routing.claude_hooks import (
 )
 from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
 from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
-from ucode.ui import print_warning
+from ucode.ui import print_note, print_warning
 
 LEGACY_STATE_KEY = "smart_routing_enabled"
 
@@ -384,6 +384,24 @@ def _route_claude_prompt(
     return decision
 
 
+def _route_print_mode_prompt(
+    state: dict,
+    token: str,
+    prompt: str,
+    catalog: AnthropicModelCatalog,
+    model_name: Callable[[str], str],
+) -> str | None:
+    """Pick a model for a headless prompt; None keeps Claude's default if the router fails."""
+    try:
+        decision = _route_claude_prompt(state, token, prompt, catalog.model_ids)
+    except RuntimeError as exc:
+        print_warning(f"Smart routing couldn't pick a model ({exc}); using Claude's default.")
+        return None
+    display = catalog.model_id_to_display_name.get(decision.model, decision.model)
+    print_note(format_routing_notice(display, decision.rationale))
+    return model_name(_unwrapped_claude_model_id(decision.model))
+
+
 def route_claude_pre_tool_use(
     payload: dict,
     *,
@@ -439,6 +457,32 @@ def _is_claude_target_model(value: object) -> bool:
     return value.removesuffix("[1m]") == CLAUDE_TARGET_MODEL.removesuffix("[1m]")
 
 
+def _claude_print_mode(tool_args: list[str]) -> bool:
+    """Whether Claude runs headless with ``-p``/``--print``, judged before Claude's ``--``."""
+    if "--" in tool_args:
+        tool_args = tool_args[: tool_args.index("--")]
+    return any(arg in {"-p", "--print"} for arg in tool_args)
+
+
+def _claude_print_prompt(tool_args: list[str]) -> tuple[str | None, bytes | None]:
+    """Find a print-mode prompt: after ``--``, right after ``-p``, or on piped stdin.
+
+    Returns the prompt text and, when it came from stdin, the bytes to hand to Claude.
+    """
+    if "--" in tool_args:
+        after = tool_args[tool_args.index("--") + 1 :]
+        if after:
+            return " ".join(after), None
+    flag = next(i for i, arg in enumerate(tool_args) if arg in {"-p", "--print"})
+    if flag + 1 < len(tool_args) and not tool_args[flag + 1].startswith("-"):
+        return tool_args[flag + 1], None
+    if sys.stdin.isatty():
+        return None, None
+    data = sys.stdin.buffer.read()
+    prompt = data.decode("utf-8", errors="replace").strip()
+    return prompt or None, data
+
+
 class _ClaudeModelSettingGuard:
     def __init__(self, settings_path: Path) -> None:
         self.settings_path = settings_path
@@ -488,6 +532,7 @@ def launch_claude(
     model_name: Callable[[str], str],
 ) -> NoReturn:
     """Launch Claude in the first-prompt routing PTY wrapper."""
+    from ucode.agents.args import has_explicit_model_arg
     from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR
 
     if os.name != "nt":
@@ -515,15 +560,24 @@ def launch_claude(
     model_ids = catalog.model_ids
 
     route_first_prompt = first_prompt_routing_enabled()
+    settings, remaining = compose_settings(tool_args)
+    routed_model: str | None = None
+    stdin_prompt: bytes | None = None
+    if route_first_prompt and _claude_print_mode(remaining):
+        # Print mode has no TUI for the PTY router to drive, so route the prompt before launch.
+        route_first_prompt = False
+        if not launch_model and not has_explicit_model_arg(remaining):
+            prompt, stdin_prompt = _claude_print_prompt(remaining)
+            if prompt:
+                routed_model = _route_print_mode_prompt(state, token, prompt, catalog, model_name)
     # TODO: Restore first-prompt routing on Windows after replacing the Unix-only PTY wrapper:
     # https://databricks.atlassian.net/browse/AIGTWY-4385
-    if route_first_prompt and os.name == "nt":
+    elif route_first_prompt and os.name == "nt":
         print_warning(
             "Claude first-prompt smart routing is unavailable on Windows; using subagent-only "
             "routing."
         )
         route_first_prompt = False
-    settings, remaining = compose_settings(tool_args)
     hook_executable = build_auth_token_argv(
         workspace, state.get("profile"), use_pat=bool(state.get("use_pat"))
     )[0]
@@ -575,7 +629,7 @@ def launch_claude(
                 _write_routed_claude_plugin(plugin_dir, model_ids)
             except Exception as exc:  # noqa: BLE001 - optional setup must not block normal launch
                 raise ClaudeRoutingSetupError("Failed to write Claude smart-routing files") from exc
-            model_args = launch_model_args(remaining, launch_model)
+            model_args = launch_model_args(remaining, routed_model or launch_model)
             argv = [
                 binary,
                 "--settings",
@@ -596,7 +650,16 @@ def launch_claude(
                     log_path=CLAUDE_PTY_LOG,
                 )
             else:
-                proc = subprocess_cross_os.popen(argv)
+                proc = subprocess_cross_os.popen(
+                    argv, stdin=subprocess.PIPE if stdin_prompt is not None else None
+                )
+                if stdin_prompt is not None and proc.stdin is not None:
+                    # ug consumed stdin to route the prompt, so hand Claude the same bytes.
+                    try:
+                        proc.stdin.write(stdin_prompt)
+                        proc.stdin.close()
+                    except BrokenPipeError:
+                        pass
                 try:
                     returncode = proc.wait()
                 except KeyboardInterrupt:
