@@ -1,4 +1,4 @@
-"""Enforce Smart Router Orchestrator availability in UG launches."""
+"""Activate the Smart Router Orchestrator workflow through agent hooks."""
 
 from __future__ import annotations
 
@@ -6,31 +6,20 @@ import argparse
 import json
 import os
 import shlex
-import shutil
 import subprocess
 import sys
 from collections.abc import Mapping
 from pathlib import Path
 
-import tomlkit
-
-from ucode import config_io, skills
-from ucode.codex_config import codex_config_args
+from ucode import skills
 from ucode.constants import (
     AGENT_CLAUDE,
     AGENT_CODEX,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
-    SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
 )
 from ucode.smart_routing.config import resolve_environment
 from ucode.smart_routing.hooks import sync_managed_hooks
-from ucode.smart_routing.session_env import (
-    SESSION_ENV_VAR,
-    SESSION_PYTHON_ENV_VAR,
-    effective_environment,
-    session_env_path,
-    start_session,
-)
+from ucode.smart_routing.session_env import effective_environment, session_env_path
 
 HOOK_MODULE = "ucode.smart_routing.orchestrator"
 DISABLED_CONTEXT = (
@@ -59,91 +48,8 @@ def enabled(env: Mapping[str, str] | None = None, *, agent: str) -> bool:
     return feature_enabled(effective_environment(source, agent=agent), agent=agent)
 
 
-def prepare_launch(*, agent: str, session_path: Path | None = None) -> dict[str, str]:
-    """Install the opted-in workflow and return its launch environment."""
-    active = feature_enabled(agent=agent)
-    env = {
-        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1" if active else "0",
-        SMART_ROUTER_CONFIG_VERSION_ENV_VAR: "",
-    }
-    if active:
-        # Do not silently launch without a requested workflow.
-        skills.install_skill(
-            skills.SMART_ROUTER_ORCHESTRATOR_SKILL, agent, config_io.APP_DIR.parent
-        )
-        env[SESSION_ENV_VAR] = str(session_path if session_path is not None else start_session())
-        env[SESSION_PYTHON_ENV_VAR] = sys.executable
-    return env
-
-
-def claude_launch_settings(settings: dict, *, session_path: Path | None = None) -> None:
-    env = prepare_launch(agent=AGENT_CLAUDE, session_path=session_path)
-    settings.setdefault("env", {}).update(env)
-    settings.setdefault("skillOverrides", {})[skills.SMART_ROUTER_ORCHESTRATOR_SKILL] = (
-        "on" if env[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] == "1" else "off"
-    )
-    sync_hooks(settings, agent=AGENT_CLAUDE)
-
-
-def _codex_skill_config(doc: dict, *, active: bool) -> list[dict]:
-    """Preserve other skills and gate known orchestrator copies by their native paths."""
-    home = config_io.APP_DIR.parent
-    codex_home = Path(os.environ.get("CODEX_HOME", str(home / ".codex"))).expanduser()
-    entries = doc.get("skills.config", doc.get("skills", {}).get("config"))
-    if entries is None:
-        for name in ("ucode.config.toml", "config.toml"):
-            entries = config_io.read_toml_safe(codex_home / name).get("skills", {}).get("config")
-            if entries is not None:
-                break
-    roots = {codex_home, home / ".codex", home / ".agents"}
-    paths = {
-        root / "skills" / skills.SMART_ROUTER_ORCHESTRATOR_SKILL / "SKILL.md" for root in roots
-    }
-    for parent in (Path.cwd(), *Path.cwd().parents):
-        path = parent / ".agents" / "skills" / skills.SMART_ROUTER_ORCHESTRATOR_SKILL / "SKILL.md"
-        if path.is_file():
-            paths.add(path)
-    other = []
-    for entry in entries or []:
-        path = Path(entry["path"]).expanduser()
-        if path.parent.name == skills.SMART_ROUTER_ORCHESTRATOR_SKILL:
-            paths.add(path)
-        else:
-            other.append(entry)
-    return other + [{"path": str(path), "enabled": active} for path in sorted(paths)]
-
-
-def codex_launch_args(
-    tool_args: list[str], doc: dict, *, session_path: Path | None = None
-) -> list[str]:
-    """Apply the flag after caller config overrides, preserving their other skills/hooks."""
-    before_prompt = tool_args[: tool_args.index("--")] if "--" in tool_args else tool_args
-    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
-    parser.add_argument("-c", "--config", action="append", default=[])
-    options, remaining = parser.parse_known_args(before_prompt)
-    for value in options.config:
-        if value.partition("=")[0].partition(".")[0].strip('"') in {"skills", "hooks"}:
-            config_io.deep_merge_dict(doc, tomlkit.parse(value))
-            doc.pop("skills.config", None)
-    env = prepare_launch(agent=AGENT_CODEX, session_path=session_path)
-    active = env[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] == "1"
-    doc["skills.config"] = _codex_skill_config(doc, active=active)
-    sync_hooks(doc, agent=AGENT_CODEX)
-    if active:
-        doc["features.hooks"] = True
-    doc.update({f"shell_environment_policy.set.{key}": value for key, value in env.items()})
-    caller_config = [arg for value in options.config for arg in ("-c", value)]
-    return [*caller_config, *codex_config_args(doc), *remaining, *tool_args[len(before_prompt) :]]
-
-
 def skill_directory() -> Path:
     return skills._skills_source() / skills.SMART_ROUTER_ORCHESTRATOR_SKILL
-
-
-def add_claude_agents(plugin_dir: Path) -> None:
-    """Load roles alongside the router's exact-model agents, only for this launch."""
-    if feature_enabled(agent=AGENT_CLAUDE):
-        shutil.copytree(skill_directory() / "agents", plugin_dir / "agents", dirs_exist_ok=True)
 
 
 def sync_hooks(doc: dict, *, agent: str) -> None:

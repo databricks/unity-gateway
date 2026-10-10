@@ -16,7 +16,7 @@ import traceback
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 
-from ucode import gateway_proxy
+from ucode import gateway_proxy, skills
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -28,6 +28,7 @@ from ucode.config_io import (
 )
 from ucode.constants import (
     AGENT_CLAUDE,
+    ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     LOOPBACK_HOST,
     MCP_CLEANUP_SCOPES,
     MCP_USER_SCOPE,
@@ -97,6 +98,7 @@ from ucode.smart_routing.claude_hooks import (
     sync_smart_routing_hooks,
 )
 from ucode.smart_routing.routing import configured_router_name
+from ucode.smart_routing.session_env import launch_environment
 from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
 from ucode.ui import print_note, print_success, print_warning
@@ -2065,6 +2067,15 @@ def _resolve_launch_binary(binary: str) -> str:
     )
 
 
+def configure_orchestrator(settings: dict) -> None:
+    env = launch_environment(agent=AGENT_CLAUDE)
+    settings.setdefault("env", {}).update(env)
+    settings.setdefault("skillOverrides", {})[skills.SMART_ROUTER_ORCHESTRATOR_SKILL] = (
+        "on" if env[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] == "1" else "off"
+    )
+    orchestrator.sync_hooks(settings, agent=AGENT_CLAUDE)
+
+
 def _build_claude_argv(
     binary: str,
     tool_args: list[str],
@@ -2101,7 +2112,7 @@ def _build_claude_argv(
     merged = _merge_claude_settings(caller_settings, read_json_safe(CLAUDE_SETTINGS_PATH))
     if settings_override is not None:
         merged = _merge_claude_settings(merged, settings_override)
-    orchestrator.claude_launch_settings(merged)
+    configure_orchestrator(merged)
     merged_env = merged.get("env")
     if isinstance(merged_env, dict):
         merged_env.pop("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", None)

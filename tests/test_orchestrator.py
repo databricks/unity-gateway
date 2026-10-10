@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import shutil
 from functools import partial
 from pathlib import Path
@@ -16,6 +17,7 @@ from ucode import config_io, skills
 from ucode.agents import claude, codex
 from ucode.codex_config import codex_config_args
 from ucode.constants import AGENT_CLAUDE, AGENT_CODEX, ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR
+from ucode.launcher import prepare_agent_launch
 from ucode.smart_routing import orchestrator, session_env
 
 NAME = skills.SMART_ROUTER_ORCHESTRATOR_SKILL
@@ -38,7 +40,6 @@ def test_flag_transitions_are_idempotent_and_preserve_other_settings(home, monke
     monkeypatch.setenv(
         "CODEX_HOME" if agent == AGENT_CODEX else "CLAUDE_CONFIG_DIR", str(config_home)
     )
-    marker = session_env.start_session()
     other_hook = {"hooks": [{"type": "command", "command": "user-hook"}]}
     other_skill = {"path": str(home / "other/SKILL.md"), "enabled": False}
     doc = {
@@ -47,18 +48,21 @@ def test_flag_transitions_are_idempotent_and_preserve_other_settings(home, monke
         "skills": {"config": [other_skill]},
     }
     configure = (
-        partial(orchestrator.codex_launch_args, [])
+        partial(codex.compose_launch_args, [])
         if agent == AGENT_CODEX
-        else orchestrator.claude_launch_settings
+        else claude.configure_orchestrator
     )
     for flag in ("0", "0", "1", "1", "0"):
         monkeypatch.setenv(ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR, flag)
-        configure(doc, session_path=marker)
+        prepare_agent_launch(agent=agent, routing_enabled=False)
+        configure(doc)
         installed = config_home / "skills" / NAME / "SKILL.md"
         before = copy.deepcopy(doc)
+        marker = os.environ.get(session_env.SESSION_ENV_VAR)
         modified = installed.stat().st_mtime_ns if installed.exists() else None
-        configure(doc, session_path=marker)
+        configure(doc)
         assert doc == before
+        assert os.environ.get(session_env.SESSION_ENV_VAR) == marker
         assert (installed.stat().st_mtime_ns if installed.exists() else None) == modified
         assert doc["hooks"]["UserPromptSubmit"][0] == other_hook
         assert len(doc["hooks"]["UserPromptSubmit"]) == (2 if flag == "1" else 1)
@@ -96,9 +100,9 @@ def test_enabled_launch_fails_if_the_skill_cannot_be_installed(home, monkeypatch
     monkeypatch.setattr(skills, "install_skill", fail_install)
     monkeypatch.setenv(ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR, "1")
     with pytest.raises(OSError, match="read-only"):
-        orchestrator.prepare_launch(agent=agent)
+        prepare_agent_launch(agent=agent, routing_enabled=False)
     monkeypatch.setenv(ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR, "0")
-    orchestrator.prepare_launch(agent=agent)
+    prepare_agent_launch(agent=agent, routing_enabled=False)
 
 
 @pytest.mark.parametrize("source", ["config.toml", "ucode.config.toml"])
@@ -114,7 +118,7 @@ def test_codex_preserves_existing_skill_config_and_overrides_old_orchestrator_en
     path.write_text(tomlkit.dumps({"skills": {"config": [other, previous]}}))
     original = path.read_bytes()
     doc = {}
-    orchestrator.codex_launch_args([], doc)
+    codex.compose_launch_args([], doc)
     assert doc["skills.config"][0] == other
     assert {"path": previous["path"], "enabled": False} in doc["skills.config"]
     assert path.read_bytes() == original
@@ -136,6 +140,7 @@ def test_native_harness_gates_previously_installed_and_project_skills(home, monk
     monkeypatch.setattr(codex, "exec_or_spawn", launches.append)
     for flag in ("0", "1", "0"):
         monkeypatch.setenv(ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR, flag)
+        prepare_agent_launch(agent=agent, routing_enabled=False)
         session.env[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] = flag
         if agent == AGENT_CODEX:
             value = codex_config_args(

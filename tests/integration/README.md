@@ -29,6 +29,8 @@ These checks do not establish live agent coverage.
 skill availability for Claude 2.1.290 and Codex 0.154.0, reusing this suite's process
 harness. Those component checks require no inference or gateway credentials and do
 not establish a completed live orchestration task.
+Shared dispatch preparation and native config composition are checked separately;
+repeated composition must preserve the existing installation and session marker.
 
 CUJ3 and CUJ4 require a non-empty HTTP 200 for inference. Claude 2.1.290's known
 thinking-display 400 is accepted only when the next inference request with the same system

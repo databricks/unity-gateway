@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -59,7 +60,12 @@ from ucode.smart_routing.claude_hooks import (
 )
 from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
 from ucode.smart_routing.config import apply_config, resolve_environment
-from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
+from ucode.smart_routing.session_env import (
+    SESSION_ENV_VAR,
+    SESSION_PYTHON_ENV_VAR,
+    session_env_path,
+    start_session,
+)
 from ucode.ui import print_warning
 
 LEGACY_STATE_KEY = "smart_routing_enabled"
@@ -92,7 +98,7 @@ def _prepare_smart_router_session(agent: str) -> Path:
         install_skill(SMART_ROUTER_SKILL, agent, config_io.APP_DIR.parent)
     except (OSError, RuntimeError) as exc:
         print_warning(f"Could not install the {SMART_ROUTER_SKILL} skill: {exc}")
-    return start_session()
+    return session_env_path() if os.environ.get(SESSION_ENV_VAR) else start_session()
 
 
 def _launch_token(state: dict, workspace: str) -> str:
@@ -345,7 +351,10 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
                 ]
             ),
         )
-    orchestrator.add_claude_agents(plugin_dir)
+    if orchestrator.feature_enabled(agent=AGENT_CLAUDE):
+        shutil.copytree(
+            orchestrator.skill_directory() / "agents", plugin_dir / "agents", dirs_exist_ok=True
+        )
     source = Path(__file__).parents[1] / "agents" / "claude_mods" / "register.ts"
     write_text_file(plugin_dir / "hooks" / "register.ts", source.read_text(encoding="utf-8"))
     write_json_file(plugin_dir / "hooks" / "hooks.json", {"modules": ["./register.ts"]})
@@ -500,7 +509,7 @@ def launch_claude(
     model_name: Callable[[str], str],
 ) -> NoReturn:
     """Launch Claude in the first-prompt routing PTY wrapper."""
-    from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR
+    from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR, configure_orchestrator
 
     if os.name != "nt":
         from ucode.smart_routing import claude_pty
@@ -583,7 +592,7 @@ def launch_claude(
             session_path = _prepare_smart_router_session(AGENT_CLAUDE)
             env[SESSION_ENV_VAR] = str(session_path)
             env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
-            orchestrator.claude_launch_settings(settings, session_path=session_path)
+            configure_orchestrator(settings)
             try:
                 write_json_file(settings_path, settings)
                 _write_routed_claude_plugin(plugin_dir, model_ids)
@@ -645,6 +654,8 @@ def launch_codex(
     start_model: str | None,
     render_overlay: Callable[..., dict],
 ) -> NoReturn:
+    from ucode.agents.codex import compose_launch_args
+
     workspace = state.get("workspace")
     if not workspace:
         raise RuntimeError(
@@ -678,11 +689,9 @@ def launch_codex(
     overlay["hooks"] = _v2_hooks(state, available_models)
     overlay["features.hooks"] = True
     session_env_path = _prepare_smart_router_session(AGENT_CODEX)
-    orchestrator_config = {"hooks": overlay["hooks"]}
-    launch_args = orchestrator.codex_launch_args(
-        tool_args, orchestrator_config, session_path=session_env_path
-    )
-    overlay.update(orchestrator_config)
+    launch_config = {"hooks": overlay["hooks"]}
+    launch_args = compose_launch_args(tool_args, launch_config)
+    overlay.update(launch_config)
     # Codex constructs tool subprocess environments through its shell policy.
     # Pass both the session marker and its launching interpreter through that policy.
     overlay[f"shell_environment_policy.set.{SESSION_ENV_VAR}"] = str(session_env_path)
