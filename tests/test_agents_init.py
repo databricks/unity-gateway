@@ -56,7 +56,7 @@ class TestModelArgumentParsing:
 
 class TestToolSpecs:
     def test_all_tools_present(self):
-        assert set(TOOL_SPECS) == {"codex", "claude", "gemini", "opencode", "copilot", "pi"}
+        assert set(TOOL_SPECS) == {"codex", "claude", "gemini", "opencode", "copilot", "pi", "omp"}
 
     def test_each_spec_has_required_keys(self):
         required = {"binary", "package", "display", "config_path", "backup_path"}
@@ -99,9 +99,9 @@ class TestInstallAiToolsForAgents:
 
     def test_maps_supported_tools_and_drops_others(self, monkeypatch):
         captured = self._capture(monkeypatch)
-        # Gemini and Pi aren't supported by `databricks aitools`, so they drop.
+        # Gemini, Pi, and Oh My Pi aren't supported by `databricks aitools`, so they drop.
         install_databricks_ai_tools_for_agents(
-            ["claude", "codex", "gemini", "pi"],
+            ["claude", "codex", "gemini", "pi", "omp"],
             {"profile": "prof", "databricks_ai_tools_enabled": True},
         )
         assert captured == {"agents": ["claude-code", "codex"], "profile": "prof"}
@@ -238,6 +238,8 @@ class TestNormalizeTool:
             ("opencode", "opencode"),
             ("copilot", "copilot"),
             ("pi", "pi"),
+            ("omp", "omp"),
+            ("oh-my-pi", "omp"),
             ("CODEX", "codex"),
             ("  Claude  ", "claude"),
         ],
@@ -293,6 +295,18 @@ class TestCheckGatewayEndpoint:
     def test_pi_unavailable_when_no_models(self):
         assert check_gateway_endpoint({}, "pi") is False
 
+    def test_omp_available_with_claude(self):
+        assert check_gateway_endpoint({"claude_models": {"sonnet": "s4"}}, "omp") is True
+
+    def test_omp_available_with_codex(self):
+        assert check_gateway_endpoint({"codex_models": ["m"]}, "omp") is True
+
+    def test_omp_available_with_gemini(self):
+        assert check_gateway_endpoint({"gemini_models": ["gemini-2"]}, "omp") is True
+
+    def test_omp_unavailable_when_no_models(self):
+        assert check_gateway_endpoint({}, "omp") is False
+
 
 class TestDefaultModelForTool:
     def test_codex_returns_none_without_a_configured_model(self):
@@ -346,6 +360,31 @@ class TestDefaultModelForTool:
 
     def test_pi_returns_none_when_no_models(self):
         assert default_model_for_tool("pi", {}) is None
+
+    def test_omp_prefers_claude_opus(self):
+        state = {"claude_models": {"opus": "o4", "sonnet": "s4"}, "codex_models": ["c"]}
+        assert default_model_for_tool("omp", state) == "o4"
+
+    def test_omp_falls_back_to_codex(self):
+        state = {"claude_models": {}, "codex_models": ["c1"]}
+        assert default_model_for_tool("omp", state) == "c1"
+
+    def test_omp_falls_back_to_gemini(self):
+        state = {"claude_models": {}, "codex_models": [], "gemini_models": ["gemini-2"]}
+        assert default_model_for_tool("omp", state) == "gemini-2"
+
+    def test_omp_returns_none_when_no_models(self):
+        assert default_model_for_tool("omp", {}) is None
+
+    def test_omp_ignores_pi_managed_keys(self):
+        # Oh My Pi has no managed-config variant, so pi's admin keys must not
+        # steer omp's model choice on a shared workspace.
+        state = {
+            "pi_default_model": "admin-chosen",
+            "pi_models": ["admin-allowlisted"],
+            "claude_models": {"sonnet": "discovered"},
+        }
+        assert default_model_for_tool("omp", state) == "discovered"
 
 
 class TestResolveLaunchModel:
@@ -976,7 +1015,7 @@ class TestInstallToolBinary:
             ensure_tool_binary_available("opencode")
 
 
-@pytest.mark.parametrize("tool", ["claude", "opencode", "copilot", "pi"])
+@pytest.mark.parametrize("tool", ["claude", "opencode", "copilot", "pi", "omp"])
 def test_fable_only_workspace_has_a_default(tool):
     state = {
         "claude_models": {"fable": "system.ai.claude-fable-5"},
@@ -986,7 +1025,7 @@ def test_fable_only_workspace_has_a_default(tool):
     assert default_model_for_tool(tool, state) == "system.ai.claude-fable-5"
 
 
-@pytest.mark.parametrize("tool", ["copilot", "pi"])
+@pytest.mark.parametrize("tool", ["copilot", "pi", "omp"])
 def test_fable_does_not_displace_existing_default(tool):
     state = {
         "claude_models": {"fable": "system.ai.claude-fable-5"},

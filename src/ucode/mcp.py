@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 import questionary
 from rich.table import Table
 
-from ucode.agents import claude, codex, copilot, cursor, gemini, opencode
+from ucode.agents import claude, codex, copilot, cursor, gemini, omp, opencode
 from ucode.config_io import restore_file
 from ucode.constants import MCP_CLEANUP_SCOPES, MCP_USER_SCOPE
 from ucode.databricks import (
@@ -125,6 +125,12 @@ MCP_CLIENTS = {
         "binary": "cursor-agent",
         "display": "Cursor",
         "list_command": "cursor-agent mcp list",
+    },
+    "omp": {
+        # No list_command: omp publishes no `mcp list` subcommand, so the live
+        # status rows skip omp and fall back to configured-only output.
+        "binary": "omp",
+        "display": "Oh My Pi",
     },
 }
 SKILLS_MCP_KIND = "skills"
@@ -395,6 +401,9 @@ def configure_client_mcp_server(
     if client == "cursor":
         removed = cursor.write_mcp_server_config(name, argv)
         return [MCP_USER_SCOPE] if removed else []
+    if client == "omp":
+        removed = omp.write_mcp_server_config(name, argv)
+        return [MCP_USER_SCOPE] if removed else []
     raise RuntimeError(f"Unsupported MCP client '{client}'.")
 
 
@@ -413,6 +422,8 @@ def remove_client_mcp_server(client: str, name: str) -> list[str]:
         return [MCP_USER_SCOPE] if copilot.remove_mcp_server_config(name) else []
     if client == "cursor":
         return [MCP_USER_SCOPE] if cursor.remove_mcp_server_config(name) else []
+    if client == "omp":
+        return [MCP_USER_SCOPE] if omp.remove_mcp_server_config(name) else []
     raise RuntimeError(f"Unsupported MCP client '{client}'.")
 
 
@@ -443,6 +454,14 @@ def revert_mcp_configs(state: dict) -> dict[str, bool]:
             "copilot" in (server.get("clients") or []) for server in state.get("mcp_servers") or []
         ),
     ) or results.get("copilot", False)
+    # Oh My Pi also keeps MCP servers in its own agent-dir mcp.json, restored the
+    # same way (the developer's own servers survive because the backup predates
+    # the first ucode write).
+    results["omp"] = restore_file(
+        omp.OMP_MCP_PATH,
+        omp.OMP_MCP_BACKUP_PATH,
+        any("omp" in (server.get("clients") or []) for server in state.get("mcp_servers") or []),
+    ) or results.get("omp", False)
     return results
 
 
@@ -1360,6 +1379,7 @@ _MCP_CLIENT_MODULES = {
     "gemini": gemini,
     "copilot": copilot,
     "cursor": cursor,
+    "omp": omp,
     "opencode": opencode,
 }
 
@@ -1402,6 +1422,8 @@ def _managed_mcp_entry(
         return gemini.build_mcp_server_entry(argv)
     if client == "copilot":
         return copilot.build_mcp_server_entry(argv)
+    if client == "omp":
+        return omp.build_mcp_server_entry(argv)
     if client == "opencode":
         return opencode.build_mcp_server_entry(argv)
     raise RuntimeError(f"Unsupported MCP client '{client}'.")
@@ -1777,7 +1799,7 @@ def setup_mcp_clients(
     if not installed_clients:
         raise RuntimeError(
             "No supported MCP clients are installed. Install Claude, Codex, Gemini, OpenCode, "
-            "or GitHub Copilot CLI."
+            "GitHub Copilot CLI, or Oh My Pi."
         )
     clients = configured_mcp_clients(state, installed_clients)
     if agents is not None:
@@ -1791,7 +1813,7 @@ def setup_mcp_clients(
     if not clients:
         raise RuntimeError(
             "No configured MCP-capable coding agents are installed. Run `ucode configure` "
-            "for Codex, Claude, Gemini, OpenCode, or GitHub Copilot CLI first."
+            "for Codex, Claude, Gemini, OpenCode, GitHub Copilot CLI, or Oh My Pi first."
         )
     configured_tools = set(state.get("available_tools") or [])
     missing_clients = [
@@ -2369,7 +2391,12 @@ def _run_mcp_list(client: str) -> str | None:
     spec = MCP_CLIENTS.get(client)
     if not spec:
         return None
-    argv = str(spec["list_command"]).split()
+    list_command = spec.get("list_command")
+    if not list_command:
+        # Clients that keep MCP servers in a file ucode writes itself (omp) expose
+        # no listing subcommand; the caller shows configured servers only.
+        return None
+    argv = str(list_command).split()
     # Gemini reads its config from a pinned home dir, matching how ucode registers servers there.
     env = _gemini_cli_env() if client == "gemini" else None
     try:

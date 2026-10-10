@@ -120,7 +120,7 @@ class TestHelp:
             "Manage": output[panels["Manage"] : panels["Usage"]],
             "Usage": output[panels["Usage"] : global_options],
         }
-        for command in ("claude", "codex", "copilot", "cursor", "gemini", "opencode", "pi"):
+        for command in ("claude", "codex", "copilot", "cursor", "gemini", "omp", "opencode", "pi"):
             assert command in sections["Launch"]
         assert "configure" in sections["Setup"]
         for command in ("mcp", "skills"):
@@ -3153,6 +3153,7 @@ class TestAutoConfigureOnFirstRun:
         ("opencode", "Launching OpenCode with Unity Gateway"),
         ("copilot", "Launching GitHub Copilot CLI with Unity Gateway"),
         ("pi", "Launching Pi with Unity Gateway"),
+        ("omp", "Launching Oh My Pi with Unity Gateway"),
     ],
 )
 def test_launch_title(tool, expected):
@@ -5081,7 +5082,7 @@ class TestSkipPreflightFlag:
     """`--skip-preflight` on a launch command threads through _launch_tool to
     configure_shared_state as skip_preflight."""
 
-    LAUNCH_TOOLS = ["codex", "claude", "gemini", "opencode", "copilot", "pi"]
+    LAUNCH_TOOLS = ["codex", "claude", "gemini", "opencode", "copilot", "pi", "omp"]
 
     @staticmethod
     def _patches(cfg):
