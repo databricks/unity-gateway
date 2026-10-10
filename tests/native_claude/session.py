@@ -3,8 +3,10 @@
 import json
 import os
 import queue
+import shlex
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -31,6 +33,13 @@ class Session:
         shutil.copyfile(
             Path(__file__).parents[2] / "skills/smart-router/SKILL.md", skill / "SKILL.md"
         )
+        # Use an existing skill command, like production, so reload needs no registration.
+        probe_skill = root / "config/skills/routing-probe"
+        probe_skill.mkdir()
+        (probe_skill / "SKILL.md").write_text(
+            "---\nname: routing-probe\ndescription: Observe routing in component tests\n---\n"
+            "The test mod handles this command locally.\n"
+        )
         settings = {
             "env": {
                 **resolve_environment(env, agent=AGENT_CLAUDE),
@@ -39,6 +48,18 @@ class Session:
             "pluginConfigs": {
                 CLAUDE_ROUTING_PLUGIN_NAME: {"options": _claude_mod_launch_options(env)}
             },
+        }
+        probe = root / "hook.py"
+        probe.write_text(
+            "import json, os\nfrom pathlib import Path\n"
+            "keys = ('ENABLE_SMART_ROUTING_V2', 'ENABLE_SMART_ROUTING_SUBAGENT_ONLY', 'ENABLE_SMART_ROUTER_ORCHESTRATOR')\n"
+            "Path('hook-env.json').write_text(json.dumps({k: os.environ.get(k) for k in keys}))\n"
+            "print('{}')\n"
+        )
+        argv = [sys.executable, str(probe)]
+        command = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+        settings["hooks"] = {
+            "UserPromptSubmit": [{"hooks": [{"type": "command", "command": command}]}]
         }
         process_env = {
             **{

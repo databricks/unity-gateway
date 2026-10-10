@@ -103,7 +103,7 @@ jobs:
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
       - run: npm install -g @anthropic-ai/claude-code@2.1.290
       - run: uv lock
-      - name: Validate and test the mod entry point
+      - name: Validate and test Claude routing
         run: |
           export UCODE_TEST_CLAUDE_BINARY="$(command -v claude)"
           uv run pytest tests/native_claude/test_mod.py -q

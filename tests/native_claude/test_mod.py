@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -111,6 +112,12 @@ def test_native_parent_and_child_request_bodies(native_binary, fixture_api, tmp_
             command = session.send(f"/smart-router {action}")
             assert command["num_turns"] == 0 and len(captures) == count
             session.send("Use an Agent child to say hello, then confirm completion.")
+            expected_flags = (
+                before["environment"]
+                if action == "on"
+                else dict.fromkeys(before["environment"], "0")
+            )
+            assert json.loads((session.root / "hook-env.json").read_text()) == expected_flags
             rows = captures[count:]
             recipe = env["SMART_ROUTER_NAME"] if action == "on" else "DISABLED"
             assert {row["source"] for row in rows} == {"parent", "child"}, rows
