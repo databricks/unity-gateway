@@ -81,6 +81,8 @@ These are component checks, not live Windows coverage for every agent.
 
 Agent configuration tests also verify `ug` auth/MCP helper commands, including
 quoted executable paths and replacement of legacy `ucode` routing/web-search helpers.
+The Codex e2e shard also starts a real app-server and stdio MCP child to prove the three
+managed Databricks auth variables reach the child while an unlisted variable does not.
 
 `TestChildStdoutLaunch` in `test_cli.py` checks Claude `-p`/`--print` and Codex `exec`
 (plain and `--json`) and `app-server` status/error output on stderr, argument forwarding with

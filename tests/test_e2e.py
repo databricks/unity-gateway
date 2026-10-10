@@ -13,16 +13,23 @@ from __future__ import annotations
 import atexit
 import json
 import os
+import queue
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import textwrap
+import threading
+import time
+import uuid
 from pathlib import Path
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
 import httpx
 import pytest
+import tomlkit
 
 from ucode.agents import resolve_provider_models
 from ucode.databricks import (
@@ -527,6 +534,198 @@ class TestCodexLaunch:
                 )
 
         assert not failures, "Codex launch failures:\n" + "\n".join(failures)
+
+    def test_app_server_forwards_managed_mcp_env_vars(self, tmp_path):
+        """A real Codex app-server passes managed MCP credentials to its stdio child."""
+        from ucode.agents import codex
+
+        binary = shutil.which("codex")
+        if not binary:
+            pytest.skip("`codex` is not installed")
+
+        expected_env = {
+            "DATABRICKS_BEARER": "ucode-codex-mcp-bearer-sentinel",
+            "DATABRICKS_BEARER_COMMAND": "ucode-codex-mcp-command-sentinel",
+            "DATABRICKS_CONFIG_FILE": "ucode-codex-mcp-config-sentinel",
+        }
+        unlisted_name = "UCODE_MCP_UNLISTED_SENTINEL"
+        unlisted_value = "ucode-codex-mcp-unlisted-sentinel"
+        probe_name = f"env-probe-{uuid.uuid4().hex}"
+        observed_path = tmp_path / "mcp-env.json"
+        probe = textwrap.dedent(
+            """
+            import json
+            import os
+            import sys
+            from pathlib import Path
+
+            Path(sys.argv[1]).write_text(
+                json.dumps(
+                    {
+                        "DATABRICKS_BEARER": os.environ.get("DATABRICKS_BEARER"),
+                        "DATABRICKS_BEARER_COMMAND": os.environ.get(
+                            "DATABRICKS_BEARER_COMMAND"
+                        ),
+                        "DATABRICKS_CONFIG_FILE": os.environ.get("DATABRICKS_CONFIG_FILE"),
+                        "UCODE_MCP_UNLISTED_SENTINEL": os.environ.get(
+                            "UCODE_MCP_UNLISTED_SENTINEL"
+                        ),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            for line in sys.stdin:
+                message = json.loads(line)
+                if message.get("method") == "initialize":
+                    result = {
+                        "protocolVersion": message["params"].get(
+                            "protocolVersion", "2024-11-05"
+                        ),
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "env-probe", "version": "1"},
+                    }
+                elif message.get("method") == "tools/list":
+                    result = {"tools": []}
+                else:
+                    continue
+                if "id" in message:
+                    print(
+                        json.dumps(
+                            {"jsonrpc": "2.0", "id": message["id"], "result": result}
+                        ),
+                        flush=True,
+                    )
+            """
+        )
+        codex_home_root = _codex_home_outside_tmp()
+        codex_home = codex_home_root / ".codex"
+        codex_home.mkdir()
+        (codex_home / "config.toml").write_text(
+            tomlkit.dumps(
+                {
+                    "mcp_servers": {
+                        probe_name: codex.managed_mcp_entry(
+                            [sys.executable, "-c", probe, str(observed_path)]
+                        )
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        env = {
+            **os.environ,
+            "CODEX_HOME": str(codex_home),
+            **expected_env,
+            unlisted_name: unlisted_value,
+        }
+        process_kwargs = {"start_new_session": True} if os.name == "posix" else {}
+        proc = subprocess.Popen(
+            [binary, "app-server", "--listen", "stdio://"],
+            cwd=tmp_path,
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            **process_kwargs,
+        )
+        messages: queue.Queue = queue.Queue()
+        stdout_lines: list[str] = []
+        stderr_lines: list[str] = []
+
+        def read_stdout() -> None:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                stdout_lines.append(line)
+                try:
+                    messages.put(json.loads(line))
+                except json.JSONDecodeError:
+                    messages.put({"protocol_error": line})
+            messages.put(None)
+
+        def read_stderr() -> None:
+            assert proc.stderr is not None
+            stderr_lines.extend(proc.stderr)
+
+        stdout_reader = threading.Thread(target=read_stdout, daemon=True)
+        stderr_reader = threading.Thread(target=read_stderr, daemon=True)
+        stdout_reader.start()
+        stderr_reader.start()
+
+        def send(message: dict) -> None:
+            assert proc.stdin is not None
+            proc.stdin.write(json.dumps(message) + "\n")
+            proc.stdin.flush()
+
+        def wait_for(predicate, description: str, timeout: float = 30) -> dict:
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                try:
+                    message = messages.get(timeout=max(0.01, deadline - time.monotonic()))
+                except queue.Empty:
+                    continue
+                if message is None:
+                    break
+                if "protocol_error" in message:
+                    raise AssertionError(f"Codex app-server protocol error: {message}")
+                if predicate(message):
+                    return message
+            raise AssertionError(
+                f"No app-server {description} response; "
+                f"stdout={''.join(stdout_lines)[-1000:]!r} "
+                f"stderr={''.join(stderr_lines)[-1000:]!r}"
+            )
+
+        try:
+            send(
+                {
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {"clientInfo": {"name": "ucode-e2e", "version": "1.0.0"}},
+                }
+            )
+            initialize = wait_for(lambda message: message.get("id") == 1, "initialize")
+            assert "error" not in initialize, initialize
+
+            send({"method": "initialized", "params": {}})
+            send({"id": 2, "method": "thread/start", "params": {}})
+            wait_for(lambda message: message.get("id") == 2, "thread/start")
+            ready = wait_for(
+                lambda message: (
+                    message.get("method") == "mcpServer/startupStatus/updated"
+                    and message.get("params", {}).get("name") == probe_name
+                    and message.get("params", {}).get("status") == "ready"
+                ),
+                f"{probe_name} MCP startup",
+            )
+            assert ready["params"]["status"] == "ready"
+            assert json.loads(observed_path.read_text(encoding="utf-8")) == {
+                **expected_env,
+                unlisted_name: None,
+            }
+        finally:
+            if os.name == "posix":
+                try:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+            elif proc.poll() is None:
+                proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                if os.name == "posix":
+                    os.killpg(proc.pid, signal.SIGKILL)
+                else:
+                    proc.kill()
+                proc.wait(timeout=5)
+            stdout_reader.join(timeout=5)
+            stderr_reader.join(timeout=5)
+            for stream in (proc.stdin, proc.stdout, proc.stderr):
+                if stream is not None:
+                    stream.close()
+            shutil.rmtree(codex_home_root, ignore_errors=True)
 
 
 class TestClaudeLaunch:
