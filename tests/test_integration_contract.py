@@ -300,9 +300,13 @@ def test_live_integration_cases_belong_to_exactly_one_ci_agent():
 
 
 def test_model_discovery_cases_match_current_launch_contract():
-    root = Path(__file__).parent / "integration"
+    root = Path(__file__).parent
     seen = []
-    for path in root.glob("test_ug_*_model_discovery.py"):
+    paths = [
+        *root.glob("integration/test_ug_*_model_discovery.py"),
+        *root.glob("e2e_cuj/test_cuj*_model_discovery.py"),
+    ]
+    for path in paths:
         source = path.read_text()
         assert "UG_ENABLE_MODEL_DISCOVERY" not in source, path.name
         tree = ast.parse(source)
@@ -322,7 +326,7 @@ def test_model_discovery_cases_match_current_launch_contract():
                 for target in node.targets
             )
         )
-        for node in tree.body:
+        for node in ast.walk(tree):
             if not isinstance(node, ast.FunctionDef):
                 continue
             match = re.match(r"test_case_(\d{2})_", node.name)

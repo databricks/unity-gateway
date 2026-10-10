@@ -3,6 +3,7 @@
 import json
 
 import pytest
+from utils.constants import CLAUDE_TEST_MODEL
 from utils.evidence import FileTask
 
 pytestmark = [pytest.mark.live, pytest.mark.claude]
@@ -111,6 +112,65 @@ def test_ug_claude_headless_prompt_after_separator(live_session, workspace):
         timeout=180,
     )
     task.assert_headless_answer("claude", result)
+    session.assert_not_routed()
+
+
+@pytest.mark.usefixtures("unmanaged_workspace")
+def test_ug_claude_headless_fresh_workspace(live_session, workspace):
+    """Scenario: launch Claude headlessly against an unmanaged workspace from fresh state.
+
+    Expected: ``ug claude --workspace`` starts the real installed Claude CLI without a
+    configure step, and its structured result contains the unpredictable fixture value after
+    using the Read tool with the inexpensive Haiku model; the command exits without routing.
+    """
+    session = live_session
+    task = FileTask(session)
+
+    result = session.run(
+        "claude",
+        "--workspace",
+        workspace,
+        "--",
+        "--model",
+        CLAUDE_TEST_MODEL,
+        "-p",
+        task.prompt,
+        "--output-format",
+        "json",
+        "--allowedTools",
+        "Read",
+        timeout=180,
+    )
+    task.assert_headless_answer("claude", result)
+    usage = json.loads(result.stdout)["modelUsage"]
+    assert set(usage) == {CLAUDE_TEST_MODEL}, usage
+    assert usage[CLAUDE_TEST_MODEL]["outputTokens"] > 0, usage
+    session.assert_not_routed()
+
+
+@pytest.mark.usefixtures("unmanaged_workspace")
+def test_ug_claude_fresh_provider_launch(live_session, workspace, claude_provider):
+    """Scenario: launch Claude from fresh state with an explicit provider service.
+
+    Expected: ``ug claude --workspace`` with ``--provider`` starts the real installed Claude
+    CLI without a configure step, reports the selected provider, and writes the provider header
+    to its generated settings; ``--version`` exits successfully without inference or routing.
+    """
+    session = live_session
+    result = session.run(
+        "claude",
+        "--workspace",
+        workspace,
+        "--provider",
+        claude_provider,
+        "--",
+        "--version",
+        timeout=180,
+    )
+    assert claude_provider in result.stdout
+    settings = json.loads((session.home / ".claude/ucode-settings.json").read_text())
+    headers = (settings.get("env") or {}).get("ANTHROPIC_CUSTOM_HEADERS", "").splitlines()
+    assert f"Databricks-Model-Provider-Service: {claude_provider}" in headers
     session.assert_not_routed()
 
 

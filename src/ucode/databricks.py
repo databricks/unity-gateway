@@ -2350,22 +2350,24 @@ def build_skills_mcp_url(workspace: str, locations: list[str]) -> str:
 
 # Maps the gateway routing dialect a coding tool speaks to the Model Provider
 # Service `provider_type`s it can be backed by. claude speaks Anthropic's API,
-# which both the `anthropic` and `amazon_bedrock` provider types serve (Bedrock
-# just exposes different model ids); codex speaks OpenAI's, which the `openai`,
-# `azure_openai`, and `microsoft_foundry` provider types all serve (the gateway
-# fronts Azure OpenAI and Foundry with the OpenAI surface); gemini speaks
-# Google's, served by a Gemini Enterprise provider. Tags are the short form
-# produced by `_provider_type_tag` (e.g. `amazon_bedrock`).
+# which the `anthropic`, `amazon_bedrock`, and `bedrock_mantle` provider types
+# serve (Bedrock just exposes different model ids); codex speaks OpenAI's, which
+# the `openai`, `azure_openai`, `microsoft_foundry`, `amazon_bedrock`, and
+# `bedrock_mantle` provider types all serve (the gateway fronts them with the
+# OpenAI surface); gemini speaks Google's, served by a Gemini Enterprise
+# provider. Tags are the short form produced by `_provider_type_tag` (e.g.
+# `amazon_bedrock`).
 _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
-    "claude": ("anthropic", "amazon_bedrock"),
-    "codex": ("openai", "azure_openai", "microsoft_foundry"),
+    "claude": ("anthropic", "amazon_bedrock", "bedrock_mantle"),
+    "codex": ("openai", "azure_openai", "microsoft_foundry", "amazon_bedrock", "bedrock_mantle"),
     "gemini": ("gemini_enterprise",),
 }
 
 # Provider types that expose Bedrock-style model ids (e.g.
-# `us.anthropic.claude-sonnet-4-6`) instead of the agent's canonical model
-# names, so ucode must pin them explicitly.
-BEDROCK_PROVIDER_TYPES: tuple[str, ...] = ("amazon_bedrock",)
+# `us.anthropic.claude-sonnet-4-6`, or region-less `anthropic.claude-*` on
+# Mantle) instead of the agent's canonical model names, so ucode must pin them
+# explicitly.
+BEDROCK_PROVIDER_TYPES: tuple[str, ...] = ("amazon_bedrock", "bedrock_mantle")
 
 
 def tool_supports_provider_type(tool: str, provider_type: str) -> bool:
@@ -2591,7 +2593,7 @@ def service_usable_for_tool(tool: str, service: dict) -> bool:
     provider_type = service.get("provider_type", "")
     if not tool_supports_provider_type(tool, provider_type):
         return False
-    if provider_type in BEDROCK_PROVIDER_TYPES:
+    if tool == "claude" and provider_type in BEDROCK_PROVIDER_TYPES:
         return bool(service.get("allow_all_targets")) or bool(
             map_claude_family_models(service.get("targets") or [])
         )
@@ -2635,7 +2637,8 @@ def resolve_provider_service(
             f"which {tool} can't route to (supported: {supported})."
         )
     if (
-        provider_type in BEDROCK_PROVIDER_TYPES
+        tool == "claude"
+        and provider_type in BEDROCK_PROVIDER_TYPES
         and not match.get("allow_all_targets")
         and not map_claude_family_models(match.get("targets") or [])
     ):

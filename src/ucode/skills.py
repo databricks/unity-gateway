@@ -28,6 +28,11 @@ def _validate_skill_name(skill_name: str) -> None:
         raise ValueError(f"Invalid skill name: {skill_name!r}")
 
 
+def skill_entrypoint(skill_dir: Path, agent: str) -> Path:
+    entrypoint = skill_dir / f"SKILL.{agent}.md"
+    return entrypoint if entrypoint.is_file() else skill_dir / "SKILL.md"
+
+
 def _remove_skill_path(destination: Path) -> bool:
     """Remove an existing skill path so an install is an exact replacement."""
     if destination.is_symlink() or destination.is_file():
@@ -39,14 +44,18 @@ def _remove_skill_path(destination: Path) -> bool:
     return False
 
 
-def _bundle_digest(skill_dir: Path) -> str | None:
+def _bundle_digest(skill_dir: Path, *, entrypoint: Path | None = None) -> str | None:
     """Digest a skill's paths and contents, or return None for an invalid bundle."""
     if skill_dir.is_symlink() or not skill_dir.is_dir():
         return None
 
     digest = hashlib.sha256()
     try:
-        for path in sorted(skill_dir.rglob("*")):
+        paths = {path.relative_to(skill_dir): path for path in skill_dir.rglob("*")}
+        if entrypoint is not None:
+            # Compare the bundle as installed, with the selected instructions at SKILL.md.
+            paths[Path("SKILL.md")] = entrypoint
+        for relative, path in sorted(paths.items()):
             if path.is_symlink():
                 return None
             if path.is_file():
@@ -57,8 +66,7 @@ def _bundle_digest(skill_dir: Path) -> str | None:
                 content = b""
             else:
                 return None
-            relative = path.relative_to(skill_dir).as_posix().encode()
-            digest.update(kind + b"\0" + relative + b"\0" + content)
+            digest.update(kind + b"\0" + relative.as_posix().encode() + b"\0" + content)
     except OSError:
         return None
     return digest.hexdigest()
@@ -72,9 +80,10 @@ def install_skill(skill_name: str, agent: str, home: Path | None = None) -> Path
     except KeyError:
         raise ValueError(f"Unsupported skill agent: {agent!r}") from None
     source = _skills_source() / skill_name
-    if not (source / "SKILL.md").is_file():
+    entrypoint = skill_entrypoint(source, agent)
+    if not entrypoint.is_file():
         raise RuntimeError(f"Unity Gateway's `{skill_name}` skill resource is missing.")
-    source_digest = _bundle_digest(source)
+    source_digest = _bundle_digest(source, entrypoint=entrypoint)
     if source_digest is None:
         raise RuntimeError(f"Unity Gateway's `{skill_name}` skill resource is invalid.")
 
@@ -83,6 +92,7 @@ def install_skill(skill_name: str, agent: str, home: Path | None = None) -> Path
     if _bundle_digest(destination) != source_digest:
         _remove_skill_path(destination)
         shutil.copytree(source, destination)
+        shutil.copy2(entrypoint, destination / "SKILL.md")
     return destination
 
 
