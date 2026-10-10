@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import shutil
 from importlib.metadata import distribution
 from pathlib import Path
+
+from ucode.constants import AGENT_CLAUDE, AGENT_CODEX
 
 _SKILL_ROOTS = {"claude": ".claude/skills", "codex": ".codex/skills"}
 _LEGACY_SKILL_ROOTS = (".agents/skills",)
@@ -88,7 +91,12 @@ def install_skill(skill_name: str, agent: str, home: Path | None = None) -> Path
         raise RuntimeError(f"Unity Gateway's `{skill_name}` skill resource is invalid.")
 
     base = Path.home() if home is None else home
-    destination = base / root / skill_name
+    config_dir = {AGENT_CLAUDE: "CLAUDE_CONFIG_DIR", AGENT_CODEX: "CODEX_HOME"}[agent]
+    destination = (
+        Path(os.environ[config_dir]).expanduser() / "skills" / skill_name
+        if os.environ.get(config_dir)
+        else base / root / skill_name
+    )
     if _bundle_digest(destination) != source_digest:
         _remove_skill_path(destination)
         shutil.copytree(source, destination)
@@ -102,7 +110,6 @@ def uninstall_skill(skill_name: str, home: Path | None = None) -> list[Path]:
 
     base = Path.home() if home is None else home
     roots = (*_SKILL_ROOTS.values(), *_LEGACY_SKILL_ROOTS)
-
     removed: list[Path] = []
     for root in roots:
         destination = base / root / skill_name

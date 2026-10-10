@@ -35,6 +35,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     import ucode.managed_files as managed_files_mod
     import ucode.os_compatibility.subprocess_cross_os as subprocess_cross_os_mod
     import ucode.state as state_mod
+    from ucode.agents import claude as claude_mod
     from ucode.agents import codex as codex_mod
 
     state_dir = tmp_path / ".ucode"
@@ -56,6 +57,9 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
         codex_mod, "CODEX_MODEL_CATALOG_PATH", state_dir / "codex-model-catalog.json"
     )
     monkeypatch.setattr(codex_mod, "CODEX_CONFIG_PATH", tmp_path / ".codex" / "ucode.config.toml")
+    monkeypatch.setattr(
+        claude_mod, "CLAUDE_SETTINGS_PATH", tmp_path / ".claude" / "ucode-settings.json"
+    )
 
     def reject_privileged_write(path, _desired_text):
         pytest.fail(

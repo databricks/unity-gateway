@@ -107,7 +107,9 @@ class TestLaunchCodex:
             options=LaunchOptions(),
         )
 
-        assert launches == [["codex", "--config", 'model_provider="ucode-databricks"', *tool_args]]
+        assert launches[0][:3] == ["codex", "--config", 'model_provider="ucode-databricks"']
+        assert launches[0][-len(tool_args) :] == tool_args
+        assert any(arg.startswith("skills.config=") for arg in launches[0])
 
     def test_codex_launch_normalizes_cached_bootstrap_model(self, monkeypatch):
         calls = []
@@ -364,8 +366,10 @@ class TestLaunchCodex:
         assert "x-databricks-workspace" in provider_arg
         assert "eng-ml-inference" in provider_arg
 
-    def test_subagent_only_launch_runs_tui_directly(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("orchestrator_flag", ["0", "1"])
+    def test_subagent_only_launch_runs_tui_directly(self, tmp_path, monkeypatch, orchestrator_flag):
         monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR, orchestrator_flag)
         monkeypatch.setenv("CODEX_HOME", str(tmp_path))
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
@@ -391,7 +395,7 @@ class TestLaunchCodex:
         with pytest.raises(SystemExit) as exc:
             v2.launch_codex(
                 {"workspace": WS, "codex_models": ["system.ai.gpt-5-6-sol"]},
-                ["--search"],
+                ["--config", 'model="user-model"', "--search"],
                 binary="codex",
                 start_model="gpt-start",
                 render_overlay=codex.render_overlay,
@@ -402,6 +406,10 @@ class TestLaunchCodex:
         assert argv[0] == "codex"
         assert argv[-1] == "--search"
         assert 'model="gpt-start"' in argv
+        assert argv.index('model="user-model"') > argv.index('model="gpt-start"')
+        skill_override = next(arg for arg in argv if arg.startswith("skills.config="))
+        assert f"enabled = {str(orchestrator_flag == '1').lower()}" in skill_override
+        assert any("hooks.UserPromptSubmit=" in arg for arg in argv) == (orchestrator_flag == "1")
         hook_override = next(arg for arg in argv if arg.startswith("hooks.PreToolUse="))
         assert "codex-router-hook route-subagent" in hook_override
         assert "--model system.ai.gpt-5-6-sol" in hook_override

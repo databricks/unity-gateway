@@ -18,6 +18,20 @@ Claude mod entry-point coverage lives in `test_claude_mod.py` (generated plugin 
 TypeScript event-forwarding test in CI. Request metadata and toggle behavior are
 covered by a follow-up change. See [the mod guide](../docs/claude-mod.md).
 
+`test_orchestrator.py` checks both agents' flag transitions, repeated configuration,
+activation after compaction, installation failures, and preservation of unrelated settings.
+The transition cases also cover custom config homes; native checks reuse the existing
+process harness rather than maintaining a separate app-server client.
+Shared dispatch prepares each launch's installation and session once. Agent config
+composition is checked for unchanged skill files and session markers on repeated calls;
+smart-routing setup reuses the prepared marker.
+Caller settings and Codex CLI overrides cannot reverse the launch flag.
+Its native checks query Codex's skill loader and Claude's command list, and require
+Claude to reject explicit invocation when disabled. CI runs these without inference or
+credentials on Claude 2.1.290 and Codex 0.154.0, including previously installed and
+project-local skill copies. Availability is set per UG launch; existing sessions need
+to be relaunched to change native skill availability.
+
 Dedicated CUJs reuse `integration/utils` session/terminal mechanics and file-task
 and transcript readers, not its config stubs or pytest fixtures. Prompt/model
 correlation remains CUJ-specific. Concurrent runs may read the same CUJ workspace.

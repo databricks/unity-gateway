@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -50,7 +51,7 @@ from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
     release_file_lock,
 )
-from ucode.skills import SMART_ROUTER_ORCHESTRATOR_SKILL, SMART_ROUTER_SKILL, install_skill
+from ucode.skills import SMART_ROUTER_SKILL, install_skill
 from ucode.smart_routing import claude_routing, codex_interposer, orchestrator, routing
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
@@ -59,7 +60,12 @@ from ucode.smart_routing.claude_hooks import (
 )
 from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
 from ucode.smart_routing.config import apply_config, resolve_environment
-from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
+from ucode.smart_routing.session_env import (
+    SESSION_ENV_VAR,
+    SESSION_PYTHON_ENV_VAR,
+    session_env_path,
+    start_session,
+)
 from ucode.ui import print_warning
 
 LEGACY_STATE_KEY = "smart_routing_enabled"
@@ -88,15 +94,11 @@ class ClaudeRoutingSetupError(RuntimeError):
 
 
 def _prepare_smart_router_session(agent: str) -> Path:
-    skills = [SMART_ROUTER_SKILL]
-    if orchestrator.feature_enabled(agent=agent):
-        skills.append(SMART_ROUTER_ORCHESTRATOR_SKILL)
-    for skill in skills:
-        try:
-            install_skill(skill, agent, config_io.APP_DIR.parent)
-        except (OSError, RuntimeError) as exc:
-            print_warning(f"Could not install the {skill} skill: {exc}")
-    return start_session()
+    try:
+        install_skill(SMART_ROUTER_SKILL, agent, config_io.APP_DIR.parent)
+    except (OSError, RuntimeError) as exc:
+        print_warning(f"Could not install the {SMART_ROUTER_SKILL} skill: {exc}")
+    return session_env_path() if os.environ.get(SESSION_ENV_VAR) else start_session()
 
 
 def _launch_token(state: dict, workspace: str) -> str:
@@ -349,7 +351,10 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
                 ]
             ),
         )
-    orchestrator.add_claude_agents(plugin_dir)
+    if orchestrator.feature_enabled(agent=AGENT_CLAUDE):
+        shutil.copytree(
+            orchestrator.skill_directory() / "agents", plugin_dir / "agents", dirs_exist_ok=True
+        )
     source = Path(__file__).parents[1] / "agents" / "claude_mods" / "register.ts"
     write_text_file(plugin_dir / "hooks" / "register.ts", source.read_text(encoding="utf-8"))
     write_json_file(plugin_dir / "hooks" / "hooks.json", {"modules": ["./register.ts"]})
@@ -504,7 +509,7 @@ def launch_claude(
     model_name: Callable[[str], str],
 ) -> NoReturn:
     """Launch Claude in the first-prompt routing PTY wrapper."""
-    from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR
+    from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR, configure_orchestrator
 
     if os.name != "nt":
         from ucode.smart_routing import claude_pty
@@ -565,7 +570,6 @@ def launch_claude(
     sync_smart_routing_hooks(settings, routing_state, enabled=True)
     if route_first_prompt:
         sync_first_prompt_hook(settings, hook_executable)
-    orchestrator.sync_hooks(settings, agent="claude")
     model_setting = _ClaudeModelSettingGuard(user_settings_path)
 
     def route_prompt(prompt: str) -> claude_pty.FirstPromptRoute:
@@ -585,9 +589,10 @@ def launch_claude(
             plugin_dir = launch_dir / "plugin"
             if route_first_prompt:
                 env[FIRST_PROMPT_SOCKET_ENV] = str(socket_path)
-            session_path = _prepare_smart_router_session("claude")
+            session_path = _prepare_smart_router_session(AGENT_CLAUDE)
             env[SESSION_ENV_VAR] = str(session_path)
             env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
+            configure_orchestrator(settings)
             try:
                 write_json_file(settings_path, settings)
                 _write_routed_claude_plugin(plugin_dir, model_ids)
@@ -638,7 +643,6 @@ def _v2_hooks(state: dict, available_models: list[str]) -> dict:
             "PreToolUse": merge_pre_tool_use_hooks([], state, available_models=available_models),
         }
     }
-    orchestrator.sync_hooks(doc, agent="codex")
     return doc["hooks"]
 
 
@@ -650,6 +654,8 @@ def launch_codex(
     start_model: str | None,
     render_overlay: Callable[..., dict],
 ) -> NoReturn:
+    from ucode.agents.codex import compose_launch_args
+
     workspace = state.get("workspace")
     if not workspace:
         raise RuntimeError(
@@ -682,7 +688,10 @@ def launch_codex(
         overlay["model_catalog_json"] = str(catalog_path)
     overlay["hooks"] = _v2_hooks(state, available_models)
     overlay["features.hooks"] = True
-    session_env_path = _prepare_smart_router_session("codex")
+    session_env_path = _prepare_smart_router_session(AGENT_CODEX)
+    launch_config = {"hooks": overlay["hooks"]}
+    launch_args = compose_launch_args(tool_args, launch_config)
+    overlay.update(launch_config)
     # Codex constructs tool subprocess environments through its shell policy.
     # Pass both the session marker and its launching interpreter through that policy.
     overlay[f"shell_environment_policy.set.{SESSION_ENV_VAR}"] = str(session_env_path)
@@ -693,7 +702,7 @@ def launch_codex(
     if not first_prompt_routing_enabled(agent=AGENT_CODEX):
         # Subagent-only routing needs neither the app-server nor the interposer:
         # the hooks ride in the CLI config, so launch the TUI directly.
-        exec_or_spawn([binary, *config_args, *tool_args])
+        exec_or_spawn([binary, *config_args, *launch_args])
     app_port = _free_port()
     app_server_url = _loopback_websocket_url(app_port)
 

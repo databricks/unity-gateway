@@ -37,6 +37,7 @@ def test_smart_routed_session_installs_skill(tmp_path, monkeypatch, agent):
     assert session_path == Path(os.environ[session_env.SESSION_ENV_VAR])
     assert Path(os.environ[session_env.SESSION_ENV_VAR]).is_file()
     assert os.environ["UCODE_SMART_ROUTER_PYTHON"] == sys.executable
+    assert v2._prepare_smart_router_session(agent) == session_path
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Exercises the skill's POSIX shell commands")

@@ -16,7 +16,7 @@ import traceback
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 
-from ucode import gateway_proxy
+from ucode import gateway_proxy, skills
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -28,6 +28,7 @@ from ucode.config_io import (
 )
 from ucode.constants import (
     AGENT_CLAUDE,
+    ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     LOOPBACK_HOST,
     MCP_CLEANUP_SCOPES,
     MCP_USER_SCOPE,
@@ -89,6 +90,7 @@ from ucode.mcp_web_search import (
     external_provider_selected,
 )
 from ucode.os_compatibility import subprocess_cross_os
+from ucode.smart_routing import orchestrator
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
@@ -96,6 +98,7 @@ from ucode.smart_routing.claude_hooks import (
     sync_smart_routing_hooks,
 )
 from ucode.smart_routing.routing import configured_router_name
+from ucode.smart_routing.session_env import launch_environment
 from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
 from ucode.ui import print_note, print_success, print_warning
@@ -1986,7 +1989,7 @@ def _merge_claude_settings(base: dict, overlay: dict) -> dict:
     """Deep-merge *overlay* onto *base* (overlay wins on conflicting leaves),
     preserving both sources' hooks and permission denies. Inputs are not mutated.
     """
-    merged = deep_merge_dict(copy.deepcopy(base), overlay)
+    merged = deep_merge_dict(copy.deepcopy(base), copy.deepcopy(overlay))
     _preserve_permission_denies(base, merged)
     base_hooks = base.get("hooks")
     overlay_hooks = overlay.get("hooks")
@@ -2064,6 +2067,15 @@ def _resolve_launch_binary(binary: str) -> str:
     )
 
 
+def configure_orchestrator(settings: dict) -> None:
+    env = launch_environment(agent=AGENT_CLAUDE)
+    settings.setdefault("env", {}).update(env)
+    settings.setdefault("skillOverrides", {})[skills.SMART_ROUTER_ORCHESTRATOR_SKILL] = (
+        "on" if env[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] == "1" else "off"
+    )
+    orchestrator.sync_hooks(settings, agent=AGENT_CLAUDE)
+
+
 def _build_claude_argv(
     binary: str,
     tool_args: list[str],
@@ -2092,10 +2104,6 @@ def _build_claude_argv(
     """
     source_args = ["--setting-sources", _RELAYED_SETTING_SOURCES] if relayed else []
     caller_values, remaining = _extract_caller_settings(tool_args)
-    if not caller_values and settings_override is None:
-        # No caller --settings: hand Claude ucode's settings file directly (the
-        # common path; behavior unchanged).
-        return [binary, *source_args, "--settings", str(CLAUDE_SETTINGS_PATH), *tool_args]
     caller_settings: dict = {}
     for value in caller_values:
         caller_settings = _merge_claude_settings(caller_settings, _load_caller_settings(value))
@@ -2104,6 +2112,7 @@ def _build_claude_argv(
     merged = _merge_claude_settings(caller_settings, read_json_safe(CLAUDE_SETTINGS_PATH))
     if settings_override is not None:
         merged = _merge_claude_settings(merged, settings_override)
+    configure_orchestrator(merged)
     merged_env = merged.get("env")
     if isinstance(merged_env, dict):
         merged_env.pop("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", None)

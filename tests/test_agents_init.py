@@ -13,6 +13,7 @@ import pytest
 
 import ucode.agents as agents_mod
 import ucode.databricks as db_mod
+from ucode import config_io, skills
 from ucode.agents import (
     DEFAULT_TOOL,
     TOOL_SPECS,
@@ -28,7 +29,9 @@ from ucode.agents import (
     resolve_launch_model,
 )
 from ucode.agents.args import has_explicit_model_arg
+from ucode.constants import AGENT_CLAUDE, AGENT_CODEX, ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR
 from ucode.managed_config import ManagedConfigResult
+from ucode.smart_routing import session_env
 from ucode.ui import redirect_output_to_stderr
 
 
@@ -68,18 +71,32 @@ class TestToolSpecs:
         assert DEFAULT_TOOL == "codex"
 
 
-def test_launch_dispatches_invocation_options(monkeypatch):
+@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
+@pytest.mark.parametrize("orchestration_flag", ["0", "1"])
+def test_launch_prepares_session_before_dispatching_invocation_options(
+    monkeypatch, agent, orchestration_flag
+):
     calls = []
     options = LaunchOptions(launch_smart_routing=True)
+    monkeypatch.setenv(ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR, orchestration_flag)
     monkeypatch.setattr(
-        agents_mod.codex,
+        agents_mod._MODULES[agent],
         "launch",
-        lambda state, tool_args, *, options: calls.append((state, tool_args, options)),
+        lambda state, tool_args, *, options: calls.append(
+            (state, tool_args, options, session_env.session_env_path())
+        ),
     )
 
-    agents_mod.launch("codex", {"workspace": "ws"}, ["prompt"], options=options)
+    agents_mod.launch(agent, {"workspace": "ws"}, ["prompt"], options=options)
 
-    assert calls == [({"workspace": "ws"}, ["prompt"], options)]
+    assert calls[0][:3] == ({"workspace": "ws"}, ["prompt"], options)
+    assert calls[0][3].is_file()
+    installed = (
+        config_io.APP_DIR.parent / f".{agent}/skills" / skills.SMART_ROUTER_ORCHESTRATOR_SKILL
+    )
+    assert (installed / "SKILL.md").is_file() == (orchestration_flag == "1")
+    agents_mod.launch(agent, {"workspace": "ws"}, ["prompt"], options=options)
+    assert calls[1][3] != calls[0][3]
 
 
 class TestInstallAiToolsForAgents:
@@ -1093,8 +1110,14 @@ class TestConfigureSelectedTools:
 
 
 class TestConfiguredPaths:
-    def test_claude_reports_its_settings_file_home_abbreviated(self):
-        from ucode.agents import configured_paths
+    def test_claude_reports_its_settings_file_home_abbreviated(self, monkeypatch):
+        from ucode.agents import claude, configured_paths
+
+        monkeypatch.setattr(
+            claude,
+            "CLAUDE_SETTINGS_PATH",
+            claude.CLAUDE_SETTINGS_PATH.home() / ".claude" / "ucode-settings.json",
+        )
         from ucode.agents.claude import CLAUDE_SETTINGS_PATH
 
         paths = configured_paths("claude", {})

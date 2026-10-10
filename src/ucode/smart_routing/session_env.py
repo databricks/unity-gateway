@@ -10,7 +10,11 @@ from collections.abc import Mapping, MutableMapping
 from pathlib import Path
 
 from ucode.config_io import atomic_write_json
-from ucode.constants import SMART_ROUTING_ENV_KEYS
+from ucode.constants import (
+    ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
+    SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
+    SMART_ROUTING_ENV_KEYS,
+)
 from ucode.smart_routing.config import resolve_environment
 
 SESSION_ENV_VAR = "UCODE_SESSION_ENV_FILE"
@@ -28,6 +32,19 @@ def start_session(env: MutableMapping[str, str] | None = None) -> Path:
     # The skill uses this interpreter with -m ucode.cli, independent of the tool's PATH.
     target[SESSION_PYTHON_ENV_VAR] = sys.executable
     return path
+
+
+def launch_environment(*, agent: str) -> dict[str, str]:
+    """Serialize the prepared orchestration environment for native agent settings."""
+    active = resolve_environment(agent=agent).get(ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR) == "1"
+    env = {
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1" if active else "0",
+        SMART_ROUTER_CONFIG_VERSION_ENV_VAR: "",
+    }
+    if active:
+        env[SESSION_ENV_VAR] = str(session_env_path())
+        env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
+    return env
 
 
 def session_env_path(env: Mapping[str, str] | None = None) -> Path:

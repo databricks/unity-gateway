@@ -31,7 +31,8 @@ def _plugin_agent_models(plugin_dir: Path) -> set[str]:
         model_line = next(
             line for line in agent_path.read_text().splitlines() if line.startswith("model: ")
         )
-        models.add(json.loads(model_line.removeprefix("model: ")))
+        model = model_line.removeprefix("model: ")
+        models.add(json.loads(model) if model.startswith('"') else model)
     return models
 
 
@@ -430,11 +431,15 @@ class TestV2Launch:
             "theme": "dark",
         }
 
-    def test_subagent_only_launch_skips_first_prompt_routing(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("orchestrator_flag", ["0", "1"])
+    def test_subagent_only_launch_skips_first_prompt_routing(
+        self, tmp_path, monkeypatch, orchestrator_flag
+    ):
         user_settings = tmp_path / "settings.json"
         user_settings.write_text(json.dumps({"model": "opus"}))
         monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
         monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR, orchestrator_flag)
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "")
         monkeypatch.setenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "")
         monkeypatch.setattr(v2, "APP_DIR", tmp_path)
@@ -507,10 +512,16 @@ class TestV2Launch:
         assert v2.ENABLE_SMART_ROUTING_ENV_VAR not in env
         assert claude_hooks.FIRST_PROMPT_SOCKET_ENV not in env
         # Subagent routing is fully wired; only the first-prompt machinery is absent.
-        assert "UserPromptSubmit" not in settings["hooks"]
+        assert ("UserPromptSubmit" in settings["hooks"]) == (orchestrator_flag == "1")
+        assert settings["skillOverrides"]["smart-router-orchestrator"] == (
+            "on" if orchestrator_flag == "1" else "off"
+        )
         assert "route-subagent" in str(settings["hooks"]["PreToolUse"])
         assert settings["modelOverrides"] == {"claude-opus-4-8": "system.ai.claude-opus-4-8"}
-        assert captured["plugin_models"] == {"system.ai.claude-opus-4-8"}
+        expected_models = {"system.ai.claude-opus-4-8"}
+        if orchestrator_flag == "1":
+            expected_models.add("sonnet")
+        assert captured["plugin_models"] == expected_models
         assert captured["argv"][3:5] == ["--model", "opus"]
         assert captured["argv"].count("--agents") == 1
         assert captured["argv"].count("--plugin-dir") == 2

@@ -25,6 +25,7 @@ from ucode.databricks import (
     map_claude_family_models,
     resolve_provider_service,
 )
+from ucode.launcher import prepare_agent_launch
 from ucode.managed_config import refresh_managed_config
 from ucode.managed_files import managed_write_batch
 from ucode.os_compatibility import subprocess_cross_os
@@ -479,6 +480,8 @@ def launch(
     *,
     options: LaunchOptions,
 ) -> None:
+    if tool in (AGENT_CLAUDE, AGENT_CODEX):
+        prepare_agent_launch(agent=tool, routing_enabled=options.launch_smart_routing)
     _MODULES[tool].launch(state, tool_args, options=options)
 
 

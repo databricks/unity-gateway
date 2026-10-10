@@ -6,7 +6,24 @@ import os
 import signal
 import sys
 
+from ucode import config_io, skills
+from ucode.constants import ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR
 from ucode.os_compatibility import subprocess_cross_os
+from ucode.smart_routing.config import resolve_environment
+from ucode.smart_routing.session_env import start_session
+
+
+def prepare_agent_launch(*, agent: str, routing_enabled: bool) -> None:
+    """Install the requested workflow and create a fresh session before native launch."""
+    source = resolve_environment(agent=agent)
+    orchestration_enabled = source.get(ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR) == "1"
+    if orchestration_enabled:
+        # Do not silently launch without a requested workflow.
+        skills.install_skill(
+            skills.SMART_ROUTER_ORCHESTRATOR_SKILL, agent, config_io.APP_DIR.parent
+        )
+    if orchestration_enabled or routing_enabled:
+        start_session()
 
 
 def exec_or_spawn(argv: list[str]) -> None:

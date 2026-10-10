@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import copy
 import hashlib
 import os
@@ -15,7 +16,7 @@ from pathlib import Path
 import tomlkit
 from tomlkit.exceptions import ParseError
 
-from ucode import gateway_proxy
+from ucode import config_io, gateway_proxy, skills
 from ucode.codex_config import (
     catalog_slugs,
     codex_config_args,
@@ -37,6 +38,7 @@ from ucode.config_io import (
 )
 from ucode.constants import (
     AGENT_CODEX,
+    ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     LOOPBACK_HOST,
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
@@ -71,6 +73,7 @@ from ucode.managed_files import (
     revert_managed_file,
 )
 from ucode.os_compatibility import subprocess_cross_os
+from ucode.smart_routing import orchestrator
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.codex_hooks import (
     remove_smart_routing_hooks,
@@ -79,6 +82,7 @@ from ucode.smart_routing.codex_hooks import (
 )
 from ucode.smart_routing.codex_routing import codex_model_id
 from ucode.smart_routing.routing import configured_router_name
+from ucode.smart_routing.session_env import launch_environment
 from ucode.state import get_provider_service, is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
 from ucode.ui import print_warning_err
@@ -1094,6 +1098,55 @@ def _launch_codex_with_otel_proxy(
     raise SystemExit(returncode)
 
 
+def _codex_skill_config(doc: dict, *, active: bool) -> list[dict]:
+    """Preserve other skills and gate known orchestrator copies by their native paths."""
+    home = config_io.APP_DIR.parent
+    codex_home = Path(os.environ.get("CODEX_HOME", str(home / ".codex"))).expanduser()
+    entries = doc.get("skills.config", doc.get("skills", {}).get("config"))
+    if entries is None:
+        for name in ("ucode.config.toml", "config.toml"):
+            entries = config_io.read_toml_safe(codex_home / name).get("skills", {}).get("config")
+            if entries is not None:
+                break
+    roots = {codex_home, home / ".codex", home / ".agents"}
+    paths = {
+        root / "skills" / skills.SMART_ROUTER_ORCHESTRATOR_SKILL / "SKILL.md" for root in roots
+    }
+    for parent in (Path.cwd(), *Path.cwd().parents):
+        path = parent / ".agents" / "skills" / skills.SMART_ROUTER_ORCHESTRATOR_SKILL / "SKILL.md"
+        if path.is_file():
+            paths.add(path)
+    other = []
+    for entry in entries or []:
+        path = Path(entry["path"]).expanduser()
+        if path.parent.name == skills.SMART_ROUTER_ORCHESTRATOR_SKILL:
+            paths.add(path)
+        else:
+            other.append(entry)
+    return other + [{"path": str(path), "enabled": active} for path in sorted(paths)]
+
+
+def compose_launch_args(tool_args: list[str], doc: dict) -> list[str]:
+    """Apply the flag after caller config overrides, preserving their other skills/hooks."""
+    before_prompt = tool_args[: tool_args.index("--")] if "--" in tool_args else tool_args
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    parser.add_argument("-c", "--config", action="append", default=[])
+    options, remaining = parser.parse_known_args(before_prompt)
+    for value in options.config:
+        if value.partition("=")[0].partition(".")[0].strip('"') in {"skills", "hooks"}:
+            config_io.deep_merge_dict(doc, tomlkit.parse(value))
+            doc.pop("skills.config", None)
+    env = launch_environment(agent=AGENT_CODEX)
+    active = env[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] == "1"
+    doc["skills.config"] = _codex_skill_config(doc, active=active)
+    orchestrator.sync_hooks(doc, agent=AGENT_CODEX)
+    if active:
+        doc["features.hooks"] = True
+    doc.update({f"shell_environment_policy.set.{key}": value for key, value in env.items()})
+    caller_config = [arg for value in options.config for arg in ("-c", value)]
+    return [*caller_config, *codex_config_args(doc), *remaining, *tool_args[len(before_prompt) :]]
+
+
 def _run_codex(
     state: dict,
     base_argv: list[str],
@@ -1103,9 +1156,12 @@ def _run_codex(
     workspace: str | None,
 ) -> None:
     """Launch Codex — via the loopback proxy when OTLP tracing is on, else exec-replace."""
+    profile = read_toml_safe(CODEX_CONFIG_PATH)
+    overlay = {key: profile[key] for key in ("skills", "hooks") if key in profile}
     if tool_args[:1] == ["update"]:
         # exec replaces ug, so reattach only on a later validated refresh.
         detach_app_model_catalog()
+    tool_args = compose_launch_args(tool_args, overlay)
     if otel_tracing and workspace:
         _launch_codex_with_otel_proxy(state, base_argv, tool_args, workspace)
     else:

@@ -1,4 +1,4 @@
-"""Activate Smart Router Orchestrator in opted-in smart-routing sessions."""
+"""Activate the Smart Router Orchestrator workflow through agent hooks."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import argparse
 import json
 import os
 import shlex
-import shutil
 import subprocess
 import sys
 from collections.abc import Mapping
@@ -37,32 +36,20 @@ def feature_enabled(env: Mapping[str, str] | None = None, *, agent: str) -> bool
 
 
 def enabled(env: Mapping[str, str] | None = None, *, agent: str) -> bool:
-    from ucode.smart_routing.v2 import smart_routing_enabled
-
     source = os.environ if env is None else env
     if not feature_enabled(source, agent=agent):
         return False
-    if source.get("ISAAC_LAUNCH_MODE", "").strip().lower() == "omni":
-        return False
     try:
-        # The marker is created only after UG selects a supported routing launch.
+        # An installed skill alone does not activate the workflow.
         if not session_env_path(source).is_file():
             return False
     except (RuntimeError, OSError):
         return False
-    return smart_routing_enabled(
-        effective_environment(source, agent=agent), default=False, agent=agent
-    )
+    return feature_enabled(effective_environment(source, agent=agent), agent=agent)
 
 
 def skill_directory() -> Path:
     return skills._skills_source() / skills.SMART_ROUTER_ORCHESTRATOR_SKILL
-
-
-def add_claude_agents(plugin_dir: Path) -> None:
-    """Load roles alongside the router's exact-model agents, only for this launch."""
-    if feature_enabled(agent=AGENT_CLAUDE):
-        shutil.copytree(skill_directory() / "agents", plugin_dir / "agents", dirs_exist_ok=True)
 
 
 def sync_hooks(doc: dict, *, agent: str) -> None:
