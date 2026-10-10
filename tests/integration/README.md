@@ -52,10 +52,14 @@ This suite runs the **installed product** through subprocesses, against the same
 patch application functions, substitute agent executables, run a fake gateway,
 or construct ug state files. The normal test suite checks these boundaries.
 
-The Claude mod entry point has separate native component checks in
-`../native_claude/test_mod.py`. Claude 2.1.290 validates the module and runs its
-TypeScript event-forwarding test in a dedicated CI job. These checks do not submit
-inference requests or replace this suite's live gateway/TUI journeys.
+Claude routing has separate native component checks in `../native_claude/test_mod.py`.
+The dedicated CI job runs mod unit tests and native sessions against a local fixture API,
+checking complete flag/recipe restoration, clear/reload, compaction, process isolation,
+hook environments, and parent/Agent request bodies. Python tests cover Claude-specific version resolution
+and obsolete-file isolation. These checks do not replace live gateway/TUI journeys.
+The Claude TUI journey below observes native local-command confirmations, complete
+process-environment restoration, no override files, and real routed/unrouted children.
+Codex retains its file-based skill controls. Live execution requires workspace credentials.
 
 The existing unit tests keep their fixtures. Integration has an independent
 pytest configuration and uses `--confcutdir` so those fixtures cannot leak in.
@@ -944,13 +948,3 @@ The runner returns nonzero on installation or test failure.
 Do not drop the mirror flags if public registries resolve to `127.0.0.1` or return
 `ECONNREFUSED`. The runner deliberately ignores host `.npmrc` and resolver settings.
 Outside the Databricks network, use reachable package indexes explicitly instead.
-
-Native launch-option component tests (`native_claude/test_mod.py`) check two real Claude
-processes with different resolved routing baselines. Python cases cover Claude-specific presets,
-unknown selectors, and absent versus empty flags. These checks do not establish gateway/TUI coverage.
-
-Native Claude component checks exercise the installed smart-router skill with the mod:
-complete off/on restoration, process isolation, clear/reload, compaction, and real parent/Agent
-request payloads against a local fixture API. Mod unit cases cover absent/empty flags,
-invalid JSON and arguments, orchestration-only inactivity, and rollback after denied writes.
-These are not live gateway or interactive TUI results.

@@ -127,6 +127,80 @@ def _run_calculation(
     )
 
 
+def _toggle_with_mod(tui, session, enabled: bool) -> None:
+    state = "on" if enabled else "off"
+    confirmation = f"Smart Router is {state} for this session"
+    controls = list(Path(session.env["TMPDIR"]).glob("ug-session-env-*/env.json"))
+    assert controls == [], controls
+
+    def confirmations():
+        return sum(
+            record.get("type") == "system"
+            and record.get("subtype") == "local_command"
+            and record.get("commandRun") == {"command": "smart-router", "args": state}
+            and confirmation in record.get("content", "")
+            for path, records in agent_sessions(session, "claude").items()
+            if not is_child_session("claude", path, records)
+            for record in records
+        )
+
+    before = confirmations()
+    tui.submit(f"/smart-router {state}")
+    tui.wait_for(
+        lambda _screen: confirmations() > before,
+        f"the native Smart Router mod command to turn routing {state}",
+        timeout=120,
+    )
+    assert list(Path(session.env["TMPDIR"]).glob("ug-session-env-*/env.json")) == []
+    # The following calculation independently verifies the routing effect on a real child.
+
+
+def _claude_routing_environment(tui, session) -> dict:
+    probe = session.cwd / "routing-env-probe.py"
+    result = session.cwd / "routing-env.json"
+    probe.write_text(
+        "import json, os\nfrom pathlib import Path\n"
+        "keys = ('ENABLE_SMART_ROUTING_V2', 'ENABLE_SMART_ROUTING_SUBAGENT_ONLY', "
+        "'ENABLE_SMART_ROUTER_ORCHESTRATOR')\n"
+        "Path('routing-env.json').write_text(json.dumps({k: os.environ.get(k) for k in keys}))\n"
+        "print('ROUTING_ENV_PROBE_COMPLETE')\n"
+    )
+    if result.exists():
+        result.unlink()
+
+    def completion_counts():
+        answers = outputs = 0
+        for path, records in agent_sessions(session, "claude").items():
+            if is_child_session("claude", path, records):
+                continue
+            answers += len(assistant_answers("claude", records))
+            outputs += sum(
+                "ROUTING_ENV_PROBE_COMPLETE" in output for output in tool_outputs("claude", records)
+            )
+        return answers, outputs
+
+    before_answers, before_outputs = completion_counts()
+    tui.submit(
+        "Use Bash to run `python3 routing-env-probe.py` in the project directory. "
+        "Do not edit the script or its output. Reply ROUTING_ENV_PROBE_COMPLETE after it succeeds."
+    )
+    tui.wait_for(
+        lambda _screen: result.is_file(), "the routing environment probe output", timeout=120
+    )
+    tui.wait_for(
+        lambda _screen: all(
+            after > before
+            for after, before in zip(
+                completion_counts(), (before_answers, before_outputs), strict=True
+            )
+        ),
+        "a new Bash probe result and assistant answer in Claude's native transcript",
+        timeout=120,
+    )
+
+    return json.loads(result.read_text())
+
+
 def _toggle_with_skill(
     tui, session, agent: str, enabled: bool, orchestration_enabled: bool
 ) -> None:
@@ -141,9 +215,12 @@ def _toggle_with_skill(
         ["smart-router", "smart-router-orchestrator"] if orchestration_enabled else ["smart-router"]
     )
     assert installed_skills == expected_skills, installed_skills
+    if agent == "claude":
+        _toggle_with_mod(tui, session, enabled)
+        return
 
     state = "on" if enabled else "off"
-    invocation = f"/smart-router {state}" if agent == "claude" else f"$smart-router {state}"
+    invocation = f"$smart-router {state}"
     controls = list(Path(session.env["TMPDIR"]).glob("ug-session-env-*/env.json"))
     assert len(controls) == 1, controls
     expected = (
@@ -364,8 +441,8 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
     back on through the skill, and spawn a third child in the same real TUI session.
 
     Expected: routing-only cases install Smart Router; enabling orchestration also installs
-    Smart Router Orchestrator. Each invocation records the CLI
-    confirmation in the native transcript and changes the saved routing controls, even with
+    Smart Router Orchestrator. Each invocation records a native mod
+    confirmation and changes the process environment without override files, even with
     collapsed terminal output; all three uniquely tagged calculations complete in native child
     sessions; only the first and third show the subagent-routing banner and produce live gateway
     decisions correlated with those children. Claude's native task view reports no running
@@ -395,6 +472,7 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
     ) as tui:
         tui.boot()
         _run_calculation(tui, session, "claude", "1+1", "2", orchestration_enabled, routed=True)
+        baseline = _claude_routing_environment(tui, session)
         _toggle_with_skill(
             tui,
             session,
@@ -402,6 +480,7 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
             enabled=False,
             orchestration_enabled=orchestration_enabled,
         )
+        assert _claude_routing_environment(tui, session) == dict.fromkeys(baseline, "0")
         _run_calculation(tui, session, "claude", "1+2", "3", False, routed=False)
         _toggle_with_skill(
             tui,
@@ -410,6 +489,7 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
             enabled=True,
             orchestration_enabled=orchestration_enabled,
         )
+        assert _claude_routing_environment(tui, session) == baseline
         _run_calculation(tui, session, "claude", "2+2", "4", orchestration_enabled, routed=True)
         tui.wait_for_background_tasks()
         tui.exit_normally()
