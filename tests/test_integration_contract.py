@@ -128,7 +128,6 @@ FORK_GUARD = (
 )
 # Fork PRs get no secrets or OIDC token, so jobs that need either must skip them.
 SKIPPED_ON_FORK_PRS = {
-    "installation-windows",
     "workspace",
     "smoke",
     "headless-windows",
