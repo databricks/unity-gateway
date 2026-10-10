@@ -44,6 +44,11 @@ Restore the inherited environment on every exit.
 Explicit launch/session on/off controls still apply after version expansion.
 Managed routing defaults must not rewrite already-resolved version flags.
 
+Every new `smart_routing` or `smart_router` environment variable must be registered in
+`SMART_ROUTING_ENV_KEYS` in the same change, including orchestration controls.
+Pass Claude's resolved launch baseline through native `pluginConfigs` options in the existing
+launch settings. Keep the TypeScript static; toggles must not write configuration files.
+
 ### Adding a parameter
 
 1. Define its environment-variable constant in `src/ucode/constants.py` and add it to
