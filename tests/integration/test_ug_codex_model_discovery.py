@@ -1,9 +1,9 @@
-"""Codex model-discovery CUJs for repository scenarios 8, 10, 12, and 14."""
+"""Codex model-discovery CUJs for repository scenarios 10, 12, and 14."""
 
 import os
-import tomllib
 
 import pytest
+from utils.model_discovery import assert_codex_default_models as _assert_default_models
 from utils.provider_catalog import fetch_codex_parent_catalog
 
 pytestmark = [pytest.mark.codex, pytest.mark.usefixtures("unmanaged_workspace")]
@@ -17,43 +17,6 @@ def _codex_parent_catalog(unmanaged_workspace, parent_schema, codex_parent_model
     assert codex_parent_model in catalog.model_ids, catalog.model_ids
     assert all(model.startswith(parent_schema + ".") for model in catalog.model_ids), catalog
     return catalog
-
-
-def _assert_default_models(session, models):
-    discovered = session.workspace_state()["codex_models"]
-    assert discovered and all(model.startswith("system.ai.") for model in discovered)
-    config = tomllib.loads((session.home / ".codex/ucode.config.toml").read_text())
-    assert "model" not in config, config
-    assert "model_reasoning_effort" not in config, config
-    assert "model_catalog_json" not in config, config
-    assert models and len(models) == len(set(models)), models
-    assert any(model.startswith("gpt-") for model in models), models
-    assert not list((session.home / ".ucode").glob("codex-model-catalog-*.json"))
-
-
-@pytest.mark.live
-def test_case_08_configured_codex_uses_default_models(live_session, workspace):
-    """Scenario: configure Codex, then launch without source overrides.
-
-    Expected: unmanaged configuration leaves model selection to Codex's native default;
-    ug records system.ai discovery while model and reasoning preferences remain unset;
-    app-server exposes native GPT entries without a generated provider/parent-scoped catalog.
-    """
-    session = live_session
-    session.run(
-        "configure",
-        "--agents",
-        "codex",
-        "--workspace",
-        workspace,
-        "--skip-upgrade",
-        "--disable-databricks-ai-tools",
-        timeout=240,
-    )
-
-    models = session.codex_model_ids(["app-server", "--listen", "stdio://"])
-
-    _assert_default_models(session, models)
 
 
 @pytest.mark.live
