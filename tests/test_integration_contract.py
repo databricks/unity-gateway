@@ -142,8 +142,8 @@ SKIPPED_ON_FORK_PRS = {
 }
 
 
-def _integration_jobs():
-    workflow = (Path(__file__).parent.parent / ".github/workflows/integration.yml").read_text()
+def _integration_jobs(name="integration.yml"):
+    workflow = (Path(__file__).parent.parent / ".github/workflows" / name).read_text()
     body = workflow.split("\njobs:\n", 1)[1]
     return dict(re.findall(r"(?ms)^  ([a-z0-9-]+):\n(.*?)(?=^  [a-z0-9-]+:\n|\Z)", body))
 
@@ -172,6 +172,19 @@ def test_integration_jobs_that_run_on_fork_pull_requests_need_no_credentials():
         assert "secrets." not in jobs[name] and "id-token: write" not in jobs[name], (
             f"{name} runs on fork PRs, which get no secrets or OIDC token"
         )
+
+
+def test_ci_windows_lanes_skip_fork_pull_requests():
+    jfrog_jobs = {
+        name: job for name, job in _integration_jobs("ci.yml").items() if "setup-jfrog-cli" in job
+    }
+
+    assert set(jfrog_jobs) == {"test", "e2e-shards"}
+    for name, job in jfrog_jobs.items():
+        assert (
+            f"os: ${{{{ fromJSON(({FORK_GUARD}) && "
+            """'["ubuntu-latest", "windows-server-latest"]' || '["ubuntu-latest"]') }}"""
+        ) in job, f"{name} logs in to JFrog with OIDC on Windows, which fork PRs can't do"
 
 
 def test_windows_integration_ci_uses_shared_claude_version():
