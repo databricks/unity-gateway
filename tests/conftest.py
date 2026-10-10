@@ -37,6 +37,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     import ucode.state as state_mod
     from ucode.agents import codex as codex_mod
 
+    config_io_mod.set_dry_run(False)
     state_dir = tmp_path / ".ucode"
     state_dir.mkdir()
     monkeypatch.setattr(state_mod, "STATE_PATH", state_dir / "state.json")

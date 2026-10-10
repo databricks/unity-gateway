@@ -99,6 +99,14 @@ The two columns show what `ug` does without and with a [managed config](https://
 
 This is the intended behavior; we are still working to make the code match it in every case. In particular, `ug` today also clears some fields that this list leaves alone: the `env.ANTHROPIC_DEFAULT_*_MODEL_NAME` companions, `env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`, `env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`, and Codex `model_reasoning_effort`. Codex `[otel]` is never written to a file.
 
+### How `ug` tracks what it wrote (provenance)
+
+`ug` shares these files with other writers (an admin, Isaac, MDM, or the developer), so when it cleans up a field it previously set it must not delete a value someone else owns at the same key. For that, `ug` keeps a provenance record at `~/.ucode/managed-backups/provenance.json`: for each agent and destination file, the key paths `ug` wrote and the exact value it wrote at each.
+
+- `ug` removes or restores a field only while the file still holds the value `ug` last wrote there. If anyone else has since changed that value, `ug` gives up the claim and leaves the field alone.
+- The record is refreshed after each confirmed write by `ug configure` (including the auto-configure a launch runs first), and `ug revert` clears it.
+- It is not a mirror of this whole table. It holds only the keys a cleanup path actually consults (the fields `ug` conditionally removes), not every field `ug` writes. Values other writers set are never recorded.
+
 <details>
 <summary>Claude Code</summary>
 

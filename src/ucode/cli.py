@@ -127,6 +127,7 @@ from ucode.mcp import (
     revert_mcp_configs,
 )
 from ucode.os_compatibility import subprocess_cross_os
+from ucode.provenance import clear_provenance
 from ucode.skills_download import (
     configure_location_skills_download_command,
     configure_selected_skills_download_command,
@@ -1340,6 +1341,7 @@ def revert() -> int:
     # place; restoring the per-profile file above does not undo that.
     legacy_codex_stripped = revert_legacy_shared_config()
     clear_state()
+    clear_provenance()
 
     print_heading("Revert")
     print_kv("Workspace", state.get("workspace") or "none")
