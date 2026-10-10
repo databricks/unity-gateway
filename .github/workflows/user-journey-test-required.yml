@@ -68,18 +68,23 @@ jobs:
           : "${USER_JOURNEY_JUDGE_MODEL:?Set the UG_CI_USER_JOURNEY_JUDGE_MODEL repository variable to a Responses-capable system.ai model}"
           python3 .github/scripts/user-journey-required/check.py
 
-      # Comment-triggered runs are not attached to the PR, so report back on its head commit.
+      # Comment-triggered runs are not attached to the PR, so report back on the evaluated commit.
       - name: Report the result on the fork PR
         if: ${{ github.event_name == 'issue_comment' }}
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.issue.number }}
           OUTCOME: ${{ steps.gate.outcome }}
+          SHA: ${{ steps.gate.outputs.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          sha=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq .head.sha)
-          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::could not read the PR head commit"; exit 1; }
+          sha=$SHA
+          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+              --body "User-journey check could not pin the evaluated commit; comment \`/user-journey-check\` to retry: $RUN_URL"
+            exit 1
+          fi
           state=$([ "$OUTCOME" = success ] && echo success || echo failure)
           gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$sha" -f state="$state" \
             -f context="User Journey Test Required" -f description="User-journey check $OUTCOME" \

@@ -297,6 +297,22 @@ def _sync_waiver_label() -> int:
     return _pass("waiver label already matches the authorized comment state.")
 
 
+def _record_evaluated_head(pr_path: str, pr: dict[str, Any]) -> None:
+    """Pin the verdict to the head the diff was read at, for the fork-PR status report."""
+    sha = str(pr.get("head", {}).get("sha", ""))
+    current = _gh_json(pr_path)
+    current_sha = str(current.get("head", {}).get("sha", "")) if isinstance(current, dict) else ""
+    if not re.fullmatch(r"[0-9a-f]{40}", sha) or current_sha != sha:
+        raise GateError(
+            f"The PR head changed while its diff was read ({sha[:7] or 'unknown'} -> "
+            f"{current_sha[:7] or 'unknown'}). Re-run this check."
+        )
+    output = os.environ.get("GITHUB_OUTPUT")
+    if output:
+        with open(output, "a") as handle:
+            handle.write(f"sha={sha}\n")
+
+
 def _pass(message: str) -> int:
     print(f"PASS: {message}")
     return 0
@@ -316,6 +332,7 @@ def main() -> int:
         files = _gh_json(f"{pr_path}/files", paginate=True)
         if not isinstance(pr, dict) or not isinstance(files, list):
             raise GateError("GitHub returned an unexpected pull-request response.")
+        _record_evaluated_head(pr_path, pr)
 
         if not any(_is_product_path(str(file.get("filename", ""))) for file in files):
             return _pass("no ug product or packaging files changed; no journey test is required.")
