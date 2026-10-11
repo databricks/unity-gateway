@@ -53,7 +53,7 @@ sequenceDiagram
 	env-->>host: Exit code 0 is a pass
 ```
 
-Every launch runs with smart routing on (`ENABLE_SMART_ROUTING_V2=1`). On Linux, ug routes Claude's first prompt and its subagents. On Windows, ug routes only Claude's subagents, because the first-prompt router needs a Unix PTY. Codex sends ug's router header on every model call.
+Every launch runs with smart routing on (`ENABLE_SMART_ROUTING_V2=1`). ug routes Claude's prompt before launch, because print mode (`-p`) has no terminal UI to switch models in, and it routes Claude's subagents. Codex sends ug's router header on every model call.
 
 The Harbor lane runs `ug configure` in each container. The native lane runs it once at the start of the job.
 
