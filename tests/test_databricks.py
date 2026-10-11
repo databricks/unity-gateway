@@ -3960,6 +3960,34 @@ class TestHttpPatchJson:
         assert seen["content_type"] == "application/json"
 
 
+class TestHttpPostJson:
+    def test_extra_headers_are_sent_alongside_auth_and_json_headers(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        seen = {}
+
+        def capture(request, timeout=None):
+            seen.update(request.header_items())
+            response = MagicMock()
+            response.__enter__ = lambda s: s
+            response.__exit__ = MagicMock(return_value=False)
+            response.read.return_value = b"{}"
+            response.status = 200
+            return response
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", capture)
+        payload, reason = db_mod._http_post_json(
+            f"{WS}/api/anything", "tok", {"k": "v"}, headers={"User-Agent": "ucode/1.2.3"}
+        )
+        assert (payload, reason) == ({}, None)
+        assert seen == {
+            "Authorization": "Bearer tok",
+            "Accept": "application/json",
+            "Content-type": "application/json",
+            "User-agent": "ucode/1.2.3",
+        }
+
+
 class TestCodingAgentConfigCrudClients:
     CONFIG = {"default_agent": "CODING_AGENT_CLAUDE_CODE"}
 

@@ -52,6 +52,18 @@ def ref(
     )
 
 
+@pytest.fixture(autouse=True)
+def usage_reports(monkeypatch) -> list[list[str]]:
+    """Capture each skill usage report's FQNs so no test starts a reporter process."""
+    reports: list[list[str]] = []
+    monkeypatch.setattr(
+        sd,
+        "report_skill_usage_in_background",
+        lambda ws, tok, refs: reports.append([r.fqn for r in refs]),
+    )
+    return reports
+
+
 class TestSkillDirRoots:
     def test_roots_under_project_dir(self, tmp_path):
         roots = skill_dir_roots(str(tmp_path))
@@ -409,6 +421,30 @@ class TestDownloadSkillsFromSchemaLocations:
 
         assert "No skills found in `main.default`." in capsys.readouterr().out
 
+    def test_reports_written_skills_from_every_location_once(
+        self, tmp_path, monkeypatch, usage_reports
+    ):
+        by_location = {
+            ("main", "default"): [ref("good"), ref("bad")],
+            ("ml", "prod"): [ref("pii", catalog="ml", schema="prod")],
+        }
+        monkeypatch.setattr(
+            sd, "list_schema_skills", lambda ws, tok, c, s: (by_location[(c, s)], None)
+        )
+        monkeypatch.setattr(
+            sd,
+            "fetch_skill_bundle",
+            lambda ws, tok, c, s, leaf: (
+                (None, "HTTP 500 Server Error") if leaf == "bad" else ({"SKILL.md": b"ok"}, None)
+            ),
+        )
+
+        sd.download_skills_from_schema_locations(
+            WS, "token", ["main.default", "ml.prod"], str(tmp_path)
+        )
+
+        assert usage_reports == [["main.default.good", "ml.prod.pii"]]
+
 
 class TestDownloadRefs:
     def test_fetches_each_ref_from_its_own_schema(self, tmp_path, monkeypatch):
@@ -549,6 +585,22 @@ class TestDownloadSelectedSkills:
         record = skills_state.attribution_for_dir(tmp_path / ".claude/skills/triage")
         assert record["workspace_id"] == "org-42"
 
+    def test_reports_written_skills(self, tmp_path, monkeypatch, usage_reports):
+        monkeypatch.setattr(sd, "get_skill", lambda ws, tok, fqn: ref(fqn.rsplit(".", 1)[-1]))
+        monkeypatch.setattr(
+            sd,
+            "fetch_skill_bundle",
+            lambda ws, tok, c, s, leaf: (
+                (None, "HTTP 500 Server Error") if leaf == "bad" else ({"SKILL.md": b"ok"}, None)
+            ),
+        )
+
+        sd.download_selected_skills(
+            WS, "token", ["main.default.good", "main.default.bad"], str(tmp_path)
+        )
+
+        assert usage_reports == [["main.default.good"]]
+
 
 class TestReconcileManagedSkills:
     """`reconcile_managed_skills` downloads the managed selector's skills additively and removes
@@ -595,6 +647,19 @@ class TestReconcileManagedSkills:
         assert removed == []
         assert (tmp_path / ".claude/skills/triage/SKILL.md").read_bytes() == b"triage"
         assert (tmp_path / ".agents/skills/pii/SKILL.md").read_bytes() == b"pii"
+
+    def test_reports_only_newly_installed_skills(self, tmp_path, monkeypatch, usage_reports):
+        self._seed_managed(tmp_path, "main.default.triage")
+        monkeypatch.setattr(
+            sd, "list_schema_skills", lambda *a, **k: ([ref("triage"), ref("pii")], None)
+        )
+        monkeypatch.setattr(
+            sd, "fetch_skill_bundle", lambda ws, tok, c, s, leaf: ({"SKILL.md": b"x"}, None)
+        )
+
+        sd.reconcile_managed_skills({"skills": {"unity_catalog_location": "main.default"}})
+
+        assert usage_reports == [["main.default.pii"]]
 
     def test_downloaded_skills_are_recorded_as_managed(self, tmp_path, monkeypatch):
         monkeypatch.setattr(sd, "list_schema_skills", lambda *a, **k: ([ref("triage")], None))
@@ -1315,6 +1380,25 @@ class TestUpdateStaleSkills:
         stored = skills_state.list_downloaded()
         assert stored[0]["fqn"] == "main.default.triage"
         assert stored[0]["uc_update_time"] == "2026-09-01T00:00:00Z"
+
+    def test_updates_are_not_reported_as_usage(self, tmp_path, monkeypatch, usage_reports):
+        home = tmp_path / "home"
+        monkeypatch.setattr(sd.Path, "home", classmethod(lambda cls: home))
+        monkeypatch.setattr(
+            sd,
+            "_fetch_bundles",
+            lambda *a, **k: {"main.default.triage": ({"SKILL.md": b"fresh"}, None)},
+        )
+
+        updated = sd._update_stale_skills(
+            WS,
+            "token",
+            [({"base": str(home)}, _skill("triage", "2026-09-01T00:00:00Z"))],
+            time.monotonic() + 30,
+        )
+
+        assert updated == 1
+        assert usage_reports == []
 
     def test_skips_rename_onto_skill_already_on_disk(self, tmp_path, monkeypatch):
         home = tmp_path / "home"
