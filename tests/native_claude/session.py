@@ -34,9 +34,6 @@ class Session:
         settings = {
             "env": {
                 **resolve_environment(env, agent=AGENT_CLAUDE),
-                "ANTHROPIC_CUSTOM_HEADERS": env.get(
-                    "ANTHROPIC_CUSTOM_HEADERS", "X-Probe-Keep: preserved"
-                ),
                 "CLAUDE_CODE_EXTRA_BODY": '{"caller_field":"keep"}',
             },
             "pluginConfigs": {

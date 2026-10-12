@@ -23,10 +23,13 @@ The baseline comes from native plugin options and survives `/clear`, `/compact`,
 plugin reloads. Toggles affect future requests and newly spawned hooks; already running
 child processes retain their inherited environment. No toggle writes settings or snapshots.
 
-The `Claude mod · 2.1.290` CI job validates the packaged module and runs its
-TypeScript event tests, toggle lifecycle checks, and parent/child header checks against
-a local fixture API. These component checks do not establish live gateway coverage.
-To run those checks locally:
+The existing Claude skill-toggle integration journey checks recorded inference
+headers during its three calculation phases: launch recipe, `DISABLED` after off,
+and launch recipe after on. Each phase retains completed native parent/child
+answers and requires successful real gateway responses.
+
+The `Claude mod · 2.1.290` CI job validates the packaged module and checks event
+forwarding and launch-local options. To run those component checks locally:
 
 ```bash
 UCODE_TEST_CLAUDE_BINARY=/absolute/path/to/claude \

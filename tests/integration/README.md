@@ -59,9 +59,8 @@ or construct ug state files. The normal test suite checks these boundaries.
 
 The Claude mod entry point has separate native component checks in
 `../native_claude/test_mod.py`. Claude 2.1.290 validates the module and runs its
-TypeScript event tests, toggle lifecycle checks, and parent/child recipe-header checks
-against a local fixture API in a dedicated CI job. These checks do not replace this
-suite's live gateway/TUI journeys.
+TypeScript event-forwarding and launch-option tests in a dedicated CI job. The
+existing Claude skill-toggle journey checks the live recipe headers across on/off/on.
 
 The existing unit tests keep their fixtures. Integration has an independent
 pytest configuration and uses `--confcutdir` so those fixtures cannot leak in.
@@ -356,9 +355,10 @@ establish PowerShell command execution.
 The toggle journeys retain the legacy routing-only and orchestration cases and add each of
 the three subagent-only `SMART_ROUTER_CONFIG_VERSION` presets. They require only `smart-router`
 for routing-only cases, and both `smart-router-orchestrator` and `smart-router` when orchestration
-is enabled. They verify the saved session controls, a new CLI confirmation in the native
-tool-result records, and a new
-assistant answer after each skill invocation.
+is enabled. Claude checks each local mod confirmation and the recorded recipe header
+on the following calculation's real gateway requests. Codex verifies saved session controls,
+a new CLI confirmation in native tool-result records, and a new assistant answer after each
+skill invocation.
 Collapsed terminal output is allowed; the answer need not repeat the CLI's exact wording.
 Each following child still verifies whether a routing decision occurred.
 With orchestration enabled through legacy flags or a preset, both routed children
@@ -994,10 +994,13 @@ Native launch-option component tests (`native_claude/test_mod.py`) check two rea
 processes with different resolved routing baselines. Python cases cover Claude-specific presets,
 unknown selectors, and absent versus empty flags. These checks do not establish gateway/TUI coverage.
 
-Native Claude component checks exercise the installed smart-router skill with the mod:
-complete off/on restoration, process isolation, clear/reload, compaction, and real parent/Agent
-request headers against a local fixture API, with caller body fields unchanged. Mod unit
-cases cover absent/empty flags and headers, duplicate recipe headers, invalid arguments,
-recipe line breaks, untouched caller bodies, orchestration-only inactivity, and rollback
-after denied header writes.
-These are not live gateway or interactive TUI results.
+`integration/test_ug_smart_routing_hooks.py` checks recipe headers in its existing
+Claude skill-toggle journey. The recorder forwards to the real workspace, configured
+through public `ug configure --workspace <recorder-url>` without hand-writing ug state.
+Checkpoints and each calculation's unique marker correlate parent/child inference
+requests to the on/off/on phases. All matched tool-capable requests must carry the
+launch recipe, `DISABLED`, then the launch recipe again and reach non-empty HTTP 200
+responses, with only the existing verified native compatibility retries accepted.
+Local Claude mod confirmation replaces the old saved-control-file/assistant-turn wait;
+Codex retains its CLI control-file checks. No extra TUI sessions or tasks are added.
+Clear/reload, compaction, and denied-write rollback are not independently checked.
