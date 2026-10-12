@@ -33,6 +33,8 @@ dependencies = [
 [project.scripts]
 ug = "ucode.cli:main"
 ucode = "ucode.cli:main"
+# claudeCode.claudeProcessWrapper for the Claude Code VS Code extension; see ucode.vscode.
+ug-claude-vscode = "ucode.vscode_wrapper:main"
 
 [tool.hatch.build.targets.wheel]
 # Keep the Python module and existing ~/.ucode configuration paths compatible.
