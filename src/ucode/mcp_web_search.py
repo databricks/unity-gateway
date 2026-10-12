@@ -122,6 +122,15 @@ def web_search_model_from_env() -> str | None:
     )
 
 
+def web_search_external_web_access_from_env() -> bool | None:
+    value = os.environ.get("UG_WEBSEARCH_EXTERNAL_WEB_ACCESS", "").strip().lower()
+    if not value:
+        return None
+    if value not in {"true", "false", "1", "0"}:
+        raise RuntimeError("UG_WEBSEARCH_EXTERNAL_WEB_ACCESS must be true, false, 1, or 0.")
+    return value in {"true", "1"}
+
+
 def _call_responses_api(query: str) -> dict[str, Any]:
     """POST to the Databricks Codex (Responses API) gateway and return the
     parsed JSON payload. Raises RuntimeError on any failure with a message
@@ -135,11 +144,9 @@ def _call_responses_api(query: str) -> dict[str, Any]:
         raise RuntimeError("Set UG_WEBSEARCH_MODEL (or the legacy UCODE_WEB_SEARCH_MODEL) env var.")
 
     web_search_tool: dict[str, Any] = {"type": "web_search"}
-    external_web_access = os.environ.get("UG_WEBSEARCH_EXTERNAL_WEB_ACCESS", "").strip().lower()
-    if external_web_access:
-        if external_web_access not in {"true", "false", "1", "0"}:
-            raise RuntimeError("UG_WEBSEARCH_EXTERNAL_WEB_ACCESS must be true, false, 1, or 0.")
-        web_search_tool["external_web_access"] = external_web_access in {"true", "1"}
+    external_web_access = web_search_external_web_access_from_env()
+    if external_web_access is not None:
+        web_search_tool["external_web_access"] = external_web_access
 
     try:
         token = get_databricks_token(workspace, profile)

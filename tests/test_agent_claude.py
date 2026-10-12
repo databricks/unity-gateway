@@ -770,14 +770,27 @@ class TestWebSearchMcpEntry:
         }
 
     @pytest.mark.parametrize("binary_name", ["ug", "ug.exe"])
-    def test_forwards_external_web_access(self, monkeypatch, tmp_path, binary_name):
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ("false", "false"),
+            (" FaLsE ", "false"),
+            ("0", "false"),
+            ("true", "true"),
+            (" TRUE ", "true"),
+            ("1", "true"),
+        ],
+    )
+    def test_forwards_external_web_access(
+        self, monkeypatch, tmp_path, binary_name, value, expected
+    ):
         command = str(tmp_path / binary_name)
         monkeypatch.setattr(claude, "ug_binary", lambda: command)
-        monkeypatch.setenv("UG_WEBSEARCH_EXTERNAL_WEB_ACCESS", "false")
+        monkeypatch.setenv("UG_WEBSEARCH_EXTERNAL_WEB_ACCESS", value)
 
         entry = claude._web_search_mcp_entry(WS, "search-model", "profile")
 
-        assert entry["env"]["UG_WEBSEARCH_EXTERNAL_WEB_ACCESS"] == "false"
+        assert entry["env"]["UG_WEBSEARCH_EXTERNAL_WEB_ACCESS"] == expected
         assert entry["env"]["DATABRICKS_CONFIG_PROFILE"] == "profile"
         assert entry["command"] == command
         assert claude._generated_search_entry(entry) is True

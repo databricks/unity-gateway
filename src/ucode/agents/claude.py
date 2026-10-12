@@ -87,6 +87,7 @@ from ucode.mcp_web_search import (
     MANAGED_ENTRY_FLAG,
     PROVIDER_ENV,
     external_provider_selected,
+    web_search_external_web_access_from_env,
     web_search_model_from_env,
 )
 from ucode.os_compatibility import subprocess_cross_os
@@ -407,9 +408,9 @@ def _web_search_mcp_entry(
         "UG_WEBSEARCH_MODEL": search_model,
         "UCODE_WEB_SEARCH_MODEL": search_model,
     }
-    external_web_access = os.environ.get("UG_WEBSEARCH_EXTERNAL_WEB_ACCESS", "").strip()
-    if external_web_access:
-        env["UG_WEBSEARCH_EXTERNAL_WEB_ACCESS"] = external_web_access
+    external_web_access = web_search_external_web_access_from_env()
+    if external_web_access is not None:
+        env["UG_WEBSEARCH_EXTERNAL_WEB_ACCESS"] = str(external_web_access).lower()
     if profile:
         env["DATABRICKS_CONFIG_PROFILE"] = profile
     return {
@@ -1061,11 +1062,11 @@ def _register_web_search_mcp(
             "an unchanged ug-generated registration. Review it before reconfiguring search."
         )
         return False
+    entry = _web_search_mcp_entry(workspace, search_model, profile)
     try:
         remove_claude_mcp_server(WEB_SEARCH_MCP_NAME, MCP_USER_SCOPE)
     except RuntimeError:
         pass
-    entry = _web_search_mcp_entry(workspace, search_model, profile)
     try:
         add_claude_mcp_server(WEB_SEARCH_MCP_NAME, entry)
     except RuntimeError as exc:
@@ -1324,6 +1325,8 @@ def write_tool_config(
     picker_catalog: AnthropicModelCatalog | None = None,
 ) -> dict:
     external_search = external_provider_selected()
+    if not external_search:
+        web_search_external_web_access_from_env()
     # Back up only a file that predates ucode's management of the tool. A
     # re-configure would otherwise snapshot ucode's own generated file, and
     # revert would restore that snapshot instead of deleting the file.

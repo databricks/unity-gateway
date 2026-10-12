@@ -276,7 +276,10 @@ the pinned Claude version (currently 2.1.280 in CI).
 Web-search environment overrides (`UG_WEBSEARCH_MODEL`, legacy
 `UCODE_WEB_SEARCH_MODEL`, and `UG_WEBSEARCH_EXTERNAL_WEB_ACCESS`) have
 unit/component coverage in `../test_agent_claude.py` and
-`../test_mcp_web_search.py`. No live integration search request is asserted.
+`../test_mcp_web_search.py`. `../test_claude_search_discovery.py` additionally
+checks canonical registration through `write_tool_config`, no re-registration
+for equivalent values, and rejection of invalid values before config, state,
+or existing registrations change. No live integration search request is asserted.
 
 ## Test layout and format
 

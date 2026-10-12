@@ -84,7 +84,7 @@ quoted executable paths and replacement of legacy `ucode` routing/web-search hel
 
 | Unit/component coverage | Expected evidence |
 | --- | --- |
-| `test_agent_claude.py`, `test_mcp_web_search.py` web-search environment overrides | `UG_WEBSEARCH_MODEL` wins over the legacy variable and configured/discovered models; legacy fallback still works; the MCP entry forwards external-access settings; request JSON contains the selected model and optional boolean `external_web_access`; invalid booleans fail before authentication |
+| `test_agent_claude.py`, `test_claude_search_discovery.py`, `test_mcp_web_search.py` web-search environment overrides | `UG_WEBSEARCH_MODEL` wins over the legacy variable and configured/discovered models; legacy fallback still works; the MCP entry canonicalizes external-access settings to `true`/`false`; equivalent values do not re-register through `write_tool_config`; invalid booleans preserve config files, state, and working registrations and fail before authentication; request JSON contains the selected model and optional boolean `external_web_access` |
 
 These checks mock dependencies and do not establish live web-search behavior.
 
