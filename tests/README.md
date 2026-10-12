@@ -157,6 +157,14 @@ and real-shell copy/rename failure handling in temporary directories.
 `test_cli.py` covers the workspace configure session boundary.
 These are unit/component checks; they do not establish live sudo password-prompt behavior.
 
+`test_managed_config.py` and `test_managed_files.py` cover machine policy versus user-owned
+`refresh_ts.json`, five-minute throttling, no privileged write for unchanged policy or
+retrieval-only drift, changed-policy sudo selection, denied-update warning/fallback, matching
+removal, workspace isolation, fingerprint invalidation, and dry-run behavior.
+`test_ug_managed_config_launch_reuses_cache_within_ttl` is the live journey for root-owned `0644`
+policy, user-owned `0600` timestamps, and unchanged policy bytes/inode/mtime/ctime after an
+expired unchanged check. Its live sudo/password behavior still requires a disposable clean VM.
+
 | Scenario | Status / requirement |
 | --- | --- |
 | Live MCP and skills functionality | Deferred; installation tests cover the local web-search MCP handshake and tool listing, not upstream proxying or a real search request |

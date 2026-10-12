@@ -32,6 +32,7 @@ _SUDO = "/usr/bin/sudo"
 MANAGED_BACKUP_DIR = APP_DIR / "managed-backups"
 MANAGED_BACKUP_MANIFEST_PATH = MANAGED_BACKUP_DIR / "manifest.json"
 MANAGED_FINGERPRINT_VERSION = 1
+UNITY_GATEWAY_MANAGED_SETTINGS_PATH = Path("/etc/unitygateway/managed-settings.json")
 _MISSING = object()
 _managed_write_batch: tuple[str, ...] = ()
 _managed_write_notice_shown = False
@@ -60,12 +61,14 @@ _SUDO_REPLACE_TARGETS = {
         {
             Path("/etc/claude-code/managed-settings.json"),
             Path("/etc/codex/managed_config.toml"),
+            UNITY_GATEWAY_MANAGED_SETTINGS_PATH,
         }
     ),
     OS.MACOS: frozenset(
         {
             Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
             Path("/etc/codex/managed_config.toml"),
+            UNITY_GATEWAY_MANAGED_SETTINGS_PATH,
         }
     ),
 }
@@ -726,8 +729,8 @@ _SUDO_REPLACE_SCRIPT = (
 )
 
 
-def _sudo_replace_command(mode: str, *args: str) -> list[str]:
-    return _sudo_command(
+def _sudo_replace_command(mode: str, *args: str, non_interactive: bool = False) -> list[str]:
+    command = [
         "/bin/sh",
         "-c",
         _SUDO_REPLACE_SCRIPT,
@@ -735,7 +738,66 @@ def _sudo_replace_command(mode: str, *args: str) -> list[str]:
         mode,
         current_os().value,
         *args,
-    )
+    ]
+    if non_interactive:
+        if os.geteuid() == 0:
+            return command
+        return [_SUDO, "-n", *command]
+    return _sudo_command(*command)
+
+
+def update_workspace_policy(
+    path: Path, desired_text: str | None, *, interactive: bool = False
+) -> None:
+    """Install or remove changed policy, prompting only in an interactive terminal."""
+    if path != UNITY_GATEWAY_MANAGED_SETTINGS_PATH:
+        raise RuntimeError(f"Refusing unexpected workspace-policy target: {path}")
+    _validate_sudo_replace_target(path)
+    if not managed_files_supported():
+        raise ManagedFileWriteUnavailable(
+            "Machine-wide workspace policy is supported only on Linux and macOS."
+        )
+    current_text = read_managed_file(path)
+    if current_text == desired_text:
+        return
+    if is_dry_run():
+        console.print(
+            f"\n[bold]\\[dry run] {path} (via sudo)[/bold]\n"
+            f"{desired_text if desired_text is not None else '(remove)'}"
+        )
+        return
+    try:
+        if (
+            desired_text is not None
+            and interactive
+            and managed_writes_allowed()
+            and os.geteuid() != 0
+        ):
+            _sudo_replace(path, desired_text)
+        else:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", encoding="utf-8") as source:
+                source.write(desired_text if desired_text is not None else current_text or "")
+                source.flush()
+                subprocess.run(
+                    _sudo_replace_command(
+                        "once" if desired_text is not None else "remove",
+                        source.name,
+                        str(path),
+                        non_interactive=not (
+                            interactive and managed_writes_allowed() and os.geteuid() != 0
+                        ),
+                    ),
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=30,
+                )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ManagedFileWriteUnavailable(f"Could not update workspace policy at {path}.") from exc
+    if read_managed_file(path) != desired_text:
+        raise ManagedFileWriteUnavailable(
+            f"Workspace policy at {path} changed during installation; run `ug configure` again."
+        )
 
 
 def _encode_worker_arg(value: str) -> str:

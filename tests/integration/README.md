@@ -15,6 +15,13 @@ handling without sudo.
 This integration suite does not yet assert password-prompt counts with sudo credential caching
 disabled; that requires a disposable workstation/VM with an explicit sudo policy.
 
+The managed TTL journey installs `/etc/unitygateway/managed-settings.json` through real configure,
+checks root ownership and readable modes, then ages only user-owned `~/.ucode/refresh_ts.json`.
+Warm launch leaves the timestamp unchanged; expired launch advances it without changing installed
+policy bytes, inode, mtime, or ctime when the workspace policy is unchanged. Unit/component tests
+cover changed-policy prompts, denied-update fallback, removal, and metadata-only drift.
+Live changed-policy password/denial coverage remains a gap requiring a clean disposable VM.
+
 ## Run a specific combination
 
 Prerequisites: Python 3.12+, uv, Node/npm, and Databricks CLI 1.17.0. The runner
@@ -25,7 +32,7 @@ agent installations or checkout's `.venv`.
 CI pins Databricks CLI 1.17.0 in the live and managed integration lanes. The
 runner's isolated `PATH` exposes that selected CLI, so skills journeys meet ug's
 CLI minimum without falling back to another version installed on the machine.
-Native live runs refuse existing machine-wide Claude/Codex configuration, which
+Native live runs refuse existing machine-wide Unity Gateway/Claude/Codex configuration, which
 could override the selected workspace even with a fresh home. Use a clean VM
 in that case; the runner never edits or bypasses those managed settings.
 

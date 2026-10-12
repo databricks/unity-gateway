@@ -8,6 +8,7 @@ each isolated session. Normalization, config writers, the gateway, and Codex rem
 import json
 import os
 import tomllib
+from pathlib import Path
 
 import pytest
 from utils.constants import MANAGED_CODEX_PROVIDER_SERVICE
@@ -88,7 +89,7 @@ def _assert_managed_provider_catalog(session, models, expected: CodexProviderCat
     app_catalog_path = session.home / ".ucode" / "codex-model-catalog.json"
     assert shared_config.get("model_catalog_json") == str(app_catalog_path), shared_config
 
-    managed_cache = json.loads((session.home / ".ucode/managed-config.json").read_text())
+    managed_cache = json.loads(Path("/etc/unitygateway/managed-settings.json").read_text())
     raw_config = managed_cache.get("config")
     enabled_agents = raw_config.get("enabled_agents") if isinstance(raw_config, dict) else None
     assert isinstance(enabled_agents, list), "persisted managed config had no enabled_agents list"

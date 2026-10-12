@@ -190,7 +190,14 @@ with `ug configure` to control installation.
 | GitHub Copilot CLI | `~/.copilot/ucode.env`, `~/.copilot/ucode-mcp-config.json` |
 | Pi | `~/.ucode/pi-home/.pi/agent/models.json`, `~/.ucode/pi-home/.pi/agent/settings.json` |
 | Cursor Agent | `~/.cursor/mcp.json` |
-| Unity Gateway | `~/.ucode/managed-state.json`, `~/.ucode/managed-backups/` |
+| Unity Gateway | `/etc/unitygateway/managed-settings.json` (Linux and macOS), `~/.ucode/refresh_ts.json`, `~/.ucode/managed-state.json`, `~/.ucode/managed-backups/` |
+
+Workspace policy is root-owned but readable without sudo. Configure installs it only when the
+workspace publishes a policy; launches check for updates every five minutes and request sudo only
+when policy changes. If a launch update fails, ug warns and keeps the installed policy.
+Refresh timestamps live in user-owned `~/.ucode/refresh_ts.json`, not in the protected policy file.
+This policy is separate from agent-file backups and is not removed by `ug revert`.
+See [managed workspace policy](docs/managed-workspace-policy.md) for permissions and trade-offs.
 
 ## Development
 

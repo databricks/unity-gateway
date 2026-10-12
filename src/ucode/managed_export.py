@@ -56,8 +56,8 @@ def build_export_payload() -> dict:
     config = load_managed_configuration(workspace)
     if not config:
         raise RuntimeError(
-            "No managed configuration found locally. Run `ug` against a workspace that "
-            "publishes one, then re-run `ug export`."
+            "No managed configuration found locally. Run `ug configure` against a workspace that "
+            "publishes one to install its policy, then re-run `ug export`."
         )
     errors = validate_manifest(normalize_managed_config(config), None)
     if errors:

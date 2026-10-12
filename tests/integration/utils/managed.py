@@ -88,8 +88,11 @@ def set_managed_config_stub(session, tmp_path, config: dict | None) -> None:
 
 
 def is_managed_config_control_plane_cache(home: Path, path: Path) -> bool:
-    """Whether ``path`` is ug's expected fetched-config cache, not agent-owned state."""
-    return path == home / ".ucode" / "managed-config.json"
+    """Whether ``path`` is workspace-policy refresh state, not agent-owned configuration."""
+    return path in (
+        home / ".ucode" / "refresh_ts.json",
+        Path("/etc/unitygateway/managed-settings.json"),
+    )
 
 
 def build_coding_agent_config(

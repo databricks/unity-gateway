@@ -842,17 +842,15 @@ def _configure_workspace_command(
         )
         state = states[0]
         parent_schema = None
-        if tool in ("claude", "codex"):
-            managed, _ = refresh_managed_config(state, force_refresh=True)
-            _reject_disabled_agent(managed, tool)
-            if managed is not None:
-                state = resolve_state(managed, state, tool)
+        managed, _ = refresh_managed_config(state, force_refresh=True)
+        _reject_disabled_agent(managed, tool)
+        if managed is not None:
+            state = resolve_state(managed, state, tool)
+            if tool in ("claude", "codex"):
                 if not managed_provider_service(managed, tool):
                     parent_schema = managed_unity_catalog_location(managed, tool)
         state = configure_single_tool(tool, state, parent_schema=parent_schema)
-        install_databricks_ai_tools_for_agents(
-            [tool], state, force_refresh=tool not in ("claude", "codex")
-        )
+        install_databricks_ai_tools_for_agents([tool], state, force_refresh=False)
         spec = TOOL_SPECS[tool]
         provider_summary = "Databricks" if parent_schema else _provider_summary(tool, state)
         console.print(

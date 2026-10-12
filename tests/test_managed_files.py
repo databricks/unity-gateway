@@ -508,8 +508,203 @@ class TestSudoReplace:
         assert codex_config.codex_managed_config_path() in allowed
 
 
+class TestWorkspacePolicyWriter:
+    @pytest.fixture
+    def policy_path(self, tmp_path, monkeypatch):
+        path = tmp_path / "unitygateway" / "managed-settings.json"
+        path.parent.mkdir()
+        monkeypatch.setattr(managed_files, "UNITY_GATEWAY_MANAGED_SETTINGS_PATH", path)
+        monkeypatch.setitem(
+            managed_files._SUDO_REPLACE_TARGETS,
+            managed_files.current_os(),
+            frozenset({path}),
+        )
+        monkeypatch.setattr(managed_files.os, "geteuid", lambda: 1000, raising=False)
+        return path
+
+    def test_identical_policy_does_not_invoke_sudo(self, policy_path, monkeypatch):
+        policy_path.write_text("installed")
+        monkeypatch.setattr(
+            managed_files.subprocess,
+            "run",
+            lambda *args, **kwargs: pytest.fail("unchanged policy must not invoke sudo"),
+        )
+        managed_files.update_workspace_policy(policy_path, "installed", interactive=True)
+
+    def test_changed_interactive_policy_uses_existing_prompting_writer(
+        self, policy_path, monkeypatch
+    ):
+        policy_path.write_text("old")
+        calls = []
+
+        def write(path, desired_text):
+            calls.append((path, desired_text))
+            path.write_text(desired_text)
+
+        monkeypatch.setattr(managed_files, "_sudo_replace", write)
+        managed_files.update_workspace_policy(policy_path, "new", interactive=True)
+        assert calls == [(policy_path, "new")]
+
+    def test_noninteractive_policy_update_uses_sudo_n(self, policy_path, monkeypatch):
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: False)
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append(command)
+            policy_path.write_text(Path(command[-2]).read_text())
+            assert kwargs["timeout"] == 30
+            return subprocess.CompletedProcess(command, 0)
+
+        monkeypatch.setattr(managed_files.subprocess, "run", run)
+        managed_files.update_workspace_policy(policy_path, "new", interactive=True)
+        assert calls[0][:2] == [managed_files._SUDO, "-n"]
+        assert policy_path.read_text() == "new"
+        assert not Path(calls[0][-2]).exists()
+
+    def test_failed_privileged_update_leaves_original_file(self, policy_path, monkeypatch):
+        policy_path.write_text("old")
+
+        def denied(command, **kwargs):
+            raise subprocess.CalledProcessError(1, command, stderr="a password is required")
+
+        monkeypatch.setattr(managed_files.subprocess, "run", denied)
+        with pytest.raises(managed_files.ManagedFileWriteUnavailable):
+            managed_files.update_workspace_policy(policy_path, "new")
+        assert policy_path.read_text() == "old"
+
+    def test_interactive_policy_removal_may_prompt(self, policy_path, monkeypatch):
+        policy_path.write_text("old")
+        calls = []
+
+        def remove(command, **kwargs):
+            calls.append(command)
+            assert Path(command[-2]).read_text() == "old"
+            policy_path.unlink()
+            return subprocess.CompletedProcess(command, 0)
+
+        monkeypatch.setattr(managed_files.subprocess, "run", remove)
+        managed_files.update_workspace_policy(policy_path, None, interactive=True)
+        assert calls[0][0:2] == [managed_files._SUDO, "/bin/sh"]
+        assert "remove" in calls[0]
+
+    def test_root_policy_update_does_not_need_sudo(self, policy_path, monkeypatch):
+        monkeypatch.setattr(managed_files.os, "geteuid", lambda: 0)
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append(command)
+            policy_path.write_text(Path(command[-2]).read_text())
+            return subprocess.CompletedProcess(command, 0)
+
+        monkeypatch.setattr(managed_files.subprocess, "run", run)
+        managed_files.update_workspace_policy(policy_path, "new", interactive=True)
+        assert calls[0][0:2] == ["/bin/sh", "-c"]
+
+    def test_policy_dry_run_never_invokes_sudo(self, policy_path, monkeypatch):
+        config_io.set_dry_run(True)
+        monkeypatch.setattr(
+            managed_files.subprocess,
+            "run",
+            lambda *args, **kwargs: pytest.fail("dry run must not invoke sudo"),
+        )
+        managed_files.update_workspace_policy(policy_path, "new", interactive=True)
+        assert not policy_path.exists()
+
+    def test_policy_symlink_is_rejected_before_sudo(self, policy_path, tmp_path, monkeypatch):
+        target = tmp_path / "user-file.json"
+        target.write_text("user settings")
+        policy_path.symlink_to(target)
+        monkeypatch.setattr(
+            managed_files.subprocess,
+            "run",
+            lambda *args, **kwargs: pytest.fail("symlink must not invoke sudo"),
+        )
+        with pytest.raises(RuntimeError, match="symlink"):
+            managed_files.update_workspace_policy(policy_path, "new")
+        assert target.read_text() == "user settings"
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="The managed writer is Unix-only")
 class TestManagedWorkerShell:
+    @pytest.mark.parametrize("existing", [False, True])
+    def test_real_shell_enforces_workspace_policy_permissions(self, tmp_path, existing):
+        source = tmp_path / "source.json"
+        source.write_text('{"workspace":"https://ws","config":{"spec_version":1}}\n')
+        parent = tmp_path / "unitygateway"
+        parent.mkdir(mode=0o700)
+        target = parent / "managed-settings.json"
+        if existing:
+            target.write_text("old policy")
+            target.chmod(0o600)
+        ownership_log = tmp_path / "ownership.log"
+        script = managed_files._SUDO_REPLACE_SCRIPT.replace(
+            "/etc/unitygateway/managed-settings.json", str(target)
+        )
+        shim = """
+chown() {
+    printf '%s\\n' "$*" >> "$UG_TEST_CHOWN_LOG"
+}
+"""
+        script = script.replace('\ncase "$mode" in', shim + '\ncase "$mode" in')
+        result = subprocess.run(
+            [
+                "/bin/sh",
+                "-c",
+                script,
+                "policy-test",
+                "once",
+                managed_files.current_os().value,
+                str(source),
+                str(target),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env={
+                **os.environ,
+                "SUDO_UID": str(os.getuid()),
+                "UG_TEST_CHOWN_LOG": str(ownership_log),
+            },
+        )
+        assert result.returncode == 0, result.stderr
+        assert target.read_text() == source.read_text()
+        assert target.stat().st_mode & 0o777 == 0o644
+        assert parent.stat().st_mode & 0o777 == 0o755
+        assert f"0:0 {parent}" in ownership_log.read_text()
+        assert len(ownership_log.read_text().splitlines()) >= 2
+
+    @pytest.mark.parametrize("changed", [False, True])
+    def test_real_shell_removes_only_matching_workspace_policy(self, tmp_path, changed):
+        source = tmp_path / "expected.json"
+        source.write_text("old policy")
+        target = tmp_path / "managed-settings.json"
+        target.write_text("new policy" if changed else "old policy")
+        script = managed_files._SUDO_REPLACE_SCRIPT.replace(
+            "/etc/unitygateway/managed-settings.json", str(target)
+        )
+        result = subprocess.run(
+            [
+                "/bin/sh",
+                "-c",
+                script,
+                "policy-test",
+                "remove",
+                managed_files.current_os().value,
+                str(source),
+                str(target),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env={**os.environ, "SUDO_UID": str(os.getuid())},
+        )
+        if changed:
+            assert result.returncode != 0
+            assert target.read_text() == "new policy"
+        else:
+            assert result.returncode == 0, result.stderr
+            assert not target.exists()
+
     @pytest.mark.parametrize("failed_step", ["", "metadata", "content", "rename"])
     def test_real_shell_preserves_file_on_failed_step(self, tmp_path, failed_step):
         """Exercise the actual shell protocol without sudo, using only temporary files."""

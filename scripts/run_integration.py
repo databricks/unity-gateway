@@ -245,7 +245,7 @@ def main() -> int:
     if missing:
         raise SystemExit("Install these prerequisites first: " + ", ".join(missing))
     if not args.installation_only:
-        managed_paths = []
+        managed_paths = [Path("/etc/unitygateway/managed-settings.json")]
         if args.codex_version:
             managed_paths.extend(
                 [Path("/etc/codex/managed_config.toml"), Path("/etc/codex/requirements.toml")]
