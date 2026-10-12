@@ -239,7 +239,8 @@ time.sleep(30)
         "transcript",
     ],
 )
-def test_claude_waits_for_background_task_completion_before_exit(tmp_path, view):
+@pytest.mark.parametrize("entry", ["list", "running-detail", "completed-detail"])
+def test_claude_waits_for_background_task_completion_before_exit(tmp_path, view, entry):
     """An offline terminal fixture requires /tasks, completion, Escape, then /exit."""
     views = {
         "empty": "No tasks currently running",
@@ -283,6 +284,14 @@ def test_claude_waits_for_background_task_completion_before_exit(tmp_path, view)
         "transcript": ("Background\n\n  Completed (1)\n✔ ug_subagent_one   done · Sonnet 5\n\n❯"),
     }
     views["resumed"] = views["mixed"]
+    detail = (
+        "Background task update waiting while this panel is open\n"
+        "agent › Read file contents\n"
+        + ("✔ Completed · 9s · Haiku 4.5\n" if entry == "completed-detail" else "9s · Haiku 4.5\n")
+        + "← to go back · Esc/Enter/Space to close"
+        + (" · x to stop" if entry == "running-detail" else "")
+        + " · f to foreground"
+    )
     complete = view in ("empty", "completed", "detail", "resumed")
     script = tmp_path / "ug"
     script.write_text(
@@ -299,6 +308,11 @@ print("Background tasks: scheduled task · Runs once in 1m", flush=True)
 time.sleep(0.8)
 previous = termios.tcgetattr(sys.stdin.fileno())
 tty.setraw(sys.stdin.fileno())
+if {entry != "list"!r}:
+    print("\\x1b[2J\\x1b[H" + {detail!r}.replace("\\n", "\\r\\n"), flush=True)
+    assert sys.stdin.read(3) == "\\x1b[D", "Must return to the full task list"
+    time.sleep(0.5)
+    assert not select.select([sys.stdin], [], [], 0)[0], "Repeated task-list navigation"
 print("\\x1b[2J\\x1b[H" + {views[view]!r}.replace("\\n", "\\r\\n"), flush=True)
 if {view == "resumed"!r}:
     time.sleep(0.8)
@@ -331,6 +345,10 @@ assert sys.stdin.readline().strip() == "/exit"
                 tui.wait_for_background_tasks(timeout=2)
             assert not tui.ended
             assert not any("/exit" in action["keys"] for action in tui.actions)
+        back = [action for action in tui.actions if action.get("keys") == "\x1b[D"]
+        assert len(back) == int(entry != "list")
+        if back:
+            assert detail.splitlines()[-1] in back[0]["screen_before"]
 
 
 def test_mcp_list_poll_retries_a_failed_probe_until_rows_match(monkeypatch):

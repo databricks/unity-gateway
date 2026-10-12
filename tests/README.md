@@ -61,6 +61,9 @@ Offline PTY checks verify that the Claude background-task wait observes "No task
 running" or a native task menu containing only completed rows before sending `/exit`, without
 stopping tasks or confirming an exit dialog. Running/scheduled sections, incomplete row counts,
 and completed-task text outside the native menu cannot satisfy the wait.
+When `/tasks` opens one agent's detail panel, the helper uses its Left-arrow navigation to
+return to the full list. Offline PTY checks cover running and completed detail panels and
+require all tasks to finish before exit, including when the selected agent is already done.
 The live Claude subagent skill-toggle journey uses this wait after its final calculation.
 CUJ4's Claude preset sessions also use it after verifying delegated file tasks: a completed
 answer does not prove that a resumed child has stopped running.
