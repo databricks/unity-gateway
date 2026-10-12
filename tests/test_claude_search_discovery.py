@@ -95,6 +95,7 @@ def test_claude_only_setup_registers_search_without_prior_codex_setup(
     assert entry["env"] == {
         "DATABRICKS_HOST": WORKSPACE,
         "DATABRICKS_CONFIG_PROFILE": "test-profile",
+        "UG_WEBSEARCH_MODEL": SEARCH_MODEL,
         "UCODE_WEB_SEARCH_MODEL": SEARCH_MODEL,
     }
     saved = state_module.load_state()

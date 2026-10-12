@@ -178,6 +178,21 @@ Concurrent setup still uses ug's existing whole-workspace state writes. A stale
 ownership fingerprint safely preserves the server and prevents automatic handoff;
 this contract does not make shared setup transactional.
 
+### Claude Web Search
+
+Claude's local web-search MCP accepts launch-time environment overrides:
+
+```bash
+UG_WEBSEARCH_MODEL=YOUR_RESPONSES_MODEL \
+UG_WEBSEARCH_EXTERNAL_WEB_ACCESS=false ug claude
+```
+
+`UG_WEBSEARCH_MODEL` takes precedence over the legacy `UCODE_WEB_SEARCH_MODEL`,
+then the configured or discovered web-search model. Empty values are ignored.
+`UG_WEBSEARCH_EXTERNAL_WEB_ACCESS` accepts `true`, `false`, `1`, or `0` and is
+sent as `tools[0].external_web_access` in the Responses API request. When unset
+or empty, the field is omitted, preserving the existing API default.
+
 ## Skills
 
 Unity Catalog Skills can be registered as MCP tools or downloaded into local

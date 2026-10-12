@@ -273,6 +273,11 @@ model appears in the picker. No managed config, provider, model location, discov
 flag, or inherited discovery environment variable enables this path. This runs with
 the pinned Claude version (currently 2.1.280 in CI).
 
+Web-search environment overrides (`UG_WEBSEARCH_MODEL`, legacy
+`UCODE_WEB_SEARCH_MODEL`, and `UG_WEBSEARCH_EXTERNAL_WEB_ACCESS`) have
+unit/component coverage in `../test_agent_claude.py` and
+`../test_mcp_web_search.py`. No live integration search request is asserted.
+
 ## Test layout and format
 
 All user journeys are top-level tests. There is no separate regressions category:

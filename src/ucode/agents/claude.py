@@ -87,6 +87,7 @@ from ucode.mcp_web_search import (
     MANAGED_ENTRY_FLAG,
     PROVIDER_ENV,
     external_provider_selected,
+    web_search_model_from_env,
 )
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.smart_routing import v2 as smart_routing_v2
@@ -148,10 +149,11 @@ def minimum_version_error() -> str | None:
 
 
 def _resolve_web_search_model(state: dict) -> str | None:
-    """Pick the model the web_search MCP server should call. Prefers an
-    explicit override in state, otherwise the first endpoint discovered as
-    Responses-API-capable. Returns None if no GPT endpoint is available —
-    callers should skip the MCP wiring in that case."""
+    """Pick the web_search model from env, state, or discovered Responses models.
+    Returns None if no model is available, so callers can skip the MCP wiring."""
+    env_model = web_search_model_from_env()
+    if env_model:
+        return env_model
     override = state.get("web_search_model")
     if isinstance(override, str) and override.strip():
         return override.strip()
@@ -402,8 +404,12 @@ def _web_search_mcp_entry(
     PATH (e.g. desktop GUI launchers) still find it."""
     env: dict[str, str] = {
         "DATABRICKS_HOST": workspace,
+        "UG_WEBSEARCH_MODEL": search_model,
         "UCODE_WEB_SEARCH_MODEL": search_model,
     }
+    external_web_access = os.environ.get("UG_WEBSEARCH_EXTERNAL_WEB_ACCESS", "").strip()
+    if external_web_access:
+        env["UG_WEBSEARCH_EXTERNAL_WEB_ACCESS"] = external_web_access
     if profile:
         env["DATABRICKS_CONFIG_PROFILE"] = profile
     return {
@@ -1117,11 +1123,13 @@ def _generated_search_entry(entry: object) -> bool:
         and isinstance(env, dict)
         and all(isinstance(value, str) for value in env.values())
         and bool(env.get("DATABRICKS_HOST"))
-        and bool(env.get("UCODE_WEB_SEARCH_MODEL"))
+        and bool(env.get("UG_WEBSEARCH_MODEL") or env.get("UCODE_WEB_SEARCH_MODEL"))
         and set(env)
         <= {
             "DATABRICKS_HOST",
+            "UG_WEBSEARCH_MODEL",
             "UCODE_WEB_SEARCH_MODEL",
+            "UG_WEBSEARCH_EXTERNAL_WEB_ACCESS",
             "DATABRICKS_CONFIG_PROFILE",
         }
     )
