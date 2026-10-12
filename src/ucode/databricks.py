@@ -32,6 +32,8 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, urlencode, urlparse
 
+from databricks.sdk import environments
+
 from ucode.config_io import APP_DIR
 from ucode.constants import (
     MODEL_PROVIDER_SERVICE_HEADER,
@@ -108,6 +110,18 @@ class AnthropicModelCatalog:
     model_id_to_display_name: dict[str, str]
     error_msg: str | None = None
     model_id_to_description: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class BudgetLimitStatus:
+    """The caller's live spend against one AI Gateway budget threshold."""
+
+    budget_id: str
+    scope_type: str
+    time_period: str
+    percent_consumed: Decimal
+    spend: Decimal | None = None
+    threshold: Decimal | None = None
 
 
 class CodexMpsModelCatalogUnavailable(RuntimeError):
@@ -3735,6 +3749,181 @@ def resolve_current_budget_spend(
         if spend is None:
             return None, "workspace reported no coding-agent budget spend"
     return (spend, threshold), None
+
+
+_BUDGET_SPEND_STATUS_API_PATH = "/api/2.1/accounts/{account_id}/budget-spend-statuses"
+_BUDGET_SPEND_STATUS_PAGE_SIZE = 100
+_BUDGET_SCOPE_TYPES = frozenset(
+    {
+        "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER",
+        "ALERT_CONFIGURATION_SCOPE_TYPE_SHARED",
+    }
+)
+_BUDGET_TIME_PERIODS = frozenset({"DAY", "MONTH"})
+
+
+def _get_databricks_account_token(
+    account_host: str,
+    account_id: str,
+) -> tuple[str | None, str | None]:
+    """Mint an account-audience token without forwarding workspace credentials."""
+    env = os.environ.copy()
+    for key in (
+        "DATABRICKS_ACCOUNT_ID",
+        "DATABRICKS_AUTH_TYPE",
+        "DATABRICKS_BEARER",
+        "DATABRICKS_BEARER_COMMAND",
+        "DATABRICKS_CONFIG_PROFILE",
+        "DATABRICKS_HOST",
+        "DATABRICKS_TOKEN",
+        "DATABRICKS_WORKSPACE_ID",
+    ):
+        env.pop(key, None)
+    cmd = [
+        databricks_cli_path(),
+        "auth",
+        "token",
+        "--host",
+        account_host,
+        "--account-id",
+        account_id,
+        "--output",
+        "json",
+    ]
+    try:
+        result = run(
+            cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return None, f"Databricks CLI could not get an account token: {exc}"
+    _debug("account auth token", _format_subprocess_result(result))
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip()[:500]
+        suffix = f": {detail}" if detail else ""
+        return None, f"Databricks CLI could not get an account token{suffix}"
+    try:
+        token = json.loads(result.stdout or "{}").get("access_token", "")
+    except json.JSONDecodeError:
+        return None, "Databricks CLI returned an invalid account token response"
+    if not isinstance(token, str) or not token.strip():
+        return None, "Databricks CLI returned no account token"
+    return token.strip(), None
+
+
+def _budget_limit_status(entry: object, budget_id: str) -> BudgetLimitStatus | None:
+    if not isinstance(entry, dict):
+        return None
+    scope_type = entry.get("scope_type")
+    time_period = entry.get("time_period")
+    percent_consumed = _parse_decimal(entry.get("percent_consumed"))
+    if (
+        scope_type not in _BUDGET_SCOPE_TYPES
+        or time_period not in _BUDGET_TIME_PERIODS
+        or percent_consumed is None
+        or not percent_consumed.is_finite()
+        or percent_consumed < 0
+    ):
+        return None
+
+    spend = _parse_decimal(entry.get("spend")) if "spend" in entry else None
+    threshold = _parse_decimal(entry.get("threshold")) if "threshold" in entry else None
+    if ("spend" in entry and (spend is None or not spend.is_finite() or spend < 0)) or (
+        "threshold" in entry and (threshold is None or not threshold.is_finite() or threshold < 0)
+    ):
+        return None
+    return BudgetLimitStatus(
+        budget_id=budget_id,
+        scope_type=scope_type,
+        time_period=time_period,
+        percent_consumed=percent_consumed,
+        spend=spend,
+        threshold=threshold,
+    )
+
+
+def list_current_user_budget_spend_statuses(
+    workspace: str,
+    workspace_token: str,
+    *,
+    timeout: int = 10,
+) -> tuple[list[BudgetLimitStatus], str | None]:
+    """List the caller's spend against blocking AI Gateway budget thresholds."""
+    discovery_url = f"{workspace_origin(workspace)}/.well-known/databricks-config"
+    discovery, reason = _http_get_json(discovery_url, workspace_token, timeout=timeout)
+    if reason is not None:
+        return [], reason
+    if not isinstance(discovery, dict):
+        return [], "workspace discovery returned an unexpected response shape"
+
+    account_id = discovery.get("account_id")
+    workspace_id = discovery.get("workspace_id") or workspace_org_id(workspace)
+    if not isinstance(account_id, str) or not account_id.strip():
+        return [], "workspace discovery returned no account ID"
+    if not isinstance(workspace_id, str) or not workspace_id.isdigit():
+        return [], "workspace discovery returned no numeric workspace ID"
+    account_id = account_id.strip()
+
+    environment = environments.get_environment_for_hostname(workspace_hostname(workspace))
+    account_host = environment.deployment_url("accounts")
+    account_token, reason = _get_databricks_account_token(account_host, account_id)
+    if account_token is None:
+        return [], reason or "could not get an account token"
+
+    base_url = account_host + _BUDGET_SPEND_STATUS_API_PATH.format(
+        account_id=quote(account_id, safe="")
+    )
+    statuses: list[BudgetLimitStatus] = []
+    page_token: str | None = None
+    seen_page_tokens: set[str] = set()
+    while True:
+        params = {
+            "page_size": _BUDGET_SPEND_STATUS_PAGE_SIZE,
+            "filter": f"workspace_id = {workspace_id}",
+        }
+        if page_token is not None:
+            params["page_token"] = page_token
+        payload, reason = _http_get_json(
+            f"{base_url}?{urlencode(params)}", account_token, timeout=timeout
+        )
+        if reason is not None:
+            return [], reason
+        if not isinstance(payload, dict):
+            return [], "budget spend status listing returned an unexpected response shape"
+        raw_budgets = payload.get("budget_spend_statuses", [])
+        if not isinstance(raw_budgets, list):
+            return [], "budget spend status listing returned no status collection"
+
+        for raw_budget in raw_budgets:
+            if not isinstance(raw_budget, dict):
+                return [], "budget spend status listing returned a malformed budget status"
+            budget_id = raw_budget.get("budget_id")
+            raw_statuses = raw_budget.get("alert_spend_statuses")
+            if (
+                not isinstance(budget_id, str)
+                or not budget_id
+                or not isinstance(raw_statuses, list)
+            ):
+                return [], "budget spend status listing returned a malformed budget status"
+            for raw_status in raw_statuses:
+                status = _budget_limit_status(raw_status, budget_id)
+                if status is None:
+                    return [], "budget spend status listing returned a malformed alert status"
+                statuses.append(status)
+
+        next_page_token = payload.get("next_page_token")
+        if next_page_token in (None, ""):
+            return statuses, None
+        if not isinstance(next_page_token, str):
+            return [], "budget spend status listing returned an invalid page token"
+        if next_page_token in seen_page_tokens:
+            return [], "budget spend status listing repeated a page token"
+        seen_page_tokens.add(next_page_token)
+        page_token = next_page_token
 
 
 def _parse_decimal(value: object) -> Decimal | None:
