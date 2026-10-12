@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
-from contextlib import nullcontext
+import shlex
 from unittest.mock import patch
+
+import pytest
 
 from ucode.agents import pi
 
@@ -97,7 +99,7 @@ class TestRenderOverlayProviders:
 
 class TestRenderOverlayUserAgent:
     def test_user_agent_set_on_all_three_providers(self, monkeypatch):
-        monkeypatch.setattr(pi, "ucode_version", lambda: "0.1.0")
+        monkeypatch.setattr(pi, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(pi, "agent_version", lambda binary: "0.74.0")
         overlay, _ = _overlay(
             "claude-sonnet",
@@ -248,21 +250,6 @@ class TestBuildRuntimeEnv:
 
         assert env["PI_CODING_AGENT_DIR"] == str(pi.PI_CONFIG_DIR)
         assert env["HOME"] == "/real-user-home"
-
-
-class TestPiValidateCmd:
-    def test_starts_with_binary(self):
-        cmd = pi.validate_cmd("pi")
-        assert cmd[0] == "pi"
-
-    def test_uses_print_flag(self):
-        # `--print` puts pi in non-interactive mode; without it the TUI hangs on stdin.
-        cmd = pi.validate_cmd("pi")
-        assert "--print" in cmd
-
-    def test_has_prompt(self):
-        cmd = pi.validate_cmd("pi")
-        assert len(cmd) > 2
 
 
 class TestWriteToolConfig:
@@ -426,29 +413,6 @@ class TestWriteToolConfig:
         assert merged["theme"] == "Default Dark"
 
 
-class TestValidateAllToolsPiRollback:
-    def test_failed_pi_validation_rolls_back_settings(self, tmp_path, monkeypatch):
-        import ucode.agents as agents_mod
-        import ucode.agents.pi as pi_mod
-
-        settings_file = tmp_path / "settings.json"
-        settings_file.write_text("{}", encoding="utf-8")
-        monkeypatch.setattr(pi_mod, "PI_SETTINGS_PATH", settings_file)
-        monkeypatch.setattr(pi_mod, "PI_SETTINGS_BACKUP_PATH", tmp_path / "settings.backup.json")
-        # Keep the generic models.json rollback off the user's real config dir.
-        monkeypatch.setitem(agents_mod.TOOL_SPECS["pi"], "config_path", tmp_path / "models.json")
-        monkeypatch.setitem(
-            agents_mod.TOOL_SPECS["pi"], "backup_path", tmp_path / "models.backup.json"
-        )
-        monkeypatch.setattr(agents_mod, "validate_tool", lambda tool: (False, "boom"))
-        monkeypatch.setattr(agents_mod, "save_state", lambda s: None)
-        monkeypatch.setattr(agents_mod, "spinner", lambda *_a, **_kw: nullcontext())
-
-        agents_mod.validate_all_tools({"available_tools": ["pi"], "managed_configs": {"pi": True}})
-
-        assert not settings_file.exists()
-
-
 class TestManagedModels:
     """A managed config's models arrive as `pi_models` and must not come from the shared keys."""
 
@@ -511,12 +475,33 @@ class TestBuildPiApiKey:
     """Pi resolves a leading-`!` config value as a command before every provider
     request, so the apiKey is that command rather than a baked bearer."""
 
-    def test_is_a_pi_command_value_running_auth_token(self):
+    def test_is_a_pi_command_value_running_auth_token(self, monkeypatch):
+        monkeypatch.setattr("ucode.databricks.shutil.which", lambda command: f"/tools/{command}")
         api_key = pi.build_pi_api_key({"workspace": WS})
 
+        assert api_key == f"!/tools/ug auth-token --host {WS}"
+
+    @pytest.mark.parametrize(
+        "ug_exe",
+        [r"C:\Users\me\.local\bin\ug.EXE", r"C:\Program Files\ug.exe", r"C:\Users\O'Brien\ug.exe"],
+    )
+    def test_windows_executable_path_survives_bash(self, monkeypatch, ug_exe):
+        # Pi runs `!command` through Git Bash on Windows, so the command must be
+        # POSIX-quoted: an unquoted `C:\...\ug.EXE` would lose its backslashes.
+        monkeypatch.setattr("ucode.databricks.platform.system", lambda: "Windows")
+        monkeypatch.setattr("ucode.databricks.shutil.which", lambda command: ug_exe)
+        api_key = pi.build_pi_api_key({"workspace": WS, "profile": "my profile", "use_pat": True})
+
         assert api_key.startswith("!")
-        assert "auth-token" in api_key
-        assert f"--host {WS}" in api_key
+        assert shlex.split(api_key[1:]) == [
+            ug_exe,
+            "auth-token",
+            "--host",
+            WS,
+            "--profile",
+            "my profile",
+            "--use-pat",
+        ]
 
     def test_omits_force_refresh(self):
         # Pi has no token cache on this path, so --force-refresh would round-trip

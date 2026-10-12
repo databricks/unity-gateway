@@ -158,8 +158,10 @@ def test_spawn_rewrite_injects_routed_model(monkeypatch):
     # The rationale is surfaced in the systemMessage (shown to the user), not
     # only in permissionDecisionReason. The model field is the short family
     # name ("opus") that Claude Code's Agent tool schema accepts.
-    expected_message = claude_routing.routing.format_subagent_message(
-        "opus", "Deep exploration needs the strongest model."
+    expected_message = "\n" + claude_routing.routing.format_subagent_message(
+        "opus",
+        "Deep exploration needs the strongest model.",
+        subagent_name="Explore",
     )
     assert output["systemMessage"] == expected_message
     assert hook["permissionDecision"] == "allow"
@@ -170,6 +172,44 @@ def test_spawn_rewrite_injects_routed_model(monkeypatch):
         "model": "opus",
     }
     assert hook["permissionDecisionReason"] == expected_message
+
+
+def test_spawn_oss_notice_unwraps_gateway_model_and_includes_prompt(monkeypatch):
+    gateway_model = "anthropic-aigw-77df06ea-system.ai.glm-5-3"
+    monkeypatch.setattr(
+        claude_routing,
+        "request_routing_decision",
+        lambda *args, **kwargs: (
+            claude_routing.RoutingDecision(
+                model=gateway_model,
+                raw_model="glm-5-3",
+                rationale="The task fits the OSS route.",
+            ),
+            None,
+        ),
+    )
+
+    output = claude_routing.route_pre_tool_use(
+        {
+            "tool_name": "Agent",
+            "tool_input": {"prompt": "Inspect the parser for edge cases"},
+        },
+        workspace=WS,
+        token="token",
+        available_models=[gateway_model],
+    )
+
+    expected_message = (
+        "\n┌───────────────────────────────────────────────────────────────────────────┐\n"
+        "│ Using Unity Gateway Smart Router - Subagent                               │\n"
+        "│ Prompt : Inspect the parser for edge cases                                │\n"
+        "│ Selected Model : system.ai.glm-5-3                                        │\n"
+        "│ Reason : The task fits the OSS route.                                     │\n"
+        "└───────────────────────────────────────────────────────────────────────────┘"
+    )
+    assert output["systemMessage"] == expected_message
+    assert "anthropic-aigw-77df06ea" not in output["systemMessage"]
+    assert output["hookSpecificOutput"]["updatedInput"]["model"] == gateway_model
 
 
 def test_task_tool_alias_is_routed(monkeypatch):

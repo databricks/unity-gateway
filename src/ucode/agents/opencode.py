@@ -6,12 +6,11 @@ import json
 import os
 import re
 import signal
-import subprocess
 
-from ucode.agent_updates import available_npm_package_update
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
+    apply_json_mcp_diff,
     backup_existing_file,
     deep_merge_dict,
     read_json_safe,
@@ -24,10 +23,11 @@ from ucode.databricks import (
     get_databricks_token,
     model_token_limits,
 )
+from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import mark_tool_managed, save_state
-from ucode.telemetry import agent_version, ucode_version
+from ucode.telemetry import agent_version, ug_version
 
-from .args import LaunchOptions
+from .args import LaunchOptions, explicit_model_arg_value, has_explicit_model_arg
 
 OPENCODE_XDG_CONFIG_HOME = APP_DIR / "opencode-xdg"
 OPENCODE_CONFIG_DIR = OPENCODE_XDG_CONFIG_HOME / "opencode"
@@ -88,7 +88,7 @@ async function mintToken() {
     cacheToken(token)
   } catch (error) {
     const detail = String(error.stderr || error.message || "").trim()
-    throw new Error("ucode auth-token failed" + (detail ? ": " + detail : ""))
+    throw new Error("ug auth-token failed" + (detail ? ": " + detail : ""))
   }
 }
 
@@ -154,18 +154,6 @@ def minimum_version_error() -> str | None:
     return f"{message} Update it with `npm install -g {SPEC['package']}`."
 
 
-def is_update_available() -> tuple[str, str] | None:
-    """Offer only stable OpenCode v1 updates, never npm's beta `latest` tag."""
-    update = available_npm_package_update(OPENCODE_NPM_PACKAGE)
-    if update is None:
-        return None
-    _, target = update
-    parsed = _parse_version(target)
-    if "-" in target or parsed is None or parsed[0] != 1:
-        return None
-    return update
-
-
 def render_auth_plugin(state: dict) -> str:
     """Render the local OpenCode plugin that refreshes Databricks auth on demand."""
     argv = build_auth_token_argv(
@@ -205,6 +193,41 @@ def _resolve_model_selector(model: str, opencode_models: dict[str, list[str]]) -
     return model
 
 
+def resolve_explicit_model(model: str, state: dict) -> str:
+    """Resolve and validate a model explicitly selected for an OpenCode launch.
+
+    Databricks model ids are exposed in family buckets in ucode state, while
+    OpenCode addresses those models through managed provider ids. Other
+    provider/model selectors belong to OpenCode and are passed through.
+    """
+    selector = model.strip()
+    if not selector:
+        raise RuntimeError("OpenCode model must not be empty.")
+
+    opencode_models = state.get("opencode_models") or {}
+    resolved = _resolve_model_selector(selector, opencode_models)
+    if "/" not in selector:
+        if resolved != selector:
+            return resolved
+        raise RuntimeError(
+            f"OpenCode model '{selector}' is not configured. "
+            "Choose a discovered model id or pass a provider/model selector."
+        )
+
+    provider, _, model_id = selector.partition("/")
+    if not provider or not model_id:
+        raise RuntimeError("OpenCode model selector must use provider/model form.")
+    managed_providers = {path[-1] for path in PROVIDER_KEYS}
+    if provider not in managed_providers:
+        return selector
+
+    if _resolve_model_selector(model_id, opencode_models) == selector:
+        return selector
+    raise RuntimeError(
+        f"OpenCode model '{selector}' is not configured for managed provider '{provider}'."
+    )
+
+
 def _oss_model_overlay(model: str, ua_header: dict[str, str]) -> dict:
     """Per-model overlay for an OSS model entry.
 
@@ -232,7 +255,7 @@ def render_overlay(
     # `headers` are clobbered by that injection, but per-model `headers` are
     # merged AFTER and win — so the UA must live on each model entry.
     ua_header = {
-        "User-Agent": f"ucode/{ucode_version()} opencode/{agent_version('opencode')}",
+        "User-Agent": f"ucode/{ug_version()} opencode/{agent_version('opencode')}",
     }
 
     anthropic_models = opencode_models.get("anthropic") or []
@@ -327,7 +350,7 @@ def write_tool_config(
 
 def build_mcp_server_entry(argv: list[str]) -> dict:
     # A `local` MCP server runs a command over stdio; `command` is the full
-    # argv. ucode registers the `ucode mcp-proxy ...` bridge here so OpenCode
+    # argv. ug registers the `ug mcp-proxy ...` bridge here so OpenCode
     # never speaks HTTP+bearer directly — the proxy mints fresh tokens itself.
     return {
         "type": "local",
@@ -360,6 +383,13 @@ def remove_mcp_server_config(name: str) -> bool:
     return True
 
 
+def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
+    """Apply ``add``/``remove`` to OpenCode's `mcp` table in a single read-modify-write. Returns the names actually removed."""
+    return apply_json_mcp_diff(
+        OPENCODE_CONFIG_PATH, "mcp", add, remove, backup_path=OPENCODE_BACKUP_PATH
+    )
+
+
 def default_model(state: dict) -> str | None:
     if isinstance(state.get("opencode_default_model"), str):
         return state.get("opencode_default_model")
@@ -374,8 +404,8 @@ def default_model(state: dict) -> str | None:
     return oss[0] if oss else None
 
 
-def _configure_launch(state: dict) -> str:
-    model = default_model(state)
+def _configure_launch(state: dict, model: str | None = None) -> str:
+    model = model or default_model(state)
     if not model:
         raise RuntimeError("No OpenCode model is configured.")
     _, token = write_tool_config(state, model)
@@ -390,11 +420,26 @@ def build_runtime_env(token: str, state: dict | None = None) -> dict[str, str]:
 
 
 def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None:
-    """Launch OpenCode with on-demand token refresh from its local plugin."""
-    token = _configure_launch(state)
+    """Launch OpenCode with the selected model and on-demand token refresh."""
+    model = explicit_model_arg_value(tool_args) or options.user_pinned_model
+    if model is not None:
+        model = resolve_explicit_model(model, state)
+    token = _configure_launch(state, model)
     env = build_runtime_env(token, state)
 
-    proc = subprocess.Popen([SPEC["binary"], *tool_args], env=env)
+    if model is not None and not has_explicit_model_arg(tool_args):
+        try:
+            separator = tool_args.index("--")
+        except ValueError:
+            separator = len(tool_args)
+        tool_args = [
+            *tool_args[:separator],
+            "--model",
+            model,
+            *tool_args[separator:],
+        ]
+
+    proc = subprocess_cross_os.popen([SPEC["binary"], *tool_args], env=env)
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:
@@ -406,10 +451,3 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
 
 def validate_cmd(binary: str) -> list[str]:
     return [binary, "run", "say hi in 5 words or less"]
-
-
-def validate_env(state: dict) -> dict[str, str]:
-    workspace = state.get("workspace")
-    if not workspace:
-        raise RuntimeError("No workspace configured.")
-    return build_runtime_env(get_databricks_token(workspace, state.get("profile")), state)

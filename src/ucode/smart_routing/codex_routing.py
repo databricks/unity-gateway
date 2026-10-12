@@ -15,10 +15,12 @@ import re
 # Python modules are singletons so patching this name patches the one call site.
 import urllib.request  # noqa: F401
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 from ucode.config_io import APP_DIR
-from ucode.smart_routing import routing
+from ucode.constants import AGENT_CODEX
+from ucode.smart_routing import orchestrator, routing
 from ucode.smart_routing.routing import RoutingDecision
 
 ROUTER_NAME = routing.ROUTER_NAME
@@ -28,10 +30,27 @@ SPAWN_AGENT_TOOL_SUFFIX = "spawn_agent"
 CANARY_PATH = APP_DIR / "codex-smart-routing-canary.json"
 AUDIT_PATH = APP_DIR / "codex-smart-routing-audit.jsonl"
 DECISIONS_PATH = APP_DIR / "codex-smart-routing-decisions.jsonl"
+SUBAGENT_NOTICE_CONFIG = routing.SubagentNoticeConfig(
+    name_field="task_name",
+    prompt_field="message",
+    leading_newline=True,
+)
 
 _GPT_RE = re.compile(r"gpt-(\d+)(?:[.-](\d+))?(?:[.-](\d+))?(-.+|[a-z].*)?")
 
 _normalize_model = routing.normalize_model
+
+
+# TODO: Remove once server-side smart routing is more robust to duplicate model names.
+def _normalize_route_model(model: str) -> str:
+    """Canonicalize equivalent Codex GPT spellings to one router option."""
+    normalized = _normalize_model(model)
+    match = _GPT_RE.fullmatch(normalized)
+    if match is None:
+        return normalized
+    major, minor, patch, suffix = match.groups()
+    version = "-".join(part for part in (major, minor, patch) if part is not None)
+    return f"gpt-{version}{suffix or ''}"
 
 
 def request_routing_decision(
@@ -44,7 +63,7 @@ def request_routing_decision(
     log: Callable[[str], None] | None = None,
 ) -> tuple[RoutingDecision | None, str | None]:
     """Ask the router for a servable Codex model."""
-    available = {_normalize_model(model): model for model in available_models}
+    available = {_normalize_route_model(model): model for model in available_models}
     route_options = [(model, "codex") for model in available]
     if not route_options:
         return None, "no cached model services are available"
@@ -64,7 +83,7 @@ def request_routing_decision(
         token,
         task,
         route_options,
-        lambda raw_model: available.get(_normalize_model(raw_model)),
+        lambda raw_model: available.get(_normalize_route_model(raw_model)),
         router_name=router_name,
         timeout=timeout,
     )
@@ -72,8 +91,8 @@ def request_routing_decision(
 
 def resolve_routed_model(raw_model: str, available_models: list[str]) -> str | None:
     """Map a router arm to a model the configured workspace can serve."""
-    normalized = {_normalize_model(model): model for model in available_models}
-    return normalized.get(_normalize_model(raw_model))
+    normalized = {_normalize_route_model(model): model for model in available_models}
+    return normalized.get(_normalize_route_model(raw_model))
 
 
 def route_pre_tool_use(
@@ -92,6 +111,7 @@ def route_pre_tool_use(
         def record(payload, task, decision, requested):
             routing.write_decision_record(DECISIONS_PATH, payload, task, decision, requested)
 
+    name_suffix = " [orchestrator on]" if orchestrator.enabled(agent=AGENT_CODEX) else ""
     return routing.route_spawn_tool(
         payload,
         is_spawn_agent=is_spawn_agent_tool,
@@ -100,6 +120,7 @@ def route_pre_tool_use(
         ),
         default_task_label="Codex subagent task",
         model_id_mapper=codex_model_id,
+        notice_config=replace(SUBAGENT_NOTICE_CONFIG, name_suffix=name_suffix),
         record_decision=record,
     )
 

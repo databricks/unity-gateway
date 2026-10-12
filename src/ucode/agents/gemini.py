@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import re
 import signal
-import subprocess
 import threading
 from pathlib import Path
 
@@ -13,6 +12,7 @@ from ucode.agent_updates import latest_version_below
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
+    apply_json_mcp_diff,
     backup_existing_file,
     deep_merge_dict,
     parse_dotenv,
@@ -25,13 +25,14 @@ from ucode.databricks import (
     build_tool_base_url,
     get_databricks_token,
 )
+from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import (
     get_provider_service,
     mark_tool_managed,
     save_state,
     set_provider_service,
 )
-from ucode.telemetry import agent_version, ucode_version
+from ucode.telemetry import agent_version, ug_version
 
 from .args import LaunchOptions
 
@@ -122,6 +123,17 @@ def _ensure_local_settings_selected_type() -> None:
     write_json_file(GEMINI_SETTINGS_PATH, settings)
 
 
+def build_mcp_server_entry(argv: list[str]) -> dict:
+    """The `mcpServers` stdio entry `gemini mcp add <name> <argv> --type stdio` writes."""
+    return {"command": argv[0], "args": list(argv[1:])}
+
+
+def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
+    """Apply ``add``/``remove`` to Gemini's `mcpServers` (in ug's Gemini home settings) in a single
+    read-modify-write. Returns the names actually removed."""
+    return apply_json_mcp_diff(GEMINI_SETTINGS_PATH, "mcpServers", add, remove)
+
+
 def render_env_overlay(
     workspace: str, model: str, token: str, *, provider: str | None = None
 ) -> dict[str, str]:
@@ -129,7 +141,7 @@ def render_env_overlay(
     # `Key:Value` pairs and spreads them after the SDK's default User-Agent,
     # so a key named `User-Agent` overrides the default. Resolved via
     # upstream issue google-gemini/gemini-cli#10088.
-    custom_headers = f"User-Agent:ucode/{ucode_version()} gemini/{agent_version('gemini')}"
+    custom_headers = f"User-Agent:ucode/{ug_version()} gemini/{agent_version('gemini')}"
     if provider:
         # A Model Provider Service routes by this header; the request still names
         # the service's target model in `GEMINI_MODEL` (pinned by the launch path).
@@ -246,7 +258,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
     )
     refresher.start()
 
-    proc = subprocess.Popen([SPEC["binary"], *tool_args], env=env)
+    proc = subprocess_cross_os.popen([SPEC["binary"], *tool_args], env=env)
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:
@@ -261,20 +273,3 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
 
 def validate_cmd(binary: str) -> list[str]:
     return [binary, "-p", "say hi in 5 words or less"]
-
-
-def validate_env(state: dict) -> dict[str, str]:
-    """Inject env vars for the validation subprocess.
-
-    The Gemini CLI's .env auto-loading skips ~/.gemini/.env when run from an
-    untrusted folder, so we cannot rely on it during validation.
-    """
-    workspace = state.get("workspace")
-    if not workspace:
-        raise RuntimeError("No workspace configured.")
-    provider = get_provider_service(state, "gemini")
-    model = _launch_model(state, provider)
-    if not model:
-        raise RuntimeError("No Gemini model is configured.")
-    token = get_databricks_token(workspace, state.get("profile"))
-    return build_runtime_env(workspace, model, token, provider=provider)

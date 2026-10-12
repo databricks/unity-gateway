@@ -15,7 +15,7 @@ class TestExecOrSpawn:
         with (
             patch.object(launcher.os, "name", "posix"),
             patch.object(launcher.os, "execvp") as execvp,
-            patch.object(launcher.subprocess, "Popen") as popen,
+            patch.object(launcher.subprocess_cross_os, "popen") as popen,
         ):
             launcher.exec_or_spawn(["claude", "--settings", "x"])
         execvp.assert_called_once_with("claude", ["claude", "--settings", "x"])
@@ -29,7 +29,7 @@ class TestExecOrSpawn:
         with (
             patch.object(launcher.os, "name", "nt"),
             patch.object(launcher.os, "execvp") as execvp,
-            patch.object(launcher.subprocess, "Popen", return_value=proc) as popen,
+            patch.object(launcher.subprocess_cross_os, "popen", return_value=proc) as popen,
         ):
             with pytest.raises(SystemExit) as exc:
                 launcher.exec_or_spawn(["claude.exe", "--settings", "x"])
@@ -43,11 +43,26 @@ class TestExecOrSpawn:
         proc.wait.return_value = 42
         with (
             patch.object(launcher.os, "name", "nt"),
-            patch.object(launcher.subprocess, "Popen", return_value=proc),
+            patch.object(launcher.subprocess_cross_os, "popen", return_value=proc),
         ):
             with pytest.raises(SystemExit) as exc:
                 launcher.exec_or_spawn(["claude.exe"])
         assert exc.value.code == 42
+
+    def test_windows_passes_prompt_metacharacters_without_a_shell(self):
+        proc = MagicMock()
+        proc.wait.return_value = 0
+        prompt = 'keep "quotes" & pipes | and %PATH% literal'
+        argv = [r"C:\Program Files\Claude\claude.exe", "--print", prompt]
+        with (
+            patch.object(launcher.os, "name", "nt"),
+            patch.object(launcher.subprocess_cross_os, "popen", return_value=proc) as popen,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                launcher.exec_or_spawn(argv)
+
+        popen.assert_called_once_with(argv)
+        assert exc.value.code == 0
 
     def test_windows_keyboard_interrupt_forwards_sigint(self):
         proc = MagicMock()
@@ -55,9 +70,26 @@ class TestExecOrSpawn:
         proc.wait.side_effect = [KeyboardInterrupt(), 130]
         with (
             patch.object(launcher.os, "name", "nt"),
-            patch.object(launcher.subprocess, "Popen", return_value=proc),
+            patch.object(launcher.subprocess_cross_os, "popen", return_value=proc),
         ):
             with pytest.raises(SystemExit) as exc:
                 launcher.exec_or_spawn(["claude.exe"])
         proc.send_signal.assert_called_once_with(launcher.signal.SIGINT)
         assert exc.value.code == 130
+
+    def test_windows_spawns_resolved_npm_shim(self):
+        proc = MagicMock()
+        proc.wait.return_value = 0
+        shim = r"C:\Users\me\AppData\Roaming\npm\codex.CMD"
+        with (
+            patch.object(launcher.os, "name", "nt"),
+            patch.object(launcher.subprocess_cross_os.shutil, "which", return_value=shim),
+            patch.object(
+                launcher.subprocess_cross_os.subprocess, "Popen", return_value=proc
+            ) as popen,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                launcher.exec_or_spawn(["codex", "--model", "m"])
+
+        assert exc.value.code == 0
+        popen.assert_called_once_with([shim, "--model", "m"])

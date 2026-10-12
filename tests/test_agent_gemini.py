@@ -54,13 +54,13 @@ class TestRenderEnvOverlay:
         assert env["GEMINI_API_KEY_AUTH_MECHANISM"] == "bearer"
 
     def test_sets_user_agent_via_custom_headers(self, monkeypatch):
-        monkeypatch.setattr(gemini, "ucode_version", lambda: "0.1.0")
+        monkeypatch.setattr(gemini, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(gemini, "agent_version", lambda binary: "0.40.0")
         env = gemini.render_env_overlay(WS, "gemini-2", "tok")
         assert env["GEMINI_CLI_CUSTOM_HEADERS"] == "User-Agent:ucode/0.1.0 gemini/0.40.0"
 
     def test_provider_adds_routing_header_and_pins_target(self, monkeypatch):
-        monkeypatch.setattr(gemini, "ucode_version", lambda: "0.1.0")
+        monkeypatch.setattr(gemini, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(gemini, "agent_version", lambda binary: "0.40.0")
         env = gemini.render_env_overlay(
             WS, "gemini-3.5-flash", "tok", provider="cat.sch.gemini-enterprise"
@@ -237,3 +237,21 @@ class TestWriteToolConfig:
         assert settings["theme"] == "dark"
         assert settings["otherKey"] == 123
         assert "security" not in settings
+
+
+class TestWriteUserMcpServers:
+    def test_batched_add_remove_preserves_other_settings(self, tmp_path, monkeypatch):
+        path = tmp_path / ".gemini" / "settings.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            json.dumps({"security": {"x": 1}, "mcpServers": {"mine": {"command": "z"}}})
+        )
+        monkeypatch.setattr(gemini, "GEMINI_SETTINGS_PATH", path)
+
+        entry = gemini.build_mcp_server_entry(["ug", "mcp-proxy", "u"])
+        gemini.write_user_mcp_servers({"svc": entry}, {"mine"})
+
+        doc = json.loads(path.read_text())
+        assert doc["security"] == {"x": 1}  # untouched
+        assert "mine" not in doc["mcpServers"]
+        assert doc["mcpServers"]["svc"] == {"command": "ug", "args": ["mcp-proxy", "u"]}

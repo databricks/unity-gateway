@@ -1,0 +1,155 @@
+"""Validation helpers for model-discovery evidence."""
+
+import hashlib
+import re
+import tomllib
+
+_CLAUDE_GATEWAY_ALIAS = re.compile(r"^anthropic-aigw-[0-9a-fA-F]{8}-(?P<model>.*)$")
+_CLAUDE_PICKER_ROW = re.compile(r"(?m)^[ \t]*(?:[❯›>][ \t]*)?\d+\.[ \t]+(?P<label>[^\n]*)$")
+_CLAUDE_NATIVE_PICKER_LABELS = {
+    "claude-haiku-4-5": ("Haiku", "Haiku 4.5"),
+    "claude-opus-5": ("Opus", "Opus 5"),
+    "claude-sonnet-5": ("Sonnet", "Sonnet 5"),
+}
+_CLAUDE_DEFAULT_PICKER_ROW = re.compile(
+    r"^Default(?: \(recommended\))?[ \t]+Use the default model\b"
+)
+_SYSTEM_AI_PREFIX = "system.ai."
+
+
+def claude_discovery_model_id(model_id: str) -> str:
+    """Encode the exact wire ID expected by Claude's gateway discovery feature."""
+    if "claude" in model_id.lower() or "anthropic" in model_id.lower():
+        return model_id
+    checksum = hashlib.sha256(model_id.encode("utf-8")).hexdigest()[:8]
+    return f"anthropic-aigw-{checksum}-{model_id}"
+
+
+def claude_model_in_picker(screen: str, model_id: str, display_name: str | None) -> bool:
+    """Return whether a Claude model appears in a numbered picker row.
+
+    The captured terminal screen also contains startup banners and picker
+    footer text.  Restrict matching to rows with a numeric picker position so
+    those other screen regions cannot satisfy the assertion accidentally.
+    """
+    rows = [row.group("label") for row in _CLAUDE_PICKER_ROW.finditer(screen)]
+    if model_id == "claude-haiku-4-5-20251001":
+        # Claude can deduplicate this gateway model into its built-in Haiku 4.5 row. An explicit
+        # provider or parent catalog can instead render the raw model id, so fall through to the
+        # generic ID/display-name check when the native row is absent.
+        if any(re.search(r"^Haiku\b[^\n]*\bHaiku 4\.5\b", row) for row in rows):
+            return True
+    if model_id in _CLAUDE_NATIVE_PICKER_LABELS:
+        # Bare native IDs can also be deduplicated into built-in family rows.
+        # Match the exact family/version, never a banner or another native version.
+        family, label = _CLAUDE_NATIVE_PICKER_LABELS[model_id]
+        pattern = rf"^{re.escape(family)}\b[^\n]*\b{re.escape(label)}\b(?!\.\d)"
+        if any(re.search(pattern, row) for row in rows):
+            return True
+    candidates = [
+        value for value in (model_id, display_name) if isinstance(value, str) and value.strip()
+    ]
+    if not candidates:
+        return False
+    return any(any(candidate in row for candidate in candidates) for row in rows)
+
+
+def claude_system_model_ids(models: list[dict]) -> list[str]:
+    """Return canonical ``system.ai`` ids from Claude's gateway model entries.
+
+    Claude Code may expose a gateway alias for a Databricks-hosted model.  The
+    alias is only valid when its provider prefix has exactly eight hexadecimal
+    characters; all other entries must already be canonical ``system.ai`` ids.
+    Raw ids are checked for duplicates before aliases are normalized so that
+    malformed or lossy evidence cannot be silently hidden by normalization.
+    """
+    assert isinstance(models, list) and models, f"Expected a non-empty model list: {models!r}"
+
+    raw_ids: list[str] = []
+    for model in models:
+        assert isinstance(model, dict), f"Invalid model entry: {model!r}"
+        model_id = model.get("id")
+        assert isinstance(model_id, str) and model_id, f"Invalid model id: {model!r}"
+        raw_ids.append(model_id)
+
+    assert len(raw_ids) == len(set(raw_ids)), f"Duplicate raw model ids: {models!r}"
+
+    canonical_ids: list[str] = []
+    for model_id in raw_ids:
+        alias = _CLAUDE_GATEWAY_ALIAS.fullmatch(model_id)
+        canonical_id = alias.group("model") if alias else model_id
+        assert canonical_id.startswith(_SYSTEM_AI_PREFIX) and len(canonical_id) > len(
+            _SYSTEM_AI_PREFIX
+        ), f"Expected a system.ai model id: {model_id!r}"
+        canonical_ids.append(canonical_id)
+    return canonical_ids
+
+
+def codex_model_in_picker(screen: str, model_id: str, display_name: str) -> bool:
+    """Match native numbered picker rows, not banners, prompt text, or footers."""
+    rows = re.findall(r"(?m)^[ \t]*(?:[❯›>][ \t]*)?\d+[.)][ \t]+([^\n]+)$", screen)
+    return any(_picker_row_matches(row, model_id, display_name) for row in rows)
+
+
+def _picker_row_matches(label: str, model_id: str, display_name: str | None) -> bool:
+    return any(
+        re.search(rf"(?<![\w.-]){re.escape(candidate)}(?![\w.-])", label)
+        for candidate in (model_id, display_name)
+        if candidate
+    )
+
+
+def assert_picker_inventory(screen: str, agent: str, display_names: dict[str, str | None]) -> None:
+    """Require exactly one unambiguous numbered native row per expected model."""
+    assert agent in {"claude", "codex"}, agent
+    assert display_names, "Expected a nonempty provider model inventory"
+    rows = re.findall(r"(?m)^[ \t]*(?:[❯›>][ \t]*)?\d+[.)](?:[ \t]+([^\n]*))?$", screen)
+    assert rows, f"No numbered {agent} picker rows:\n{screen}"
+    observed: list[str] = []
+    for label in rows:
+        if agent == "claude" and _CLAUDE_DEFAULT_PICKER_ROW.match(label):
+            continue
+        matched = {
+            model
+            for model, display_name in display_names.items()
+            if _picker_row_matches(label, model, display_name)
+        }
+        assert len(matched) == 1, (
+            f"Unmatched or ambiguous {agent} picker row {label!r}: {sorted(matched)}"
+        )
+        model = matched.pop()
+        assert model not in observed, f"Duplicate {agent} picker model row: {model}"
+        observed.append(model)
+    assert set(observed) == set(display_names), {
+        "agent": agent,
+        "expected": sorted(display_names),
+        "observed": observed,
+    }
+
+
+def assert_claude_system_models_in_picker(session, screen):
+    """Require system.ai discovery and picker evidence; the native catalog may lag UC."""
+    models = session.claude_gateway_models()
+    ids = claude_system_model_ids(models)
+    discovered = session.workspace_state()["claude_models"]
+    assert discovered, "ug configure found no Claude system.ai models"
+    assert all(model_id.startswith("system.ai.claude-") for model_id in discovered.values()), (
+        discovered
+    )
+    assert set(discovered.values()) & set(ids), (discovered, models)
+    assert any(
+        claude_model_in_picker(screen, model["id"], model.get("display_name")) for model in models
+    ), screen
+
+
+def assert_codex_default_models(session, models):
+    """Require system.ai discovery while leaving Codex's native catalog and defaults intact."""
+    discovered = session.workspace_state()["codex_models"]
+    assert discovered and all(model.startswith("system.ai.") for model in discovered)
+    config = tomllib.loads((session.home / ".codex/ucode.config.toml").read_text())
+    assert "model" not in config, config
+    assert "model_reasoning_effort" not in config, config
+    assert "model_catalog_json" not in config, config
+    assert models and len(models) == len(set(models)), models
+    assert any(model.startswith("gpt-") for model in models), models
+    assert not list((session.home / ".ucode").glob("codex-model-catalog-*.json"))

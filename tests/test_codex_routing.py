@@ -153,6 +153,7 @@ def test_router_failure_fails_open(monkeypatch):
 
 
 def test_spawn_rewrite_preserves_original_input(monkeypatch):
+    monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", "0")
     encrypted_message = {"encrypted": "opaque-ciphertext"}
     payload = {
         "tool_name": "collaborationspawn_agent",
@@ -183,10 +184,13 @@ def test_spawn_rewrite_preserves_original_input(monkeypatch):
     )
 
     hook = output["hookSpecificOutput"]
-    # The rationale is surfaced in BOTH the systemMessage (shown to the user) and
-    # permissionDecisionReason, so the "why" is visible, not just the "what".
-    expected_message = codex_routing.routing.format_subagent_message(
-        "gpt-5.5", "Review needs deeper reasoning."
+    expected_message = (
+        "\n┌───────────────────────────────────────────────────────────────────────────┐\n"
+        "│ Using Unity Gateway Smart Router - Subagent                               │\n"
+        "│ Subagent : reviewer                                                       │\n"
+        "│ Selected Model : gpt-5.5                                                  │\n"
+        "│ Reason : Review needs deeper reasoning.                                   │\n"
+        "└───────────────────────────────────────────────────────────────────────────┘"
     )
     assert output["systemMessage"] == expected_message
     assert "Using Unity Gateway Smart Router - Subagent" in expected_message
@@ -201,7 +205,14 @@ def test_spawn_rewrite_preserves_original_input(monkeypatch):
     assert hook["permissionDecisionReason"] == expected_message
 
 
-def test_spawn_rewrite_uses_codex_model_id_for_uc_endpoint(monkeypatch):
+def test_spawn_rewrite_uses_codex_model_id_for_uc_endpoint(monkeypatch, tmp_path):
+    session_file = tmp_path / "env.json"
+    session_file.write_text("{}")
+    monkeypatch.setenv("UCODE_SESSION_ENV_FILE", str(session_file))
+    monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", "1")
+    monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "1")
+    monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
+    monkeypatch.delenv("ISAAC_LAUNCH_MODE", raising=False)
     monkeypatch.setattr(
         codex_routing,
         "request_routing_decision",
@@ -224,10 +235,16 @@ def test_spawn_rewrite_uses_codex_model_id_for_uc_endpoint(monkeypatch):
         available_models=["system.ai.gpt-5-6-luna"],
     )
 
-    assert output["systemMessage"] == codex_routing.routing.format_subagent_message(
-        "gpt-5.6-luna", ""
+    expected_message = (
+        "\n┌───────────────────────────────────────────────────────────────────────────┐\n"
+        "│ Using Unity Gateway Smart Router - Subagent                               │\n"
+        "│ Subagent : routing-smoke-test [orchestrator on]                           │\n"
+        "│ Selected Model : gpt-5.6-luna                                             │\n"
+        "└───────────────────────────────────────────────────────────────────────────┘"
     )
+    assert output["systemMessage"] == expected_message
     assert output["hookSpecificOutput"]["updatedInput"]["model"] == "gpt-5.6-luna"
+    assert output["hookSpecificOutput"]["updatedInput"]["task_name"] == "routing-smoke-test"
 
 
 def test_codex_model_id_maps_uc_gpt_models_to_codex_slugs():
@@ -346,6 +363,59 @@ def test_spawn_falls_through_encrypted_message_to_task_name(monkeypatch):
     )
     # Encrypted dict skipped (not a string), fell through to task_name.
     assert captured["task"] == "reviewer"
+
+
+def test_spawn_falls_through_fernet_message_to_task_name(monkeypatch):
+    captured = {}
+
+    def fake_decision(*args, **kwargs):
+        captured["task"] = args[2] if len(args) > 2 else kwargs.get("task")
+        return (
+            codex_routing.RoutingDecision(model="databricks-gpt-5-5", raw_model="gpt-5-6-sol"),
+            None,
+        )
+
+    monkeypatch.setattr(codex_routing, "request_routing_decision", fake_decision)
+    codex_routing.route_pre_tool_use(
+        {
+            "tool_name": "collaborationspawn_agent",
+            "tool_input": {
+                "task_name": "reviewer",
+                "message": "gAAAAABqqU8EOCRSZac8zPpmJqgyznI8gFYExjTbUKzfT9vq7EAz722mbQxTY2ctkVwoX69",
+            },
+        },
+        workspace=WS,
+        token="token",
+        available_models=["databricks-gpt-5-5"],
+    )
+
+    assert captured["task"] == "reviewer"
+
+
+def test_spawn_uses_generic_task_instead_of_fernet_message(monkeypatch):
+    captured = {}
+
+    def fake_decision(*args, **kwargs):
+        captured["task"] = args[2] if len(args) > 2 else kwargs.get("task")
+        return (
+            codex_routing.RoutingDecision(model="databricks-gpt-5-5", raw_model="gpt-5-6-sol"),
+            None,
+        )
+
+    monkeypatch.setattr(codex_routing, "request_routing_decision", fake_decision)
+    codex_routing.route_pre_tool_use(
+        {
+            "tool_name": "collaborationspawn_agent",
+            "tool_input": {
+                "message": "gAAAAABqqU8EOCRSZac8zPpmJqgyznI8gFYExjTbUKzfT9vq7EAz722mbQxTY2ctkVwoX69"
+            },
+        },
+        workspace=WS,
+        token="token",
+        available_models=["databricks-gpt-5-5"],
+    )
+
+    assert captured["task"] == "Codex subagent task"
 
 
 def test_canary_and_audit_are_written(tmp_path, monkeypatch):
