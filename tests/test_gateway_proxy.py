@@ -532,12 +532,21 @@ class TestCodexV2Proxy:
         }
         event = {"type": "response.output_item.done", "item": item}
         payload = json.dumps({"output": [item]}).encode()
+        body = b'{"tools":[{"type":"namespace","name":"collaboration","tools":[]}]}'
         if path == "/v1/responses/compact":
-            payload = json.dumps(
+            history = [
+                {**item, "namespace": "collaboration", "call_id": "prior"},
                 {
-                    "object": "response.compaction",
-                    "output": [{"type": "compaction", "encrypted_content": "opaque-summary"}],
-                }
+                    "type": "function_call_output",
+                    "namespace": "collaboration",
+                    "call_id": "prior",
+                    "output": "File read successfully.",
+                },
+            ]
+            compact_item = {"type": "compaction", "encrypted_content": "opaque-summary"}
+            body = json.dumps({"model": "test-model", "input": history}).encode()
+            payload = json.dumps(
+                {"object": "response.compaction", "output": [*history, compact_item]}
             ).encode()
         if streaming:
             data = b"\r\n".join(
@@ -549,16 +558,24 @@ class TestCodexV2Proxy:
         def upstream(request):
             # Replace only the provider; httpx decodes actual gzip bytes.
             requests.append(request)
+            response_payload = payload
+            if path == "/v1/responses/compact":
+                # Compaction may retain completed calls and results from its input.
+                response_payload = json.dumps(
+                    {
+                        "object": "response.compaction",
+                        "output": [*json.loads(request.content)["input"], compact_item],
+                    }
+                ).encode()
             return httpx.Response(
                 401 if len(requests) == 1 else status,
                 headers={
                     "Content-Type": "text/event-stream" if streaming else "application/json",
                     "Content-Encoding": "gzip",
                 },
-                stream=_ResponseChunks(gzip.compress(payload)),
+                stream=_ResponseChunks(gzip.compress(response_payload)),
             )
 
-        body = b'{"tools":[{"type":"namespace","name":"collaboration","tools":[]}]}'
         cache, out = _FakeCache(), _Collect()
         with httpx.Client(
             transport=httpx.MockTransport(upstream), base_url="https://gateway.test"
@@ -582,19 +599,19 @@ class TestCodexV2Proxy:
         for request in requests:
             assert gateway_proxy.AI_GATEWAY_TOKEN_HEADER not in request.headers
             assert request.headers[gateway_proxy.MODEL_PROVIDER_SERVICE_HEADER] == "main.provider"
-            expected_namespace = "collaboration" if path == "/v1/models" else "ucode_collaboration"
-            assert json.loads(request.content)["tools"][0]["name"] == expected_namespace
+            if path == "/v1/responses/compact":
+                assert request.content == body
+            else:
+                namespace = "collaboration" if path == "/v1/models" else "ucode_collaboration"
+                assert json.loads(request.content)["tools"][0]["name"] == namespace
         headers, wire = bytes(out.data).split(b"\r\n\r\n", 1)
         assert f" {status} ".encode() in headers
-        if path == "/v1/models" or status != 200:
+        if path != "/v1/responses" or status != 200:
             assert b"content-encoding: gzip" in headers.lower()
             assert gzip.decompress(wire) == payload
         else:
             assert b"content-encoding" not in headers.lower()
             assert b"content-length" not in headers.lower()
-            if path == "/v1/responses/compact":
-                assert wire == payload
-                return
             if streaming:
                 assert b": heartbeat\r\n\r\nid: evt-1\r\n" in wire
                 assert wire.endswith(b"data: [DONE]\n\n")

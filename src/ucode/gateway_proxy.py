@@ -82,7 +82,6 @@ _DEFAULT_TTL_S = 3600
 # and exception class names — never headers, bodies, or credentials.
 _DIAGNOSTICS_ENV = "UCODE_RELAYED_PROXY_DIAGNOSTICS"
 _DIAGNOSTICS_TRUE = frozenset({"1", "true", "yes", "on"})
-_CODEX_V2_RESPONSE_PATHS = frozenset({"/v1/responses", "/v1/responses/compact"})
 _CODEX_V2_MAX_SSE_EVENT_BYTES = 16 * 1024 * 1024
 
 
@@ -483,11 +482,7 @@ class _CodexV2ProxyHandler(_ProxyHandler):
 
     def _prepare_request_body(self, body: bytes | None) -> bytes | None:
         self._codex_v2_adapter_active = False
-        if (
-            self.command != "POST"
-            or urlsplit(self.path).path not in _CODEX_V2_RESPONSE_PATHS
-            or body is None
-        ):
+        if self.command != "POST" or urlsplit(self.path).path != "/v1/responses" or body is None:
             return body
         transformed, changed = prepare_request(body)
         self._codex_v2_adapter_active = changed
