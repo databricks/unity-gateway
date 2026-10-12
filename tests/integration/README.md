@@ -93,6 +93,11 @@ before and after ug's separator, with no workspace policy. It requires a complet
 file task, the requested model with output tokens in JSON `modelUsage`, and no routing
 wrapper. Use the runner's `--claude-model` option to reproduce a specific model.
 
+The Claude Databricks configure journey also checks that generated settings declare
+`CLAUDE_CODE_MAX_CONTEXT_TOKENS=1050000`. Component tests in `test_agent_claude.py`
+check ownership and that the override does not disable compaction. Neither check
+establishes the backend context limit or successful in-session GPT switching.
+
 Codex covers `--model VALUE`, `--model=VALUE`, and `-m VALUE` before ug's separator
 and within native `exec`, asserting the completed turn's selected model. Codex has
 no UG-owned `--model` option: all three spellings are forwarded to Codex in either position.

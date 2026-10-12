@@ -20,6 +20,8 @@ def test_ug_configure_claude_databricks(live_session, workspace):
     model in its real picker. It returns a file value through the real gateway,
     exits normally, and can reopen the configuration ug created.
     The generated auth helper uses ug and prints only the supplied bearer.
+    Settings declare a global 1,050,000-token context window for unknown models;
+    this journey does not exercise the backend context limit or GPT switching.
     Optional AI Tools are disabled; the selected agent version is kept pinned.
     """
     session = live_session
@@ -39,6 +41,7 @@ def test_ug_configure_claude_databricks(live_session, workspace):
     assert not session.workspace_state().get("provider_services", {}).get("claude")
 
     settings = json.loads((session.home / ".claude/ucode-settings.json").read_text())
+    assert settings["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "1050000"
     helper = shlex.split(settings["apiKeyHelper"])
     assert Path(helper[0]) == session.binary.with_name("ug")
     assert helper[1] == "auth-token"

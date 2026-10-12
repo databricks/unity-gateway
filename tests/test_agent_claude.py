@@ -255,6 +255,16 @@ class TestRenderOverlay:
         overlay, _ = claude.render_overlay(WS, "s4")
         assert overlay["env"]["CLAUDE_CODE_USE_GATEWAY"] == "1"
 
+    @pytest.mark.parametrize("model", [None, "system.ai.claude-haiku-4-5", "system.ai.gpt-6-astra"])
+    def test_sets_global_context_window_without_disabling_compaction(self, model):
+        overlay, keys = claude.render_overlay(WS, model)
+
+        env = overlay["env"]
+        assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "1050000"
+        assert ["env", "CLAUDE_CODE_MAX_CONTEXT_TOKENS"] in keys
+        assert "DISABLE_COMPACT" not in env
+        assert "CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT" not in env
+
     @pytest.mark.parametrize("env_value", [None, "", "0", "true", "yes"])
     def test_gateway_model_discovery_disabled_unless_opted_in(self, monkeypatch, env_value):
         if env_value is not None:

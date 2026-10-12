@@ -487,6 +487,9 @@ def render_overlay(
         "ENABLE_PROMPT_CACHING_1H": "1",
         "ENABLE_TOOL_SEARCH": "true",
         "CLAUDE_CODE_USE_GATEWAY": "1",
+        # Size unknown models for GPT's context window, including after /model switches.
+        # With compaction enabled, recognized Claude models keep their own limits.
+        "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "1050000",
     }
     # Intentionally NOT setting ANTHROPIC_MODEL by default. Setting it produces a
     # duplicate catalog row in Claude Code's /model picker (e.g. "Opus 4.8 (1M

@@ -68,6 +68,12 @@ models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when
 no provider or model location is selected. Use `--provider` or `--model-location`
 to select another model source; managed workspace configs control their own sources.
 
+Claude settings include `CLAUDE_CODE_MAX_CONTEXT_TOKENS=1050000`, matching the
+GPT 5.6/6 context window, including after in-session model switches. This is a
+global fallback for unrecognized models without `[1m]`, not a GPT-only setting.
+With compaction enabled, recognized Claude models retain their native limits.
+ug does not disable compaction or unknown-model window enforcement.
+
 `ug codex` validates discovered models with the installed Codex binary and publishes
 them to `~/.ucode/codex-model-catalog.json`, referenced by shared `~/.codex/config.toml`
 for Codex App. Managed static lists use the same path during `ug configure`. The
