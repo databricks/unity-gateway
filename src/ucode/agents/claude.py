@@ -2117,11 +2117,22 @@ def _build_claude_argv(
 
 
 def _has_subscription_login() -> bool:
-    """True when Claude Code already holds a subscription login (`claude auth
-    status` exits 0). Never inspects or captures the credential itself."""
+    """True when Claude Code holds a Claude subscription login that a relayed launch will use.
+
+    `auth status` reports `loggedIn` for any credential, including an apiKeyHelper or
+    ANTHROPIC_API_KEY, so only `authMethod: claude.ai` counts. It reads the same setting sources as
+    the relayed session, which drops the user scope, so a user-scope apiKeyHelper neither passes
+    the check nor hides a real login. Never inspects or captures the credential itself."""
     try:
         result = subprocess_cross_os.run(
-            [SPEC["binary"], "auth", "status"],
+            [
+                SPEC["binary"],
+                "--setting-sources",
+                _RELAYED_SETTING_SOURCES,
+                "auth",
+                "status",
+                "--json",
+            ],
             check=False,
             capture_output=True,
             text=True,
@@ -2129,7 +2140,14 @@ def _has_subscription_login() -> bool:
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
-    return result.returncode == 0
+    if result.returncode != 0:
+        return False
+    try:
+        status = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        # A Claude Code that prints no JSON status: fall back to the exit code.
+        return True
+    return isinstance(status, dict) and status.get("authMethod") == "claude.ai"
 
 
 def _ensure_subscription_login() -> None:
