@@ -15,6 +15,7 @@ import threading
 import traceback
 from collections.abc import Callable, Collection
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from ucode import gateway_proxy
 from ucode.config_io import (
@@ -38,6 +39,7 @@ from ucode.custom_oauth import (
     CustomOAuthConfig,
     build_custom_auth_shell_command,
     custom_oauth_cli_enabled,
+    get_custom_client_token,
 )
 from ucode.databricks import (
     AnthropicModelCatalog,
@@ -82,6 +84,7 @@ from ucode.mcp_web_search import (
     external_provider_selected,
 )
 from ucode.os_compatibility import subprocess_cross_os
+from ucode.request_headers import _origin
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
@@ -1287,20 +1290,15 @@ def _custom_headers_from_settings(settings: dict) -> dict[str, set[str]]:
     return headers
 
 
-def _reject_custom_header_collisions(
-    custom_headers: dict[str, str],
-    managed_http_headers: dict[str, str] | None = None,
-) -> None:
-    if not custom_headers:
-        return
-
-    private_settings = read_json_safe(CLAUDE_SETTINGS_PATH)
+def _managed_settings_env() -> dict:
+    """Return the env from Claude's OS-managed settings, with drop-ins applied in order."""
     managed_path = _managed_settings_path()
     managed_paths = (
         [managed_path, *sorted(managed_path.with_name("managed-settings.d").glob("*.json"))]
         if managed_path is not None
         else []
     )
+    env: dict = {}
     for path in managed_paths:
         try:
             managed_text = read_managed_file(path)
@@ -1312,26 +1310,31 @@ def _reject_custom_header_collisions(
                 f"Cannot safely inspect Claude Code managed settings at {path}: {exc}."
             ) from exc
         managed_env = managed_settings.get("env")
-        if isinstance(managed_env, dict) and ANTHROPIC_CUSTOM_HEADERS_ENV_KEY in managed_env:
-            # `ug configure` mirrors ug's own headers here for bare `claude` launches.
-            if (
-                CLAUDE_MANAGED_CUSTOM_HEADER_NAMES
-                & _custom_headers_from_settings(managed_settings).keys()
-            ):
-                owner = "ug mirrors its Claude Code headers into OS-managed settings at"
-                remedy = "Omit --header for Claude launches on this machine."
-            else:
-                owner = "Claude Code OS-managed settings define them at"
-                remedy = "Contact your administrator or omit --header."
-            raise RuntimeError(
-                f"--header cannot be applied because {owner} {path} "
-                f"(env.{ANTHROPIC_CUSTOM_HEADERS_ENV_KEY}), which take precedence over launch "
-                f"settings. {remedy}"
-            )
+        if isinstance(managed_env, dict):
+            env.update(managed_env)
+    return env
 
-    conflicts = custom_headers.keys() & {
-        name.strip().casefold() for name in (managed_http_headers or {}) if isinstance(name, str)
-    }
+
+def _reject_custom_header_collisions(
+    custom_headers: dict[str, str],
+    managed_http_headers: dict[str, str] | None = None,
+) -> None:
+    if not custom_headers:
+        return
+
+    private_settings = read_json_safe(CLAUDE_SETTINGS_PATH)
+    conflicts = (
+        custom_headers.keys()
+        & _custom_headers_from_settings({"env": _managed_settings_env()}).keys()
+    )
+    conflicts.update(
+        custom_headers.keys()
+        & {
+            name.strip().casefold()
+            for name in (managed_http_headers or {})
+            if isinstance(name, str)
+        }
+    )
     existing = _custom_headers_from_settings(private_settings)
     conflicts.update(custom_headers.keys() & existing.keys())
     if conflicts:
@@ -2220,6 +2223,98 @@ def _launch_relayed(
     raise SystemExit(returncode)
 
 
+def _launch_env_changes(inherited_env: dict[str, str]) -> dict[str, str]:
+    return {key: value for key, value in os.environ.items() if inherited_env.get(key) != value}
+
+
+def _start_custom_headers_proxy(
+    state: dict, custom_headers: dict[str, str], launch_env: dict
+) -> Callable[[], None] | None:
+    """Apply launch headers despite OS-managed ANTHROPIC_CUSTOM_HEADERS.
+
+    Managed settings env outranks ``--settings``, so hand provider settings to the process env
+    (CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST) and authenticate through a loopback refresh proxy.
+    Returns the proxy teardown, or None when no host-managed launch is needed.
+    """
+    if not custom_headers:
+        return None
+    managed_env = _managed_settings_env()
+    if ANTHROPIC_CUSTOM_HEADERS_ENV_KEY not in managed_env:
+        return None
+    private_env = read_json_safe(CLAUDE_SETTINGS_PATH).get("env")
+    env = {**(private_env if isinstance(private_env, dict) else {}), **managed_env, **launch_env}
+    env[ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = _merge_anthropic_custom_headers(
+        managed_env.get(ANTHROPIC_CUSTOM_HEADERS_ENV_KEY),
+        _custom_headers_text(custom_headers),
+        managed_header_names=frozenset(),
+    )
+    workspace = str(state.get("workspace") or "")
+    base_url = str(env.get("ANTHROPIC_BASE_URL") or "")
+    if not workspace or _origin(base_url) != _origin(workspace):
+        raise RuntimeError(
+            "--header cannot be applied because Claude Code OS-managed settings route "
+            "ANTHROPIC_BASE_URL to an administrator-managed endpoint outside the ug workspace."
+        )
+    profile = state.get("profile")
+    custom_oauth = state.get("custom_oauth")
+
+    def token_provider(force_refresh: bool) -> str:
+        if isinstance(custom_oauth, dict):
+            return get_custom_client_token(
+                workspace,
+                custom_oauth["client_id"],
+                custom_oauth["redirect_url"],
+                scopes=custom_oauth["scopes"],
+                profile=custom_oauth.get("profile"),
+                force_refresh=force_refresh,
+            )
+        return get_databricks_token(workspace, profile, force_refresh=force_refresh)
+
+    server, cache, client = gateway_proxy.start_gateway_proxy(
+        workspace, token_provider, urlsplit(base_url).path
+    )
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    # The proxy supplies auth, so keep real tokens out of Claude's process tree.
+    auth_keys = (
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "OAUTH_TOKEN",
+    )
+    exported = {
+        key: value if isinstance(value, str) else json.dumps(value)
+        for key, value in env.items()
+        if key not in auth_keys and isinstance(value, (str, int, float, bool))
+    }
+    # Claude sends loopback requests through HTTP(S)_PROXY unless NO_PROXY exempts them.
+    for key in ("NO_PROXY", "no_proxy"):
+        existing = exported.get(key, os.environ.get(key, ""))
+        exported[key] = ",".join(filter(None, (existing, LOOPBACK_HOST)))
+    host_keys = ("CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", "ANTHROPIC_BASE_URL")
+    previous_env = {key: os.environ.get(key) for key in (*auth_keys, *exported, *host_keys)}
+    for key in auth_keys:
+        os.environ.pop(key, None)
+    os.environ.update(exported)
+    os.environ["CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST"] = "1"
+    # The proxy forwards request paths under the managed base URL path.
+    os.environ["ANTHROPIC_BASE_URL"] = f"http://{LOOPBACK_HOST}:{server.server_address[1]}"
+    # Placeholder; the proxy replaces Authorization with a fresh Databricks token.
+    os.environ["ANTHROPIC_AUTH_TOKEN"] = "ucode-proxy"
+
+    def stop() -> None:
+        cache.stop()
+        server.shutdown()
+        client.close()
+        # Restore the env so a smart-routing fallback relaunch starts from the original values.
+        for key, value in previous_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    return stop
+
+
 def launch(
     state: dict,
     tool_args: list[str],
@@ -2228,6 +2323,7 @@ def launch(
 ) -> None:
     custom_headers = dict(options.custom_headers)
     validate_custom_headers(state, custom_headers)
+    inherited_env = dict(os.environ)
     tool_args = _external_web_search_args(state, tool_args)
     binary = SPEC["binary"]
     workspace = state.get("workspace")
@@ -2236,6 +2332,11 @@ def launch(
         # than persisting it in Claude's private or OS-managed settings.
         os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
     if state.get("claude_relayed"):
+        if custom_headers and ANTHROPIC_CUSTOM_HEADERS_ENV_KEY in _managed_settings_env():
+            raise RuntimeError(
+                "--header is not supported for relayed Claude launches when Claude Code "
+                f"OS-managed settings define env.{ANTHROPIC_CUSTOM_HEADERS_ENV_KEY}."
+            )
         if custom_headers:
             _launch_relayed(state, binary, tool_args, custom_headers=custom_headers)
         else:
@@ -2256,18 +2357,25 @@ def launch(
                     settings, remaining = _compose_v2_settings(tool_args)
                     return _merge_launch_custom_headers(settings, custom_headers), remaining
 
-            smart_routing_v2.launch_claude(
-                state,
-                tool_args,
-                binary=binary,
-                user_settings_path=CLAUDE_USER_SETTINGS_PATH,
-                # With no user pin, let Claude resolve its starting model from its own settings.
-                launch_model=options.user_pinned_model,
-                compose_settings=compose_settings,
-                launch_model_args=_launch_model_args,
-                model_name=_maybe_add_1m_suffix,
-                **({"custom_headers": custom_headers} if custom_headers else {}),
+            stop_proxy = _start_custom_headers_proxy(
+                state, custom_headers, _launch_env_changes(inherited_env)
             )
+            try:
+                smart_routing_v2.launch_claude(
+                    state,
+                    tool_args,
+                    binary=binary,
+                    user_settings_path=CLAUDE_USER_SETTINGS_PATH,
+                    # With no user pin, let Claude resolve its starting model from its own settings.
+                    launch_model=options.user_pinned_model,
+                    compose_settings=compose_settings,
+                    launch_model_args=_launch_model_args,
+                    model_name=_maybe_add_1m_suffix,
+                    **({"custom_headers": custom_headers} if custom_headers else {}),
+                )
+            finally:
+                if stop_proxy is not None:
+                    stop_proxy()
         except smart_routing_v2.ClaudeRoutingSetupError:
             _debug("Claude smart-routing setup failed; launching normally", traceback.format_exc())
             routing_setup_failed = True
@@ -2328,7 +2436,23 @@ def launch(
         }
         settings_override = _merge_claude_settings(settings_override or {}, {"env": fallback_env})
         os.environ.update(fallback_env)
-    exec_or_spawn(_build_claude_argv(binary, launch_args, settings_override=settings_override))
+    argv = _build_claude_argv(binary, launch_args, settings_override=settings_override)
+    override_env = (settings_override or {}).get("env")
+    stop_proxy = _start_custom_headers_proxy(
+        state,
+        custom_headers,
+        {
+            **(override_env if isinstance(override_env, dict) else {}),
+            **_launch_env_changes(inherited_env),
+        },
+    )
+    if stop_proxy is None:
+        exec_or_spawn(argv)
+        return
+    try:
+        exec_or_spawn(argv, wait_for_exit=True)
+    finally:
+        stop_proxy()
 
 
 def validate_cmd(binary: str) -> list[str]:

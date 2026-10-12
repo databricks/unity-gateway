@@ -2649,40 +2649,167 @@ class TestClaudeLaunch:
         )
         assert json.loads(settings_path.read_text()) == {"env": {}}
 
-    @pytest.mark.parametrize(
-        ("managed_value", "message"),
-        [
-            ("X-Admin: managed", "Contact your administrator"),
-            ("", "Contact your administrator"),
-            ("x-databricks-use-coding-agent-mode: true", "ug mirrors its Claude Code headers"),
-        ],
-    )
-    def test_launch_rejects_custom_headers_when_os_managed_headers_exist(
-        self, monkeypatch, tmp_path, managed_value, message
+    def _managed_header_launch(
+        self, monkeypatch, managed_env, custom_headers, state=None, options=None
     ):
-        calls: list[list[str]] = []
-        managed_path = tmp_path / "managed-settings.json"
+        managed_path = Path("/managed/managed-settings.json")
         monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
         monkeypatch.setattr(
-            claude,
-            "read_managed_file",
-            lambda _path: json.dumps({"env": {"ANTHROPIC_CUSTOM_HEADERS": managed_value}}),
+            claude, "read_managed_file", lambda _path: json.dumps({"env": managed_env})
         )
         monkeypatch.setattr(claude, "read_json_safe", lambda _path: {})
-        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_args, **_kwargs: "token")
+        monkeypatch.setattr(
+            claude.os, "environ", {"ANTHROPIC_API_KEY": "stale", "OAUTH_TOKEN": "secret"}
+        )
+        execs: list[list[str]] = []
+        spawned: list[dict] = []
 
-        with pytest.raises(RuntimeError, match=message):
+        def exec_or_spawn(argv, *, wait_for_exit=False):
+            if not wait_for_exit:
+                execs.append(argv)
+                return
+            spawned.append({"argv": argv, "env": dict(os.environ)})
+            raise SystemExit(3)
+
+        monkeypatch.setattr(claude, "exec_or_spawn", exec_or_spawn)
+        proxies: list[tuple] = []
+        server = MagicMock(server_address=("127.0.0.1", 4321))
+        cache, client = MagicMock(), MagicMock()
+
+        def start_gateway_proxy(workspace, token_provider, upstream_path):
+            proxies.append((workspace, upstream_path, token_provider(True)))
+            return server, cache, client
+
+        monkeypatch.setattr(claude.gateway_proxy, "start_gateway_proxy", start_gateway_proxy)
+        result = SimpleNamespace(execs=execs, proxies=proxies, spawned=spawned, server=server)
+        try:
             claude.launch(
-                {"workspace": WS},
+                state or {"workspace": WS},
                 [],
-                options=LaunchOptions(
-                    custom_headers=(("X-Development-Route", "test-target"),),
-                ),
+                options=options or LaunchOptions(custom_headers=custom_headers),
+            )
+        except SystemExit as exc:
+            result.returncode = exc.code
+        return result
+
+    @pytest.mark.parametrize(
+        "managed_value", ["X-Admin: managed", "x-databricks-use-coding-agent-mode: true"]
+    )
+    def test_launch_hosts_provider_when_os_managed_headers_exist(self, monkeypatch, managed_value):
+        result = self._managed_header_launch(
+            monkeypatch,
+            {
+                "ANTHROPIC_BASE_URL": f"{WS}/ai-gateway/anthropic",
+                "ANTHROPIC_CUSTOM_HEADERS": managed_value,
+                "ANTHROPIC_DEFAULT_SONNET_MODEL": "managed-sonnet",
+            },
+            (("X-Development-Route", "test-target"),),
+        )
+
+        assert result.execs == []
+        assert result.returncode == 3
+        assert result.proxies == [(WS, "/ai-gateway/anthropic", "token")]
+        env = result.spawned[0]["env"]
+        assert env["CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST"] == "1"
+        assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:4321"
+        assert env["ANTHROPIC_AUTH_TOKEN"] == "ucode-proxy"
+        assert "ANTHROPIC_API_KEY" not in env
+        assert "OAUTH_TOKEN" not in env
+        assert env["ANTHROPIC_CUSTOM_HEADERS"].splitlines() == [
+            managed_value,
+            "X-Development-Route: test-target",
+        ]
+        assert env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "managed-sonnet"
+        assert env["NO_PROXY"].split(",")[-1] == "127.0.0.1"
+        assert env["no_proxy"].split(",")[-1] == "127.0.0.1"
+        result.server.shutdown.assert_called_once()
+        assert "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST" not in os.environ
+
+    def test_user_pinned_model_wins_over_managed_model(self, monkeypatch):
+        headers = (("X-Development-Route", "test-target"),)
+        result = self._managed_header_launch(
+            monkeypatch,
+            {
+                "ANTHROPIC_BASE_URL": WS,
+                "ANTHROPIC_CUSTOM_HEADERS": "X-Admin: managed",
+                "ANTHROPIC_MODEL": "managed-model",
+            },
+            headers,
+            options=LaunchOptions(custom_headers=headers, user_pinned_model="cat.schema.model"),
+        )
+
+        assert result.spawned[0]["env"]["ANTHROPIC_MODEL"] == "cat.schema.model"
+
+    def test_smart_routing_fallback_still_hosts_provider(self, monkeypatch):
+        attempts: list[dict] = []
+
+        def launch_claude(*_args, **_kwargs):
+            attempts.append(dict(os.environ))
+            raise claude.smart_routing_v2.ClaudeRoutingSetupError("setup failed")
+
+        monkeypatch.setattr(claude.smart_routing_v2, "launch_claude", launch_claude)
+        monkeypatch.setattr(claude, "_resolve_launch_binary", lambda binary: binary)
+        headers = (("X-Development-Route", "test-target"),)
+        result = self._managed_header_launch(
+            monkeypatch,
+            {"ANTHROPIC_BASE_URL": WS, "ANTHROPIC_CUSTOM_HEADERS": "X-Admin: managed"},
+            headers,
+            options=LaunchOptions(custom_headers=headers, launch_smart_routing=True),
+        )
+
+        assert attempts[0]["CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST"] == "1"
+        assert len(result.proxies) == 2
+        env = result.spawned[0]["env"]
+        assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:4321"
+        assert env["CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST"] == "1"
+
+    def test_relayed_launch_rejects_custom_headers_with_managed_headers(self, monkeypatch):
+        with pytest.raises(RuntimeError, match="not supported for relayed Claude launches"):
+            self._managed_header_launch(
+                monkeypatch,
+                {"ANTHROPIC_CUSTOM_HEADERS": "X-Admin: managed"},
+                (("X-Development-Route", "test-target"),),
+                state={"workspace": WS, "claude_relayed": True},
             )
 
-        assert calls == []
+    def test_launch_rejects_custom_header_named_like_managed_header(self, monkeypatch):
+        with pytest.raises(RuntimeError, match="cannot override existing Claude Code header"):
+            self._managed_header_launch(
+                monkeypatch,
+                {"ANTHROPIC_CUSTOM_HEADERS": "X-Admin: managed"},
+                (("X-Admin", "mine"),),
+            )
 
-    def test_custom_headers_reject_managed_drop_in_headers(self, monkeypatch, tmp_path):
+    def test_launch_rejects_custom_headers_for_admin_routed_endpoint(self, monkeypatch):
+        with pytest.raises(RuntimeError, match="administrator-managed endpoint"):
+            self._managed_header_launch(
+                monkeypatch,
+                {
+                    "ANTHROPIC_BASE_URL": "https://gateway.example.com/anthropic",
+                    "ANTHROPIC_CUSTOM_HEADERS": "X-Admin: managed",
+                },
+                (("X-Development-Route", "test-target"),),
+            )
+
+    @pytest.mark.parametrize(
+        ("managed_env", "custom_headers"),
+        [
+            ({"ANTHROPIC_CUSTOM_HEADERS": "X-Admin: managed"}, ()),
+            ({"ANTHROPIC_MODEL": "managed"}, (("X-Development-Route", "test-target"),)),
+        ],
+    )
+    def test_launch_without_managed_header_conflict_execs(
+        self, monkeypatch, managed_env, custom_headers
+    ):
+        result = self._managed_header_launch(monkeypatch, managed_env, custom_headers)
+
+        assert len(result.execs) == 1
+        assert result.proxies == []
+        assert result.spawned == []
+        assert "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST" not in os.environ
+
+    def test_custom_headers_reject_managed_drop_in_header_names(self, monkeypatch, tmp_path):
         managed_path = tmp_path / "managed-settings.json"
         drop_in = tmp_path / "managed-settings.d" / "10-admin.json"
         drop_in.parent.mkdir()
@@ -2690,8 +2817,9 @@ class TestClaudeLaunch:
         monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
         monkeypatch.setattr(claude, "read_json_safe", lambda _path: {})
 
-        with pytest.raises(RuntimeError, match="10-admin.json"):
-            claude.validate_custom_headers({}, {"X-Development-Route": "test-target"})
+        with pytest.raises(RuntimeError, match="x-admin"):
+            claude.validate_custom_headers({}, {"X-Admin": "mine"})
+        claude.validate_custom_headers({}, {"X-Development-Route": "test-target"})
 
     def test_windows_launch_preserves_prompt_as_literal_argv(self, monkeypatch, tmp_path):
         native_binary = tmp_path / "Claude Code" / "claude.exe"

@@ -504,6 +504,23 @@ def start_relay_proxy(
     )
 
 
+def start_gateway_proxy(
+    workspace: str,
+    token_provider: Callable[[bool], str],
+    upstream_path: str,
+) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
+    """Start a workspace gateway proxy on an OS-assigned port."""
+    return _start_proxy(
+        workspace,
+        token_provider,
+        0,
+        upstream_path=upstream_path,
+        token_header=AUTHORIZATION_HEADER,
+        handler_type=_ProxyHandler,
+        force_refresh_near_expiry=True,
+    )
+
+
 def start_otel_proxy(
     workspace: str,
     token_provider: Callable[[bool], str],

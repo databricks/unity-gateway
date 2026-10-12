@@ -235,9 +235,9 @@ requests for that invocation, including prelaunch discovery and configuration re
 helpers for that launch. Use non-secret values; headers are not saved in Codex configuration.
 
 `ug claude --header 'X-Development-Route: test-target'` passes headers through launch-only
-settings, preserving required headers without changing shared settings. Claude launches reject
-`--header` when OS-managed settings define `env.ANTHROPIC_CUSTOM_HEADERS`, because that policy
-takes precedence over launch settings.
+settings, preserving required headers without changing shared settings. When OS-managed settings
+define `env.ANTHROPIC_CUSTOM_HEADERS`, ug appends the headers to the managed ones and runs Claude
+through a loopback token-refresh proxy with `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST=1`.
 
 Databricks AI Tools are installed only by `ug configure`, never by agent launch
 commands. Use `--enable-databricks-ai-tools` or `--disable-databricks-ai-tools`

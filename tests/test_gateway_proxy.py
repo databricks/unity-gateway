@@ -602,3 +602,24 @@ class TestRelayedOssRouting:
         assert sent["Authorization"] == "Bearer anthropic-oauth"
         assert sent[gateway_proxy.AI_GATEWAY_TOKEN_HEADER] == "Bearer tok1"
         assert sent["Databricks-Model-Provider-Service"] == "cat.s.relayed_mps"
+
+
+def test_start_gateway_proxy_uses_authorization(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        gateway_proxy, "_start_proxy", lambda *args, **kwargs: calls.append((args, kwargs))
+    )
+
+    gateway_proxy.start_gateway_proxy("https://ws", "provider", "/ai-gateway/anthropic")
+
+    assert calls == [
+        (
+            ("https://ws", "provider", 0),
+            {
+                "upstream_path": "/ai-gateway/anthropic",
+                "token_header": gateway_proxy.AUTHORIZATION_HEADER,
+                "handler_type": gateway_proxy._ProxyHandler,
+                "force_refresh_near_expiry": True,
+            },
+        )
+    ]
