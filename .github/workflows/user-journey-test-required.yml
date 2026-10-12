@@ -4,7 +4,7 @@ name: User Journey Test Required
 # GitHub API. It never checks out or executes code from the PR head, including
 # for fork PRs. The Databricks bearer is sent only to the configured workspace.
 on:
-  pull_request_target:
+  pull_request_target:  # zizmor: ignore[dangerous-triggers]
     types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
 
 permissions:

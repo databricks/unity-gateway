@@ -890,12 +890,17 @@ class TestListModelProviderServices:
             "main.schema2.bedrock-svc",
         ]
 
-    def test_codex_filters_to_openai(self, monkeypatch):
+    def test_codex_includes_openai_and_bedrock(self, monkeypatch):
         monkeypatch.setattr(
             db_mod, "_http_get_json", lambda url, token, timeout=30: (self._PAYLOAD, None)
         )
         names, _ = db_mod.list_tool_provider_services("codex", WS, "token")
-        assert names == ["main.schema1.openai-svc"]
+        # Codex pins no Claude family, so a Bedrock service is usable whatever its targets.
+        assert names == [
+            "main.schema1.openai-svc",
+            "main.schema2.bedrock-svc",
+            "main.schema2.bedrock-titan-svc",
+        ]
 
 
 class TestMapClaudeFamilyModels:
@@ -1214,6 +1219,59 @@ class TestResolveProviderService:
         assert service["allow_all_targets"] is True
         assert service["targets"] == []
 
+    def test_bedrock_mantle_with_claude_ok(self, monkeypatch):
+        payload = {
+            "model_provider_services": [
+                {
+                    "name": "model-provider-services/main.schema2.mantle-svc",
+                    "config": {
+                        "provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_BEDROCK_MANTLE",
+                        "targets": [{"model": "anthropic.claude-haiku-4-5"}],
+                    },
+                }
+            ]
+        }
+        monkeypatch.setattr(
+            db_mod, "_http_get_json", lambda url, token, timeout=30: (payload, None)
+        )
+        service, error = db_mod.resolve_provider_service(
+            "claude", "main.schema2.mantle-svc", WS, "token"
+        )
+        assert error is None
+        assert service["provider_type"] == "bedrock_mantle"
+
+    @pytest.mark.parametrize(
+        "provider_type",
+        [
+            "EXTERNAL_MODEL_PROVIDER_TYPE_AMAZON_BEDROCK",
+            "EXTERNAL_MODEL_PROVIDER_TYPE_BEDROCK_MANTLE",
+        ],
+    )
+    def test_bedrock_without_claude_ok_for_codex(self, monkeypatch, provider_type):
+        payload = {
+            "model_provider_services": [
+                {
+                    "name": "model-provider-services/main.schema2.gpt-oss-svc",
+                    "config": {
+                        "provider_type": provider_type,
+                        "targets": [{"model": "openai.gpt-oss-120b"}],
+                    },
+                }
+            ]
+        }
+        monkeypatch.setattr(
+            db_mod, "_http_get_json", lambda url, token, timeout=30: (payload, None)
+        )
+        service, error = db_mod.resolve_provider_service(
+            "codex", "main.schema2.gpt-oss-svc", WS, "token"
+        )
+        assert error is None
+        assert service["targets"] == ["openai.gpt-oss-120b"]
+        _, claude_error = db_mod.resolve_provider_service(
+            "claude", "main.schema2.gpt-oss-svc", WS, "token"
+        )
+        assert "no Claude models" in claude_error
+
     def test_not_found_lists_usable(self, monkeypatch):
         self._patch(monkeypatch)
         service, error = db_mod.resolve_provider_service("claude", "main.x.missing", WS, "token")
@@ -1263,6 +1321,16 @@ class TestServiceUsableForTool:
             "allow_all_targets": False,
         }
         assert not db_mod.service_usable_for_tool("claude", service)
+
+    @pytest.mark.parametrize("provider_type", ["amazon_bedrock", "bedrock_mantle"])
+    def test_bedrock_claude_targets_required_only_for_claude(self, provider_type):
+        service = {
+            "provider_type": provider_type,
+            "targets": ["openai.gpt-oss-120b"],
+            "allow_all_targets": False,
+        }
+        assert not db_mod.service_usable_for_tool("claude", service)
+        assert db_mod.service_usable_for_tool("codex", service)
 
 
 class TestModelProviderFeatureUnavailable:
@@ -2195,6 +2263,26 @@ class TestGetDatabricksToken:
 
         assert db_mod.has_valid_databricks_auth(WS)
         assert profile_log.read_text() == ""
+
+    def test_check_auth_returns_none_when_cli_cannot_run(self, tmp_path, monkeypatch):
+        env = self._fake_databricks(tmp_path, "sys.exit(0)")
+        monkeypatch.setattr("os.environ", env)
+
+        def denied(*args, **kwargs):
+            raise PermissionError(13, "Access is denied")
+
+        monkeypatch.setattr(db_mod, "run", denied)
+
+        assert db_mod.check_databricks_auth(WS) is None
+        assert db_mod.has_valid_databricks_auth(WS) is False
+
+    def test_check_auth_returns_false_when_cli_rejects_credentials(self, tmp_path, monkeypatch):
+        env = self._fake_databricks(
+            tmp_path, 'print("token expired", file=sys.stderr); sys.exit(1)'
+        )
+        monkeypatch.setattr("os.environ", env)
+
+        assert db_mod.check_databricks_auth(WS) is False
 
     def test_reauths_and_retries_when_token_empty(self, tmp_path, monkeypatch):
         call_count = tmp_path / "calls"

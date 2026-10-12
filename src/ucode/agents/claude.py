@@ -27,6 +27,7 @@ from ucode.config_io import (
     write_json_file,
 )
 from ucode.constants import (
+    AGENT_CLAUDE,
     LOOPBACK_HOST,
     MCP_CLEANUP_SCOPES,
     MCP_USER_SCOPE,
@@ -471,7 +472,7 @@ def render_overlay(
         header_lines.append(f"{MODEL_PROVIDER_SERVICE_HEADER}: {provider}")
     elif parent_schema:
         header_lines.append(f"{MODEL_SERVICE_PARENT_SCHEMA_HEADER}: {parent_schema}")
-    if smart_routing_v2.smart_routing_enabled():
+    if smart_routing_v2.smart_routing_enabled(None, default=False, agent=AGENT_CLAUDE):
         header_lines.append(f"{SMART_ROUTER_RECIPE_HEADER}: {configured_router_name()}")
     # Relayed: the X-Databricks-AI-Gateway-Token swap header is added per request
     # by the refresh proxy, not here — a static value would go stale mid-session.

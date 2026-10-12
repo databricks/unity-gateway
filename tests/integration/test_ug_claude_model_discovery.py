@@ -1,10 +1,13 @@
-"""Claude model-discovery CUJs for repository scenarios 7, 9, 11, and 13."""
+"""Claude model-discovery CUJs for repository scenarios 9, 11, and 13."""
 
 import json
 import re
 
 import pytest
-from utils.model_discovery import claude_model_in_picker, claude_system_model_ids
+from utils.model_discovery import (
+    assert_claude_system_models_in_picker as _assert_system_models_in_picker,
+)
+from utils.model_discovery import claude_model_in_picker
 from utils.terminal import AgentTerminal
 
 pytestmark = [pytest.mark.claude, pytest.mark.usefixtures("unmanaged_workspace")]
@@ -53,60 +56,12 @@ def _system_models_visible(session):
     return lambda _text: session.claude_gateway_cache_ready()
 
 
-def _assert_system_models_in_picker(session, screen):
-    models = session.claude_gateway_models()
-    ids = claude_system_model_ids(models)
-    discovered = session.workspace_state()["claude_models"]
-    assert discovered, "ug configure found no Claude system.ai models"
-    # ug caches the newest system.ai model per family from UC model-services, which can list a
-    # just-released model (e.g. a new opus tier) before Claude Code's own gateway-model discovery
-    # surfaces it in the picker cache. Require the cached defaults to be well-formed system.ai
-    # Claude ids that overlap Claude Code's catalog, rather than a strict subset of a catalog that
-    # can legitimately lag behind UC model-services.
-    assert all(model_id.startswith("system.ai.claude-") for model_id in discovered.values()), (
-        discovered
-    )
-    assert set(discovered.values()) & set(ids), (discovered, models)
-    assert any(
-        claude_model_in_picker(screen, model["id"], model.get("display_name")) for model in models
-    ), screen
-
-
 def _assert_replacement_picker(session, expected_ids):
     settings = json.loads((session.home / ".claude" / "ucode-settings.json").read_text())
     assert not {"availableModels", "enforceAvailableModels"} & settings.keys(), settings
     picker = settings["modelPicker"]
     assert picker["replaceBuiltInOptions"] is True, picker
     assert [option["model"] for option in picker["options"]] == expected_ids, picker
-
-
-@pytest.mark.live
-@pytest.mark.tui
-def test_case_07_configured_claude_discovers_system_models(live_session, workspace):
-    """Scenario: configure Claude, then launch without source overrides or discovery flags.
-
-    Expected: native discovery caches system.ai models as raw IDs or recognized Claude
-    gateway aliases and shows a discovered picker entry.
-    """
-    session = live_session
-    session.run(
-        "configure",
-        "--agents",
-        "claude",
-        "--workspace",
-        workspace,
-        "--skip-upgrade",
-        "--disable-databricks-ai-tools",
-        timeout=240,
-    )
-
-    command = [str(session.binary), "claude"]
-    with AgentTerminal(session, "claude", command, "case-07-system-models") as tui:
-        tui.boot()
-        screen = tui.open_model_picker(model_visible=_system_models_visible(session))
-        tui.exit_normally()
-
-    _assert_system_models_in_picker(session, screen)
 
 
 @pytest.mark.live

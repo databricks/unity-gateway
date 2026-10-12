@@ -3,7 +3,7 @@ name: UG Review
 # The reviewer always runs trusted code from the default branch. PR-controlled
 # metadata and patches are fetched as untrusted text and are never executed.
 on:
-  pull_request_target:
+  pull_request_target:  # zizmor: ignore[dangerous-triggers]
     types: [opened, synchronize, reopened, ready_for_review, labeled]
 
 permissions:

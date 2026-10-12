@@ -497,6 +497,21 @@ def _launch_policy_patches(
         }
 
 
+def test_bare_launch_preserves_preset_until_agent_selection(monkeypatch):
+    monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "subagent_orch_v0")
+    monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "0")
+
+    def select_and_launch_agent(*args, **kwargs):
+        assert os.environ["SMART_ROUTER_CONFIG_VERSION"] == "subagent_orch_v0"
+        assert os.environ["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] == "0"
+
+    with patch("ucode.cli._launch_managed_default", side_effect=select_and_launch_agent) as launch:
+        result = runner.invoke(app, [])
+
+    assert result.exit_code == 0, result.output
+    launch.assert_called_once()
+
+
 class TestSubcommandRouting:
     @pytest.mark.parametrize("tool", TOOLS)
     def test_subcommand_calls_correct_tool(self, tool):
@@ -946,7 +961,7 @@ class TestSubcommandRouting:
             patch(
                 "ucode.cli._launch_tool",
                 side_effect=lambda *_args, **_kwargs: routing_during_launch.append(
-                    cli_mod.smart_routing_v2.smart_routing_enabled()
+                    cli_mod.smart_routing_v2.smart_routing_enabled(None, default=False, agent=tool)
                 ),
             ) as mock_launch,
         ):

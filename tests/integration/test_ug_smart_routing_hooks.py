@@ -60,7 +60,7 @@ def _routing_decisions(session, agent: str) -> list[dict]:
     return read_jsonl(session.home / ".ucode" / f"{agent}-smart-routing-decisions.jsonl")
 
 
-def _routing_banner_for_task(screen: str, marker: str) -> bool:
+def _routing_banner_for_task(screen: str, marker: str, *, orchestrator_on: bool) -> bool:
     """Whether the rendered router panel belongs to this uniquely tagged task."""
     lines = screen.splitlines()
     for index, line in enumerate(lines):
@@ -73,19 +73,33 @@ def _routing_banner_for_task(screen: str, marker: str) -> bool:
                 break
         # Rich can wrap the marker between any two characters in a narrow TUI.
         # Compare without rendered whitespace so the banner remains attributable.
-        if marker in "".join("\n".join(panel).split()):
+        text = "".join("\n".join(panel).split())
+        if marker in text and (not orchestrator_on or "[orchestratoron]" in text):
             return True
     return False
 
 
-def _run_calculation(tui, session, agent: str, expression: str, expected: str, *, routed: bool):
+def _run_calculation(
+    tui,
+    session,
+    agent: str,
+    expression: str,
+    expected: str,
+    orchestration_enabled: bool,
+    *,
+    routed: bool,
+):
     task = SubagentCalculation(expression, expected)
     before = _routing_decisions(session, agent)
     tui.submit(task.prompt)
 
     if routed:
         tui.wait_for(
-            lambda screen: _routing_banner_for_task(screen, task.marker),
+            lambda screen: _routing_banner_for_task(
+                screen,
+                task.marker,
+                orchestrator_on=orchestration_enabled,
+            ),
             f"the Smart Router subagent banner for {task.marker}",
             timeout=120,
         )
@@ -96,7 +110,9 @@ def _run_calculation(tui, session, agent: str, expression: str, expected: str, *
     after = _routing_decisions(session, agent)
     new_decisions = after[len(before) :]
     if not routed:
-        assert not _routing_banner_for_task(tui.visible, task.marker), tui.visible
+        assert not _routing_banner_for_task(tui.visible, task.marker, orchestrator_on=False), (
+            tui.visible
+        )
         assert not new_decisions, new_decisions
         return
 
@@ -354,6 +370,7 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
     sessions; only the first and third show the subagent-routing banner and produce live gateway
     decisions correlated with those children. Claude's native task view reports no running
     tasks before /exit is submitted. No first-prompt routing wrapper starts.
+    With orchestration enabled, both routed banners must include [orchestrator on].
     """
     session = live_session
     session.env["TMPDIR"] = str(tmp_path)
@@ -377,7 +394,7 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
         session, "claude", [str(session.binary), "claude"], "smart-router-skill-toggle"
     ) as tui:
         tui.boot()
-        _run_calculation(tui, session, "claude", "1+1", "2", routed=True)
+        _run_calculation(tui, session, "claude", "1+1", "2", orchestration_enabled, routed=True)
         _toggle_with_skill(
             tui,
             session,
@@ -385,7 +402,7 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
             enabled=False,
             orchestration_enabled=orchestration_enabled,
         )
-        _run_calculation(tui, session, "claude", "1+2", "3", routed=False)
+        _run_calculation(tui, session, "claude", "1+2", "3", False, routed=False)
         _toggle_with_skill(
             tui,
             session,
@@ -393,7 +410,7 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
             enabled=True,
             orchestration_enabled=orchestration_enabled,
         )
-        _run_calculation(tui, session, "claude", "2+2", "4", routed=True)
+        _run_calculation(tui, session, "claude", "2+2", "4", orchestration_enabled, routed=True)
         tui.wait_for_background_tasks()
         tui.exit_normally()
         transcript = "".join(tui.output)
@@ -436,6 +453,7 @@ def test_smart_router_skill_toggles_codex_subagent_routing(
     collapsed terminal output; all three uniquely tagged calculations complete in native child
     sessions; only the first and third show the subagent-routing banner and produce live gateway
     decisions correlated with those children. No first-prompt interposer starts.
+    With orchestration enabled, both routed banners must include [orchestrator on].
     """
     session = live_session
     session.env["TMPDIR"] = str(tmp_path)
@@ -459,7 +477,7 @@ def test_smart_router_skill_toggles_codex_subagent_routing(
         session, "codex", [str(session.binary), "codex"], "smart-router-skill-toggle"
     ) as tui:
         tui.boot()
-        _run_calculation(tui, session, "codex", "1+1", "2", routed=True)
+        _run_calculation(tui, session, "codex", "1+1", "2", orchestration_enabled, routed=True)
         _toggle_with_skill(
             tui,
             session,
@@ -467,7 +485,7 @@ def test_smart_router_skill_toggles_codex_subagent_routing(
             enabled=False,
             orchestration_enabled=orchestration_enabled,
         )
-        _run_calculation(tui, session, "codex", "1+2", "3", routed=False)
+        _run_calculation(tui, session, "codex", "1+2", "3", False, routed=False)
         _toggle_with_skill(
             tui,
             session,
@@ -475,7 +493,7 @@ def test_smart_router_skill_toggles_codex_subagent_routing(
             enabled=True,
             orchestration_enabled=orchestration_enabled,
         )
-        _run_calculation(tui, session, "codex", "2+2", "4", routed=True)
+        _run_calculation(tui, session, "codex", "2+2", "4", orchestration_enabled, routed=True)
         tui.exit_normally()
         transcript = "".join(tui.output)
     assert SMART_ROUTING_BANNER not in transcript, transcript
