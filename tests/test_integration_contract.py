@@ -224,6 +224,8 @@ def test_fork_integration_runs_only_member_requested_pr_heads():
 
 
 HEAD = "0123456789abcdef0123456789abcdef01234567"
+# Verified against the live API on the protected runner; a text change here must be re-verified.
+PR_HEAD_JQ = '[.head.sha, (.head.repo.full_name // "")] | @tsv'
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="the authorize step runs bash on Linux")
@@ -247,13 +249,14 @@ def test_fork_integration_authorize_pins_the_pr_head_or_the_reviewed_commit(
     script = textwrap.dedent(authorize.split("        run: |\n", 1)[1])
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    # What `gh api --jq '[.head.sha, (.head.repo.full_name // "")] | @tsv'` prints.
+    # What real gh prints for that query; any other --jq expression gets no output and is refused.
     (tmp_path / "pr.tsv").write_text(f"{HEAD}\t{head_repo or ''}\n")
     fake_gh = bin_dir / "gh"
     fake_gh.write_text(
         "#!/bin/sh\n"
         f'echo "$*" >> "{tmp_path}/calls"\n'
-        f'case "$*" in "api repos/databricks/unity-gateway/pulls/7 --jq "*) cat "{tmp_path}/pr.tsv";; esac\n'
+        f"case \"$*\" in 'api repos/databricks/unity-gateway/pulls/7 --jq {PR_HEAD_JQ}')"
+        f' cat "{tmp_path}/pr.tsv";; esac\n'
     )
     fake_gh.chmod(0o755)
     output = tmp_path / "github-output"
@@ -287,7 +290,7 @@ def test_fork_integration_authorize_pins_the_pr_head_or_the_reviewed_commit(
 def test_fork_integration_github_api_jobs_run_on_allowlisted_runners():
     # The org IP allow list rejects GitHub API calls from GitHub-hosted runners.
     workflow = _workflow("fork-integration.yml")
-    protected = "    runs-on:\n      group: databricks-protected-runner-group\n"
+    protected = "    runs-on:\n      group: databricks-protected-runner-group\n      labels: linux-ubuntu-latest\n"
 
     assert workflow.count(protected) == 3
     assert "runs-on: ubuntu-latest" not in workflow
