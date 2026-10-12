@@ -3746,10 +3746,10 @@ class TestHasSubscriptionLogin:
 
         assert claude._has_subscription_login() is False
 
-    def test_non_json_status_falls_back_to_exit_code(self, monkeypatch):
-        self._status(monkeypatch, "Logged in with Claude account")
+    def test_unreadable_status_needs_a_login(self, monkeypatch):
+        self._status(monkeypatch, 'Update available\n{"loggedIn": true}')
 
-        assert claude._has_subscription_login() is True
+        assert claude._has_subscription_login() is False
 
 
 class TestWriteToolConfigBackup:
