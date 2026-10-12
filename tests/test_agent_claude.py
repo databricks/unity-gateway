@@ -727,6 +727,28 @@ class TestMergeAnthropicCustomHeaders:
             "meep: lala",  # Preserved from existing settings in its original position.
         ]
 
+    def test_preserves_existing_request_tags_when_ucode_has_none(self):
+        existing = "databricks-ai-gateway-request-tags: source=isaac-cli"
+        managed = "x-databricks-use-coding-agent-mode: true"
+
+        merged = claude._merge_anthropic_custom_headers(existing, managed)
+
+        assert merged.splitlines() == [
+            "databricks-ai-gateway-request-tags: source=isaac-cli",
+            "x-databricks-use-coding-agent-mode: true",
+        ]
+
+    def test_replaces_existing_request_tags_when_ucode_sets_them(self):
+        existing = "databricks-ai-gateway-request-tags: source=isaac-cli\nmeep: lala"
+        managed = 'Databricks-Ai-Gateway-Request-Tags: {"team":"infra"}'
+
+        merged = claude._merge_anthropic_custom_headers(existing, managed)
+
+        assert merged.splitlines() == [
+            'Databricks-Ai-Gateway-Request-Tags: {"team":"infra"}',
+            "meep: lala",
+        ]
+
 
 class TestRenderOverlayWebSearchDisable:
     def test_settings_overlay_never_includes_mcp_servers(self):

@@ -25,6 +25,11 @@ def request_tags_header_value(env: Mapping[str, str] | None = None) -> str | Non
     value = (source.get(AI_GATEWAY_REQUEST_TAGS_ENV_VAR) or "").strip()
     if not value:
         return None
+    if "\n" in value or "\r" in value:
+        print_warning_err(
+            f"Ignoring {AI_GATEWAY_REQUEST_TAGS_ENV_VAR}: value contains line breaks. Provide the tags as JSON on a single line."
+        )
+        return None
     try:
         # Make sure the value is a JSON object
         parsed = json.loads(value)

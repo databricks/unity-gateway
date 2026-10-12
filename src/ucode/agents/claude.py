@@ -244,9 +244,11 @@ CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
         MODEL_PROVIDER_SERVICE_HEADER.casefold(),
         MODEL_SERVICE_PARENT_SCHEMA_HEADER.casefold(),
         SMART_ROUTER_RECIPE_HEADER.casefold(),
-        AI_GATEWAY_REQUEST_TAGS_HEADER.casefold(),
     }
 )
+# ug replaces these only when it emits them (e.g. AI_GATEWAY_REQUEST_TAGS is set); otherwise an
+# existing line, such as Isaac's own request tags, is preserved.
+CLAUDE_OPTIONAL_CUSTOM_HEADER_NAMES = frozenset({AI_GATEWAY_REQUEST_TAGS_HEADER.casefold()})
 # These attribute inference traffic; neither selects the gateway or provider.
 CLAUDE_OPTIONAL_ATTRIBUTION_HEADER_NAMES = frozenset(
     {"user-agent", SMART_ROUTER_RECIPE_HEADER.casefold()}
@@ -1624,7 +1626,8 @@ def _merge_anthropic_custom_headers(existing: object, ucode_headers: str) -> str
     1. Split the existing custom headers by newline into individual header items.
     2. Split each item on ``:`` to identify its header name.
     3. Replace headers in ``CLAUDE_MANAGED_CUSTOM_HEADER_NAMES`` with ucode's values in their
-       existing positions, while preserving all other existing headers.
+       existing positions, while preserving all other existing headers. Headers in
+       ``CLAUDE_OPTIONAL_CUSTOM_HEADER_NAMES`` are replaced only when ucode supplies a value.
     4. Append any ucode-managed headers that were not already present.
 
     Header names are compared case-insensitively. Non-header lines are also preserved to avoid
@@ -1649,7 +1652,13 @@ def _merge_anthropic_custom_headers(existing: object, ucode_headers: str) -> str
     for line in existing.splitlines():
         name, separator, _value = line.partition(":")
         normalized_name = name.strip().casefold()
-        if separator and normalized_name in CLAUDE_MANAGED_CUSTOM_HEADER_NAMES:
+        if separator and (
+            normalized_name in CLAUDE_MANAGED_CUSTOM_HEADER_NAMES
+            or (
+                normalized_name in CLAUDE_OPTIONAL_CUSTOM_HEADER_NAMES
+                and normalized_name in ucode_lines_by_name
+            )
+        ):
             replacement = ucode_lines_by_name.get(normalized_name)
             if replacement is not None and normalized_name not in replaced_names:
                 merged.append(replacement)
