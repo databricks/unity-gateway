@@ -316,6 +316,55 @@ def managed_file_conflicts(
     return conflicts
 
 
+def raise_on_skipped_managed_overrides(
+    path: Path,
+    conflicts: list[str],
+    *,
+    display: str,
+) -> None:
+    """Fail when an opt-out left a stale OS-managed file overriding the new user config."""
+    if not conflicts:
+        return
+    raise RuntimeError(
+        f"the OS-managed {display} settings at {path} are stale and conflict with your per-user settings."
+        f" {SKIP_OS_SETTINGS_ENV} is set, so the OS-managed settings were not modified. Run `ug revert` "
+        f"from an interactive terminal or remove {path}"
+    )
+
+
+def check_skipped_managed_overrides(
+    path: Path | None,
+    *,
+    parser: ManagedParser,
+    compose: Callable[[dict], dict],
+    owned_paths: list[list[str]],
+    display: str,
+) -> None:
+    """When opting out, fail if a stale OS-managed file still overrides the new user config.
+
+    `UG_SKIP_OS_SETTINGS` leaves the root-owned managed file untouched. A file from an earlier
+    workspace keeps its highest-precedence gateway values, so refuse to proceed when the conflicting
+    keys would let a bare agent silently reach the old workspace. Reads only (no sudo); best-effort,
+    so an unsupported platform, symlink, or unparseable file is left to the normal reconcile path.
+    """
+    if path is None or path.is_symlink():
+        return
+    current_text = read_managed_file(path)
+    if current_text is None:
+        return
+    try:
+        existing = parser(current_text)
+    except RuntimeError:
+        return
+    # `compose` mutates its argument in place, so snapshot the on-disk state before composing.
+    managed_before = deepcopy(existing)
+    raise_on_skipped_managed_overrides(
+        path,
+        managed_file_conflicts(managed_before, compose(existing), owned_paths),
+        display=display,
+    )
+
+
 def _unwrap(value: object) -> object:
     """Return a plain-Python view of a value, unwrapping tomlkit items so it compares by content."""
     unwrap = getattr(value, "unwrap", None)

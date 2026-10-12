@@ -628,7 +628,7 @@ chown() {
 
 
 class TestManagedSettingsSkipped:
-    """``UCODE_SKIP_MANAGED_SETTINGS`` opts out of every OS-managed-file operation."""
+    """``UG_SKIP_OS_SETTINGS`` opts out of every OS-managed-file operation."""
 
     def test_absent_env_does_not_skip(self, monkeypatch):
         monkeypatch.delenv(managed_files.SKIP_OS_SETTINGS_ENV, raising=False)
@@ -663,6 +663,26 @@ class TestManagedSettingsSkipped:
             parser=json.loads,
         )
         assert result == "unsupported"
+
+    def test_raise_on_skipped_managed_overrides_reports_stale_leaves(self):
+        with pytest.raises(RuntimeError) as excinfo:
+            managed_files.raise_on_skipped_managed_overrides(
+                Path("/etc/claude-code/managed-settings.json"),
+                ["env.ANTHROPIC_BASE_URL"],
+                display="Claude Code",
+            )
+        message = str(excinfo.value)
+        assert managed_files.SKIP_OS_SETTINGS_ENV in message
+        assert "stale" in message
+        assert "ug revert" in message
+
+    def test_raise_on_skipped_managed_overrides_silent_without_conflicts(self):
+        # No conflicts means nothing stale overrides the user config, so this must not raise.
+        managed_files.raise_on_skipped_managed_overrides(
+            Path("/etc/claude-code/managed-settings.json"),
+            [],
+            display="Claude Code",
+        )
 
 
 class TestManagedFileLifecycle:
