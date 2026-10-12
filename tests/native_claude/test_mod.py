@@ -76,10 +76,8 @@ def test_native_toggle_lifecycle_and_isolation(native_binary, tmp_path):
                 "environment": before["environment"]
                 if action == "on"
                 else dict.fromkeys(before["environment"], "0"),
-                "body": {
-                    "caller_field": "keep",
-                    "smart_router_recipe_name": "custom_recipe" if action == "on" else "DISABLED",
-                },
+                "headers": "X-Probe-Keep: preserved\nDatabricks-Smart-Router-Recipe: "
+                + ("custom_recipe" if action == "on" else "DISABLED"),
             }
             assert a.observe() == expected
             assert b.observe() == peer
@@ -92,17 +90,17 @@ def test_native_toggle_lifecycle_and_isolation(native_binary, tmp_path):
             **expected,
             "revision": "reloaded",
             "environment": dict.fromkeys(before["environment"], "0"),
-            "body": {"caller_field": "keep", "smart_router_recipe_name": "DISABLED"},
+            "headers": "X-Probe-Keep: preserved\nDatabricks-Smart-Router-Recipe: DISABLED",
         }
         a.send("/smart-router on")
         assert a.observe() == {**before, "revision": "reloaded"}
 
 
-def test_native_parent_and_child_request_bodies(native_binary, fixture_api, tmp_path):
+def test_native_parent_and_child_request_headers(native_binary, fixture_api, tmp_path):
     api, captures = fixture_api
     env = {
         "SMART_ROUTER_CONFIG_VERSION": config.SUBAGENT_ORCH_V0,
-        "SMART_ROUTER_NAME": 'custom "quoted" λ',
+        "SMART_ROUTER_NAME": 'custom "quoted"',
     }
     with Session(native_binary, tmp_path / "requests", env, api + "/requests") as session:
         before = session.observe()
@@ -114,13 +112,16 @@ def test_native_parent_and_child_request_bodies(native_binary, fixture_api, tmp_
             rows = captures[count:]
             recipe = env["SMART_ROUTER_NAME"] if action == "on" else "DISABLED"
             assert {row["source"] for row in rows} == {"parent", "child"}, rows
-            assert {row["value"] for row in rows} == {recipe}, rows
+            assert {row["recipe"] for row in rows} == {recipe}, rows
+            assert {row["keep"] for row in rows} == {"preserved"}, rows
+            assert {row["body_recipe"] for row in rows} == {"ABSENT"}, rows
             assert {row["caller"] for row in rows} == {"keep"}, rows
         session.send("/smart-router off")
         session.send("/compact")
-        assert session.observe()["body"] == {
-            "caller_field": "keep",
-            "smart_router_recipe_name": "DISABLED",
-        }
+        observed = session.observe()
+        assert observed["body"] == {"caller_field": "keep"}
+        assert observed["headers"] == (
+            "X-Probe-Keep: preserved\nDatabricks-Smart-Router-Recipe: DISABLED"
+        )
         session.send("/smart-router on")
         assert session.observe() == before

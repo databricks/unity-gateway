@@ -15,8 +15,9 @@ mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 Claude mod entry-point coverage lives in `test_claude_mod.py` (generated plugin contents),
 `test_claude_smart_routing_v2.py` (launch wiring), and the explicitly selected
 `native_claude/test_mod.py` suite. Claude 2.1.290 validates the module and runs its
-TypeScript event-forwarding test in CI. Request metadata and toggle behavior are
-covered by a follow-up change. See [the mod guide](../docs/claude-mod.md).
+TypeScript event tests, toggle lifecycle checks, and parent/child recipe-header checks
+against a local fixture API in CI. These checks do not establish live gateway coverage.
+See [the mod guide](../docs/claude-mod.md).
 
 Dedicated CUJs reuse `integration/utils` session/terminal mechanics and file-task
 and transcript readers, not its config stubs or pytest fixtures. Prompt/model
@@ -471,6 +472,8 @@ unknown selectors, and absent versus empty flags. These checks do not establish 
 
 Native Claude component checks exercise the installed smart-router skill with the mod:
 complete off/on restoration, process isolation, clear/reload, compaction, and real parent/Agent
-request payloads against a local fixture API. Mod unit cases cover absent/empty flags,
-invalid JSON and arguments, orchestration-only inactivity, and rollback after denied writes.
+request headers against a local fixture API, with caller body fields unchanged. Mod unit
+cases cover absent/empty flags and headers, duplicate recipe headers, invalid arguments,
+recipe line breaks, untouched caller bodies, orchestration-only inactivity, and rollback
+after denied header writes.
 These are not live gateway or interactive TUI results.

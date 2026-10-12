@@ -20,8 +20,8 @@ const routed = {
 };
 const start = {surface: 'terminal', isInteractive: true, cwd: '/work'} as const;
 
-function environment(on, flags, body = '{"caller":1}', denied = '') {
-  const env = {...flags, CLAUDE_CODE_EXTRA_BODY: body};
+function environment(on, flags, headers = 'X-Caller: keep', denied = '') {
+  const env = {...flags, ANTHROPIC_CUSTOM_HEADERS: headers, CLAUDE_CODE_EXTRA_BODY: '{"caller":1}'};
   on('env.get', ($, e) => ({value: env[e.name]}));
   on('env.set', ($, e) => {
     if (e.name === denied) return {deny: 'Updates denied'};
@@ -38,11 +38,13 @@ test('complete toggle restores baseline and preserves new caller metadata', {opt
   await $.session.start(start);
   for (const action of ['off', 'off', 'on', 'on']) {
     env.CLAUDE_CODE_EXTRA_BODY = '{"caller":2}';
+    env.ANTHROPIC_CUSTOM_HEADERS = 'X-Caller: updated\ndatabricks-smart-router-recipe: old\nDATABRICKS-SMART-ROUTER-RECIPE: duplicate\nX-Other: keep';
     const reply = await $.command.run({command: 'smart-router', args: action});
     expect(reply.text).toContain(`Smart Router is ${action}`);
     expect(env).toEqual({
       ...(action === 'on' ? flags : {ENABLE_SMART_ROUTING_V2: '0', ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '0', ENABLE_SMART_ROUTER_ORCHESTRATOR: '0'}),
-      CLAUDE_CODE_EXTRA_BODY: JSON.stringify({caller: 2, smart_router_recipe_name: action === 'on' ? routed.recipe : 'DISABLED'}),
+      ANTHROPIC_CUSTOM_HEADERS: `X-Caller: updated\nX-Other: keep\nDatabricks-Smart-Router-Recipe: ${action === 'on' ? routed.recipe : 'DISABLED'}`,
+      CLAUDE_CODE_EXTRA_BODY: '{"caller":2}',
     });
   }
 });
@@ -56,26 +58,20 @@ test('empty and absent launch flags are restored exactly', {options: {
   const before = {...env};
   await $.command.run({command: 'smart-router', args: 'off'});
   await $.session.start(start);
-  expect(JSON.parse(env.CLAUDE_CODE_EXTRA_BODY).smart_router_recipe_name).toBe('DISABLED');
+  expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe('X-Caller: keep\nDatabricks-Smart-Router-Recipe: DISABLED');
   await $.command.run({command: 'smart-router', args: 'on'});
   expect(env).toEqual(before);
 });
 
-test('invalid input and denied writes preserve prior environment', {options: routed}, async ($, on) => {
+test('invalid arguments and denied header writes preserve prior environment', {options: routed}, async ($, on) => {
   const flags = {ENABLE_SMART_ROUTING_V2: '1', ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1', ENABLE_SMART_ROUTER_ORCHESTRATOR: '1'};
-  const env = environment(on, flags, '{}', 'ENABLE_SMART_ROUTER_ORCHESTRATOR');
+  const env = environment(on, flags, 'X-Caller: keep', 'ANTHROPIC_CUSTOM_HEADERS');
   const before = {...env};
   const reply = await $.command.run({command: 'smart-router', args: 'off'});
   expect(reply.text).toContain('Could not update');
   expect(env).toEqual(before);
   await $.command.run({command: 'smart-router', args: 'typo'});
   expect(env).toEqual(before);
-  for (const raw of ['broken', 'null', '[]', 'true']) {
-    env.CLAUDE_CODE_EXTRA_BODY = raw;
-    const result = await $.command.run({command: 'smart-router', args: 'off'});
-    expect(result.text).toContain('Could not update');
-    expect(env).toEqual({...before, CLAUDE_CODE_EXTRA_BODY: raw});
-  }
 });
 
 test('orchestration alone does not activate routing', {options: {ENABLE_SMART_ROUTER_ORCHESTRATOR: '1'}}, async ($, on) => {
@@ -84,5 +80,29 @@ test('orchestration alone does not activate routing', {options: {ENABLE_SMART_RO
   await $.session.start(start);
   const result = await $.command.run({command: 'smart-router', args: 'on'});
   expect(result.text).toContain('not enabled');
+  expect(env).toEqual(before);
+});
+
+test('absent and empty headers work without parsing caller bodies', {options: routed}, async ($, on) => {
+  const env = environment(on, {});
+  for (const headers of [undefined, '']) {
+    for (const raw of ['broken', 'null', '[]', 'true', '{"smart_router_recipe_name":"caller_override"}']) {
+      env.ANTHROPIC_CUSTOM_HEADERS = headers;
+      env.CLAUDE_CODE_EXTRA_BODY = raw;
+      const reply = await $.command.run({command: 'smart-router', args: 'on'});
+      expect(reply.text).toContain('Smart Router is on');
+      expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe(`Databricks-Smart-Router-Recipe: ${routed.recipe}`);
+      expect(env.CLAUDE_CODE_EXTRA_BODY).toBe(raw);
+    }
+  }
+});
+
+test('recipe line breaks are rejected before environment writes', {options: {
+  ...routed, recipe: 'task_v3\r\nX-Injected: value',
+}}, async ($, on) => {
+  const env = environment(on, {});
+  const before = {...env};
+  const reply = await $.command.run({command: 'smart-router', args: 'on'});
+  expect(reply.text).toContain('Could not update');
   expect(env).toEqual(before);
 });

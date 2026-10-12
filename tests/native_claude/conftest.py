@@ -31,7 +31,9 @@ def fixture_api():
                 {
                     "session": self.path.split("/")[1],
                     "source": source,
-                    "value": body.get("smart_router_recipe_name", "ABSENT"),
+                    "recipe": self.headers.get("Databricks-Smart-Router-Recipe"),
+                    "keep": self.headers.get("X-Probe-Keep"),
+                    "body_recipe": body.get("smart_router_recipe_name", "ABSENT"),
                     "caller": body.get("caller_field"),
                 }
             )

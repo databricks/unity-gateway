@@ -59,8 +59,9 @@ or construct ug state files. The normal test suite checks these boundaries.
 
 The Claude mod entry point has separate native component checks in
 `../native_claude/test_mod.py`. Claude 2.1.290 validates the module and runs its
-TypeScript event-forwarding test in a dedicated CI job. These checks do not submit
-inference requests or replace this suite's live gateway/TUI journeys.
+TypeScript event tests, toggle lifecycle checks, and parent/child recipe-header checks
+against a local fixture API in a dedicated CI job. These checks do not replace this
+suite's live gateway/TUI journeys.
 
 The existing unit tests keep their fixtures. Integration has an independent
 pytest configuration and uses `--confcutdir` so those fixtures cannot leak in.
@@ -995,6 +996,8 @@ unknown selectors, and absent versus empty flags. These checks do not establish 
 
 Native Claude component checks exercise the installed smart-router skill with the mod:
 complete off/on restoration, process isolation, clear/reload, compaction, and real parent/Agent
-request payloads against a local fixture API. Mod unit cases cover absent/empty flags,
-invalid JSON and arguments, orchestration-only inactivity, and rollback after denied writes.
+request headers against a local fixture API, with caller body fields unchanged. Mod unit
+cases cover absent/empty flags and headers, duplicate recipe headers, invalid arguments,
+recipe line breaks, untouched caller bodies, orchestration-only inactivity, and rollback
+after denied header writes.
 These are not live gateway or interactive TUI results.

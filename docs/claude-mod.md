@@ -8,19 +8,25 @@ from `src/ucode/agents/claude_mods/` and writes `hooks/hooks.json` into that plu
 routing launches use this path, and the existing temporary-directory lifecycle
 cleans up the files when Claude exits.
 
-The mod merges the launch recipe into `CLAUDE_CODE_EXTRA_BODY` and intercepts the
-existing skill's `/smart-router on|off` command locally, without inference or command
+The mod merges the launch recipe into the `Databricks-Smart-Router-Recipe` header
+via `ANTHROPIC_CUSTOM_HEADERS` and intercepts the existing skill's `/smart-router on|off` command locally, without inference or command
 registration. Off sets every routing flag to `0` and the recipe to `DISABLED`; on
 restores the original flags and recipe, including originally absent variables.
-Unrelated request fields are preserved. A failed write attempts to restore prior values
-and reports failure; the native environment API does not provide an atomic transaction.
+Unrelated headers are preserved, and `CLAUDE_CODE_EXTRA_BODY` is left untouched.
+Duplicate recipe headers are replaced case-insensitively. Recipe line breaks are rejected.
+A failed write attempts to restore prior values and reports failure; the native environment API does not provide an atomic transaction.
+
+If a caller supplies `smart_router_recipe_name` in the request body, gateways with
+body-recipe parsing enabled give it precedence over the header; toggles preserve that override.
 
 The baseline comes from native plugin options and survives `/clear`, `/compact`, and
 plugin reloads. Toggles affect future requests and newly spawned hooks; already running
 child processes retain their inherited environment. No toggle writes settings or snapshots.
 
 The `Claude mod · 2.1.290` CI job validates the packaged module and runs its
-TypeScript event-forwarding test. To run those checks locally:
+TypeScript event tests, toggle lifecycle checks, and parent/child header checks against
+a local fixture API. These component checks do not establish live gateway coverage.
+To run those checks locally:
 
 ```bash
 UCODE_TEST_CLAUDE_BINARY=/absolute/path/to/claude \

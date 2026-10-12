@@ -7,7 +7,7 @@ async function readEnvironment($: EngineInterface): Promise<Environment> {
     ENABLE_SMART_ROUTING_V2: await $.env.get('ENABLE_SMART_ROUTING_V2'),
     ENABLE_SMART_ROUTING_SUBAGENT_ONLY: await $.env.get('ENABLE_SMART_ROUTING_SUBAGENT_ONLY'),
     ENABLE_SMART_ROUTER_ORCHESTRATOR: await $.env.get('ENABLE_SMART_ROUTER_ORCHESTRATOR'),
-    CLAUDE_CODE_EXTRA_BODY: await $.env.get('CLAUDE_CODE_EXTRA_BODY'),
+    ANTHROPIC_CUSTOM_HEADERS: await $.env.get('ANTHROPIC_CUSTOM_HEADERS'),
   };
 }
 
@@ -16,23 +16,24 @@ async function writeEnvironment($: EngineInterface, env: Environment): Promise<v
   await $.env.set('ENABLE_SMART_ROUTING_V2', env.ENABLE_SMART_ROUTING_V2);
   await $.env.set('ENABLE_SMART_ROUTING_SUBAGENT_ONLY', env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY);
   await $.env.set('ENABLE_SMART_ROUTER_ORCHESTRATOR', env.ENABLE_SMART_ROUTER_ORCHESTRATOR);
-  await $.env.set('CLAUDE_CODE_EXTRA_BODY', env.CLAUDE_CODE_EXTRA_BODY);
+  await $.env.set('ANTHROPIC_CUSTOM_HEADERS', env.ANTHROPIC_CUSTOM_HEADERS);
 }
 
 async function setRouting($: EngineInterface, options: PluginOptions, enabled: boolean): Promise<void> {
   const original = (key: string): string | undefined =>
     (options.unset as readonly string[]).includes(key) ? undefined : options[key] as string;
   const previous = await readEnvironment($);
-  const body = JSON.parse(previous.CLAUDE_CODE_EXTRA_BODY || '{}');
-  if (!body || Array.isArray(body) || typeof body !== 'object') {
-    throw new Error('CLAUDE_CODE_EXTRA_BODY must be a JSON object.');
+  const recipe = enabled ? options.recipe : 'DISABLED';
+  if (typeof recipe !== 'string' || /[\r\n]/.test(recipe)) {
+    throw new Error('Smart Router recipe must be a single-line string.');
   }
+  const headers = (previous.ANTHROPIC_CUSTOM_HEADERS || '').split('\n').filter(
+    line => line.trim() && line.split(':')[0].trim().toLowerCase() !== 'databricks-smart-router-recipe');
   const environment = {
     ENABLE_SMART_ROUTING_V2: enabled ? original('ENABLE_SMART_ROUTING_V2') : '0',
     ENABLE_SMART_ROUTING_SUBAGENT_ONLY: enabled ? original('ENABLE_SMART_ROUTING_SUBAGENT_ONLY') : '0',
     ENABLE_SMART_ROUTER_ORCHESTRATOR: enabled ? original('ENABLE_SMART_ROUTER_ORCHESTRATOR') : '0',
-    CLAUDE_CODE_EXTRA_BODY: JSON.stringify({...body,
-      smart_router_recipe_name: enabled ? options.recipe : 'DISABLED'}),
+    ANTHROPIC_CUSTOM_HEADERS: [...headers, `Databricks-Smart-Router-Recipe: ${recipe}`].join('\n'),
   };
   try {
     await writeEnvironment($, environment);
@@ -69,7 +70,7 @@ export function register(on: On, options: PluginOptions): void {
         : ' Apply the smart-router-orchestrator skill to further work.';
       return {text: `Smart Router is ${action} for this session.${guidance}`};
     } catch {
-      return {text: 'Could not update Smart Router. Check CLAUDE_CODE_EXTRA_BODY and environment permissions; retry or restart through UG.'};
+      return {text: 'Could not update Smart Router. Check the recipe, ANTHROPIC_CUSTOM_HEADERS, and environment permissions; retry or restart through UG.'};
     }
   });
 }

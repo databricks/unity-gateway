@@ -58,4 +58,4 @@ def test_launch_options_preserve_empty_and_absent_values():
 def test_mod_setters_cover_every_registered_routing_flag():
     source = Path(v2.__file__).parents[1] / "agents/claude_mods/register.ts"
     names = set(re.findall(r"\$\.env\.set\('([^']+)'", source.read_text()))
-    assert names - {"CLAUDE_CODE_EXTRA_BODY"} == set(SMART_ROUTING_ENV_KEYS)
+    assert names - {"ANTHROPIC_CUSTOM_HEADERS"} == set(SMART_ROUTING_ENV_KEYS)
