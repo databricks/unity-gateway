@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import subprocess
 
+import pytest
+
 from ucode import mcp_connection_login as mcl
 
 WS = "https://ws.staging.cloud.databricks.com"
 AIGW_URL = f"{WS}/ai-gateway/mcp-services/system.ai.github"
+RESOLVED_CLI = "/opt/databricks/bin/databricks"
 
 
 class TestConnectionFromUrl:
@@ -29,6 +32,10 @@ class TestConnectionFromUrl:
 
 
 class TestRunConnectionLogin:
+    @pytest.fixture(autouse=True)
+    def _resolved_cli(self, monkeypatch):
+        monkeypatch.setattr(mcl, "databricks_cli_path", lambda: RESOLVED_CLI)
+
     def _fake_run(self, captured, *, returncode, stderr=""):
         def _run(argv, **kwargs):
             # The `--resource`-support pre-check runs `auth login --help` first.
@@ -49,7 +56,8 @@ class TestRunConnectionLogin:
 
         assert ok and message == "signed in"
         argv = captured[0]
-        assert argv[:3] == ["databricks", "auth", "login"]
+        assert argv[0] == RESOLVED_CLI
+        assert argv[1:3] == ["auth", "login"]
         assert "--resource" in argv and AIGW_URL in argv
         assert "--host" in argv and WS in argv
         assert "--profile" in argv and "p" in argv

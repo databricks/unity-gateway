@@ -7,7 +7,6 @@ import hashlib
 import os
 import re
 import signal
-import subprocess
 import tempfile
 import threading
 from collections.abc import Callable
@@ -37,6 +36,7 @@ from ucode.config_io import (
     write_toml_file,
 )
 from ucode.constants import (
+    AGENT_CODEX,
     AI_GATEWAY_REQUEST_TAGS_HEADER,
     LOOPBACK_HOST,
     MODEL_PROVIDER_SERVICE_HEADER,
@@ -71,6 +71,7 @@ from ucode.managed_files import (
     reconcile_managed_file,
     revert_managed_file,
 )
+from ucode.os_compatibility import subprocess_cross_os
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.codex_hooks import (
     remove_smart_routing_hooks,
@@ -208,7 +209,7 @@ def _provider_block(
         http_headers[MODEL_PROVIDER_SERVICE_HEADER] = provider
     elif parent_schema:
         http_headers[MODEL_SERVICE_PARENT_SCHEMA_HEADER] = parent_schema
-    if smart_routing_v2.smart_routing_enabled():
+    if smart_routing_v2.smart_routing_enabled(None, default=False, agent=AGENT_CODEX):
         http_headers[SMART_ROUTER_RECIPE_HEADER] = configured_router_name()
     request_tags = request_tags_header_value()
     if request_tags:
@@ -490,7 +491,9 @@ def write_tool_config(
         prune_key_paths(base, _PROVIDER_HTTP_HEADERS_KEY_PATHS)
         deep_merge_dict(base, copy.deepcopy(overlay))
         # deep_merge can't drop keys, so clear model preferences from an earlier run.
-        if chosen_model is None and not smart_routing_v2.smart_routing_enabled():
+        if chosen_model is None and not smart_routing_v2.smart_routing_enabled(
+            None, default=False, agent=AGENT_CODEX
+        ):
             for key in ("model", "model_reasoning_effort"):
                 base.pop(key, None)
         if include_catalog:
@@ -535,6 +538,33 @@ def _parse_managed_config(text: str) -> dict:
         return tomlkit.parse(text)
     except ParseError as exc:
         raise RuntimeError(f"invalid TOML: {exc}") from exc
+
+
+def managed_user_agent() -> str | None:
+    """The User-Agent value in Codex's OS-managed Databricks provider headers, if one is there."""
+    path = codex_managed_config_path()
+    try:
+        text = read_managed_file(path) if path else None
+        doc = _parse_managed_config(text) if text else {}
+    except (RuntimeError, ValueError):  # ValueError: a file that isn't UTF-8
+        return None
+    headers = _managed_provider_headers(doc)
+    key = _user_agent_key(headers)
+    value = headers[key] if headers is not None and key is not None else None
+    return value if isinstance(value, str) else None
+
+
+def _managed_provider_headers(doc: dict) -> dict | None:
+    """The Databricks provider's ``http_headers`` table in a Codex config document, if present."""
+    providers = doc.get("model_providers")
+    provider = providers.get(CODEX_MODEL_PROVIDER_NAME) if isinstance(providers, dict) else None
+    headers = provider.get("http_headers") if isinstance(provider, dict) else None
+    return headers if isinstance(headers, dict) else None
+
+
+def _user_agent_key(headers: dict | None) -> str | None:
+    """The ``User-Agent`` key in ``headers`` under any casing, else None."""
+    return next((key for key in headers or {} if str(key).casefold() == "user-agent"), None)
 
 
 def managed_config_is_current(state: dict) -> bool:
@@ -584,15 +614,8 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
         ) from exc
     managed_before = copy.deepcopy(existing)
     desired_doc = compose(existing)
-    if not managed_writes_allowed():
-        conflicts = managed_file_conflicts(managed_before, desired_doc, MANAGED_KEYS)
-        if conflicts:
-            raise RuntimeError(
-                "Codex configuration cannot be applied non-interactively because OS-managed "
-                f"settings at {path} override ucode values: {', '.join(conflicts)}. Run `ucode "
-                "configure --agent codex` from an interactive terminal or contact your "
-                "administrator."
-            )
+    conflicts = managed_file_conflicts(managed_before, desired_doc, MANAGED_KEYS)
+    if not managed_writes_allowed() and not conflicts:
         mark_managed_file_verified(state, "codex", path, scope="local-compatible")
         return
     try:
@@ -605,7 +628,6 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
             parser=_parse_managed_config,
         )
     except ManagedFileWriteUnavailable:
-        conflicts = managed_file_conflicts(managed_before, desired_doc, MANAGED_KEYS)
         if conflicts:
             raise
         print_warning_err(
@@ -618,6 +640,11 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
 
 
 MANAGED_MCP_CONFIG_KEY = "mcp_servers"
+_CODEX_MCP_AUTH_ENV_VARS = [
+    "DATABRICKS_BEARER",
+    "DATABRICKS_BEARER_COMMAND",
+    "DATABRICKS_CONFIG_FILE",
+]
 
 
 def managed_mcp_uses_managed_file() -> bool:
@@ -632,7 +659,11 @@ def managed_mcp_uses_managed_file() -> bool:
 
 def managed_mcp_entry(argv: list[str]) -> dict:
     """A ``[mcp_servers.<name>]`` stdio entry from the ``ug mcp-proxy`` argv (same as user scope)."""
-    return {"command": argv[0], "args": list(argv[1:])}
+    return {
+        "command": argv[0],
+        "args": list(argv[1:]),
+        "env_vars": list(_CODEX_MCP_AUTH_ENV_VARS),
+    }
 
 
 def managed_mcp_http_entry(url: str, client_id: str) -> dict:
@@ -791,9 +822,8 @@ def default_model(state: dict) -> str | None:
     """Return a managed Codex model, or leave selection to Codex."""
     if isinstance(state.get("codex_default_model"), str):
         return state["codex_default_model"]
-    if smart_routing_v2.smart_routing_enabled():
+    if smart_routing_v2.smart_routing_enabled(None, default=False, agent=AGENT_CODEX):
         return _smart_routing_config_model(state)
-    clear_model_preferences(state)
     return None
 
 
@@ -820,7 +850,7 @@ def config_precedence_paths() -> tuple[Path, ...]:
 
 def clear_model_preferences(state: dict) -> bool:
     """Remove ucode profile model preferences so Codex selects its default."""
-    if smart_routing_v2.smart_routing_enabled():
+    if smart_routing_v2.smart_routing_enabled(None, default=False, agent=AGENT_CODEX):
         return False
     if isinstance(state.get("codex_default_model"), str):
         return False
@@ -1056,7 +1086,7 @@ def _launch_codex_with_otel_proxy(
     server_thread.start()
     endpoint = f"http://{LOOPBACK_HOST}:{server.server_address[1]}/v1/traces"
     otel_args = codex_config_args(_otel_proxy_overlay(endpoint))
-    proc = subprocess.Popen([*base_argv, *otel_args, *tool_args])
+    proc = subprocess_cross_os.popen([*base_argv, *otel_args, *tool_args])
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:

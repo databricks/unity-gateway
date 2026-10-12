@@ -1,7 +1,7 @@
 """Version-floor gate: ug enforces minimum agent CLI versions at launch.
 
 One scenario per agent, driven against the real installed CLI with a
-below-floor pin (`--claude-version 2.1.258 --codex-version 0.144.0`, or the
+below-floor pin (`--claude-version 2.1.289 --codex-version 0.144.0`, or the
 matching workflow_dispatch inputs). The gate only exists below the floor, and
 the suite forbids skips, so each scenario returns early when the pinned CLI
 already meets the floor.
@@ -18,9 +18,9 @@ from utils.terminal import TerminalProcess
 
 pytestmark = pytest.mark.installation
 
-_FLOORS = {"claude": (2, 1, 259), "codex": (0, 145, 0)}
+_FLOORS = {"claude": (2, 1, 290), "codex": (0, 145, 0)}
 _REQUIREMENTS = {
-    "claude": "ug requires Claude Code 2.1.259 or newer",
+    "claude": "ug requires Claude Code 2.1.290 or newer",
     "codex": "ug requires Codex 0.145.0 or newer",
 }
 _UPGRADE_PROMPTS = {

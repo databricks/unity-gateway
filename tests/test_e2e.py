@@ -15,8 +15,8 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
-import threading
 from pathlib import Path
 from urllib import error as urllib_error
 from urllib import request as urllib_request
@@ -41,22 +41,18 @@ from ucode.databricks import (
     service_usable_for_tool,
     workspace_hostname,
 )
+from ucode.os_compatibility import subprocess_cross_os
 from ucode.ui import normalize_workspace_url
 
 # ---------------------------------------------------------------------------
 # CI provider-launch pinning
 # ---------------------------------------------------------------------------
-# The claude and codex provider-launch tests each route through one fixed,
-# non-relayed MPS that exposes only its cheapest model, so the inference is
-# deterministic and ~a cent per run rather than depending on whichever service
-# happened to list first. Hardcoded on purpose.
+# The claude provider-launch tests route through one fixed, non-relayed MPS
+# that exposes only its cheapest model, so the inference is deterministic and
+# ~a cent per run rather than depending on whichever service happened to list
+# first. Hardcoded on purpose.
 CI_ANTHROPIC_MPS = "main.ucode.ci_e2e_anthropic_nonrelay_mps"  # api-key Anthropic (for claude)
 CI_ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
-CI_ANTHROPIC_RELAY_MPS = (
-    "main.ucode.ci_e2e_anthropic_relay_mps"  # subscription-relay Anthropic (for claude)
-)
-CI_OPENAI_MPS = "main.ucode.ci_openai_mps"  # api-key OpenAI (for codex)
-CI_OPENAI_MODEL = "gpt-5-nano"
 
 # Claude Code's client-side model pre-flight is flaky for MPS-routed ids and emits this; the
 # launch retries on it before giving up (see TestModelProviderLaunch).
@@ -77,10 +73,17 @@ def _skip_if_no_workspace():
         pytest.skip("Set UCODE_TEST_WORKSPACE=https://... to run E2E tests")
 
 
+@pytest.fixture(autouse=True)
+def _real_command_resolution(_isolate_ucode_state, monkeypatch):
+    # Unit tests stub out Windows shim lookup; live tests need the installed agent CLIs.
+    monkeypatch.setattr(subprocess_cross_os, "shutil", shutil)
+
+
 def _run_agent(
     cmd: list[str], env: dict | None = None, timeout: int = 60
 ) -> subprocess.CompletedProcess:
-    return subprocess.run(
+    # The cross-OS helper resolves npm `.cmd` shims, which CreateProcess can't run by bare name.
+    return subprocess_cross_os.run(
         cmd,
         capture_output=True,
         text=True,
@@ -88,6 +91,13 @@ def _run_agent(
         env=env,
         stdin=subprocess.DEVNULL,
     )
+
+
+def _timeout_output(output: str | bytes | None) -> str:
+    """Partial output from TimeoutExpired is bytes on POSIX but already text on Windows."""
+    if isinstance(output, bytes):
+        return output.decode("utf-8", errors="replace")
+    return output or ""
 
 
 def _codex_home_outside_tmp() -> Path:
@@ -434,9 +444,8 @@ E2E_MODEL_SKIP_HARNESSES: dict[str, frozenset[str]] = {
     "gpt-5-6-luna": frozenset({"copilot", "pi"}),
     "gpt-5-6-sol": frozenset({"copilot", "pi"}),
     "gpt-5-6-terra": frozenset({"copilot"}),
-    "gpt-6-astra": frozenset({"copilot"}),
-    "gpt-6-luna": frozenset({"copilot", "pi"}),
-    "gpt-6-sol": frozenset({"copilot", "pi"}),
+    "gpt-6-luna": frozenset({"pi"}),
+    "gpt-6-sol": frozenset({"pi"}),
 }
 
 
@@ -573,12 +582,12 @@ class TestClaudeLaunch:
 
 
 class TestModelProviderLaunch:
-    """Launch claude/codex routed through a real Model Provider Service.
+    """Launch claude routed through a real Model Provider Service.
 
-    Both are pinned to fixed CI MPSes (CI_ANTHROPIC_MPS / CI_OPENAI_MPS), each
-    exposing only its cheapest model, so a real request flows through the MPS
-    gateway deterministically. Skips when the MPS is absent or the caller lacks
-    permission on the backing connection.
+    Pinned to a fixed CI MPS (CI_ANTHROPIC_MPS) exposing only its cheapest
+    model, so a real request flows through the MPS gateway deterministically.
+    Skips when the MPS is absent or the caller lacks permission on the backing
+    connection.
     """
 
     @staticmethod
@@ -685,112 +694,6 @@ class TestModelProviderLaunch:
             tmp_path, monkeypatch, state, provider_models, launch_model, e2e_workspace, e2e_token
         )
 
-    def test_launch_claude_through_relayed_provider(
-        self, tmp_path, monkeypatch, e2e_state, e2e_workspace, e2e_token
-    ):
-        """Relayed (subscription-relay) launch: Claude Code authenticates to
-        Anthropic with the subscription OAuth token while the loopback proxy
-        injects the Databricks swap token. Headless runs supply the OAuth token
-        via CLAUDE_CODE_OAUTH_TOKEN (`claude setup-token` output); without it the
-        launch would open an interactive browser login, so the test skips. Also
-        needs a relayed MPS on the workspace, so it stays inert until both exist.
-        """
-        import ucode.config_io as config_io_mod
-        from ucode import gateway_proxy
-        from ucode.agents import claude
-
-        _require_binary("claude")
-        if not os.environ.get(claude.CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR):
-            pytest.skip(
-                "set CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) to run the relayed launch"
-            )
-        provider = CI_ANTHROPIC_RELAY_MPS
-        _, error, _relayed = resolve_provider_models(
-            "claude", {**e2e_state, "workspace": e2e_workspace}, provider
-        )
-        if error is not None:
-            pytest.skip(
-                f"CI relayed Anthropic MPS {provider} unavailable on this workspace: {error}"
-            )
-
-        config_dir = tmp_path / "claude_config"
-        config_dir.mkdir()
-        monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
-        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", config_dir / "settings.json")
-        monkeypatch.setattr(claude, "CLAUDE_BACKUP_PATH", tmp_path / "claude-settings.backup.json")
-        # Start the real loopback refresh proxy exactly as `_launch_relayed` does, so
-        # the request is credential-swapped and relayed like a live session. The token
-        # provider feeds the e2e bearer rather than shelling out to the CLI.
-        server, cache, client = gateway_proxy.start_relay_proxy(
-            e2e_workspace, lambda _force: e2e_token, 0
-        )
-        port = server.server_address[1]
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        try:
-            state = {**e2e_state, "workspace": e2e_workspace, "relayed_proxy_port": port}
-            with pytest.MonkeyPatch().context() as mp:
-                mp.setattr("ucode.state.save_state", lambda s: None)
-                claude.write_tool_config(state, None, provider=provider, relayed=True)
-            env = {
-                **os.environ,
-                "CLAUDE_CONFIG_DIR": str(config_dir),
-                "ANTHROPIC_BASE_URL": f"http://127.0.0.1:{port}",
-            }
-            result = _run_agent(claude.validate_cmd("claude"), env=env, timeout=90)
-        finally:
-            cache.stop()
-            server.shutdown()
-            client.close()
-        combined = (result.stdout + result.stderr).strip()
-        self._skip_if_provider_unusable(combined, provider)
-        assert result.returncode == 0 and combined, (
-            f"relayed provider={provider} rc={result.returncode} "
-            f"stdout={result.stdout[:300]!r} stderr={result.stderr[:300]!r}"
-        )
-
-    def test_launch_codex_through_provider(
-        self, tmp_path, monkeypatch, e2e_state, e2e_workspace, e2e_token
-    ):
-        import ucode.config_io as config_io_mod
-        from ucode.agents import codex
-
-        _require_binary("codex")
-        # Pinned to the fixed CI OpenAI MPS (Nano-only) — the codex counterpart to the claude pin
-        # (codex speaks the OpenAI API, so it can't use the Anthropic MPS). Skip when it's absent.
-        provider = CI_OPENAI_MPS
-        state = {**e2e_state, "workspace": e2e_workspace, "codex_default_model": CI_OPENAI_MODEL}
-        _, error, _ = resolve_provider_models("codex", state, provider)
-        if error is not None:
-            pytest.skip(f"CI OpenAI MPS {provider} unavailable on this workspace: {error}")
-
-        monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
-        config_dir = _codex_home_outside_tmp() / ".codex"
-        config_dir.mkdir(parents=True)
-        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", config_dir / "ucode.config.toml")
-        monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "codex-config.backup.toml")
-
-        with pytest.MonkeyPatch().context() as mp:
-            mp.setattr("ucode.state.save_state", lambda s: None)
-            # codex.write_tool_config pins the model from state["codex_default_model"] (set above),
-            # so it lands as gpt-5-nano — the only model this MPS allows.
-            codex.write_tool_config(state, None, provider=provider)
-
-        timeout_seconds = int(os.environ.get("UCODE_E2E_AGENT_TIMEOUT", "60"))
-        try:
-            result = _run_agent(
-                codex.validate_cmd("codex"),
-                env={**os.environ, "CODEX_HOME": str(config_dir)},
-                timeout=timeout_seconds,
-            )
-        except subprocess.TimeoutExpired:
-            pytest.fail(f"provider={provider} timed out after {timeout_seconds}s")
-        combined = (result.stdout + result.stderr).strip()
-        self._skip_if_provider_unusable(combined, provider)
-        assert result.returncode == 0 and combined, (
-            f"provider={provider} rc={result.returncode} "
-            f"stdout={result.stdout[:300]!r} stderr={result.stderr[:300]!r}"
-        )
-
 
 class TestAnthropicNonRelayMps:
     """Non-relay (api-key) Anthropic MPS, pinned to CI_ANTHROPIC_MPS (Haiku-only).
@@ -877,6 +780,10 @@ class TestGeminiLaunch:
                 f"({gemini.MAX_GEMINI_VERSION_TEXT}); run `ucode gemini` to downgrade."
             )
         gemini_models: list = e2e_state.get("gemini_models") or []
+        # Windows CI installs Gemini CLI from JFrog, which still serves a build under the ceiling, so
+        # it's the lane that launches these. Image-only models can't serve its tool calls.
+        if os.name == "nt":
+            gemini_models = [m for m in gemini_models if not m.endswith("-image")]
         if not gemini_models:
             pytest.skip("No Gemini models available on this workspace")
 
@@ -981,7 +888,6 @@ class TestOpencodeLaunch:
         monkeypatch.setattr(opencode, "OPENCODE_CONFIG_PATH", config_path)
         monkeypatch.setattr(opencode, "OPENCODE_BACKUP_PATH", backup_path)
 
-        import sys
         import time
 
         print(f"\n[opencode-per-model] {len(models)} models to test", flush=True)
@@ -1010,8 +916,8 @@ class TestOpencodeLaunch:
                 result = _run_agent(cmd, env=opencode.build_runtime_env(e2e_token), timeout=180)
             except subprocess.TimeoutExpired as exc:
                 elapsed = time.monotonic() - t0
-                partial_stdout = (exc.stdout or b"").decode("utf-8", errors="replace")
-                partial_stderr = (exc.stderr or b"").decode("utf-8", errors="replace")
+                partial_stdout = _timeout_output(exc.stdout)
+                partial_stderr = _timeout_output(exc.stderr)
                 print(
                     f"[opencode-per-model] {provider}/{model} TIMEOUT after {elapsed:.1f}s\n"
                     f"  partial stdout: {partial_stdout[:500]!r}\n"
@@ -1133,7 +1039,7 @@ class TestOpencodeLaunch:
 
 
 class TestCopilotLaunch:
-    """Run copilot against every Claude/codex model via the MLflow chat-completions gateway.
+    """Run Copilot through MLflow using Responses for GPT-6+ and Chat Completions otherwise.
 
     Gemini is excluded by design — Databricks' Gemini translator rejects the
     `stream_options` field Copilot CLI sends. Other incompatible models are
@@ -1161,11 +1067,16 @@ class TestCopilotLaunch:
                 "databricks-gpt-6-astra",
                 "databricks-gpt-6-luna",
                 "databricks-gpt-6-sol",
+                "databricks-gpt-6-1-sol",
                 "databricks-gpt-5-4",
                 "databricks-gpt-5-6",
             ]
         }
         assert self._all_models(state) == [
+            ("codex", "databricks-gpt-6-astra"),
+            ("codex", "databricks-gpt-6-luna"),
+            ("codex", "databricks-gpt-6-sol"),
+            ("codex", "databricks-gpt-6-1-sol"),
             ("codex", "databricks-gpt-5-4"),
             ("codex", "databricks-gpt-5-6"),
         ]
@@ -1372,7 +1283,7 @@ class TestWebSearchMcpSubprocess:
                 '{"query":"latest anthropic announcement"}}}'
             ),
         ]
-        proc = subprocess.run(
+        proc = subprocess_cross_os.run(
             ["ucode", "mcp", "web-search"],
             input="\n".join(requests) + "\n",
             capture_output=True,
@@ -1422,23 +1333,27 @@ def _make_reauth_fake_databricks(tmp_path, real_token: str) -> str:
     tmp_path.mkdir(parents=True, exist_ok=True)
     call_count = tmp_path / "db_calls"
     call_count.write_text("0")
-    fake = tmp_path / "databricks"
-    fake.write_text(
-        "#!/bin/sh\n"
-        f"count=$(cat {call_count})\n"
-        f"echo $((count + 1)) > {call_count}\n"
+    script = tmp_path / "fake_databricks.py"
+    script.write_text(
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        f"calls = Path({str(call_count)!r})\n"
+        "count = int(calls.read_text())\n"
+        "calls.write_text(str(count + 1))\n"
         # auth login is a silent no-op (re-auth succeeds immediately)
-        'case "$*" in\n'
-        '  *"auth login"*) exit 0 ;;\n'
-        "esac\n"
+        "if 'auth login' in ' '.join(sys.argv[1:]):\n"
+        "    sys.exit(0)\n"
         # first auth token call returns empty (simulates expired session)
-        'if [ "$count" -eq 0 ]; then\n'
-        '  echo \'{"access_token": "", "token_type": "Bearer"}\'\n'
-        "else\n"
-        f'  echo \'{{"access_token": "{real_token}", "token_type": "Bearer"}}\'\n'
-        "fi\n"
+        f"token = '' if count == 0 else {real_token!r}\n"
+        "print(json.dumps({'access_token': token, 'token_type': 'Bearer'}))\n"
     )
-    fake.chmod(0o755)
+    # Windows finds the `.cmd` shim through PATHEXT; POSIX needs an executable `databricks`.
+    if os.name == "nt":
+        (tmp_path / "databricks.cmd").write_text(f'@"{sys.executable}" "{script}" %*\r\n')
+    else:
+        fake = tmp_path / "databricks"
+        fake.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{script}" "$@"\n')
+        fake.chmod(0o755)
     return str(tmp_path)
 
 
@@ -1470,7 +1385,7 @@ class TestGeminiAuthRecovery:
 
         with pytest.MonkeyPatch().context() as mp:
             mp.setattr("ucode.state.save_state", lambda s: None)
-            mp.setenv("PATH", f"{fake_db_dir}:{os.environ['PATH']}")
+            mp.setenv("PATH", f"{fake_db_dir}{os.pathsep}{os.environ['PATH']}")
             # get_databricks_token will fail first, reauth, then return e2e_token
             _, recovered_token = gemini.write_tool_config(
                 {**e2e_state, "workspace": e2e_workspace}, model

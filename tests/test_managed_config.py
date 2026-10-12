@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -53,6 +54,7 @@ RAW_MANIFEST = {
                 "smart_routing": {"enabled": True},
                 "tracing": {"enabled": True},
                 "http_headers": {"x-databricks-workspace": "eng-ml-inference"},
+                "agent_native_settings": {"allowManagedMcpServersOnly": True, "env": {"FOO": "1"}},
             },
         },
         {
@@ -65,7 +67,7 @@ RAW_MANIFEST = {
     ],
     "mcp_servers": {"names": ["system.ai.github", "main.default.jira"]},
     "skills": {"names": ["system.ai.pdf-extraction"]},
-    "spend_tiers": {
+    "smart_defaults": {
         "budget_id": "c6563b45-df9a-4b19-afb2-d42dc2b52576",
         "tiers": [
             {
@@ -75,6 +77,13 @@ RAW_MANIFEST = {
             },
         ],
     },
+}
+
+# A legacy cache/API response from before the server renamed ``spend_tiers`` to
+# ``smart_defaults``. It is accepted only when the current key is absent.
+LEGACY_RAW_MANIFEST = {
+    **{key: value for key, value in RAW_MANIFEST.items() if key != "smart_defaults"},
+    "spend_tiers": RAW_MANIFEST["smart_defaults"],
 }
 
 
@@ -96,6 +105,24 @@ class TestNormalize:
     def test_http_headers_map_to_http_headers(self):
         claude = normalize_managed_config(RAW_MANIFEST)["enabled_agents"]["claude"]
         assert claude["http_headers"] == {"x-databricks-workspace": "eng-ml-inference"}
+
+    def test_settings_are_carried_verbatim(self):
+        agents = normalize_managed_config(RAW_MANIFEST)["enabled_agents"]
+        assert agents["claude"]["agent_native_settings"] == {
+            "allowManagedMcpServersOnly": True,
+            "env": {"FOO": "1"},
+        }
+        assert "agent_native_settings" not in agents["codex"]
+
+    def test_non_object_settings_are_dropped(self):
+        raw = {
+            "enabled_agents": [
+                {"agent": "CODING_AGENT_CODEX", "config": {"agent_native_settings": "x"}}
+            ]
+        }
+        assert (
+            "agent_native_settings" not in normalize_managed_config(raw)["enabled_agents"]["codex"]
+        )
 
     def test_smart_routing_maps_to_agent_switch(self):
         claude = normalize_managed_config(RAW_MANIFEST)["enabled_agents"]["claude"]
@@ -162,10 +189,27 @@ class TestNormalize:
         assert codex["model_config"]["model_provider_service"] == "main.default.openai-mps"
         assert codex["model_config"]["default_model"] == "gpt-5.4"
 
-    def test_budget_policy_carries_budget_id_and_tiers(self):
+    def test_smart_defaults_carries_budget_id_and_tiers(self):
         cfg = normalize_managed_config(RAW_MANIFEST)
-        assert cfg["spend_tiers"]["budget_id"] == "c6563b45-df9a-4b19-afb2-d42dc2b52576"
-        assert cfg["spend_tiers"]["tiers"][0]["recommended_agent"] == "codex"
+        assert cfg["smart_defaults"]["budget_id"] == "c6563b45-df9a-4b19-afb2-d42dc2b52576"
+        assert cfg["smart_defaults"]["tiers"][0]["recommended_agent"] == "codex"
+
+    def test_legacy_spend_tiers_fall_back_to_smart_defaults(self):
+        cfg = normalize_managed_config(LEGACY_RAW_MANIFEST)
+        assert cfg["smart_defaults"] == normalize_managed_config(RAW_MANIFEST)["smart_defaults"]
+        assert "spend_tiers" not in cfg
+
+    def test_smart_defaults_take_precedence_over_legacy_spend_tiers(self):
+        raw = {
+            **LEGACY_RAW_MANIFEST,
+            "smart_defaults": {"budget_id": "new-budget"},
+        }
+        assert normalize_managed_config(raw)["smart_defaults"] == {"budget_id": "new-budget"}
+
+    @pytest.mark.parametrize("smart_defaults", [None, {}, {"tiers": []}])
+    def test_explicit_empty_smart_defaults_do_not_resurrect_legacy(self, smart_defaults):
+        raw = {**LEGACY_RAW_MANIFEST, "smart_defaults": smart_defaults}
+        assert "smart_defaults" not in normalize_managed_config(raw)
 
     def test_spec_version_not_carried_into_internal_manifest(self):
         # Kept out so the serialize/normalize round trip (which never sees spec_version) is unaffected.
@@ -348,6 +392,7 @@ class TestPersistence:
             RAW_MANIFEST
         )
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no POSIX file modes")
     def test_saved_file_is_0600(self, _managed_path):
         save_managed_state("https://ws.example.com", {"default_agent": "claude"})
         mode = stat.S_IMODE(os.stat(_managed_path).st_mode)
@@ -453,8 +498,25 @@ class TestFetchClient:
         assert configs == []
         assert reason == "HTTP 403 Forbidden"
 
-    def test_sends_ucode_user_agent_header(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("claude_ua", "codex_ua", "expected"),
+        [
+            (None, None, "ucode/9.9.9"),
+            ("ucode/1.0 claude/2.1.289", None, "ucode/9.9.9 claude/2.1.289"),
+            (
+                "ucode/1.0 claude/2.1.289",
+                "ucode/1.0 codex/0.154.0",
+                "ucode/9.9.9 claude/2.1.289 codex/0.154.0",
+            ),
+            ("admin-agent/1.0", "ucode/1.0 claude/2.1.289", "ucode/9.9.9"),
+        ],
+    )
+    def test_sends_ucode_user_agent_header(self, monkeypatch, claude_ua, codex_ua, expected):
+        from ucode.agents import claude, codex
+
         monkeypatch.setattr(db_mod, "ug_version", lambda: "9.9.9")
+        monkeypatch.setattr(claude, "managed_user_agent", lambda: claude_ua)
+        monkeypatch.setattr(codex, "managed_user_agent", lambda: codex_ua)
         captured = {}
 
         class _FakeResponse:
@@ -475,7 +537,7 @@ class TestFetchClient:
 
         monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
         db_mod.fetch_managed_coding_agent_configs("https://ws", "tok")
-        assert captured["request"].get_header("User-agent") == "ucode/9.9.9"
+        assert captured["request"].get_header("User-agent") == expected
 
 
 WORKSPACE = "https://ws.example.com"
@@ -738,6 +800,20 @@ class TestRefreshTTL:
         )
         self._no_fetch(monkeypatch)
         assert refresh_managed_config(_state()) == (normalize_managed_config(RAW_MANIFEST), False)
+
+    def test_fresh_legacy_cache_normalizes_to_smart_defaults(self, monkeypatch):
+        self._write_cache(
+            config=LEGACY_RAW_MANIFEST,
+            outcome="published",
+            retrieved_at=NOW - timedelta(minutes=1),
+        )
+        self._no_fetch(monkeypatch)
+        result, feature_disabled = refresh_managed_config(_state())
+        assert result == normalize_managed_config(LEGACY_RAW_MANIFEST)
+        assert result is not None
+        assert "smart_defaults" in result
+        assert "spend_tiers" not in result
+        assert feature_disabled is False
 
     def test_fresh_no_config_cache_short_circuits(self, monkeypatch):
         self._write_cache(config={}, outcome="none", retrieved_at=NOW - timedelta(minutes=1))

@@ -1,0 +1,14 @@
+{
+  "spec_version": 1,
+  "default_agent": "CODING_AGENT_CLAUDE_CODE",
+  "enabled_agents": [
+    {
+      "agent": "CODING_AGENT_CLAUDE_CODE",
+      "config": {
+        "models": {
+          "model_provider_service": "main.default.ci_e2e_anthropic_mps"
+        }
+      }
+    }
+  ]
+}

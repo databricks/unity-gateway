@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import os
 import socket
 import threading
 import time
@@ -501,6 +502,11 @@ class TestRetryOn401:
 
 
 class TestStartProxyPortFallback:
+    def test_loopback_server_keeps_reuse_only_on_posix(self):
+        assert gateway_proxy._LoopbackHTTPServer.allow_reuse_address is (
+            gateway_proxy.ThreadingHTTPServer.allow_reuse_address and os.name != "nt"
+        )
+
     def test_falls_back_to_free_port_when_cached_port_busy(self, monkeypatch):
         # A stale proxy from a killed session can still hold the cached port; the
         # bind must fall back to an OS-assigned free port rather than crash.
@@ -516,6 +522,8 @@ class TestStartProxyPortFallback:
             "TokenCache",
             lambda token_provider, **_kwargs: _StubCache(),
         )
+        # Exercise Windows' no-reuse bind behavior on POSIX test hosts too.
+        monkeypatch.setattr(gateway_proxy._LoopbackHTTPServer, "allow_reuse_address", False)
         # Occupy a port to simulate the leftover proxy holding it.
         occupied = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         occupied.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

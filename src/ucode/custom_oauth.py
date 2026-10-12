@@ -17,12 +17,17 @@ from databricks.sdk import oauth
 from ucode.constants import LOCALHOST, LOOPBACK_HOST
 from ucode.databricks import (
     build_auth_token_argv,
+    databricks_cli_path,
     ensure_databricks_cli_version,
     external_bearer_configured,
     get_databricks_token,
     has_valid_databricks_auth,
     run,
     save_databricks_cli_oauth_profile,
+)
+from ucode.os_compatibility.file_lock_cross_os import (
+    acquire_exclusive_file_lock,
+    release_file_lock,
 )
 from ucode.ui import err_console, normalize_workspace_url, print_warning_err
 
@@ -118,21 +123,19 @@ def build_custom_auth_shell_command(workspace: str, config: CustomOAuthConfig) -
 
 @contextmanager
 def _custom_oauth_lock(cache_dir: Path, redirect_url: str) -> Iterator[None]:
-    """Serialize helpers sharing a callback port with a POSIX file lock.
+    """Serialize helpers sharing a callback port with an OS file lock.
 
     Keep the lock file in place: unlinking it could let waiters lock different
     inodes. The OS releases the lock even if the helper is killed on timeout.
     """
-    import fcntl
-
     cache_dir.mkdir(parents=True, exist_ok=True)
     port = urlparse(redirect_url).port
     with (cache_dir / f"ug-oauth-{port}.lock").open("a+b") as lock_file:
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        acquire_exclusive_file_lock(lock_file)
         try:
             yield
         finally:
-            fcntl.flock(lock_file, fcntl.LOCK_UN)
+            release_file_lock(lock_file)
 
 
 def _custom_cli_profile(workspace: str, client_id: str) -> str:
@@ -153,7 +156,7 @@ def ensure_custom_oauth_cli_token(
     if has_valid_databricks_auth(workspace, profile):
         return get_databricks_token(workspace, profile)
     login_args = [
-        "databricks",
+        databricks_cli_path(),
         "auth",
         "login",
         "--host",

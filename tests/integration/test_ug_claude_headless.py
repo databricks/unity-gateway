@@ -3,6 +3,7 @@
 import json
 
 import pytest
+from utils.constants import CLAUDE_TEST_MODEL
 from utils.evidence import FileTask
 
 pytestmark = [pytest.mark.live, pytest.mark.claude]
@@ -13,7 +14,7 @@ def test_ug_claude_headless_prompt_argument(live_session, workspace):
     """Scenario: configure claude and submit a headless prompt via argument.
 
     Expected: the real agent reads the fixture and returns its unknown value in
-    its structured completed answer, with exit code zero.
+    its structured completed answer, with exit code zero and JSON-only stdout.
     """
     session = live_session
     task = FileTask(session)
@@ -39,6 +40,7 @@ def test_ug_claude_headless_prompt_argument(live_session, workspace):
         "Read",
         timeout=180,
     )
+    assert json.loads(result.stdout)["type"] == "result"
     task.assert_headless_answer("claude", result)
     session.assert_not_routed()
 
@@ -47,7 +49,7 @@ def test_ug_claude_headless_prompt_stdin(live_session, workspace):
     """Scenario: configure claude and submit a headless prompt via stdin.
 
     Expected: the real agent reads the fixture and returns its unknown value in
-    its structured completed answer, with exit code zero.
+    its structured completed answer, with exit code zero and JSON-only stdout.
     """
     session = live_session
     task = FileTask(session)
@@ -73,6 +75,7 @@ def test_ug_claude_headless_prompt_stdin(live_session, workspace):
         timeout=180,
         input_text=task.prompt + "\n",
     )
+    assert json.loads(result.stdout)["type"] == "result"
     task.assert_headless_answer("claude", result)
     session.assert_not_routed()
 
@@ -112,12 +115,74 @@ def test_ug_claude_headless_prompt_after_separator(live_session, workspace):
     session.assert_not_routed()
 
 
-@pytest.mark.parametrize("model_form", ["separate", "equals"])
-def test_ug_claude_headless_explicit_model_bypasses_routing(live_session, workspace, model_form):
-    """Scenario: choose an explicit model while global smart routing is enabled.
+@pytest.mark.usefixtures("unmanaged_workspace")
+def test_ug_claude_headless_fresh_workspace(live_session, workspace):
+    """Scenario: launch Claude headlessly against an unmanaged workspace from fresh state.
 
-    Expected: the model option is accepted, the real file task completes, and
-    no routing wrapper overrides the caller's choice.
+    Expected: ``ug claude --workspace`` starts the real installed Claude CLI without a
+    configure step, and its structured result contains the unpredictable fixture value after
+    using the Read tool with the inexpensive Haiku model; the command exits without routing.
+    """
+    session = live_session
+    task = FileTask(session)
+
+    result = session.run(
+        "claude",
+        "--workspace",
+        workspace,
+        "--",
+        "--model",
+        CLAUDE_TEST_MODEL,
+        "-p",
+        task.prompt,
+        "--output-format",
+        "json",
+        "--allowedTools",
+        "Read",
+        timeout=180,
+    )
+    task.assert_headless_answer("claude", result)
+    usage = json.loads(result.stdout)["modelUsage"]
+    assert set(usage) == {CLAUDE_TEST_MODEL}, usage
+    assert usage[CLAUDE_TEST_MODEL]["outputTokens"] > 0, usage
+    session.assert_not_routed()
+
+
+@pytest.mark.usefixtures("unmanaged_workspace")
+def test_ug_claude_fresh_provider_launch(live_session, workspace, claude_provider):
+    """Scenario: launch Claude from fresh state with an explicit provider service.
+
+    Expected: ``ug claude --workspace`` with ``--provider`` starts the real installed Claude
+    CLI without a configure step, reports the selected provider, and writes the provider header
+    to its generated settings; ``--version`` exits successfully without inference or routing.
+    """
+    session = live_session
+    result = session.run(
+        "claude",
+        "--workspace",
+        workspace,
+        "--provider",
+        claude_provider,
+        "--",
+        "--version",
+        timeout=180,
+    )
+    assert claude_provider in result.stdout
+    settings = json.loads((session.home / ".claude/ucode-settings.json").read_text())
+    headers = (settings.get("env") or {}).get("ANTHROPIC_CUSTOM_HEADERS", "").splitlines()
+    assert f"Databricks-Model-Provider-Service: {claude_provider}" in headers
+    session.assert_not_routed()
+
+
+@pytest.mark.parametrize("model_form", ["separate", "equals"])
+@pytest.mark.parametrize("model_owner", ["ug", "claude"])
+def test_ug_claude_headless_explicit_model_bypasses_routing(
+    live_session, workspace, model_form, model_owner
+):
+    """Scenario: choose a model before/after ug's separator with no workspace policy.
+
+    Expected: with smart routing enabled, the real file task completes on the
+    requested model, confirmed by JSON modelUsage, without a routing wrapper.
     """
     session = live_session
     task = FileTask(session)
@@ -136,6 +201,7 @@ def test_ug_claude_headless_explicit_model_bypasses_routing(live_session, worksp
     session.env["ENABLE_SMART_ROUTING_V2"] = "1"
     result = session.run(
         "claude",
+        *(model_args if model_owner == "ug" else []),
         "--",
         "-p",
         task.prompt,
@@ -143,10 +209,13 @@ def test_ug_claude_headless_explicit_model_bypasses_routing(live_session, worksp
         "json",
         "--allowedTools",
         "Read",
-        *model_args,
+        *(model_args if model_owner == "claude" else []),
         timeout=180,
     )
     task.assert_headless_answer("claude", result)
+    usage = json.loads(result.stdout)["modelUsage"]
+    assert set(usage) == {model}, {"expected": model, "observed": sorted(usage)}
+    assert usage[model]["outputTokens"] > 0, usage
     session.assert_not_routed()
 
 
@@ -219,7 +288,7 @@ def test_ug_claude_reports_unsupported_short_model_option(live_session, workspac
         "--skip-upgrade",
         "--disable-databricks-ai-tools",
     )
-    expected = session.run("-m", "sonnet", "-p", "hi", binary="claude", ok=False)
+    expected = session.run("-m", "sonnet", "-p", "hi", binary=session.which("claude"), ok=False)
     actual = session.run("claude", "--", "-m", "sonnet", "-p", "hi", ok=False)
     assert expected.returncode != 0 and "unknown option '-m'" in expected.stderr
     assert actual.returncode == expected.returncode

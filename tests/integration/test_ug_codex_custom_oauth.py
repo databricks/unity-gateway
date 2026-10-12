@@ -20,7 +20,7 @@ def test_ug_codex_custom_oauth_cli_boots(live_session, workspace):
     """
     session = live_session
     session.env["ENABLE_CUSTOM_OAUTH_FROM_CLI"] = "1"
-    version = session.run("version", "--output", "json", binary="databricks")
+    version = session.run("version", "--output", "json", binary=session.which("databricks"))
     assert json.loads(version.stdout)["Version"] == "1.17.0"
     command = [
         str(session.binary),

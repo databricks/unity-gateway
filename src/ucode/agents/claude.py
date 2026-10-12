@@ -10,9 +10,10 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import threading
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 
 from ucode import gateway_proxy
@@ -21,10 +22,12 @@ from ucode.config_io import (
     ToolSpec,
     backup_existing_file,
     deep_merge_dict,
+    prune_key_paths,
     read_json_safe,
     write_json_file,
 )
 from ucode.constants import (
+    AGENT_CLAUDE,
     AI_GATEWAY_REQUEST_TAGS_HEADER,
     LOOPBACK_HOST,
     MCP_CLEANUP_SCOPES,
@@ -54,6 +57,8 @@ from ucode.managed_files import (
     OS,
     ManagedFileSnapshots,
     ManagedFileWriteUnavailable,
+    SettingsPassthrough,
+    apply_settings_passthrough,
     current_os,
     managed_file_conflicts,
     managed_file_is_verified,
@@ -63,15 +68,28 @@ from ucode.managed_files import (
     managed_files_supported,
     managed_writes_allowed,
     mark_managed_file_verified,
+    plan_settings_passthrough,
     read_managed_file,
     reconcile_managed_file,
+    record_settings_passthrough,
+    record_ug_picker,
     revert_managed_file,
+    warn_skipped_settings_passthrough,
+    withdrawn_list_items,
 )
 from ucode.mcp_oauth import (
     CLAUDE_CODE_OAUTH_CLIENT_ID,
     MCP_OAUTH_CALLBACK_PORT,
     oauth_client_available,
 )
+from ucode.mcp_web_search import (
+    AUTOMATIC_PROVIDER,
+    EXTERNAL_PROVIDER_OVERRIDE_FLAG,
+    MANAGED_ENTRY_FLAG,
+    PROVIDER_ENV,
+    external_provider_selected,
+)
+from ucode.os_compatibility import subprocess_cross_os
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
@@ -96,8 +114,8 @@ CLAUDE_MCP_CONFIG_PATH = Path.home() / ".claude.json"
 CLAUDE_USER_SETTINGS_PATH = CLAUDE_CONFIG_DIR / "settings.json"
 CLAUDE_BACKUP_PATH = APP_DIR / "claude-ucode-settings.backup.json"
 WEB_SEARCH_MCP_STATE_KEY = "claude_web_search_mcp"
-MINIMUM_CLAUDE_VERSION = (2, 1, 259)
-MINIMUM_CLAUDE_VERSION_TEXT = "2.1.259"
+MINIMUM_CLAUDE_VERSION = (2, 1, 290)
+MINIMUM_CLAUDE_VERSION_TEXT = "2.1.290"
 MANAGED_MCP_SETTINGS_KEY = "managedMcpServers"
 
 SPEC: ToolSpec = {
@@ -164,6 +182,9 @@ CLAUDE_OTEL_TRACE_ENV_KEYS = (
     "CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS",
     "CLAUDE_CODE_PROPAGATE_TRACEPARENT",
 )
+CLAUDE_OTEL_TRACE_PATHS = tuple(("env", key) for key in CLAUDE_OTEL_TRACE_ENV_KEYS) + (
+    ("otelHeadersHelper",),
+)
 
 
 def _otel_trace_env(workspace: str) -> dict[str, str]:
@@ -205,6 +226,16 @@ CLAUDE_CONDITIONAL_ENV_KEYS = ("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",)
 # settings file on every launch so stale values never linger.
 CLAUDE_REMOVED_ENV_KEYS = ("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",)
 CLAUDE_MANAGED_PICKER_KEYS = ("availableModels", "enforceAvailableModels", "modelPicker")
+CLAUDE_PERMISSIONS_DENY_PATH = ["permissions", "deny"]
+CLAUDE_ALLOWED_MCP_SERVERS_KEY = "allowedMcpServers"
+# The managed config's harness-native settings (resolved from the manifest), and the leaves last
+# skipped so the warning about them prints once rather than on every launch. What ug delivered is
+# recorded in the file-keyed managed manifest instead, because the managed file is machine-wide.
+SETTINGS_PASSTHROUGH_STATE_KEY = "claude_settings_passthrough"
+SETTINGS_PASSTHROUGH_IGNORED_STATE_KEY = "claude_settings_passthrough_ignored"
+# Settings that stop Claude Code from running hooks outside the managed file, which is where smart
+# routing installs its per-launch hooks.
+CLAUDE_HOOK_LOCKDOWN_KEYS = ("allowManagedHooksOnly", "disableAllHooks")
 ANTHROPIC_CUSTOM_HEADERS_ENV_KEY = "ANTHROPIC_CUSTOM_HEADERS"
 CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
     {
@@ -215,6 +246,10 @@ CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
         SMART_ROUTER_RECIPE_HEADER.casefold(),
         AI_GATEWAY_REQUEST_TAGS_HEADER.casefold(),
     }
+)
+# These attribute inference traffic; neither selects the gateway or provider.
+CLAUDE_OPTIONAL_ATTRIBUTION_HEADER_NAMES = frozenset(
+    {"user-agent", SMART_ROUTER_RECIPE_HEADER.casefold()}
 )
 # Relayed drops the user scope to deliberately omit the stale apiKeyHelper. Only applied to relayed
 # launches — normal launches keep loading user settings (hooks/permissions) as before.
@@ -259,6 +294,28 @@ def _parse_managed_settings(text: str) -> dict:
     if not isinstance(settings, dict):
         raise RuntimeError("the top-level JSON value must be an object")
     return settings
+
+
+def managed_user_agent() -> str | None:
+    """The User-Agent value in Claude Code's OS-managed custom headers, if one is there."""
+    path = _managed_settings_path()
+    try:
+        text = read_managed_file(path) if path else None
+        settings = _parse_managed_settings(text) if text else {}
+    except (RuntimeError, ValueError):  # ValueError: a file that isn't UTF-8
+        return None
+    env = settings.get("env")
+    headers = env.get(ANTHROPIC_CUSTOM_HEADERS_ENV_KEY) if isinstance(env, dict) else None
+    if not isinstance(headers, str):
+        return None
+    values = (_user_agent_header_value(line) for line in headers.split("\n"))
+    return next((value for value in values if value is not None), None)
+
+
+def _user_agent_header_value(line: str) -> str | None:
+    """The value of a ``User-Agent`` line in ANTHROPIC_CUSTOM_HEADERS (any name casing), else None."""
+    name, separator, value = line.partition(":")
+    return value.strip() if separator and name.strip().casefold() == "user-agent" else None
 
 
 def _dump_managed_settings(settings: dict) -> str:
@@ -338,7 +395,11 @@ def relayed_proxy_base_url(state: dict) -> str:
     return f"http://{LOOPBACK_HOST}:{port}"
 
 
-def _web_search_mcp_entry(workspace: str, search_model: str, profile: str | None = None) -> dict:
+def _web_search_mcp_entry(
+    workspace: str,
+    search_model: str,
+    profile: str | None = None,
+) -> dict:
     """Stdio MCP server entry pointing at `ug mcp web-search`. Resolves
     the absolute path to the `ug` binary so launchers without the right
     PATH (e.g. desktop GUI launchers) still find it."""
@@ -351,7 +412,7 @@ def _web_search_mcp_entry(workspace: str, search_model: str, profile: str | None
     return {
         "type": "stdio",
         "command": ug_binary(),
-        "args": ["mcp", "web-search"],
+        "args": ["mcp", "web-search", MANAGED_ENTRY_FLAG],
         "env": env,
     }
 
@@ -414,7 +475,7 @@ def render_overlay(
         header_lines.append(f"{MODEL_PROVIDER_SERVICE_HEADER}: {provider}")
     elif parent_schema:
         header_lines.append(f"{MODEL_SERVICE_PARENT_SCHEMA_HEADER}: {parent_schema}")
-    if smart_routing_v2.smart_routing_enabled():
+    if smart_routing_v2.smart_routing_enabled(None, default=False, agent=AGENT_CLAUDE):
         header_lines.append(f"{SMART_ROUTER_RECIPE_HEADER}: {configured_router_name()}")
     request_tags = request_tags_header_value()
     if request_tags:
@@ -693,7 +754,7 @@ def add_claude_mcp_server(
     else:
         cmd = ["claude", "mcp", "add", name, "-s", scope, "--", *server]
     try:
-        subprocess.run(
+        subprocess_cross_os.run(
             cmd,
             check=True,
             capture_output=True,
@@ -739,7 +800,13 @@ def add_claude_http_mcp_server(
         url,
     ]
     try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=30)
+        subprocess_cross_os.run(
+            cmd,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(f"Failed to add HTTP MCP server '{name}' via claude CLI.") from exc
 
@@ -751,7 +818,7 @@ def remove_claude_mcp_server(name: str, scope: str) -> bool:
     from ucode.mcp import _is_missing_mcp_server_output
 
     try:
-        subprocess.run(
+        subprocess_cross_os.run(
             ["claude", "mcp", "remove", name, "-s", scope],
             check=True,
             capture_output=True,
@@ -875,7 +942,9 @@ def managed_mcp_entry(url: str) -> dict:
     }
 
 
-def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
+def reconcile_managed_mcp(
+    state: dict, servers: dict[str, dict], *, also_registered: Iterable[str] = ()
+) -> bool:
     """Overwrite ug's ``managedMcpServers`` in Claude's OS-managed file with ``servers``.
 
     ``servers`` is the freshly resolved managed set keyed by name; an empty map clears the key. The
@@ -883,7 +952,11 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
     managed key is preserved, including the model configuration ug wrote earlier this run and any
     admin-authored policy. Returns True when the managed file is the delivery mechanism (written or
     already current), False when it cannot be used (unsupported platform or a non-interactive run),
-    so the caller routes those servers to the user-scope registration instead."""
+    so the caller routes those servers to the user-scope registration instead.
+
+    ``also_registered`` names the servers ug registers in Claude outside this file this run (the
+    user-scope fallback), so an admin's ``agent_native_settings`` MCP allowlist keeps admitting them.
+    """
     path = _managed_settings_path()
     if path is None or not managed_writes_allowed():
         return False
@@ -900,21 +973,35 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
             f"Cannot safely update Claude Code managed settings at {path}: {exc}. ucode did not "
             "modify the file. Repair it or contact your administrator."
         ) from exc
-    # Nothing managed to clear: never create or rewrite the file just to remove an absent key.
-    if not servers and MANAGED_MCP_SETTINGS_KEY not in existing:
-        return True
     desired = copy.deepcopy(existing)
     if servers:
         desired[MANAGED_MCP_SETTINGS_KEY] = servers
     else:
         desired.pop(MANAGED_MCP_SETTINGS_KEY, None)
+    admin_allowlist = _delivered_admin_allowlist()
+    desired = _allow_ug_mcp_servers(
+        desired,
+        admin_allowlist,
+        _ug_registered_mcp_names(
+            state,
+            servers,
+            web_search=bool(state.get(WEB_SEARCH_MCP_STATE_KEY)),
+            also=also_registered,
+        ),
+    )
+    # Nothing to change: never create or rewrite the file just to restate it.
+    if desired == existing:
+        return True
+    owned_paths = [[MANAGED_MCP_SETTINGS_KEY]]
+    if admin_allowlist is not None:
+        owned_paths.append([CLAUDE_ALLOWED_MCP_SERVERS_KEY])
     try:
         reconcile_managed_file(
             path,
             _dump_managed_settings(desired),
             tool="claude",
             display="Claude Code",
-            owned_paths=[[MANAGED_MCP_SETTINGS_KEY]],
+            owned_paths=owned_paths,
             parser=_parse_managed_settings,
         )
     except ManagedFileWriteUnavailable:
@@ -948,20 +1035,36 @@ def read_managed_mcp_urls() -> dict[str, str]:
     }
 
 
-def _register_web_search_mcp(workspace: str, search_model: str, profile: str | None = None) -> bool:
+def _register_web_search_mcp(
+    workspace: str,
+    search_model: str,
+    profile: str | None = None,
+    *,
+    previous_entry: object = None,
+) -> bool:
     """Register (or replace) the web_search MCP server in Claude Code's user
-    scope via `claude mcp add-json`. Removes any prior entry first so re-runs
-    pick up changes to the workspace, model, or ucode binary path.
+    scope via `claude mcp add-json`. Replace only a known generated user entry;
+    project/local entries and user edits belong to the caller.
 
     Returns True if registration succeeded. Failures are non-blocking: we warn
     and return False so the rest of `ucode claude` setup can complete.
     """
-    for scope in MCP_CLEANUP_SCOPES:
-        try:
-            remove_claude_mcp_server(WEB_SEARCH_MCP_NAME, scope)
-        except RuntimeError:
-            # Best-effort cleanup of stale entries — keep going.
-            pass
+    config = _read_claude_config_for_rewrite(claude_mcp_config_path())
+    servers = config.get("mcpServers", {}) if config is not None else None
+    existing = servers.get(WEB_SEARCH_MCP_NAME) if isinstance(servers, dict) else None
+    if not isinstance(servers, dict) or (
+        existing is not None
+        and (existing != previous_entry or not _generated_search_entry(existing))
+    ):
+        print_warning(
+            "Preserving web_search: its Claude configuration is unreadable or its entry is not "
+            "an unchanged ug-generated registration. Review it before reconfiguring search."
+        )
+        return False
+    try:
+        remove_claude_mcp_server(WEB_SEARCH_MCP_NAME, MCP_USER_SCOPE)
+    except RuntimeError:
+        pass
     entry = _web_search_mcp_entry(workspace, search_model, profile)
     try:
         add_claude_mcp_server(WEB_SEARCH_MCP_NAME, entry)
@@ -983,6 +1086,201 @@ def _web_search_mcp_is_current(state: dict, entry: dict) -> bool:
     config = read_json_safe(claude_mcp_config_path())
     servers = config.get("mcpServers")
     return isinstance(servers, dict) and servers.get(WEB_SEARCH_MCP_NAME) == entry
+
+
+def _external_search_conflict(reason: str) -> RuntimeError:
+    return RuntimeError(
+        f"Cannot safely select external web search: {reason}. No search registration was changed. "
+        "Review the web_search MCP entry and its ug ownership state, or launch with "
+        f"{PROVIDER_ENV}=ucode to keep the existing provider."
+    )
+
+
+def _search_config(path: Path) -> dict:
+    config = _read_claude_config_for_rewrite(path)
+    if config is None:
+        raise _external_search_conflict(f"cannot read a JSON object at {path}")
+    return config
+
+
+def _search_servers(config: dict, key: str = "mcpServers") -> dict:
+    servers = config.get(key, {})
+    if not isinstance(servers, dict):
+        raise _external_search_conflict(f"{key} is not an object")
+    return servers
+
+
+def _generated_search_entry(entry: object) -> bool:
+    if not isinstance(entry, dict) or set(entry) != {"type", "command", "args", "env"}:
+        return False
+    command = entry.get("command")
+    env = entry.get("env")
+    return (
+        entry["type"] == "stdio"
+        and isinstance(command, str)
+        and Path(command).name in ("ug", "ucode", "ug.exe", "ucode.exe")
+        and entry["args"] in (["mcp", "web-search"], ["mcp", "web-search", MANAGED_ENTRY_FLAG])
+        and isinstance(env, dict)
+        and all(isinstance(value, str) for value in env.values())
+        and bool(env.get("DATABRICKS_HOST"))
+        and bool(env.get("UCODE_WEB_SEARCH_MODEL"))
+        and set(env)
+        <= {
+            "DATABRICKS_HOST",
+            "UCODE_WEB_SEARCH_MODEL",
+            "DATABRICKS_CONFIG_PROFILE",
+        }
+    )
+
+
+def _external_web_search_args(state: dict, tool_args: list[str]) -> list[str]:
+    if not external_provider_selected():
+        return tool_args
+    try:
+        return _prepare_external_web_search_args(state, tool_args)
+    except RuntimeError as exc:
+        if os.environ.get(PROVIDER_ENV) != AUTOMATIC_PROVIDER:
+            raise
+        print_warning(
+            f"{exc} Keeping the existing provider for this launch; duplicates may remain."
+        )
+        os.environ[PROVIDER_ENV] = "ucode"
+        return tool_args
+
+
+def _prepare_external_web_search_args(state: dict, tool_args: list[str]) -> list[str]:
+    """Shadow only a verified ug registration, without rewriting shared MCP configuration.
+
+    A launch-scoped helper also handles legacy entries pointing at a different ug install.
+    Standalone launches keep their original registration while Isaac is running.
+    """
+    end = tool_args.index("--") if "--" in tool_args else len(tool_args)
+    options = tool_args[:end]
+    if "--strict-mcp-config" in options:
+        return tool_args
+    config = _search_config(claude_mcp_config_path())
+    entry = _search_servers(config).get(WEB_SEARCH_MCP_NAME)
+    if entry is None:
+        return tool_args
+
+    # Preserve the user's disabled registration without introducing a dynamic scope.
+    directories = [Path.cwd(), *Path.cwd().parents]
+    projects = config.get("projects", {})
+    if not isinstance(projects, dict):
+        raise _external_search_conflict("Claude's projects configuration is not an object")
+    local_configs = []
+    for directory in directories:
+        local = projects.get(str(directory), {})
+        if not isinstance(local, dict):
+            raise _external_search_conflict(
+                f"project configuration at {directory} is not an object"
+            )
+        disabled = local.get("disabledMcpServers", [])
+        if not isinstance(disabled, list) or not all(isinstance(name, str) for name in disabled):
+            raise _external_search_conflict(f"invalid disabledMcpServers at {directory}")
+        if WEB_SEARCH_MCP_NAME in disabled:
+            return tool_args
+        local_configs.append(local)
+    if not _generated_search_entry(entry) or entry != state.get(WEB_SEARCH_MCP_STATE_KEY):
+        raise _external_search_conflict(
+            "the user-scope web_search entry has unknown or edited ownership"
+        )
+
+    for option in options:
+        if option in ("--worktree", "-w", "--setting-sources") or option.startswith(
+            ("--worktree=", "--setting-sources=")
+        ):
+            raise _external_search_conflict(
+                "custom project/config scope prevents ownership verification"
+            )
+
+    for directory, local in zip(directories, local_configs, strict=True):
+        if WEB_SEARCH_MCP_NAME in _search_servers(local):
+            raise _external_search_conflict(f"a local web_search entry exists at {directory}")
+        if WEB_SEARCH_MCP_NAME in _search_servers(_search_config(directory / ".mcp.json")):
+            raise _external_search_conflict(f"a project web_search entry exists at {directory}")
+
+    managed_path = _managed_settings_path()
+    if managed_path is None:
+        raise _external_search_conflict("managed MCP scope cannot be inspected on this platform")
+    if managed_path.with_name("managed-mcp.json").exists():
+        raise _external_search_conflict("managed-mcp.json has exclusive control over MCP servers")
+    user_settings = (
+        Path(os.environ["CLAUDE_CONFIG_DIR"]) / "settings.json"
+        if os.environ.get("CLAUDE_CONFIG_DIR")
+        else CLAUDE_USER_SETTINGS_PATH
+    )
+    settings_paths = [managed_path, user_settings, CLAUDE_SETTINGS_PATH]
+    settings_paths.extend(sorted(managed_path.with_name("managed-settings.d").glob("*.json")))
+    for directory in directories:
+        settings_paths.extend(
+            [directory / ".claude/settings.json", directory / ".claude/settings.local.json"]
+        )
+    settings = [_search_config(path) for path in settings_paths]
+    caller_settings, _ = _extract_caller_settings(options)
+    settings.extend(_load_caller_settings(value) for value in caller_settings)
+    for setting in settings:
+        if WEB_SEARCH_MCP_NAME in _search_servers(setting, MANAGED_MCP_SETTINGS_KEY):
+            raise _external_search_conflict("a managed web_search entry exists")
+        # Replacing an executable must never evade a command-based MCP policy.
+        if "deniedMcpServers" in setting or "allowedMcpServers" in setting:
+            raise _external_search_conflict("MCP policy requires review before replacing a helper")
+        env = setting.get("env", {})
+        if not isinstance(env, dict) or env.get(PROVIDER_ENV, "external") != "external":
+            raise _external_search_conflict("Claude settings override the selected search provider")
+
+    last_mcp_option = None
+    i = 0
+    while i < len(options):
+        option = options[i]
+        values = []
+        if option == "--mcp-config":
+            last_mcp_option = i
+            i += 1
+            while i < len(options) and not options[i].startswith("-"):
+                values.append(options[i])
+                i += 1
+            if not values:
+                raise _external_search_conflict("--mcp-config has no value")
+        elif option.startswith("--mcp-config="):
+            last_mcp_option = i
+            values.append(option.partition("=")[2])
+            i += 1
+        else:
+            i += 1
+        for value in values:
+            caller_config = _load_caller_settings(value)
+            if WEB_SEARCH_MCP_NAME in _search_servers(caller_config):
+                raise _external_search_conflict("--mcp-config defines its own web_search entry")
+
+    override = {
+        "type": "stdio",
+        "command": sys.executable,
+        "args": [
+            "-m",
+            "ucode.cli",
+            "mcp",
+            "web-search",
+            EXTERNAL_PROVIDER_OVERRIDE_FLAG,
+            MANAGED_ENTRY_FLAG,
+        ],
+        "env": {**entry["env"], PROVIDER_ENV: "external"},
+    }
+    value = json.dumps({"mcpServers": {WEB_SEARCH_MCP_NAME: override}})
+    result = list(tool_args)
+    if last_mcp_option is None:
+        result[end:end] = ["--mcp-config", value]
+    else:
+        option = result[last_mcp_option]
+        if option.startswith("--mcp-config="):
+            result[last_mcp_option : last_mcp_option + 1] = [
+                "--mcp-config",
+                value,
+                option.partition("=")[2],
+            ]
+        else:
+            result.insert(last_mcp_option + 1, value)
+    return result
 
 
 def _unregister_web_search_mcp() -> None:
@@ -1023,6 +1321,7 @@ def write_tool_config(
     parent_schema: str | None = None,
     picker_catalog: AnthropicModelCatalog | None = None,
 ) -> dict:
+    external_search = external_provider_selected()
     # Back up only a file that predates ucode's management of the tool. A
     # re-configure would otherwise snapshot ucode's own generated file, and
     # revert would restore that snapshot instead of deleting the file.
@@ -1035,6 +1334,9 @@ def write_tool_config(
     managed_config_present = refresh_managed_config(state).manifest is not None
     previous_keys = ((state.get("managed_configs") or {}).get("claude") or {}).get("keys", [])
     web_search_model = _resolve_web_search_model(state)
+    should_write_tracing_settings = (
+        bool(state.get("claude_otel_tracing")) and managed_config_present
+    )
     # Relayed inference points at a local refresh proxy; its loopback base URL is
     # recorded in state so launch starts the proxy on the matching port.
     relayed_base_url = relayed_proxy_base_url(state) if relayed else None
@@ -1054,7 +1356,7 @@ def write_tool_config(
         custom_model=custom_model,
         parent_schema=parent_schema,
         static_models=state.get("claude_static_models"),
-        otel_tracing=bool(state.get("claude_otel_tracing")),
+        otel_tracing=should_write_tracing_settings,
         picker_catalog=picker_catalog,
         managed_http_headers=state.get("claude_http_headers"),
     )
@@ -1093,6 +1395,13 @@ def write_tool_config(
         )
         # Copy the overlay per file so merging into one base cannot affect the other.
         overlay_for_merge = copy.deepcopy(overlay)
+        should_preserve_managed_tracing = (
+            managed_settings_snapshots is not None and not should_write_tracing_settings
+        )
+        # UG only owns managed-file telemetry while a workspace config actively enables it.
+        # Otherwise omit these paths from the overlay so the live managed values pass through.
+        if should_preserve_managed_tracing:
+            prune_key_paths(overlay_for_merge, [list(path) for path in CLAUDE_OTEL_TRACE_PATHS])
         if enforce_model_default_hierarchy:
             settings_file_env = base_env if isinstance(base_env, dict) else {}
             target_env = overlay_for_merge["env"]
@@ -1139,6 +1448,20 @@ def write_tool_config(
                     target_env.pop(key, None)
                 else:
                     target_env[key] = selected_default_model
+        should_preserve_preexisting_claude_family_defaults = (
+            not managed_config_present
+            and not coding_agent_config_defaults
+            and isinstance(base_env, dict)
+        )
+        if should_preserve_preexisting_claude_family_defaults:
+            # Without an admin Coding Agent Config, an existing family default belongs to the
+            # developer. Discovery may fill an absent family, but must not replace a value they
+            # already selected in either the private or OS-managed settings file.
+            target_env = overlay_for_merge["env"]
+            for key in CLAUDE_DEFAULT_MODEL_ENV_KEYS.values():
+                existing_default = base_env.get(key)
+                if isinstance(existing_default, str):
+                    target_env[key] = existing_default
         merged = deep_merge_dict(base, overlay_for_merge)
         for key in stale_picker_keys:
             merged.pop(key, None)
@@ -1168,30 +1491,29 @@ def write_tool_config(
             for key in CLAUDE_CONDITIONAL_ENV_KEYS:
                 if key not in overlay_env:
                     merged_env.pop(key, None)
-            for key in CLAUDE_OTEL_TRACE_ENV_KEYS:
-                if key not in overlay_env:
-                    merged_env.pop(key, None)
             # deep_merge_dict keeps keys already in the file, so drop the ones ucode no
             # longer writes.
             for key in CLAUDE_REMOVED_ENV_KEYS:
                 merged_env.pop(key, None)
+        if managed_settings_snapshots is None and not should_write_tracing_settings:
+            prune_key_paths(merged, [list(path) for path in CLAUDE_OTEL_TRACE_PATHS])
         if not any(key in overlay_for_merge for key in CLAUDE_MANAGED_PICKER_KEYS):
             if managed_settings_snapshots is None:
                 for key in CLAUDE_MANAGED_PICKER_KEYS:
                     merged.pop(key, None)
-            elif managed_settings_snapshots.last_applied_by_ug is not None:
-                last_applied = managed_settings_snapshots.last_applied_by_ug
-                live_picker = [merged.get(key) for key in CLAUDE_MANAGED_PICKER_KEYS]
-                ucode_picker = [last_applied.get(key) for key in CLAUDE_MANAGED_PICKER_KEYS]
-                if live_picker == ucode_picker:
+            else:
+                # Revert only the picker ug recorded writing, and only while it is untouched as a
+                # unit; last-applied snapshots also hold foreign pickers ug merely preserved.
+                ug_picker = managed_settings_snapshots.ug_picker or {}
+                if ug_picker and all(merged.get(key) == ug_picker[key] for key in ug_picker):
                     baseline = managed_settings_snapshots.original_before_ug or {}
-                    for key in CLAUDE_MANAGED_PICKER_KEYS:
+                    for key in ug_picker:
                         if key in baseline:
                             merged[key] = baseline[key]
                         else:
                             merged.pop(key, None)
-        if "otelHeadersHelper" not in overlay_for_merge:
-            merged.pop("otelHeadersHelper", None)
+                elif not ug_picker:
+                    _warn_unrecorded_allow_list(merged, managed_settings_snapshots)
         sync_smart_routing_hooks(merged, state, enabled=False)
         return merged
 
@@ -1205,32 +1527,82 @@ def write_tool_config(
         ),
     )
 
+    # The admin's settings may not displace anything ug writes, except the hooks and deny lists ug
+    # only merges its own entries into.
+    passthrough = plan_settings_passthrough(
+        state.get(SETTINGS_PASSTHROUGH_STATE_KEY),
+        reserved_paths=[
+            *(
+                path
+                for path in managed_file_keys
+                if path[0] != "hooks" and path != CLAUDE_PERMISSIONS_DENY_PATH
+            ),
+            *([key] for key in CLAUDE_MANAGED_PICKER_KEYS),
+            [MANAGED_MCP_SETTINGS_KEY],
+        ],
+    )
+    warn_skipped_settings_passthrough(
+        state, SETTINGS_PASSTHROUGH_IGNORED_STATE_KEY, passthrough, "Claude Code", print_warning
+    )
+    previous_leaves = (managed_snapshots.settings_passthrough if managed_snapshots else None) or []
+    _warn_if_settings_disable_smart_routing(passthrough, previous_leaves)
     _reconcile_managed_settings(
         state,
-        lambda base: _compose(
-            base,
-            enforce_model_default_hierarchy=(
-                source_scoped_defaults or (provider is None and parent_schema is None)
+        lambda base: _allow_ug_mcp_servers(
+            apply_settings_passthrough(
+                _compose(
+                    base,
+                    enforce_model_default_hierarchy=(
+                        source_scoped_defaults or (provider is None and parent_schema is None)
+                    ),
+                    managed_settings_snapshots=managed_snapshots,
+                ),
+                passthrough,
+                previous_leaves=previous_leaves,
+                snapshots=managed_snapshots,
+                is_shared_list=_is_shared_claude_list,
             ),
-            managed_settings_snapshots=managed_snapshots,
+            passthrough.items_at([CLAUDE_ALLOWED_MCP_SERVERS_KEY])
+            if [CLAUDE_ALLOWED_MCP_SERVERS_KEY] in passthrough.paths
+            else None,
+            _ug_registered_mcp_names(
+                state,
+                base.get(MANAGED_MCP_SETTINGS_KEY),
+                web_search=bool(web_search_model and not external_search),
+            ),
         ),
-        managed_file_keys,
+        [*managed_file_keys, *passthrough.paths],
         relayed,
+        [key for key in CLAUDE_MANAGED_PICKER_KEYS if key in overlay],
+        withdrawn_denies=withdrawn_list_items(
+            CLAUDE_PERMISSIONS_DENY_PATH, passthrough, previous_leaves
+        ),
+        passthrough_leaves=passthrough.record(),
     )
 
-    if web_search_model:
+    custom_oauth = state.get("custom_oauth")
+    web_search_profile = (
+        custom_oauth.get("profile")
+        if isinstance(custom_oauth, dict) and custom_oauth.get("profile")
+        else state.get("profile")
+    )
+    # Ownership describes the installed registration, even when no search model is available.
+    if web_search_model and not external_search:
         web_search_entry = _web_search_mcp_entry(
-            state["workspace"], web_search_model, state.get("profile")
+            state["workspace"],
+            web_search_model,
+            web_search_profile,
         )
         if not _web_search_mcp_is_current(state, web_search_entry):
             # Registration runs multiple `claude mcp` subprocesses and can take several seconds.
             registration_success = _register_web_search_mcp(
-                state["workspace"], web_search_model, state.get("profile")
+                state["workspace"],
+                web_search_model,
+                web_search_profile,
+                previous_entry=state.get(WEB_SEARCH_MCP_STATE_KEY),
             )
             if registration_success:
                 state[WEB_SEARCH_MCP_STATE_KEY] = web_search_entry
-    else:
-        state.pop(WEB_SEARCH_MCP_STATE_KEY, None)
 
     # Persist relayed mode + proxy port so launch() wires the refresh proxy and
     # subscription login; cleared on a non-relayed launch.
@@ -1292,11 +1664,142 @@ def _merge_anthropic_custom_headers(existing: object, ucode_headers: str) -> str
     return "\n".join(merged)
 
 
+def _required_custom_headers(value: object) -> dict[str, str] | None:
+    if not isinstance(value, str):
+        return None
+    headers: dict[str, str] = {}
+    for line in value.splitlines():
+        if not line.strip():
+            continue
+        name, separator, header_value = line.partition(":")
+        if (
+            not separator
+            or not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", name)
+            or name.lower() in headers
+            or any(ord(char) < 32 and char != "\t" or ord(char) == 127 for char in header_value)
+        ):
+            return None
+        headers[name.lower()] = header_value.strip()
+    return {
+        name: header_value
+        for name, header_value in headers.items()
+        if name not in CLAUDE_OPTIONAL_ATTRIBUTION_HEADER_NAMES
+    }
+
+
+def _managed_settings_conflicts(
+    existing: dict, desired: dict, owned_paths: list[list[str]]
+) -> list[str]:
+    conflicts = managed_file_conflicts(existing, desired, owned_paths)
+    header_path = f"env.{ANTHROPIC_CUSTOM_HEADERS_ENV_KEY}"
+    if header_path in conflicts:
+        existing_headers = _required_custom_headers(
+            (existing.get("env") or {}).get(ANTHROPIC_CUSTOM_HEADERS_ENV_KEY)
+        )
+        desired_headers = _required_custom_headers(
+            (desired.get("env") or {}).get(ANTHROPIC_CUSTOM_HEADERS_ENV_KEY)
+        )
+        if existing_headers is not None and existing_headers == desired_headers:
+            conflicts.remove(header_path)
+    return conflicts
+
+
+def _ug_registered_mcp_names(
+    state: dict, managed_servers: object, *, web_search: bool, also: Iterable[str] = ()
+) -> set[str]:
+    """Every MCP server name ug registers in Claude: its managed-file entries, its user-scope
+    fallback registrations, and its own web search server."""
+    names = set(managed_servers) if isinstance(managed_servers, dict) else set()
+    names.update(also)
+    names.update(
+        server["name"]
+        for server in state.get("managed_mcp_servers") or []
+        if isinstance(server, dict)
+        and isinstance(server.get("name"), str)
+        and "claude" in (server.get("clients") or [])
+    )
+    if web_search:
+        names.add(WEB_SEARCH_MCP_NAME)
+    return names
+
+
+def _delivered_admin_allowlist() -> list | None:
+    """The ``allowedMcpServers`` list ug last delivered from the admin's agent_native_settings, if any."""
+    leaves = managed_file_snapshots("claude", _parse_managed_settings).settings_passthrough or []
+    for leaf in leaves:
+        if (
+            isinstance(leaf, list)
+            and len(leaf) == 2
+            and leaf[0] == [CLAUDE_ALLOWED_MCP_SERVERS_KEY]
+            and isinstance(leaf[1], list)
+        ):
+            return leaf[1]
+    return None
+
+
+def _allow_ug_mcp_servers(settings: dict, admin_allowlist: list | None, names: set[str]) -> dict:
+    """Admit ug's own MCP servers in an admin's ``allowedMcpServers``.
+
+    Claude Code blocks any server missing from that allowlist and matches it by registered name,
+    which admins can't be expected to know, so ug appends its own servers after the admin's entries.
+    Recomputed from the admin's list each time, so a server ug stops registering drops out. An
+    allowlist that didn't come from agent_native_settings is left alone.
+    """
+    if admin_allowlist is None:
+        return settings
+    listed = {entry.get("serverName") for entry in admin_allowlist if isinstance(entry, dict)}
+    settings[CLAUDE_ALLOWED_MCP_SERVERS_KEY] = [
+        *admin_allowlist,
+        *({"serverName": name} for name in sorted(names - listed)),
+    ]
+    return settings
+
+
+def _is_shared_claude_list(path: list[str]) -> bool:
+    """Lists IT and ug also write to in the managed file, so the admin's entries merge into them."""
+    return path == CLAUDE_PERMISSIONS_DENY_PATH or (len(path) == 2 and path[0] == "hooks")
+
+
+def _warn_if_settings_disable_smart_routing(
+    passthrough: SettingsPassthrough, previous_leaves: list
+) -> None:
+    if passthrough.record() == previous_leaves:
+        return
+    lockdown = [
+        ".".join(path)
+        for path, value in passthrough.leaves
+        if value is True and path in ([key] for key in CLAUDE_HOOK_LOCKDOWN_KEYS)
+    ]
+    if lockdown:
+        print_warning(
+            f"Your managed settings set {', '.join(lockdown)}, which also blocks the per-launch "
+            "hooks ug's smart routing installs; smart-routed launches will run unrouted."
+        )
+
+
+def _warn_unrecorded_allow_list(merged: dict, snapshots: ManagedFileSnapshots) -> None:
+    """Flag an enforced model allow-list ug may have written before it recorded its pickers.
+
+    Without a record ug can't tell it from an administrator's, so it is never removed; say how to
+    clear it instead of leaving the old model restriction in place silently."""
+    last_applied = snapshots.last_applied_by_ug or {}
+    keys = [k for k in ("availableModels", "enforceAvailableModels") if merged.get(k) is not None]
+    if keys and all(merged[k] == last_applied.get(k) for k in keys):
+        print_warning(
+            f"Claude Code managed settings at {_managed_settings_path()} still set "
+            f"{', '.join(keys)}, possibly from an earlier ug version. If you didn't expect a model "
+            "allow-list, run `ug revert` or ask your administrator to remove it."
+        )
+
+
 def _reconcile_managed_settings(
     state: dict,
     compose: Callable[[dict], dict],
     owned_paths: list[list[str]],
     relayed: bool,
+    picker_keys: list[str],
+    withdrawn_denies: list | None = None,
+    passthrough_leaves: list | None = None,
 ) -> None:
     """Reconcile Claude Code's OS-managed settings so a bare ``claude`` uses the gateway.
 
@@ -1345,16 +1848,9 @@ def _reconcile_managed_settings(
         ) from exc
     managed_before = copy.deepcopy(existing)
     desired_settings = compose(existing)
-    _preserve_permission_denies(managed_before, desired_settings)
-    if not managed_writes_allowed():
-        conflicts = managed_file_conflicts(managed_before, desired_settings, owned_paths)
-        if conflicts:
-            raise RuntimeError(
-                "Claude Code configuration cannot be applied non-interactively because "
-                f"OS-managed settings at {path} override ucode values: {', '.join(conflicts)}. "
-                "Run `ucode configure --agent claude` from an interactive terminal or contact "
-                "your administrator."
-            )
+    _preserve_permission_denies(managed_before, desired_settings, withdrawn=withdrawn_denies or [])
+    conflicts = _managed_settings_conflicts(managed_before, desired_settings, owned_paths)
+    if not managed_writes_allowed() and not conflicts:
         mark_managed_file_verified(state, "claude", path, scope="local-compatible")
         return
     try:
@@ -1367,7 +1863,6 @@ def _reconcile_managed_settings(
             parser=_parse_managed_settings,
         )
     except ManagedFileWriteUnavailable:
-        conflicts = managed_file_conflicts(managed_before, desired_settings, owned_paths)
         if conflicts:
             raise
         print_warning(
@@ -1377,9 +1872,18 @@ def _reconcile_managed_settings(
         mark_managed_file_verified(state, "claude", path, scope="local-compatible")
         return
     mark_managed_file_verified(state, "claude", path)
+    record_ug_picker("claude", {key: desired_settings[key] for key in picker_keys})
+    record_settings_passthrough("claude", passthrough_leaves or [])
 
 
-def _preserve_permission_denies(existing: dict, desired: dict) -> None:
+def _preserve_permission_denies(
+    existing: dict, desired: dict, *, withdrawn: Sequence[object] = ()
+) -> None:
+    """Keep the deny rules already in ``existing`` alongside ``desired``'s, except ``withdrawn``.
+
+    ``withdrawn`` holds rules ug delivered from the admin's settings that the admin has since dropped;
+    every other existing rule (IT-authored ones included) stays.
+    """
     existing_permissions = existing.get("permissions")
     desired_permissions = desired.get("permissions")
     if not isinstance(existing_permissions, dict) or not isinstance(desired_permissions, dict):
@@ -1388,10 +1892,8 @@ def _preserve_permission_denies(existing: dict, desired: dict) -> None:
     desired_denies = desired_permissions.get("deny")
     if not isinstance(existing_denies, list) or not isinstance(desired_denies, list):
         return
-    desired_permissions["deny"] = [
-        *existing_denies,
-        *(rule for rule in desired_denies if rule not in existing_denies),
-    ]
+    kept = [rule for rule in existing_denies if rule not in withdrawn]
+    desired_permissions["deny"] = [*kept, *(rule for rule in desired_denies if rule not in kept)]
 
 
 def default_model(state: dict) -> str | None:
@@ -1488,10 +1990,10 @@ def _union_claude_hooks(base: dict, overlay: dict) -> dict:
 
 def _merge_claude_settings(base: dict, overlay: dict) -> dict:
     """Deep-merge *overlay* onto *base* (overlay wins on conflicting leaves),
-    but UNION the ``hooks`` so neither side's hooks are dropped. Inputs are not
-    mutated.
+    preserving both sources' hooks and permission denies. Inputs are not mutated.
     """
     merged = deep_merge_dict(copy.deepcopy(base), overlay)
+    _preserve_permission_denies(base, merged)
     base_hooks = base.get("hooks")
     overlay_hooks = overlay.get("hooks")
     if isinstance(base_hooks, dict) or isinstance(overlay_hooks, dict):
@@ -1583,7 +2085,7 @@ def _build_claude_argv(
     ``--settings`` (e.g. an integration injecting hooks) would have exactly one
     of the two silently dropped. To let ucode compose with any prior command,
     we merge a caller-supplied ``--settings`` with ucode's — ucode's gateway
-    keys win, hooks from both are unioned — and hand Claude a single merged
+    keys win, hooks and denies from both are unioned — and hand Claude a single merged
     ``--settings`` (inline JSON). The merge is per-launch and is never written
     back to the shared ucode settings file, so concurrent launches cannot
     accumulate one another's hooks. A caller ``--settings`` value ucode cannot
@@ -1604,7 +2106,7 @@ def _build_claude_argv(
     for value in caller_values:
         caller_settings = _merge_claude_settings(caller_settings, _load_caller_settings(value))
     # ucode wins over the caller for conflicting keys (protects gateway auth);
-    # hooks from both sides survive.
+    # hooks and permission denies from both sides survive.
     merged = _merge_claude_settings(caller_settings, read_json_safe(CLAUDE_SETTINGS_PATH))
     if settings_override is not None:
         merged = _merge_claude_settings(merged, settings_override)
@@ -1624,7 +2126,7 @@ def _has_subscription_login() -> bool:
     """True when Claude Code already holds a subscription login (`claude auth
     status` exits 0). Never inspects or captures the credential itself."""
     try:
-        result = subprocess.run(
+        result = subprocess_cross_os.run(
             [SPEC["binary"], "auth", "status"],
             check=False,
             capture_output=True,
@@ -1649,7 +2151,7 @@ def _ensure_subscription_login() -> None:
         return
     print_note("Opening browser to sign in with your Claude subscription...")
     try:
-        subprocess.run([SPEC["binary"], "auth", "login"], check=True, timeout=300)
+        subprocess_cross_os.run([SPEC["binary"], "auth", "login"], check=True, timeout=300)
     except subprocess.CalledProcessError as exc:
         raise RuntimeError("`claude auth login` failed.") from exc
     except subprocess.TimeoutExpired as exc:
@@ -1696,7 +2198,7 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
 
-    proc = subprocess.Popen(_build_claude_argv(binary, tool_args, relayed=True))
+    proc = subprocess_cross_os.popen(_build_claude_argv(binary, tool_args, relayed=True))
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:
@@ -1715,6 +2217,7 @@ def launch(
     *,
     options: LaunchOptions,
 ) -> None:
+    tool_args = _external_web_search_args(state, tool_args)
     binary = SPEC["binary"]
     workspace = state.get("workspace")
     if workspace and os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) == "1":
@@ -1727,12 +2230,8 @@ def launch(
     launch_default_model = state.get("_claude_launch_default_model")
     if isinstance(launch_default_model, str) and launch_default_model:
         os.environ["ANTHROPIC_DEFAULT_MODEL"] = launch_default_model
-    # Smart routing needs Unix PTY support, which Windows does not provide.
-    if options.launch_smart_routing and os.name == "nt":
-        raise RuntimeError(
-            "Smart routing in Claude Code is currently not supported on Windows. "
-            "Please use Codex or launch without --enable-smart-routing."
-        )
+    # Smart routing also spawns Claude directly, so it needs the native executable.
+    binary = _resolve_launch_binary(binary)
     routing_setup_failed = False
     if options.launch_smart_routing:
         try:
@@ -1752,12 +2251,12 @@ def launch(
             routing_setup_failed = True
         else:
             return
-    binary = _resolve_launch_binary(binary)
     if workspace and not custom_oauth_cli_enabled(state.get("custom_oauth")):
         os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
     settings_override = None
     launch_args = list(tool_args)
     if options.user_pinned_model:
+        # Pass the exact ID: managed family defaults can override temporary aliases.
         os.environ["ANTHROPIC_MODEL"] = options.user_pinned_model
         settings_override = {"env": {"ANTHROPIC_MODEL": options.user_pinned_model}}
         launch_args = [

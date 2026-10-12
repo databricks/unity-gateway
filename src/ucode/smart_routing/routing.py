@@ -134,6 +134,7 @@ class SubagentNoticeConfig:
     prompt_field: str
     display_model_mapper: Callable[[str], str] | None = None
     leading_newline: bool = False
+    name_suffix: str = ""
 
     def name(self, tool_input: dict[str, Any]) -> str | None:
         return _nonempty_string(tool_input.get(self.name_field))
@@ -153,10 +154,13 @@ class SubagentNoticeConfig:
         routed_model: str,
         tool_input: dict[str, Any],
     ) -> str:
+        subagent_name = self.name(tool_input)
+        if self.name_suffix:
+            subagent_name = f"{subagent_name or 'subagent'}{self.name_suffix}"
         message = decision.display_message(
             model_label=self.display_model(decision.model, routed_model),
             is_subagent=True,
-            subagent_name=self.name(tool_input),
+            subagent_name=subagent_name,
             prompt=self.prompt(tool_input),
         )
         return f"\n{message}" if self.leading_newline else message
