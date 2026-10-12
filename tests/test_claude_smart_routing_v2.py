@@ -7,6 +7,7 @@ import os
 import sys
 import threading
 import time
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -15,7 +16,8 @@ import pytest
 from ucode.agents import LaunchOptions, claude
 from ucode.constants import AGENT_CLAUDE
 from ucode.databricks import AnthropicModelCatalog
-from ucode.smart_routing import claude_hooks, routing, v2
+from ucode.smart_routing import claude_hooks, pricing, routing, savings, v2
+from ucode.smart_routing.pricing import ModelPrice
 
 if sys.platform != "win32":
     from ucode.smart_routing import claude_pty
@@ -23,6 +25,17 @@ if sys.platform != "win32":
 requires_pty = pytest.mark.skipif(
     sys.platform == "win32", reason="Claude PTY routing is POSIX-only"
 )
+
+
+_START_SAVINGS_PRICE_REFRESH = v2._start_savings_price_refresh
+
+
+@pytest.fixture(autouse=True)
+def savings_price_refresh(monkeypatch) -> Mock:
+    """Routed launches refresh savings prices on a background thread; keep it off the network."""
+    refresh = Mock()
+    monkeypatch.setattr(v2, "_start_savings_price_refresh", refresh)
+    return refresh
 
 
 def _plugin_agent_models(plugin_dir: Path) -> set[str]:
@@ -430,7 +443,9 @@ class TestV2Launch:
             "theme": "dark",
         }
 
-    def test_subagent_only_launch_skips_first_prompt_routing(self, tmp_path, monkeypatch):
+    def test_subagent_only_launch_skips_first_prompt_routing(
+        self, tmp_path, monkeypatch, savings_price_refresh
+    ):
         user_settings = tmp_path / "settings.json"
         user_settings.write_text(json.dumps({"model": "opus"}))
         monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
@@ -500,9 +515,21 @@ class TestV2Launch:
 
         assert exc.value.code == 4
         settings = captured["settings"]
+        price_cache = pricing.price_cache_path(tmp_path, "https://example.com")
         assert settings["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME] == {
-            "options": v2._claude_mod_launch_options({**os.environ, **settings["env"]})
+            "options": {
+                **v2._claude_mod_launch_options({**os.environ, **settings["env"]}),
+                **v2._claude_savings_launch_options(
+                    captured["plugin_dir"].parent,
+                    price_cache=price_cache,
+                    baseline_session_start=False,
+                ),
+            }
         }
+        # The `opus` alias isn't a model service, so only the catalog id is priced.
+        savings_price_refresh.assert_called_once_with(
+            "https://example.com", "token", ["system.ai.claude-opus-4-8"], price_cache
+        )
         env = settings["env"]
         assert env[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
         for key in (v2.SESSION_ENV_VAR, v2.SESSION_PYTHON_ENV_VAR):
@@ -522,6 +549,186 @@ class TestV2Launch:
         assert not captured["plugin_dir"].exists()
         # The model-setting guard is a first-prompt concern; user settings stay untouched.
         assert json.loads(user_settings.read_text()) == {"model": "opus"}
+
+
+class TestSavingsLaunch:
+    """Routed launches hand the savings mod its pricer and refresh the rates it prices with."""
+
+    @staticmethod
+    def _launch(monkeypatch, tmp_path, *, first_prompt: bool) -> dict:
+        user_settings = tmp_path / "settings.json"
+        user_settings.write_text(json.dumps({"model": "opus"}))
+        routing_flag = (
+            v2.ENABLE_SMART_ROUTING_ENV_VAR if first_prompt else v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR
+        )
+        monkeypatch.setenv(routing_flag, "1")
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        monkeypatch.setattr(v2, "CLAUDE_PTY_LOG", tmp_path / "v2.log")
+        monkeypatch.setattr(v2, "_model_picker_catalog", lambda: None)
+        monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
+        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
+        monkeypatch.setattr(
+            v2,
+            "list_anthropic_model_catalog",
+            lambda *_args: AnthropicModelCatalog(
+                model_ids=["system.ai.claude-opus-4-8"], model_id_to_display_name={}
+            ),
+        )
+        captured: dict = {}
+
+        def capture(argv) -> None:
+            captured["launch_dir"] = Path(argv[argv.index("--plugin-dir") + 1]).parent
+            settings = json.loads(Path(argv[argv.index("--settings") + 1]).read_text())
+            captured["options"] = settings["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME][
+                "options"
+            ]
+
+        def run_pty(argv, **_kwargs) -> int:
+            capture(argv)
+            return 0
+
+        def popen(argv, **_kwargs) -> Mock:
+            capture(argv)
+            return Mock(wait=lambda: 0)
+
+        if first_prompt:
+            monkeypatch.setattr(claude_pty, "run_claude_pty", run_pty)
+        else:
+            monkeypatch.setattr(v2.subprocess, "Popen", popen)
+
+        with pytest.raises(SystemExit) as exc:
+            v2.launch_claude(
+                {"workspace": "https://example.com"},
+                [],
+                binary="claude",
+                user_settings_path=user_settings,
+                launch_model="opus",
+                compose_settings=lambda _args: ({}, []),
+                launch_model_args=claude._launch_model_args,
+                model_name=claude._maybe_add_1m_suffix,
+            )
+        assert exc.value.code == 0
+        return captured
+
+    @pytest.mark.parametrize("first_prompt", [False, pytest.param(True, marks=requires_pty)])
+    def test_first_prompt_routing_prices_against_the_start_model(
+        self, monkeypatch, tmp_path, first_prompt
+    ):
+        captured = self._launch(monkeypatch, tmp_path, first_prompt=first_prompt)
+
+        assert captured["options"]["savings_pricer"] == savings.pricer_argv(
+            python=sys.executable,
+            price_cache=pricing.price_cache_path(tmp_path, "https://example.com"),
+            baseline_session_start=first_prompt,
+        )
+        assert captured["options"]["savings_usage"] == str(
+            captured["launch_dir"] / savings.USAGE_FILENAME
+        )
+
+    def test_opting_out_skips_the_pricer_and_the_price_refresh(
+        self, monkeypatch, tmp_path, savings_price_refresh
+    ):
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR, "0")
+
+        captured = self._launch(monkeypatch, tmp_path, first_prompt=False)
+
+        assert {
+            key: captured["options"][key] for key in v2.CLAUDE_SAVINGS_OPTION_DEFAULTS
+        } == v2.CLAUDE_SAVINGS_OPTION_DEFAULTS
+        savings_price_refresh.assert_not_called()
+
+
+class TestSavingsPriceRefresh:
+    def test_prices_routable_and_main_models_by_system_ai_name(self):
+        services = v2._savings_model_services(
+            [
+                "system.ai.claude-opus-4-8[1m]",
+                "anthropic-aigw-73ea02b2-system.ai.glm-5-2",
+                "databricks-claude-sonnet-5",
+                "opus",
+                None,
+            ],
+            {
+                "env": {
+                    "ANTHROPIC_DEFAULT_OPUS_MODEL": "system.ai.claude-opus-5-5",
+                    "UNRELATED": "system.ai.not-a-main-model",
+                }
+            },
+        )
+
+        assert services == [
+            "system.ai.claude-opus-4-8",
+            "system.ai.claude-opus-5-5",
+            "system.ai.claude-sonnet-5",
+            "system.ai.glm-5-2",
+        ]
+
+    def test_caches_the_fetched_rates(self, monkeypatch, tmp_path):
+        cache = tmp_path / "model-prices.json"
+        requests = []
+
+        def fetch(workspace, token, model_services):
+            requests.append((workspace, token, model_services))
+            token_costs = [
+                {"token_type": "TOKEN_TYPE_INPUT", "cost": 5},
+                {"token_type": "TOKEN_TYPE_OUTPUT", "cost": 25},
+            ]
+            rate = {
+                "model_service": "system.ai.claude-opus-4-8",
+                "costs": [{"unit": "USD", "token_costs": token_costs}],
+            }
+            return [rate], None
+
+        monkeypatch.setattr(v2, "fetch_endpoint_rates", fetch)
+
+        v2._refresh_savings_prices(
+            "https://example.com", "token", ["system.ai.claude-opus-4-8"], cache
+        )
+
+        assert requests == [("https://example.com", "token", ["system.ai.claude-opus-4-8"])]
+        cached = pricing.read_price_cache(cache)
+        assert cached is not None
+        assert cached[0] == {
+            "claude-opus-4-8": ModelPrice(input=Decimal("5"), output=Decimal("25"))
+        }
+
+    @pytest.mark.parametrize(
+        "fetch",
+        [
+            lambda *_args: ([], "HTTP 404 Not Found"),
+            lambda *_args: (_ for _ in ()).throw(RuntimeError("rates API down")),
+        ],
+    )
+    def test_failed_refresh_keeps_the_previous_cache(self, monkeypatch, tmp_path, fetch):
+        cache = tmp_path / "model-prices.json"
+        pricing.write_price_cache(
+            cache, {"claude-opus-4-8": ModelPrice(input=Decimal("5"))}, now=1.0
+        )
+        monkeypatch.setattr(v2, "fetch_endpoint_rates", fetch)
+
+        v2._refresh_savings_prices(
+            "https://example.com", "token", ["system.ai.claude-opus-4-8"], cache
+        )
+
+        cached = pricing.read_price_cache(cache)
+        assert cached is not None and cached[1] == "1.0"
+
+    def test_refresh_runs_on_a_daemon_thread(self, monkeypatch, tmp_path):
+        done = threading.Event()
+        calls = []
+
+        def refresh(*args):
+            thread = threading.current_thread()
+            calls.append((thread is threading.main_thread(), thread.daemon, args))
+            done.set()
+
+        monkeypatch.setattr(v2, "_refresh_savings_prices", refresh)
+        cache = tmp_path / "model-prices.json"
+
+        _START_SAVINGS_PRICE_REFRESH("https://example.com", "token", ["m"], cache)
+
+        assert done.wait(5)
+        assert calls == [(False, True, ("https://example.com", "token", ["m"], cache))]
 
 
 class TestV2ModelPickerDiscovery:

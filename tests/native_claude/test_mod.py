@@ -2,16 +2,36 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
 from session import Session
 
-from ucode.smart_routing import config
-from ucode.smart_routing.v2 import _claude_mod_launch_options, _write_routed_claude_plugin
+from ucode.smart_routing import config, savings
+from ucode.smart_routing.v2 import (
+    CLAUDE_SAVINGS_OPTION_DEFAULTS,
+    _claude_mod_launch_options,
+    _write_routed_claude_plugin,
+)
+
+
+def _savings_options(root: Path) -> dict:
+    return {
+        # A space and a non-ASCII character check the argv survives the options round trip.
+        "savings_pricer": savings.pricer_argv(
+            python=sys.executable,
+            price_cache=root / "no prices λ.json",
+            baseline_session_start=False,
+        ),
+        "savings_usage": str(root / savings.USAGE_FILENAME),
+        "orchestrator_version": "1.2.0",
+    }
 
 
 @pytest.fixture(scope="module")
@@ -48,10 +68,41 @@ def test_native_options_are_launch_local(native_binary, tmp_path):
         "SMART_ROUTER_CONFIG_VERSION": config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
         "SMART_ROUTER_NAME": 'custom "quoted" λ',
     }
+    savings_options = _savings_options(tmp_path / "a")
     with (
-        Session(native_binary, tmp_path / "a", env) as a,
+        Session(native_binary, tmp_path / "a", env, options=savings_options) as a,
         Session(native_binary, tmp_path / "b", {}) as b,
     ):
-        assert a.observe()["options"] == _claude_mod_launch_options(env)
-        assert b.observe()["options"] == _claude_mod_launch_options({})
+        assert a.observe()["options"] == {**_claude_mod_launch_options(env), **savings_options}
+        # Claude fills in the declared defaults for options a launch omits.
+        assert b.observe()["options"] == {
+            **_claude_mod_launch_options({}),
+            **CLAUDE_SAVINGS_OPTION_DEFAULTS,
+        }
         assert not (a.plugin / "hooks/launch.json").exists()
+
+
+def test_savings_mod_records_the_start_model(native_binary, tmp_path):
+    root = tmp_path / "session"
+    options = _savings_options(root)
+    usage = Path(options["savings_usage"])
+    with Session(native_binary, root, {}, options=options) as session:
+        session.observe()
+        # The mod writes its sums off the session.start critical path.
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                recorded = json.loads(usage.read_text(encoding="utf-8"))
+                break
+            except (OSError, ValueError):
+                assert time.monotonic() < deadline, "the savings mod never wrote its usage file"
+                time.sleep(0.1)
+
+    assert recorded == {
+        "version": 1,
+        "start_model": "claude-sonnet-4-6",
+        "main_model": None,
+        "first_main_model": None,
+        "user_switched": False,
+        "entries": [],
+    }

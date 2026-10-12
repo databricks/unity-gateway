@@ -19,7 +19,7 @@ from ucode.smart_routing.v2 import (
 
 
 class Session:
-    def __init__(self, binary, root, env, api="http://127.0.0.1:1"):
+    def __init__(self, binary, root, env, api="http://127.0.0.1:1", options=None):
         self.root = root
         root.mkdir()
         self.plugin = root / "plugin"
@@ -37,7 +37,9 @@ class Session:
                 "CLAUDE_CODE_EXTRA_BODY": '{"caller_field":"keep"}',
             },
             "pluginConfigs": {
-                CLAUDE_ROUTING_PLUGIN_NAME: {"options": _claude_mod_launch_options(env)}
+                CLAUDE_ROUTING_PLUGIN_NAME: {
+                    "options": {**_claude_mod_launch_options(env), **(options or {})}
+                }
             },
         }
         process_env = {

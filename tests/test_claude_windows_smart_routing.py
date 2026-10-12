@@ -54,6 +54,7 @@ def test_windows_subagent_routing_uses_native_binary_without_unix_imports(tmp_pa
     monkeypatch.delenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, raising=False)
     monkeypatch.setattr(v2, "APP_DIR", tmp_path)
     monkeypatch.setattr(v2, "install_skill", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(v2, "_start_savings_price_refresh", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(v2, "_model_picker_catalog", lambda: None)
     monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
     monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])

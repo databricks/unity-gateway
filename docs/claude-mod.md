@@ -27,3 +27,24 @@ UG passes the resolved routing flags and recipe in the existing launch settings 
 `pluginConfigs["ug-smart-router"].options`. Claude supplies these to `register(on, options)`.
 `unset` lists originally absent flags because native options cannot carry null values.
 The source remains static; no additional launch snapshot file is created.
+
+## Savings estimate
+
+`hooks/savings.ts` draws a dim row above the prompt: the estimated savings from smart
+routing and, when the launch activates Smart Router Orchestrator, the skill's
+`metadata.version` from `SKILL.claude.md`. For each turn request, main agent and
+subagents, the mod sums token usage by the model that served it and its baseline. Main
+is its own baseline, and a subagent's baseline is the main model in effect when it ran.
+Under first-prompt routing, requests before the user changes the main model are priced
+against the model the session started on.
+
+After each turn the mod writes those sums to `savings_usage`, a file in the launch's
+temporary directory. It then runs the `savings_pricer` argv
+(`python -P -m ucode.smart_routing.savings`), which prices the sums from the
+workspace's cached endpoint rates and prints the row's text. Each routed launch
+refreshes that cache on a background thread. An estimate is hidden, not undercounted,
+when any served or baseline model has no rate. The orchestrator version is passed
+as `orchestrator_version`.
+
+The estimate is on by default; `ENABLE_SMART_ROUTING_SAVINGS=0` opts a launch out
+and leaves the three options at their declared defaults.

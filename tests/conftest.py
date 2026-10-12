@@ -77,6 +77,8 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.delenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", raising=False)
     monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
     monkeypatch.delenv("SMART_ROUTER_NAME", raising=False)
+    # A developer's savings opt-out would otherwise drop the savings options from launch tests.
+    monkeypatch.delenv("ENABLE_SMART_ROUTING_SAVINGS", raising=False)
     # On Windows, resolve_command swaps a bare program name for whatever `shutil.which`
     # finds on the developer's PATH (e.g. a real `codex.CMD`). Rebind only the compatibility
     # helper's `shutil` so argv stays host-independent; helper tests patch `which` explicitly.

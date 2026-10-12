@@ -17,6 +17,13 @@ Claude mod entry-point coverage lives in `test_claude_mod.py` (generated plugin 
 `native_claude/test_mod.py` suite. Claude 2.1.290 validates the module and runs its
 TypeScript event-forwarding test in CI. Request metadata and toggle behavior are
 covered by a follow-up change. See [the mod guide](../docs/claude-mod.md).
+Savings estimate coverage: `test_smart_routing_savings.py` prices the mod's token sums
+(per-entry and first-prompt baselines, unpriced or malformed entries, the pricer's single
+JSON line). `test_smart_routing_pricing.py` covers endpoint rates and the price cache.
+`test_claude_mod.py` and `test_claude_smart_routing_v2.py` cover the savings options,
+opt-out and price refresh. In the native suite, the options reach the mod unchanged and
+a real session records its start model. Token accumulation in `turn.step` and the
+above-prompt row are not covered automatically.
 
 Dedicated CUJs reuse `integration/utils` session/terminal mechanics and file-task
 and transcript readers, not its config stubs or pytest fixtures. Prompt/model
