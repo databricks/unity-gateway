@@ -29,7 +29,9 @@ def request_tags_header_value(env: Mapping[str, str] | None = None) -> str | Non
         # Make sure the value is a JSON object
         parsed = json.loads(value)
         if type(parsed) is not dict:
-            print_warning_err(f"Ignoring {AI_GATEWAY_REQUEST_TAGS_ENV_VAR}: expected a JSON object, but got a {type(parsed)}")
+            print_warning_err(
+                f"Ignoring {AI_GATEWAY_REQUEST_TAGS_ENV_VAR}: expected a JSON object, but got a {type(parsed)}"
+            )
             return None
         return value
     except Exception as e:
