@@ -1831,17 +1831,21 @@ class TestAuthTokenCommand:
         else:
             os.environ["DATABRICKS_BEARER"] = original
 
-    def test_prints_only_the_token_to_stdout(self):
+    @pytest.mark.parametrize("browser_login", [False, True])
+    def test_prints_only_the_token_to_stdout(self, browser_login):
         with (
             patch("ucode.cli.load_state", return_value={"workspace": "https://ws"}),
             patch("ucode.cli.get_databricks_token", return_value="tok-123") as fetch,
         ):
-            result = runner.invoke(app, ["auth-token"])
+            args = ["auth-token", "--browser-login"] if browser_login else ["auth-token"]
+            result = runner.invoke(app, args)
         assert result.exit_code == 0
         # Nothing but the bare token (plus trailing newline) may reach stdout,
         # or the consuming agent will treat the noise as part of the token.
         assert result.stdout == "tok-123\n"
-        fetch.assert_called_once_with("https://ws", None, force_refresh=False, browser_login=False)
+        fetch.assert_called_once_with(
+            "https://ws", None, force_refresh=False, browser_login=browser_login
+        )
 
     def test_host_and_profile_override_state(self):
         with (
@@ -1864,15 +1868,6 @@ class TestAuthTokenCommand:
             result = runner.invoke(app, ["auth-token", "--force-refresh"])
         assert result.exit_code == 0
         fetch.assert_called_once_with("https://ws", None, force_refresh=True, browser_login=False)
-
-    def test_browser_login_is_forwarded(self):
-        with (
-            patch("ucode.cli.load_state", return_value={"workspace": "https://ws"}),
-            patch("ucode.cli.get_databricks_token", return_value="tok") as fetch,
-        ):
-            result = runner.invoke(app, ["auth-token", "--browser-login"])
-        assert result.exit_code == 0
-        fetch.assert_called_once_with("https://ws", None, force_refresh=False, browser_login=True)
 
     def test_errors_without_workspace(self):
         with patch("ucode.cli.load_state", return_value={}):

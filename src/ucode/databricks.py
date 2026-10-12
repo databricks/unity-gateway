@@ -72,12 +72,9 @@ TOKEN_REFRESH_INTERVAL_SECONDS = 1800
 # we retry rather than treat them as an expired session.
 _TOKEN_CACHE_LOCK_MARKERS = ("cache update", "exit status 45")
 _TOKEN_FETCH_MAX_ATTEMPTS = 4
-# The CLI's errors for a missing cached login and an invalid refresh token. Not
-# its generic "Try logging in again with `databricks auth login`" trailer: that
-# is appended to network failures too, which must never open a browser.
+# Match expired/missing logins, not the generic login hint also used for network errors.
 _LOGIN_REQUIRED_MARKERS = ("not configured for this host", "refresh token is invalid")
-# Below the agent's 180 s helper timeout (CUSTOM_OAUTH_TIMEOUT_MS), so ug ends an
-# abandoned login itself: Codex kills only the helper, not the CLI it spawned.
+# End login before Codex's 180 s timeout kills the helper and orphans the CLI.
 _BROWSER_LOGIN_TIMEOUT_SECONDS = 150
 _BROWSER_LOGIN_LOCK_PATH = APP_DIR / "auth-login.lock"
 _HTTP_GET_RETRYABLE_STATUS_CODES = frozenset({429})
@@ -1379,28 +1376,22 @@ def _browser_login(
     env: dict[str, str],
     fetch: Callable[[], tuple[str, str]],
 ) -> str:
-    """Run a browser `databricks auth login` from a token helper, then fetch again.
-
-    Serialized with an OS file lock: concurrent helpers (agent threads, a 401
-    retry) would otherwise each open a browser and race for the CLI's callback
-    port. Fetch first once the lock is held, since the helper that held it may
-    have just signed in."""
+    """Serialize browser sign-in across helpers sharing the CLI's callback port."""
     started = time.monotonic()
     _BROWSER_LOGIN_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
     with _BROWSER_LOGIN_LOCK_PATH.open("a+b") as lock_file:
         acquire_exclusive_file_lock(lock_file)
         try:
+            # Another helper may have signed in while we waited.
             token, _ = fetch()
             if token:
                 return token
-            # The agent times the helper from launch, so time spent waiting on
-            # the lock comes out of the login's budget.
+            # Lock wait and token fetch share the login's time budget.
             remaining = _BROWSER_LOGIN_TIMEOUT_SECONDS - (time.monotonic() - started)
             if remaining <= 0:
                 return ""
             try:
-                # stdout -> stderr: this process's stdout carries the token to
-                # the agent. stdin is closed since the flow is browser-driven.
+                # Keep login output off the helper's token-only stdout.
                 subprocess_cross_os.run(
                     [
                         databricks_cli_path(),
@@ -1419,8 +1410,7 @@ def _browser_login(
                 )
             except (OSError, subprocess.TimeoutExpired) as exc:
                 _debug("auth login", f"exception: {type(exc).__name__}: {exc}")
-            token, _ = fetch()
-            return token
+            return fetch()[0]
         finally:
             release_file_lock(lock_file)
 
@@ -1507,10 +1497,8 @@ def get_databricks_token(
         stderr = ""
         for attempt in range(_TOKEN_FETCH_MAX_ATTEMPTS):
             token, stderr = _fetch()
-            if token:
-                return token, ""
-            if not any(marker in stderr.lower() for marker in _TOKEN_CACHE_LOCK_MARKERS):
-                return "", stderr
+            if token or not any(marker in stderr.lower() for marker in _TOKEN_CACHE_LOCK_MARKERS):
+                return token, stderr
             _debug("auth token", f"cache-lock contention (attempt {attempt + 1}); retrying")
             if attempt < _TOKEN_FETCH_MAX_ATTEMPTS - 1:
                 time.sleep(random.uniform(0.05, 0.1 * (2**attempt)))
@@ -1662,11 +1650,7 @@ def ug_binary() -> str:
 
 
 def build_auth_token_argv(
-    workspace: str,
-    profile: str | None = None,
-    *,
-    use_pat: bool = False,
-    browser_login: bool = False,
+    workspace: str, profile: str | None = None, *, use_pat: bool = False
 ) -> list[str]:
     """Argv for the cross-platform token helper: `ug auth-token ...`.
 
@@ -1680,8 +1664,6 @@ def build_auth_token_argv(
         argv += ["--profile", profile]
     if use_pat:
         argv.append("--use-pat")
-    if browser_login:
-        argv.append("--browser-login")
     return argv
 
 

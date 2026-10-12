@@ -1931,14 +1931,7 @@ def auth_token_cmd(
         bool,
         typer.Option("--force-refresh", help="Force the Databricks CLI to mint a new token."),
     ] = False,
-    browser_login: Annotated[
-        bool,
-        typer.Option(
-            "--browser-login",
-            hidden=True,
-            help="Open a browser sign-in when the Databricks login has expired.",
-        ),
-    ] = False,
+    browser_login: Annotated[bool, typer.Option("--browser-login", hidden=True)] = False,
     client_id: Annotated[
         str | None,
         typer.Option(

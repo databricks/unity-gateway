@@ -1885,10 +1885,6 @@ class TestBuildAuthTokenArgv:
     def test_no_use_pat_flag_by_default(self):
         assert "--use-pat" not in build_auth_token_argv(WS)
 
-    def test_browser_login_flag(self):
-        assert "--browser-login" in build_auth_token_argv(WS, browser_login=True)
-        assert "--browser-login" not in build_auth_token_argv(WS)
-
 
 class TestBuildAuthShellCommand:
     def test_contains_workspace(self):
