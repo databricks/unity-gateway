@@ -25,7 +25,7 @@ import ucode.cli as cli_mod
 import ucode.databricks as db_mod
 from ucode.cli import app
 from ucode.databricks import GatewayProbe
-from ucode.managed_config import normalize_managed_config
+from ucode.managed_config import ManagedConfigResult, normalize_managed_config
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -120,7 +120,7 @@ class TestHelp:
             "Manage": output[panels["Manage"] : panels["Usage"]],
             "Usage": output[panels["Usage"] : global_options],
         }
-        for command in ("claude", "codex", "copilot", "cursor", "gemini", "opencode", "pi"):
+        for command in ("claude", "codex", "copilot", "cursor", "gemini", "opencode", "kilo", "pi"):
             assert command in sections["Launch"]
         assert "configure" in sections["Setup"]
         for command in ("mcp", "skills"):
@@ -495,6 +495,21 @@ def _launch_policy_patches(
             "launch": launch,
             "state": launch_state,
         }
+
+
+def test_bare_launch_preserves_preset_until_agent_selection(monkeypatch):
+    monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "subagent_orch_v0")
+    monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "0")
+
+    def select_and_launch_agent(*args, **kwargs):
+        assert os.environ["SMART_ROUTER_CONFIG_VERSION"] == "subagent_orch_v0"
+        assert os.environ["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] == "0"
+
+    with patch("ucode.cli._launch_managed_default", side_effect=select_and_launch_agent) as launch:
+        result = runner.invoke(app, [])
+
+    assert result.exit_code == 0, result.output
+    launch.assert_called_once()
 
 
 class TestSubcommandRouting:
@@ -946,7 +961,7 @@ class TestSubcommandRouting:
             patch(
                 "ucode.cli._launch_tool",
                 side_effect=lambda *_args, **_kwargs: routing_during_launch.append(
-                    cli_mod.smart_routing_v2.smart_routing_enabled()
+                    cli_mod.smart_routing_v2.smart_routing_enabled(None, default=False, agent=tool)
                 ),
             ) as mock_launch,
         ):
@@ -1136,6 +1151,23 @@ class TestManagedConfigLaunchSourceGuard:
 
         assert result.exit_code == 1
         assert "`--provider` or `--model-location` is not allowed" in _strip_ansi(result.output)
+        calls["launch"].assert_not_called()
+
+    def test_fresh_state_still_rejects_provider_under_managed_config(self):
+        with (
+            _launch_policy_patches({}) as calls,
+            patch("ucode.cli.load_state", return_value={}),
+            patch(
+                "ucode.cli._prompt_for_configuration",
+                return_value=(MINIMAL_STATE["workspace"], None),
+            ),
+            patch("ucode.cli.configure_single_tool", return_value=MINIMAL_STATE) as mock_configure,
+        ):
+            result = runner.invoke(app, ["claude", "--provider", "main.default.provider"])
+
+        assert result.exit_code == 1
+        assert "`--provider` or `--model-location` is not allowed" in _strip_ansi(result.output)
+        mock_configure.assert_called_once_with("claude", MINIMAL_STATE, provider=None)
         calls["launch"].assert_not_called()
 
     def test_persisted_provider_is_not_mistaken_for_an_explicit_option(self):
@@ -3028,7 +3060,7 @@ class TestAutoConfigureOnFirstRun:
             result = runner.invoke(app, [tool])
 
         assert result.exit_code == 0, result.output
-        mock_configure.assert_called_once_with(tool, configured_state)
+        mock_configure.assert_called_once_with(tool, configured_state, provider=None)
         mock_restore.assert_not_called()
         mock_launch.assert_called_once()
         assert mock_launch.call_args.args[:2] == (tool, configured_state)
@@ -3057,7 +3089,7 @@ class TestAutoConfigureOnFirstRun:
             result = runner.invoke(app, ["claude"])
         assert result.exit_code == 0, result.output
         mock_bootstrap.assert_called_once_with("claude", skip_cli_version_check=False)
-        mock_auto.assert_called_once_with("claude")
+        mock_auto.assert_called_once_with("claude", provider=None)
 
     def test_triggers_when_tool_not_in_available_tools(self):
         """Auto-configure runs when workspace exists but the tool wasn't configured."""
@@ -3082,7 +3114,41 @@ class TestAutoConfigureOnFirstRun:
             result = runner.invoke(app, ["claude"])
         assert result.exit_code == 0, result.output
         mock_bootstrap.assert_called_once_with("claude", skip_cli_version_check=False)
-        mock_auto.assert_called_once_with("claude")
+        mock_auto.assert_called_once_with("claude", provider=None)
+
+    def test_first_run_configures_through_launch_provider(self):
+        """A default-gateway first-run setup would write the managed auth keys that a relayed
+        provider's launch then refuses to start over."""
+        with (
+            _launch_policy_patches(None) as calls,
+            patch("ucode.cli.load_state", return_value={}),
+            patch("ucode.cli._auto_configure_tool") as mock_auto,
+        ):
+            calls["resolve_provider"].return_value = (None, None, True)
+            result = runner.invoke(app, ["claude", "--provider", "main.default.relay"])
+
+        assert result.exit_code == 0, result.output
+        mock_auto.assert_called_once_with("claude", provider="main.default.relay")
+        assert calls["configure"].call_args.kwargs["relayed"] is True
+
+    @pytest.mark.parametrize(
+        ("manifest", "expected_provider"),
+        [(None, "main.default.relay"), ({"claude": {}}, None)],
+    )
+    def test_auto_configure_forwards_provider_unless_managed(self, manifest, expected_provider):
+        # A managed config must still reject --provider with its own error later in the launch.
+        with (
+            patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
+            patch("ucode.cli.configure_shared_state", return_value=MINIMAL_STATE),
+            patch(
+                "ucode.cli._fetch_managed_config",
+                return_value=ManagedConfigResult(manifest, False),
+            ),
+            patch("ucode.cli.configure_single_tool", return_value=MINIMAL_STATE) as mock_configure,
+        ):
+            cli_mod._auto_configure_tool("claude", provider="main.default.relay")
+
+        mock_configure.assert_called_once_with("claude", MINIMAL_STATE, provider=expected_provider)
 
     def test_skipped_when_already_configured(self):
         """Auto-configure is skipped when workspace and tool are already set up."""
@@ -3467,7 +3533,9 @@ class TestConfigureAgentFlag:
             result = runner.invoke(app, ["configure", "--agents", "claude,bogus"])
         assert result.exit_code != 0
         assert "Unsupported tool 'bogus'" in result.output
-        assert "codex, claude, gemini, opencode, copilot, pi" in " ".join(result.output.split())
+        assert "codex, claude, gemini, opencode, kilo, copilot, pi" in " ".join(
+            result.output.split()
+        )
         mock_cfg.assert_not_called()
 
     def test_agents_flag_rejects_empty_list(self):

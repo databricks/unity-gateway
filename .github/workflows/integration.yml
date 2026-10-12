@@ -2,6 +2,11 @@ name: Integration
 
 on:
   workflow_call:
+    inputs:
+      ref:
+        description: Commit to test; fork-integration.yml passes the PR head pinned by /integration-test
+        type: string
+        default: ''
   workflow_dispatch:
     inputs:
       ug_version:
@@ -38,7 +43,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: integration-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  group: integration-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 env:
@@ -58,6 +63,8 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
           fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
@@ -65,6 +72,7 @@ jobs:
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
         with:
           version: 0.9.8
+          enable-cache: ${{ inputs.ref == '' }}
       - name: Test a fresh installed package without credentials
         run: |
           uv run --no-project --python 3.12 python scripts/run_integration.py \
@@ -92,6 +100,8 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
           fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
@@ -99,6 +109,7 @@ jobs:
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
         with:
           version: 0.9.8
+          enable-cache: ${{ inputs.ref == '' }}
       - name: Test a fresh installed package without workspace credentials
         shell: pwsh
         run: |
@@ -174,6 +185,8 @@ jobs:
     steps: &live-steps
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
           fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
@@ -181,6 +194,7 @@ jobs:
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
         with:
           version: 0.9.8
+          enable-cache: ${{ inputs.ref == '' }}
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
         with:
           version: 1.17.0
@@ -229,6 +243,8 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
           fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
@@ -236,6 +252,7 @@ jobs:
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
         with:
           version: 0.9.8
+          enable-cache: ${{ inputs.ref == '' }}
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
         with:
           version: 1.17.0
@@ -353,6 +370,8 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
           fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
@@ -360,6 +379,7 @@ jobs:
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
         with:
           version: 0.9.8
+          enable-cache: ${{ inputs.ref == '' }}
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
         with:
           version: 1.17.0
@@ -409,6 +429,8 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
           fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
@@ -416,6 +438,7 @@ jobs:
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
         with:
           version: 0.9.8
+          enable-cache: ${{ inputs.ref == '' }}
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
         with:
           version: 1.17.0
@@ -463,6 +486,9 @@ jobs:
       cujs: ${{ steps.discover.outputs.cujs }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
       - name: Discover every E2E CUJ file
         id: discover
         shell: bash
@@ -498,12 +524,16 @@ jobs:
       UG_BUDGET_CUJ_SP_CLIENT_SECRET: ${{ secrets.UG_BUDGET_CUJ_SP_CLIENT_SECRET }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: 22.19.0
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
         with:
           version: 0.9.8
+          enable-cache: ${{ inputs.ref == '' }}
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
         with:
           version: 1.17.0

@@ -22,3 +22,8 @@ uv run pytest tests/native_claude/test_mod.py -q
 ```
 
 See [Claude Mods](https://code.claude.com/docs/en/plugins/mods/overview).
+
+UG passes the resolved routing flags and recipe in the existing launch settings under
+`pluginConfigs["ug-smart-router"].options`. Claude supplies these to `register(on, options)`.
+`unset` lists originally absent flags because native options cannot carry null values.
+The source remains static; no additional launch snapshot file is created.
