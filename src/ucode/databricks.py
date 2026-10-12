@@ -37,10 +37,7 @@ from ucode.constants import (
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
 )
 from ucode.os_compatibility import subprocess_cross_os
-from ucode.os_compatibility.file_lock_cross_os import (
-    acquire_exclusive_file_lock,
-    release_file_lock,
-)
+from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock
 from ucode.telemetry import ug_version
 from ucode.ui import (
     err_console,
@@ -1381,38 +1378,34 @@ def _browser_login(
     _BROWSER_LOGIN_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
     with _BROWSER_LOGIN_LOCK_PATH.open("a+b") as lock_file:
         acquire_exclusive_file_lock(lock_file)
+        # Another helper may have signed in while we waited.
+        token, _ = fetch()
+        if token:
+            return token
+        # Lock wait and token fetch share the login's time budget.
+        remaining = _BROWSER_LOGIN_TIMEOUT_SECONDS - (time.monotonic() - started)
+        if remaining <= 0:
+            return ""
         try:
-            # Another helper may have signed in while we waited.
-            token, _ = fetch()
-            if token:
-                return token
-            # Lock wait and token fetch share the login's time budget.
-            remaining = _BROWSER_LOGIN_TIMEOUT_SECONDS - (time.monotonic() - started)
-            if remaining <= 0:
-                return ""
-            try:
-                # Keep login output off the helper's token-only stdout.
-                subprocess_cross_os.run(
-                    [
-                        databricks_cli_path(),
-                        "auth",
-                        "login",
-                        "--host",
-                        workspace,
-                        *_profile_args(profile),
-                    ],
-                    check=False,
-                    timeout=remaining,
-                    stdin=subprocess.DEVNULL,
-                    stdout=sys.stderr,
-                    stderr=sys.stderr,
-                    env=env,
-                )
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                _debug("auth login", f"exception: {type(exc).__name__}: {exc}")
-            return fetch()[0]
-        finally:
-            release_file_lock(lock_file)
+            # Keep login output off the helper's token-only stdout.
+            subprocess_cross_os.run(
+                [
+                    databricks_cli_path(),
+                    "auth",
+                    "login",
+                    "--host",
+                    workspace,
+                    *_profile_args(profile),
+                ],
+                timeout=remaining,
+                stdin=subprocess.DEVNULL,
+                stdout=sys.stderr,
+                stderr=sys.stderr,
+                env=env,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            _debug("auth login", f"exception: {type(exc).__name__}: {exc}")
+        return fetch()[0]
 
 
 def get_databricks_token(
