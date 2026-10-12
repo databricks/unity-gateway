@@ -391,6 +391,7 @@ class TestLaunchCodex:
         assert "x-databricks-workspace" in provider_arg
         assert "eng-ml-inference" in provider_arg
 
+    @pytest.mark.parametrize("platform_name", ["posix", "nt"])
     @pytest.mark.parametrize(
         ("tool_args", "add_default_cwd", "use_server_sandbox_default"),
         [
@@ -420,10 +421,17 @@ class TestLaunchCodex:
         ],
     )
     def test_subagent_only_launch_protects_resume_without_routing_parent(
-        self, tmp_path, monkeypatch, tool_args, add_default_cwd, use_server_sandbox_default
+        self,
+        tmp_path,
+        monkeypatch,
+        platform_name,
+        tool_args,
+        add_default_cwd,
+        use_server_sandbox_default,
     ):
         monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
         monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        monkeypatch.setattr(v2, "os", SimpleNamespace(name=platform_name, environ=os.environ))
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
         monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
@@ -456,9 +464,18 @@ class TestLaunchCodex:
         assert exc.value.code == 0
         argv, tui_argv = spawned
         assert argv[:2] == ["codex", "app-server"]
+        provider_args = []
+        if platform_name == "nt":
+            provider_args = [
+                "--config",
+                'model_provider="Databricks"',
+                "--config",
+                next(arg for arg in argv if arg.startswith("model_providers.Databricks=")),
+            ]
         cwd_args = ["--cd", str(Path.cwd())] if add_default_cwd else []
         assert tui_argv == [
             "codex",
+            *provider_args,
             *cwd_args,
             "--remote",
             "ws://127.0.0.1:41002",

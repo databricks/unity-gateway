@@ -60,6 +60,9 @@ class AppServer:
         # proxy settings from forwarding this local control connection.
         transport = socket.create_connection(("127.0.0.1", self.port), RPC_TIMEOUT_SECONDS)
         try:
+            # A supplied socket bypasses websockets' timeout reset. Only the RPC
+            # deadline should expire while its receiver waits for confirmation.
+            transport.settimeout(None)
             self.connection = connect(self.url, sock=transport, open_timeout=RPC_TIMEOUT_SECONDS)
             self.socket = self.connection.__enter__()
         except Exception:

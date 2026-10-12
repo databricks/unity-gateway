@@ -250,8 +250,12 @@ def test_failed_confirmation_keeps_protection_pending(tmp_path, native_peer, mon
     peer.threads["child"].update(model="parent-model", reasoningEffort="low")
     peer.confirm = False
     monkeypatch.setattr(codex_resume, "RPC_TIMEOUT_SECONDS", 0.5)
-    with codex_resume.AppServer(peer.url) as client, pytest.raises(TimeoutError):
-        routes.restore_before_input("child", client)
+    with codex_resume.AppServer(peer.url) as client:
+        client.read("child")
+        # The socket's connect timeout must not race the RPC confirmation deadline.
+        assert client.socket.socket.gettimeout() is None
+        with pytest.raises(TimeoutError):
+            routes.restore_before_input("child", client)
     # Model the failure before the external runtime applies the update.
     peer.threads["child"].update(model="parent-model", reasoningEffort="low")
     peer.confirm = True

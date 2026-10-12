@@ -569,7 +569,8 @@ def test_smart_router_skill_toggles_codex_subagent_routing(
     confirmation in the native transcript and changes the saved routing controls, even with
     collapsed terminal output; all three uniquely tagged calculations complete in native child
     sessions; only the first and third show the subagent-routing banner and produce live gateway
-    decisions correlated with those children. The parent's first prompt is not routed.
+    decisions correlated with those children. The parent retains its configured model across
+    all native turns and the interposer records no first-prompt routing attempt.
     With orchestration enabled, both routed banners must include [orchestrator on].
     """
     session = live_session
@@ -581,7 +582,9 @@ def test_smart_router_skill_toggles_codex_subagent_routing(
             session.env["ENABLE_SMART_ROUTER_ORCHESTRATOR"] = "1"
     else:
         session.env["SMART_ROUTER_CONFIG_VERSION"] = SMART_ROUTER_CONFIG_VERSION
-    use_managed_config_fixture(session, "codex_smart_routing")
+    config_path = use_managed_config_fixture(session, "codex_smart_routing")
+    codex_config = json.loads(config_path.read_text())["enabled_agents"][0]["config"]
+    expected_model = codex_config["default_models"]["default_model"]
     session.run(
         "configure",
         "--workspace",
@@ -614,4 +617,17 @@ def test_smart_router_skill_toggles_codex_subagent_routing(
         tui.exit_normally()
         transcript = "".join(tui.output)
     assert SMART_ROUTING_BANNER not in transcript, transcript
-    session.assert_not_routed()
+    routing_log = session.routing_log("codex")
+    assert "[ROUTE]" not in routing_log, routing_log
+    assert "[REWRITE]" not in routing_log, routing_log
+    parents = [
+        records
+        for path, records in agent_sessions(session, "codex").items()
+        if not is_child_session("codex", path, records)
+    ]
+    assert len(parents) == 1, "Expected one native parent session"
+    parent_models = [
+        row["payload"]["model"] for row in parents[0] if row.get("type") == "turn_context"
+    ]
+    session.record("parent-models.json", {"expected": expected_model, "observed": parent_models})
+    assert parent_models and set(parent_models) == {expected_model}, parent_models

@@ -40,14 +40,20 @@ Routed Codex v1 child close/resume is covered by the component suite
 router/provider responses, including restart, nested children, and unset effort. This suite
 does not yet contain a live gateway child-resume journey. Claude and external evaluation
 plugins are outside that fix's launch path.
+The component suite also verifies that a missing settings confirmation times out at
+the RPC deadline, preserves the pending restoration, and permits a successful retry.
+The connection's socket timeout must not race that deadline.
 
 Both Codex routing modes use the app-server. The launcher supplies a working directory
 to the remote TUI so its native folder-trust prompt runs on fresh projects. Component
-coverage in `../test_codex_smart_routing_v2.py` checks the default directory and preserves
-explicit `--cd`/`-C` forms, permission flags, and literal prompt arguments after `--`.
+coverage in `../test_codex_smart_routing_v2.py` runs the launch-argument cases with both
+POSIX and Windows settings, checks the default directory, and preserves explicit
+`--cd`/`-C` forms, permission flags, and literal prompt arguments after `--`.
 It also checks initial sandbox resolution through Codex's current server configuration,
 without replacing explicit selections or changing resumed and later threads.
-The live subagent toggle journey still requires the parent to remain unrouted.
+The live Codex subagent toggle journey compares every native parent turn with the
+configured model and requires no first-prompt route or rewrite in the interposer log.
+The interposer also protects resumed children in subagent-only sessions.
 
 CUJ3 and CUJ4 require a non-empty HTTP 200 for inference. Claude 2.1.290's known
 thinking-display 400 is accepted only when the next inference request with the same system
