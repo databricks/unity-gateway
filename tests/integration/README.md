@@ -25,6 +25,11 @@ complete per-agent validation, session precedence, and preserving the preset sel
 until managed-default agent selection.
 These checks do not establish live agent coverage.
 
+The shared request recorder and native compatibility-retry checks live in
+`utils/request_recorder.py`. The CUJ adapter keeps its existing
+configuration glue and imports those helpers; request forwarding, header
+redaction, and paired response assertions retain their behavior.
+
 CUJ3 and CUJ4 require a non-empty HTTP 200 for inference. Claude 2.1.290's known
 thinking-display 400 is accepted only when the next inference request with the same system
 context and session metadata removes `display`,
