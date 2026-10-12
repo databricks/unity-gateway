@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Mapping
 
@@ -24,10 +25,15 @@ def request_tags_header_value(env: Mapping[str, str] | None = None) -> str | Non
     value = (source.get(AI_GATEWAY_REQUEST_TAGS_ENV_VAR) or "").strip()
     if not value:
         return None
-    if "\n" in value or "\r" in value:
+    try:
+        # Make sure the value is a JSON object
+        parsed = json.loads(value)
+        if type(parsed) is not dict:
+            print_warning_err(f"Ignoring {AI_GATEWAY_REQUEST_TAGS_ENV_VAR}: expected a JSON object, but got a {type(parsed)}")
+            return None
+        return value
+    except Exception as e:
         print_warning_err(
-            f"Ignoring {AI_GATEWAY_REQUEST_TAGS_ENV_VAR}: value contains line breaks, which cannot "
-            "be sent as an HTTP header. Provide the tags on a single line (e.g. compact JSON)."
+            f"Ignoring {AI_GATEWAY_REQUEST_TAGS_ENV_VAR}: value is not valid JSON. Provide the tags as JSON on a single line.\n{e}"
         )
         return None
-    return value

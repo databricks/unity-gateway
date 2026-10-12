@@ -35,3 +35,13 @@ class TestRequestTagsHeaderValue:
         value = '{"a":"b"}\r{"c":"d"}'
         assert request_tags_header_value({"AI_GATEWAY_REQUEST_TAGS": value}) is None
         assert "AI_GATEWAY_REQUEST_TAGS" in capsys.readouterr().err
+
+    def test_skips_and_warns_on_invalid_json(self, capsys):
+        value = '{"a":"b"'
+        assert request_tags_header_value({"AI_GATEWAY_REQUEST_TAGS": value}) is None
+        assert "AI_GATEWAY_REQUEST_TAGS" in capsys.readouterr().err
+
+    def test_skips_and_warns_on_non_object_json(self, capsys):
+        value = '"A string!"'
+        assert request_tags_header_value({"AI_GATEWAY_REQUEST_TAGS": value}) is None
+        assert "AI_GATEWAY_REQUEST_TAGS" in capsys.readouterr().err

@@ -123,6 +123,8 @@ def render_overlay(
     ua_headers = {"User-Agent": f"ucode/{ug_version()} pi/{agent_version('pi')}"}
     request_tags = request_tags_header_value()
     if request_tags:
+        # Similarly to UA, request_tags is a JSON object (validated in `request_tags_header_value()`)
+        # so it can never collide with an env var name
         ua_headers[AI_GATEWAY_REQUEST_TAGS_HEADER] = request_tags
 
     claude_ids = sorted(set(claude_models.values()))
