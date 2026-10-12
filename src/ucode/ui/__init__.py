@@ -167,18 +167,17 @@ def print_note(text: str) -> None:
     console.print(f"[dim]•[/dim] {text}")
 
 
-def _success_marker() -> str:
-    """Use ASCII when a redirected Windows console cannot encode the checkmark."""
-    marker = "✔"
+def encodable_glyph(glyph: str, fallback: str) -> str:
+    """Use ``fallback`` when a redirected Windows console cannot encode ``glyph``."""
     try:
-        marker.encode(console.encoding)
+        glyph.encode(console.encoding)
     except UnicodeEncodeError:
-        return "+"
-    return marker
+        return fallback
+    return glyph
 
 
 def print_success(message: str) -> None:
-    console.print(f"[bold green]{_success_marker()}[/bold green] {message}")
+    console.print(f"[bold green]{encodable_glyph('✔', '+')}[/bold green] {message}")
 
 
 def print_warning(message: str) -> None:

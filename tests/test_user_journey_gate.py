@@ -158,3 +158,56 @@ def test_waiver_command_must_match_exactly():
     ]
 
     assert gate._waiver_status(comments, {"rohita5l", "lilly-luo"}) == (False, "")
+
+
+EVALUATED = "a" * 40
+
+
+def _gate_with_heads(monkeypatch, tmp_path, *heads, filename="README.md"):
+    output = tmp_path / "github-output"
+    output.touch()
+    monkeypatch.setenv("REPO", "databricks/unity-gateway")
+    monkeypatch.setenv("PR_NUMBER", "1")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    pulls = iter({"title": "Change", "head": {"sha": sha}} for sha in heads)
+    files = [{"filename": filename, "status": "modified", "patch": "+change"}]
+
+    def gh_json(path, paginate=False):
+        if path.endswith("/files"):
+            return files
+        if path.endswith("/comments"):
+            return []
+        return next(pulls)
+
+    monkeypatch.setattr(gate, "_gh_json", gh_json)
+    return gate.main(), output.read_text()
+
+
+def test_gate_records_the_head_its_diff_was_read_at(monkeypatch, tmp_path):
+    assert _gate_with_heads(monkeypatch, tmp_path, EVALUATED, EVALUATED) == (
+        0,
+        f"sha={EVALUATED}\n",
+    )
+
+
+def test_gate_fails_without_a_verdict_sha_when_the_head_moves(monkeypatch, tmp_path, capsys):
+    assert _gate_with_heads(monkeypatch, tmp_path, EVALUATED, "b" * 40) == (1, "")
+    assert (
+        "The PR head changed while its diff was read (aaaaaaa -> bbbbbbb)"
+        in capsys.readouterr().out
+    )
+
+
+def test_gate_records_the_head_when_the_verdict_fails(monkeypatch, tmp_path):
+    policy = tmp_path / "AGENTS.md"
+    policy.write_text("policy")
+    monkeypatch.setenv("TEST_POLICY_PATH", str(policy))
+    monkeypatch.setenv("USER_JOURNEY_WAIVER_ADMINS", "rohita5l")
+    monkeypatch.setattr(gate, "_judge", lambda title, diff, test_policy: (True, "new launch flow"))
+
+    assert _gate_with_heads(
+        monkeypatch, tmp_path, EVALUATED, EVALUATED, filename="src/ucode/cli.py"
+    ) == (
+        1,
+        f"sha={EVALUATED}\n",
+    )

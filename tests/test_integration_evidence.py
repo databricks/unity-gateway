@@ -7,6 +7,7 @@ import pytest
 from tests.integration.utils import evidence
 from tests.integration.utils.agents import claude, codex
 from tests.integration.utils.evidence import (
+    FileTask,
     SubagentCalculation,
     assert_no_terminal_api_error,
     assistant_answer_contains,
@@ -101,6 +102,19 @@ def test_tagged_calculation_requires_the_native_child_answer(tmp_path, agent):
     assert task.marker in task.prompt
     assert f'task name "{task.marker}"' in task.prompt
     assert "1+1" in task.prompt
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+@pytest.mark.parametrize("child", [False, True])
+def test_file_task_child_completion_is_independent_of_parent_answer(tmp_path, agent, child):
+    session = _Session(tmp_path)
+    session.cwd = tmp_path
+    task = FileTask(session)
+    assert task.value not in task.delegate_prompt
+    assert not task.completed(session, agent, child=True)
+    _write_answer(tmp_path, agent, child=child, value=task.value)
+    assert task.completed(session, agent, child=True) == child
+    assert task.completed(session, agent) != child
 
 
 def test_codex_model_identity_uses_only_the_completed_answer_turn():

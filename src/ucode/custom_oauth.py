@@ -17,6 +17,7 @@ from databricks.sdk import oauth
 from ucode.constants import LOCALHOST, LOOPBACK_HOST
 from ucode.databricks import (
     build_auth_token_argv,
+    clear_databricks_token_cache,
     databricks_cli_path,
     ensure_databricks_cli_version,
     external_bearer_configured,
@@ -168,7 +169,10 @@ def ensure_custom_oauth_cli_token(
         "--scopes",
         ",".join(scope for scope in config["scopes"] if scope != "offline_access"),
     ]
-    run(login_args, timeout=CUSTOM_OAUTH_TIMEOUT_MS // 1000)
+    try:
+        run(login_args, timeout=CUSTOM_OAUTH_TIMEOUT_MS // 1000)
+    finally:
+        clear_databricks_token_cache()
     return get_databricks_token(workspace, profile)
 
 

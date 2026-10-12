@@ -46,7 +46,7 @@ from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
-from ucode.constants import SMART_ROUTING_ENV_KEYS
+from ucode.constants import AGENT_CLAUDE, AGENT_CODEX, SMART_ROUTING_ENV_KEYS
 from ucode.custom_oauth import (
     CUSTOM_OAUTH_CLI_ENV_VAR,
     custom_oauth_cli_enabled,
@@ -184,10 +184,10 @@ from ucode.usage import usage as usage_report
 CustomOAuthConfig = custom_oauth.CustomOAuthConfig
 
 _DISCOVERY_CONSUMERS: dict[str, tuple[str, ...]] = {
-    "claude": ("claude", "opencode", "copilot", "pi"),
+    "claude": ("claude", "opencode", "kilo", "copilot", "pi"),
     "codex": ("codex", "copilot", "pi"),
-    "gemini": ("gemini", "opencode", "pi"),
-    "oss": ("opencode",),
+    "gemini": ("gemini", "opencode", "kilo", "pi"),
+    "oss": ("opencode", "kilo"),
 }
 
 
@@ -618,16 +618,23 @@ def configure_shared_state(
         print_warning(f"Model service: {model_service_probe.detail}")
 
     want_claude = (
-        fetch_all or "claude" in tools or "opencode" in tools or "copilot" in tools or "pi" in tools
+        fetch_all
+        or "claude" in tools
+        or "opencode" in tools
+        or "kilo" in tools
+        or "copilot" in tools
+        or "pi" in tools
     )
-    want_gemini = fetch_all or "gemini" in tools or "opencode" in tools or "pi" in tools
+    want_gemini = (
+        fetch_all or "gemini" in tools or "opencode" in tools or "kilo" in tools or "pi" in tools
+    )
     # Claude's web-search server also needs a Responses-capable model.
     want_codex = (
         fetch_all or "codex" in tools or "claude" in tools or "copilot" in tools or "pi" in tools
     )
     # Codex smart routing can select OSS models such as GLM, so a Codex-only
     # configure must persist that discovered family too.
-    want_oss = fetch_all or "opencode" in tools or "codex" in tools
+    want_oss = fetch_all or "opencode" in tools or "kilo" in tools or "codex" in tools
 
     claude_reason: str | None = None
     gemini_reason: str | None = None
@@ -695,7 +702,8 @@ def configure_shared_state(
             state["codex_models"] = codex_models
         if want_oss:
             state["oss_models"] = oss_models
-        if fetch_all or "opencode" in tools:
+        if fetch_all or "opencode" in tools or "kilo" in tools:
+            # Kilo is an OpenCode fork and consumes the same discovered view.
             state["opencode_models"] = opencode_models
     save_state(state)
     # Scrub MCP entries that ucode wrote for the previous workspace so the new
@@ -1125,6 +1133,9 @@ def _status_models(tool: str, state: dict) -> list[str]:
         models = static_models
     elif tool in ("claude", "codex", "gemini", "opencode"):
         models = _model_values(state.get(f"{tool}_models"))
+    elif tool == "kilo":
+        # Kilo shares OpenCode's discovery; its models live under opencode_models.
+        models = _model_values(state.get("opencode_models"))
     elif tool == "copilot":
         models = _model_values(state.get("copilot_models")) or (
             _model_values(state.get("claude_models")) + _model_values(state.get("codex_models"))
@@ -1146,7 +1157,7 @@ def _status_default_model(tool: str, state: dict, models: list[str]) -> str | No
         return explicit
     # Claude and Codex deliberately leave the starting model to the agent unless a managed
     # config pins one. The other clients write the first resolved model into their ug config.
-    return models[0] if models and tool in ("gemini", "opencode", "copilot", "pi") else None
+    return models[0] if models and tool in ("gemini", "opencode", "kilo", "copilot", "pi") else None
 
 
 def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
@@ -1373,6 +1384,7 @@ _HELP_COMMAND_ORDER = (
     "cursor",
     "gemini",
     "opencode",
+    "kilo",
     "pi",
     "configure",
     "mcp",
@@ -2381,7 +2393,9 @@ def codex_router_hook_cmd(
     import json
     import sys
 
-    if not smart_routing_v2.smart_routing_enabled(effective_environment()):
+    if not smart_routing_v2.smart_routing_enabled(
+        effective_environment(agent=AGENT_CODEX), default=False, agent=AGENT_CODEX
+    ):
         return
 
     from ucode.smart_routing.codex_routing import (
@@ -2460,7 +2474,9 @@ def claude_router_hook_cmd(
     import json
     import sys
 
-    if not smart_routing_v2.smart_routing_enabled(effective_environment()):
+    if not smart_routing_v2.smart_routing_enabled(
+        effective_environment(agent=AGENT_CLAUDE), default=False, agent=AGENT_CLAUDE
+    ):
         return
 
     from ucode.smart_routing.claude_routing import (
@@ -2544,7 +2560,9 @@ def claude_router_hook_cmd(
         sys.stdout.write(json.dumps(output))
 
 
-def _auto_configure_tool(tool: str, custom_oauth: CustomOAuthConfig | None = None) -> None:
+def _auto_configure_tool(
+    tool: str, custom_oauth: CustomOAuthConfig | None = None, provider: str | None = None
+) -> None:
     """Configure a tool for launch without sending a separate validation prompt.
 
     The real agent session follows immediately; explicit configure retains the
@@ -2557,8 +2575,14 @@ def _auto_configure_tool(tool: str, custom_oauth: CustomOAuthConfig | None = Non
         workspace, profile = _prompt_for_configuration(tool)
     configure_kwargs = {"custom_oauth": custom_oauth} if custom_oauth is not None else {}
     state = configure_shared_state(workspace, profile=profile, tools=[tool], **configure_kwargs)
+    # A managed config rejects --provider later in the launch; resolving it here would replace that
+    # error with a lookup failure.
+    if provider is not None:
+        managed, _ = _fetch_managed_config(state)
+        if managed is not None:
+            provider = None
 
-    state = configure_single_tool(tool, state)
+    state = configure_single_tool(tool, state, provider=provider)
 
     spec = TOOL_SPECS[tool]
     console.print(
@@ -2577,12 +2601,13 @@ CAN_USE_CACHED_CONFIG_AGENTS = frozenset({"claude", "codex"})
 
 
 @contextmanager
-def _smart_routing_v2_flag(enabled: bool | None) -> Iterator[None]:
+def _smart_routing_v2_flag(enabled: bool | None, *, agent: str) -> Iterator[None]:
     """Apply an explicit routing choice without leaking into an embedding process."""
-    if enabled is None:
-        yield
-        return
-    previous = smart_routing_v2.override_smart_routing(enabled)
+    previous = (
+        smart_routing_v2.apply_config(agent=agent)
+        if enabled is None
+        else smart_routing_v2.override_smart_routing(enabled, agent=agent)
+    )
     try:
         yield
     finally:
@@ -2904,8 +2929,10 @@ def _launch_tool(
     parent_schema: str | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
 ) -> None:
+    previous = {}
     try:
         tool = normalize_tool(tool_name)
+        previous = smart_routing_v2.apply_config(agent=tool)
         if not custom_oauth_cli_enabled(custom_oauth):
             os.environ.pop(CUSTOM_OAUTH_CLI_ENV_VAR, None)
         # Before any status print: a stdio-protocol subcommand owns stdout, so
@@ -2956,10 +2983,12 @@ def _launch_tool(
             skip_cli_version_check=skip_preflight,
         )
         if needs_auto_configure:
+            # Configure through this launch's --provider: a default-gateway setup would write the
+            # managed auth keys that a relayed provider's launch then refuses to start over.
             if custom_oauth is None:
-                _auto_configure_tool(tool)
+                _auto_configure_tool(tool, provider=provider)
             else:
-                _auto_configure_tool(tool, custom_oauth=custom_oauth)
+                _auto_configure_tool(tool, custom_oauth=custom_oauth, provider=provider)
         state = ensure_provider_state(tool)
         # Remembered before the fallback below collapses the two cases: a managed config may not
         # silently override a provider the user typed on the command line (it errors instead).
@@ -3019,7 +3048,7 @@ def _launch_tool(
         # policy equivalent and must take effect before launch options are computed.
         managed_smart_routing_enabled = _managed_smart_routing_enabled(managed, tool)
         smart_routing_enabled = smart_routing_v2.smart_routing_enabled(
-            default=managed_smart_routing_enabled
+            None, default=managed_smart_routing_enabled, agent=tool
         )
         # Discovery exists to find models and isn't needed for managed config that already names them.
         managed_models_known = managed_supplies_models(managed, tool)
@@ -3072,7 +3101,7 @@ def _launch_tool(
             )
         # Validate the provider service before launching — it must exist, be a
         # provider type this tool can route to (e.g. claude can't use an OpenAI
-        # or Foundry service), and, for Bedrock, expose Claude models to pin.
+        # or Foundry service), and, for Claude on Bedrock, expose Claude models to pin.
         # Gemini is exempt: it validates the service and resolves its target in a single
         # lookup via resolve_gemini_provider_model (below), and uses no family model map.
         provider_models = None
@@ -3252,7 +3281,7 @@ def _launch_tool(
                 f"{TOOL_SPECS[tool]['display']} may require one-time hook review. Open "
                 "`/hooks` and trust the ug routing hooks if prompted."
             )
-        if tool in ("gemini", "opencode", "copilot", "pi"):
+        if tool in ("gemini", "opencode", "kilo", "copilot", "pi"):
             print_note(
                 f"{TOOL_SPECS[tool]['display']} token refresh is managed automatically "
                 f"every 30 minutes while the session is running."
@@ -3281,7 +3310,12 @@ def _launch_tool(
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
         with _smart_routing_v2_flag(
-            True if managed_smart_routing_enabled and smart_routing_enabled else None
+            True
+            if managed_smart_routing_enabled
+            and smart_routing_enabled
+            and not smart_routing_v2.smart_routing_enabled(None, default=False, agent=tool)
+            else None,
+            agent=tool,
         ):
             launch_agent(tool, state, ctx.args, options=launch_options)
     except RuntimeError as exc:
@@ -3290,6 +3324,8 @@ def _launch_tool(
     except KeyboardInterrupt:
         print_err("Interrupted.")
         raise typer.Exit(130) from None
+    finally:
+        smart_routing_v2.restore_smart_routing_env(previous)
 
 
 # Launch-only escape hatch for managed/headless launchers (e.g. omnigent) that
@@ -3515,7 +3551,7 @@ def codex_cmd(
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from exc
-    with _smart_routing_v2_flag(enable_smart_routing_flag):
+    with _smart_routing_v2_flag(enable_smart_routing_flag, agent=AGENT_CODEX):
         with _disable_smart_routing_for_subcommand("codex", ctx):
             _launch_tool(
                 "codex",
@@ -3603,7 +3639,7 @@ def claude_cmd(
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from exc
-    with _smart_routing_v2_flag(enable_smart_routing_flag):
+    with _smart_routing_v2_flag(enable_smart_routing_flag, agent=AGENT_CLAUDE):
         with _disable_smart_routing_for_subcommand("claude", ctx):
             _launch_tool(
                 "claude",
@@ -3668,6 +3704,28 @@ def opencode_cmd(
 ) -> None:
     """Launch OpenCode via Databricks."""
     _launch_tool("opencode", ctx, model=model, skip_preflight=skip_preflight)
+
+
+@app.command(
+    "kilo",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+    rich_help_panel="Launch",
+)
+def kilo_cmd(
+    ctx: typer.Context,
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            "-m",
+            help="Configured model ID or Kilo provider/model for this launch. "
+            "Pass before any `--` separator.",
+        ),
+    ] = None,
+    skip_preflight: SkipPreflightOption = False,
+) -> None:
+    """Launch Kilo via Databricks."""
+    _launch_tool("kilo", ctx, model=model, skip_preflight=skip_preflight)
 
 
 @app.command(
@@ -3743,7 +3801,7 @@ def configure(
         str | None,
         typer.Option(
             "--agent",
-            help="Configure only the named agent (e.g. claude, codex, gemini, opencode, copilot, pi).",
+            help="Configure only the named agent (e.g. claude, codex, gemini, opencode, kilo, copilot, pi).",
         ),
     ] = None,
     agents: Annotated[

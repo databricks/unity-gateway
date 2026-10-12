@@ -151,7 +151,7 @@ class TestDatabricksAuthCheck:
     def test_ok_when_valid(self):
         with (
             patch.object(doctor_mod, "load_state", return_value={"workspace": "https://ws"}),
-            patch.object(doctor_mod, "has_valid_databricks_auth", return_value=True),
+            patch.object(doctor_mod, "check_databricks_auth", return_value=True),
         ):
             check = _check_databricks_auth()
         assert check.status == "ok"
@@ -160,18 +160,29 @@ class TestDatabricksAuthCheck:
     def test_warn_and_login_suggestion_when_invalid(self):
         with (
             patch.object(doctor_mod, "load_state", return_value={"workspace": "https://ws"}),
-            patch.object(doctor_mod, "has_valid_databricks_auth", return_value=False),
+            patch.object(doctor_mod, "check_databricks_auth", return_value=False),
         ):
             check = _check_databricks_auth()
         assert check.status == "warn"
         assert check.suggestion is not None
         assert "Log in" in check.suggestion.prompt
 
+    def test_unrunnable_cli_is_not_reported_as_invalid_credentials(self):
+        with (
+            patch.object(doctor_mod, "load_state", return_value={"workspace": "https://ws"}),
+            patch.object(doctor_mod, "check_databricks_auth", return_value=None),
+        ):
+            check = _check_databricks_auth()
+        assert check.status == "warn"
+        assert "could not run" in check.detail
+        assert "no valid credentials" not in check.detail
+        assert check.suggestion is None
+
     def test_login_fix_reports_success(self):
         with (
             patch.object(doctor_mod, "load_state", return_value={"workspace": "https://ws"}),
-            # invalid at first, then valid after login
-            patch.object(doctor_mod, "has_valid_databricks_auth", side_effect=[False, True]),
+            patch.object(doctor_mod, "check_databricks_auth", return_value=False),
+            patch.object(doctor_mod, "has_valid_databricks_auth", return_value=True),
             patch.object(doctor_mod, "run_databricks_login") as login,
         ):
             check = _check_databricks_auth()
@@ -181,7 +192,7 @@ class TestDatabricksAuthCheck:
     def test_login_fix_reports_failure_when_login_raises(self):
         with (
             patch.object(doctor_mod, "load_state", return_value={"workspace": "https://ws"}),
-            patch.object(doctor_mod, "has_valid_databricks_auth", return_value=False),
+            patch.object(doctor_mod, "check_databricks_auth", return_value=False),
             patch.object(doctor_mod, "run_databricks_login", side_effect=RuntimeError("nope")),
         ):
             check = _check_databricks_auth()
@@ -267,3 +278,30 @@ class TestDoctorFlow:
         ):
             doctor()
         prompt.assert_not_called()
+
+
+class TestLegacyEncodingOutput:
+    def test_cp1252_console_renders_ascii_badges_instead_of_raising(self):
+        import io
+
+        from rich.console import Console
+
+        import ucode.ui as ui_mod
+
+        buffer = io.BytesIO()
+        cp1252_console = Console(file=io.TextIOWrapper(buffer, encoding="cp1252"), highlight=False)
+        checks = [
+            doctor_mod.Check("uv", "ok", "found on PATH"),
+            doctor_mod.Check("npm", "error", "not installed"),
+        ]
+        with (
+            patch.object(ui_mod, "console", cp1252_console),
+            patch.object(doctor_mod, "console", cp1252_console),
+            patch.object(doctor_mod, "_gather_checks", return_value=checks),
+        ):
+            doctor_mod.doctor()
+        cp1252_console.file.flush()
+
+        output = buffer.getvalue().decode("cp1252")
+        assert "+ uv: found on PATH" in output
+        assert "x npm: not installed" in output
