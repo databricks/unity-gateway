@@ -289,7 +289,10 @@ The generated shell hooks expect Git Bash; PowerShell-only setups are not covere
 Smart-routed interactive Codex sessions preserve a routed child's model and reasoning
 effort through native `close_agent` / `resume_agent` and subsequent `send_input`, including
 routed descendants. Both routing modes use the Codex app-server; subagent-only routing
-keeps the parent's model. Codex must trust the generated hooks. If settings cannot be
+keeps the parent's model. UG passes the working directory to the remote TUI so Codex
+can show its normal folder-trust prompt and resolve the initial sandbox from its current
+configuration. Explicit `--cd`/`-C` and permission options are preserved.
+Codex must trust the generated hooks. If settings cannot be
 restored, UG blocks the follow-up with a retry message.
 
 This protection is verified with Codex 0.159.3 and requires its native thread-settings APIs.

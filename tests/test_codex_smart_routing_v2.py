@@ -283,6 +283,8 @@ class TestLaunchCodex:
         assert processes[0].kwargs["env"]["CODEX_HOME"] == "/user/codex-home"
         tui_argv = processes[1].argv
         expected_tui_args = [
+            "--cd",
+            str(Path.cwd()),
             "--remote",
             "ws://127.0.0.1:41002",
             "--model",
@@ -389,8 +391,36 @@ class TestLaunchCodex:
         assert "x-databricks-workspace" in provider_arg
         assert "eng-ml-inference" in provider_arg
 
+    @pytest.mark.parametrize(
+        ("tool_args", "add_default_cwd", "use_server_sandbox_default"),
+        [
+            (["--search"], True, True),
+            (["--cd", "project with spaces"], False, True),
+            (["--cd=../other project"], False, True),
+            (["-C", "../other project"], False, True),
+            (["-C../other project"], False, True),
+            (["--sandbox", "read-only", "--ask-for-approval", "never"], True, False),
+            (["-sread-only"], True, False),
+            (["--sandbox=read-only"], True, False),
+            (["--config", 'sandbox_mode="read-only"'], True, False),
+            (["-csandbox_mode='read-only'"], True, False),
+            (["-c=sandbox_mode='read-only'"], True, False),
+            (['--config="sandbox_mode"="read-only"'], True, False),
+            (["-c", "default_permissions='restricted'"], True, True),
+            (["-c", "permissions.restricted.file_system={}"], True, True),
+            (["-c", "sandbox_workspace_write.writable_roots=[]"], True, True),
+            (["-c", "profile='restricted'"], True, False),
+            (["--profile", "restricted"], True, False),
+            (["-prestricted"], True, False),
+            (["--approve-for-me"], True, False),
+            (["--dangerously-bypass-approvals-and-sandbox"], True, False),
+            (["--ask-for-approval", "never"], True, True),
+            (["-c", "model_reasoning_effort='high'"], True, True),
+            (["--", "--cd=part of the prompt --sandbox=read-only"], True, True),
+        ],
+    )
     def test_subagent_only_launch_protects_resume_without_routing_parent(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, tool_args, add_default_cwd, use_server_sandbox_default
     ):
         monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
         monkeypatch.setenv("CODEX_HOME", str(tmp_path))
@@ -417,7 +447,7 @@ class TestLaunchCodex:
         with pytest.raises(SystemExit) as exc:
             v2.launch_codex(
                 {"workspace": WS, "codex_models": ["system.ai.gpt-5-6-sol"]},
-                ["--search"],
+                tool_args,
                 binary="codex",
                 start_model="gpt-start",
                 render_overlay=codex.render_overlay,
@@ -426,14 +456,18 @@ class TestLaunchCodex:
         assert exc.value.code == 0
         argv, tui_argv = spawned
         assert argv[:2] == ["codex", "app-server"]
-        assert tui_argv[-5:] == [
+        cwd_args = ["--cd", str(Path.cwd())] if add_default_cwd else []
+        assert tui_argv == [
+            "codex",
+            *cwd_args,
             "--remote",
             "ws://127.0.0.1:41002",
             "--model",
             "gpt-start",
-            "--search",
+            *tool_args,
         ]
         assert interposer_args["workspace"] is None
+        assert interposer_args["use_server_sandbox_default"] is use_server_sandbox_default
         assert 'model="gpt-start"' in argv
         hook_override = next(arg for arg in argv if arg.startswith("hooks.PreToolUse="))
         assert "codex-router-hook route-subagent" in hook_override
@@ -749,6 +783,75 @@ def test_interposer_startup_failure_is_propagated(monkeypatch):
 
 
 class TestInterposerSession:
+    @pytest.mark.parametrize("use_server_default", [False, True])
+    @pytest.mark.parametrize(
+        "sandbox", [None, "read-only", "workspace-write", "danger-full-access"]
+    )
+    def test_initial_thread_uses_server_for_stale_sandbox_default(
+        self, use_server_default, sandbox
+    ):
+        sess = codex_interposer._Session(
+            None, log=lambda _m: None, use_server_sandbox_default=use_server_default
+        )
+        request = {
+            "id": 1,
+            "method": "thread/start",
+            "params": {
+                "cwd": "/project",
+                "sandbox": sandbox,
+                "approvalPolicy": "never",
+                "model": "gpt-selected",
+                "config": {"sandbox_workspace_write": {"network_access": False}},
+            },
+        }
+        result = sess.on_tui_frame(json.dumps(request))
+        expected = json.loads(json.dumps(request))
+        if use_server_default and sandbox == "read-only":
+            del expected["params"]["sandbox"]
+        assert json.loads(result.frame) == expected
+        assert result.needs_settings_update is False
+
+        sess.on_engine_frame(json.dumps({"id": 1, "result": {"thread": {"id": "t1"}}}))
+        request["id"] = 2
+        frame = json.dumps(request)
+        assert sess.on_tui_frame(frame).frame == frame
+
+    def test_initial_sandbox_default_survives_a_rejected_start(self):
+        sess = codex_interposer._Session(None, log=lambda _m: None, use_server_sandbox_default=True)
+        request = {"id": "start", "method": "thread/start", "params": {"sandbox": "read-only"}}
+        expected = {"id": "start", "method": "thread/start", "params": {}}
+        assert json.loads(sess.on_tui_frame(json.dumps(request)).frame) == expected
+        sess.on_engine_frame(
+            json.dumps({"id": "start", "error": {"message": "unsupported history"}})
+        )
+        assert json.loads(sess.on_tui_frame(json.dumps(request)).frame) == expected
+
+    @pytest.mark.parametrize("method", ["turn/start", "thread/resume", "thread/settings/update"])
+    def test_server_sandbox_default_leaves_followups_and_restoration_unchanged(self, method):
+        sess = codex_interposer._Session(None, log=lambda _m: None, use_server_sandbox_default=True)
+        frame = json.dumps({"id": 1, "method": method, "params": {"sandbox": "read-only"}})
+        assert sess.on_tui_frame(frame).frame == frame
+
+    def test_server_sandbox_default_preserves_explicit_profile_selection(self):
+        sess = codex_interposer._Session(None, log=lambda _m: None, use_server_sandbox_default=True)
+        frame = json.dumps(
+            {
+                "id": 1,
+                "method": "thread/start",
+                "params": {"sandbox": "read-only", "permissions": ":read-only"},
+            }
+        )
+        assert sess.on_tui_frame(frame).frame == frame
+
+    @pytest.mark.parametrize("method", ["thread/resume", "thread/fork"])
+    def test_restored_session_keeps_sandbox_selection_for_new_threads(self, method):
+        sess = codex_interposer._Session(None, log=lambda _m: None, use_server_sandbox_default=True)
+        frame = json.dumps({"id": 1, "method": method, "params": {"sandbox": "read-only"}})
+        assert sess.on_tui_frame(frame).frame == frame
+        sess.on_engine_frame(json.dumps({"id": 1, "result": {"thread": {"id": "restored"}}}))
+        frame = json.dumps({"id": 2, "method": "thread/start", "params": {"sandbox": "read-only"}})
+        assert sess.on_tui_frame(frame).frame == frame
+
     def _turn_start(self, model: str, thread_id: str = "t1", prompt: str = "Fix the parser") -> str:
         return json.dumps(
             {

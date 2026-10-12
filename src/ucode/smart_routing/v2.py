@@ -791,6 +791,40 @@ def _v2_hooks(state: dict, available_models: list[str]) -> dict:
     return doc["hooks"]
 
 
+def _codex_has_sandbox_override(tool_args: list[str]) -> bool:
+    args = iter(tool_args)
+    for arg in args:
+        if arg == "--":
+            break
+        if arg in {
+            "--sandbox",
+            "--profile",
+            "--full-auto",
+            "--auto-review",
+            "--approve-for-me",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--yolo",
+        } or arg.startswith(("--sandbox=", "--profile=", "-s", "-p")):
+            return True
+        override = ""
+        if arg in {"--config", "-c"}:
+            override = next(args, "")
+        elif arg.startswith("--config="):
+            override = arg.removeprefix("--config=")
+        elif arg.startswith("-c"):
+            override = arg[2:].removeprefix("=")
+        key = override.partition("=")[0].strip().split(".")[0].strip("\"'")
+        # These selections are not replayed in the native thread/start config.
+        if key in {
+            "sandbox_mode",
+            "sandbox_permissions",
+            "profile",
+            "profiles",
+        }:
+            return True
+    return False
+
+
 def launch_codex(
     state: dict,
     tool_args: list[str],
@@ -868,6 +902,7 @@ def launch_codex(
             workspace=workspace if first_prompt_routing_enabled(agent=AGENT_CODEX) else None,
             token_provider=lambda: _launch_token(state, workspace),
             on_model_override=codex_resume.for_workspace(workspace).allow_override,
+            use_server_sandbox_default=not _codex_has_sandbox_override(tool_args),
             switch_message_fn=format_routing_notice,
             log_path=CODEX_INTERPOSER_LOG,
         )
@@ -882,8 +917,26 @@ def launch_codex(
                     if key in overlay
                 }
             )
+        # Remote Codex only checks project trust when --cd is explicit. Preserve
+        # native onboarding and its sandbox defaults for the local workspace.
+        cwd_args = ["--cd", str(Path.cwd())]
+        for arg in tool_args:
+            if arg == "--":
+                break
+            if arg == "--cd" or arg.startswith(("--cd=", "-C")):
+                cwd_args = []
+                break
         tui = subprocess_cross_os.popen(
-            [binary, *provider_args, "--remote", tui_url, "--model", start_model, *tool_args]
+            [
+                binary,
+                *provider_args,
+                *cwd_args,
+                "--remote",
+                tui_url,
+                "--model",
+                start_model,
+                *tool_args,
+            ]
         )
         try:
             returncode = tui.wait()

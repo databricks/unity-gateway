@@ -569,7 +569,7 @@ def test_smart_router_skill_toggles_codex_subagent_routing(
     confirmation in the native transcript and changes the saved routing controls, even with
     collapsed terminal output; all three uniquely tagged calculations complete in native child
     sessions; only the first and third show the subagent-routing banner and produce live gateway
-    decisions correlated with those children. No first-prompt interposer starts.
+    decisions correlated with those children. The parent's first prompt is not routed.
     With orchestration enabled, both routed banners must include [orchestrator on].
     """
     session = live_session
