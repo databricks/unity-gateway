@@ -500,6 +500,9 @@ class TestV2Launch:
 
         assert exc.value.code == 4
         settings = captured["settings"]
+        assert settings["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME] == {
+            "options": v2._claude_mod_launch_options({**os.environ, **settings["env"]})
+        }
         env = settings["env"]
         assert env[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
         for key in (v2.SESSION_ENV_VAR, v2.SESSION_PYTHON_ENV_VAR):

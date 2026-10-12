@@ -27,6 +27,7 @@ Tests live in `tests/`.
 - Use `acquire_exclusive_file_lock` / `release_file_lock` from `ucode.os_compatibility.file_lock_cross_os` instead of calling `fcntl.flock`, `fcntl.lockf`, or `msvcrt.locking` directly. Ruff enforces this outside the compatibility module and tests.
 - Use `launcher.exec_or_spawn` when handing the terminal to an agent. Shell strings and explicit executable overrides keep their existing subprocess semantics.
 - Add or update focused tests for behavior changes.
+- Never trigger a workflow with `pull_request_target`; `tests/test_integration_contract.py` rejects it. Use `pull_request` for checks that need no secrets, and a member-only `issue_comment` command that checks out the default branch (as in `fork-integration.yml`) for checks that need secrets on fork PRs.
 - Do not modify generated or lock files unless the dependency graph intentionally changes.
 
 ## Smart-routing configuration
@@ -43,6 +44,11 @@ an error. Existing legacy flags and explicit launch/session controls retain thei
 Restore the inherited environment on every exit.
 Explicit launch/session on/off controls still apply after version expansion.
 Managed routing defaults must not rewrite already-resolved version flags.
+
+Every new `smart_routing` or `smart_router` environment variable must be registered in
+`SMART_ROUTING_ENV_KEYS` in the same change, including orchestration controls.
+Pass Claude's resolved launch baseline through native `pluginConfigs` options in the existing
+launch settings. Keep the TypeScript static; toggles must not write configuration files.
 
 ### Adding a parameter
 

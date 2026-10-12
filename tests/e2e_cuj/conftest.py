@@ -12,9 +12,9 @@ from .base import bearer
 from .helpers.constants import CLAUDE, CODEX, MANAGED_PATHS
 from .helpers.session import (
     MACHINE_WIDE_LEAK,
-    MachineWideLeak,
     UserSession,
     dirty_runner_message,
+    record_machine_wide_leak,
 )
 from .helpers.tui_request_recorder import TuiRequestRecorder
 from .helpers.workspace import Workspace
@@ -29,13 +29,6 @@ def pytest_configure(config):
 def _scrubbed(error: DatabricksError) -> RuntimeError:
     # Server messages may echo credentials; retain only the SDK error type.
     return RuntimeError(f"Workspace API failed: {type(error).__name__}")
-
-
-def _record_machine_wide_leak(request):
-    """Name the class that leaked machine-wide settings to the later classes it blocks."""
-    leaked = tuple(str(path) for path in MANAGED_PATHS if path.exists())
-    if leaked:
-        request.config.stash[MACHINE_WIDE_LEAK] = MachineWideLeak(request.node.nodeid, leaked)
 
 
 @pytest.fixture(scope="class")
@@ -70,7 +63,7 @@ def cuj(request, setup_workspace, tmp_path_factory):
                                 "cleanup-revert", "CUJ teardown left machine-wide agent settings"
                             )
                         finally:
-                            _record_machine_wide_leak(request)
+                            record_machine_wide_leak(request)
             except DatabricksError as error:
                 raise _scrubbed(error) from None
 
