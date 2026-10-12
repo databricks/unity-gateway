@@ -10,8 +10,10 @@ from dataclasses import asdict, dataclass
 import httpx
 
 from tests.integration.utils.evidence import FileTask, read_jsonl
+from tests.integration.utils.model_discovery import claude_discovery_model_id
+from tests.integration.utils.provider_catalog import MODEL_SERVICE_PARENT_SCHEMA_HEADER
 
-from .constants import CLAUDE, CODEX, NATIVE_MODEL_ALIASES
+from .constants import CLAUDE, CODEX, INFERENCE_PATHS, NATIVE_MODEL_ALIASES
 
 
 def canonical_model(value):
@@ -112,6 +114,67 @@ def served_inference_request(recorder, requests, request, agent):
         )
         request = retry
     raise AssertionError("Claude compatibility retries did not reach a successful response")
+
+
+def assert_claude_headless_model(result, expected):
+    final = None
+    for line in result.stdout.splitlines():
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict) and payload.get("type") == "result":
+            final = payload
+    assert final is not None and not final.get("is_error"), result.stdout
+    usage = final["modelUsage"]
+    assert set(usage) == {expected}, {"expected": expected, "observed": sorted(usage)}
+    assert usage[expected]["outputTokens"] > 0, usage
+
+
+def _request_contains_task(request, agent, task):
+    field = "messages" if agent == CLAUDE else "input"
+    entries = request.payload.get(field)
+    if not isinstance(entries, (list, str)):
+        return False
+    if isinstance(entries, str):
+        return entries == task.prompt
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("role") != "user":
+            continue
+        content = entry.get("content", "")
+        if isinstance(content, str) and content == task.prompt:
+            return True
+        if isinstance(content, list) and any(
+            message_text([part]) == task.prompt for part in content if isinstance(part, dict)
+        ):
+            return True
+    return False
+
+
+def assert_inference_evidence(recorder, checkpoint, agent, task, expected, *, parent_schema=None):
+    expected_wire_model = claude_discovery_model_id(expected) if agent == CLAUDE else expected
+    requests = recorder.requests_after(checkpoint)
+    inference_requests = [
+        request
+        for request in requests
+        if request.method == "POST" and request.path == INFERENCE_PATHS[agent]
+    ]
+    assert inference_requests, {
+        "agent": agent,
+        "path": INFERENCE_PATHS[agent],
+        "requests": [(request.method, request.path) for request in requests],
+    }
+    task_requests = [
+        request for request in inference_requests if _request_contains_task(request, agent, task)
+    ]
+    assert task_requests, "No inference request contained the submitted task prompt"
+    for request in task_requests:
+        if parent_schema is not None:
+            assert (
+                request.headers.get(MODEL_SERVICE_PARENT_SCHEMA_HEADER.lower()) == parent_schema
+            ), request.headers
+        served = served_inference_request(recorder, task_requests, request, agent)
+        assert_served(recorder, served, expected_wire_model)
 
 
 def claude_file_task(session):

@@ -154,6 +154,98 @@ class TestCursorMcpClient:
         assert "cursor" not in clients
 
 
+class TestKiloMcpClient:
+    def test_kilo_registered_in_mcp_clients(self):
+        assert "kilo" in mcp.MCP_CLIENTS
+        assert mcp.MCP_CLIENTS["kilo"]["binary"] == "kilo"
+        assert mcp.MCP_CLIENTS["kilo"]["list_command"] == "kilo mcp list"
+
+    def test_kilo_in_client_modules(self):
+        assert mcp._MCP_CLIENT_MODULES["kilo"] is mcp.kilo
+
+    def test_kilo_cli_env_pins_xdg_config_home(self):
+        # `kilo mcp list` must read ug's isolated config dir, so the env ug runs it
+        # with pins XDG_CONFIG_HOME to the same dir kilo.build_runtime_env uses.
+        env = mcp._kilo_cli_env()
+        assert env["XDG_CONFIG_HOME"] == str(mcp.kilo.KILO_XDG_CONFIG_HOME)
+
+    def test_parses_kilo_tree_mcp_list_output(self):
+        # Kilo prints `●  <glyph> <name> <status>` rows with indented `│` detail lines
+        # (the proxy command, which must NOT be parsed as a server).
+        output = (
+            "┌  MCP Servers\n"
+            "│\n"
+            "●  ✗ system-ai-atlassian failed\n"
+            "│      Failed to get tools\n"
+            "│      /path/ug mcp-proxy --url https://ws/ai-gateway/.../system.ai.atlassian\n"
+            "│\n"
+            "●  ✓ system-ai-dbsql connected\n"
+            "│      /path/ug mcp-proxy --url https://ws/ai-gateway/.../system.ai.dbsql\n"
+            "└  2 server(s)\n"
+        )
+        assert mcp.parse_mcp_list_output("kilo", output) == {
+            "system-ai-atlassian": mcp.LIVE_FAILED,
+            "system-ai-dbsql": mcp.LIVE_CONNECTED,
+        }
+
+    def test_kilo_empty_listing_parses_to_no_servers(self):
+        assert mcp.parse_mcp_list_output("kilo", "▲  No MCP servers configured") == {}
+
+    def test_run_mcp_list_passes_xdg_env_for_kilo(self, monkeypatch):
+        # Regression: without the pinned XDG_CONFIG_HOME, `kilo mcp list` reads the
+        # user's default ~/.config/kilo and reports ug's servers as missing.
+        captured: dict = {}
+
+        class _Result:
+            stdout = ""
+            stderr = ""
+
+        def _fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            captured["env"] = kwargs.get("env")
+            return _Result()
+
+        monkeypatch.setattr(mcp.subprocess_cross_os, "run", _fake_run)
+        mcp._run_mcp_list("kilo")
+
+        assert captured["argv"] == ["kilo", "mcp", "list"]
+        assert captured["env"] is not None
+        assert captured["env"]["XDG_CONFIG_HOME"] == str(mcp.kilo.KILO_XDG_CONFIG_HOME)
+
+    def test_configure_dispatches_proxy_argv_to_kilo_writer(self, monkeypatch):
+        calls: list[tuple[str, list[str]]] = []
+        monkeypatch.setattr(
+            mcp.kilo,
+            "write_mcp_server_config",
+            lambda name, argv: calls.append((name, argv)) or False,
+        )
+
+        removed_scopes = mcp.configure_client_mcp_server("kilo", "github", GH_URL, WS, "p")
+
+        assert removed_scopes == []
+        assert calls == [("github", _proxy_argv())]
+
+    def test_configure_reports_user_scope_on_replace(self, monkeypatch):
+        monkeypatch.setattr(mcp.kilo, "write_mcp_server_config", lambda name, argv: True)
+        assert mcp.configure_client_mcp_server("kilo", "github", GH_URL, WS, "p") == [
+            mcp.MCP_USER_SCOPE
+        ]
+
+    def test_remove_dispatches_to_kilo_remover(self, monkeypatch):
+        calls: list[str] = []
+        monkeypatch.setattr(
+            mcp.kilo, "remove_mcp_server_config", lambda name: calls.append(name) or True
+        )
+        assert mcp.remove_client_mcp_server("kilo", "github-mcp") == [mcp.MCP_USER_SCOPE]
+        assert calls == ["github-mcp"]
+
+    def test_managed_entry_builds_via_kilo_module(self):
+        argv = mcp.build_mcp_proxy_argv(GH_URL, WS, None, use_pat=False)
+        assert mcp._managed_mcp_entry(
+            "kilo", GH_URL, WS, None, use_pat=False, always_load=False, http_client=None
+        ) == mcp.kilo.build_mcp_server_entry(argv)
+
+
 class TestConfigureClientMcpServer:
     def test_configures_copilot_with_proxy_argv(self, monkeypatch):
         calls: list[tuple[str, list[str]]] = []

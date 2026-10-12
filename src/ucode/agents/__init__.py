@@ -16,6 +16,7 @@ import subprocess
 from pathlib import Path
 
 from ucode.config_io import ToolSpec
+from ucode.constants import AGENT_CLAUDE, AGENT_CODEX
 from ucode.databricks import (
     AnthropicModelCatalog,
     get_databricks_token,
@@ -41,7 +42,7 @@ from ucode.ui import (
     status_subprocess_stdout,
 )
 
-from . import claude, codex, copilot, gemini, opencode, pi
+from . import claude, codex, copilot, gemini, kilo, opencode, pi
 from .args import LaunchOptions as LaunchOptions
 from .args import explicit_model_arg_value as explicit_model_arg_value
 
@@ -50,6 +51,7 @@ _MODULES = {
     "claude": claude,
     "gemini": gemini,
     "opencode": opencode,
+    "kilo": kilo,
     "copilot": copilot,
     "pi": pi,
 }
@@ -68,6 +70,8 @@ TOOL_ALIASES = {
     "gemini": "gemini",
     "gemini-cli": "gemini",
     "opencode": "opencode",
+    "kilo": "kilo",
+    "kilocode": "kilo",
     "copilot": "copilot",
     "pi": "pi",
 }
@@ -116,7 +120,7 @@ def normalize_tool(tool: str) -> str:
     normalized = TOOL_ALIASES.get(tool.strip().lower())
     if not normalized:
         raise RuntimeError(
-            f"Unsupported tool '{tool}'. Use one of: codex, claude, gemini, opencode, copilot, pi."
+            f"Unsupported tool '{tool}'. Use one of: codex, claude, gemini, opencode, kilo, copilot, pi."
         )
     return normalized
 
@@ -412,11 +416,11 @@ def configure_tool(
     picker_catalog: AnthropicModelCatalog | None = None,
 ) -> dict:
     result: dict | tuple[dict, str]
-    if tool == "codex":
+    if tool == AGENT_CODEX:
         result = codex.write_tool_config(
             state, model, provider=provider, parent_schema=parent_schema
         )
-    elif tool == "claude":
+    elif tool == AGENT_CLAUDE:
         # A Model Provider Service or parent schema routes by header and discovers models natively,
         # so the usual "model required" guard doesn't apply to either Claude source.
         if not model and not provider and not parent_schema:
@@ -444,6 +448,8 @@ def configure_tool(
             result = copilot.write_tool_config(state, model)
         elif tool == "pi":
             result = pi.write_tool_config(state, model)
+        elif tool == "kilo":
+            result = kilo.write_tool_config(state, model)
         else:
             result = opencode.write_tool_config(state, model)
     # gemini/opencode/copilot/pi return (state, token); codex/claude return state
@@ -485,7 +491,7 @@ def check_gateway_endpoint(state: dict, tool: str) -> bool:
     """V2-only: a tool is available iff we discovered models for it."""
     if tool == "claude":
         return bool(state.get("claude_models"))
-    if tool == "opencode":
+    if tool in ("opencode", "kilo"):
         return bool(state.get("opencode_models"))
     if tool == "codex":
         return bool(state.get("codex_models"))
@@ -505,6 +511,7 @@ def check_gateway_endpoint(state: dict, tool: str) -> bool:
 _TOOL_DISCOVERY_SOURCES: dict[str, tuple[str, ...]] = {
     "claude": ("claude",),
     "opencode": ("claude", "gemini", "oss"),
+    "kilo": ("claude", "gemini", "oss"),
     "codex": ("codex",),
     "gemini": ("gemini",),
     "copilot": ("claude", "codex"),

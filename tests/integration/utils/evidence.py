@@ -24,7 +24,7 @@ def assert_no_terminal_api_error(screen: str) -> None:
 def read_jsonl(path: Path) -> list[dict]:
     if not path.is_file():
         return []
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     lines = text.splitlines(keepends=True)
     records = []
     for index, line in enumerate(lines):
