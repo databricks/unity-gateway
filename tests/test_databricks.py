@@ -17,6 +17,7 @@ import pytest
 import ucode.databricks as db_mod
 from ucode.databricks import (
     CODING_AGENT_RECOMMEND_MODEL_PATH,
+    BudgetLimitStatus,
     _format_subprocess_result,
     _parse_databricks_cli_version,
     _run_databricks_cli_installer,
@@ -44,6 +45,7 @@ from ucode.databricks import (
     get_databricks_token,
     install_ai_tools,
     install_databricks_cli,
+    list_current_user_budget_spend_statuses,
     list_databricks_apps,
     list_workspace_budgets,
     resolve_current_budget_spend,
@@ -4186,6 +4188,234 @@ class TestResolveCurrentBudgetSpend:
         spend, reason = resolve_current_budget_spend("https://ws", "token")
         assert spend is None
         assert "not a JSON object" in reason
+
+
+class TestListCurrentUserBudgetSpendStatuses:
+    @staticmethod
+    def _stub_account_auth(monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_get_databricks_account_token",
+            lambda account_host, account_id: ("account-token", None),
+        )
+
+    def test_discovers_account_and_parses_personal_and_shared_limits(self, monkeypatch):
+        self._stub_account_auth(monkeypatch)
+        calls = []
+
+        def fake_get(url, token, timeout=10):
+            calls.append((url, token))
+            if url.endswith("/.well-known/databricks-config"):
+                return {"account_id": "account-1", "workspace_id": "123"}, None
+            return {
+                "budget_spend_statuses": [
+                    {
+                        "budget_id": "budget-1",
+                        "alert_spend_statuses": [
+                            {
+                                "scope_type": "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER",
+                                "time_period": "DAY",
+                                "spend": "43.50",
+                                "threshold": "50",
+                                "percent_consumed": "87",
+                            },
+                            {
+                                "scope_type": "ALERT_CONFIGURATION_SCOPE_TYPE_SHARED",
+                                "time_period": "MONTH",
+                                "percent_consumed": "82.25",
+                            },
+                        ],
+                    }
+                ]
+            }, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        statuses, reason = list_current_user_budget_spend_statuses(WS, "workspace-token")
+
+        assert reason is None
+        assert statuses == [
+            BudgetLimitStatus(
+                budget_id="budget-1",
+                scope_type="ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER",
+                time_period="DAY",
+                percent_consumed=Decimal("87"),
+                spend=Decimal("43.50"),
+                threshold=Decimal("50"),
+            ),
+            BudgetLimitStatus(
+                budget_id="budget-1",
+                scope_type="ALERT_CONFIGURATION_SCOPE_TYPE_SHARED",
+                time_period="MONTH",
+                percent_consumed=Decimal("82.25"),
+            ),
+        ]
+        assert calls[0] == (
+            "https://example.databricks.com/.well-known/databricks-config",
+            "workspace-token",
+        )
+        request_url, request_token = calls[1]
+        assert request_url.startswith(
+            "https://accounts.cloud.databricks.com/api/2.1/accounts/"
+            "account-1/budget-spend-statuses?"
+        )
+        params = parse_qs(request_url.split("?", 1)[1])
+        assert params == {"page_size": ["100"], "filter": ["workspace_id = 123"]}
+        assert request_token == "account-token"
+
+    def test_pages_until_the_server_omits_the_next_token(self, monkeypatch):
+        self._stub_account_auth(monkeypatch)
+        pages = iter(
+            [
+                {
+                    "budget_spend_statuses": [],
+                    "next_page_token": "page-2",
+                },
+                {
+                    "budget_spend_statuses": [
+                        {
+                            "budget_id": "budget-2",
+                            "alert_spend_statuses": [
+                                {
+                                    "scope_type": "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER",
+                                    "time_period": "MONTH",
+                                    "percent_consumed": "0",
+                                    "threshold": "100",
+                                }
+                            ],
+                        }
+                    ]
+                },
+            ]
+        )
+        urls = []
+
+        def fake_get(url, token, timeout=10):
+            if url.endswith("/.well-known/databricks-config"):
+                return {"account_id": "account-1", "workspace_id": "123"}, None
+            urls.append(url)
+            return next(pages), None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        statuses, reason = list_current_user_budget_spend_statuses(WS, "workspace-token")
+
+        assert reason is None
+        assert [status.budget_id for status in statuses] == ["budget-2"]
+        assert "page_token=page-2" in urls[1]
+
+    def test_rejects_a_repeated_page_token(self, monkeypatch):
+        self._stub_account_auth(monkeypatch)
+
+        def fake_get(url, token, timeout=10):
+            if url.endswith("/.well-known/databricks-config"):
+                return {"account_id": "account-1", "workspace_id": "123"}, None
+            return {"budget_spend_statuses": [], "next_page_token": "same"}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        statuses, reason = list_current_user_budget_spend_statuses(WS, "workspace-token")
+
+        assert statuses == []
+        assert reason == "budget spend status listing repeated a page token"
+
+    def test_accepts_an_omitted_empty_status_collection(self, monkeypatch):
+        self._stub_account_auth(monkeypatch)
+
+        def fake_get(url, token, timeout=10):
+            if url.endswith("/.well-known/databricks-config"):
+                return {"account_id": "account-1", "workspace_id": "123"}, None
+            return {}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        statuses, reason = list_current_user_budget_spend_statuses(WS, "workspace-token")
+
+        assert statuses == []
+        assert reason is None
+
+    @pytest.mark.parametrize(
+        "alert_status",
+        [
+            {"time_period": "DAY", "percent_consumed": "1"},
+            {
+                "scope_type": "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER",
+                "time_period": "WEEK",
+                "percent_consumed": "1",
+            },
+            {
+                "scope_type": "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER",
+                "time_period": "DAY",
+                "percent_consumed": "invalid",
+            },
+            {
+                "scope_type": "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER",
+                "time_period": "DAY",
+                "percent_consumed": "NaN",
+            },
+            {
+                "scope_type": "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER",
+                "time_period": "DAY",
+                "percent_consumed": "1",
+                "spend": "invalid",
+            },
+        ],
+    )
+    def test_rejects_malformed_alert_statuses(self, monkeypatch, alert_status):
+        self._stub_account_auth(monkeypatch)
+
+        def fake_get(url, token, timeout=10):
+            if url.endswith("/.well-known/databricks-config"):
+                return {"account_id": "account-1", "workspace_id": "123"}, None
+            return {
+                "budget_spend_statuses": [
+                    {"budget_id": "budget-1", "alert_spend_statuses": [alert_status]}
+                ]
+            }, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        statuses, reason = list_current_user_budget_spend_statuses(WS, "workspace-token")
+
+        assert statuses == []
+        assert reason == "budget spend status listing returned a malformed alert status"
+
+    def test_account_token_uses_account_host_without_workspace_credentials(self, monkeypatch):
+        monkeypatch.setenv("DATABRICKS_HOST", WS)
+        monkeypatch.setenv("DATABRICKS_TOKEN", "workspace-token")
+        monkeypatch.setenv("DATABRICKS_BEARER", "workspace-bearer")
+        monkeypatch.setenv("DATABRICKS_ACCOUNT_ID", "wrong-account")
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "/usr/local/bin/databricks")
+        captured = {}
+
+        def fake_run(args, **kwargs):
+            captured["args"] = args
+            captured["env"] = kwargs["env"]
+            return subprocess.CompletedProcess(args, 0, '{"access_token":"account-token"}', "")
+
+        monkeypatch.setattr(db_mod, "run", fake_run)
+
+        token, reason = db_mod._get_databricks_account_token(
+            "https://accounts.cloud.databricks.com", "account-1"
+        )
+
+        assert token == "account-token"
+        assert reason is None
+        assert captured["args"] == [
+            "/usr/local/bin/databricks",
+            "auth",
+            "token",
+            "--host",
+            "https://accounts.cloud.databricks.com",
+            "--account-id",
+            "account-1",
+            "--output",
+            "json",
+        ]
+        assert "DATABRICKS_HOST" not in captured["env"]
+        assert "DATABRICKS_TOKEN" not in captured["env"]
+        assert "DATABRICKS_BEARER" not in captured["env"]
+        assert "DATABRICKS_ACCOUNT_ID" not in captured["env"]
 
 
 class TestListWorkspaceBudgets:
