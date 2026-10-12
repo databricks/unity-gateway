@@ -111,7 +111,7 @@ This is the intended behavior; we are still working to make the code match it in
 <details>
 <summary>Claude Code</summary>
 
-Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file (`/etc/claude-code/managed-settings.json` on Linux, `/Library/Application Support/ClaudeCode/managed-settings.json` on macOS), which takes precedence.
+Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file (`/etc/claude-code/managed-settings.json` on Linux, `/Library/Application Support/ClaudeCode/managed-settings.json` on macOS, `C:\Program Files\ClaudeCode\managed-settings.json` on Windows), which takes precedence.
 
 | Field | Without managed config | With managed config | Notes |
 |-------|------------------------|---------------------|-------|

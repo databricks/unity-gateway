@@ -21,8 +21,8 @@ for a password. If that repair is denied, the agent does not launch.
 
 | Agent | Local ucode configuration | OS-managed configuration |
 | --- | --- | --- |
-| Claude Code | `~/.claude/ucode-settings.json` | Linux: `/etc/claude-code/managed-settings.json`; macOS: `/Library/Application Support/ClaudeCode/managed-settings.json` |
-| Codex | `~/.codex/ucode.config.toml` | `/etc/codex/managed_config.toml` |
+| Claude Code | `~/.claude/ucode-settings.json` | Linux: `/etc/claude-code/managed-settings.json`; macOS: `/Library/Application Support/ClaudeCode/managed-settings.json`; Windows: `C:\Program Files\ClaudeCode\managed-settings.json` |
+| Codex | `~/.codex/ucode.config.toml` | Linux and macOS: `/etc/codex/managed_config.toml`; none on Windows |
 
 The local file is always written. The OS-managed file is additionally reconciled during interactive
 configuration, except for Claude subscription relay.
@@ -37,6 +37,12 @@ A denied repair blocks launch.
 `managed_writes_allowed` centralizes this policy: its default remains interactive-only, while the
 shared reconciliation/writer permits an existing-file repair attempt. The writer derives sudo's
 prompt mode and stdin handling itself; the predicate does not probe or grant authorization.
+
+Windows has no `sudo`, so the terminal doesn't matter there: an elevated (or SYSTEM) process may
+write `C:\Program Files\ClaudeCode\managed-settings.json` directly, which lets device provisioning
+run `ug configure` headlessly. Standard users can't write under Program Files. For them an absent or
+compatible file stays local-only (with a warning when the machine-wide file is missing ug's
+settings), and a conflicting file stops the command with a request to rerun it elevated.
 
 This is a new shared ucode distinction. The previous implementation inferred interactivity from
 command shape in some flows and did not guard managed-file writes consistently.

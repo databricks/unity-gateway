@@ -64,6 +64,9 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(managed_files_mod, "_sudo_replace", reject_privileged_write)
+    # Windows CI runners are elevated; never let an unmocked test write C:\Program Files.
+    monkeypatch.setattr(managed_files_mod, "_windows_is_admin", lambda: False)
+    monkeypatch.setattr(managed_files_mod, "_windows_replace", reject_privileged_write)
     monkeypatch.delenv("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", raising=False)
     monkeypatch.delenv("UCODE_SESSION_ENV_FILE", raising=False)

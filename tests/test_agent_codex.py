@@ -2054,9 +2054,19 @@ class TestWriteConfigBackup:
 
 class TestCodexManagedMcpUsesManagedFile:
     def test_true_when_supported_and_interactive(self, monkeypatch):
+        monkeypatch.setattr(
+            codex, "codex_managed_config_path", lambda: Path("/etc/codex/managed_config.toml")
+        )
         monkeypatch.setattr(codex, "managed_files_supported", lambda: True)
         monkeypatch.setattr(codex, "managed_writes_allowed", lambda: True)
         assert codex.managed_mcp_uses_managed_file() is True
+
+    def test_false_without_a_codex_managed_path(self, monkeypatch):
+        # Windows supports Claude's managed file but Codex has none there.
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: None)
+        monkeypatch.setattr(codex, "managed_files_supported", lambda: True)
+        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: True)
+        assert codex.managed_mcp_uses_managed_file() is False
 
     def test_false_when_non_interactive(self, monkeypatch):
         monkeypatch.setattr(codex, "managed_files_supported", lambda: True)

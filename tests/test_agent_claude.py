@@ -2285,6 +2285,65 @@ class TestWriteToolConfigManagedSettings:
 
         assert managed_writes == []
 
+    def test_windows_non_admin_warns_and_uses_local_settings(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        warns: list = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: False)
+        monkeypatch.setattr(claude, "current_os", lambda: managed_files.OS.WINDOWS)
+        monkeypatch.setattr(claude, "print_warning", warns.append)
+
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+        )
+
+        assert managed_writes == []
+        assert any("need administrator rights" in warning for warning in warns)
+
+    def test_windows_non_admin_with_conflicting_machine_settings_quits(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ProgramW6432", str(tmp_path / "Program Files"))
+        monkeypatch.setattr(claude, "current_os", lambda: managed_files.OS.WINDOWS)
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.WINDOWS)
+        path = managed_files.windows_claude_managed_settings_path()
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"apiKeyHelper": "it-helper"}), encoding="utf-8")
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: path)
+
+        with pytest.raises(RuntimeError, match="requires administrator rights.*ug configure"):
+            claude._reconcile_managed_settings(
+                {},
+                lambda base: {**base, "apiKeyHelper": "ug auth-token"},
+                [["apiKeyHelper"]],
+                False,
+                [],
+            )
+
+        assert json.loads(path.read_text(encoding="utf-8")) == {"apiKeyHelper": "it-helper"}
+
+    def test_windows_non_admin_with_current_machine_settings_is_silent(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+        )
+        provisioned = {str(FAKE_MANAGED_PATH): json.loads(managed_writes[0][1])}
+
+        managed_writes.clear()
+        warns: list = []
+        self._patch(monkeypatch, private_writes, managed_writes, provisioned)
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: False)
+        monkeypatch.setattr(claude, "current_os", lambda: managed_files.OS.WINDOWS)
+        monkeypatch.setattr(claude, "print_warning", warns.append)
+
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+        )
+
+        assert managed_writes == []
+        assert warns == []
+
     def test_noninteractive_uses_local_settings_when_managed_file_is_compatible(self, monkeypatch):
         private_writes: list = []
         managed_writes: list = []

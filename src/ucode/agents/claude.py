@@ -75,6 +75,7 @@ from ucode.managed_files import (
     record_ug_picker,
     revert_managed_file,
     warn_skipped_settings_passthrough,
+    windows_claude_managed_settings_path,
     withdrawn_list_items,
 )
 from ucode.mcp_oauth import (
@@ -282,6 +283,8 @@ def _managed_settings_path() -> Path | None:
         return Path("/etc/claude-code/managed-settings.json")
     if current_os() is OS.MACOS:
         return Path("/Library/Application Support/ClaudeCode/managed-settings.json")
+    if current_os() is OS.WINDOWS:
+        return windows_claude_managed_settings_path()
     return None
 
 
@@ -1844,11 +1847,12 @@ def _reconcile_managed_settings(
     if relayed:
         conflicts = _managed_relayed_conflicts(path)
         if conflicts:
+            terminal = "an elevated" if current_os() is OS.WINDOWS else "an interactive"
             raise RuntimeError(
                 "Claude subscription relay cannot start because enterprise managed settings "
                 f"define {', '.join(conflicts)} at {path}. Ask your administrator to remove "
                 "those entries or use standard Databricks authentication. If ucode previously "
-                "created them, run `ucode revert` from an interactive terminal first."
+                f"created them, run `ucode revert` from {terminal} terminal first."
             )
         mark_managed_file_verified(state, "claude", path, scope="relay-compatible")
         return
@@ -1866,6 +1870,12 @@ def _reconcile_managed_settings(
     _preserve_permission_denies(managed_before, desired_settings, withdrawn=withdrawn_denies or [])
     conflicts = _managed_settings_conflicts(managed_before, desired_settings, owned_paths)
     if not managed_writes_allowed() and not conflicts:
+        if current_os() is OS.WINDOWS and current_text is None:
+            print_warning(
+                f"Machine-wide Claude Code settings at {path} need administrator rights; using "
+                "your own settings. To set them for this machine, run `ug configure` from an "
+                "elevated terminal."
+            )
         mark_managed_file_verified(state, "claude", path, scope="local-compatible")
         return
     try:
