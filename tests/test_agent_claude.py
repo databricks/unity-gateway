@@ -769,13 +769,17 @@ class TestWebSearchMcpEntry:
             "DATABRICKS_CONFIG_PROFILE": "custom-profile",
         }
 
-    def test_forwards_external_web_access(self, monkeypatch):
+    @pytest.mark.parametrize("binary_name", ["ug", "ug.exe"])
+    def test_forwards_external_web_access(self, monkeypatch, tmp_path, binary_name):
+        command = str(tmp_path / binary_name)
+        monkeypatch.setattr(claude, "ug_binary", lambda: command)
         monkeypatch.setenv("UG_WEBSEARCH_EXTERNAL_WEB_ACCESS", "false")
 
         entry = claude._web_search_mcp_entry(WS, "search-model", "profile")
 
         assert entry["env"]["UG_WEBSEARCH_EXTERNAL_WEB_ACCESS"] == "false"
         assert entry["env"]["DATABRICKS_CONFIG_PROFILE"] == "profile"
+        assert entry["command"] == command
         assert claude._generated_search_entry(entry) is True
 
     def test_unsetting_external_web_access_removes_override(self, monkeypatch):
