@@ -45,7 +45,6 @@ from ucode.databricks import (
     list_anthropic_models,
     maybe_add_gpt_1m_suffix,
 )
-from ucode.launcher import exec_or_spawn
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
@@ -65,7 +64,11 @@ from ucode.smart_routing.claude_hooks import (
     sync_first_prompt_hook,
     sync_smart_routing_hooks,
 )
-from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
+from ucode.smart_routing.codex_hooks import (
+    merge_pre_tool_use_hooks,
+    resume_hook_groups,
+    routing_models,
+)
 from ucode.smart_routing.config import apply_config, resolve_environment
 from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
 from ucode.ui import print_note, print_warning
@@ -782,6 +785,8 @@ def _v2_hooks(state: dict, available_models: list[str]) -> dict:
             "PreToolUse": merge_pre_tool_use_hooks([], state, available_models=available_models),
         }
     }
+    for event, groups in resume_hook_groups(state).items():
+        doc["hooks"].setdefault(event, []).extend(groups)
     orchestrator.sync_hooks(doc, agent="codex")
     return doc["hooks"]
 
@@ -794,6 +799,9 @@ def launch_codex(
     start_model: str | None,
     render_overlay: Callable[..., dict],
 ) -> NoReturn:
+    # These Codex-only modules load websockets; keep them off the Claude launch path.
+    from ucode.smart_routing import codex_interposer, codex_resume
+
     workspace = state.get("workspace")
     if not workspace:
         raise RuntimeError(
@@ -824,9 +832,12 @@ def launch_codex(
     catalog_path = custom_catalog_path()
     if catalog_path is not None:
         overlay["model_catalog_json"] = str(catalog_path)
+    app_port = _free_port()
+    app_server_url = _loopback_websocket_url(app_port)
     overlay["hooks"] = _v2_hooks(state, available_models)
     overlay["features.hooks"] = True
     session_env_path = _prepare_smart_router_session("codex")
+    codex_resume.configure_session(session_env_path, app_server_url)
     # Codex constructs tool subprocess environments through its shell policy.
     # Pass both the session marker and its launching interpreter through that policy.
     overlay[f"shell_environment_policy.set.{SESSION_ENV_VAR}"] = str(session_env_path)
@@ -834,27 +845,18 @@ def launch_codex(
         SESSION_PYTHON_ENV_VAR
     ]
     config_args = codex_config_args(overlay)
-    if not first_prompt_routing_enabled(agent=AGENT_CODEX):
-        # Subagent-only routing needs neither the app-server nor the interposer:
-        # the hooks ride in the CLI config, so launch the TUI directly.
-        exec_or_spawn([binary, *config_args, *tool_args])
-    app_port = _free_port()
-    app_server_url = _loopback_websocket_url(app_port)
-
-    # Codex-only, and pulls in `websockets`; keep it off the Claude launch path.
-    from ucode.smart_routing import codex_interposer
-
-    # Preserve the user's normal CODEX_HOME (including MCP servers, skills, and
-    # preferences) and layer only ucode's gateway settings at CLI precedence.
-    app_server = subprocess_cross_os.popen(
-        [binary, "app-server", *config_args, "--listen", app_server_url],
-        env=os.environ.copy(),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    app_server = None
     stop_interposer = None
     try:
+        # Preserve the user's normal CODEX_HOME (including MCP servers, skills, and
+        # preferences) and layer only ucode's gateway settings at CLI precedence.
+        app_server = subprocess_cross_os.popen(
+            [binary, "app-server", *config_args, "--listen", app_server_url],
+            env=os.environ.copy(),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         if not _wait_for_app_server(app_port, timeout=APP_SERVER_READY_TIMEOUT_SECONDS):
             raise RuntimeError(
                 "Codex app-server did not become ready for smart routing; check workspace auth."
@@ -863,8 +865,9 @@ def launch_codex(
             LOOPBACK_HOST,
             app_server_url,
             available_models=available_models,
-            workspace=workspace,
+            workspace=workspace if first_prompt_routing_enabled(agent=AGENT_CODEX) else None,
             token_provider=lambda: _launch_token(state, workspace),
+            on_model_override=codex_resume.for_workspace(workspace).allow_override,
             switch_message_fn=format_routing_notice,
             log_path=CODEX_INTERPOSER_LOG,
         )
@@ -888,11 +891,18 @@ def launch_codex(
             tui.send_signal(signal.SIGINT)
             returncode = tui.wait()
     finally:
-        if stop_interposer is not None:
-            stop_interposer()
-        app_server.terminate()
         try:
-            app_server.wait(timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
-        except Exception:  # noqa: BLE001
-            app_server.kill()
+            if stop_interposer is not None:
+                stop_interposer()
+        finally:
+            try:
+                if app_server is not None:
+                    app_server.terminate()
+                    try:
+                        app_server.wait(timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
+                    except subprocess.TimeoutExpired:
+                        app_server.kill()
+                        app_server.wait()
+            finally:
+                (session_env_path.parent / "codex-app-server.json").unlink(missing_ok=True)
     sys.exit(returncode)

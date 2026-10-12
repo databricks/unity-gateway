@@ -5,8 +5,8 @@ from __future__ import annotations
 import copy
 import shlex
 import subprocess
+import sys
 
-from ucode.databricks import build_auth_token_argv
 from ucode.smart_routing import hooks
 
 ROUTING_HOOK_COMMAND_MARKER = "codex-router-hook"
@@ -65,6 +65,23 @@ def merge_pre_tool_use_hooks(
     return doc["hooks"]["PreToolUse"]
 
 
+def resume_hook_groups(state: dict) -> dict[str, list[dict]]:
+    return {
+        "PreToolUse": [
+            {
+                "matcher": ".*(resume_agent|send_input)$",
+                "hooks": [_routing_command_hook(_routing_hook_argv(state, "guard-resume"))],
+            }
+        ],
+        "PostToolUse": [
+            {
+                "matcher": "Agent|.*spawn_agent$",
+                "hooks": [_routing_command_hook(_routing_hook_argv(state, "bind-route"))],
+            }
+        ],
+    }
+
+
 def _pre_tool_use_hook_group(state: dict, *, available_models: list[str] | None = None) -> dict:
     route_argv = _routing_hook_argv(
         state,
@@ -82,15 +99,17 @@ def _routing_hook_argv(
 ) -> list[str]:
     workspace = str(state.get("workspace") or "")
     argv = [
-        build_auth_token_argv(workspace, state.get("profile"), use_pat=bool(state.get("use_pat")))[
-            0
-        ],
+        sys.executable,
+        "-m",
+        "ucode.cli",
         ROUTING_HOOK_COMMAND_MARKER,
         event,
     ]
-    if event != "route-subagent":
+    if event not in {"route-subagent", "guard-resume", "bind-route"}:
         return argv
     argv += ["--host", workspace]
+    if event != "route-subagent":
+        return argv
     profile = state.get("profile")
     if isinstance(profile, str) and profile:
         argv += ["--profile", profile]

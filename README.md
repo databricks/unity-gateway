@@ -286,6 +286,18 @@ is enabled, ug warns and falls back to subagent routing because the first-prompt
 wrapper requires a Unix terminal.
 The generated shell hooks expect Git Bash; PowerShell-only setups are not covered.
 
+Smart-routed interactive Codex sessions preserve a routed child's model and reasoning
+effort through native `close_agent` / `resume_agent` and subsequent `send_input`, including
+routed descendants. Both routing modes use the Codex app-server; subagent-only routing
+keeps the parent's model. Codex must trust the generated hooks. If settings cannot be
+restored, UG blocks the follow-up with a retry message.
+
+This protection is verified with Codex 0.159.3 and requires its native thread-settings APIs.
+It covers children created through UG's smart-routing launcher, including later resumes
+in another smart-routed launch against the same workspace. Direct Codex, `codex exec`,
+explicit-model launch bypasses, and standalone evaluation plugins do not acquire the guard.
+Native multi-agent v2 retains its own saved-settings restore path.
+
 ### Smart Router Orchestrator
 
 Use `SMART_ROUTER_CONFIG_VERSION` at launch to select a smart-routing configuration.

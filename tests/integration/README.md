@@ -34,6 +34,13 @@ The shared request recorder and native compatibility-retry checks live in
 configuration glue and imports those helpers; request forwarding, header
 redaction, and paired response assertions retain their behavior.
 
+Routed Codex v1 child close/resume is covered by the component suite
+`../test_codex_resume.py` and the optional native Codex 0.159.3 reproduction documented in
+`../README.md`. The latter uses UG's real hooks and native lifecycle with synthetic local
+router/provider responses, including restart, nested children, and unset effort. This suite
+does not yet contain a live gateway child-resume journey. Claude and external evaluation
+plugins are outside that fix's launch path.
+
 CUJ3 and CUJ4 require a non-empty HTTP 200 for inference. Claude 2.1.290's known
 thinking-display 400 is accepted only when the next inference request with the same system
 context and session metadata removes `display`,

@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from ucode import codex_config
 from ucode.agents import LaunchOptions, codex
-from ucode.smart_routing import codex_interposer, codex_routing, v2
+from ucode.smart_routing import codex_interposer, codex_resume, codex_routing, v2
 
 WS = "https://example.databricks.com"
 
@@ -310,6 +313,28 @@ class TestLaunchCodex:
         assert interposer_args["kwargs"]["switch_message_fn"] is v2.format_routing_notice
         assert stopped == [True]
         assert processes[0].terminated is True
+        assert codex_resume.app_server_url() is None
+
+    def test_app_server_start_failure_removes_session_endpoint(self, monkeypatch):
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        monkeypatch.setattr(v2, "get_databricks_token", lambda *_args: "fixture-token")
+        endpoint_during_launch = []
+
+        def failed_start(*_args, **_kwargs):
+            endpoint_during_launch.append(codex_resume.app_server_url())
+            raise OSError("could not start Codex")
+
+        monkeypatch.setattr(v2.subprocess_cross_os, "popen", failed_start)
+        with pytest.raises(OSError, match="could not start Codex"):
+            v2.launch_codex(
+                {"workspace": WS, "codex_models": ["gpt-start"]},
+                [],
+                binary="codex",
+                start_model="gpt-start",
+                render_overlay=lambda *_args, **_kwargs: {},
+            )
+        assert endpoint_during_launch[0].startswith("ws://127.0.0.1:")
+        assert codex_resume.app_server_url() is None
 
     def test_managed_http_headers_reach_app_server_config(self, monkeypatch):
         # Smart routing rebuilds the overlay and passes it to the app-server as `-c` overrides that
@@ -364,29 +389,30 @@ class TestLaunchCodex:
         assert "x-databricks-workspace" in provider_arg
         assert "eng-ml-inference" in provider_arg
 
-    def test_subagent_only_launch_runs_tui_directly(self, tmp_path, monkeypatch):
+    def test_subagent_only_launch_protects_resume_without_routing_parent(
+        self, tmp_path, monkeypatch
+    ):
         monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
         monkeypatch.setenv("CODEX_HOME", str(tmp_path))
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
         monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
-        monkeypatch.setattr(
-            v2.subprocess,
-            "Popen",
-            lambda *_args, **_kwargs: pytest.fail("subagent-only routing spawns no app-server"),
-        )
-        monkeypatch.setattr(
-            codex_interposer,
-            "start_interposer_thread",
-            lambda *_args, **_kwargs: pytest.fail("subagent-only routing must not interpose"),
-        )
-        execd = []
+        interposer_args = {}
 
-        def fake_exec(argv):
-            execd.append(argv)
-            raise SystemExit(0)
+        def start_interposer(*_args, **kwargs):
+            interposer_args.update(kwargs)
+            return 41002, lambda: None
 
-        monkeypatch.setattr(v2, "exec_or_spawn", fake_exec)
+        monkeypatch.setattr(codex_interposer, "start_interposer_thread", start_interposer)
+        monkeypatch.setattr(v2, "_free_port", lambda: 41001)
+        monkeypatch.setattr(v2, "_wait_for_app_server", lambda *_args, **_kwargs: True)
+        spawned = []
+
+        def fake_spawn(argv, **_kwargs):
+            spawned.append(argv)
+            return SimpleNamespace(wait=lambda timeout=None: 0, terminate=lambda: None)
+
+        monkeypatch.setattr(v2.subprocess_cross_os, "popen", fake_spawn)
 
         with pytest.raises(SystemExit) as exc:
             v2.launch_codex(
@@ -398,13 +424,27 @@ class TestLaunchCodex:
             )
 
         assert exc.value.code == 0
-        (argv,) = execd
-        assert argv[0] == "codex"
-        assert argv[-1] == "--search"
+        argv, tui_argv = spawned
+        assert argv[:2] == ["codex", "app-server"]
+        assert tui_argv[-5:] == [
+            "--remote",
+            "ws://127.0.0.1:41002",
+            "--model",
+            "gpt-start",
+            "--search",
+        ]
+        assert interposer_args["workspace"] is None
         assert 'model="gpt-start"' in argv
         hook_override = next(arg for arg in argv if arg.startswith("hooks.PreToolUse="))
         assert "codex-router-hook route-subagent" in hook_override
         assert "--model system.ai.gpt-5-6-sol" in hook_override
+        assert "guard-resume" in hook_override
+        assert "ws://" not in hook_override
+        post_hook = next(arg for arg in argv if arg.startswith("hooks.PostToolUse="))
+        assert "bind-route" in post_hook
+        assert not (
+            Path(os.environ["UCODE_SESSION_ENV_FILE"]).parent / "codex-app-server.json"
+        ).exists()
         assert (
             "shell_environment_policy.set.UCODE_SESSION_ENV_FILE="
             + json.dumps(os.environ["UCODE_SESSION_ENV_FILE"])
@@ -436,8 +476,9 @@ class TestLaunchCodex:
             ["system.ai.gpt-5-6-sol"],
         )["PreToolUse"]
 
-        assert len(configured) == 1
+        assert len(configured) == 2
         assert configured[0]["matcher"] == "Agent|.*spawn_agent$"
+        assert configured[1]["matcher"] == ".*(resume_agent|send_input)$"
         assert "--model system.ai.gpt-5-6-sol" in configured[0]["hooks"][0]["command"]
         assert (codex_home / "config.toml").read_bytes() == before
 
@@ -464,10 +505,16 @@ class TestLaunchCodex:
             hook["command"]
             for group in configured
             for hook in group["hooks"]
-            if "codex-router-hook" in hook["command"]
+            if "codex-router-hook route-subagent" in hook["command"]
         ]
         assert len(routing_commands) == 1
-        assert routing_commands[0].startswith("/bin/ug codex-router-hook route-subagent ")
+        assert shlex.split(routing_commands[0])[:5] == [
+            sys.executable,
+            "-m",
+            "ucode.cli",
+            "codex-router-hook",
+            "route-subagent",
+        ]
         assert "--model system.ai.gpt-5-6-sol" in routing_commands[0]
         assert "--model old" not in routing_commands[0]
 

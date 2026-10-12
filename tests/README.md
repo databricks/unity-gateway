@@ -274,6 +274,15 @@ gateway provider on Windows while Unix launch arguments stay unchanged and routi
 hooks stay with the app-server. This is component coverage, not a live Windows
 sign-in or TUI test.
 
+`test_codex_resume.py` covers SQLite persistence across guard restarts, saved model/effort
+restoration (including unset effort), nested callers sharing the root session ID,
+descendant traversal through unrouted parents, live follow-ups, deliberate overrides,
+native-v2 exclusion, identity mismatches, repeated/overlapping resumes, and denial when
+metadata, persistence, or native confirmation fails. Its loopback WebSocket peer substitutes
+the external Codex service. The CLI and route store run unchanged.
+`test_codex_smart_routing_v2.py` also checks the app-server lifecycle in both routing modes,
+session-endpoint cleanup, and hooks bound to the launching Python executable.
+
 Claude picker composition is checked directly through the catalog and renderer functions in
 `test_agent_claude.py`; focused CLI cases cover source selection and launch precedence.
 Explicit Claude/GPT `--model` regressions in `test_cli.py` exercise the real launcher
@@ -613,7 +622,7 @@ desktop GUI or systemd login/reboot pass.
 | Saved Claude picker selection | Unit/component checks in `test_agent_claude.py` cover mapped family aliases, `[1m]`/`[200k]` variants, and unavailable-model fallback without changing saved settings. No dedicated live journey. |
 | Fresh provider/parent validation and mixed Bedrock filtering | Not covered after removing the duplicate model-discovery suites |
 | TUI initial prompt supplied on the launch command line | Not yet covered; headless prompt arguments are covered |
-| Follow-up turns and conversation resume | Not covered; reopen proves startup, not conversation resume |
+| Follow-up turns and conversation resume | Routed Codex v1 child close/resume has component coverage and the native reproduction below. Other resume paths and a live gateway resume journey remain uncovered; reopen alone proves startup |
 | Claude/Codex interactive smart routing | First-prompt routing is covered by the `managed_fixture` banner journeys and CUJ4. The live subagent-only journeys spawn native children and invoke the installed Smart Router skill to verify routing on -> off -> on within one Claude/Codex session. The scheduled harness-latest workflow repeats CUJ4, routing hooks, skill toggles, and banners with both latest agents. Plugin-refresh survival and native daemon/background dispatch remain deferred. |
 | Full allow/deny tool-permission matrix | Not covered; onboarding/trust uses actual TUI choices |
 | Desktop Codex app, Isaac itself, auto-upgrades | Not covered by command forwarding or pinned-version tests |
@@ -625,6 +634,34 @@ See [integration/README.md](integration/README.md) for commands, CI, artifacts,
 and reproduction. Follow [AGENTS.md](AGENTS.md) and [CLAUDE.md](CLAUDE.md) when
 adding, modifying, or removing tests. The ordinary suite enforces both the
 no-mocking boundary and the Scenario/Expected docstring format.
+
+### Native Codex resume reproduction
+
+[`scripts/reproduce_codex_resume.py`](../scripts/reproduce_codex_resume.py) uses an installed
+Codex 0.159.3 binary, UG's actual CLI hooks, and deterministic loopback router/Responses services.
+It needs Linux and `bwrap` to isolate native/UG state without changing user configuration.
+Generated fixture hooks are approved through Codex's native trust API. No gateway credentials
+or model inference are used; this is component reproduction, not a live gateway integration test.
+
+Run from a checkout with its Python dependencies already installed, using new output directories:
+
+```bash
+PYTHONPATH="$PWD/src" uv run --no-sync python scripts/reproduce_codex_resume.py \
+  --binary /absolute/path/to/codex --version 0.159.3 \
+  --output /tmp/ug-resume-baseline --baseline
+PYTHONPATH="$PWD/src" uv run --no-sync python scripts/reproduce_codex_resume.py \
+  --binary /absolute/path/to/codex --version 0.159.3 \
+  --output /tmp/ug-resume-fixed
+```
+
+The baseline keeps routing enabled and omits the guard hooks; success means it observed the
+child switching from `gpt-5.1-codex-mini`/high to the parent's `gpt-5.1`/low after resume.
+The fixed case requires the child's model/effort to stay unchanged in provider requests
+and native thread settings. Both check live follow-ups and preserve the parent's settings.
+Add `--restart`, `--nested`, or `--no-effort` to test a new native process, subtree restoration,
+or unset effort. Outputs include routing calls, requests, native events/settings, tool results,
+and `result.json`; missing stages or failed hooks fail the run. Other native Codex versions,
+Windows/macOS, TUI interaction, and production incidence are not established by this check.
 
 Native launch-option component tests (`native_claude/test_mod.py`) check two real Claude
 processes with different resolved routing baselines. Python cases cover Claude-specific presets,
