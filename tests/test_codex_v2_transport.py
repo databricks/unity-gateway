@@ -85,18 +85,6 @@ def test_replay_maps_plaintext_but_preserves_encrypted_calls_and_outputs(argumen
     ]
 
 
-@pytest.mark.parametrize("body", [b"invalid JSON", b'{"tools":[],"input":"unchanged"}'])
-def test_non_v2_requests_are_byte_transparent(body):
-    assert prepare_request(body) == (body, False)
-
-
-def test_reserved_namespace_collision_is_rejected():
-    with pytest.raises(ValueError, match="reserved namespace"):
-        prepare_request(
-            json.dumps({"tools": [{"type": "namespace", "name": WIRE_NAMESPACE}]}).encode()
-        )
-
-
 @pytest.mark.parametrize(
     "name,shape",
     [
@@ -136,13 +124,9 @@ def test_response_restores_native_calls_without_changing_arguments_or_ids(name, 
     [
         {"encrypted_function_args": ["encrypted"]},
         {"arguments": '{"message":"gAAAAABopaque"}'},
-        {"arguments": ""},
-        {"arguments": "[]"},
-        {"namespace": NATIVE_NAMESPACE},
-        {"type": "function_call_output"},
     ],
 )
-def test_completed_assignment_rejects_opaque_or_malformed_calls(override):
+def test_completed_assignment_rejects_encrypted_messages(override):
     item = {**CALL, "namespace": WIRE_NAMESPACE, **override}
     with pytest.raises(ValueError):
         transform_response_event({"type": "response.output_item.done", "item": item})

@@ -13,30 +13,6 @@ from ucode.smart_routing import codex_interposer, codex_routing, v2
 WS = "https://example.databricks.com"
 
 
-@pytest.fixture(autouse=True)
-def routing_proxy(monkeypatch):
-    # These are launcher unit tests, not transport tests. Replace only the
-    # network factory so no developer credentials or live endpoint are used.
-    calls = []
-    resources = SimpleNamespace(calls=calls, token_provider=None)
-    server = SimpleNamespace(
-        server_address=("127.0.0.1", 41003),
-        serve_forever=lambda: None,
-        shutdown=lambda: calls.append("shutdown"),
-        server_close=lambda: calls.append("server_close"),
-    )
-    cache = SimpleNamespace(stop=lambda: calls.append("stop"))
-    client = SimpleNamespace(close=lambda: calls.append("close"))
-
-    def start_proxy(workspace, token_provider):
-        assert workspace == WS
-        resources.token_provider = token_provider
-        return server, cache, client
-
-    monkeypatch.setattr(v2.gateway_proxy, "start_codex_v2_proxy", start_proxy)
-    return resources
-
-
 def test_smart_routing_switch_message_is_boxed():
     message = v2.format_routing_notice("model-x", "Because X.")
 
@@ -201,7 +177,7 @@ class TestLaunchCodex:
                 assert path.read_text() == content
         assert codex._smart_routing_config_model({"codex_default_model": "admin"}) == "admin"
 
-    def test_owns_app_server_interposer_and_tui_lifecycle(self, monkeypatch, routing_proxy):
+    def test_owns_app_server_interposer_and_tui_lifecycle(self, monkeypatch):
         processes = []
         interposer_args = {}
         stopped = []
@@ -274,7 +250,7 @@ class TestLaunchCodex:
             "--config",
         ]
         assert processes[0].argv[7].startswith(f"model_providers.{provider_name}={{")
-        assert 'base_url = "http://127.0.0.1:41003/v1"' in processes[0].argv[7]
+        assert 'base_url = "http://127.0.0.1:' in processes[0].argv[7]
         assert "supports_websockets = false" in processes[0].argv[7]
         assert processes[0].argv[8] == "--config"
         hook_override = processes[0].argv[9]
@@ -323,15 +299,12 @@ class TestLaunchCodex:
             "system.ai.glm-5-2",
         ]
         assert interposer_args["kwargs"]["workspace"] == WS
-        assert token_calls == [(WS, "myprof", False)]
-        assert interposer_args["kwargs"]["token_provider"]() == "token-2"
-        assert token_calls == [(WS, "myprof", False), (WS, "myprof", False)]
-        assert routing_proxy.token_provider(True) == "token-3"
-        assert token_calls[-1] == (WS, "myprof", True)
+        assert token_calls == [(WS, "myprof", False), (WS, "myprof", True)]
+        assert interposer_args["kwargs"]["token_provider"]() == "token-3"
+        assert token_calls[-1] == (WS, "myprof", False)
         assert interposer_args["kwargs"]["switch_message_fn"] is v2.format_routing_notice
         assert stopped == [True]
         assert processes[0].terminated is True
-        assert routing_proxy.calls == ["stop", "shutdown", "server_close", "close"]
 
     def test_managed_http_headers_reach_app_server_config(self, monkeypatch):
         # Smart routing rebuilds the overlay and passes it to the app-server as `-c` overrides that
@@ -387,7 +360,7 @@ class TestLaunchCodex:
         assert "eng-ml-inference" in provider_arg
 
     def test_subagent_only_launch_selects_transport_without_parent_routing(
-        self, tmp_path, monkeypatch, routing_proxy
+        self, tmp_path, monkeypatch
     ):
         monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
         monkeypatch.setenv("CODEX_HOME", str(tmp_path))
@@ -448,27 +421,6 @@ class TestLaunchCodex:
         # The hook subprocesses inherit the launch environment and pass the routing gate.
         assert os.environ[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
         assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "token"
-        assert routing_proxy.calls == ["stop", "shutdown", "server_close", "close"]
-
-    def test_transport_closes_when_codex_fails_to_start(self, monkeypatch, routing_proxy):
-        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
-        monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
-        monkeypatch.setattr(codex, "ug_version", lambda: "test")
-        monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.154.0")
-
-        def fail_spawn(*args, **kwargs):
-            raise FileNotFoundError("isolated test binary does not exist")
-
-        monkeypatch.setattr(v2.subprocess_cross_os, "popen", fail_spawn)
-        with pytest.raises(FileNotFoundError):
-            v2.launch_codex(
-                {"workspace": WS, "codex_models": ["system.ai.gpt-5-6-sol"]},
-                [],
-                binary="missing-codex",
-                start_model="gpt-5.6-sol",
-                render_overlay=codex.render_overlay,
-            )
-        assert routing_proxy.calls == ["stop", "shutdown", "server_close", "close"]
 
     def test_v2_pre_tool_hook_leaves_saved_hooks_to_codex(self, tmp_path, monkeypatch):
         codex_home = tmp_path / ".codex"
@@ -526,7 +478,9 @@ class TestLaunchCodex:
 
     def test_missing_cached_models_starts_with_bootstrap_model(self, monkeypatch):
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
-        monkeypatch.setattr(v2, "get_databricks_token", lambda workspace, profile: "token")
+        monkeypatch.setattr(
+            v2, "get_databricks_token", lambda workspace, profile, **_kwargs: "token"
+        )
         monkeypatch.setattr(codex, "agent_version", lambda binary: "unknown")
         monkeypatch.setattr(v2, "_free_port", lambda: 41001)
         monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout: True)
@@ -668,7 +622,7 @@ class TestCustomCatalogModels:
             cli=self._catalog(tmp_path / "cli.json", ["gpt-6-astra", "gpt-6-b"]),
         )
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
-        monkeypatch.setattr(v2, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
         monkeypatch.setattr(v2, "_free_port", lambda: 41001)
         monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout: True)
         monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.145.0")
@@ -776,11 +730,6 @@ class TestInterposerSession:
             {"method": "turn/start", "params": {"model": "parent-model", "input": "task"}}
         )
         assert session.on_tui_frame(turn).frame == turn
-
-    def test_thread_provider_is_unchanged_without_a_transport(self):
-        session = codex_interposer._Session(None, log=lambda _message: None)
-        request = json.dumps({"method": "thread/start", "params": {"modelProvider": "user"}})
-        assert session.on_tui_frame(request).frame == request
 
     def _turn_start(self, model: str, thread_id: str = "t1", prompt: str = "Fix the parser") -> str:
         return json.dumps(

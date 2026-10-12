@@ -499,7 +499,8 @@ See the named coverage and gaps matrix in
 The native v2 CUJ uses a bundled v2 catalog and a user-owned observer hook to verify
 the exact assignment at the native call, PreToolUse, and router decision. It checks
 managed-provider selection and completion on the selected child model; it does not
-exercise compaction; retained-history passthrough is covered by the proxy component test. Append
+exercise compaction. The proxy component test checks that retained calls, results, and
+the compressed response pass through unchanged; it uses no patched behavior. Append
 `-- -k test_ug_codex_native_v2_plain_assignment_routing` to the version-pinned runner.
 A before/after comparison additionally needs fresh sessions with identical Codex, parent
 model, workspace, catalog, and prompt, capturing the provider spawn, hook, and router

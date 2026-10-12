@@ -9,6 +9,7 @@ Smart Router skill and spawn real children before and after its session-local to
 """
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -22,7 +23,7 @@ from utils.evidence import (
     tool_outputs,
 )
 from utils.managed import use_managed_config_fixture
-from utils.terminal import AgentTerminal, codex_command_approval_pending
+from utils.terminal import AgentTerminal
 
 SMART_ROUTING_BANNER = "Using Unity Gateway Smart Router."
 SMART_ROUTING_SUBAGENT_NOTICE = "Using Unity Gateway Smart Router - Subagent"
@@ -127,6 +128,23 @@ def _run_calculation(
     )
 
 
+def _codex_command_approval_pending(screen: str, expected_command: str) -> bool:
+    prompt = "Would you like to run the following command?"
+    if prompt not in screen or "Press enter to confirm or esc to cancel" not in screen:
+        return False
+    dialog = screen.rsplit(prompt, 1)[1]
+    command = re.search(
+        r"(?ms)^[ \t]*\$ (.*?)\n[ \t]*[›❯>][ \t]*1\. Yes, proceed \(y\)[ \t]*$",
+        dialog,
+    )
+    assert (
+        "Environment: local" in dialog
+        and command is not None
+        and command.group(1).strip() == expected_command
+    ), "Codex requested an unexpected command approval:\n" + dialog
+    return True
+
+
 def _toggle_with_skill(
     tui, session, agent: str, enabled: bool, orchestration_enabled: bool
 ) -> None:
@@ -181,7 +199,7 @@ def _toggle_with_skill(
         if (
             agent == "codex"
             and not approval_sent
-            and codex_command_approval_pending(screen, command)
+            and _codex_command_approval_pending(screen, command)
         ):
             tui.send("\r", f"approve the session-local Smart Router toggle {state} once")
             approval_sent = True

@@ -134,13 +134,12 @@ Managed smart defaults are covered by `test_managed_config.py`, `test_cli.py`,
 without tier rules, applying recommendations when tiers exist, and serializing the current
 API field. These are unit/component checks; live request-count coverage is not included.
 
-`test_codex_smart_routing_v2.py` covers session-provider selection, subagent-only
-launches, identity refresh, and cleanup. `test_codex_v2_transport.py` covers native
-namespace translation, readable assignments, encrypted history, and malformed calls.
-`test_gateway_proxy.py` covers gzip JSON/SSE decoding, auth refresh, and passthrough
-with an HTTP transport fixture, including unchanged compaction requests and responses
-that retain completed calls, results, and an opaque summary.
-These are component checks, not live compaction or Windows coverage.
+The existing `test_codex_smart_routing_v2.py` launcher cases cover session-provider
+selection and both routing modes. `test_codex_v2_transport.py` checks readable
+assignments and encrypted-history replay. `test_gateway_proxy.py` checks gzip
+JSON/SSE decoding and unchanged compaction requests and responses retaining completed
+calls, results, and an opaque summary. These component checks do not cover live
+standalone compaction, injected startup failures, or malformed-stream diagnostics.
 
 Claude picker composition is checked directly through the catalog and renderer functions in
 `test_agent_claude.py`; focused CLI cases cover source selection and launch precedence.
