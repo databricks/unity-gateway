@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import time
 import tomllib
 import uuid
 
@@ -16,32 +15,36 @@ from tests.integration.utils.sql import query_count, resolve_trace_table, resolv
 from tests.integration.utils.terminal import AgentTerminal
 
 from .base import BaseCujTest
-from .helpers.constants import CLAUDE, CODEX
-from .helpers.evidence import SessionEvidence, canonical_model
+from .helpers.constants import (
+    AGENT_HEADER,
+    CLAUDE,
+    CLAUDE_HAIKU_MODEL,
+    CLAUDE_OPUS_MODEL,
+    CLAUDE_SONNET_MODEL,
+    CODEX,
+    CODEX_LUNA_MODEL,
+    CODEX_SOL_MODEL,
+    INFERENCE_PATHS,
+    RUN_HEADER,
+)
+from .helpers.evidence import SessionEvidence
+from .helpers.poll import poll
 from .helpers.tui_request_recorder import TuiRequestRecorder
 
-CLAUDE_MODELS = [
-    "system.ai.claude-opus-4-8",
-    "system.ai.claude-sonnet-4-6",
-    "system.ai.claude-haiku-4-5",
-]
+CUJ_NAME = "CUJ 1 · Explicit models, tracing, headers"
+
+CLAUDE_MODELS = [CLAUDE_OPUS_MODEL, CLAUDE_SONNET_MODEL, CLAUDE_HAIKU_MODEL]
 CLAUDE_DEFAULTS = {
-    "default_model": "system.ai.claude-sonnet-4-6",
-    "default_opus_model": "system.ai.claude-opus-4-8",
-    "default_sonnet_model": "system.ai.claude-sonnet-4-6",
-    "default_haiku_model": "system.ai.claude-haiku-4-5",
+    "default_model": CLAUDE_SONNET_MODEL,
+    "default_opus_model": CLAUDE_OPUS_MODEL,
+    "default_sonnet_model": CLAUDE_SONNET_MODEL,
+    "default_haiku_model": CLAUDE_HAIKU_MODEL,
 }
-CODEX_MODELS = ["system.ai.gpt-5-6-sol", "system.ai.gpt-5-6-luna"]
-CODEX_DEFAULT = CODEX_MODELS[0]
-CODEX_LUNA = CODEX_MODELS[1]
-EXPECTED_HEADER_NAMES = {"x-ug-e2e-run", "x-ug-e2e-agent"}
-CLAUDE_REQUEST_PATH = "/ai-gateway/anthropic/v1/messages"
-CODEX_REQUEST_PATH = "/ai-gateway/codex/v1/responses"
+CODEX_MODELS = [CODEX_SOL_MODEL, CODEX_LUNA_MODEL]
+CODEX_DEFAULT = CODEX_SOL_MODEL
+EXPECTED_HEADER_NAMES = {RUN_HEADER, AGENT_HEADER}
 TRACE_WAIT_SECONDS = 360
 TRACE_POLL_SECONDS = 10
-NATIVE_MODEL_ALIASES = {
-    "system.ai.anthropic.claude-haiku-4-5-20251001-v1:0": CLAUDE_MODELS[2],
-}
 
 
 def _claude_models_visible(text: str) -> bool:
@@ -82,9 +85,9 @@ def _assert_inference_requests(
     served_models = []
     marked_requests = 0
     for request in requests:
-        assert request.headers["x-ug-e2e-run"] == run_id, request.headers
+        assert request.headers[RUN_HEADER] == run_id, request.headers
         # AIGTWY-4876: Requests retain the configured agent header.
-        assert request.headers["x-ug-e2e-agent"] == agent, request.headers
+        assert request.headers[AGENT_HEADER] == agent, request.headers
         payload = request.payload
         assert isinstance(payload, dict), type(payload)
         assert isinstance(payload.get("model"), str), sorted(payload)
@@ -97,16 +100,6 @@ def _assert_inference_requests(
     assert (
         sum(re.sub(r"\[(?:1m|200k)\]$", "", model) == expected for model in served_models) >= 2
     ), served_models
-
-
-def _assert_native_model(evidence: SessionEvidence, task: FileTask, expected: str) -> None:
-    turn = evidence.completed(task)
-    assert turn is not None, f"No completed native turn matched {task.prompt!r}"
-    expected_model = canonical_model(expected)
-    actual_models = {
-        NATIVE_MODEL_ALIASES.get(model, model) for model in map(canonical_model, turn.models)
-    }
-    assert actual_models == {expected_model}, (turn, expected_model)
 
 
 def _managed_config(session) -> dict:
@@ -170,15 +163,15 @@ def _assert_published_config(raw: dict, entries: dict[str, dict]) -> dict[str, s
     assert claude["default_models"] == CLAUDE_DEFAULTS, claude
     assert claude["tracing"] == {"enabled": True}, claude
     claude_headers = _normalized_headers(claude["http_headers"])
-    assert claude_headers["x-ug-e2e-agent"] == CLAUDE, claude_headers
+    assert claude_headers[AGENT_HEADER] == CLAUDE, claude_headers
 
     assert codex["smart_routing"] == {"enabled": False}, codex
     assert codex["models"] == {"model_services": CODEX_MODELS}, codex
     assert codex["default_models"] == {"default_model": CODEX_DEFAULT}, codex
     assert codex["tracing"] == {"enabled": True}, codex
     codex_headers = _normalized_headers(codex["http_headers"])
-    assert codex_headers["x-ug-e2e-agent"] == CODEX, codex_headers
-    assert codex_headers["x-ug-e2e-run"] == claude_headers["x-ug-e2e-run"], (
+    assert codex_headers[AGENT_HEADER] == CODEX, codex_headers
+    assert codex_headers[RUN_HEADER] == claude_headers[RUN_HEADER], (
         claude_headers,
         codex_headers,
     )
@@ -222,8 +215,8 @@ def _assert_generated_configs(session, claude_headers: dict[str, str], workspace
     codex_provider = codex_profile["model_providers"]["Databricks"]
     assert codex_provider["base_url"] == f"{workspace}/ai-gateway/codex/v1", codex_profile
     assert _managed_header_subset(codex_provider["http_headers"]) == {
-        "x-ug-e2e-run": claude_headers["x-ug-e2e-run"],
-        "x-ug-e2e-agent": CODEX,
+        RUN_HEADER: claude_headers[RUN_HEADER],
+        AGENT_HEADER: CODEX,
     }, codex_profile
     codex_catalog_path = session.home / ".ucode" / "codex-model-catalog.json"
     assert codex_profile["model_catalog_json"] == str(codex_catalog_path), codex_profile
@@ -350,39 +343,38 @@ def _wait_for_trace_pairs(
     pairs: list[tuple[str, str, str]],
     session,
 ) -> None:
-    deadline = time.monotonic() + TRACE_WAIT_SECONDS
-    observed = 0
-    observed_client = 0
-    while True:
-        observed = _trace_pair_count(workspace, bearer, warehouse_id, table, pairs)
-        observed_client = _trace_client_pair_count(workspace, bearer, warehouse_id, table, pairs)
-        if observed >= len(pairs) and observed_client >= len(pairs):
-            session.record(
-                "trace-query.json",
-                {
-                    "table": table,
-                    "expected_pairs": [
-                        {"marker": marker, "model": model, "marker_source": source}
-                        for marker, model, source in pairs
-                    ],
-                    "observed_pairs": observed,
-                    "observed_native_client_pairs": observed_client,
-                    "native_client_model_scope": "expected model per marker; auxiliary models allowed",
-                },
-            )
-            return
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            pytest.fail(
-                "Managed sentinel trace evidence timed out: "
-                f"observed {observed}/{len(pairs)} internal and "
-                f"{observed_client}/{len(pairs)} native client marker/model pairs in {table}. "
-                "The generated headers below are local writer evidence; the public trace table "
-                "does not expose arbitrary HTTP request headers, so this failure does not claim "
-                "that X-UG-E2E-* headers reached the gateway. Native client spans may also "
-                "contain auxiliary model calls for the same task."
-            )
-        time.sleep(min(TRACE_POLL_SECONDS, remaining))
+    observed, observed_client = poll(
+        lambda: (
+            _trace_pair_count(workspace, bearer, warehouse_id, table, pairs),
+            _trace_client_pair_count(workspace, bearer, warehouse_id, table, pairs),
+        ),
+        timeout=TRACE_WAIT_SECONDS,
+        interval=TRACE_POLL_SECONDS,
+        done=lambda counts: all(count >= len(pairs) for count in counts),
+    )
+    if observed < len(pairs) or observed_client < len(pairs):
+        pytest.fail(
+            "Managed sentinel trace evidence timed out: "
+            f"observed {observed}/{len(pairs)} internal and "
+            f"{observed_client}/{len(pairs)} native client marker/model pairs in {table}. "
+            "The generated headers below are local writer evidence; the public trace table "
+            "does not expose arbitrary HTTP request headers, so this failure does not claim "
+            "that X-UG-E2E-* headers reached the gateway. Native client spans may also "
+            "contain auxiliary model calls for the same task."
+        )
+    session.record(
+        "trace-query.json",
+        {
+            "table": table,
+            "expected_pairs": [
+                {"marker": marker, "model": model, "marker_source": source}
+                for marker, model, source in pairs
+            ],
+            "observed_pairs": observed,
+            "observed_native_client_pairs": observed_client,
+            "native_client_model_scope": "expected model per marker; auxiliary models allowed",
+        },
+    )
 
 
 MANAGED_WORKSPACE_URL = "https://dbc-135c115c-c255.cloud.databricks.com"
@@ -450,13 +442,13 @@ class TestCujManagedClaude(BaseCujTest):
         claude_headers = _assert_published_config(raw, entries)
         assert claude["models"] == {"model_services": CLAUDE_MODELS}, claude
         assert claude["default_models"] == CLAUDE_DEFAULTS, claude
-        assert claude_headers["x-ug-e2e-agent"] == CLAUDE, claude_headers
+        assert claude_headers[AGENT_HEADER] == CLAUDE, claude_headers
 
         claude_settings_path = session.home / ".claude" / "ucode-settings.json"
         settings = json.loads(claude_settings_path.read_text())
         configured_base_url = f"{workspace.url}/ai-gateway/anthropic"
         assert settings["env"]["ANTHROPIC_BASE_URL"] == configured_base_url, settings
-        run_id = claude_headers["x-ug-e2e-run"]
+        run_id = claude_headers[RUN_HEADER]
 
         root_task = FileTask(session)
         root_marker = f"ug-managed-claude-{uuid.uuid4().hex}-root"
@@ -473,11 +465,11 @@ class TestCujManagedClaude(BaseCujTest):
             assert _claude_picker_visible(picker_screen), picker_screen
             tui.exit_normally()
         root_task.assert_completed(session, CLAUDE)
-        _assert_native_model(evidence, root_task, CLAUDE_DEFAULTS["default_model"])
+        evidence.assert_models(root_task, CLAUDE_DEFAULTS["default_model"])
         _assert_inference_requests(
             recorder,
             root_checkpoint,
-            CLAUDE_REQUEST_PATH,
+            INFERENCE_PATHS[CLAUDE],
             root_marker,
             run_id,
             CLAUDE,
@@ -502,11 +494,11 @@ class TestCujManagedClaude(BaseCujTest):
             tui.wait_for_task(claude_opus_task)
             tui.exit_normally()
         claude_opus_task.assert_completed(session, CLAUDE)
-        _assert_native_model(evidence, claude_opus_task, CLAUDE_DEFAULTS["default_opus_model"])
+        evidence.assert_models(claude_opus_task, CLAUDE_DEFAULTS["default_opus_model"])
         _assert_inference_requests(
             recorder,
             opus_checkpoint,
-            CLAUDE_REQUEST_PATH,
+            INFERENCE_PATHS[CLAUDE],
             claude_opus_marker,
             run_id,
             CLAUDE,
@@ -531,11 +523,11 @@ class TestCujManagedClaude(BaseCujTest):
             tui.wait_for_task(claude_sonnet_task)
             tui.exit_normally()
         claude_sonnet_task.assert_completed(session, CLAUDE)
-        _assert_native_model(evidence, claude_sonnet_task, CLAUDE_DEFAULTS["default_sonnet_model"])
+        evidence.assert_models(claude_sonnet_task, CLAUDE_DEFAULTS["default_sonnet_model"])
         _assert_inference_requests(
             recorder,
             sonnet_checkpoint,
-            CLAUDE_REQUEST_PATH,
+            INFERENCE_PATHS[CLAUDE],
             claude_sonnet_marker,
             run_id,
             CLAUDE,
@@ -560,11 +552,11 @@ class TestCujManagedClaude(BaseCujTest):
             tui.wait_for_task(claude_haiku_task)
             tui.exit_normally()
         claude_haiku_task.assert_completed(session, CLAUDE)
-        _assert_native_model(evidence, claude_haiku_task, CLAUDE_DEFAULTS["default_haiku_model"])
+        evidence.assert_models(claude_haiku_task, CLAUDE_DEFAULTS["default_haiku_model"])
         _assert_inference_requests(
             recorder,
             haiku_checkpoint,
-            CLAUDE_REQUEST_PATH,
+            INFERENCE_PATHS[CLAUDE],
             claude_haiku_marker,
             run_id,
             CLAUDE,
@@ -597,7 +589,7 @@ class TestCujManagedCodex(BaseCujTest):
         claude_headers = _assert_published_config(raw, entries)
         assert codex["models"] == {"model_services": CODEX_MODELS}, codex
         assert codex["default_models"] == {"default_model": CODEX_DEFAULT}, codex
-        assert _normalized_headers(codex["http_headers"])["x-ug-e2e-agent"] == CODEX, codex
+        assert _normalized_headers(codex["http_headers"])[AGENT_HEADER] == CODEX, codex
         codex_models = session.codex_model_ids(
             ["app-server", "--listen", "stdio://"], name="managed-codex-models"
         )
@@ -607,7 +599,7 @@ class TestCujManagedCodex(BaseCujTest):
         assert profile["model_providers"]["Databricks"]["base_url"] == (
             f"{recorder.url}/ai-gateway/codex/v1"
         ), profile
-        run_id = claude_headers["x-ug-e2e-run"]
+        run_id = claude_headers[RUN_HEADER]
         session.env.pop("OTEL_RESOURCE_ATTRIBUTES", None)
 
         codex_default_task = FileTask(session)
@@ -633,11 +625,11 @@ class TestCujManagedCodex(BaseCujTest):
             tui.wait_for_task(codex_default_task)
             tui.exit_normally()
         codex_default_task.assert_completed(session, CODEX)
-        _assert_native_model(evidence, codex_default_task, CODEX_DEFAULT)
+        evidence.assert_models(codex_default_task, CODEX_DEFAULT)
         _assert_inference_requests(
             recorder,
             default_checkpoint,
-            CODEX_REQUEST_PATH,
+            INFERENCE_PATHS[CODEX],
             codex_default_marker,
             run_id,
             CODEX,
@@ -658,7 +650,7 @@ class TestCujManagedCodex(BaseCujTest):
                 CODEX,
                 "--",
                 "--model",
-                CODEX_LUNA,
+                CODEX_LUNA_MODEL,
                 "--config",
                 f'otel.span_attributes.ug_integration_marker="{codex_luna_marker}"',
             ],
@@ -669,15 +661,15 @@ class TestCujManagedCodex(BaseCujTest):
             tui.wait_for_task(codex_luna_task)
             tui.exit_normally()
         codex_luna_task.assert_completed(session, CODEX)
-        _assert_native_model(evidence, codex_luna_task, CODEX_LUNA)
+        evidence.assert_models(codex_luna_task, CODEX_LUNA_MODEL)
         _assert_inference_requests(
             recorder,
             luna_checkpoint,
-            CODEX_REQUEST_PATH,
+            INFERENCE_PATHS[CODEX],
             codex_luna_marker,
             run_id,
             CODEX,
-            CODEX_LUNA,
+            CODEX_LUNA_MODEL,
         )
         final_profile = tomllib.loads((session.home / ".codex" / "ucode.config.toml").read_text())
         assert final_profile["model_providers"]["Databricks"]["base_url"] == (

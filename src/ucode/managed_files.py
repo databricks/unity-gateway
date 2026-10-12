@@ -1,8 +1,8 @@
 """Safely manage root-owned, highest-precedence agent settings files.
 
 Interactive updates preserve unrelated policy, retain a private baseline for ``ucode revert``, and
-verify the privileged atomic replacement. Non-interactive runs only check whether existing managed
-values are compatible with ucode's local settings.
+verify the privileged atomic replacement. Existing-file repairs may run without a terminal;
+the shared writer uses sudo's non-prompting mode without consuming the caller's standard input.
 """
 
 from __future__ import annotations
@@ -168,9 +168,14 @@ def managed_file_scope(state: dict, tool: str) -> str:
     return scope if isinstance(scope, str) else "managed"
 
 
-def managed_writes_allowed() -> bool:
-    """Managed writes are interactive setup work; scripts and CI use local settings."""
+def _sudo_may_prompt() -> bool:
+    """A terminal is attached, so sudo can prompt and the persistent worker is usable."""
     return sys.stdin.isatty()
+
+
+def managed_writes_allowed(*, repair_existing: bool = False) -> bool:
+    """Writes need either an interactive terminal or an existing file to repair in place."""
+    return _sudo_may_prompt() or repair_existing
 
 
 @contextmanager
@@ -253,6 +258,8 @@ class ManagedFileSnapshots:
     last_applied_by_ug: dict | None
     # Picker values ug itself last wrote to this file; only these may later be reverted.
     ug_picker: dict | None = None
+    # ``[path, value]`` leaves ug last delivered here from the admin's agent_native_settings.
+    settings_passthrough: list | None = None
 
 
 def managed_file_snapshots(tool: str, parser: ManagedParser) -> ManagedFileSnapshots:
@@ -279,10 +286,12 @@ def managed_file_snapshots(tool: str, parser: ManagedParser) -> ManagedFileSnaps
         if not isinstance(entry, dict):
             return ManagedFileSnapshots(None, None)
         ug_picker = entry.get("ug_picker")
+        passthrough = entry.get("settings_passthrough")
         return ManagedFileSnapshots(
             _parse(_snapshot_text(entry, "backup_file")),
             _parse(_snapshot_text(entry, "last_applied_file")),
             ug_picker if isinstance(ug_picker, dict) else None,
+            passthrough if isinstance(passthrough, list) else None,
         )
     except RuntimeError:
         return ManagedFileSnapshots(None, None)
@@ -306,6 +315,27 @@ def record_ug_picker(tool: str, picker: dict) -> None:
         entry["ug_picker"] = picker
     else:
         entry.pop("ug_picker", None)
+    _write_manifest(manifest)
+
+
+def record_settings_passthrough(tool: str, leaves: list) -> None:
+    """Record the agent_native_settings leaves ug just confirmed in ``tool``'s managed file.
+
+    File-keyed like :func:`record_ug_picker`: the managed file is machine-wide, so a launch for any
+    workspace must see what ug last delivered there to withdraw what that workspace doesn't set."""
+    if is_dry_run():
+        return
+    try:
+        manifest = _load_manifest()
+    except RuntimeError:
+        return
+    entry = _manifest_files(manifest).get(tool)
+    if not isinstance(entry, dict) or entry.get("settings_passthrough", []) == leaves:
+        return
+    if leaves:
+        entry["settings_passthrough"] = leaves
+    else:
+        entry.pop("settings_passthrough", None)
     _write_manifest(manifest)
 
 
@@ -468,17 +498,17 @@ def reconcile_managed_file(
             f"{display}: OS-managed settings aren't supported on this platform; skipped {path}."
         )
         return "unsupported"
-    if not managed_writes_allowed() and not is_dry_run():
-        raise RuntimeError(
-            f"Refusing to update {display} managed settings at {path} non-interactively. "
-            "Run the command from an interactive terminal."
-        )
     if path.is_symlink():
         raise RuntimeError(
             f"Refusing to update {display} managed settings through symlink {path}. "
             "Replace it with a regular file or contact your administrator."
         )
     current_text = read_managed_file(path)
+    if not managed_writes_allowed(repair_existing=current_text is not None) and not is_dry_run():
+        raise RuntimeError(
+            f"Refusing to update {display} managed settings at {path} non-interactively. "
+            "Run the command from an interactive terminal."
+        )
     if current_text == desired_text:
         return "unchanged"
     if current_text is not None:
@@ -497,7 +527,8 @@ def reconcile_managed_file(
 
     created = current_text is None
     _ensure_backup(tool, path, current_text)
-    _print_managed_write_permission(display)
+    if _sudo_may_prompt():
+        _print_managed_write_permission(display)
     if read_managed_file(path) != current_text:
         raise RuntimeError(
             f"{display} managed settings changed while ucode was preparing the update. "
@@ -842,6 +873,175 @@ def _three_way_revert(current: dict, original: dict, last: dict, paths: list) ->
     return reverted
 
 
+@dataclass
+class SettingsPassthrough:
+    """An admin's harness-native settings, split into the leaves to deliver and those skipped."""
+
+    # (leaf path, value) pairs to write into the managed file; ucode owns these paths for revert.
+    leaves: list[tuple[list[str], object]]
+    # Dotted leaf paths skipped because ucode writes them itself or the file format can't hold them.
+    ignored: list[str]
+
+    @property
+    def paths(self) -> list[list[str]]:
+        return [path for path, _ in self.leaves]
+
+    def items_at(self, path: list[str]) -> list:
+        """The admin's list at ``path``, or an empty list when it doesn't set one there."""
+        return next(
+            (value for leaf, value in self.leaves if leaf == path and isinstance(value, list)), []
+        )
+
+    def record(self) -> list:
+        """The ``[path, value]`` pairs to persist, so the next apply knows what ucode delivered."""
+        return [[path, value] for path, value in self.leaves]
+
+
+def _leaf_paths(value: dict, prefix: list[str]) -> Iterator[tuple[list[str], object]]:
+    for key, child in value.items():
+        if not isinstance(key, str):
+            continue
+        if isinstance(child, dict) and child:
+            yield from _leaf_paths(child, [*prefix, key])
+        else:
+            yield [*prefix, key], child
+
+
+def _overlaps(path: list[str], other: list[str]) -> bool:
+    """True when one path is a prefix of the other, so writing one would clobber the other."""
+    shorter = min(len(path), len(other))
+    return path[:shorter] == other[:shorter]
+
+
+def plan_settings_passthrough(
+    settings: dict | None,
+    *,
+    reserved_paths: list[list[str]],
+) -> SettingsPassthrough:
+    """Split an admin's harness-native ``settings`` into leaves to deliver and leaves to skip.
+
+    The managed config carries these verbatim rather than as ucode fields, so a new harness setting
+    needs no ucode change. A leaf overlapping ``reserved_paths`` is skipped: ucode's own gateway
+    wiring must keep working.
+    """
+    leaves: list[tuple[list[str], object]] = []
+    ignored: list[str] = []
+    for path, value in _leaf_paths(settings or {}, []):
+        if any(_overlaps(path, reserved) for reserved in reserved_paths):
+            ignored.append(".".join(path))
+        else:
+            leaves.append((path, value))
+    return SettingsPassthrough(leaves, ignored)
+
+
+def warn_skipped_settings_passthrough(
+    state: dict,
+    state_key: str,
+    passthrough: SettingsPassthrough,
+    display: str,
+    warn: Callable[[str], None],
+) -> None:
+    """Warn about skipped settings once, recording them in ``state[state_key]`` so a relaunch with
+    the same config stays quiet, while an admin edit that changes the skipped set warns again."""
+    if passthrough.ignored and passthrough.ignored != state.get(state_key):
+        warn(
+            f"Skipped managed {display} settings that ug configures itself or the file can't "
+            f"hold: {', '.join(passthrough.ignored)}."
+        )
+    if passthrough.ignored:
+        state[state_key] = passthrough.ignored
+    else:
+        state.pop(state_key, None)
+
+
+def apply_settings_passthrough(
+    doc: dict,
+    passthrough: SettingsPassthrough,
+    *,
+    previous_leaves: list,
+    snapshots: ManagedFileSnapshots,
+    is_shared_list: Callable[[list[str]], bool] = lambda path: False,
+) -> dict:
+    """Write ``passthrough``'s leaves into ``doc`` and withdraw ones the admin has since dropped.
+
+    Each leaf is written as-is (lists replace), except a list the file shares with other authors
+    (``is_shared_list``, e.g. Claude's ``permissions.deny`` or a hook event): there the admin's items
+    are merged in, and only items ucode itself delivered last time are withdrawn, so IT-authored
+    entries survive.
+
+    ``previous_leaves`` is the ``[path, value]`` list :meth:`SettingsPassthrough.record` saved last
+    time. A previously delivered scalar path the admin has dropped is withdrawn by the same three-way
+    rule ``ucode revert`` uses: only when the live value is still what ucode last wrote, restoring the
+    pre-ucode value if there was one, so a value someone edited by hand stays.
+    """
+    previous = _recorded_leaves(previous_leaves)
+    applied = passthrough.paths
+    shared_paths = [
+        path for path, value in passthrough.leaves if _is_shared(path, value, is_shared_list)
+    ]
+    shared_paths += [
+        path
+        for path, value in previous
+        if path not in shared_paths and _is_shared(path, value, is_shared_list)
+    ]
+    for path, value in passthrough.leaves:
+        if path not in shared_paths:
+            _set_path_value(doc, path, value)
+    for path in shared_paths:
+        _merge_shared_list(
+            doc,
+            path,
+            passthrough.items_at(path),
+            withdrawn=withdrawn_list_items(path, passthrough, previous_leaves),
+        )
+
+    stale = [path for path, _ in previous if path not in applied and path not in shared_paths]
+    if stale and snapshots.last_applied_by_ug is not None:
+        doc = _three_way_revert(
+            doc, snapshots.original_before_ug or {}, snapshots.last_applied_by_ug, stale
+        )
+    return doc
+
+
+def withdrawn_list_items(
+    path: list[str], passthrough: SettingsPassthrough, previous_leaves: list
+) -> list:
+    """Items ucode delivered into the shared list at ``path`` last time that the admin has dropped."""
+    current = passthrough.items_at(path)
+    return [
+        item
+        for previous_path, value in _recorded_leaves(previous_leaves)
+        if previous_path == path and isinstance(value, list)
+        for item in value
+        if item not in current
+    ]
+
+
+def _is_shared(path: list[str], value: object, is_shared_list: Callable[[list[str]], bool]) -> bool:
+    return isinstance(value, list) and is_shared_list(path)
+
+
+def _recorded_leaves(raw: object) -> list[tuple[list[str], object]]:
+    if not isinstance(raw, list):
+        return []
+    leaves: list[tuple[list[str], object]] = []
+    for entry in raw:
+        if isinstance(entry, list) and len(entry) == 2 and (path := _owned_path(entry[0])):
+            leaves.append((path, entry[1]))
+    return leaves
+
+
+def _merge_shared_list(doc: dict, path: list[str], admin_items: list, *, withdrawn: list) -> None:
+    existing = _path_value(doc, path)
+    current = existing if isinstance(existing, list) else []
+    merged = [item for item in current if item not in withdrawn]
+    merged.extend(item for item in admin_items if item not in merged)
+    if merged:
+        _set_path_value(doc, path, merged)
+    elif existing is not _MISSING:
+        _delete_path_value(doc, path)
+
+
 # Read once into memory and passed to `sh -c`: root never executes a file from the (user-writable)
 # install directory, so the script can't be swapped between validation and use.
 _SUDO_REPLACE_SCRIPT = (
@@ -1009,16 +1209,17 @@ def _sudo_remove(path: Path) -> None:
 
 def _sudo_replace(path: Path, desired_text: str) -> None:
     """Atomically replace ``path`` while preserving metadata and file flags."""
-    if not managed_writes_allowed():
-        raise RuntimeError("Refusing to invoke sudo for managed settings non-interactively.")
     _validate_sudo_replace_target(path)
+    if not managed_writes_allowed(repair_existing=path.is_file()):
+        raise RuntimeError("Refusing to create managed settings non-interactively.")
+    non_interactive = not _sudo_may_prompt()
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=path.suffix or ".tmp", delete=False, encoding="utf-8"
     ) as tmp:
         tmp.write(desired_text)
         tmp_path = tmp.name
     try:
-        if _managed_write_session_depth:
+        if _managed_write_session_depth and not non_interactive:
             _session_worker().replace(path, tmp_path)
         else:
             subprocess_cross_os.run(
@@ -1027,6 +1228,7 @@ def _sudo_replace(path: Path, desired_text: str) -> None:
                     tmp_path,
                     str(path),
                 ),
+                stdin=subprocess.DEVNULL if non_interactive else None,
                 capture_output=True,
                 text=True,
                 check=True,
@@ -1105,7 +1307,5 @@ def _sudo_failure_message(path: Path, display: str, exc: subprocess.CalledProces
 
 
 def _sudo_command(*args: str) -> list[str]:
-    """Build a sudo command only for an explicitly interactive managed-file operation."""
-    if not managed_writes_allowed():
-        raise RuntimeError("Refusing to invoke sudo for managed settings non-interactively.")
-    return [_SUDO, *args]
+    """Never prompt for privileged commands when no terminal is available."""
+    return [_SUDO, *([] if _sudo_may_prompt() else ["-n"]), *args]

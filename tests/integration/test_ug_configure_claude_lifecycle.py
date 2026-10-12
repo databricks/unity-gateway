@@ -25,11 +25,11 @@ def test_unmanaged_claude_preserves_preexisting_family_defaults(live_session, un
     test does not claim model inference.
     """
     session = live_session
-    session.run("install", "-d", "-m", "0755", "/etc/claude-code", binary="sudo")
+    session.run("install", "-d", "-m", "0755", "/etc/claude-code", binary=session.which("sudo"))
     session.run(
         "tee",
         MANAGED_SETTINGS_PATH,
-        binary="sudo",
+        binary=session.which("sudo"),
         input_text=json.dumps({"env": PREEXISTING_FAMILY_DEFAULTS}),
     )
 
@@ -44,7 +44,9 @@ def test_unmanaged_claude_preserves_preexisting_family_defaults(live_session, un
             "--disable-databricks-ai-tools",
             timeout=240,
         )
-        settings = json.loads(session.run(MANAGED_SETTINGS_PATH, binary="cat", timeout=30).stdout)
+        settings = json.loads(
+            session.run(MANAGED_SETTINGS_PATH, binary=session.which("cat"), timeout=30).stdout
+        )
         assert {
             key: settings.get("env", {}).get(key) for key in PREEXISTING_FAMILY_DEFAULTS
         } == PREEXISTING_FAMILY_DEFAULTS
@@ -59,7 +61,7 @@ def test_unmanaged_claude_preserves_preexisting_family_defaults(live_session, un
                 ) as terminal:
                     terminal.finish()
         finally:
-            session.run("rm", "-f", MANAGED_SETTINGS_PATH, binary="sudo")
+            session.run("rm", "-f", MANAGED_SETTINGS_PATH, binary=session.which("sudo"))
 
 
 def test_ug_configure_claude_repeat_and_revert(live_session, workspace):

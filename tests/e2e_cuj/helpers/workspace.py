@@ -26,6 +26,16 @@ class Workspace:
     def policy(cls, config):
         return {key: value for key, value in config.items() if key not in cls.OUTPUT_FIELDS}
 
+    @staticmethod
+    def agent_configs(config):
+        """Each enabled agent's settings, keyed by its CodingAgent value."""
+        entries = config["enabled_agents"]
+        configs = {entry["agent"]: entry["config"] for entry in entries}
+        assert len(configs) == len(entries), (
+            f"Duplicate enabled agents: {[entry['agent'] for entry in entries]}"
+        )
+        return configs
+
     def config(self):
         result = self.client.api_client.do("GET", "/api/ai-gateway/v2/coding-agent-configs")
         configs = result.get("coding_agent_configs", [])

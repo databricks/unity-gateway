@@ -441,8 +441,59 @@ class TestSudoReplace:
         assert str(path) not in command[3]
         assert str(parent) not in command[3]
         assert "$(not-a-command)\n" not in command[3]
-        assert kwargs == {"capture_output": True, "text": True, "check": True}
+        assert kwargs == {"capture_output": True, "text": True, "check": True, "stdin": None}
         assert source_path is not None and not source_path.exists()
+
+    @pytest.mark.parametrize("denied", [False, True])
+    def test_noninteractive_repair_uses_sudo_n_without_session_or_stdin(
+        self, tmp_path, monkeypatch, denied
+    ):
+        calls: list = []
+        source_paths: list[Path] = []
+        path = tmp_path / "managed-settings.json"
+        path.write_text('{"apiKeyHelper": "isaac"}')
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: False)
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
+        monkeypatch.setitem(
+            managed_files._SUDO_REPLACE_TARGETS, managed_files.OS.LINUX, frozenset({path})
+        )
+
+        def run(command, **kwargs):
+            source = Path(command[-2])
+            source_paths.append(source)
+            assert source.read_text() == '{"apiKeyHelper": "ug auth token"}'
+            calls.append((command, kwargs))
+            if denied:
+                raise subprocess.CalledProcessError(
+                    1, command, stderr="sudo: a password is required"
+                )
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(managed_files.subprocess_cross_os, "run", run)
+        monkeypatch.setattr(
+            managed_files.subprocess_cross_os,
+            "popen",
+            lambda *args, **kwargs: pytest.fail(
+                "headless repair must not start an interactive worker"
+            ),
+        )
+
+        with managed_files.managed_write_session():
+            if denied:
+                with pytest.raises(subprocess.CalledProcessError):
+                    _REAL_SUDO_REPLACE(path, '{"apiKeyHelper": "ug auth token"}')
+            else:
+                _REAL_SUDO_REPLACE(path, '{"apiKeyHelper": "ug auth token"}')
+
+        assert len(calls) == 1
+        command, kwargs = calls[0]
+        assert command[:4] == ["/usr/bin/sudo", "-n", "/bin/sh", "-c"]
+        assert command[4] == managed_files._SUDO_REPLACE_SCRIPT
+        assert command[5:8] == ["ucode-managed-replace", "once", "linux"]
+        assert command[-1] == str(path)
+        assert kwargs["stdin"] == subprocess.DEVNULL
+        assert kwargs["check"] is True
+        assert all(not source.exists() for source in source_paths)
 
     def test_rejects_target_outside_fixed_allowlist_before_sudo(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
@@ -491,7 +542,9 @@ class TestSudoReplace:
         )[0]
         shell_entries = set(re.findall(r'"(linux|macos):([^"]+)"', body))
         python_entries = {
-            (os_enum.value, str(path))
+            # These are fixed Unix paths; compare via as_posix so Windows'
+            # backslash separators in str(Path) don't break the match.
+            (os_enum.value, path.as_posix())
             for os_enum, paths in managed_files._SUDO_REPLACE_TARGETS.items()
             for path in paths
         }
@@ -626,6 +679,127 @@ chown() {
 
 
 class TestManagedFileLifecycle:
+    def test_noninteractive_creation_is_blocked(self, tmp_path, backup_dir, monkeypatch):
+        path = tmp_path / "managed.json"
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: False)
+        monkeypatch.setattr(
+            managed_files,
+            "_sudo_replace",
+            lambda *args: pytest.fail("headless creation must not write"),
+        )
+
+        with pytest.raises(RuntimeError, match="Refusing to update .* non-interactively"):
+            managed_files.reconcile_managed_file(
+                path,
+                '{"apiKeyHelper": "ug"}',
+                tool="claude",
+                display="Claude Code",
+                owned_paths=[["apiKeyHelper"]],
+                parser=json.loads,
+            )
+
+        assert not path.exists()
+        assert not backup_dir.exists()
+
+    def test_noninteractive_revert_is_blocked(self, tmp_path, backup_dir, monkeypatch):
+        path = tmp_path / "managed.json"
+        path.write_text('{"enterprise": true}\n', encoding="utf-8")
+        monkeypatch.setattr(
+            managed_files,
+            "_sudo_replace",
+            lambda target, text: target.write_text(text, encoding="utf-8"),
+        )
+        managed_files.reconcile_managed_file(
+            path,
+            '{"enterprise": true, "ucode": true}\n',
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[["ucode"]],
+            parser=json.loads,
+        )
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: False)
+
+        with pytest.raises(RuntimeError, match="Cannot restore .* non-interactively"):
+            managed_files.revert_managed_file(
+                "claude", display="Claude Code", parser=json.loads, dumper=json.dumps
+            )
+
+        assert path.read_text(encoding="utf-8") == '{"enterprise": true, "ucode": true}\n'
+
+    def test_noninteractive_repair_preserves_policy_and_backup(
+        self, tmp_path, backup_dir, monkeypatch
+    ):
+        path = tmp_path / "managed.json"
+        original = '{"apiKeyHelper": "isaac", "permissions": {"deny": ["Read(secret.txt)"]}}\n'
+        desired = '{"apiKeyHelper": "ug", "permissions": {"deny": ["Read(secret.txt)"]}}\n'
+        path.write_text(original)
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: False)
+
+        def replace(target, text):
+            target.write_text(text)
+
+        monkeypatch.setattr(managed_files, "_sudo_replace", replace)
+        monkeypatch.setattr(
+            managed_files,
+            "_print_managed_write_permission",
+            lambda *args: pytest.fail("headless repair must not ask for a password"),
+        )
+
+        assert (
+            managed_files.reconcile_managed_file(
+                path,
+                desired,
+                tool="claude",
+                display="Claude Code",
+                owned_paths=[["apiKeyHelper"]],
+                parser=json.loads,
+            )
+            == "written"
+        )
+        assert path.read_text() == desired
+        assert (backup_dir / "manifest.json").exists()
+        snapshots = managed_files.managed_file_snapshots("claude", json.loads)
+        assert snapshots.original_before_ug == json.loads(original)
+        assert snapshots.last_applied_by_ug == json.loads(desired)
+
+    def test_noninteractive_permission_failure_preserves_file_and_does_not_retry(
+        self, tmp_path, backup_dir, monkeypatch
+    ):
+        path = tmp_path / "managed.json"
+        original = '{"apiKeyHelper": "isaac"}\n'
+        path.write_text(original)
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: False)
+        calls: list = []
+
+        def deny_write(target, text):
+            calls.append(target)
+            raise subprocess.CalledProcessError(
+                1, ["sudo", "-n"], stderr="sudo: a password is required"
+            )
+
+        monkeypatch.setattr(managed_files, "_sudo_replace", deny_write)
+        monkeypatch.setattr(
+            managed_files,
+            "_print_managed_write_permission",
+            lambda *args: pytest.fail("headless repair must not ask for a password"),
+        )
+
+        with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="password is required"):
+            managed_files.reconcile_managed_file(
+                path,
+                '{"apiKeyHelper": "ug"}\n',
+                tool="claude",
+                display="Claude Code",
+                owned_paths=[["apiKeyHelper"]],
+                parser=json.loads,
+            )
+
+        assert path.read_text() == original
+        assert calls == [path]
+        assert managed_files.managed_file_snapshots(
+            "claude", json.loads
+        ).original_before_ug == json.loads(original)
+
     def test_dry_run_does_not_write_or_backup(self, tmp_path, backup_dir, monkeypatch):
         path = tmp_path / "managed.json"
         config_io.set_dry_run(True)
@@ -1128,14 +1302,20 @@ def test_revert_semantic_noop_preserves_bytes_without_sudo(tmp_path, backup_dir,
     assert path.read_text() == admin_text  # exact bytes preserved
 
 
-def test_managed_writes_disabled_without_tty(monkeypatch):
-    monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: False)
+@pytest.mark.parametrize(
+    ("interactive", "repair_existing", "expected"),
+    [(False, False, False), (False, True, True), (True, False, True)],
+)
+def test_managed_writes_policy(monkeypatch, interactive, repair_existing, expected):
+    monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: interactive)
 
-    assert managed_files.managed_writes_allowed() is False
+    assert managed_files.managed_writes_allowed() is interactive
+    assert managed_files.managed_writes_allowed(repair_existing=repair_existing) is expected
 
 
-def test_sudo_command_refuses_noninteractive_execution(monkeypatch):
-    monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda: False)
+@pytest.mark.parametrize("interactive", [False, True])
+def test_sudo_command_derives_prompt_policy(monkeypatch, interactive):
+    monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: interactive)
 
-    with pytest.raises(RuntimeError, match="Refusing to invoke sudo"):
-        managed_files._sudo_command("cp", "a", "b")
+    expected = ["/usr/bin/sudo", *([] if interactive else ["-n"]), "cp", "a", "b"]
+    assert managed_files._sudo_command("cp", "a", "b") == expected

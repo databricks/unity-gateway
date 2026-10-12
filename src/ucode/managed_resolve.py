@@ -37,6 +37,10 @@ _CLAUDE_FAMILY_SLOTS = {
 # Agents whose writers support the per-agent managed OTLP tracing flag.
 OTEL_TRACING_TOOLS = ("claude", "codex")
 
+# Agents that receive the config's harness-native `agent_native_settings`. Claude only, matching the
+# server: Codex's MCP lockdown lives in requirements.toml, which ug doesn't write yet.
+SETTINGS_PASSTHROUGH_TOOLS = ("claude",)
+
 
 def _as_dict(value: object) -> dict[str, object]:
     """Return ``value`` as a ``dict[str, object]`` when it is a dict, else an empty dict."""
@@ -77,7 +81,8 @@ def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
     """The state keys to layer over local state so ``tool``'s writer sees managed settings.
 
     Each agent reads models from a different shape, so the manifest's list has to be translated.
-    Supported tracing flags are also mapped to the state key each writer consumes.
+    Supported tracing flags and harness-native settings are also mapped to the state key each
+    writer consumes.
     """
     overrides: dict[str, object] = {}
     models = _manifest_models(managed, tool)
@@ -105,6 +110,9 @@ def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
         overrides[f"{tool}_http_headers"] = http_headers
     if tool in OTEL_TRACING_TOOLS and managed_otel_tracing_enabled(managed, tool):
         overrides[f"{tool}_otel_tracing"] = True
+    settings = _as_dict(_agent_entry(managed, tool).get("agent_native_settings"))
+    if tool in SETTINGS_PASSTHROUGH_TOOLS and settings:
+        overrides[f"{tool}_settings_passthrough"] = settings
     return overrides
 
 

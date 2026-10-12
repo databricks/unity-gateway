@@ -8,6 +8,9 @@ from tests.integration.utils.terminal import AgentTerminal
 
 from .base import BaseCujTest
 from .helpers.constants import CLAUDE, CODEX, CodingAgent
+from .helpers.workspace import Workspace
+
+CUJ_NAME = "CUJ 5 · Budget-driven defaults"
 
 
 class _BudgetDefaultsBase(BaseCujTest):
@@ -34,13 +37,10 @@ class TestCujBudgetDefaultsBelowTier(_BudgetDefaultsBase):
         """
         session, workspace, _ = cuj
         config_path = "/api/ai-gateway/v2/coding-agent-configs"
-        payload = workspace.client.api_client.do("GET", path=config_path)
-        config = payload["coding_agent_configs"][0]
+        config = workspace.config()
         assert config["default_agent"] == CodingAgent.CLAUDE_CODE, config
-        claude = next(
-            agent for agent in config["enabled_agents"] if agent["agent"] == CodingAgent.CLAUDE_CODE
-        )
-        claude_defaults = claude["config"]["default_models"]
+        claude = Workspace.agent_configs(config)[CodingAgent.CLAUDE_CODE]
+        claude_defaults = claude["default_models"]
         assert claude_defaults["default_model"] == self.SONNET_MODEL, config
         assert config["smart_defaults"]["budget_id"] == self.BUDGET_ID, config
         assert config["smart_defaults"]["tiers"] == [
@@ -102,15 +102,10 @@ class TestCujBudgetDefaults(_BudgetDefaultsBase):
         """
         session, workspace, _ = cuj
         config_path = "/api/ai-gateway/v2/coding-agent-configs"
-        payload = workspace.client.api_client.do("GET", path=config_path)
-        config = payload["coding_agent_configs"][0]
+        config = workspace.config()
         assert config["default_agent"] == CodingAgent.CLAUDE_CODE, config
-        codex_agent = next(
-            agent for agent in config["enabled_agents"] if agent["agent"] == CodingAgent.CODEX
-        )
-        live_default_model = (
-            codex_agent.get("config", {}).get("default_models", {}).get("default_model")
-        )
+        codex_agent = Workspace.agent_configs(config)[CodingAgent.CODEX]
+        live_default_model = codex_agent.get("default_models", {}).get("default_model")
         assert live_default_model == self.SOL_MODEL, (
             f"Live Codex config model mismatch: expected {self.SOL_MODEL!r}, "
             f"got {live_default_model!r}"

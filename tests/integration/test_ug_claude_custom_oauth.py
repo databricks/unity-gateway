@@ -26,7 +26,7 @@ def test_ug_claude_custom_oauth_cli_boots(live_session, workspace):
     """
     session = live_session
     session.env["ENABLE_CUSTOM_OAUTH_FROM_CLI"] = "1"
-    version = session.run("version", "--output", "json", binary="databricks")
+    version = session.run("version", "--output", "json", binary=session.which("databricks"))
     assert json.loads(version.stdout)["Version"] == "1.17.0"
     command = [
         str(session.binary),
@@ -50,7 +50,7 @@ def test_ug_claude_custom_oauth_cli_boots(live_session, workspace):
     assert profiles[profile]["client_id"] == CLIENT_ID
 
     managed_settings = json.loads(
-        session.run(MANAGED_SETTINGS_PATH, binary="cat", timeout=30).stdout
+        session.run(MANAGED_SETTINGS_PATH, binary=session.which("cat"), timeout=30).stdout
     )
     assert shlex.split(managed_settings["apiKeyHelper"]) == [
         str(session.binary.with_name("ug")),

@@ -7,9 +7,11 @@ import pytest
 from tests.integration.utils import evidence
 from tests.integration.utils.agents import claude, codex
 from tests.integration.utils.evidence import (
+    FileTask,
     SubagentCalculation,
     assert_no_terminal_api_error,
     assistant_answer_contains,
+    tool_outputs,
 )
 
 
@@ -100,6 +102,19 @@ def test_tagged_calculation_requires_the_native_child_answer(tmp_path, agent):
     assert task.marker in task.prompt
     assert f'task name "{task.marker}"' in task.prompt
     assert "1+1" in task.prompt
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+@pytest.mark.parametrize("child", [False, True])
+def test_file_task_child_completion_is_independent_of_parent_answer(tmp_path, agent, child):
+    session = _Session(tmp_path)
+    session.cwd = tmp_path
+    task = FileTask(session)
+    assert task.value not in task.delegate_prompt
+    assert not task.completed(session, agent, child=True)
+    _write_answer(tmp_path, agent, child=child, value=task.value)
+    assert task.completed(session, agent, child=True) == child
+    assert task.completed(session, agent) != child
 
 
 def test_codex_model_identity_uses_only_the_completed_answer_turn():
@@ -216,3 +231,76 @@ def test_completed_task_model_assertion_requires_exact_singleton(tmp_path, agent
     session = _transcript_session(tmp_path, agent, {"parent.jsonl": records})
     with pytest.raises(AssertionError):
         evidence.assert_completed_task_model(session, agent, "value", "expected")
+
+
+@pytest.mark.parametrize(
+    "agent,record",
+    [
+        (
+            "claude",
+            {
+                "type": "user",
+                "message": {"content": [{"type": "tool_result", "content": "confirmed"}]},
+            },
+        ),
+        (
+            "claude",
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "content": [{"type": "text", "text": "confirmed"}],
+                        }
+                    ]
+                },
+            },
+        ),
+        (
+            "codex",
+            {
+                "type": "response_item",
+                "payload": {"type": "function_call_output", "output": "confirmed"},
+            },
+        ),
+        (
+            "codex",
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call_output",
+                    "output": [{"type": "input_text", "text": "confirmed"}],
+                },
+            },
+        ),
+    ],
+)
+def test_tool_outputs_read_native_string_and_block_results(agent, record):
+    assert tool_outputs(agent, [record]) == ["confirmed"]
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_tool_outputs_exclude_user_echoes_and_assistant_claims(agent):
+    records = [
+        {"type": "user", "message": {"role": "user", "content": "confirmed"}},
+        {
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "confirmed"}]},
+        },
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "confirmed"}],
+            },
+        },
+        {
+            "type": "user",
+            "message": {
+                "content": [{"type": "tool_result", "content": "confirmed", "is_error": True}]
+            },
+        },
+    ]
+    assert tool_outputs(agent, records) == []

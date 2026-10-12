@@ -36,6 +36,7 @@ from ucode.config_io import (
     write_toml_file,
 )
 from ucode.constants import (
+    AGENT_CODEX,
     LOOPBACK_HOST,
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
@@ -206,7 +207,7 @@ def _provider_block(
         http_headers[MODEL_PROVIDER_SERVICE_HEADER] = provider
     elif parent_schema:
         http_headers[MODEL_SERVICE_PARENT_SCHEMA_HEADER] = parent_schema
-    if smart_routing_v2.smart_routing_enabled():
+    if smart_routing_v2.smart_routing_enabled(None, default=False, agent=AGENT_CODEX):
         http_headers[SMART_ROUTER_RECIPE_HEADER] = configured_router_name()
     _apply_managed_headers(http_headers, managed_http_headers)
     return {
@@ -485,7 +486,9 @@ def write_tool_config(
         prune_key_paths(base, _PROVIDER_HTTP_HEADERS_KEY_PATHS)
         deep_merge_dict(base, copy.deepcopy(overlay))
         # deep_merge can't drop keys, so clear model preferences from an earlier run.
-        if chosen_model is None and not smart_routing_v2.smart_routing_enabled():
+        if chosen_model is None and not smart_routing_v2.smart_routing_enabled(
+            None, default=False, agent=AGENT_CODEX
+        ):
             for key in ("model", "model_reasoning_effort"):
                 base.pop(key, None)
         if include_catalog:
@@ -606,15 +609,8 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
         ) from exc
     managed_before = copy.deepcopy(existing)
     desired_doc = compose(existing)
-    if not managed_writes_allowed():
-        conflicts = managed_file_conflicts(managed_before, desired_doc, MANAGED_KEYS)
-        if conflicts:
-            raise RuntimeError(
-                "Codex configuration cannot be applied non-interactively because OS-managed "
-                f"settings at {path} override ucode values: {', '.join(conflicts)}. Run `ucode "
-                "configure --agent codex` from an interactive terminal or contact your "
-                "administrator."
-            )
+    conflicts = managed_file_conflicts(managed_before, desired_doc, MANAGED_KEYS)
+    if not managed_writes_allowed() and not conflicts:
         mark_managed_file_verified(state, "codex", path, scope="local-compatible")
         return
     try:
@@ -627,7 +623,6 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
             parser=_parse_managed_config,
         )
     except ManagedFileWriteUnavailable:
-        conflicts = managed_file_conflicts(managed_before, desired_doc, MANAGED_KEYS)
         if conflicts:
             raise
         print_warning_err(
@@ -822,7 +817,7 @@ def default_model(state: dict) -> str | None:
     """Return a managed Codex model, or leave selection to Codex."""
     if isinstance(state.get("codex_default_model"), str):
         return state["codex_default_model"]
-    if smart_routing_v2.smart_routing_enabled():
+    if smart_routing_v2.smart_routing_enabled(None, default=False, agent=AGENT_CODEX):
         return _smart_routing_config_model(state)
     return None
 
@@ -850,7 +845,7 @@ def config_precedence_paths() -> tuple[Path, ...]:
 
 def clear_model_preferences(state: dict) -> bool:
     """Remove ucode profile model preferences so Codex selects its default."""
-    if smart_routing_v2.smart_routing_enabled():
+    if smart_routing_v2.smart_routing_enabled(None, default=False, agent=AGENT_CODEX):
         return False
     if isinstance(state.get("codex_default_model"), str):
         return False

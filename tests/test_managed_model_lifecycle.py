@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from ucode import managed_files
+from ucode import managed_config, managed_files
 from ucode.agents import claude, codex
 from ucode.config_io import read_toml_safe
 from ucode.managed_config import normalize_managed_config
@@ -101,6 +101,10 @@ CODEX_CONFIG_B = _config(_codex_agent(CODEX_B))
 CODEX_CONFIG_MPS = _config(_mps_agent("CODING_AGENT_CODEX", MPS))
 
 
+def _unauthenticated(*_args, **_kwargs):
+    raise RuntimeError("Databricks CLI is not authenticated")
+
+
 class _Harness:
     """Applies a managed config (or None) for one agent, persisting to tmp files across calls."""
 
@@ -159,6 +163,8 @@ class _Harness:
 @pytest.fixture
 def harness(tmp_path, monkeypatch):
     h = _Harness(tmp_path)
+    # No live managed config: fail the token fetch like an unauthenticated Databricks CLI.
+    monkeypatch.setattr(managed_config, "get_databricks_token", _unauthenticated)
 
     # --- Claude: real tmp private file; simulate the sudo-backed OS-managed write on tmp. ---
     monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", h.claude_settings)

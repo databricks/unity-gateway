@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -9,6 +10,7 @@ import shutil
 import tempfile
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -88,6 +90,21 @@ def second_workspace(workspace):
     return value
 
 
+@contextlib.contextmanager
+def case_directory(prefix: str, parent: Path | None):
+    if os.name != "nt":
+        with tempfile.TemporaryDirectory(prefix=prefix, dir=parent) as path:
+            yield path
+        return
+    # mkdtemp's 0o700 becomes an owner-only ACL on Windows, which Codex's sandbox can't read.
+    path = Path(parent or tempfile.gettempdir()) / f"{prefix}{uuid.uuid4().hex[:8]}"
+    path.mkdir()
+    try:
+        yield str(path)
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
+
+
 @pytest.fixture
 def session(request, installed_binary):
     # Codex rejects helper installation beneath /tmp. Keep the disposable home
@@ -96,10 +113,8 @@ def session(request, installed_binary):
     case = re.sub(r"[^a-zA-Z0-9_.-]", "_", request.node.name)
     project_parent = root if os.name == "nt" else None
     with (
-        tempfile.TemporaryDirectory(prefix="case-", dir=root) as temporary,
-        tempfile.TemporaryDirectory(
-            prefix="ug-integration-project-", dir=project_parent
-        ) as project,
+        case_directory("case-", root) as temporary,
+        case_directory("ug-integration-project-", project_parent) as project,
     ):
         # Agents walk parent directories for project settings. Keeping cwd out
         # of the checkout prevents its .claude/AGENTS.md from influencing a run.

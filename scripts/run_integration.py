@@ -7,6 +7,7 @@ or the developer's installed agents. Only the live workspace is shared with e2e.
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 import contextlib
 import datetime as dt
@@ -31,20 +32,6 @@ AGENT_PACKAGES = {
     "codex": "@openai/codex",
     "opencode": "opencode-ai",
 }
-MANAGED_DEFAULTS_TARGETS = (
-    (
-        "UG_MPS_DEFAULTS_BEARER",
-        "https://eng-ml-inference-batch-inference-us-west-2.cloud.databricks.com",
-        "1c359c0f-58bc-42ac-a74f-079ccb173676",
-        "UG_MPS_DEFAULTS_CLIENT_SECRET",
-    ),
-    (
-        "UG_PARENT_SCHEMA_DEFAULTS_BEARER",
-        "https://eng-ml-inference-ap-northeast-2.cloud.databricks.com",
-        "95e267dc-4393-4360-9d45-4b9b13b2d370",
-        "UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET",
-    ),
-)
 WINDOWS_PATHEXT = ".COM;.EXE;.BAT;.CMD"
 UV_INDEX_CREDENTIAL_ENV = (
     "UV_INDEX_DATABRICKS_PYPI_USERNAME",
@@ -52,6 +39,10 @@ UV_INDEX_CREDENTIAL_ENV = (
 )
 NPM_TOKEN_ENV = "UG_INTEGRATION_NPM_TOKEN"
 INSTALLER_CREDENTIAL_ENV = (*UV_INDEX_CREDENTIAL_ENV, NPM_TOKEN_ENV)
+PTY_MODULES = {"pexpect", "pyte"}
+PTY_HELPERS = {"utils.terminal", "utils.mcp"}
+# Claude exports no spans on Windows, where ug writes no machine-wide Claude settings.
+WINDOWS_UNSUPPORTED_MODULES = {"test_ug_claude_tracing.py"}
 HEADLESS_TEST_NODES = {
     "claude": "test_ug_claude_headless.py::test_ug_claude_headless_prompt_argument",
     "codex": "test_ug_codex_headless.py::test_ug_codex_headless_prompt_argument",
@@ -174,7 +165,33 @@ def integration_test_targets(
         return targets
     if platform_name == "nt" and installation_only:
         return [str(suite / "test_installation.py")]
+    if platform_name == "nt":
+        return [
+            str(module)
+            for module in sorted(suite.glob("test_*.py"))
+            if module.name not in WINDOWS_UNSUPPORTED_MODULES and not uses_pty(module)
+        ]
     return [str(suite)]
+
+
+def uses_pty(module: Path) -> bool:
+    """Whether a suite module drives agents through the POSIX-only PTY helpers."""
+    imported_names = []
+    for node in ast.walk(ast.parse(module.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.ImportFrom):
+            imported_names.append(node.module or "")
+            imported_names.extend(
+                f"{node.module}.{alias.name}" if node.module else alias.name
+                for alias in node.names
+                if alias.name != "*"
+            )
+        elif isinstance(node, ast.Import):
+            imported_names.extend(alias.name for alias in node.names)
+    return any(
+        name.split(".")[0] in PTY_MODULES
+        or any(name == helper or name.endswith(f".{helper}") for helper in PTY_HELPERS)
+        for name in imported_names
+    )
 
 
 def process_group_options() -> dict:
@@ -373,11 +390,6 @@ def arguments(
         "pytest_args", nargs=argparse.REMAINDER, help="After --, pass pytest filters."
     )
     args = parser.parse_args(argv)
-    if platform_name != "posix" and not (args.installation_only or args.headless_only):
-        parser.error(
-            "Live agent/TUI integration requires POSIX PTY, managed-settings, and signal "
-            "support. Use --installation-only or --headless-only on Windows."
-        )
     # Only selection/early-stop controls are accepted. Pytest configuration,
     # plugins and report destinations are part of the suite's isolation contract.
     filters = argparse.ArgumentParser(add_help=False)
@@ -520,12 +532,7 @@ def main() -> int:
     bearer = os.environ.get("DATABRICKS_BEARER", "").strip()
     second_bearer = os.environ.get("DATABRICKS_SECOND_BEARER", "").strip()
     oauth_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
-    target_bearers: dict[str, str] = {}
-    client_secrets = (
-        os.environ.get("DATABRICKS_CLIENT_SECRET", ""),
-        os.environ.get("UG_MPS_DEFAULTS_CLIENT_SECRET", ""),
-        os.environ.get("UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET", ""),
-    )
+    client_secrets = (os.environ.get("DATABRICKS_CLIENT_SECRET", ""),)
 
     def redact(value: str) -> str:
         return redact_secrets(
@@ -534,7 +541,6 @@ def main() -> int:
                 bearer,
                 second_bearer,
                 oauth_token,
-                *target_bearers.values(),
                 *client_secrets,
                 *installer_secrets,
             ),
@@ -549,7 +555,8 @@ def main() -> int:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
         ) as proc:
             try:
                 stdout, stderr = proc.communicate(timeout=timeout)
@@ -813,7 +820,8 @@ def main() -> int:
                 ],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
+                encoding="utf-8",
+                errors="replace",
                 stdin=subprocess.DEVNULL,
             ) as auth:
                 auth_stdout, _ = auth.communicate(timeout=30)
@@ -830,14 +838,6 @@ def main() -> int:
             client_secret = os.environ.get("DATABRICKS_CLIENT_SECRET", "").strip()
             if client_id and client_secret:
                 bearer = mint_m2m_token(args.workspace, client_id, client_secret)
-
-        if not args.installation_only:
-            for bearer_env, target_workspace, client_id, secret_env in MANAGED_DEFAULTS_TARGETS:
-                secret = os.environ.get(secret_env, "").strip()
-                if args.workspace.rstrip("/") == target_workspace:
-                    target_bearers[bearer_env] = bearer
-                elif secret:
-                    target_bearers[bearer_env] = mint_m2m_token(target_workspace, client_id, secret)
 
         test_dependencies = ["pytest==9.0.3"]
         if os.name == "posix":
@@ -876,10 +876,6 @@ def main() -> int:
                 "UG_INTEGRATION_CODEX_PARENT_MODEL": args.codex_parent_model,
                 "UCODE_TEST_WORKSPACE": args.workspace or "",
                 "DATABRICKS_BEARER": bearer,
-                "UG_MPS_DEFAULTS_BEARER": target_bearers.get("UG_MPS_DEFAULTS_BEARER", ""),
-                "UG_PARENT_SCHEMA_DEFAULTS_BEARER": target_bearers.get(
-                    "UG_PARENT_SCHEMA_DEFAULTS_BEARER", ""
-                ),
                 "UCODE_TEST_SECOND_WORKSPACE": args.second_workspace or "",
                 "DATABRICKS_SECOND_BEARER": second_bearer,
                 "UG_INTEGRATION_WAREHOUSE_ID": args.warehouse_id or "",
