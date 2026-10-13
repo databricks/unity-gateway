@@ -146,6 +146,11 @@ def render_env_overlay(
         # A Model Provider Service routes by this header; the request still names
         # the service's target model in `GEMINI_MODEL` (pinned by the launch path).
         custom_headers += f",Databricks-Model-Provider-Service:{provider}"
+    # TODO: attach AI_GATEWAY_REQUEST_TAGS here like the other agents do. Not yet
+    # supported for Gemini: GEMINI_CLI_CUSTOM_HEADERS is the only header hook the
+    # supported CLI (< 0.45) exposes, and its parser splits on `,(?=\s*[^,:]+:)`
+    # with no escaping, so a JSON tag value's inner `,"key":` pairs are shredded
+    # into bogus headers.
     return {
         "GEMINI_MODEL": model,
         "GOOGLE_GEMINI_BASE_URL": build_tool_base_url("gemini", workspace),
