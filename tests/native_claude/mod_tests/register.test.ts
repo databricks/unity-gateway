@@ -19,7 +19,7 @@ test('status output renders ON and OFF badges on both surfaces', async ($) => {
           text: `Smart Router is ${enabled ? 'on' : 'off'} for this session.`,
         },
       });
-      expect(await ui.find({type: 'Text', text: 'Unity Gateway Smart Router'})).toBeDefined();
+      expect(await ui.find({type: 'Text', text: '⚡ Unity Gateway Smart Router'})).toBeDefined();
       const badge = await ui.find({type: 'Text', text: enabled ? ' ON ' : ' OFF '});
       expect(badge.props).toMatchObject({
         bold: true, color: 'black', backgroundColor: enabled ? 'green' : 'gray',

@@ -128,7 +128,7 @@ export function register(on: On, options: PluginOptions): void {
       flexDirection: 'row',
       columnGap: 1,
       children: [
-        Text({bold: true, children: ['Unity Gateway Smart Router']}),
+        Text({bold: true, children: ['⚡ Unity Gateway Smart Router']}),
         Text({
           bold: true,
           color: 'black',
