@@ -1,6 +1,8 @@
 """Desktop credential command output, argument isolation, and failure behavior."""
 
 import pytest
+from click import unstyle
+from typer import rich_utils
 from typer.testing import CliRunner
 
 from ucode.cli import app
@@ -37,16 +39,21 @@ def test_desktop_auth_emits_only_token_and_keeps_diagnostics_on_stderr(monkeypat
 
 
 @pytest.mark.parametrize("missing", ["host", "profile"])
-def test_desktop_auth_requires_explicit_workspace_and_profile(runner, missing):
+@pytest.mark.parametrize("color", [False, True], ids=["plain", "ansi"])
+def test_desktop_auth_requires_explicit_workspace_and_profile(monkeypatch, runner, missing, color):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setattr(rich_utils, "FORCE_TERMINAL", color)  # CI forces colors on captured stderr.
     args = ["claude-desktop-auth"]
     if missing != "host":
         args += ["--host", "https://workspace.example"]
     if missing != "profile":
         args += ["--profile", "selected-profile"]
-    result = runner.invoke(app, args)
-    assert result.exit_code != 0
+    result = runner.invoke(app, args, color=color)
+    assert result.exit_code == 2
     assert result.stdout == ""
-    assert f"--{missing}" in result.stderr
+    assert ("\x1b[" in result.stderr) == color
+    assert f"Missing option '--{missing}'." in unstyle(result.stderr)
 
 
 @pytest.mark.parametrize("error", [RuntimeError("Login required"), ValueError("Invalid host")])
