@@ -1508,6 +1508,12 @@ def write_tool_config(
                 elif not ug_picker:
                     _warn_unrecorded_allow_list(merged, managed_settings_snapshots)
         sync_smart_routing_hooks(merged, state, enabled=False)
+        if os.environ.get("ISAAC_CLI_METRICS_CONTEXT"):
+            from ucode.startup_telemetry import observe_claude_metrics
+
+            metrics_env = merged.get("env")
+            if isinstance(metrics_env, dict):
+                observe_claude_metrics(metrics_env)
         return merged
 
     managed_snapshots = managed_file_snapshots("claude", _parse_managed_settings)

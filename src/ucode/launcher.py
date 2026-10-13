@@ -22,6 +22,10 @@ def exec_or_spawn(argv: list[str]) -> None:
     for it, and propagate its exit code — the same pattern the token-refreshing
     agents (gemini/opencode/copilot/pi) already use.
     """
+    if os.environ.get("ISAAC_CLI_METRICS_CONTEXT"):
+        from ucode.startup_telemetry import record_handoff
+
+        record_handoff()
     if os.name != "nt":
         os.execvp(argv[0], argv)
         return  # unreachable on POSIX; keeps type-checkers happy
