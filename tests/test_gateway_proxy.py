@@ -503,24 +503,6 @@ class TestRetryOn401:
 
 
 class TestStartProxyPortFallback:
-    def test_otel_uses_fixed_port_and_rejects_collisions(self):
-        with socket.socket() as probe:
-            probe.bind(("127.0.0.1", 0))
-            port = probe.getsockname()[1]
-        server, cache, client = gateway_proxy.start_otel_proxy(
-            "https://workspace.example", lambda _: "token", port=port
-        )
-        try:
-            assert server.server_address == ("127.0.0.1", port)
-            with pytest.raises(OSError):
-                gateway_proxy.start_otel_proxy(
-                    "https://workspace.example", lambda _: "token", port=port
-                )
-        finally:
-            server.server_close()
-            cache.stop()
-            client.close()
-
     def test_loopback_server_keeps_reuse_only_on_posix(self):
         assert gateway_proxy._LoopbackHTTPServer.allow_reuse_address is (
             gateway_proxy.ThreadingHTTPServer.allow_reuse_address and os.name != "nt"
@@ -550,6 +532,11 @@ class TestStartProxyPortFallback:
         occupied.listen(1)
         busy_port = occupied.getsockname()[1]
         try:
+            # Desktop's exporter cannot follow a fallback to a different port.
+            with pytest.raises(OSError):
+                gateway_proxy.start_otel_proxy(
+                    "https://workspace.example", lambda _: "token", port=busy_port
+                )
             server, _cache, client = gateway_proxy.start_relay_proxy(
                 "https://x.staging.cloud.databricks.com",
                 lambda _force: "tok",

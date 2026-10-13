@@ -260,6 +260,7 @@ class ManagedFileSnapshots:
     ug_picker: dict | None = None
     # ``[path, value]`` leaves ug last delivered here from the admin's agent_native_settings.
     settings_passthrough: list | None = None
+    owned_paths: list | None = None
 
 
 def managed_file_snapshots(tool: str, parser: ManagedParser) -> ManagedFileSnapshots:
@@ -287,11 +288,13 @@ def managed_file_snapshots(tool: str, parser: ManagedParser) -> ManagedFileSnaps
             return ManagedFileSnapshots(None, None)
         ug_picker = entry.get("ug_picker")
         passthrough = entry.get("settings_passthrough")
+        owned_paths = entry.get("owned_paths")
         return ManagedFileSnapshots(
             _parse(_snapshot_text(entry, "backup_file")),
             _parse(_snapshot_text(entry, "last_applied_file")),
             ug_picker if isinstance(ug_picker, dict) else None,
             passthrough if isinstance(passthrough, list) else None,
+            owned_paths if isinstance(owned_paths, list) else None,
         )
     except RuntimeError:
         return ManagedFileSnapshots(None, None)
@@ -575,14 +578,8 @@ def revert_managed_file(
     display: str,
     parser: ManagedParser,
     dumper: ManagedDumper,
-    owned_paths_on_exact_match: bool = False,
 ) -> str:
-    """Restore one managed file from its baseline while preserving later external edits.
-
-    When ``owned_paths_on_exact_match`` is true, an exact match with the last-applied snapshot still
-    goes through the owned-path three-way merge. This is for multiple ucode writers sharing one file:
-    one writer's snapshot can include another writer's newer settings.
-    """
+    """Restore one managed file from its baseline while preserving later external edits."""
     manifest = _load_manifest()
     entry = _manifest_files(manifest).get(tool)
     if not isinstance(entry, dict):
@@ -598,7 +595,7 @@ def revert_managed_file(
     original_text = _original_text(entry)
     last_text = _snapshot_text(entry, "last_applied_file")
 
-    if current_text == last_text and not owned_paths_on_exact_match:
+    if current_text == last_text:
         desired_text = original_text
     elif current_text is None or last_text is None:
         desired_text = current_text

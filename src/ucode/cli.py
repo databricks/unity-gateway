@@ -2330,7 +2330,6 @@ def otel_proxy_cmd(
 ) -> None:
     """Run the same OTLP proxy as a Codex CLI session, for desktop."""
     from ucode import gateway_proxy
-    from ucode.agents.codex import _otel_token_provider
 
     try:
         state = load_full_state().get("workspaces", {}).get(host)
@@ -2338,7 +2337,7 @@ def otel_proxy_cmd(
             raise RuntimeError(f"No saved configuration for {host}. Run `ug configure` first.")
         apply_pat_environment(state)
         server, cache, client = gateway_proxy.start_otel_proxy(
-            host, _otel_token_provider(state, host), port=port
+            host, codex_agent._otel_token_provider(state, host), port=port
         )
         try:
             server.serve_forever()

@@ -47,6 +47,7 @@ from ucode.constants import (
     SMART_ROUTER_RECIPE_HEADER,
 )
 from ucode.custom_oauth import (
+    CUSTOM_OAUTH_CLI_ENV_VAR,
     CUSTOM_OAUTH_TIMEOUT_MS,
     CustomOAuthConfig,
     build_custom_auth_token_argv,
@@ -528,11 +529,14 @@ def write_tool_config(
         enabled=False,
     )
     write_toml_file(CODEX_CONFIG_PATH, doc)
-    _reconcile_managed_config(state, lambda base: compose(base, include_catalog=False))
+    otel_port = _reconcile_managed_config(state, lambda base: compose(base, include_catalog=False))
     state = mark_tool_managed(state, "codex", MANAGED_KEYS)
     save_state(state)
     # The desktop proxy reads authentication from the saved workspace.
-    _reconcile_desktop_otel(state)
+    if otel_port is not None and not is_dry_run():
+        _ensure_otel_service(workspace, otel_port)
+    elif not state.get("codex_otel_tracing") and managed_writes_allowed():
+        _remove_otel_service()
     return state
 
 
@@ -593,21 +597,14 @@ def managed_config_status(state: dict) -> tuple[Path | None, str, str]:
 
 
 def revert_managed_config() -> str:
-    otel_result = revert_managed_file(
-        "codex-otel",
-        display="Codex desktop tracing",
-        parser=_parse_managed_config,
-        dumper=tomlkit.dumps,
-        owned_paths_on_exact_match=True,
-    )
-    _remove_otel_service()
     result = revert_managed_file(
         "codex",
         display="Codex",
         parser=_parse_managed_config,
         dumper=tomlkit.dumps,
     )
-    return otel_result if result == "unchanged" else result
+    _remove_otel_service()
+    return result
 
 
 def _otel_service_path() -> Path:
@@ -635,33 +632,6 @@ def _systemd_quote(value: str, *, exec_start: bool = False) -> str:
     return f'"{escaped}"'
 
 
-def _otel_service_text(workspace: str, port: int) -> str:
-    ug_path = ug_binary()
-    if not os.path.isabs(ug_path):
-        raise RuntimeError(
-            "Could not resolve an absolute ug executable for the Codex OTEL service."
-        )
-    lines = [
-        _CODEX_OTEL_UNIT_MARKER,
-        "[Unit]",
-        'Description="Unity Gateway Codex OTEL proxy"',
-        "",
-        "[Service]",
-        f"ExecStart={_systemd_quote(ug_path, exec_start=True)} otel-proxy --host "
-        f"{_systemd_quote(workspace, exec_start=True)} --port {port}",
-        "Restart=on-failure",
-        "RestartSec=1s",
-    ]
-    for name in ("PATH", "DATABRICKS_CONFIG_FILE", "DATABRICKS_AUTH_STORAGE"):
-        value = os.environ.get(name)
-        if name == "DATABRICKS_CONFIG_FILE" and value:
-            value = str(Path(value).expanduser().absolute())
-        if value:
-            lines.append(f"Environment={_systemd_quote(f'{name}={value}')}")
-    lines.extend(["", "[Install]", "WantedBy=default.target", ""])
-    return "\n".join(lines)
-
-
 def _allocate_otel_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind((LOOPBACK_HOST, 0))
@@ -678,7 +648,32 @@ def _ensure_otel_service(workspace: str, port: int) -> None:
         raise RuntimeError(f"Refusing to replace a symlinked systemd unit: {path}")
     if path.exists() and not _owned_otel_service(path):
         raise RuntimeError(f"Refusing to replace an unmanaged systemd unit: {path}")
-    write_text_file(path, _otel_service_text(workspace, port))
+    ug_path = ug_binary()
+    if not os.path.isabs(ug_path):
+        raise RuntimeError(
+            "Could not resolve an absolute ug executable for the Codex OTEL service."
+        )
+    lines = [
+        _CODEX_OTEL_UNIT_MARKER,
+        "[Service]",
+        f"ExecStart={_systemd_quote(ug_path, exec_start=True)} otel-proxy --host "
+        f"{_systemd_quote(workspace, exec_start=True)} --port {port}",
+        "Restart=on-failure",
+        "RestartSec=1s",
+    ]
+    for name in (
+        "PATH",
+        "DATABRICKS_CONFIG_FILE",
+        "DATABRICKS_AUTH_STORAGE",
+        CUSTOM_OAUTH_CLI_ENV_VAR,
+    ):
+        value = os.environ.get(name)
+        if name == "DATABRICKS_CONFIG_FILE" and value:
+            value = str(Path(value).expanduser().absolute())
+        if value:
+            lines.append(f"Environment={_systemd_quote(f'{name}={value}')}")
+    lines.extend(["", "[Install]", "WantedBy=default.target", ""])
+    write_text_file(path, "\n".join(lines))
     _run_systemctl(["daemon-reload"])
     _run_systemctl(["enable", CODEX_OTEL_SERVICE_NAME])
     _run_systemctl(["restart", CODEX_OTEL_SERVICE_NAME])
@@ -697,72 +692,7 @@ def _remove_otel_service() -> None:
     _run_systemctl(["daemon-reload"])
 
 
-def _reconcile_desktop_otel(state: dict) -> None:
-    """Give desktop a persistent exporter without owning other telemetry settings."""
-    if current_os() != OS.LINUX:
-        return
-    snapshots = managed_file_snapshots("codex-otel", _parse_managed_config)
-    enabled = bool(state.get("codex_otel_tracing"))
-    if not enabled:
-        if is_dry_run():
-            return
-        if snapshots.last_applied_by_ug is None and not _otel_service_path().exists():
-            return
-    if not managed_writes_allowed():
-        if not enabled:
-            raise RuntimeError(
-                "Run `ug configure --agents codex` interactively to disable desktop tracing."
-            )
-        print_warning_err(
-            "Codex desktop tracing requires interactive `ug configure --agents codex`; "
-            "CLI tracing remains available."
-        )
-        return
-    path = codex_managed_config_path()
-    if path is None or managed_file_scope(state, "codex") != "managed":
-        if enabled:
-            print_warning_err("Codex desktop tracing requires writable OS-managed settings.")
-        return
-    if enabled:
-        text = read_managed_file(path)
-        doc = _parse_managed_config(text) if text is not None else tomlkit.document()
-        if not isinstance(doc.get("otel", {}), dict):
-            raise RuntimeError(f"Codex managed settings at {path} must define otel as a table.")
-        try:
-            previous = snapshots.last_applied_by_ug or {}
-            port = urlsplit(previous["otel"]["trace_exporter"]["otlp-http"]["endpoint"]).port
-        except (KeyError, TypeError, ValueError):
-            port = None
-        port = port or _allocate_otel_port()
-        endpoint = f"http://{LOOPBACK_HOST}:{port}/v1/traces"
-        doc.setdefault("otel", {})["trace_exporter"] = _otel_proxy_overlay(endpoint)["otel"][
-            "trace_exporter"
-        ]
-        # Keep the selected port in the exporter snapshot even if service startup fails.
-        reconcile_managed_file(
-            path,
-            tomlkit.dumps(doc),
-            tool="codex-otel",
-            display="Codex desktop tracing",
-            owned_paths=[["otel", "trace_exporter"]],
-            parser=_parse_managed_config,
-        )
-        if not is_dry_run():
-            _ensure_otel_service(state["workspace"], port)
-    else:
-        revert_managed_file(
-            "codex-otel",
-            display="Codex desktop tracing",
-            parser=_parse_managed_config,
-            dumper=tomlkit.dumps,
-            owned_paths_on_exact_match=True,
-        )
-        _remove_otel_service()
-    mark_managed_file_verified(state, "codex", path)
-    save_state(state)
-
-
-def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> None:
+def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> int | None:
     """Reconcile Codex's highest-precedence config while preserving unrelated policy."""
     path = codex_managed_config_path()
     if path is None:
@@ -784,9 +714,57 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
             f"Cannot safely update Codex managed settings at {path}: {exc}. ucode did not modify "
             "the file. Repair it or contact your administrator."
         ) from exc
+    otel_port = None
+    owned_paths = MANAGED_KEYS
+    if current_os() == OS.LINUX:
+        snapshots = managed_file_snapshots("codex", _parse_managed_config)
+        tracing_owned = ["otel", "trace_exporter"] in (snapshots.owned_paths or [])
+        if tracing_owned:
+            try:
+                previous = snapshots.last_applied_by_ug or {}
+                endpoint = urlsplit(previous["otel"]["trace_exporter"]["otlp-http"]["endpoint"])
+                otel_port = endpoint.port if endpoint.hostname == LOOPBACK_HOST else None
+            except (KeyError, TypeError, ValueError):
+                pass
+        enabled = bool(state.get("codex_otel_tracing"))
+        if not managed_writes_allowed():
+            if not enabled and (tracing_owned or _owned_otel_service(_otel_service_path())):
+                raise RuntimeError(
+                    "Run `ug configure --agents codex` interactively to disable desktop tracing."
+                )
+            if enabled:
+                print_warning_err(
+                    "Codex desktop tracing requires interactive `ug configure --agents codex`."
+                )
+            otel_port = None
+        elif not enabled:
+            if tracing_owned and not is_dry_run():
+                # Restore tracing, then reapply the current model settings through the same writer.
+                revert_managed_config()
+                text = read_managed_file(path)
+                restored = _parse_managed_config(text) if text is not None else {}
+                if isinstance(existing.get("otel"), dict):
+                    existing["otel"].pop("trace_exporter", None)
+                    if "trace_exporter" in restored.get("otel", {}):
+                        existing["otel"]["trace_exporter"] = restored["otel"]["trace_exporter"]
+                # Retain settings written by other Codex writers, including managed MCP servers.
+                owned_paths = [
+                    p for p in snapshots.owned_paths or [] if p != ["otel", "trace_exporter"]
+                ]
+            otel_port = None
+        else:
+            otel_port = otel_port or _allocate_otel_port()
+
     managed_before = copy.deepcopy(existing)
     desired_doc = compose(existing)
-    conflicts = managed_file_conflicts(managed_before, desired_doc, MANAGED_KEYS)
+    if otel_port:
+        if not isinstance(desired_doc.get("otel", {}), dict):
+            raise RuntimeError(f"Codex managed settings at {path} must define otel as a table.")
+        desired_doc.setdefault("otel", {})["trace_exporter"] = _otel_proxy_overlay(
+            f"http://{LOOPBACK_HOST}:{otel_port}/v1/traces"
+        )["otel"]["trace_exporter"]
+        owned_paths = [*MANAGED_KEYS, ["otel", "trace_exporter"]]
+    conflicts = managed_file_conflicts(managed_before, desired_doc, owned_paths)
     if not managed_writes_allowed() and not conflicts:
         mark_managed_file_verified(state, "codex", path, scope="local-compatible")
         return
@@ -796,7 +774,7 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
             tomlkit.dumps(desired_doc),
             tool="codex",
             display="Codex",
-            owned_paths=MANAGED_KEYS,
+            owned_paths=owned_paths,
             parser=_parse_managed_config,
         )
     except ManagedFileWriteUnavailable:
@@ -809,6 +787,7 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
         mark_managed_file_verified(state, "codex", path, scope="local-compatible")
         return
     mark_managed_file_verified(state, "codex", path)
+    return otel_port
 
 
 MANAGED_MCP_CONFIG_KEY = "mcp_servers"
@@ -1184,9 +1163,6 @@ def _launch_token(state: dict, workspace: str, *, force_refresh: bool = False) -
     provider (_otel_token_provider) delegates here so both mint the same principal."""
     custom_oauth = state.get("custom_oauth")
     if isinstance(custom_oauth, dict):
-        profile = custom_oauth.get("profile")
-        if isinstance(profile, str) and profile.strip():
-            return get_databricks_token(workspace, profile, force_refresh=force_refresh)
         return get_custom_client_token(
             workspace,
             custom_oauth["client_id"],

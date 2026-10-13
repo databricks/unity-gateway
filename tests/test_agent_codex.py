@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import Mock
@@ -1453,6 +1452,7 @@ class TestCodexLaunch:
                 "client_id": "client",
                 "redirect_url": "http://localhost:8020",
                 "scopes": ["all-apis", "offline_access"],
+                "profile": "ug-oauth-client",
             },
         }
 
@@ -1462,7 +1462,7 @@ class TestCodexLaunch:
             "workspace": WS,
             "token": "custom-token",
             "provider": "main.default.openai",
-            "profile": None,
+            "profile": "ug-oauth-client",
         }
         assert os.environ["OAUTH_TOKEN"] == "custom-token"
 
@@ -1949,117 +1949,75 @@ class TestCodexManagedConfig:
         with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="sudo denied"):
             codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
 
-
-@pytest.mark.skipif(sys.platform != "linux", reason="Linux systemd configuration")
-class TestDesktopOtelConfig:
-    @pytest.fixture
-    def desktop(self, tmp_path, monkeypatch):
-        managed_path = tmp_path / "managed_config.toml"
-        profile_path = tmp_path / "ucode.config.toml"
-        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile_path)
-        monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "profile.backup")
-        monkeypatch.setattr(codex, "LEGACY_CODEX_CONFIG_PATH", tmp_path / "config.toml")
-        monkeypatch.setattr(codex, "agent_version", lambda _: "0.154.0")
-        monkeypatch.setattr(codex, "current_os", lambda: managed_files.OS.LINUX)
-        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: managed_path)
-        monkeypatch.setattr(codex, "managed_writes_allowed", lambda **_: True)
-        monkeypatch.setattr(managed_files, "managed_files_supported", lambda: True)
-        monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda **_: True)
-        monkeypatch.setattr(managed_files, "_sudo_replace", lambda p, text: p.write_text(text))
-        monkeypatch.setattr(managed_files, "_sudo_remove", lambda p: p.unlink())
-        unit_path = tmp_path / "systemd" / "user" / codex.CODEX_OTEL_SERVICE_NAME
-        monkeypatch.setattr(codex, "_otel_service_path", lambda: unit_path)
-        monkeypatch.setattr(codex, "_allocate_otel_port", lambda: 43199)
-        monkeypatch.setattr(codex, "ug_binary", lambda: "/opt/ug path/$bin%/ug")
-        calls: list[list[str]] = []
-
-        def run(command: list[str], **_kwargs):
-            calls.append(command)
-            return subprocess.CompletedProcess(command, 0, "", "")
-
-        monkeypatch.setattr(codex.subprocess_cross_os, "run", run)
-        return managed_path, unit_path, calls
-
-    def test_enable_reconfigure_keeps_port_and_disable_restores_exporter(self, desktop):
-        path, unit_path, calls = desktop
+    @pytest.mark.skipif(sys.platform != "linux", reason="Linux systemd configuration")
+    def test_desktop_tracing_lifecycle(self, tmp_path, monkeypatch):
+        path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
+        path.parent.mkdir(parents=True)
         path.write_text(
             '[otel]\nenvironment = "existing"\nexporter = "none"\nmetrics_exporter = "none"\n'
-            '[otel.trace_exporter.otlp-http]\nendpoint = "https://original/v1/traces"\n'
-            '[otel.trace_exporter.otlp-http.headers]\nx-api-key = "old-collector-key"\n'
+            '[otel.trace_exporter.otlp-http]\nendpoint = "http://127.0.0.1:4318/v1/traces"\n'
         )
         original_otel = read_toml_safe(path)["otel"]
-        codex.write_tool_config({"workspace": WS, "codex_otel_tracing": True})
+        unit_path = codex._otel_service_path()
+        monkeypatch.setattr(codex, "_allocate_otel_port", lambda: 43199)
+        monkeypatch.setattr(codex, "ug_binary", lambda: "/opt/ug path/$bin%/ug")
+        monkeypatch.setenv("PATH", "/tmp/$cli%bin:/usr/bin")
+        monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "1")
+        run = Mock()
+        monkeypatch.setattr(codex.subprocess_cross_os, "run", run)
 
-        doc = read_toml_safe(path)
-        assert doc["otel"]["trace_exporter"]["otlp-http"]["endpoint"] == (
-            "http://127.0.0.1:43199/v1/traces"
+        codex.write_tool_config({"workspace": WS, "codex_otel_tracing": True})
+        expected_otel = dict(
+            original_otel,
+            trace_exporter=codex._otel_proxy_overlay("http://127.0.0.1:43199/v1/traces")["otel"][
+                "trace_exporter"
+            ],
         )
-        assert doc["otel"]["environment"] == "existing"
-        assert doc["otel"]["exporter"] == "none"
-        assert doc["otel"]["metrics_exporter"] == "none"
-        unit = unit_path.read_text(encoding="utf-8")
+        assert read_toml_safe(path)["otel"] == expected_otel
+        unit = unit_path.read_text()
         assert 'ExecStart="/opt/ug path/$$bin%%/ug" otel-proxy --host ' in unit
-        assert "--port 43199" in unit
-        assert calls == [
-            ["systemctl", "--user", "daemon-reload"],
-            ["systemctl", "--user", "enable", codex.CODEX_OTEL_SERVICE_NAME],
-            ["systemctl", "--user", "restart", codex.CODEX_OTEL_SERVICE_NAME],
+        assert 'Environment="PATH=/tmp/$cli%%bin:/usr/bin"' in unit
+        assert 'Environment="ENABLE_CUSTOM_OAUTH_FROM_CLI=1"' in unit
+        assert [call.args[0][-2:] for call in run.call_args_list] == [
+            ["--user", "daemon-reload"],
+            ["enable", codex.CODEX_OTEL_SERVICE_NAME],
+            ["restart", codex.CODEX_OTEL_SERVICE_NAME],
         ]
 
         newer = "https://newer.databricks.com"
         codex.write_tool_config({"workspace": newer, "codex_otel_tracing": True})
-        assert "http://127.0.0.1:43199/v1/traces" in path.read_text(encoding="utf-8")
-        assert f'--host "{newer}" --port 43199' in unit_path.read_text(encoding="utf-8")
-        assert len(calls) == 6
+        assert read_toml_safe(path)["otel"] == expected_otel
+        assert f'--host "{newer}" --port 43199' in unit_path.read_text()
+        assert run.call_count == 6
+        codex.reconcile_managed_file(
+            path,
+            path.read_text() + '\n[mcp_servers.managed]\ncommand = "ug"\n',
+            tool="codex",
+            display="Codex",
+            parser=codex._parse_managed_config,
+            owned_paths=[["mcp_servers", "managed"]],
+        )
 
         codex.write_tool_config({"workspace": newer})
         assert read_toml_safe(path)["otel"] == original_otel
+        assert read_toml_safe(path)["mcp_servers"]["managed"]["command"] == "ug"
         assert read_toml_safe(path)["model_providers"]["Databricks"]["base_url"].startswith(newer)
         assert not unit_path.exists()
-        assert calls[-2:] == [
-            ["systemctl", "--user", "disable", "--now", codex.CODEX_OTEL_SERVICE_NAME],
-            ["systemctl", "--user", "daemon-reload"],
+        assert run.call_args_list[-2].args[0][-3:] == [
+            "disable",
+            "--now",
+            codex.CODEX_OTEL_SERVICE_NAME,
         ]
 
+        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: False)
+        codex.write_tool_config({"workspace": newer, "codex_otel_tracing": True})
+        assert not unit_path.exists()
+        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: True)
         codex.write_tool_config({"workspace": newer, "codex_otel_tracing": True})
         codex.revert_managed_config()
         assert read_toml_safe(path)["otel"] == original_otel
         assert "model_providers" not in read_toml_safe(path)
-        assert not unit_path.exists()
-
-    def test_unit_environment_and_retry(self, desktop, monkeypatch):
-        _path, unit_path, calls = desktop
-        monkeypatch.setenv("PATH", "/tmp/$cli%bin:/usr/bin")
-        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", "~/.config/databricks.cfg")
-        monkeypatch.setenv("DATABRICKS_AUTH_STORAGE", "plaintext")
-        failures = iter([True, False])
-
-        def run(command: list[str], **_kwargs):
-            calls.append(command)
-            if command[-2:] == ["restart", codex.CODEX_OTEL_SERVICE_NAME] and next(failures):
-                raise subprocess.CalledProcessError(1, command, stderr="restart failed")
-            return subprocess.CompletedProcess(command, 0, "", "")
-
-        monkeypatch.setattr(codex.subprocess_cross_os, "run", run)
-        with pytest.raises(RuntimeError, match="restart failed"):
-            codex._ensure_otel_service(WS, 43199)
-        codex._ensure_otel_service(WS, 43199)
-
-        unit = unit_path.read_text(encoding="utf-8")
-        assert 'Environment="PATH=/tmp/$cli%%bin:/usr/bin"' in unit
-        assert 'Environment="DATABRICKS_CONFIG_FILE=' in unit
-        assert str(Path.home() / ".config/databricks.cfg") in unit
-        assert 'Environment="DATABRICKS_AUTH_STORAGE=plaintext"' in unit
-        assert calls[-3:] == [
-            ["systemctl", "--user", "daemon-reload"],
-            ["systemctl", "--user", "enable", codex.CODEX_OTEL_SERVICE_NAME],
-            ["systemctl", "--user", "restart", codex.CODEX_OTEL_SERVICE_NAME],
-        ]
-
-    def test_noninteractive_setup_skips_desktop_service(self, desktop, monkeypatch):
-        _path, unit_path, _calls = desktop
-        monkeypatch.setattr(codex, "managed_writes_allowed", lambda **_: False)
-        codex.write_tool_config({"workspace": WS, "codex_otel_tracing": True})
+        assert "mcp_servers" not in read_toml_safe(path)
         assert not unit_path.exists()
 
 
@@ -2396,30 +2354,3 @@ class TestManagedUserAgent:
         monkeypatch.setattr(codex, "codex_managed_config_path", lambda: path)
 
         assert codex.managed_user_agent() == expected
-
-
-class TestOtelSavedProfile:
-    @pytest.mark.parametrize("cli_enabled", [False, True])
-    def test_token_provider_uses_saved_profile(self, monkeypatch, cli_enabled):
-        if cli_enabled:
-            monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "1")
-        else:
-            monkeypatch.delenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", raising=False)
-        get_saved_profile_token = Mock(return_value="profile-token")
-        get_custom_token = Mock(side_effect=AssertionError("SDK token path must not run"))
-        monkeypatch.setattr(codex, "get_databricks_token", get_saved_profile_token)
-        monkeypatch.setattr(codex, "get_custom_client_token", get_custom_token)
-        state = {
-            "custom_oauth": {
-                "client_id": "cid",
-                "redirect_url": "http://localhost:8020/callback",
-                "scopes": ["offline_access", "model-serving"],
-                "profile": "ug-oauth-saved",
-            }
-        }
-
-        provider = codex._otel_token_provider(state, WS)
-
-        assert provider(True) == "profile-token"
-        get_saved_profile_token.assert_called_once_with(WS, "ug-oauth-saved", force_refresh=True)
-        get_custom_token.assert_not_called()

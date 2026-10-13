@@ -366,16 +366,11 @@ preferences are ignored and their files are left untouched. See the bundled
 
 ### Codex desktop tracing on Linux
 
-With workspace tracing enabled, interactive `ug configure --agents codex` points
-desktop's trace exporter at the same token-refresh proxy used by the CLI. A
-systemd user unit runs `ug otel-proxy` automatically at login and restarts it on
-failure; it reads authentication from the workspace's existing ug state.
-
-Configure on the Linux machine hosting the app-server, with a running systemd
-user manager, then restart the app-server once. Reconfigure to apply changes;
-disabling tracing or running `ug revert` removes the unit and restores the exporter.
-Use `journalctl --user -u ug-codex-otel.service` for diagnostics. Other platforms
-retain CLI tracing. Desktop GUI export and login/reboot startup are not tested.
+With workspace tracing enabled, run `ug configure --agents codex` interactively
+on the app-server's Linux host, then restart the app-server. This configures the
+existing CLI OTEL proxy as a systemd user service that starts at login.
+Reconfigure to apply changes; disabling tracing or `ug revert` removes the service.
+Diagnostics: `journalctl --user -u ug-codex-otel.service`.
 
 ## Development
 

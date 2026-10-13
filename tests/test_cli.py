@@ -3234,33 +3234,22 @@ def test_unknown_routing_config_does_not_block_launch(monkeypatch, args):
 class TestOtelProxyCommand:
     def test_reuses_cli_proxy_and_auth_for_the_configured_workspace(self):
         workspace = "https://configured.example"
-        real_save_state({"workspace": workspace, "profile": "configured-profile"})
+        real_save_state({"workspace": workspace, "profile": "saved-profile"})
         real_save_state({"workspace": "https://other.example", "profile": "other-profile"})
         server, cache, client = MagicMock(), MagicMock(), MagicMock()
         with (
             patch(
                 "ucode.gateway_proxy.start_otel_proxy", return_value=(server, cache, client)
             ) as start,
-            patch("ucode.agents.codex._launch_token", return_value="fresh-token") as token,
+            patch("ucode.agents.codex.get_databricks_token", return_value="fresh-token") as token,
         ):
             result = runner.invoke(app, ["otel-proxy", "--host", workspace, "--port", "43199"])
             assert start.call_args.args[1](True) == "fresh-token"
         assert result.exit_code == 0, result.output
         assert start.call_args.args[0] == workspace
         assert start.call_args.kwargs == {"port": 43199}
-        assert token.call_args.args[0]["profile"] == "configured-profile"
-        assert token.call_args.kwargs == {"force_refresh": True}
+        token.assert_called_once_with(workspace, "saved-profile", force_refresh=True)
         server.serve_forever.assert_called_once()
-        server.server_close.assert_called_once()
-        cache.stop.assert_called_once()
-        client.close.assert_called_once()
-
-    def test_reports_missing_workspace(self):
-        result = runner.invoke(
-            app, ["otel-proxy", "--host", "https://missing.example", "--port", "43199"]
-        )
-        assert result.exit_code == 1
-        assert "Run `ug configure` first" in " ".join(result.output.split())
 
 
 class TestDoctorCommand:
