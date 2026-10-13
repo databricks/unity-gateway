@@ -105,8 +105,9 @@ key to return to the full list before checking completion. Offline PTY cases cov
 and completed detail panels, delayed navigation, and other tasks that remain active.
 It neither stops tasks nor confirms an exit dialog. Process exit retains its 30-second
 timeout. Offline PTY checks cover this ordering.
-The shared wait also runs before CUJ4's Claude preset sessions exit, after delegated-task
-evidence is checked, because Claude can resume a child after its first completed answer.
+CUJ4's Claude preset sessions first wait for the parent's answer with the delegated file's
+value, then open the task view and use the shared wait. The parent can resume a completed
+child while forming its reply, and that resumed child can outlive the parent's answer.
 
 `../test_startup_imports.py` covers the bare version fast path, deferred imports,
 metadata fallback, and other-argument dispatch as component checks. Installation

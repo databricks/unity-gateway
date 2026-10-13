@@ -106,7 +106,7 @@ and child inference payloads carry the launch recipe in `smart_router_recipe_nam
 without a recipe header; Codex retains the recipe header. This tests requested delegation, not automatic orchestrator delegation.
 Claude's recipe is compared with the recorded routing request's selector rather than
 a hardcoded default recipe name.
-The wait uses the child's answer directly; parent-answer reconstruction is reserved for first-prompt tasks.
+Delegation evidence uses the child's answer directly; parent-turn reconstruction is reserved for first-prompt tasks.
 Offline checks reject parent-only answers and accept child answers before the parent replies.
 Offline evidence regressions do not establish a live CUJ pass.
 Selector cases have separate TUI artifact names, and the session environment is restored afterward.
@@ -119,8 +119,10 @@ Claude sessions start in auto mode; unless a routed first prompt switches the se
 Claude's informational auto-mode classifier billing notice over the transcript. The CUJ terminal
 waits for that exact notice to render stably, presses Enter (continue), and observes dismissal
 before continuing. Later occurrences are handled the same way; any other dialog still fails.
-After verifying the delegated task, Claude sessions also wait in the native `/tasks` view
-until no background work remains, including a child resumed after its initial answer.
+After verifying the delegated task, Claude sessions wait for the parent's answer containing
+the delegated file's value before opening `/tasks`: a parent still forming its reply can
+resume a completed child. They then wait in the native task view until no background work
+remains, including any resumed child that outlives the parent's answer.
 Only then does the test close the task view and submit `/exit`.
 Each preset also runs public `ug revert` in cleanup, including after a failed assertion, so
 interactive launches' OS-managed settings cannot contaminate the next preset's configuration.

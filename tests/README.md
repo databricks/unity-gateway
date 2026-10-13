@@ -65,8 +65,10 @@ When `/tasks` opens one agent's detail panel, the helper uses its Left-arrow nav
 return to the full list. Offline PTY checks cover running and completed detail panels and
 require all tasks to finish before exit, including when the selected agent is already done.
 The live Claude subagent skill-toggle journey uses this wait after its final calculation.
-CUJ4's Claude preset sessions also use it after verifying delegated file tasks: a completed
-answer does not prove that a resumed child has stopped running.
+CUJ4's Claude preset sessions wait for the parent's answer with the delegated file's value
+before opening the task view, since the parent can resume a child while forming its reply.
+They then wait for background completion: the parent's answer does not prove that a resumed
+child has stopped running.
 They cover Claude/Codex helper dispatch and rejection of routing decisions without
 the agent-specific prompt-submission evidence.
 The shared preset CUJ runs both agents for every version and derives routing and
