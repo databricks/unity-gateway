@@ -60,7 +60,8 @@ Offline CUJ regressions cover Codex delegated-turn completion and exact task-req
 notifications alone, Claude title requests, and parent continuations do not qualify.
 Unrelated and pre-checkpoint request bodies are excluded before JSON decoding.
 The original smart-routing CUJ runs four fresh sessions: routed and explicit model for both
-Claude and Codex. One additional test has five `SMART_ROUTER_CONFIG_VERSION` cases.
+Claude and Codex, with explicit-model bypass assertions enabled for both agents.
+One additional test has five `SMART_ROUTER_CONFIG_VERSION` cases.
 Each case exercises both agents and checks first-prompt routing, orchestrator context in
 inference input, and a completed explicitly requested routed subagent. It does not establish
 automatic orchestrator delegation. Routing-disabled coverage is deferred until a separately

@@ -446,18 +446,7 @@ class TestCujSmartRouting(BaseCujTest):
                 canonical_model(model) for model in completed_smart_routing_runs.supported[agent]
             }
 
-    @pytest.mark.parametrize(
-        "agent",
-        [
-            pytest.param(
-                CLAUDE,
-                marks=pytest.mark.skip(
-                    reason="TODO: Fix Claude model override precedence over managed defaults"
-                ),
-            ),
-            CODEX,
-        ],
-    )
+    @pytest.mark.parametrize("agent", AGENTS)
     def test_with_model_override_bypasses_router_and_uses_requested_model(
         self, completed_smart_routing_runs, agent
     ):
