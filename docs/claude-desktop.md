@@ -34,13 +34,28 @@ serialized. If the original message failed during login, resend it.
 Profiles live in
 `~/Library/Application Support/Claude-3p/configLibrary`. UG records its UUID and
 ownership separately in `~/.ucode/claude-desktop.json`. It never adopts a profile
-just because its name is "Unity Gateway". Repeated configuration reuses the
-recorded profile for that workspace and Databricks profile.
+just because its name is "Unity Gateway" or its UUID matches. The profile ID is
+a UUIDv5 derived from the normalized workspace URL in a UG-specific namespace.
+The same workspace has the same ID across machines; different workspaces have
+different IDs. Changing the Databricks CLI profile updates the helper rather
+than creating another Desktop profile.
 
-Other profiles, metadata, and unknown fields are preserved. Editing UG-owned fields
-causes a conflict warning instead of an overwrite. `ug revert` restores UG-owned
-changes for the current workspace/profile and preserves subsequent user edits and
-profile selections. Profiles configured for other workspaces remain untouched.
+If the UG profile is deleted in Desktop, running `ug configure` recreates it with
+the same ID and selects it again. Older UG-owned random-ID profiles migrate to
+the deterministic ID, preserving unknown fields. A conflicting unowned profile
+or multiple legacy ownership records cause a warning without overwriting them.
+
+Running `ug configure` again replaces UG-owned fields, including values edited or
+deleted in Desktop. Other profiles and unknown fields are preserved. Previously
+managed optional fields retain their last UG value when configure omits them;
+optional fields UG has never written remain user-owned. Renaming the UG metadata
+entry still causes a conflict warning.
+
+`ug revert` restores UG-owned changes for the current workspace and preserves edits
+and profile selections made after the latest configure. Profiles configured for
+other workspaces remain untouched.
+After recreating a deleted profile, revert restores the selection that was active
+immediately before recreation.
 If Desktop revert fails, UG keeps its state so the operation can be retried. Files
 are replaced atomically one at a time with best-effort rollback on write failure;
 this is not a crash-atomic transaction across the app and ownership files.
@@ -64,6 +79,10 @@ orchestration; they do not prove GUI inference on every app version.
 - The exported `alwaysStartWithDefaultModel` boolean does not identify a model.
   Inheriting a particular Claude Code default needs further native evidence; UG
   does not guess a field or claim that list order selects the default.
+- Inspected Desktop code rejects model IDs containing other vendors' model names,
+  including `glm` and `kimi`, before inference. Gateway protocol compatibility does
+  not remove this client restriction. UG preserves the catalog without renaming
+  models to bypass it.
 - Anthropic subscription relay, custom OAuth/PAT profiles, Desktop Smart Routing,
   connector/plugin compatibility, and native OTEL are not implemented here.
 - Observed inference applies to Cowork. Ordinary Chat is not claimed to use the

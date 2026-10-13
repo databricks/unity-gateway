@@ -136,7 +136,9 @@ Claude Desktop third-party profiles live in
 own UUID profile and merges only its metadata entry and applied selection. It
 owns gateway/provider/auth-helper fields, `inferenceModels`, and the headers it
 writes. Ownership is recorded in `~/.ucode/claude-desktop.json`; other profiles and
-unknown fields are preserved. Desktop setup is configure-only and best-effort.
+unknown fields are preserved. Repeat configure reapplies UG-owned fields, even if
+edited or deleted; revert preserves edits made after the latest configure.
+Desktop setup is configure-only and best-effort.
 See `docs/claude-desktop.md` for native validation limits and revert behavior.
 
 <details>
