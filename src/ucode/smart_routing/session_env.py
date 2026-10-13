@@ -52,7 +52,9 @@ def _read(path: Path) -> dict[str, str]:
     return _validate(json.loads(path.read_text(encoding="utf-8")))
 
 
-def effective_environment(env: Mapping[str, str] | None = None, *, agent: str) -> dict[str, str]:
+def effective_environment(
+    env: Mapping[str, str] | None = None, *, agent: str, strict: bool = False
+) -> dict[str, str]:
     """Overlay the latest session controls on the hook process environment."""
     effective = resolve_environment(env, agent=agent)
     try:
@@ -62,6 +64,8 @@ def effective_environment(env: Mapping[str, str] | None = None, *, agent: str) -
     try:
         effective.update(_read(path))
     except (OSError, UnicodeError, ValueError) as exc:
+        if strict:
+            raise RuntimeError(f"Smart Router session controls at {path} are invalid.") from exc
         print(
             f"Smart Router could not read session controls at {path} ({exc}); "
             "using the inherited environment.",

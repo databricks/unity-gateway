@@ -368,6 +368,10 @@ PATH conflicts for the Smart Router skill have subprocess/component coverage in
 `ug` first in PATH. The live journeys above do not inject a second installation or
 establish PowerShell command execution.
 
+Read-only `/smart-router status` has CLI component coverage in `../test_smart_router.py`
+and native command/render-tree coverage in `../native_claude/test_mod.py`, including session
+overrides, ON/OFF badges, and error rendering. Live interactive status rendering is not covered.
+
 The toggle journeys retain the legacy routing-only and orchestration cases and add each of
 the three subagent-only `SMART_ROUTER_CONFIG_VERSION` presets. They require only `smart-router`
 for routing-only cases, and both `smart-router-orchestrator` and `smart-router` when orchestration

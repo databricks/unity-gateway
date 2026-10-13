@@ -209,6 +209,10 @@ version is not executed here.
 first in PATH and a launching interpreter path containing spaces. Both agents' toggles
 must update the session controls through the launching installation. Launch tests check
 that Claude settings and Codex's shell policy carry the interpreter and session marker.
+Status checks cover both agents' presets and session toggles without launching an agent
+or writing state, and reject invalid controls and combined status/toggle flags.
+Native Claude component tests check status without inference and the ON/OFF badge trees
+on terminal and desktop, with ordinary rendering preserved for errors and other commands.
 These are component checks; they do not establish native skill permission matching or
 PowerShell execution.
 

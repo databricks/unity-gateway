@@ -6,6 +6,7 @@ import {
   DISABLED_RECIPE,
   ENABLE_ROUTING_FLAG,
   RECIPE_HEADER,
+  ROUTING_STATUS_FLAG,
 } from './constants.ts';
 
 type Environment = Record<string, string | undefined>;
@@ -28,19 +29,19 @@ async function writeEnvironment($: EngineInterface, env: Environment): Promise<v
 }
 
 // The session-control file stays Python's to write: the CLI validates it and replaces it
-// atomically. The mod only requests the toggle it just applied to the environment.
-async function writeSessionControls($: EngineInterface, enabled: boolean): Promise<void> {
+// atomically. The mod runs that CLI for toggles and read-only status.
+async function runSessionControl($: EngineInterface, flag: string): Promise<string> {
   // Claude's capability scanner requires literal environment-variable names.
   const python = await $.env.get('UCODE_SMART_ROUTER_PYTHON');
   const sessionFile = await $.env.get('UCODE_SESSION_ENV_FILE');
   if (!python || !sessionFile) {
     throw new Error('Smart Router session controls are unavailable for this session.');
   }
-  const flag = enabled ? ENABLE_ROUTING_FLAG : DISABLE_ROUTING_FLAG;
   const result = await $.process.run([python, '-m', CLI_MODULE, CLI_AGENT, flag]);
   if (result.exitCode !== 0) {
     throw new Error(`Smart Router controls exited ${result.exitCode}: ${result.stderr.trim()}`);
   }
+  return result.stdout.trim();
 }
 
 async function setRouting(
@@ -70,7 +71,7 @@ async function setRouting(
     // An explicit toggle must also replace the CLI/skill's saved session overrides,
     // which the routing hooks apply on top of the environment and would otherwise win.
     if (syncSessionControls) {
-      await writeSessionControls($, enabled);
+      await runSessionControl($, enabled ? ENABLE_ROUTING_FLAG : DISABLE_ROUTING_FLAG);
     }
   } catch (error) {
     // Restore earlier successful writes if a later environment write is denied.
@@ -96,7 +97,15 @@ export function register(on: On, options: PluginOptions): void {
   // The installed smart-router skill already supplies the slash command.
   on('command.run', {command: 'smart-router'}, async ($, e) => {
     const action = e.args.trim();
-    if (action !== 'on' && action !== 'off') return {text: 'Usage: /smart-router on|off'};
+    if (action === 'status') {
+      if (!launchedEnabled) return {text: 'Smart Router is off for this session.'};
+      try {
+        return {text: await runSessionControl($, ROUTING_STATUS_FLAG)};
+      } catch {
+        return {text: 'Could not read Smart Router status. Check session controls and process permissions; retry or restart through UG.'};
+      }
+    }
+    if (action !== 'on' && action !== 'off') return {text: 'Usage: /smart-router on|off|status'};
     if (!launchedEnabled) return {text: 'Smart Router was not enabled for this session.'};
     try {
       await setRouting($, options, action === 'on', true);
@@ -107,5 +116,26 @@ export function register(on: On, options: PluginOptions): void {
     } catch {
       return {text: 'Could not update Smart Router. Check the recipe, ANTHROPIC_CUSTOM_HEADERS, and environment permissions; retry or restart through UG.'};
     }
+  });
+
+  on('ui.render', {component: 'CommandOutput'}, ($, e, next) => {
+    if (e.props.command !== 'smart-router') return next(e);
+    const status = /^Smart Router is (on|off) for this session\.$/.exec(e.props.text);
+    if (!status) return next(e);
+    const { Box, Text } = $.ui.resolve(e);
+    const enabled = status[1] === 'on';
+    return Box({
+      flexDirection: 'row',
+      columnGap: 1,
+      children: [
+        Text({bold: true, children: ['Unity Gateway Smart Router']}),
+        Text({
+          bold: true,
+          color: 'black',
+          backgroundColor: enabled ? 'green' : 'gray',
+          children: [enabled ? ' ON ' : ' OFF '],
+        }),
+      ],
+    });
   });
 }

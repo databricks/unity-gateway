@@ -17,12 +17,19 @@ can list what the module reads and writes, and `plugin validate` rejects a varia
 position: "$.env.get takes a literal name as its first argument". Keep those names inline.
 
 The mod merges the launch recipe into the `Databricks-Smart-Router-Recipe` header
-via `ANTHROPIC_CUSTOM_HEADERS` and intercepts the existing skill's `/smart-router on|off` command locally, without inference or command
+via `ANTHROPIC_CUSTOM_HEADERS` and intercepts the existing skill's `/smart-router on|off|status` command locally, without inference or command
 registration. Off sets every routing flag to `0` and the recipe to `DISABLED`; on
 restores the original flags and recipe, including originally absent variables.
 Unrelated headers are preserved, and `CLAUDE_CODE_EXTRA_BODY` is left untouched.
 Duplicate recipe headers are replaced case-insensitively. Recipe line breaks are rejected.
 A failed write attempts to restore prior values and reports failure; the native environment API does not provide an atomic transaction.
+
+`/smart-router status` reads the effective routing flags through UG's read-only
+`claude --smart-routing-status` command, including the latest session overrides.
+The `CommandOutput` render hook displays a green ON or gray OFF badge using native
+`Box` and `Text` elements. Its text remains available in headless output, and
+errors retain Claude's normal rendering. Status does not change routing or orchestration.
+Codex and Claude sessions without mods use the skill's corresponding CLI command.
 
 If a caller supplies `smart_router_recipe_name` in the request body, gateways with
 body-recipe parsing enabled give it precedence over the header; toggles preserve that override.

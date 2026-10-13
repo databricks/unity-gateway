@@ -2614,6 +2614,20 @@ def _smart_routing_v2_flag(enabled: bool | None, *, agent: str) -> Iterator[None
         smart_routing_v2.restore_smart_routing_env(previous)
 
 
+def _print_smart_routing_status(agent: str, enabled: bool | None) -> None:
+    try:
+        if enabled is not None:
+            raise RuntimeError("Use --smart-routing-status separately from routing toggle flags.")
+        session_env_path()
+        routing_enabled = smart_routing_v2.smart_routing_enabled(
+            effective_environment(agent=agent, strict=True), default=False, agent=agent
+        )
+    except RuntimeError as exc:
+        print_err(str(exc))
+        raise typer.Exit(1) from None
+    console.print(f"Smart Router is {'on' if routing_enabled else 'off'} for this session.")
+
+
 def _toggle_current_smart_routing_session(enabled: bool | None) -> bool:
     if enabled is None:
         return False
@@ -3542,8 +3556,17 @@ def codex_cmd(
             help="Enable or disable AI Gateway model routing for this Codex launch or session.",
         ),
     ] = None,
+    smart_routing_status: Annotated[
+        bool,
+        typer.Option(
+            "--smart-routing-status", help="Show whether Smart Router is on or off in this session."
+        ),
+    ] = False,
 ) -> None:
     """Launch Codex via Databricks."""
+    if smart_routing_status:
+        _print_smart_routing_status(AGENT_CODEX, enable_smart_routing_flag)
+        return
     if _toggle_current_smart_routing_session(enable_smart_routing_flag):
         return
     try:
@@ -3630,8 +3653,17 @@ def claude_cmd(
             help="Enable or disable AI Gateway model routing for this Claude Code launch or session.",
         ),
     ] = None,
+    smart_routing_status: Annotated[
+        bool,
+        typer.Option(
+            "--smart-routing-status", help="Show whether Smart Router is on or off in this session."
+        ),
+    ] = False,
 ) -> None:
     """Launch Claude Code via Databricks."""
+    if smart_routing_status:
+        _print_smart_routing_status(AGENT_CLAUDE, enable_smart_routing_flag)
+        return
     if _toggle_current_smart_routing_session(enable_smart_routing_flag):
         return
     try:

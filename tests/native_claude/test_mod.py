@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -55,3 +57,28 @@ def test_native_options_are_launch_local(native_binary, tmp_path):
         assert a.observe()["options"] == _claude_mod_launch_options(env)
         assert b.observe()["options"] == _claude_mod_launch_options({})
         assert not (a.plugin / "hooks/launch.json").exists()
+
+
+def test_status_reads_session_overrides_without_inference(native_binary, tmp_path):
+    session_file = tmp_path / "env.json"
+    env = {
+        "SMART_ROUTER_CONFIG_VERSION": config.SUBAGENT_ONLY_V0,
+        "UCODE_SESSION_ENV_FILE": str(session_file),
+        "UCODE_SMART_ROUTER_PYTHON": sys.executable,
+    }
+    with Session(native_binary, tmp_path / "status", env) as session:
+        for overrides, expected in [
+            ({}, "on"),
+            ({"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0"}, "off"),
+            ({}, "on"),
+        ]:
+            session_file.write_text(json.dumps(overrides))
+            before = session_file.read_bytes()
+            result = session.send("/smart-router status")
+            assert f"Smart Router is {expected} for this session." in result["result"]
+            assert result["num_turns"] == 0 and result["usage"]["output_tokens"] == 0
+            assert session_file.read_bytes() == before
+        session_file.write_text("invalid json")
+        result = session.send("/smart-router status")
+        assert "Could not read Smart Router status" in result["result"]
+        assert session_file.read_text() == "invalid json"

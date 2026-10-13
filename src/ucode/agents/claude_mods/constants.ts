@@ -4,3 +4,4 @@ export const CLI_MODULE = 'ucode.cli';
 export const CLI_AGENT = 'claude';
 export const ENABLE_ROUTING_FLAG = '--enable-smart-routing';
 export const DISABLE_ROUTING_FLAG = '--disable-smart-routing';
+export const ROUTING_STATUS_FLAG = '--smart-routing-status';
