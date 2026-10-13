@@ -50,7 +50,12 @@ from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
     release_file_lock,
 )
-from ucode.skills import SMART_ROUTER_ORCHESTRATOR_SKILL, SMART_ROUTER_SKILL, install_skill
+from ucode.skills import (
+    SMART_ROUTER_ORCHESTRATOR_SKILL,
+    SMART_ROUTER_SKILL,
+    install_skill,
+    uninstall_agent_skill,
+)
 from ucode.smart_routing import claude_routing, orchestrator, routing
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
@@ -97,6 +102,15 @@ def _prepare_smart_router_session(agent: str) -> Path:
         except (OSError, RuntimeError) as exc:
             print_warning(f"Could not install the {skill} skill: {exc}")
     return start_session()
+
+
+def remove_smart_router_session_skills(agent: str) -> None:
+    """Stop offering the session controls for a launch that has no smart routing."""
+    for skill in (SMART_ROUTER_SKILL, SMART_ROUTER_ORCHESTRATOR_SKILL):
+        try:
+            uninstall_agent_skill(skill, agent, config_io.APP_DIR.parent)
+        except (OSError, RuntimeError, ValueError) as exc:
+            print_warning(f"Could not remove the {skill} skill: {exc}")
 
 
 def _launch_token(state: dict, workspace: str) -> str:

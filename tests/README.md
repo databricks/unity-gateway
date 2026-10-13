@@ -204,7 +204,9 @@ first in PATH and a launching interpreter path containing spaces. Both agents' t
 must update the session controls through the launching installation. Launch tests check
 that Claude settings and Codex's shell policy carry the interpreter and session marker.
 These are component checks; they do not establish native skill permission matching or
-PowerShell execution.
+PowerShell execution. It also covers agent-scoped withdrawal: a launch without smart
+routing removes that agent's session-control skills so `/smart-router` is no longer
+offered, and leaves the other agent's copy in place.
 
 `test_skills.py` checks agent-specific instruction installation, bundle updates,
 and matching prompt/compaction hook content for Claude and Codex. It also covers
@@ -490,6 +492,11 @@ no-mocking boundary and the Scenario/Expected docstring format.
 Native launch-option component tests (`native_claude/test_mod.py`) check two real Claude
 processes with different resolved routing baselines. Python cases cover Claude-specific presets,
 unknown selectors, and absent versus empty flags. These checks do not establish gateway/TUI coverage.
+
+`test_claude_mod.py` also checks that an explicit `/smart-router` toggle asks UG's CLI to
+replace the saved session controls, while session start restores only the launch baseline.
+The plugin test host runs without a process capability, so the mod's call itself is proven
+by the live skill-toggle journey rather than `claude plugin test`.
 
 `integration/test_ug_smart_routing_hooks.py` checks recipe headers in its existing
 Claude skill-toggle journey. The recorder forwards to the real workspace, configured

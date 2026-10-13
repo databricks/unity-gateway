@@ -110,3 +110,38 @@ def test_launcher_flags_control_routing_hook(tmp_path, monkeypatch):
     assert runner.invoke(cli.app, ["codex", "--enable-smart-routing"], env=env).exit_code == 0
     assert runner.invoke(cli.app, hook_args, input=payload, env=env).exit_code == 0
     route.assert_called_once()
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_uninstall_agent_skill_leaves_other_agents_alone(tmp_path, agent):
+    """Scenario: one agent withdraws the controls while the other still offers them.
+
+    Expected: only the named agent's copy is removed.
+    """
+    other = "codex" if agent == "claude" else "claude"
+    for name in (agent, other):
+        skills.install_skill(SMART_ROUTER_SKILL, name, tmp_path)
+
+    assert skills.uninstall_agent_skill(SMART_ROUTER_SKILL, agent, tmp_path) is True
+    assert not tmp_path.joinpath(f".{agent}/skills/{SMART_ROUTER_SKILL}").exists()
+    assert tmp_path.joinpath(f".{other}/skills/{SMART_ROUTER_SKILL}/SKILL.md").is_file()
+    # Removing an absent skill is not an error.
+    assert skills.uninstall_agent_skill(SMART_ROUTER_SKILL, agent, tmp_path) is False
+
+
+def test_launch_without_smart_routing_withdraws_the_session_controls(monkeypatch):
+    """Scenario: a routed launch installed the skill, then Claude launches without routing.
+
+    Expected: `/smart-router` is no longer offered, and Codex's own copy is untouched.
+    """
+    v2._prepare_smart_router_session("claude")
+    v2._prepare_smart_router_session("codex")
+    home = config_io.APP_DIR.parent
+    claude_skill = home / f".claude/skills/{SMART_ROUTER_SKILL}"
+    codex_skill = home / f".codex/skills/{SMART_ROUTER_SKILL}"
+    assert claude_skill.is_dir() and codex_skill.is_dir()
+
+    v2.remove_smart_router_session_skills("claude")
+
+    assert not claude_skill.exists()
+    assert codex_skill.joinpath("SKILL.md").is_file()

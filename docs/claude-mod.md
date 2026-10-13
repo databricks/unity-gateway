@@ -23,6 +23,14 @@ The baseline comes from native plugin options and survives `/clear`, `/compact`,
 plugin reloads. Toggles affect future requests and newly spawned hooks; already running
 child processes retain their inherited environment. No toggle writes settings or snapshots.
 
+An explicit `/smart-router on|off` also asks UG's CLI to replace the session controls that
+routing hooks apply over the environment, so an "off" saved earlier by the CLI or the skill
+cannot outlast the command. The mod writes no file itself: it runs the existing
+`--enable-smart-routing`/`--disable-smart-routing` entry point, which validates and replaces
+that file atomically. Session start restores only the launch baseline, so an override saved
+before `/clear` still survives it. The plugin test host provides no process capability, so
+this path is covered by the live skill-toggle journey rather than `claude plugin test`.
+
 The existing Claude skill-toggle integration journey checks recorded inference
 headers during its three calculation phases: launch recipe, `DISABLED` after off,
 and launch recipe after on. Each phase retains completed native parent/child

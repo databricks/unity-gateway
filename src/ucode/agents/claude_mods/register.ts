@@ -19,7 +19,28 @@ async function writeEnvironment($: EngineInterface, env: Environment): Promise<v
   await $.env.set('ANTHROPIC_CUSTOM_HEADERS', env.ANTHROPIC_CUSTOM_HEADERS);
 }
 
-async function setRouting($: EngineInterface, options: PluginOptions, enabled: boolean): Promise<void> {
+// The session-control file stays Python's to write: the CLI validates it and replaces it
+// atomically. The mod only requests the toggle it just applied to the environment.
+async function writeSessionControls($: EngineInterface, enabled: boolean): Promise<void> {
+  // Claude's capability scanner requires literal environment-variable names.
+  const python = await $.env.get('UCODE_SMART_ROUTER_PYTHON');
+  const sessionFile = await $.env.get('UCODE_SESSION_ENV_FILE');
+  if (!python || !sessionFile) {
+    throw new Error('Smart Router session controls are unavailable for this session.');
+  }
+  const flag = enabled ? '--enable-smart-routing' : '--disable-smart-routing';
+  const result = await $.process.run([python, '-m', 'ucode.cli', 'claude', flag]);
+  if (result.exitCode !== 0) {
+    throw new Error(`Smart Router controls exited ${result.exitCode}: ${result.stderr.trim()}`);
+  }
+}
+
+async function setRouting(
+  $: EngineInterface,
+  options: PluginOptions,
+  enabled: boolean,
+  syncSessionControls: boolean,
+): Promise<void> {
   const original = (key: string): string | undefined =>
     (options.unset as readonly string[]).includes(key) ? undefined : options[key] as string;
   const previous = await readEnvironment($);
@@ -37,6 +58,11 @@ async function setRouting($: EngineInterface, options: PluginOptions, enabled: b
   };
   try {
     await writeEnvironment($, environment);
+    // An explicit toggle must also replace the CLI/skill's saved session overrides,
+    // which the routing hooks apply on top of the environment and would otherwise win.
+    if (syncSessionControls) {
+      await writeSessionControls($, enabled);
+    }
   } catch (error) {
     // Restore earlier successful writes if a later environment write is denied.
     await writeEnvironment($, previous);
@@ -53,7 +79,7 @@ export function register(on: On, options: PluginOptions): void {
     if (launchedEnabled) {
       const current = await readEnvironment($);
       await setRouting($, options, current.ENABLE_SMART_ROUTING_V2 === '1' ||
-        current.ENABLE_SMART_ROUTING_SUBAGENT_ONLY === '1');
+        current.ENABLE_SMART_ROUTING_SUBAGENT_ONLY === '1', false);
     }
     return next(e);
   });
@@ -64,7 +90,7 @@ export function register(on: On, options: PluginOptions): void {
     if (action !== 'on' && action !== 'off') return {text: 'Usage: /smart-router on|off'};
     if (!launchedEnabled) return {text: 'Smart Router was not enabled for this session.'};
     try {
-      await setRouting($, options, action === 'on');
+      await setRouting($, options, action === 'on', true);
       const guidance = options.ENABLE_SMART_ROUTER_ORCHESTRATOR !== '1' ? '' : action === 'off'
         ? ' Earlier Smart Router Orchestrator instructions are superseded. Stop automatic delegation; honor explicit subagent requests using native model selection. Existing children can finish.'
         : ' Apply the smart-router-orchestrator skill to further work.';

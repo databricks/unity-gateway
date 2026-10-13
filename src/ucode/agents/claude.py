@@ -2259,6 +2259,9 @@ def launch(
             routing_setup_failed = True
         else:
             return
+    # This launch has no session controls, so withdraw the skill an earlier routed launch
+    # installed: otherwise `/smart-router` stays on offer and its command would launch Claude.
+    smart_routing_v2.remove_smart_router_session_skills(AGENT_CLAUDE)
     if workspace and not custom_oauth_cli_enabled(state.get("custom_oauth")):
         os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
     settings_override = None

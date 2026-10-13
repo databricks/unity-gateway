@@ -48,7 +48,9 @@ Managed routing defaults must not rewrite already-resolved version flags.
 Every new `smart_routing` or `smart_router` environment variable must be registered in
 `SMART_ROUTING_ENV_KEYS` in the same change, including orchestration controls.
 Pass Claude's resolved launch baseline through native `pluginConfigs` options in the existing
-launch settings. Keep the TypeScript static; toggles must not write configuration files.
+launch settings. Keep the TypeScript static; toggles must not write configuration files. An explicit toggle
+may delegate the session-control write to UG's CLI, which validates and replaces that file
+atomically; the mod itself still writes no file.
 
 ### Adding a parameter
 
