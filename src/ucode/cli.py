@@ -86,6 +86,7 @@ from ucode.managed_config import (
     get_managed_config,
     get_model_recommendation,
     load_managed_state,
+    managed_launch_workspace,
     normalize_managed_config,
     refresh_managed_config,
 )
@@ -2581,8 +2582,12 @@ def _launch_tool(
         # auto-configures it if unseen), so `ug claude --provider ... --workspace ...`
         # works without a prior `ug configure`.
         if workspace_url:
-            set_current_workspace(normalize_workspace_url(workspace_url))
+            set_current_workspace(managed_launch_workspace(workspace_url))
         existing = load_state()
+        launch_workspace = managed_launch_workspace(existing.get("workspace"))
+        if launch_workspace and not existing.get("workspace"):
+            set_current_workspace(launch_workspace)
+            existing = load_state()
         # Workspaces configured with --use-pat export the profile's PAT as
         # DATABRICKS_BEARER up front so every auth check below (and the
         # launched agent itself) uses the static token instead of OAuth.
@@ -2601,6 +2606,7 @@ def _launch_tool(
             else:
                 _auto_configure_tool(tool, custom_oauth=custom_oauth)
         state = ensure_provider_state(tool)
+        managed_launch_workspace(state.get("workspace"))
         # Remembered before the fallback below collapses the two cases: a managed config may not
         # silently override a provider the user typed on the command line (it errors instead).
         explicit_provider = provider
@@ -2995,12 +3001,15 @@ def _launch_managed_default(
 ) -> None:
     """Route bare ``ucode`` by whether the workspace publishes a managed config."""
     if workspace:
-        set_current_workspace(normalize_workspace_url(workspace))
+        set_current_workspace(managed_launch_workspace(workspace))
     state = load_state()
-    current = state.get("workspace")
+    current = managed_launch_workspace(state.get("workspace"))
     if not current:
         console.print(ctx.get_help())
         return
+    if not state.get("workspace"):
+        set_current_workspace(current)
+        state = load_state()
     install_databricks_cli(skip_version_check=skip_preflight)
     apply_pat_environment(state)
     coding_agent_config_feature_disabled = False

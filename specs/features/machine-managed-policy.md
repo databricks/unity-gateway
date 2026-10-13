@@ -21,7 +21,7 @@ The existing privileged writer atomically installs allowlisted Claude/Codex sett
 - R2: Install only `{workspace, config}`, preserving the raw remote configuration under `config`; no refresh timestamps or outcomes in the protected wrapper.
 - R3: Bare `ug`, `ug <agent>`, and indirect agent checks reuse fresh refresh metadata and check remote policy after the five-minute TTL.
 - R4: The installed machine file is the sole persisted policy source; the legacy home cache is neither read nor automatically migrated.
-- R5: Canonical workspace URLs determine identity. Never apply another workspace's policy.
+- R5: Canonical workspace URLs determine identity. The installed workspace is authoritative for launches and refresh; reject a different selected workspace instead of falling back to unmanaged behavior.
 - R6: Install atomically with root-owned `0755` directory and root-owned `0644` file; reject unsafe targets and add no authentication data.
 - R7: Failed privileged configure writes raise actionable errors. Failed launch writes warn and continue with the matching installed policy.
 - R8: No-config or feature-disabled removes only a matching installed policy. If none exists, do not create a file or directory to represent absence.
@@ -34,13 +34,15 @@ The existing privileged writer atomically installs allowlisted Claude/Codex sett
 - R15: Only explicit configure may invoke sudo (interactive prompt or scripted `sudo -n`); root provisioning needs no sudo. Non-root launch policy writes/removals are deferred without even a sudo capability probe.
 - R16: Deferred launch updates direct users to IT/an administrator, not to a configure command they cannot run.
 - R17: Document that the arbitrary-string header schema does not prohibit secrets and that the entire readable raw policy must contain no secret values.
+- R18: Warn once per distinct pending policy change across TTL expiry, storing only its hash in `refresh_ts.json`; clear the hash on reconciliation.
+- R19: Validate launch workspace before cache reuse, authentication, or bootstrap, including dry-run and skip-preflight. Use the installed workspace when none is selected; only explicit administrator configure may replace it.
 
 ## Clarifications
 
 - Q1: Which platforms are supported?
   A1: Linux and macOS use `/etc/unitygateway/managed-settings.json`. Unsupported-platform writes fail explicitly; do not introduce a user-cache policy fallback.
 - Q2: How many workspaces does the machine file hold?
-  A2: One active workspace. Installing another workspace replaces it for all users. Reads ignore foreign-workspace policy; a changed launch installation can replace it only through the privileged writer.
+  A2: One active workspace. Explicit administrator configure can replace it for all users. Launch refuses a mismatched workspace and never uses unmanaged fallback to escape the installed policy.
 - Q3: What if sudo is unavailable?
   A3: Configure installation fails. Launch installation warns and retains the old matching policy; if none is installed, existing unmanaged fallback remains.
 - Q4: Why not use the installed file's inode timestamps for refresh throttling?
@@ -52,7 +54,9 @@ The existing privileged writer atomically installs allowlisted Claude/Codex sett
 - Q7: Is the local config identical to the latest remote response?
   A7: `config` preserves raw fields when installed. Only API `retrieved_time` is ignored for drift comparison, so that informational field may remain from an earlier read until actual policy changes.
 - Q8: Does Bill's review request policy-controlled refresh intervals?
-  A8: UNRESOLVED. His comment asks about the workspace source of truth for refresh, not explicitly an interval. The supported schema has no interval field. Keep five minutes pending confirmation; do not invent a wire field.
+  A8: The user confirmed that the installed workspace should select the refresh source, with mismatched launch workspaces refused. Keep the five-minute TTL; the supported schema has no interval field.
+- Q9: Where is the deployment's 24-hour MDM refresh default?
+  A9: UNRESOLVED. No scheduler exists in this PR's baseline; freshly fetched main has a one-shot `scripts/mdm-bootstrap.sh` with no refresh interval. Recommend four hours (`14400` seconds) in deployment scheduling, but the actual scheduler location is needed to change its default.
 
 ## Acceptance Criteria
 
@@ -61,7 +65,7 @@ The existing privileged writer atomically installs allowlisted Claude/Codex sett
 - AC3: GIVEN a fresh matching check WHEN bare `ug` launches THEN it reads installed policy without another policy API request.
 - AC4: GIVEN configure already refreshed policy WHEN Claude or AI Tools checks it again THEN the shared refresh metadata prevents a duplicate API request or privileged write.
 - AC5: GIVEN only legacy home policy WHEN a launch refresh cannot install policy THEN the legacy copy is not read or promoted.
-- AC6: GIVEN foreign installed workspace WHEN selected-workspace policy cannot be installed THEN no foreign policy is returned or applied.
+- AC6: GIVEN installed machine policy WHEN launch selects a foreign workspace THEN launch fails before cache/auth/bootstrap, without requests or policy/state writes; dry-run and skip-preflight do not bypass the guard.
 - AC7: GIVEN matching installed policy WHEN no-config or feature-disabled is fetched and removal succeeds THEN the file is removed and the outcome is cached only in refresh metadata.
 - AC8: GIVEN installed policy WHEN privileged replacement fails THEN bytes remain intact; configure errors and launch warns while returning the installed policy.
 - AC9: GIVEN failed API/authentication reads WHEN launching THEN existing matching-policy fallback and unsupported-version diagnostics remain.
@@ -76,6 +80,10 @@ The existing privileged writer atomically installs allowlisted Claude/Codex sett
 - AC18: GIVEN workspace without policy and no matching installed file WHEN refreshed THEN no protected file or directory is created.
 - AC19: GIVEN deferred launch update WHEN immediately relaunched THEN the recorded check throttles another API request/warning within five minutes.
 - AC20: GIVEN explicit configure WHEN changed policy requires privilege THEN existing interactive/scripted sudo behavior remains available.
+- AC21: GIVEN a deferred policy change WHEN repeated launch checks expire THEN only the first check warns and all checks retain installed policy; a distinct fetched policy warns again.
+- AC22: GIVEN a pending hash WHEN retrieval metadata or JSON object key order alone changes THEN no new change warning occurs.
+- AC23: GIVEN a pending update/removal WHEN remote policy matches installed policy or root/MDM/configure reconciles it THEN the next successful check clears the hash.
+- AC24: GIVEN installed policy and no selected workspace WHEN launch checks policy THEN the installed workspace is the remote source, while per-user authentication remains per-user.
 
 ## Constraints
 
@@ -100,10 +108,11 @@ The existing privileged writer atomically installs allowlisted Claude/Codex sett
 
 1. Change the authoritative policy path and persist only workspace/config. Normalize at consumption time; ignore only volatile retrieval metadata for comparison.
 2. Extend the existing atomic privileged writer with fixed policy installation/removal, root ownership, readable modes, configure-only sudo, a no-elevation launch guard, and root support.
-3. Move check metadata into the user-owned sidecar. Keep five-minute throttling, negative outcomes, and fingerprint invalidation without copying policy.
+3. Move check metadata into the user-owned sidecar. Keep five-minute throttling, negative outcomes, fingerprint invalidation, and a pending-policy hash for once-per-change warnings without copying policy.
 4. Force refresh in all explicit agent configuration variants. Keep launch and indirect agent refreshes; after one check they reuse the sidecar.
-5. Handle changed installs and matching removals through the writer. Configure errors on failed writes; launches warn and use the installed fallback, throttling retries.
+5. Handle changed installs and matching removals through the writer. Configure errors on failed writes; launches warn once per distinct change and use the installed fallback, throttling retries. Clear pending hashes after reconciliation.
 6. Update export/recovery documentation and integration consumers. Validate temporary-path unit/component coverage and integration contracts; report live sudo coverage as unrun without a clean VM.
+7. Use the installed workspace as launch/refresh authority. Refuse mismatched state/flags before cache/auth/bootstrap; allow explicit administrator configure to switch the machine workspace.
 
 ### Affected Components
 
@@ -115,7 +124,7 @@ The existing privileged writer atomically installs allowlisted Claude/Codex sett
 
 ### Data Model Changes
 
-Machine policy is `{workspace, config}`. User refresh metadata maps each canonical workspace to `{last_checked_at, outcome, policy_fingerprint}`. Fingerprint contains existence, device, inode, size, mtime, and ctime. No second raw/normalized policy copy is introduced.
+Machine policy is `{workspace, config}`. User refresh metadata maps each canonical workspace to `{last_checked_at, outcome, policy_fingerprint}` plus optional `pending_config_hash` for deferred updates/removals. The SHA-256 hash covers workspace and raw policy excluding `retrieved_time`, with sorted JSON keys. Fingerprint contains existence, device, inode, size, mtime, and ctime. No second raw/normalized policy copy is introduced.
 
 ### API Changes
 
@@ -124,14 +133,14 @@ None. Continue using the existing coding-agent-configs GET. Internal policy save
 ### Risks and Trade-offs
 
 - Root-writable versus root-readable: policy can be read without sudo, but all machine users can see its configuration metadata. Arbitrary-string headers are not schema-safe for secrets; all raw policy fields must contain no secrets.
-- A single active machine workspace is intentional; switches affect other users, who never consume mismatched policy.
+- A single active machine workspace is intentional; launch selections must match it and fail rather than run unmanaged. Administrator configure switches affect other users.
 - A user-owned timestamp avoids pointless privileged writes after unchanged checks but is mutable and not a security enforcement boundary.
 - TTL avoids every-launch API latency but delays change detection by up to five minutes. Fingerprints detect local changes, not remote freshness.
-- Warning/fallback favors availability over strict latest-policy enforcement. Denied updates/removals leave old policy active; retries are throttled for five minutes.
+- Warning/fallback favors availability over strict latest-policy enforcement. Denied updates/removals leave old policy active; retries are throttled for five minutes and warnings deduplicated across expiry by pending hash.
 - Non-root launch writes are always deferred, even for administrators with cached sudo; this deliberately favors MDM ownership and zero elevation attempts over automatic privileged launch repair. Configure retains interactive sudo and scripted `sudo -n`; root refresh writes directly.
 - Ignoring `retrieved_time` avoids false drift but means that field does not necessarily represent the latest check; use the sidecar instead.
 - Deletion avoids empty tombstones; sidecar outcomes preserve absent/disabled semantics.
-- Refresh metadata atomic writes do not serialize simultaneous workspace checks; a lost timestamp entry causes an extra check, not an alternate policy copy.
+- Refresh metadata atomic writes do not serialize simultaneous workspace checks; a lost timestamp/hash entry can cause an extra check/warning, not an alternate policy copy.
 - Legacy home policy is intentionally not trusted/promoted; configure must retrieve/install authoritative workspace policy.
 - Existing forgiving readers remain, and this is not a fail-closed enforcement redesign.
 - Packaged-writer root ownership and non-root TTY/script deferral are checked in a disposable Linux container. Actual configure password interaction and full MDM/agent provisioning still require separately selected credentials and machine policy.
@@ -165,6 +174,13 @@ None. Continue using the existing coding-agent-configs GET. Internal policy save
 - [x] T14: Update integration consumers and clean-machine runner checks.
 - [x] T15: Document permissions, refresh lifecycle, single-workspace scope, and migration.
 
+### Phase 5 — Review Follow-ups
+
+- [x] T16: Hash pending workspace policy, suppress repeat warnings, and clear the hash on reconciliation.
+- [x] T17: Guard all launch paths against workspace mismatch before setup and use installed workspace for remote refresh.
+- [x] T18: Add unit regressions and a black-box foreign-workspace rejection journey; document the four-hour MDM scheduling recommendation.
+- [ ] T19: Change the actual MDM refresh default to four hours once its scheduler location is supplied; no such default exists in this PR or fetched main.
+
 ### Validation
 
-- [x] T-val: Rerun focused tests, integration contracts, lint, formatting, types, and root/non-root container component checks after review fixes. Focused checks: 970 passed; real container root ownership/modes and root/non-root persistence checks passed. Prior full suite: 2783 passed, 44 skipped, 9 unrelated/environment failures (documented in the PR). Full live MDM/agent provisioning remains pending explicitly selected workspace credentials.
+- [x] T-val: Rerun focused tests, integration contracts, lint, formatting, types, and root/non-root container component checks after review fixes. Focused checks: 1009 passed; real container root ownership/modes, root/non-root persistence, and installed-CLI workspace rejection checks passed. Managed integration file: 5 cases collected, not a live pass. Prior full suite: 2783 passed, 44 skipped, 9 unrelated/environment failures (documented in the PR). Full live MDM/agent provisioning remains pending explicitly selected workspace credentials; the MDM scheduler source is still needed for T19.

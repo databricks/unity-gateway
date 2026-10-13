@@ -76,7 +76,7 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_and_ucode_web_search_helpers_preserve_mcp_stdio` | Initialize and list tools through both web-search helper commands | Exactly the MCP JSON-RPC responses; no text/ANSI contamination; existing server/tool identities preserved; no model request |
 
 With both agents selected there are **60 live cases** (12 interactive TUI cases),
-**6 managed-workspace cases** (marker `managed`, run against workspaces that
+**7 managed-workspace cases** (marker `managed`, run against workspaces that
 publish a CodingAgentConfig), **1 two-workspace case** (marker `workspace_switch`),
 **25 managed-fixture cases** (marker `managed_fixture`, with only
 the CodingAgentConfig input injected), and **7 installation checks**. The 14 retained numbered scenarios
@@ -161,6 +161,13 @@ These are unit/component checks; they do not establish live sudo password-prompt
 `refresh_ts.json`, five-minute throttling, no privileged write for unchanged policy or
 retrieval-only drift, configure-only sudo selection, deferred-update warning/fallback, matching
 removal, workspace isolation, fingerprint invalidation, and dry-run behavior.
+Pending-change regressions cover one warning across expired checks, distinct-change warnings,
+retrieval/key-order stability, removal, and clearing after remote/MDM/configure reconciliation.
+Workspace-lock regressions in `test_managed_config.py` and `test_cli.py` refuse foreign workspaces
+before cache/auth/bootstrap, including bare/agent launches, dry-run, and skip-preflight.
+`test_ug_managed_machine_refuses_foreign_workspace_launch` adds the black-box managed journey:
+public configure followed by rejected bare/Claude/Codex workspace overrides, with policy,
+refresh metadata, and user state unchanged. This new live case has not been run locally.
 `test_ug_managed_config_launch_reuses_cache_within_ttl` is the live journey for root-owned `0644`
 policy, user-owned `0600` timestamps, and unchanged policy bytes/inode/mtime/ctime after an
 expired unchanged check. Its live sudo/password behavior still requires a disposable clean VM.
@@ -168,7 +175,8 @@ Non-root writer regressions cover terminal/script launches, initial install and 
 verify that neither a sudo capability probe nor a prompting worker is started.
 `scripts/check_machine_policy_privileges.py` runs packaged persistence in a disposable Docker
 container, checking real root ownership/modes and non-root TTY/script write deferral. It is
-component evidence, not a live workspace/agent or full MDM provisioning journey.
+component evidence, not a live workspace/agent or full MDM provisioning journey. The updated
+harness also checks installed-CLI foreign-workspace rejection as a non-sudo user.
 
 | Scenario | Status / requirement |
 | --- | --- |

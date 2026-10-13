@@ -161,3 +161,41 @@ def test_ug_managed_config_launch_reuses_cache_within_ttl(live_session, workspac
     assert policy.stat().st_ino == installed_stat.st_ino
     assert policy.stat().st_mtime_ns == installed_stat.st_mtime_ns
     assert policy.stat().st_ctime_ns == installed_stat.st_ctime_ns
+
+
+@pytest.mark.managed
+@pytest.mark.claude
+def test_ug_managed_machine_refuses_foreign_workspace_launch(live_session, workspace):
+    """Scenario: configure a managed machine, then select a foreign workspace for launch.
+
+    Expected: bare ug, Claude, and Codex refuse the foreign workspace even with skip-preflight
+    or dry-run, without changing user state, refresh metadata, or the installed policy.
+    """
+    session = live_session
+    session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
+    policy = Path("/etc/unitygateway/managed-settings.json")
+    refresh = session.home / ".ucode" / "refresh_ts.json"
+    state = session.home / ".ucode" / "state.json"
+    before = {path: path.read_bytes() for path in (policy, refresh, state)}
+    installed_stat = policy.stat()
+    foreign = "https://not-the-managed-workspace.invalid"
+    for tool in (None, "claude", "codex"):
+        for dry_run in (False, True):
+            args = [tool] if tool else []
+            args += ["--workspace", foreign, "--skip-preflight"]
+            if dry_run:
+                args = ["--dry-run", *args]
+            result = session.run(*args, ok=False, timeout=30)
+            assert result.returncode == 1, (result.stdout, result.stderr)
+            output = " ".join((result.stdout + result.stderr).split())
+            assert "Launch refused" in output, output
+            assert workspace.rstrip("/") in output, output
+            assert foreign in output, output
+            assert "IT team or an administrator" in output, output
+            assert {path: path.read_bytes() for path in before} == before
+            after_stat = policy.stat()
+            assert (after_stat.st_ino, after_stat.st_mtime_ns, after_stat.st_ctime_ns) == (
+                installed_stat.st_ino,
+                installed_stat.st_mtime_ns,
+                installed_stat.st_ctime_ns,
+            )

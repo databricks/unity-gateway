@@ -88,6 +88,38 @@ print("PASS: non-root read, unchanged check, and deferred install/removal; tty="
         os.close(terminal_slave)
     assert managed_file_fingerprint(policy) == before
     assert json.loads(policy.read_text())["config"] == original
+    foreign = "https://other.invalid"
+    user_files = [
+        Path(child_env["HOME"]) / ".ucode" / filename
+        for filename in ("state.json", "refresh_ts.json")
+    ]
+    user_state = {path: path.read_bytes() if path.exists() else None for path in user_files}
+    for tool in (None, "claude", "codex"):
+        for dry_run in (False, True):
+            args = [tool] if tool else []
+            args += ["--workspace", foreign, "--skip-preflight"]
+            if dry_run:
+                args = ["--dry-run", *args]
+            result = subprocess.run(
+                ["ug", *args],
+                user=10001,
+                group=10001,
+                extra_groups=[],
+                env=child_env,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            output = " ".join((result.stdout + result.stderr).split())
+            assert result.returncode == 1, output
+            assert "Launch refused" in output, output
+            assert workspace in output and foreign in output, output
+            assert managed_file_fingerprint(policy) == before
+            assert {
+                path: path.read_bytes() if path.exists() else None for path in user_files
+            } == user_state
+    print("PASS: installed ug refuses foreign workspace for non-root bare/Claude/Codex launches")
     save_managed_state(workspace, changed, allow_sudo=False)
     assert load_managed_configuration(workspace) == changed
     assert policy.stat().st_uid == 0

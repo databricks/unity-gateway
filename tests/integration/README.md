@@ -23,6 +23,12 @@ cover configure-only elevation, non-root read-only launches, IT guidance, remova
 metadata-only drift. Root/non-root packaged-writer checks in a disposable Linux container are
 component evidence, not live MDM provisioning or Claude/Codex launch evidence. Running the full MDM
 bootstrap and agent journey still requires explicitly selected workspace provisioning credentials.
+The foreign-workspace journey configures through the public CLI, then verifies that bare ug,
+Claude, and Codex reject a different `--workspace` with dry-run/skip-preflight without changing
+machine policy, user state, or refresh metadata. It is implemented but not locally run; unit
+regressions cover workspace-authoritative refresh and pending-hash warning suppression.
+The credential-free disposable-container harness passes real installed-CLI mismatch rejection
+as UID 10001; it does not replace the unrun real-workspace configure journey.
 
 ## Run a specific combination
 
@@ -243,8 +249,9 @@ they only configure, list models, and open/close the picker. Other live CUJs per
 real model tasks.
 
 There are **60 live cases** (including 12 TUI journeys) and **7 installation
-checks** with both agents. A separate **6 managed-workspace cases** (one per agent, an idempotent
-re-configure, a cache-TTL journey, and two Claude defaults cases; marker `managed`) run against
+checks** with both agents. A separate **7 managed-workspace cases** (one per agent, an idempotent
+re-configure, a cache-TTL journey, a foreign-workspace rejection journey, and two Claude defaults
+cases; marker `managed`) run against
 workspaces that publish CodingAgentConfigs; see "Managed-workspace journeys" below. One **`workspace_switch` case**
 uses two real workspaces and checks skills MCP cleanup and a completed Claude task.
 A further **25 `managed_fixture`
@@ -262,7 +269,7 @@ constants in the runner; CI only needs `UG_MPS_DEFAULTS_CLIENT_SECRET` for west-
 mints short-lived tokens and passes bearers to pytest; each test selects its target bearer for
 `ug configure` and Claude. The client secrets do not enter the pytest process.
 The 14 retained numbered scenarios comprise 24 explicit journeys: 12 managed and 12 unmanaged
-executions; the complete integration suite collects 99 executions. See the named coverage and gaps matrix in
+executions; the complete integration suite collects 100 executions. See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
 ```bash

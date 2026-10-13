@@ -29,6 +29,7 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 from typing import NamedTuple, cast
 
@@ -640,6 +641,15 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+def _policy_content(config: dict) -> dict:
+    return {key: value for key, value in config.items() if key != "retrieved_time"}
+
+
+def _policy_hash(workspace: str, config: dict) -> str:
+    payload = {"workspace": normalize_workspace_url(workspace), "config": _policy_content(config)}
+    return sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
 def save_managed_state(
     workspace: str, config: dict, *, interactive: bool = False, allow_sudo: bool = True
 ) -> None:
@@ -662,8 +672,7 @@ def save_managed_state(
     if (
         matches
         and isinstance(existing_config, dict)
-        and {key: value for key, value in existing_config.items() if key != "retrieved_time"}
-        == {key: value for key, value in config.items() if key != "retrieved_time"}
+        and _policy_content(existing_config) == _policy_content(config)
     ):
         return
     payload = {"workspace": workspace, "config": config}
@@ -729,6 +738,20 @@ def managed_state_workspace() -> str | None:
     return workspace if isinstance(workspace, str) and workspace else None
 
 
+def managed_launch_workspace(workspace: str | None) -> str | None:
+    """Resolve launch policy from the installed workspace, refusing a different selection."""
+    installed = managed_state_workspace()
+    installed = normalize_workspace_url(installed) if installed and installed.strip() else None
+    selected = normalize_workspace_url(workspace) if workspace else None
+    if installed and selected and selected != installed:
+        raise RuntimeError(
+            f"This machine is managed for {installed}, but your selected workspace is {selected}. "
+            f"Launch refused. Use `--workspace {installed}` or ask your IT team or an administrator "
+            "to change the machine policy."
+        )
+    return installed or selected
+
+
 def _cached_result_if_fresh(workspace: str) -> ManagedConfigResult | None:
     """Reuse a recent user-owned refresh stamp only while the installed policy is unchanged."""
     entry = config_io.read_json_safe(REFRESH_TS_PATH).get(normalize_workspace_url(workspace))
@@ -753,7 +776,9 @@ def _cached_result_if_fresh(workspace: str) -> ManagedConfigResult | None:
     return None
 
 
-def _record_refresh(workspace: str, result: ManagedConfigResult) -> None:
+def _record_refresh(
+    workspace: str, result: ManagedConfigResult, *, pending_config_hash: str | None = None
+) -> None:
     if config_io.is_dry_run():
         return
     data = config_io.read_json_safe(REFRESH_TS_PATH)
@@ -768,6 +793,8 @@ def _record_refresh(workspace: str, result: ManagedConfigResult) -> None:
         ),
         "policy_fingerprint": managed_file_fingerprint(MANAGED_CONFIG_PATH),
     }
+    if pending_config_hash is not None:
+        data[normalize_workspace_url(workspace)]["pending_config_hash"] = pending_config_hash
     try:
         config_io.atomic_write_json(REFRESH_TS_PATH, data)
         _restrict_permissions(REFRESH_TS_PATH)
@@ -783,13 +810,19 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
     Only explicit configuration may invoke sudo. Non-root launches are read-only regardless of
     terminal attachment or cached sudo access; root launches can install without sudo.
 
-    Failed launch writes warn and return the matching installed policy, recording the attempt to
-    avoid repeated prompts within the TTL. Explicit configuration write failures raise instead.
+    The installed workspace is authoritative for launches; mismatched selections fail before
+    cached reads or remote requests. Explicit configure can change the machine workspace.
+    Failed launch writes warn once per distinct pending policy and return the installed policy,
+    recording the attempt for throttling. Explicit configuration write failures raise instead.
     Fetch failures retain the existing installed-policy fallback and do not advance the timestamp.
     No-config and ``FEATURE_DISABLED`` remove a matching installed policy; if removal fails, launches
     keep using it with a warning rather than pretending it was removed.
     """
-    workspace = state.get("workspace")
+    workspace = (
+        state.get("workspace")
+        if force_refresh
+        else managed_launch_workspace(state.get("workspace"))
+    )
     if not workspace:
         return ManagedConfigResult(None, False)
     if config_io.is_dry_run() and not force_refresh:
@@ -807,6 +840,7 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
         if not _is_feature_disabled(reason):
             fallback = _persisted_fallback(workspace, reason, refused=_is_permission_denied(reason))
             return ManagedConfigResult(fallback, False)
+    pending_config_hash = None
     try:
         save_managed_state(
             workspace, raw or {}, interactive=force_refresh, allow_sudo=force_refresh
@@ -824,16 +858,19 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
             if result.manifest is not None
             else "Continuing without a local workspace policy."
         )
-        print_warning(
-            "Your workspace policy changed. Ask your IT team or an administrator to apply the "
-            f"update on this machine. {fallback_message}"
-        )
+        pending_config_hash = _policy_hash(workspace, raw or {})
+        entry = config_io.read_json_safe(REFRESH_TS_PATH).get(normalize_workspace_url(workspace))
+        if not isinstance(entry, dict) or entry.get("pending_config_hash") != pending_config_hash:
+            print_warning(
+                "Your workspace policy changed. Ask your IT team or an administrator to apply the "
+                f"update on this machine. {fallback_message}"
+            )
     else:
         result = ManagedConfigResult(
             normalize_managed_config(raw) if raw is not None else None,
             reason is not None and _is_feature_disabled(reason),
         )
-    _record_refresh(workspace, result)
+    _record_refresh(workspace, result, pending_config_hash=pending_config_hash)
     return result
 
 
