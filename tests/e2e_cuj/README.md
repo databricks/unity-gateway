@@ -114,7 +114,7 @@ until no background work remains, including a child resumed after its initial an
 Only then does the test close the task view and submit `/exit`.
 Each preset also runs public `ug revert` in cleanup, including after a failed assertion, so
 interactive launches' OS-managed settings cannot contaminate the next preset's configuration.
-The existing Claude explicit-model precedence case remains skipped; the routing-disabled case
+The Claude and Codex explicit-model precedence cases both run; the routing-disabled case
 still requires a separately preconfigured workspace.
 
 With the same live prerequisites:
