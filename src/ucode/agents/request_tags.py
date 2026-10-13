@@ -47,7 +47,7 @@ def request_tags_header_value(env: Mapping[str, str] | None = None) -> str | Non
 
 
 def traffic_id_header_value() -> str | None:
-    """The ``x-databricks-traffic-id`` value from ``UCODE_TRAFFIC_ID``, or None when unset."""
+    """The ``x-databricks-traffic-id`` value from ``UG_TRAFFIC_ID``, or None when unset."""
     value = os.environ.get(TRAFFIC_ID_ENV_VAR, "").strip()
     if "\n" in value or "\r" in value:
         print_warning_err(f"Ignoring {TRAFFIC_ID_ENV_VAR}: value contains line breaks.")

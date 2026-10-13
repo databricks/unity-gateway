@@ -48,6 +48,6 @@ class TestRequestTagsHeaderValue:
 
 
 def test_traffic_id_with_line_break_is_skipped(monkeypatch, capsys):
-    monkeypatch.setenv("UCODE_TRAFFIC_ID", "testenv://liteswap/a\nX-Injected: 1")
+    monkeypatch.setenv("UG_TRAFFIC_ID", "testenv://liteswap/a\nX-Injected: 1")
     assert traffic_id_header_value() is None
-    assert "UCODE_TRAFFIC_ID" in capsys.readouterr().err
+    assert "UG_TRAFFIC_ID" in capsys.readouterr().err

@@ -30,7 +30,7 @@ AI_GATEWAY_REQUEST_TAGS_ENV_VAR = "AI_GATEWAY_REQUEST_TAGS"
 
 # LiteSwap routes a request to a swap unit by this header, e.g. `testenv://liteswap/<id>`.
 TRAFFIC_ID_HEADER = "x-databricks-traffic-id"
-TRAFFIC_ID_ENV_VAR = "UCODE_TRAFFIC_ID"
+TRAFFIC_ID_ENV_VAR = "UG_TRAFFIC_ID"
 
 
 # MCP server registration scopes. Claude Code supports local/project/user; the
