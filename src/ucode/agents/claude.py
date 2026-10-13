@@ -2260,9 +2260,8 @@ def launch(
         else:
             return
     else:
-        # Without routing there are no session controls, so withdraw what an earlier launch
-        # installed: `/smart-router` would stay on offer with no mod to intercept it, and its
-        # command would launch another Claude.
+        # If smart routing is not enabled by any environment flags, then remove the
+        # /smart-router and smart router orchestrator skills
         smart_routing_v2.remove_smart_router_session_skills(AGENT_CLAUDE)
     if workspace and not custom_oauth_cli_enabled(state.get("custom_oauth")):
         os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
