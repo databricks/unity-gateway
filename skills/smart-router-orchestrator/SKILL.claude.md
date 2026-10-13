@@ -11,7 +11,7 @@ description: >-
 model: inherit
 argument-hint: "[task]"
 metadata:
-  version: "1.2.0"
+  version: "1.3.0"
 
 ---
 
@@ -52,16 +52,21 @@ before using a different role map.
 
 ## Delegation gate
 
-Start with the smallest plan that can deliver the caller's complete request.
-The skill being available does not itself require a child. Keep a connected
-investigation in the root when it already has the necessary context or when
-briefing plus review would repeat the same work. Delegate when a child can own
-an independently useful deliverable and replace enough root work to justify
-its execution and acceptance. Name that displaced work before spawning; broad
-scope, many files, or a cheaper model alone is insufficient. A natural zero-child
-outcome is valid. An explicit no-delegation request takes precedence.
+Choose ownership from the unresolved work before investigating it. A connected
+investigation, including its dependent questions, can itself be one complete
+owner assignment; it need not contain a separate parallel branch. Having the
+necessary context means already having decisive evidence for the caller's
+requirements, not merely knowing the vocabulary, file names, or entrypoints.
+Finish in the root when retained evidence and a bounded check suffice, or when
+briefing and acceptance would repeat the work. Otherwise compare complete
+child ownership plus acceptance with acquiring and checking all that evidence
+in the root. Delegate when that assignment replaces enough root work to justify
+its execution and acceptance; name the displaced work and keep it with its owner.
+Broad scope, many files, or a cheaper model alone is insufficient. Natural
+zero-child outcomes remain valid, and explicit no-delegation requests take
+precedence.
 
-Choose ownership before solving the task. Do not split by numbered questions,
+Choose the execution path after the gate settles. Do not split by numbered questions,
 files, or languages alone, and do not reserve a connected branch merely to keep
 the parent busy. Launch ready independent assignments together. Keep required
 independent checks, but do not add an automatic reviewer or manager stage.
@@ -82,7 +87,9 @@ or truncated portions instead of rereading them as a setup ritual.
 Brief each owner on the outcome, context, scope, constraints, authority,
 acceptance criteria, evidence, and delivery rule below. Pass established findings,
 decisions, relevant locations, and known validation commands so the child need
-not rediscover solved work. Include role constraints and these research rules so
+not rediscover solved work. Repeat the existing no-recursive-teams and
+return-to-named-owner boundary in every child brief; inherited policy text is
+insufficient. Include role constraints and these research rules so
 they survive routing.
 
 Tie each investigation step to an unresolved caller requirement. Start at the
@@ -104,15 +111,17 @@ Assign common prerequisites to one discovery owner and share its concise cited
 findings with dependent owners. Merge assignments that would reconstruct the same
 investigation; preserve targeted checks rather than banning shared file reads.
 
-Keep the assigned research or edit/test/fix loop with its owner. Return the
-integration-ready answer or change, decisive evidence, validation results, and
-unresolved issues, not routine logs or search dumps unless needed for verification
-or requested. Cover every assigned caller requirement and material qualification
-without speculative scope expansion, arbitrary caps, or a duplicate checklist.
-Check coverage and important claims before returning. A terminal reply delivers
-the result, not a progress update; if blocked, state completed coverage, the
-dependency, and explicit partial status. Preserve the requested presentation and
-all required checks; do not make the parent reconstruct the answer from raw facts.
+Keep the assigned research or edit/test/fix loop with its owner. Return a
+single answer-shaped handoff mapping every assigned caller requirement to
+decisive evidence, validation results, unresolved issues, and the requested
+presentation. Before acceptance, every caller-required evidence item must be cited. If one is missing, the same owner must make a focused amendment to obtain it or state the concrete unavailable dependency before returning partial status; do not restart the whole investigation. Do not restate the parent's plan, assignment, or source narrative
+when it does not substantiate a caller requirement. Preserve every material
+qualification and required check; do not add a duplicate checklist or speculative
+scope. Check coverage and important claims before returning. A terminal reply
+delivers the result, not a progress update; if blocked, state completed coverage,
+the dependency, and explicit partial status. The root may assemble the final
+cross-owner response from these handoffs without reconstructing the answer from
+raw facts.
 
 Keep private inter-agent source references lossless but compact. When parent and
 child share an unambiguous workspace root, declare it once and cite relative paths
