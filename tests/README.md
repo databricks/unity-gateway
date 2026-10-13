@@ -192,6 +192,12 @@ definitions, and temporary plugin loading in both routing modes. Existing launch
 tests cover caller argument preservation and file removal after exit. These checks
 do not cover plugin-write/process-start failures, native plugin refresh, or daemon behavior.
 
+`test_claude_pty_replay.py` drives `run_claude_pty` against fake TUIs. One models Claude Code
+2.1.295 and later, which keep a hook-blocked prompt in the input box: `/model` must run as a
+command, and the replay must arrive unchanged after a switch, a switch timeout, or a missing
+quiet window. These are component checks; live first-prompt routing on a pinned Claude Code
+version is not executed here.
+
 `test_smart_router.py` executes the installed skill's shell commands with another `ug`
 first in PATH and a launching interpreter path containing spaces. Both agents' toggles
 must update the session controls through the launching installation. Launch tests check

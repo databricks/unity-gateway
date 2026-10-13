@@ -863,8 +863,15 @@ capture_path.write_text(json.dumps({
         )
 
         assert result == 0
-        assert json.loads(capture.read_text()) == {
-            "command": "/model system.ai.claude-sonnet-5\r",
-            "replayed": "\x1b[200~fix\nthe parser\x1b[201~\r",
-            "restored_before_replay": True,
-        }
+        captured = json.loads(capture.read_text())
+        # Claude Code 2.1.295+ keeps the blocked prompt in the input box, so both
+        # writes start with Ctrl-U presses that clear it.
+        for key, payload in (
+            ("command", "/model system.ai.claude-sonnet-5\r"),
+            ("replayed", "\x1b[200~fix\nthe parser\x1b[201~\r"),
+        ):
+            written = captured[key]
+            assert written.endswith(payload)
+            clear = written[: -len(payload)]
+            assert clear and set(clear) == {"\x15"}, f"{key} must start with Ctrl-U presses"
+        assert captured["restored_before_replay"] is True
