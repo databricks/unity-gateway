@@ -2481,8 +2481,6 @@ def _auto_configure_tool(
         if managed is not None:
             provider = None
         else:
-            # This setup stands in for `ug configure`, so later plain launches keep the provider
-            # instead of falling back to the default gateway.
             state = set_provider_service(state, tool, provider)
 
     state = configure_single_tool(tool, state, provider=provider)
@@ -2500,8 +2498,8 @@ def _auto_configure_tool(
     )
     if provider is not None:
         print_note(
-            f"Saved {provider} as the provider for future `ug {tool}` launches. "
-            "Run `ug configure` to change it."
+            f"`ug {tool}` had no saved settings yet, so {provider} is now saved as its provider "
+            f"and later `ug {tool}` launches use it. Run `ug configure` to change it."
         )
 
 
