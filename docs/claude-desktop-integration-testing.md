@@ -101,7 +101,8 @@ process boundaries.
   - warn-only Desktop-unavailable path returns exit 0 while reporting the warning;
   - initial profile selection, model-list refresh on a later configure, repeat
     configure without duplicate profiles, preservation of unrelated profiles/keys,
-    and public <code>ug revert</code> ownership behavior.
+    deletion/recreation with the same workspace UUID, and public
+    <code>ug revert</code> ownership behavior.
 - <code>tests/integration/test_ug_claude_desktop.py</code>
   - launch the real Desktop app and enter Cowork;
   - connect a folder through the UI;
@@ -145,14 +146,29 @@ do not hand-write application state to manufacture a scenario.
 
 - First configure creates one Unity Gateway profile and selects it without removing
   existing profiles.
-- A second configure updates the recorded profile ID and model list without adding a
-  duplicate entry. User-renamed or user-owned fields remain unchanged.
+- A second configure retains the same workspace UUID and refreshes the model list
+  without adding a duplicate entry. Edited or deleted UG-owned fields are reapplied;
+  unknown fields and user-owned optional fields remain unchanged. Previously managed
+  optional fields use new configure values when supplied and their last UG values
+  otherwise. Renaming the UG metadata entry still produces a conflict warning.
+- Delete the UG profile through Desktop's UI, quit Desktop, and run configure again.
+  Verify exactly one recreated profile with the original UUID, selected and capable
+  of completing a new Cowork task. Revert must restore the selection active before
+  recreation.
+- Configure the same workspace using another explicitly selected Databricks CLI
+  profile. Verify the helper arguments change but the Desktop UUID does not.
+- In two fresh disposable users, configure equivalent spellings of the same
+  workspace URL and verify matching UUIDs. Configure a second workspace and verify
+  a distinct UUID and preservation of the first profile.
+- Generate a random-ID UG profile using the pinned older UG build, then upgrade
+  through the public configure command. Verify migration to one deterministic
+  profile without losing unknown fields or unrelated profile selections.
 - Change the selected profile in Desktop, rerun configure, and verify the documented
   ownership behavior. Record the result rather than assuming <code>appliedId</code>
   semantics.
 - Run public <code>ug revert</code>; verify the Unity Gateway profile/selection changes
   are reverted according to the ownership manifest while unrelated profiles and edits
-  survive.
+  made after the latest configure survive.
 - Confirm the macOS <code>Claude-3p/configLibrary</code> store and assert that
   <code>_meta.json</code>, UUID profiles, and the applied selection remain coherent.
   Windows must discover and validate its own native store before this journey is

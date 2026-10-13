@@ -117,8 +117,11 @@ repeat configure/revert, complete model catalogs, inherited routing headers,
 dry-run safety, and warn-only configure failures. External authentication and
 discovery boundaries are mocked; temporary profile files use the real adapter.
 Profile regressions also cover deterministic workspace UUIDs, deletion/recreation,
-auth-profile reuse, legacy UUID migration, unowned ID collisions, and exact-byte
-rollback on failed migration. Configure regressions retain main's self-managed
+auth-profile reuse, legacy UUID migration, unowned ID collisions, reapplication of
+edited/deleted UG-owned fields, optional-field ownership, preservation of edits after
+the latest configure on revert, and exact-byte rollback on failed refresh/migration.
+Orchestration checks refresh models, gateway URL, helper, and headers without deleting
+the profile. Configure regressions retain main's self-managed
 agent recording and limit Desktop writes to successful configure paths.
 These are not native GUI/Cowork inference tests. Windows profile writing,
 fresh-install activation, and inherited default selection remain gaps. The
