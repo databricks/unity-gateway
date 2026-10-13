@@ -585,17 +585,22 @@ def test_smart_router_skill_absent_when_routing_disabled(live_session, workspace
             tui.wait_for(lambda screen: "No skills found" not in screen, "the prompt")
             tui.send("/smart-router", "search native slash commands for Smart Router")
             tui.wait_for(
-                lambda screen: re.search(r"(?m)^\s*❯\s*/smart-router\s*$", screen),
-                "the Smart Router command search",
+                lambda screen: 'No commands match "/smart-router"' in screen,
+                "Claude reporting no matching Smart Router command",
                 stable_for=1,
             )
         elif agent == "codex":
             tui.send("$", "open the native skill picker")
-            tui.wait_for(lambda screen: "skill-creator" in screen, "the built-in skill picker")
+            tui.wait_for(
+                lambda screen: (
+                    "[Skill]" in screen and "Press enter to insert or esc to close" in screen
+                ),
+                "the native skill picker",
+            )
             tui.send("smart-router", "filter the native skill picker for Smart Router")
             tui.wait_for(
                 lambda screen: (
-                    "skill-creator" not in screen
+                    "[Skill]" not in screen
                     and re.search(r"(?m)^\s*[›>]\s*\$smart-router\s*$", screen)
                 ),
                 "the unmatched Smart Router skill search",
@@ -603,8 +608,6 @@ def test_smart_router_skill_absent_when_routing_disabled(live_session, workspace
             )
         else:
             raise AssertionError(f"Unsupported agent: {agent}")
-        matches = [line.strip() for line in tui.visible.splitlines() if "smart-router" in line]
-        assert len(matches) == 1, tui.visible
         tui.send("\x15", "clear the unmatched Smart Router search")
         tui.wait_for(lambda screen: "smart-router" not in screen, "the cleared prompt")
         tui.submit(task.prompt)
