@@ -8,6 +8,14 @@ from `src/ucode/agents/claude_mods/` and writes `hooks/hooks.json` into that plu
 routing launches use this path, and the existing temporary-directory lifecycle
 cleans up the files when Claude exits.
 
+`constants.ts` holds the values the mod shares with UG's CLI and the gateway: the recipe
+header name, the disabled recipe, and the CLI module, agent, and routing flags. It ships
+beside the entry point and stays out of `hooks.json`, which lists only `register.ts` as a
+module. Environment-variable names are deliberately not collected there. Claude's
+capability scanner requires a literal name at each `$.env.get`/`$.env.set` call site so it
+can list what the module reads and writes, and `plugin validate` rejects a variable in that
+position: "$.env.get takes a literal name as its first argument". Keep those names inline.
+
 The mod merges the launch recipe into the `Databricks-Smart-Router-Recipe` header
 via `ANTHROPIC_CUSTOM_HEADERS` and intercepts the existing skill's `/smart-router on|off` command locally, without inference or command
 registration. Off sets every routing flag to `0` and the recipe to `DISABLED`; on

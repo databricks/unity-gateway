@@ -393,8 +393,10 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
             ),
         )
     orchestrator.add_claude_agents(plugin_dir)
-    source = Path(__file__).parents[1] / "agents" / "claude_mods" / "register.ts"
-    write_text_file(plugin_dir / "hooks" / "register.ts", source.read_text(encoding="utf-8"))
+    mods = Path(__file__).parents[1] / "agents" / "claude_mods"
+    # constants.ts is imported by the entry point, so it ships beside it rather than as a module.
+    for name in ("register.ts", "constants.ts"):
+        write_text_file(plugin_dir / "hooks" / name, (mods / name).read_text(encoding="utf-8"))
     write_json_file(plugin_dir / "hooks" / "hooks.json", {"modules": ["./register.ts"]})
 
 

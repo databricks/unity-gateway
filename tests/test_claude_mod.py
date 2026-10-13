@@ -14,10 +14,12 @@ def test_plugin_contains_mod_entry_point(tmp_path):
     v2._write_routed_claude_plugin(tmp_path, [])
 
     assert json.loads((tmp_path / "hooks/hooks.json").read_text()) == {"modules": ["./register.ts"]}
-    assert (tmp_path / "hooks/register.ts").read_bytes() == (
-        Path(v2.__file__).parents[1] / "agents" / "claude_mods" / "register.ts"
-    ).read_bytes()
+    mods = Path(v2.__file__).parents[1] / "agents" / "claude_mods"
+    # constants.ts is imported by the entry point, so it ships beside it unmodified.
+    for name in ("register.ts", "constants.ts"):
+        assert (tmp_path / "hooks" / name).read_bytes() == (mods / name).read_bytes()
     assert sorted(path.name for path in (tmp_path / "hooks").iterdir()) == [
+        "constants.ts",
         "hooks.json",
         "register.ts",
     ]
@@ -61,17 +63,21 @@ def test_explicit_toggle_replaces_saved_session_controls():
     Expected: the command path asks UG's CLI to rewrite the session controls the hooks
     apply over the environment, while a session start restores only the launch baseline.
     """
-    source = (Path(v2.__file__).parents[1] / "agents" / "claude_mods" / "register.ts").read_text(
-        encoding="utf-8"
-    )
+    mods = Path(v2.__file__).parents[1] / "agents" / "claude_mods"
+    source = (mods / "register.ts").read_text(encoding="utf-8")
+    constants = (mods / "constants.ts").read_text(encoding="utf-8")
 
+    # The shared values live in constants.ts; environment names stay literal at their
+    # call sites because `plugin validate` rejects a variable there.
+    assert "export const ENABLE_ROUTING_FLAG = '--enable-smart-routing';" in constants
+    assert "export const DISABLE_ROUTING_FLAG = '--disable-smart-routing';" in constants
+    assert not re.search(r"\$\.env\.(get|set)\(", constants)
     # The file stays Python's to write: the CLI validates and replaces it atomically.
     assert re.search(
-        r"\$\.process\.run\(\s*\[\s*python,\s*'-m',\s*'ucode\.cli',\s*'claude',\s*flag\s*\]\s*\)",
+        r"\$\.process\.run\(\s*\[\s*python,\s*'-m',\s*CLI_MODULE,\s*CLI_AGENT,\s*flag\s*\]\s*\)",
         source,
     )
-    assert "'--enable-smart-routing'" in source
-    assert "'--disable-smart-routing'" in source
+    assert re.search(r"enabled \? ENABLE_ROUTING_FLAG : DISABLE_ROUTING_FLAG", source)
     # Only an explicit toggle syncs; a session start must not revive a saved off.
     assert re.search(r"action === 'on',\s*true\s*\)", source)
     assert re.search(r"SUBAGENT_ONLY === '1',\s*false\s*\)", source)

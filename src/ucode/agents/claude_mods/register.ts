@@ -1,4 +1,12 @@
 import type { EngineInterface, On, PluginOptions } from 'claude-code';
+import {
+  CLI_AGENT,
+  CLI_MODULE,
+  DISABLE_ROUTING_FLAG,
+  DISABLED_RECIPE,
+  ENABLE_ROUTING_FLAG,
+  RECIPE_HEADER,
+} from './constants.ts';
 
 type Environment = Record<string, string | undefined>;
 
@@ -28,8 +36,8 @@ async function writeSessionControls($: EngineInterface, enabled: boolean): Promi
   if (!python || !sessionFile) {
     throw new Error('Smart Router session controls are unavailable for this session.');
   }
-  const flag = enabled ? '--enable-smart-routing' : '--disable-smart-routing';
-  const result = await $.process.run([python, '-m', 'ucode.cli', 'claude', flag]);
+  const flag = enabled ? ENABLE_ROUTING_FLAG : DISABLE_ROUTING_FLAG;
+  const result = await $.process.run([python, '-m', CLI_MODULE, CLI_AGENT, flag]);
   if (result.exitCode !== 0) {
     throw new Error(`Smart Router controls exited ${result.exitCode}: ${result.stderr.trim()}`);
   }
@@ -44,17 +52,18 @@ async function setRouting(
   const original = (key: string): string | undefined =>
     (options.unset as readonly string[]).includes(key) ? undefined : options[key] as string;
   const previous = await readEnvironment($);
-  const recipe = enabled ? options.recipe : 'DISABLED';
+  const recipe = enabled ? options.recipe : DISABLED_RECIPE;
   if (typeof recipe !== 'string' || /[\r\n]/.test(recipe)) {
     throw new Error('Smart Router recipe must be a single-line string.');
   }
   const headers = (previous.ANTHROPIC_CUSTOM_HEADERS || '').split('\n').filter(
-    line => line.trim() && line.split(':')[0].trim().toLowerCase() !== 'databricks-smart-router-recipe');
+    line => line.trim() &&
+      line.split(':')[0].trim().toLowerCase() !== RECIPE_HEADER.toLowerCase());
   const environment = {
     ENABLE_SMART_ROUTING_V2: enabled ? original('ENABLE_SMART_ROUTING_V2') : '0',
     ENABLE_SMART_ROUTING_SUBAGENT_ONLY: enabled ? original('ENABLE_SMART_ROUTING_SUBAGENT_ONLY') : '0',
     ENABLE_SMART_ROUTER_ORCHESTRATOR: enabled ? original('ENABLE_SMART_ROUTER_ORCHESTRATOR') : '0',
-    ANTHROPIC_CUSTOM_HEADERS: [...headers, `Databricks-Smart-Router-Recipe: ${recipe}`].join('\n'),
+    ANTHROPIC_CUSTOM_HEADERS: [...headers, `${RECIPE_HEADER}: ${recipe}`].join('\n'),
   };
   try {
     await writeEnvironment($, environment);
