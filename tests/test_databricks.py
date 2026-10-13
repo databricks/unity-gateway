@@ -16,6 +16,7 @@ import pytest
 
 import ucode.custom_oauth as custom_oauth_mod
 import ucode.databricks as db_mod
+from tests.platform_marks import requires_symlinks
 from ucode.databricks import (
     CODING_AGENT_RECOMMEND_MODEL_PATH,
     _format_subprocess_result,
@@ -3776,6 +3777,7 @@ class TestDatabricksCliResolution:
 
     # -- _discover_databricks_clis -------------------------------------------
 
+    @requires_symlinks
     def test_discover_dedupes_by_realpath_keeping_path_order(self, tmp_path, monkeypatch):
         name = "databricks.exe" if os.name == "nt" else "databricks"
         real_dir = tmp_path / "real"

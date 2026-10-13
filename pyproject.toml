@@ -101,3 +101,8 @@ ignore = [
 "subprocess.call".msg = "Use ucode.os_compatibility.subprocess_cross_os.run to resolve Windows commands automatically."
 "subprocess.check_call".msg = "Use ucode.os_compatibility.subprocess_cross_os.run with check=True."
 "subprocess.check_output".msg = "Use ucode.os_compatibility.subprocess_cross_os.run with check=True and stdout=subprocess.PIPE."
+
+[tool.ty.environment]
+# Check every platform branch instead of assuming the host OS, so results match on
+# Linux CI and Windows/macOS dev machines (e.g. the Unix-only PTY code).
+python-platform = "all"

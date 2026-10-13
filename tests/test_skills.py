@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.platform_marks import requires_symlinks
 from ucode import skills
 from ucode.smart_routing import orchestrator, session_env
 
@@ -126,6 +127,7 @@ def test_uninstalls_one_skill_from_agent_roots(bundled_skill):
     assert skills.uninstall_skill(skills.SMART_ROUTER_SKILL, home) == []
 
 
+@requires_symlinks
 def test_uninstall_unlinks_all_global_aliases_without_removing_targets(tmp_path):
     home = tmp_path / "home"
     aliases = [
