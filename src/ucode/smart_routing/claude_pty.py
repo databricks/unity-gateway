@@ -198,8 +198,18 @@ def serve_first_prompt_socket(
     *,
     on_submitted_prompt: Callable[[str], None] = lambda _prompt: None,
     log: Callable[[str], None] = lambda _message: None,
+    ready: threading.Event | None = None,
 ) -> threading.Thread:
-    """Serve the hook protocol, blocking exactly one non-command prompt."""
+    """Serve the hook protocol, blocking exactly one non-command prompt.
+
+    Pass a ``threading.Event`` as *ready* to receive a reliable signal that the
+    socket is fully listening (i.e. after ``listen()``, not just ``bind()``).
+    On macOS the file-system path appears after ``bind()`` but connections are
+    only accepted after ``listen()``, so callers that poll ``path.exists()``
+    can connect before the server is ready.  The *ready* event fires after
+    ``listen()`` on success, or immediately on ``OSError`` so callers never
+    block forever on failure.
+    """
 
     def serve() -> None:
         claimed = False
@@ -212,8 +222,12 @@ def serve_first_prompt_socket(
             server.settimeout(0.5)
         except OSError as exc:
             log(f"[ERR] first-prompt socket bind failed: {exc!r}")
+            if ready is not None:
+                ready.set()  # unblock callers so they don't wait forever on failure
             return
         log(f"[READY] first-prompt socket {path}")
+        if ready is not None:
+            ready.set()  # signal: listen() is done, connections are now accepted
         try:
             while not stop.is_set():
                 try:
@@ -345,6 +359,7 @@ def run_claude_pty(
     def on_submitted_prompt(_prompt: str) -> None:
         submitted_event.set()
 
+    ready = threading.Event()
     server_thread = serve_first_prompt_socket(
         socket_path,
         route_prompt,
@@ -352,12 +367,12 @@ def run_claude_pty(
         stop,
         on_submitted_prompt=on_submitted_prompt,
         log=log,
+        ready=ready,
     )
-    socket_deadline = time.monotonic() + 2.0
-    while (
-        not socket_path.exists() and server_thread.is_alive() and time.monotonic() < socket_deadline
-    ):
-        time.sleep(0.01)
+    # Wait for the socket to be listening (after listen(), not just bind()).  On
+    # macOS bind() creates the file before listen() is called, so polling
+    # socket_path.exists() races.  The ready event fires only after listen().
+    ready.wait(timeout=2.0)
     if not socket_path.exists():
         log("[ERR] first-prompt socket was not ready before Claude launch")
         stop.set()

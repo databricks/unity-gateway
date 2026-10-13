@@ -6,7 +6,6 @@ import json
 import os
 import sys
 import threading
-import time
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -146,10 +145,11 @@ class TestFirstPromptHook:
         assert "anthropic-aigw-77df06ea" not in result["reason"]
 
     @requires_pty
-    def test_blocks_once_then_allows_replay(self, tmp_path):
-        socket_path = tmp_path / "first.sock"
+    def test_blocks_once_then_allows_replay(self, tmp_path, short_tmp_path):
+        socket_path = short_tmp_path / "first.sock"
         blocked: list[tuple[str, str]] = []
         stop = threading.Event()
+        ready = threading.Event()
         claude_pty.serve_first_prompt_socket(
             socket_path,
             lambda _prompt: claude_pty.FirstPromptRoute(
@@ -157,11 +157,10 @@ class TestFirstPromptHook:
             ),
             lambda prompt, model: blocked.append((prompt, model)),
             stop,
+            ready=ready,
         )
         try:
-            deadline = time.monotonic() + 5
-            while not socket_path.exists() and time.monotonic() < deadline:
-                time.sleep(0.01)
+            ready.wait(timeout=5)
             first = claude_pty.request_first_prompt_route(
                 socket_path, {"session_id": "s1", "prompt": "fix the parser"}
             )
@@ -799,11 +798,11 @@ class TestPtyFlow:
                 socket_path=tmp_path / "missing.sock",
             )
 
-    def test_direct_switch_restore_and_replay(self, tmp_path):
+    def test_direct_switch_restore_and_replay(self, tmp_path, short_tmp_path):
         fake_claude = tmp_path / "fake_claude.py"
         capture = tmp_path / "capture.json"
         restored = tmp_path / "restored"
-        socket_path = tmp_path / "first.sock"
+        socket_path = short_tmp_path / "first.sock"
         fake_claude.write_text(
             """
 import json
