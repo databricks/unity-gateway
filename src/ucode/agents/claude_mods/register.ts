@@ -105,6 +105,8 @@ export function register(on: On, options: PluginOptions): void {
     if (!launchedEnabled) return {text: 'Smart Router was not enabled for this session.'};
     try {
       await setRouting($, options, action === 'on', true);
+      // The savings row hides while routing is off, but the toggle changes no band props.
+      if (options.ENABLE_SMART_ROUTING_SAVINGS === '1') $.ui.invalidate('ui.render');
       const guidance = options.ENABLE_SMART_ROUTER_ORCHESTRATOR !== '1' ? '' : action === 'off'
         ? ' Earlier Smart Router Orchestrator instructions are superseded. Stop automatic delegation; honor explicit subagent requests using native model selection. Existing children can finish.'
         : ' Apply the smart-router-orchestrator skill to further work.';
