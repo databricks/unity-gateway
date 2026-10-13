@@ -575,8 +575,14 @@ def revert_managed_file(
     display: str,
     parser: ManagedParser,
     dumper: ManagedDumper,
+    owned_paths_on_exact_match: bool = False,
 ) -> str:
-    """Restore one managed file from its baseline while preserving later external edits."""
+    """Restore one managed file from its baseline while preserving later external edits.
+
+    When ``owned_paths_on_exact_match`` is true, an exact match with the last-applied snapshot still
+    goes through the owned-path three-way merge. This is for multiple ucode writers sharing one file:
+    one writer's snapshot can include another writer's newer settings.
+    """
     manifest = _load_manifest()
     entry = _manifest_files(manifest).get(tool)
     if not isinstance(entry, dict):
@@ -592,7 +598,7 @@ def revert_managed_file(
     original_text = _original_text(entry)
     last_text = _snapshot_text(entry, "last_applied_file")
 
-    if current_text == last_text:
+    if current_text == last_text and not owned_paths_on_exact_match:
         desired_text = original_text
     elif current_text is None or last_text is None:
         desired_text = current_text

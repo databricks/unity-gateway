@@ -297,6 +297,11 @@ the pinned Claude version (currently 2.1.280 in CI).
 
 ## Test layout and format
 
+Linux Codex desktop OTEL service/configuration behavior currently has component
+coverage in the ordinary test suite, including a subprocess readiness/SIGTERM check.
+Desktop GUI export and automatic startup after login/reboot are not yet covered
+by this live integration suite.
+
 All user journeys are top-level tests. There is no separate regressions category:
 
 ```text

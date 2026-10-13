@@ -3231,6 +3231,22 @@ def test_unknown_routing_config_does_not_block_launch(monkeypatch, args):
     assert dict(os.environ) == previous
 
 
+class TestOtelProxyCommand:
+    def test_delegates_to_service_runner(self):
+        with patch("ucode.codex_otel_service.run") as run:
+            result = runner.invoke(app, ["otel-proxy"])
+        assert result.exit_code == 0, result.output
+        run.assert_called_once_with()
+
+    def test_reports_startup_failure(self):
+        with patch(
+            "ucode.codex_otel_service.run", side_effect=RuntimeError("proxy not configured")
+        ):
+            result = runner.invoke(app, ["otel-proxy"])
+        assert result.exit_code == 1
+        assert "proxy not configured" in result.output
+
+
 class TestDoctorCommand:
     def test_invokes_doctor(self):
         with patch("ucode.doctor.doctor", return_value=0) as mock_doctor:

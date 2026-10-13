@@ -470,6 +470,11 @@ and real-shell copy/rename failure handling in temporary directories.
 `test_cli.py` covers the workspace configure session boundary.
 These are unit/component checks; they do not establish live sudo password-prompt behavior.
 
+Codex desktop OTEL component tests cover service-update retries, saved auth settings,
+stable-port proxying, collector-header isolation, and exporter-only restoration.
+An isolated subprocess checks readiness notification, SIGTERM exit, and port release.
+These do not establish a live desktop GUI or systemd login/reboot pass.
+
 | Scenario | Status / requirement |
 | --- | --- |
 | Broad live MCP functionality | CUJ2 covers sandbox MCP configuration and generated client listings. Live sandbox execution is deferred because MAS cannot downscope the CI service principal. Installation tests cover the local web-search MCP handshake and tool listing, not upstream proxying or a real search request. Other MCP services, live parent/child search, and permission decisions remain deferred |

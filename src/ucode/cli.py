@@ -2323,6 +2323,18 @@ def auth_token_cmd(
     sys.stdout.write(token + "\n")
 
 
+@app.command("otel-proxy", hidden=True)
+def otel_proxy_cmd() -> None:
+    """Run the Codex desktop trace proxy under the user service manager."""
+    from ucode.codex_otel_service import run
+
+    try:
+        run()
+    except (OSError, RuntimeError) as exc:
+        print_err(str(exc))
+        raise typer.Exit(1) from None
+
+
 @app.command("otel-headers", hidden=True)
 def otel_headers_cmd(
     host: Annotated[
