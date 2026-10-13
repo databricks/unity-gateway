@@ -27,6 +27,7 @@ from ucode.config_io import (
 )
 from ucode.constants import (
     AGENT_CLAUDE,
+    AI_GATEWAY_REQUEST_TAGS_HEADER,
     LOOPBACK_HOST,
     MCP_CLEANUP_SCOPES,
     MCP_USER_SCOPE,
@@ -100,6 +101,7 @@ from ucode.telemetry import agent_version, ug_version
 from ucode.ui import print_note, print_success, print_warning
 
 from .args import LaunchOptions, has_explicit_model_arg
+from .request_tags import request_tags_header_value
 
 GATEWAY_MODEL_DISCOVERY_ENV_VAR = "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"
 # If set, Claude Code launches in headless mode instead of the interactive login flow.
@@ -243,6 +245,9 @@ CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
         SMART_ROUTER_RECIPE_HEADER.casefold(),
     }
 )
+# ug replaces these only when it emits them (e.g. AI_GATEWAY_REQUEST_TAGS is set); otherwise an
+# existing line, such as Isaac's own request tags, is preserved.
+CLAUDE_OPTIONAL_CUSTOM_HEADER_NAMES = frozenset({AI_GATEWAY_REQUEST_TAGS_HEADER.casefold()})
 # These attribute inference traffic; neither selects the gateway or provider.
 CLAUDE_OPTIONAL_ATTRIBUTION_HEADER_NAMES = frozenset(
     {"user-agent", SMART_ROUTER_RECIPE_HEADER.casefold()}
@@ -473,6 +478,9 @@ def render_overlay(
         header_lines.append(f"{MODEL_SERVICE_PARENT_SCHEMA_HEADER}: {parent_schema}")
     if smart_routing_v2.smart_routing_enabled(None, default=False, agent=AGENT_CLAUDE):
         header_lines.append(f"{SMART_ROUTER_RECIPE_HEADER}: {configured_router_name()}")
+    request_tags = request_tags_header_value()
+    if request_tags:
+        header_lines.append(f"{AI_GATEWAY_REQUEST_TAGS_HEADER}: {request_tags}")
     # Relayed: the X-Databricks-AI-Gateway-Token swap header is added per request
     # by the refresh proxy, not here — a static value would go stale mid-session.
     custom_headers = "\n".join(_apply_managed_header_lines(header_lines, managed_http_headers))
@@ -1623,7 +1631,8 @@ def _merge_anthropic_custom_headers(existing: object, ucode_headers: str) -> str
     1. Split the existing custom headers by newline into individual header items.
     2. Split each item on ``:`` to identify its header name.
     3. Replace headers in ``CLAUDE_MANAGED_CUSTOM_HEADER_NAMES`` with ucode's values in their
-       existing positions, while preserving all other existing headers.
+       existing positions, while preserving all other existing headers. Headers in
+       ``CLAUDE_OPTIONAL_CUSTOM_HEADER_NAMES`` are replaced only when ucode supplies a value.
     4. Append any ucode-managed headers that were not already present.
 
     Header names are compared case-insensitively. Non-header lines are also preserved to avoid
@@ -1648,7 +1657,13 @@ def _merge_anthropic_custom_headers(existing: object, ucode_headers: str) -> str
     for line in existing.splitlines():
         name, separator, _value = line.partition(":")
         normalized_name = name.strip().casefold()
-        if separator and normalized_name in CLAUDE_MANAGED_CUSTOM_HEADER_NAMES:
+        if separator and (
+            normalized_name in CLAUDE_MANAGED_CUSTOM_HEADER_NAMES
+            or (
+                normalized_name in CLAUDE_OPTIONAL_CUSTOM_HEADER_NAMES
+                and normalized_name in ucode_lines_by_name
+            )
+        ):
             replacement = ucode_lines_by_name.get(normalized_name)
             if replacement is not None and normalized_name not in replaced_names:
                 merged.append(replacement)

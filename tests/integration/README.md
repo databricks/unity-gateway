@@ -29,6 +29,11 @@ complete per-agent validation, session precedence, and preserving the preset sel
 until managed-default agent selection.
 These checks do not establish live agent coverage.
 
+The shared request recorder and native compatibility-retry checks live in
+`utils/request_recorder.py`. The CUJ adapter keeps its existing
+configuration glue and imports those helpers; request forwarding, header
+redaction, and paired response assertions retain their behavior.
+
 CUJ3 and CUJ4 require a non-empty HTTP 200 for inference. Claude 2.1.290's known
 thinking-display 400 is accepted only when the next inference request with the same system
 context and session metadata removes `display`,
@@ -199,8 +204,9 @@ through them without changing existing journey commands or completion assertions
 Prerequisites: Python 3.12+, uv, and Node/npm. Live runs also require Databricks
 CLI 1.17.0. Full live/TUI runs require a POSIX host; Windows supports the explicit
 headless subset described below. The runner installs the requested agents into a new
-npm prefix and ug into a new virtualenv. Pytest and, for live runs, the PTY/screen
-libraries (pexpect and pyte) live in a different virtualenv, so they cannot accidentally
+npm prefix and ug into a new virtualenv. Pytest, the recorder's pinned `httpx`, and,
+for live runs, the PTY/screen libraries (pexpect and pyte) live in a different
+virtualenv, so they cannot accidentally
 supply a missing application dependency. No packages are installed into your
 existing agent installations or checkout's `.venv`.
 CI pins Databricks CLI 1.17.0 in the live and managed integration lanes. The
@@ -583,7 +589,8 @@ Each run writes a new `.integration-runs/<timestamp>/` directory containing:
   Databricks CLI, platform, source revision/diff, suite hash, and wheel hash when available.
 - `dependencies.txt` and `npm-lock.json`: the resolved Python and npm dependency
   graphs. Replay them with `--constraints` and `--npm-lock`.
-- `test-dependencies.txt`: the separately installed pytest/terminal-tool dependencies.
+- `test-dependencies.txt`: the separately installed pytest, recorder (`httpx`), and
+  terminal-tool dependencies.
 - `junit.xml`: exact test outcomes and parametrized case names.
 - `artifacts/`: command arguments, exit codes, timeout status, redacted output,
   app-server protocol diagnostics, and TUI transcripts/rendered screens plus
