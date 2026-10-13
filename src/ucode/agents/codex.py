@@ -15,7 +15,6 @@ from pathlib import Path
 import tomlkit
 from tomlkit.exceptions import ParseError
 
-from ucode import gateway_proxy
 from ucode.codex_config import (
     catalog_slugs,
     codex_config_args,
@@ -37,6 +36,7 @@ from ucode.config_io import (
 )
 from ucode.constants import (
     AGENT_CODEX,
+    AI_GATEWAY_REQUEST_TAGS_HEADER,
     LOOPBACK_HOST,
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
@@ -85,6 +85,7 @@ from ucode.ui import print_warning_err
 
 from .args import LaunchOptions
 from .codex_catalog import prepare_codex_catalog, validate_codex_catalog
+from .request_tags import request_tags_header_value
 
 CODEX_CONFIG_DIR = Path.home() / ".codex"
 CODEX_PROFILE_NAME = "ucode"
@@ -209,6 +210,9 @@ def _provider_block(
         http_headers[MODEL_SERVICE_PARENT_SCHEMA_HEADER] = parent_schema
     if smart_routing_v2.smart_routing_enabled(None, default=False, agent=AGENT_CODEX):
         http_headers[SMART_ROUTER_RECIPE_HEADER] = configured_router_name()
+    request_tags = request_tags_header_value()
+    if request_tags:
+        http_headers[AI_GATEWAY_REQUEST_TAGS_HEADER] = request_tags
     _apply_managed_headers(http_headers, managed_http_headers)
     return {
         "name": "Databricks AI Gateway",
@@ -1074,6 +1078,9 @@ def _launch_codex_with_otel_proxy(
     exec-replacing this process; mirrors Claude's relayed launch. The proxy binds an
     OS-assigned port and tears everything down when Codex exits (or fails to spawn).
     """
+    # Only tracing launches need the proxy (and its `httpx` import).
+    from ucode import gateway_proxy
+
     server, cache, client = gateway_proxy.start_otel_proxy(
         workspace, _otel_token_provider(state, workspace)
     )

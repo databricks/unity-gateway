@@ -10,7 +10,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from ucode import managed_files
+from ucode import gateway_proxy, managed_files
 from ucode.agents import LaunchOptions, codex
 from ucode.config_io import read_toml_safe
 from ucode.smart_routing import codex_routing
@@ -166,6 +166,20 @@ class TestRenderOverlay:
         overlay = codex.render_overlay(WS)
         headers = overlay["model_providers"]["Databricks"]["http_headers"]
         assert "Databricks-Model-Provider-Service" not in headers
+
+    def test_request_tags_header_added_when_env_set(self, monkeypatch):
+        # A JSON value stored as a TOML http_headers string is preserved verbatim.
+        tags = '{"team":"infra","env":"prod"}'
+        monkeypatch.setenv("AI_GATEWAY_REQUEST_TAGS", tags)
+        overlay = codex.render_overlay(WS)
+        headers = overlay["model_providers"]["Databricks"]["http_headers"]
+        assert headers["Databricks-Ai-Gateway-Request-Tags"] == tags
+
+    def test_request_tags_header_absent_when_env_unset(self, monkeypatch):
+        monkeypatch.delenv("AI_GATEWAY_REQUEST_TAGS", raising=False)
+        overlay = codex.render_overlay(WS)
+        headers = overlay["model_providers"]["Databricks"]["http_headers"]
+        assert "Databricks-Ai-Gateway-Request-Tags" not in headers
 
     def test_parent_adds_discovery_header(self):
         overlay = codex.render_overlay(WS, parent_schema="main.default")
@@ -1504,7 +1518,7 @@ class TestCodexLaunch:
             assert token_provider(False) == "tok"
             return server, cache, client
 
-        monkeypatch.setattr(codex.gateway_proxy, "start_otel_proxy", start_otel_proxy)
+        monkeypatch.setattr(gateway_proxy, "start_otel_proxy", start_otel_proxy)
         monkeypatch.setattr(codex.subprocess_cross_os, "popen", popen)
 
         with pytest.raises(SystemExit) as exc:
