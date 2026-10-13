@@ -16,7 +16,6 @@ import traceback
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 
-from ucode import gateway_proxy
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -2117,11 +2116,17 @@ def _build_claude_argv(
 
 
 def _has_subscription_login() -> bool:
-    """True when Claude Code already holds a subscription login (`claude auth
-    status` exits 0). Never inspects or captures the credential itself."""
+    """True when Claude Code holds a Claude subscription login that a relayed launch will use."""
     try:
         result = subprocess_cross_os.run(
-            [SPEC["binary"], "auth", "status"],
+            [
+                SPEC["binary"],
+                "--setting-sources",
+                _RELAYED_SETTING_SOURCES,
+                "auth",
+                "status",
+                "--json",
+            ],
             check=False,
             capture_output=True,
             text=True,
@@ -2129,7 +2134,13 @@ def _has_subscription_login() -> bool:
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
-    return result.returncode == 0
+    if result.returncode != 0:
+        return False
+    try:
+        status = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return False
+    return isinstance(status, dict) and status.get("authMethod") == "claude.ai"
 
 
 def _ensure_subscription_login() -> None:
@@ -2180,6 +2191,9 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
 
     def token_provider(force_refresh: bool) -> str:
         return get_databricks_token(workspace, profile, force_refresh=force_refresh)
+
+    # Only relayed launches need the proxy (and its `httpx` import).
+    from ucode import gateway_proxy
 
     server, cache, client = gateway_proxy.start_relay_proxy(workspace, token_provider, port)
     # start_relay_proxy falls back to an OS-assigned port when the cached one is taken

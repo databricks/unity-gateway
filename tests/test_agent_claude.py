@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, Mock
 import pytest
 
 from ucode import databricks as db_mod
-from ucode import managed_files
+from ucode import gateway_proxy, managed_files
 from ucode.agents import LaunchOptions, claude
 from ucode.smart_routing import claude_routing, v2
 from ucode.state import MANAGED_OVERLAY_KEY
@@ -2888,7 +2888,7 @@ class TestClaudeLaunch:
 
         monkeypatch.setattr(claude, "_managed_relayed_conflicts", lambda: None)
         monkeypatch.setattr(claude, "_ensure_subscription_login", lambda: None)
-        monkeypatch.setattr(claude.gateway_proxy, "start_relay_proxy", start_relay_proxy)
+        monkeypatch.setattr(gateway_proxy, "start_relay_proxy", start_relay_proxy)
         monkeypatch.setattr(
             claude,
             "get_databricks_token",
@@ -3705,6 +3705,51 @@ class TestEnsureSubscriptionLogin:
         monkeypatch.setattr(claude, "print_success", lambda *a, **kw: None)
         claude._ensure_subscription_login()
         assert calls == [[claude.SPEC["binary"], "auth", "login"]]
+
+
+class TestHasSubscriptionLogin:
+    def _status(self, monkeypatch, stdout, returncode=0):
+        calls: list[list[str]] = []
+
+        def run(cmd, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, returncode, stdout=stdout, stderr="")
+
+        monkeypatch.setattr(claude.subprocess_cross_os, "run", run)
+        return calls
+
+    def test_subscription_login_counts(self, monkeypatch):
+        calls = self._status(monkeypatch, '{"loggedIn": true, "authMethod": "claude.ai"}')
+
+        assert claude._has_subscription_login() is True
+        # Same scopes as the relayed session, so a user-scope apiKeyHelper can't mask the login.
+        assert calls == [
+            [
+                claude.SPEC["binary"],
+                "--setting-sources",
+                "project,local",
+                "auth",
+                "status",
+                "--json",
+            ]
+        ]
+
+    @pytest.mark.parametrize("auth_method", ["api_key_helper", "api_key", "oauth_token", "none"])
+    def test_other_credentials_need_a_subscription_login(self, monkeypatch, auth_method):
+        # `auth status` exits 0 for these too, but the relay can't forward them.
+        self._status(monkeypatch, json.dumps({"loggedIn": True, "authMethod": auth_method}))
+
+        assert claude._has_subscription_login() is False
+
+    def test_not_logged_in(self, monkeypatch):
+        self._status(monkeypatch, '{"loggedIn": false, "authMethod": "none"}', returncode=1)
+
+        assert claude._has_subscription_login() is False
+
+    def test_unreadable_status_needs_a_login(self, monkeypatch):
+        self._status(monkeypatch, 'Update available\n{"loggedIn": true}')
+
+        assert claude._has_subscription_login() is False
 
 
 class TestWriteToolConfigBackup:

@@ -77,6 +77,13 @@ timeout. Offline PTY checks cover this ordering.
 The shared wait also runs before CUJ4's Claude preset sessions exit, after delegated-task
 evidence is checked, because Claude can resume a child after its first completed answer.
 
+`../test_startup_imports.py` covers the bare version fast path, deferred imports,
+metadata fallback, and other-argument dispatch as component checks. Installation
+checks still exercise real console-script help and version output; neither suite
+asserts end-to-end agent startup latency. The component suite also checks that
+version output alone cannot establish CLI health when startup dependencies are
+absent; use `--help` for the startup-import probe.
+
 Agent-specific bundled instruction selection and prompt/compaction hook content
 are covered in `../test_skills.py`; those component checks do not run live agents.
 
@@ -153,6 +160,15 @@ Fresh Claude-only search discovery and registration are covered by component
 tests in `../test_claude_search_discovery.py`, including legacy catalog fallback,
 an explicit model override, and no available GPT model. Live search remains
 outside this integration suite.
+
+CLI token memoization and capability-gated `--no-browser` re-auth are covered by
+component tests in `../test_databricks.py` and `../test_mcp_web_search.py`, including
+wall/monotonic expiry across suspend or clock rollback, forced refresh, concurrent
+fetches, login invalidation, confirmed credential-error caching, and transient-failure
+recovery. Connection-login component tests also check invalidation on every login
+attempt and fresh tokens on async proxy retries. This suite
+does not assert live token-fetch counts, stale-profile recovery, or launch-time
+savings; credential/profile routing is unchanged.
 
 The sudo-session regression checks live in `../test_managed_files.py` and `../test_cli.py`.
 They cover shared-worker invocation counts, shutdown/cancellation, and temporary-file failure
@@ -602,20 +618,19 @@ starting alongside unit tests and the existing agent e2e shards. Integration has
 no dependency on agent e2e; a failure there does not prevent integration from running.
 The final required `e2e` check waits for both suites and requires both to succeed.
 The required installation and live jobs run directly on fresh GitHub Ubuntu VMs,
-not inside the optional Docker image. An advisory `windows-server-latest` job runs
+not inside the optional Docker image. An advisory `windows-latest` job runs
 the five credential-free checks in `test_installation.py` (installation, CLI,
 auth-helper, and local MCP) and
 uploads `integration-installation-windows` evidence. It uses `continue-on-error`
 and is not part of `All integration tests` until the initial Windows issues are fixed.
-The Windows job authenticates to the Databricks JFrog package proxy using
-GitHub OIDC, following the organization's SDK CI setup. Its actual OS image is
-recorded in `versions.json`; the organization can update the image behind the
-runner label. The two POSIX version-floor journeys are outside this Windows subset.
+It installs from public PyPI and npm, needs no credentials, and also runs on
+fork PRs. Its actual OS image is recorded in `versions.json`; GitHub can update
+the image behind the runner label. The two POSIX version-floor journeys are outside this Windows subset.
 It installs only Claude as the runner prerequisite; the five selected checks
 exercise ug and its local helpers, not either agent's inference path.
 An advisory **Windows headless journey · Claude** job installs the temporary Windows-pinned
 Claude version (currently 2.1.278)
-on a native Windows runner using the same authenticated package proxies,
+on a native Windows runner from public PyPI and npm,
 reuses the existing e2e workspace/bearer,
 and requires the unpredictable file value in the agent's structured final answer.
 It uploads `integration-headless-windows-claude` evidence and remains outside

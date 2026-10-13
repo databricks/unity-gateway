@@ -128,7 +128,6 @@ FORK_GUARD = (
 )
 # Fork PRs get no secrets or OIDC token, so jobs that need either must skip them.
 SKIPPED_ON_FORK_PRS = {
-    "installation-windows",
     "workspace",
     "smoke",
     "headless-windows",
@@ -142,8 +141,8 @@ SKIPPED_ON_FORK_PRS = {
 }
 
 
-def _integration_jobs(name="integration.yml"):
-    workflow = (Path(__file__).parent.parent / ".github/workflows" / name).read_text()
+def _integration_jobs():
+    workflow = (Path(__file__).parent.parent / ".github/workflows/integration.yml").read_text()
     body = workflow.split("\njobs:\n", 1)[1]
     return dict(re.findall(r"(?ms)^  ([a-z0-9-]+):\n(.*?)(?=^  [a-z0-9-]+:\n|\Z)", body))
 
@@ -172,19 +171,6 @@ def test_integration_jobs_that_run_on_fork_pull_requests_need_no_credentials():
         assert "secrets." not in jobs[name] and "id-token: write" not in jobs[name], (
             f"{name} runs on fork PRs, which get no secrets or OIDC token"
         )
-
-
-def test_ci_windows_lanes_skip_fork_pull_requests():
-    jfrog_jobs = {
-        name: job for name, job in _integration_jobs("ci.yml").items() if "setup-jfrog-cli" in job
-    }
-
-    assert set(jfrog_jobs) == {"test", "e2e-shards"}
-    for name, job in jfrog_jobs.items():
-        assert (
-            f"os: ${{{{ fromJSON(({FORK_GUARD}) && "
-            """'["ubuntu-latest", "windows-server-latest"]' || '["ubuntu-latest"]') }}"""
-        ) in job, f"{name} logs in to JFrog with OIDC on Windows, which fork PRs can't do"
 
 
 MEMBER_ONLY = 'contains(fromJSON(\'["MEMBER", "OWNER"]\'), github.event.comment.author_association)'
@@ -224,6 +210,8 @@ def test_fork_integration_runs_only_member_requested_pr_heads():
 
 
 HEAD = "0123456789abcdef0123456789abcdef01234567"
+# Verified against the live API on the protected runner; a text change here must be re-verified.
+PR_HEAD_JQ = '[.head.sha, (.head.repo.full_name // "")] | @tsv'
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="the authorize step runs bash on Linux")
@@ -247,13 +235,14 @@ def test_fork_integration_authorize_pins_the_pr_head_or_the_reviewed_commit(
     script = textwrap.dedent(authorize.split("        run: |\n", 1)[1])
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    pr = {"head": {"sha": HEAD, "repo": {"full_name": head_repo} if head_repo else None}}
-    (tmp_path / "pr.json").write_text(json.dumps(pr))
+    # What real gh prints for that query; any other --jq expression gets no output and is refused.
+    (tmp_path / "pr.tsv").write_text(f"{HEAD}\t{head_repo or ''}\n")
     fake_gh = bin_dir / "gh"
     fake_gh.write_text(
         "#!/bin/sh\n"
         f'echo "$*" >> "{tmp_path}/calls"\n'
-        f'case "$*" in "api repos/databricks/unity-gateway/pulls/7") cat "{tmp_path}/pr.json";; esac\n'
+        f"case \"$*\" in 'api repos/databricks/unity-gateway/pulls/7 --jq {PR_HEAD_JQ}')"
+        f' cat "{tmp_path}/pr.tsv";; esac\n'
     )
     fake_gh.chmod(0o755)
     output = tmp_path / "github-output"
@@ -282,6 +271,16 @@ def test_fork_integration_authorize_pins_the_pr_head_or_the_reviewed_commit(
         assert result.returncode != 0
         assert not output.exists()
         assert reason in calls and "statuses/" not in calls
+
+
+def test_fork_integration_github_api_jobs_run_on_allowlisted_runners():
+    # The org IP allow list rejects GitHub API calls from GitHub-hosted runners.
+    workflow = _workflow("fork-integration.yml")
+    protected = "    runs-on:\n      group: databricks-protected-runner-group\n      labels: linux-ubuntu-latest\n"
+
+    assert workflow.count(protected) == 3
+    assert "runs-on: ubuntu-latest" not in workflow
+    assert not re.search(r"(?m)^\s*[^#\n]*\bjq\s+-", workflow)
 
 
 def test_no_workflow_uses_pull_request_target():
