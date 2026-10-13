@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, Mock
 import pytest
 
 from ucode import databricks as db_mod
-from ucode import managed_files
+from ucode import gateway_proxy, managed_files
 from ucode.agents import LaunchOptions, claude
 from ucode.smart_routing import claude_routing, v2
 from ucode.state import MANAGED_OVERLAY_KEY
@@ -237,6 +237,22 @@ class TestRenderOverlay:
     def test_sets_custom_headers(self):
         overlay, _ = claude.render_overlay(WS, "s4")
         assert "x-databricks-use-coding-agent-mode" in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+
+    def test_request_tags_header_added_when_env_set(self, monkeypatch):
+        # A JSON value (commas + colons) must survive intact: ANTHROPIC_CUSTOM_HEADERS
+        # is newline-delimited and split on the first colon, so the value is preserved.
+        tags = '{"team":"infra","env":"prod"}'
+        monkeypatch.setenv("AI_GATEWAY_REQUEST_TAGS", tags)
+        overlay, _ = claude.render_overlay(WS, "s4")
+        headers = overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        assert f"Databricks-Ai-Gateway-Request-Tags: {tags}" in headers.splitlines()
+
+    def test_request_tags_header_absent_when_env_unset(self, monkeypatch):
+        monkeypatch.delenv("AI_GATEWAY_REQUEST_TAGS", raising=False)
+        overlay, _ = claude.render_overlay(WS, "s4")
+        assert (
+            "Databricks-Ai-Gateway-Request-Tags" not in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        )
 
     def test_does_not_disable_experimental_betas(self):
         # Would suppress the beta header 1h prompt caching needs.
@@ -719,6 +735,28 @@ class TestMergeAnthropicCustomHeaders:
             "x-databricks-use-coding-agent-mode: true",  # From ucode; overwrites existing.
             "User-Agent: ucode/1.0 claude/2.0",  # From ucode; overwrites existing.
             "meep: lala",  # Preserved from existing settings in its original position.
+        ]
+
+    def test_preserves_existing_request_tags_when_ucode_has_none(self):
+        existing = "databricks-ai-gateway-request-tags: source=isaac-cli"
+        managed = "x-databricks-use-coding-agent-mode: true"
+
+        merged = claude._merge_anthropic_custom_headers(existing, managed)
+
+        assert merged.splitlines() == [
+            "databricks-ai-gateway-request-tags: source=isaac-cli",
+            "x-databricks-use-coding-agent-mode: true",
+        ]
+
+    def test_replaces_existing_request_tags_when_ucode_sets_them(self):
+        existing = "databricks-ai-gateway-request-tags: source=isaac-cli\nmeep: lala"
+        managed = 'Databricks-Ai-Gateway-Request-Tags: {"team":"infra"}'
+
+        merged = claude._merge_anthropic_custom_headers(existing, managed)
+
+        assert merged.splitlines() == [
+            'Databricks-Ai-Gateway-Request-Tags: {"team":"infra"}',
+            "meep: lala",
         ]
 
 
@@ -2640,11 +2678,13 @@ class TestRegisterWebSearchMcp:
     def isolate_mcp_config(self, tmp_path, monkeypatch):
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
 
-    @pytest.mark.skipif(
-        sys.platform == "win32",
-        reason="shutil.which returns `ug.EXE` (PATHEXT), which the case-sensitive "
-        "_generated_search_entry binary-name check rejects; product fix tracked separately",
-    )
+    @pytest.mark.parametrize("binary", ["ug", "ucode.exe", "ug.EXE"])
+    def test_recognizes_its_own_entry_whatever_the_binary_case(self, binary):
+        entry = claude._web_search_mcp_entry(WS, "search-model", "workspace-profile")
+        entry["command"] = f"/opt/bin/{binary}"
+
+        assert claude._generated_search_entry(entry)
+
     def test_configuration_uses_saved_custom_oauth_profile(self, monkeypatch):
         # Isolate config writes and Claude CLI registration; execute the actual config writer.
         prior_entry = claude._web_search_mcp_entry(WS, "search-model", "workspace-profile")
@@ -2898,7 +2938,7 @@ class TestClaudeLaunch:
 
         monkeypatch.setattr(claude, "_managed_relayed_conflicts", lambda: None)
         monkeypatch.setattr(claude, "_ensure_subscription_login", lambda: None)
-        monkeypatch.setattr(claude.gateway_proxy, "start_relay_proxy", start_relay_proxy)
+        monkeypatch.setattr(gateway_proxy, "start_relay_proxy", start_relay_proxy)
         monkeypatch.setattr(
             claude,
             "get_databricks_token",
