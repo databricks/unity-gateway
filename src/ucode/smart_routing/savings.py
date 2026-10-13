@@ -5,7 +5,7 @@ otherwise have run on the baseline main-agent model::
 
     saved = sum(tokens * price(baseline)) - sum(tokens * price(model that served them))
 
-per token class. The mod (``agents/claude_mods/savings.ts``) sums each turn request's usage by
+per token class. The mod (``agents/claude_mods/register.ts``) sums each turn request's usage by
 (agent, baseline, served) and runs this module on that file after every turn; it prints one JSON
 line with the segment the mod draws. A main-agent request is its own baseline, and a subagent's is
 the main model in effect when it ran, so switching models with ``/model`` never reprices earlier
@@ -25,6 +25,8 @@ import sys
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
+from ucode.constants import AGENT_CLAUDE, ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR
+from ucode.smart_routing.config import resolve_environment
 from ucode.smart_routing.pricing import (
     ModelPrice,
     TokenUsage,
@@ -154,10 +156,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--price-cache", type=Path, required=True)
     parser.add_argument("--baseline-session-start", action="store_true")
     args = parser.parse_args(argv)
-    line = usage_output(
-        args.usage,
-        price_cache=args.price_cache,
-        baseline_session_start=args.baseline_session_start,
+    line = (
+        usage_output(
+            args.usage,
+            price_cache=args.price_cache,
+            baseline_session_start=args.baseline_session_start,
+        )
+        if resolve_environment(agent=AGENT_CLAUDE).get(ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR) == "1"
+        else json.dumps({"savings": None})
     )
     # Write bytes so the money bag survives a non-UTF-8 stdout locale.
     sys.stdout.buffer.write((line + "\n").encode("utf-8"))

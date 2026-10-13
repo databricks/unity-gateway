@@ -446,6 +446,7 @@ class TestV2Launch:
     def test_subagent_only_launch_skips_first_prompt_routing(
         self, tmp_path, monkeypatch, savings_price_refresh
     ):
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR, "1")
         user_settings = tmp_path / "settings.json"
         user_settings.write_text(json.dumps({"model": "opus"}))
         monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
@@ -579,6 +580,7 @@ class TestSavingsLaunch:
         def capture(argv) -> None:
             captured["launch_dir"] = Path(argv[argv.index("--plugin-dir") + 1]).parent
             settings = json.loads(Path(argv[argv.index("--settings") + 1]).read_text())
+            captured["env"] = settings["env"]
             captured["options"] = settings["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME][
                 "options"
             ]
@@ -603,7 +605,16 @@ class TestSavingsLaunch:
                 binary="claude",
                 user_settings_path=user_settings,
                 launch_model="opus",
-                compose_settings=lambda _args: ({}, []),
+                compose_settings=lambda _args: (
+                    {
+                        "env": {
+                            v2.ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR: "0"
+                            if v2.savings_enabled()
+                            else "1"
+                        }
+                    },
+                    [],
+                ),
                 launch_model_args=claude._launch_model_args,
                 model_name=claude._maybe_add_1m_suffix,
             )
@@ -614,6 +625,7 @@ class TestSavingsLaunch:
     def test_first_prompt_routing_prices_against_the_start_model(
         self, monkeypatch, tmp_path, first_prompt
     ):
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR, "1")
         captured = self._launch(monkeypatch, tmp_path, first_prompt=first_prompt)
 
         assert captured["options"]["savings_pricer"] == savings.pricer_argv(
@@ -625,10 +637,13 @@ class TestSavingsLaunch:
             captured["launch_dir"] / savings.USAGE_FILENAME
         )
 
-    def test_opting_out_skips_the_pricer_and_the_price_refresh(
-        self, monkeypatch, tmp_path, savings_price_refresh
+    @pytest.mark.parametrize("flag", [None, "", "0", "true"])
+    def test_disabled_savings_skips_the_pricer_and_the_price_refresh(
+        self, monkeypatch, tmp_path, savings_price_refresh, flag
     ):
-        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR, "0")
+        if flag is not None:
+            monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR, flag)
+        monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", "1")
 
         captured = self._launch(monkeypatch, tmp_path, first_prompt=False)
 
@@ -636,6 +651,26 @@ class TestSavingsLaunch:
             key: captured["options"][key] for key in v2.CLAUDE_SAVINGS_OPTION_DEFAULTS
         } == v2.CLAUDE_SAVINGS_OPTION_DEFAULTS
         savings_price_refresh.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "version, enabled",
+        [
+            ("subagent_orch_v1", False),
+            ("subagent_orch_savings_v0", True),
+        ],
+    )
+    def test_preset_controls_all_savings_launch_work(
+        self, monkeypatch, tmp_path, savings_price_refresh, version, enabled
+    ):
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", version)
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR, "0" if enabled else "1")
+        captured = self._launch(monkeypatch, tmp_path, first_prompt=False)
+        assert captured["env"][v2.ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR] == str(int(enabled))
+        assert captured["options"][v2.ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR] == str(int(enabled))
+        assert bool(captured["options"]["savings_pricer"]) == enabled
+        assert bool(captured["options"]["savings_usage"]) == enabled
+        assert bool(captured["options"]["orchestrator_version"]) == enabled
+        assert savings_price_refresh.called == enabled
 
 
 class TestSavingsPriceRefresh:

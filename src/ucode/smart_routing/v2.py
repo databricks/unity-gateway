@@ -32,6 +32,7 @@ from ucode.constants import (
     AGENT_CODEX,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
+    ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
     LOOPBACK_HOST,
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
@@ -84,8 +85,6 @@ HEALTH_POLL_INTERVAL_SECONDS = 0.25
 CLAUDE_ROUTE_SELECTION_TIMEOUT_S = 20.0
 CLAUDE_ROUTED_AGENT_PREFIX = "ucode-route-"
 CLAUDE_ROUTING_PLUGIN_NAME = "ug-smart-router"
-# Default on; "0" opts a launch out of the smart-routing savings estimate.
-ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR = "ENABLE_SMART_ROUTING_SAVINGS"
 # Native plugin options for the savings mod, at the values Claude fills in for a launch that omits
 # them: no pricer (the estimate is off) and no orchestrator skill version to show.
 CLAUDE_SAVINGS_OPTION_DEFAULTS: dict[str, str | list[str]] = {
@@ -357,9 +356,9 @@ def _claude_mod_launch_options(env: Mapping[str, str] | None = None) -> dict:
 
 
 def savings_enabled(env: Mapping[str, str] | None = None) -> bool:
-    """Whether a routed Claude launch shows the savings estimate (default on; ``0`` opts out)."""
-    source = os.environ if env is None else env
-    return source.get(ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR, "1") != "0"
+    """Whether a routed Claude launch explicitly enables the savings feature."""
+    source = resolve_environment(env, agent=AGENT_CLAUDE)
+    return source.get(ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR) == "1"
 
 
 def _claude_savings_launch_options(
@@ -368,13 +367,14 @@ def _claude_savings_launch_options(
     """Options for the savings mod: the pricer it runs after each turn, the file it sums usage
     into, and the orchestrator skill version it shows when the launch activates that skill."""
     options = dict(CLAUDE_SAVINGS_OPTION_DEFAULTS)
-    if savings_enabled():
-        options["savings_pricer"] = savings.pricer_argv(
-            python=sys.executable,
-            price_cache=price_cache,
-            baseline_session_start=baseline_session_start,
-        )
-        options["savings_usage"] = str(launch_dir / savings.USAGE_FILENAME)
+    if not savings_enabled():
+        return options
+    options["savings_pricer"] = savings.pricer_argv(
+        python=sys.executable,
+        price_cache=price_cache,
+        baseline_session_start=baseline_session_start,
+    )
+    options["savings_usage"] = str(launch_dir / savings.USAGE_FILENAME)
     if orchestrator.feature_enabled(agent=AGENT_CLAUDE):
         options["orchestrator_version"] = orchestrator.skill_version(agent=AGENT_CLAUDE) or ""
     return options
@@ -507,7 +507,7 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
     orchestrator.add_claude_agents(plugin_dir)
     mods = Path(__file__).parents[1] / "agents" / "claude_mods"
     # constants.ts is imported by the entry point, so it ships beside it rather than as a module.
-    for name in ("register.ts", "constants.ts", "savings.ts"):
+    for name in ("register.ts", "constants.ts"):
         write_text_file(plugin_dir / "hooks" / name, (mods / name).read_text(encoding="utf-8"))
     write_json_file(plugin_dir / "hooks" / "hooks.json", {"modules": ["./register.ts"]})
 
@@ -761,6 +761,7 @@ def launch_claude(
     env[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] = (
         "1" if orchestrator.feature_enabled(agent=AGENT_CLAUDE) else "0"
     )
+    env[ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR] = "1" if savings_enabled() else "0"
     if route_first_prompt:
         env[ENABLE_SMART_ROUTING_ENV_VAR] = "1"
     else:

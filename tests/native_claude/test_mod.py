@@ -60,12 +60,18 @@ def test_mod_validation_and_event_forwarding(native_binary, tmp_path):
         )
         assert result.returncode == 0, result.stdout + result.stderr
         if command == "validate":
-            assert "./register.ts hooks: session.start" in result.stdout
+            hooks = next(
+                line for line in result.stdout.splitlines() if "./register.ts hooks:" in line
+            )
+            assert "session.start" in hooks
 
 
-def test_native_options_are_launch_local(native_binary, tmp_path):
+@pytest.mark.parametrize(
+    "version", [config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, config.SUBAGENT_ORCH_SAVINGS_V0]
+)
+def test_native_options_are_launch_local(native_binary, tmp_path, version):
     env = {
-        "SMART_ROUTER_CONFIG_VERSION": config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+        "SMART_ROUTER_CONFIG_VERSION": version,
         "SMART_ROUTER_NAME": 'custom "quoted" λ',
     }
     savings_options = _savings_options(tmp_path / "a")
@@ -86,7 +92,9 @@ def test_savings_mod_records_the_start_model(native_binary, tmp_path):
     root = tmp_path / "session"
     options = _savings_options(root)
     usage = Path(options["savings_usage"])
-    with Session(native_binary, root, {}, options=options) as session:
+    with Session(
+        native_binary, root, {"ENABLE_SMART_ROUTING_SAVINGS": "1"}, options=options
+    ) as session:
         session.observe()
         # The mod writes its sums off the session.start critical path.
         deadline = time.monotonic() + 10
@@ -106,3 +114,14 @@ def test_savings_mod_records_the_start_model(native_binary, tmp_path):
         "user_switched": False,
         "entries": [],
     }
+
+
+@pytest.mark.parametrize("flag", [None, "", "0"])
+def test_disabled_savings_does_not_create_usage_file(native_binary, tmp_path, flag):
+    root = tmp_path / "session"
+    options = _savings_options(root)
+    env = {} if flag is None else {"ENABLE_SMART_ROUTING_SAVINGS": flag}
+    # Stale savings options must not enable the feature without an explicit flag.
+    with Session(native_binary, root, env, options=options) as session:
+        session.observe()
+    assert not Path(options["savings_usage"]).exists()

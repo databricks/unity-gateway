@@ -23,8 +23,13 @@ Savings estimate coverage: `test_smart_routing_savings.py` prices the mod's toke
 (per-entry and first-prompt baselines, unpriced or malformed entries, the pricer's single
 JSON line). `test_smart_routing_pricing.py` covers endpoint rates and the price cache.
 `test_claude_mod.py` and `test_claude_smart_routing_v2.py` cover the savings options,
-opt-out and price refresh. In the native suite, the options reach the mod unchanged and
-a real session records its start model. Token accumulation in `turn.step` and the
+explicit opt-in (unset, empty, zero, and invalid values stay off), price refresh,
+and gating the orchestrator-version row. Preset coverage in `test_smart_routing_config.py`
+checks the savings flag, inherited-value precedence, restoration, and launch/session off
+controls. `test_smart_router.py` checks that the skill toggle writes all managed flags.
+`test_claude_mod.py` checks native literal setters against the flag registry. In the
+native suite, options reach the mod unchanged, enabled sessions record their start
+model, and disabled sessions create no usage file even with stale savings options. Token accumulation in `turn.step` and the
 above-prompt row are not covered automatically.
 
 Dedicated CUJs reuse `integration/utils` session/terminal mechanics and file-task

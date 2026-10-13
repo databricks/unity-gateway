@@ -293,15 +293,19 @@ class TestPricerCommand:
         ]
 
     @staticmethod
-    def run(price_cache: Path, usage: Path, *, first_prompt: bool = False):
+    def run(price_cache: Path, usage: Path, *, first_prompt: bool = False, flag: str | None = "1"):
         argv = savings.pricer_argv(
             python=sys.executable, price_cache=price_cache, baseline_session_start=first_prompt
         )
+        env = {**os.environ, "PYTHONIOENCODING": "ascii"}
+        env.pop("ENABLE_SMART_ROUTING_SAVINGS", None)
+        if flag is not None:
+            env["ENABLE_SMART_ROUTING_SAVINGS"] = flag
         # An ASCII stdout locale must not cost the money bag.
         return subprocess.run(
             [*argv, "--usage", str(usage)],
             capture_output=True,
-            env={**os.environ, "PYTHONIOENCODING": "ascii"},
+            env=env,
             timeout=30,
             check=False,
         )
@@ -320,5 +324,12 @@ class TestPricerCommand:
     def test_never_fails_the_mod(self, tmp_path, price_cache):
         result = self.run(price_cache, tmp_path / "missing.json", first_prompt=True)
 
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == {"savings": None}
+
+    @pytest.mark.parametrize("flag", [None, "", "0", "true"])
+    def test_disabled_pricer_returns_no_estimate(self, tmp_path, price_cache, flag):
+        usage = write_usage(tmp_path, [entry("a1", OPUS_ID, SONNET_ID, SUBAGENT_USAGE)])
+        result = self.run(price_cache, usage, flag=flag)
         assert result.returncode == 0, result.stderr
         assert json.loads(result.stdout) == {"savings": None}

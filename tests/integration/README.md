@@ -1026,3 +1026,9 @@ responses, with only the existing verified native compatibility retries accepted
 Local Claude mod confirmation replaces the old saved-control-file/assistant-turn wait;
 Codex retains its CLI control-file checks. No extra TUI sessions or tasks are added.
 Clear/reload, compaction, and denied-write rollback are not independently checked.
+
+Savings gating and `subagent_orch_savings_v0` have component coverage in
+`test_smart_routing_config.py`, `test_claude_mod.py`, and `test_claude_smart_routing_v2.py`.
+Native component tests check opt-in usage-file creation and opt-out preservation.
+Live savings accumulation, display, and session off/on are not covered by the
+integration suite.
