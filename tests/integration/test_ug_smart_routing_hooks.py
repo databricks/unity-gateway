@@ -589,7 +589,7 @@ def test_smart_router_skill_absent_when_routing_disabled(live_session, workspace
                 "the Smart Router command search",
                 stable_for=1,
             )
-        else:
+        elif agent == "codex":
             tui.send("$", "open the native skill picker")
             tui.wait_for(lambda screen: "skill-creator" in screen, "the built-in skill picker")
             tui.send("smart-router", "filter the native skill picker for Smart Router")
@@ -601,6 +601,8 @@ def test_smart_router_skill_absent_when_routing_disabled(live_session, workspace
                 "the unmatched Smart Router skill search",
                 stable_for=1,
             )
+        else:
+            raise AssertionError(f"Unsupported agent: {agent}")
         matches = [line.strip() for line in tui.visible.splitlines() if "smart-router" in line]
         assert len(matches) == 1, tui.visible
         tui.send("\x15", "clear the unmatched Smart Router search")
