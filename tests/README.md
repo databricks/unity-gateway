@@ -45,6 +45,12 @@ complete per-agent validation, session precedence, and preserving the preset sel
 until managed-default agent selection.
 These checks do not establish live agent coverage.
 
+The shared request recorder and native compatibility-retry checks live in
+`integration/utils/request_recorder.py`. The CUJ adapter keeps its existing
+configuration glue and imports those helpers; request forwarding, header
+redaction, and paired response assertions retain their behavior. The integration
+runner installs `httpx` in its isolated test environment for these helpers.
+
 CUJ3 and CUJ4 also verify Claude's native recovery from the known thinking-display 400:
 the same payload without display must receive a non-empty 200 for adaptive or enabled thinking.
 If the next attempt rejects `safeguards`, only its native removal is accepted before the final 200.
