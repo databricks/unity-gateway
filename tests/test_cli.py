@@ -6248,3 +6248,20 @@ class TestChildStdoutLaunch:
         captured = capfd.readouterr()
         assert captured.out == '{"result":"child output"}\n'
         assert "Gateway status" in captured.err
+
+
+class TestWindowsProgramName:
+    @pytest.mark.parametrize(
+        ("argv0", "os_name", "expected"),
+        [
+            ("ug.EXE", "nt", "ug"),
+            ("ucode.exe", "nt", "ucode"),
+            ("ug", "posix", None),
+            ("ug.EXE", "posix", None),
+            ("__main__.py", "nt", None),
+        ],
+    )
+    def test_names_the_windows_launcher_by_its_stem(self, monkeypatch, argv0, os_name, expected):
+        monkeypatch.setattr(cli_mod.sys, "argv", [argv0])
+        monkeypatch.setattr(cli_mod.os, "name", os_name)
+        assert cli_mod._windows_program_name() == expected

@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from enum import StrEnum
@@ -4307,8 +4308,18 @@ def _verify_upgraded_commands() -> None:
             )
 
 
+def _windows_program_name() -> str | None:
+    """``ug`` rather than ``ug.EXE`` for the console-script launcher on Windows.
+
+    Click names the program after ``sys.argv[0]``, which is the launcher's full path when it is
+    started by path (``shutil.which`` returns ``...\\ug.EXE``). Returning None keeps Click's own
+    detection everywhere else, including ``python -m ucode``."""
+    stem, ext = os.path.splitext(os.path.basename(sys.argv[0]))
+    return stem if os.name == "nt" and ext.lower() == ".exe" else None
+
+
 def main() -> None:
-    app()
+    app(prog_name=_windows_program_name())
 
 
 if __name__ == "__main__":
