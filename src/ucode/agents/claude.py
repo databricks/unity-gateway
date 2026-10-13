@@ -2259,9 +2259,11 @@ def launch(
             routing_setup_failed = True
         else:
             return
-    # This launch has no session controls, so withdraw the skill an earlier routed launch
-    # installed: otherwise `/smart-router` stays on offer and its command would launch Claude.
-    smart_routing_v2.remove_smart_router_session_skills(AGENT_CLAUDE)
+    else:
+        # Without routing there are no session controls, so withdraw what an earlier launch
+        # installed: `/smart-router` would stay on offer with no mod to intercept it, and its
+        # command would launch another Claude.
+        smart_routing_v2.remove_smart_router_session_skills(AGENT_CLAUDE)
     if workspace and not custom_oauth_cli_enabled(state.get("custom_oauth")):
         os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
     settings_override = None
@@ -2301,6 +2303,8 @@ def launch(
         }
         settings_override = _merge_claude_settings(settings_override or {}, {"env": fallback_env})
         os.environ.update(fallback_env)
+        # Setup installed the controls before it failed, and this launch has no mod for them.
+        smart_routing_v2.remove_smart_router_session_skills(AGENT_CLAUDE)
     exec_or_spawn(_build_claude_argv(binary, launch_args, settings_override=settings_override))
 
 
