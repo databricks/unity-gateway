@@ -580,28 +580,35 @@ def test_smart_router_skill_absent_when_routing_disabled(live_session, workspace
         tui.boot()
         if agent == "claude":
             tui.submit("/skills")
-            tui.wait_for(lambda screen: "No skills found" in screen, "the empty native skills view")
+            tui.wait_for(
+                lambda screen: re.search(r"\bno\s+skills\b", screen, re.IGNORECASE),
+                "the empty native skills view",
+            )
             tui.send("\x1b", "close the skills view")
-            tui.wait_for(lambda screen: "No skills found" not in screen, "the prompt")
+            tui.wait_for(
+                lambda screen: not re.search(r"\bno\s+skills\b", screen, re.IGNORECASE),
+                "the prompt",
+            )
             tui.send("/smart-router", "search native slash commands for Smart Router")
             tui.wait_for(
-                lambda screen: 'No commands match "/smart-router"' in screen,
+                lambda screen: (
+                    re.search(r"\bno\s+commands?\s+match\b", screen, re.IGNORECASE)
+                    and re.search(r"(?m)^\s*[❯›>]\s*/smart-router\s*$", screen)
+                ),
                 "Claude reporting no matching Smart Router command",
                 stable_for=1,
             )
         elif agent == "codex":
             tui.send("$", "open the native skill picker")
             tui.wait_for(
-                lambda screen: (
-                    "[Skill]" in screen and "Press enter to insert or esc to close" in screen
-                ),
+                lambda screen: "[skill]" in screen.casefold(),
                 "the native skill picker",
             )
             tui.send("smart-router", "filter the native skill picker for Smart Router")
             tui.wait_for(
                 lambda screen: (
-                    "[Skill]" not in screen
-                    and re.search(r"(?m)^\s*[›>]\s*\$smart-router\s*$", screen)
+                    "[skill]" not in screen.casefold()
+                    and re.search(r"(?m)^\s*[❯›>]\s*\$smart-router\s*$", screen)
                 ),
                 "the unmatched Smart Router skill search",
                 stable_for=1,

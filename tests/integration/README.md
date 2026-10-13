@@ -377,13 +377,17 @@ a new CLI confirmation in native tool-result records, and a new assistant answer
 skill invocation.
 Collapsed terminal output is allowed; the answer need not repeat the CLI's exact wording.
 Each following child still verifies whether a routing decision occurred.
-A journey parameterized for Claude and Codex sets all three routing flags to `0` and leave
+A journey parameterized for Claude and Codex sets all three routing flags to `0` and leaves
 the preset selector empty. In a fresh Claude session, `/skills` reports no skills
 and typing `/smart-router` offers no matching command. Codex first loads its
 built-in `$` skill picker, then filters with `$smart-router` and requires no
 matching skill. Both complete a file-reading task and exit normally without
 routing banners, decisions, or wrapper logs. These cases do not check removal
 of skills left by an earlier routed launch.
+The UI assertions ignore casing, whitespace, quotes, skill display names, and
+footer wording. Claude must show a native empty-state message alongside the
+typed command. Codex must first show skill rows, then show no skill rows for
+the typed search. Input echo alone cannot pass either absence check.
 With orchestration enabled through legacy flags or a preset, both routed children
 must show `[orchestrator on]` in their own subagent banner.
 Their off-phase child is an explicit user-requested delegation;

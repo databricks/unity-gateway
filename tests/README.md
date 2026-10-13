@@ -235,10 +235,13 @@ they verify the saved
 session controls and native
 tool-result confirmation after each toggle, and explicitly request their children,
 including while routing is off.
-One live journey parameterized for Claude and Codex set all three routing flags to `0` with an empty
+One live journey parameterized for Claude and Codex sets all three routing flags to `0` with an empty
 preset selector. Claude's native skills view is empty and `/smart-router` has
 no command suggestion; Codex's loaded `$` picker has no `$smart-router` match.
 Both complete a normal file-reading task and exit without routing.
+UI checks accept casing and whitespace changes and ignore quotes, skill display
+names, and footer wording. They still require native empty-state evidence for
+Claude and a loaded Codex skill picker with no result rows for the typed search.
 The managed-fixture banner journeys separately cover the selector unset (managed default) and
 `first_prompt_and_subagent_no_orch_v0` for real first-prompt tasks.
 Preset parameterization augments only routing hooks, skill toggles, and first-prompt routing;
