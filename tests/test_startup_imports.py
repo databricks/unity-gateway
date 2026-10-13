@@ -183,6 +183,17 @@ def test_metadata_reader_falls_back_for_zip_path_before_directory(tmp_path, monk
     assert version("unity-gateway") == "1.2.3"
 
 
+def test_metadata_reader_skips_windows_console_script_launcher(tmp_path, monkeypatch) -> None:
+    # Windows console scripts put their launcher (e.g. Scripts\ug.exe) first on sys.path.
+    launcher = tmp_path / "ug.exe"
+    launcher.write_bytes(b"MZ")
+    directory = tmp_path / "site-packages"
+    _write_metadata(directory, "1.2.3")
+    monkeypatch.setattr(sys, "path", [str(launcher), str(directory)])
+
+    assert entrypoint._read_installed_version() == version("unity-gateway") == "1.2.3"
+
+
 def test_metadata_reader_falls_back_for_egg_info(tmp_path, monkeypatch) -> None:
     egg = tmp_path / "unity_gateway.egg-info"
     egg.mkdir()

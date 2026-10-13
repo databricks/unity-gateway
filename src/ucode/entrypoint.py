@@ -27,6 +27,12 @@ def _read_installed_version() -> str | None:
             names = os.listdir(entry or ".")
         except (FileNotFoundError, PermissionError):
             continue
+        except NotADirectoryError:
+            # Windows puts the console-script launcher (e.g. Scripts\ug.exe) on sys.path; it holds
+            # no distribution metadata. Other files may be zip archives, so they fall back.
+            if entry.lower().endswith(".exe"):
+                continue
+            return None
         except OSError:
             return None
         for name in names:
