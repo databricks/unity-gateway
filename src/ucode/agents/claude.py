@@ -2116,11 +2116,17 @@ def _build_claude_argv(
 
 
 def _has_subscription_login() -> bool:
-    """True when Claude Code already holds a subscription login (`claude auth
-    status` exits 0). Never inspects or captures the credential itself."""
+    """True when Claude Code holds a Claude subscription login that a relayed launch will use."""
     try:
         result = subprocess_cross_os.run(
-            [SPEC["binary"], "auth", "status"],
+            [
+                SPEC["binary"],
+                "--setting-sources",
+                _RELAYED_SETTING_SOURCES,
+                "auth",
+                "status",
+                "--json",
+            ],
             check=False,
             capture_output=True,
             text=True,
@@ -2128,7 +2134,13 @@ def _has_subscription_login() -> bool:
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
-    return result.returncode == 0
+    if result.returncode != 0:
+        return False
+    try:
+        status = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return False
+    return isinstance(status, dict) and status.get("authMethod") == "claude.ai"
 
 
 def _ensure_subscription_login() -> None:

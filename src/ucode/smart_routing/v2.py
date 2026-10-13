@@ -9,7 +9,7 @@ import subprocess
 import sys
 import time
 import urllib.request
-from collections.abc import Callable, MutableMapping
+from collections.abc import Callable, Mapping, MutableMapping
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import NoReturn, TextIO
@@ -321,6 +321,16 @@ def _routed_claude_agent_definitions(model_ids: list[str]) -> dict[str, dict[str
     }
 
 
+def _claude_mod_launch_options(env: Mapping[str, str] | None = None) -> dict:
+    source = resolve_environment(env, agent=AGENT_CLAUDE)
+    return {
+        **{key: source.get(key, "") for key in SMART_ROUTING_ENV_KEYS},
+        # Native plugin options cannot represent null; preserve absent versus empty values.
+        "unset": [key for key in SMART_ROUTING_ENV_KEYS if key not in source],
+        "recipe": source.get(routing.ROUTER_NAME_ENV_VAR, "").strip() or routing.ROUTER_NAME,
+    }
+
+
 def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
     """Write exact-model agents for launch-scoped loading through --plugin-dir."""
     write_json_file(
@@ -330,6 +340,25 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
             "version": "1.0.0",
             "description": "Launch-scoped agents for Unity Gateway smart routing.",
             "author": {"name": "Databricks"},
+            "userConfig": {
+                **{
+                    key: {"type": "string", "title": key, "description": "Original routing flag"}
+                    for key in SMART_ROUTING_ENV_KEYS
+                },
+                "unset": {
+                    "type": "string",
+                    "multiple": True,
+                    "default": [],
+                    "title": "Absent flags",
+                    "description": "Flags absent at launch",
+                },
+                "recipe": {
+                    "type": "string",
+                    "default": routing.ROUTER_NAME,
+                    "title": "Recipe",
+                    "description": "Original routing recipe",
+                },
+            },
         },
     )
     for name, definition in _routed_claude_agent_definitions(model_ids).items():
@@ -588,6 +617,9 @@ def launch_claude(
             session_path = _prepare_smart_router_session("claude")
             env[SESSION_ENV_VAR] = str(session_path)
             env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
+            settings.setdefault("pluginConfigs", {}).setdefault(CLAUDE_ROUTING_PLUGIN_NAME, {})[
+                "options"
+            ] = _claude_mod_launch_options({**resolve_environment(agent=AGENT_CLAUDE), **env})
             try:
                 write_json_file(settings_path, settings)
                 _write_routed_claude_plugin(plugin_dir, model_ids)

@@ -21,7 +21,9 @@ jobs:
           startsWith(github.event.comment.body, '/integration-test ')) &&
         contains(fromJSON('["MEMBER", "OWNER"]'), github.event.comment.author_association)
       }}
-    runs-on: ubuntu-latest
+    runs-on:
+      group: databricks-protected-runner-group
+      labels: linux-ubuntu-latest
     timeout-minutes: 5
     permissions:
       pull-requests: write
@@ -47,9 +49,9 @@ jobs:
           [[ "$COMMENT_BODY" =~ ^/integration-test([[:space:]]+([0-9a-f]{7,40}))?[[:space:]]*$ ]] \
             || refuse "use \`/integration-test\`, or \`/integration-test <sha>\` with the head commit you reviewed."
           requested="${BASH_REMATCH[2]}"
-          pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER")
-          sha=$(jq -r '.head.sha' <<<"$pr")
-          head_repo=$(jq -r '.head.repo.full_name // empty' <<<"$pr")
+          # gh's built-in --jq; the protected runner image does not guarantee a jq binary.
+          read -r sha head_repo < <(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" \
+            --jq '[.head.sha, (.head.repo.full_name // "")] | @tsv') || true
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || refuse "could not read the PR head commit."
           [ -n "$head_repo" ] || refuse "the fork repository no longer exists."
           # Naming the commit binds the run to what was reviewed, not to a later push.
@@ -71,7 +73,9 @@ jobs:
           startsWith(github.event.comment.body, '/integration-test ')) &&
         !contains(fromJSON('["MEMBER", "OWNER"]'), github.event.comment.author_association)
       }}
-    runs-on: ubuntu-latest
+    runs-on:
+      group: databricks-protected-runner-group
+      labels: linux-ubuntu-latest
     timeout-minutes: 5
     permissions:
       pull-requests: write
@@ -92,9 +96,6 @@ jobs:
     concurrency:
       group: fork-integration-${{ github.event.issue.number }}
       cancel-in-progress: true
-    permissions:
-      contents: read
-      id-token: write
     uses: ./.github/workflows/integration.yml
     with:
       ref: ${{ needs.authorize.outputs.sha }}
@@ -104,7 +105,9 @@ jobs:
     name: Report fork integration
     needs: [authorize, integration]
     if: ${{ always() && needs.authorize.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on:
+      group: databricks-protected-runner-group
+      labels: linux-ubuntu-latest
     timeout-minutes: 5
     permissions:
       statuses: write

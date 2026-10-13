@@ -21,7 +21,11 @@ from __future__ import annotations
 import subprocess
 import sys
 
-from ucode.databricks import AIGW_MCP_SERVICES_SEGMENT, databricks_cli_path
+from ucode.databricks import (
+    AIGW_MCP_SERVICES_SEGMENT,
+    clear_databricks_token_cache,
+    databricks_cli_path,
+)
 from ucode.os_compatibility import subprocess_cross_os
 
 # Login can pop a browser and wait for the user to complete the SaaS login, so
@@ -128,6 +132,8 @@ def run_connection_login(
         return False, f"could not run '{login_binary} auth login': {exc}"
     except subprocess.TimeoutExpired:
         return False, "connection sign-in timed out waiting for the browser flow to complete"
+    finally:
+        clear_databricks_token_cache()
     if result.returncode == 0:
         return True, "signed in"
     return (
