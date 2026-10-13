@@ -1009,10 +1009,9 @@ Native launch-option component tests (`native_claude/test_mod.py`) check two rea
 processes with different resolved routing baselines. Python cases cover Claude-specific presets,
 unknown selectors, and absent versus empty flags. These checks do not establish gateway/TUI coverage.
 
-`test_claude_mod.py` also checks that an explicit `/smart-router` toggle asks UG's CLI to
-replace the saved session controls, while session start restores only the launch baseline.
-The plugin test host runs without a process capability, so the mod's call itself is proven
-by the live skill-toggle journey rather than `claude plugin test`.
+The plugin test host runs without a process capability, so the mod's session-control call
+is covered by the live skill-toggle journey rather than `claude plugin test`. No component
+check asserts that the launch paths withdraw the skills.
 
 `integration/test_ug_smart_routing_hooks.py` checks recipe headers in its existing
 Claude skill-toggle journey. The recorder forwards to the real workspace, configured
