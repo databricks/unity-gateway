@@ -36,6 +36,10 @@ def _supported(monkeypatch):
     # Pin platform support on so tests are deterministic on any host.
     monkeypatch.setattr(managed_files, "managed_files_supported", lambda: True)
     monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: True)
+    # These tests cover the sudo writer; on a Windows host the elevated-write path would run
+    # instead. Not pinned elsewhere: the real worker shell picks cp flags from the host OS.
+    if managed_files.current_os() is managed_files.OS.WINDOWS:
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
 
 
 @pytest.fixture

@@ -1763,6 +1763,7 @@ class TestCodexManagedConfig:
         monkeypatch.setattr(codex, "managed_writes_allowed", lambda: not non_interactive)
         monkeypatch.setattr(codex, "codex_managed_config_path", lambda: managed_path)
         monkeypatch.setattr(managed_files, "managed_files_supported", lambda: True)
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
         monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: not non_interactive)
         monkeypatch.setattr(managed_files, "MANAGED_BACKUP_DIR", tmp_path / "managed-backups")
         monkeypatch.setattr(

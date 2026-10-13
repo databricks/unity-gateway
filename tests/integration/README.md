@@ -411,8 +411,8 @@ The portable `../test_claude_windows_smart_routing.py` checks the Windows
 subagent-only fallback without Unix imports. Native Windows TUI and hook execution
 remain outside this integration suite.
 
-The relayed CUJ launches Claude through a relayed (subscription-relay) MPS and
-completes a file task on two models: a bare Anthropic id the subscription serves
+The relayed CUJ launches Claude from fresh state through a relayed (subscription-relay)
+MPS, with no `ug configure` step, and completes a file task on two models: a bare Anthropic id the subscription serves
 directly (`route=relay`) and a Databricks-hosted `system.ai` id the loopback proxy
 re-routes to gateway auth (`route=databricks`) — one relayed session reaching both.
 It needs a subscription OAuth token (see below). Interactive model-picker selection

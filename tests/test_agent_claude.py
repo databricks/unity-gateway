@@ -1365,6 +1365,7 @@ class TestWriteToolConfigManagedSettings:
         managed_path = tmp_path / "managed-settings.json"
         backup_dir = tmp_path / "managed-backups"
         monkeypatch.setattr(managed_files, "managed_files_supported", lambda: True)
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
         monkeypatch.setattr(managed_files, "MANAGED_BACKUP_DIR", backup_dir)
         monkeypatch.setattr(
             managed_files, "MANAGED_BACKUP_MANIFEST_PATH", backup_dir / "manifest.json"
@@ -1425,6 +1426,7 @@ class TestWriteToolConfigManagedSettings:
         backup_dir = tmp_path / "managed-backups"
         sudo_writes: list[str] = []
         monkeypatch.setattr(managed_files, "managed_files_supported", lambda: True)
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
         monkeypatch.setattr(managed_files, "MANAGED_BACKUP_DIR", backup_dir)
         monkeypatch.setattr(
             managed_files, "MANAGED_BACKUP_MANIFEST_PATH", backup_dir / "manifest.json"
