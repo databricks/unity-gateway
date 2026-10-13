@@ -2324,12 +2324,30 @@ def auth_token_cmd(
 
 
 @app.command("otel-proxy", hidden=True)
-def otel_proxy_cmd() -> None:
-    """Run the Codex desktop trace proxy under the user service manager."""
-    from ucode.codex_otel_service import run
+def otel_proxy_cmd(
+    host: Annotated[str, typer.Option("--host")],
+    port: Annotated[int, typer.Option("--port", min=1, max=65535)],
+) -> None:
+    """Run the same OTLP proxy as a Codex CLI session, for desktop."""
+    from ucode import gateway_proxy
+    from ucode.agents.codex import _otel_token_provider
 
     try:
-        run()
+        state = load_full_state().get("workspaces", {}).get(host)
+        if not state:
+            raise RuntimeError(f"No saved configuration for {host}. Run `ug configure` first.")
+        apply_pat_environment(state)
+        server, cache, client = gateway_proxy.start_otel_proxy(
+            host, _otel_token_provider(state, host), port=port
+        )
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            server.server_close()
+            cache.stop()
+            client.close()
     except (OSError, RuntimeError) as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None

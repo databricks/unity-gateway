@@ -252,17 +252,7 @@ class TestOtelProxyEndToEnd:
         with _running_otel_proxy(gw, token) as proxy_url:
             resp = httpx.post(
                 f"{proxy_url}/v1/traces",
-                headers={
-                    "Authorization": "Bearer inherited-collector-token",
-                    "Content-Type": "application/x-protobuf",
-                    "Content-Encoding": "gzip",
-                    "X-Api-Key": "isaac-api-key",
-                    "X-Workspace-Id": "isaac-workspace",
-                    "X-Region": "us-west-2",
-                    "X-Cloud": "aws-public",
-                    "X-Target-Table": "isaac.target",
-                    "X-Databricks-UC-Table-Name": "main.schema.table",
-                },
+                headers={"Content-Type": "application/x-protobuf"},
                 content=b"\x0a\x02\x08\x01",  # arbitrary protobuf bytes, not JSON
                 timeout=10,
             )
@@ -272,15 +262,4 @@ class TestOtelProxyEndToEnd:
         assert req.path == "/ai-gateway/otel/v1/traces"
         assert req.header("Authorization") == "Bearer per-user-otel-token"
         assert req.header("X-Databricks-AI-Gateway-Token") is None
-        assert req.header("Content-Type") == "application/x-protobuf"
-        assert req.header("Content-Encoding") == "gzip"
-        for header in (
-            "X-Api-Key",
-            "X-Workspace-Id",
-            "X-Region",
-            "X-Cloud",
-            "X-Target-Table",
-            "X-Databricks-UC-Table-Name",
-        ):
-            assert req.header(header) is None
         assert req.body == b"\x0a\x02\x08\x01"

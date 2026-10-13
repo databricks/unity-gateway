@@ -58,22 +58,6 @@ HOP_BY_HOP_HEADERS = frozenset(
         "content-length",
     )
 )
-# OTLP requests may inherit headers from the process that launches Codex (for
-# example, Isaac's collector credentials and Unity Catalog routing headers).
-# Keep only transport metadata that is meaningful to the workspace OTLP endpoint;
-# the proxy supplies a fresh Authorization header below.
-OTLP_REQUEST_HEADERS = frozenset(
-    {
-        "accept",
-        "accept-encoding",
-        "baggage",
-        "content-encoding",
-        "content-type",
-        "traceparent",
-        "tracestate",
-        "user-agent",
-    }
-)
 # Per-operation upstream timeouts. `read` is generous because model turns stream
 # over a single response and Anthropic emits SSE pings, so inter-chunk gaps stay
 # small; `connect`/`pool` fail fast when the gateway is unreachable.
@@ -273,14 +257,6 @@ class _ProxyHandler(BaseHTTPRequestHandler):
     def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
         return self.token_header, frozenset(), "forward"
 
-    def _request_headers(
-        self,
-        token: str,
-        token_header: str,
-        extra_strip: frozenset[str],
-    ) -> dict[str, str]:
-        return forwarded_request_headers(self, token, token_header, extra_strip=extra_strip)
-
     def _handle(self) -> None:
         diagnostic_id = uuid.uuid4().hex[:12]
         started = time.monotonic()
@@ -297,7 +273,9 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         )
 
         def request_headers() -> dict[str, str]:
-            return self._request_headers(self.cache.token, token_header, extra_strip)
+            return forwarded_request_headers(
+                self, self.cache.token, token_header, extra_strip=extra_strip
+            )
 
         try:
             # First attempt with the current token.
@@ -455,23 +433,6 @@ class _LoopbackHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = ThreadingHTTPServer.allow_reuse_address and os.name != "nt"
 
 
-class _OtelProxyHandler(_ProxyHandler):
-    def _request_headers(
-        self,
-        token: str,
-        token_header: str,
-        extra_strip: frozenset[str],
-    ) -> dict[str, str]:
-        # OTLP is a separate transport boundary. Do not pass through arbitrary
-        # inherited headers, especially credentials/routing metadata intended for
-        # another collector or upstream service.
-        headers = {
-            key: value for key, value in self.headers.items() if key.lower() in OTLP_REQUEST_HEADERS
-        }
-        headers[token_header] = f"Bearer {token}"
-        return headers
-
-
 def _start_proxy(
     workspace: str,
     token_provider: Callable[[bool], str],
@@ -481,15 +442,13 @@ def _start_proxy(
     token_header: str,
     handler_type: type[_ProxyHandler],
     force_refresh_near_expiry: bool,
-    fallback_on_bind_error: bool,
+    fallback_on_bind_error: bool = True,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     """Start the loopback refresh proxy + its background token refresher.
 
-    Binds ``port``. Relay callers may opt into falling back to a fresh OS-assigned
-    port when the requested port is already in use (e.g. a prior session's proxy
-    that was killed before its teardown ran still holds the socket). The caller
-    reads ``server.server_address[1]`` for the actual port and points the client at
-    it.
+    Binds ``port``, optionally falling back to an OS-assigned port when occupied.
+    The caller reads ``server.server_address[1]`` for the actual port. Desktop
+    disables fallback because its exporter keeps the configured port.
 
     ``token_provider(force_refresh)`` mints the token from the same source the
     client agent authenticates with.
@@ -518,23 +477,14 @@ def _start_proxy(
     )
     try:
         server = _LoopbackHTTPServer(("127.0.0.1", port), handler)
-    except OSError as bind_error:
+    except OSError:
         if not fallback_on_bind_error:
-            # The fixed-port desktop proxy must not silently move to a port its
-            # caller does not know about.
-            cache.stop()
-            client.close()
-            raise OSError(
-                f"Could not bind loopback proxy to port {port}: {bind_error}"
-            ) from bind_error
-        try:
-            # Cached port is occupied (stale proxy from a killed session). Port 0 lets
-            # the OS pick any free port; the caller reconciles the base URL to it.
-            server = _LoopbackHTTPServer(("127.0.0.1", 0), handler)
-        except BaseException:
             cache.stop()
             client.close()
             raise
+        # Cached port is occupied (stale proxy from a killed session). Port 0 lets
+        # the OS pick any free port; the caller reconciles the base URL to it.
+        server = _LoopbackHTTPServer(("127.0.0.1", 0), handler)
 
     refresher = threading.Thread(target=cache.run_refresher, daemon=True)
     refresher.start()
@@ -555,7 +505,6 @@ def start_relay_proxy(
         token_header=AI_GATEWAY_TOKEN_HEADER,
         handler_type=_RelayProxyHandler,
         force_refresh_near_expiry=False,
-        fallback_on_bind_error=True,
     )
 
 
@@ -565,16 +514,14 @@ def start_otel_proxy(
     *,
     port: int = 0,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
-    """Start the Codex OTLP proxy on ``port`` (or an OS-assigned port for 0)."""
+    """Start the Codex OTLP proxy, optionally on desktop's persistent port."""
     return _start_proxy(
         workspace,
         token_provider,
         port,
         upstream_path="ai-gateway/otel/",
         token_header=AUTHORIZATION_HEADER,
-        handler_type=_OtelProxyHandler,
+        handler_type=_ProxyHandler,
         force_refresh_near_expiry=True,
-        # Codex CLI keeps the default port ephemeral; desktop callers can supply a
-        # persistent port and must receive a clear collision error.
-        fallback_on_bind_error=port == 0,
+        fallback_on_bind_error=False,
     )

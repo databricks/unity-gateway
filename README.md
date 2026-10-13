@@ -366,23 +366,16 @@ preferences are ignored and their files are left untouched. See the bundled
 
 ### Codex desktop tracing on Linux
 
-For Codex 0.134+ with workspace tracing enabled, interactive
-`ug configure --agents codex` also installs the `ug-codex-otel.service` systemd
-user service. It starts at login, restarts on failure, and refreshes the same
-workspace credentials used for Codex. It preserves `DATABRICKS_CONFIG_FILE` and
-`DATABRICKS_AUTH_STORAGE` from configuration without saving bearer tokens.
-The desktop app reads a stable loopback trace endpoint from Codex's OS-managed
-configuration. Restart its app-server once after the initial configuration.
+With workspace tracing enabled, interactive `ug configure --agents codex` points
+desktop's trace exporter at the same token-refresh proxy used by the CLI. A
+systemd user unit runs `ug otel-proxy` automatically at login and restarts it on
+failure; it reads authentication from the workspace's existing ug state.
 
-Run configuration on the machine hosting the app-server (the remote Linux host
-for a remote desktop connection). It requires a running systemd user manager.
-`systemctl --user status ug-codex-otel.service` shows service status;
-`journalctl --user -u ug-codex-otel.service` shows diagnostics. Reconfigure after
-changing workspace or authentication settings; this restarts the tracing service.
-Disabling tracing and reconfiguring, or running `ug revert`, removes the service
-and restores the previous exporter.
-Logs and metrics are unchanged. Non-interactive setup and other platforms retain
-the existing CLI tracing behavior; they do not install a desktop service.
+Configure on the Linux machine hosting the app-server, with a running systemd
+user manager, then restart the app-server once. Reconfigure to apply changes;
+disabling tracing or running `ug revert` removes the unit and restores the exporter.
+Use `journalctl --user -u ug-codex-otel.service` for diagnostics. Other platforms
+retain CLI tracing. Desktop GUI export and login/reboot startup are not tested.
 
 ## Development
 

@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 
-from ucode import config_io, gateway_proxy, managed_files
+from ucode import gateway_proxy, managed_files
 from ucode.agents import LaunchOptions, codex
 from ucode.config_io import read_toml_safe
 from ucode.smart_routing import codex_routing
@@ -1948,6 +1950,7 @@ class TestCodexManagedConfig:
             codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux systemd configuration")
 class TestDesktopOtelConfig:
     @pytest.fixture
     def desktop(self, tmp_path, monkeypatch):
@@ -1964,175 +1967,100 @@ class TestDesktopOtelConfig:
         monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda **_: True)
         monkeypatch.setattr(managed_files, "_sudo_replace", lambda p, text: p.write_text(text))
         monkeypatch.setattr(managed_files, "_sudo_remove", lambda p: p.unlink())
-        service = {"endpoint": None, "starts": 0, "stops": 0}
+        unit_path = tmp_path / "systemd" / "user" / codex.CODEX_OTEL_SERVICE_NAME
+        monkeypatch.setattr(codex, "_otel_service_path", lambda: unit_path)
+        monkeypatch.setattr(codex, "_allocate_otel_port", lambda: 43199)
+        monkeypatch.setattr(codex, "ug_binary", lambda: "/opt/ug path/$bin%/ug")
+        calls: list[list[str]] = []
 
-        def ensure(state):
-            assert state["workspace"] == WS
-            service["starts"] += 1
-            service["endpoint"] = "http://127.0.0.1:43199/v1/traces"
-            return service["endpoint"]
+        def run(command: list[str], **_kwargs):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
 
-        def remove():
-            service["stops"] += 1
-            service["endpoint"] = None
+        monkeypatch.setattr(codex.subprocess_cross_os, "run", run)
+        return managed_path, unit_path, calls
 
-        monkeypatch.setattr(codex.codex_otel_service, "ensure", ensure)
-        monkeypatch.setattr(codex.codex_otel_service, "remove", remove)
-        monkeypatch.setattr(
-            codex.codex_otel_service, "configured_endpoint", lambda: service["endpoint"]
-        )
-        return managed_path, service
-
-    def test_enable_repeat_disable_preserves_other_signals_and_restores_previous_exporter(
-        self, desktop, tmp_path
-    ):
-        path, service = desktop
+    def test_enable_reconfigure_keeps_port_and_disable_restores_exporter(self, desktop):
+        path, unit_path, calls = desktop
         path.write_text(
             '[otel]\nenvironment = "existing"\nexporter = "none"\nmetrics_exporter = "none"\n'
             '[otel.trace_exporter.otlp-http]\nendpoint = "https://original/v1/traces"\n'
             '[otel.trace_exporter.otlp-http.headers]\nx-api-key = "old-collector-key"\n'
         )
         original_otel = read_toml_safe(path)["otel"]
-        shared = tmp_path / "config.toml"
-        shared.write_text('[otel]\ntrace_exporter = "none"\n')
-        enabled = {"workspace": WS, "codex_otel_tracing": True}
-
-        codex.write_tool_config(enabled)
-        codex.write_tool_config(enabled)
+        codex.write_tool_config({"workspace": WS, "codex_otel_tracing": True})
 
         doc = read_toml_safe(path)
-        assert doc["otel"]["trace_exporter"] == {
-            "otlp-http": {"endpoint": service["endpoint"], "protocol": "binary"}
-        }
+        assert doc["otel"]["trace_exporter"]["otlp-http"]["endpoint"] == (
+            "http://127.0.0.1:43199/v1/traces"
+        )
         assert doc["otel"]["environment"] == "existing"
         assert doc["otel"]["exporter"] == "none"
         assert doc["otel"]["metrics_exporter"] == "none"
-        assert "otel" not in read_toml_safe(codex.CODEX_CONFIG_PATH)
-        assert shared.read_text() == '[otel]\ntrace_exporter = "none"\n'
+        unit = unit_path.read_text(encoding="utf-8")
+        assert 'ExecStart="/opt/ug path/$$bin%%/ug" otel-proxy --host ' in unit
+        assert "--port 43199" in unit
+        assert calls == [
+            ["systemctl", "--user", "daemon-reload"],
+            ["systemctl", "--user", "enable", codex.CODEX_OTEL_SERVICE_NAME],
+            ["systemctl", "--user", "restart", codex.CODEX_OTEL_SERVICE_NAME],
+        ]
 
-        # A later policy change is outside the exporter's ownership.
-        path.write_text(path.read_text() + "\n[features]\nexample = true\n")
-        codex.write_tool_config({"workspace": WS})
+        newer = "https://newer.databricks.com"
+        codex.write_tool_config({"workspace": newer, "codex_otel_tracing": True})
+        assert "http://127.0.0.1:43199/v1/traces" in path.read_text(encoding="utf-8")
+        assert f'--host "{newer}" --port 43199' in unit_path.read_text(encoding="utf-8")
+        assert len(calls) == 6
 
+        codex.write_tool_config({"workspace": newer})
         assert read_toml_safe(path)["otel"] == original_otel
-        assert read_toml_safe(path)["features"]["example"] is True
-        assert service["stops"] == 1
-        assert service["endpoint"] is None
+        assert read_toml_safe(path)["model_providers"]["Databricks"]["base_url"].startswith(newer)
+        assert not unit_path.exists()
+        assert calls[-2:] == [
+            ["systemctl", "--user", "disable", "--now", codex.CODEX_OTEL_SERVICE_NAME],
+            ["systemctl", "--user", "daemon-reload"],
+        ]
 
-    def test_revert_restores_exporter_added_after_model_setup(self, desktop):
-        path, service = desktop
-        codex.write_tool_config({"workspace": WS})
-        path.write_text(path.read_text() + '\n[otel]\ntrace_exporter = "none"\n')
-        codex.write_tool_config({"workspace": WS, "codex_otel_tracing": True})
-
+        codex.write_tool_config({"workspace": newer, "codex_otel_tracing": True})
         codex.revert_managed_config()
+        assert read_toml_safe(path)["otel"] == original_otel
+        assert "model_providers" not in read_toml_safe(path)
+        assert not unit_path.exists()
 
-        assert read_toml_safe(path)["otel"]["trace_exporter"] == "none"
-        assert service["stops"] == 1
+    def test_unit_environment_and_retry(self, desktop, monkeypatch):
+        _path, unit_path, calls = desktop
+        monkeypatch.setenv("PATH", "/tmp/$cli%bin:/usr/bin")
+        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", "~/.config/databricks.cfg")
+        monkeypatch.setenv("DATABRICKS_AUTH_STORAGE", "plaintext")
+        failures = iter([True, False])
 
-    def test_disable_preserves_exporter_edited_after_configuration(self, desktop):
-        path, _ = desktop
+        def run(command: list[str], **_kwargs):
+            calls.append(command)
+            if command[-2:] == ["restart", codex.CODEX_OTEL_SERVICE_NAME] and next(failures):
+                raise subprocess.CalledProcessError(1, command, stderr="restart failed")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        monkeypatch.setattr(codex.subprocess_cross_os, "run", run)
+        with pytest.raises(RuntimeError, match="restart failed"):
+            codex._ensure_otel_service(WS, 43199)
+        codex._ensure_otel_service(WS, 43199)
+
+        unit = unit_path.read_text(encoding="utf-8")
+        assert 'Environment="PATH=/tmp/$cli%%bin:/usr/bin"' in unit
+        assert 'Environment="DATABRICKS_CONFIG_FILE=' in unit
+        assert str(Path.home() / ".config/databricks.cfg") in unit
+        assert 'Environment="DATABRICKS_AUTH_STORAGE=plaintext"' in unit
+        assert calls[-3:] == [
+            ["systemctl", "--user", "daemon-reload"],
+            ["systemctl", "--user", "enable", codex.CODEX_OTEL_SERVICE_NAME],
+            ["systemctl", "--user", "restart", codex.CODEX_OTEL_SERVICE_NAME],
+        ]
+
+    def test_noninteractive_setup_skips_desktop_service(self, desktop, monkeypatch):
+        _path, unit_path, _calls = desktop
+        monkeypatch.setattr(codex, "managed_writes_allowed", lambda **_: False)
         codex.write_tool_config({"workspace": WS, "codex_otel_tracing": True})
-        path.write_text(path.read_text().replace("127.0.0.1:43199", "new-collector:4318"))
-
-        codex.write_tool_config({"workspace": WS})
-
-        exporter = read_toml_safe(path)["otel"]["trace_exporter"]["otlp-http"]
-        assert exporter["endpoint"] == "http://new-collector:4318/v1/traces"
-
-    def test_disable_restores_exporter_when_service_record_is_missing(self, desktop):
-        path, service = desktop
-        path.write_text('[otel]\ntrace_exporter = "none"\n')
-        codex.write_tool_config({"workspace": WS, "codex_otel_tracing": True})
-        service["endpoint"] = None
-
-        codex.write_tool_config({"workspace": WS})
-
-        assert read_toml_safe(path)["otel"]["trace_exporter"] == "none"
-        assert service["stops"] == 1
-
-    @pytest.mark.parametrize("operation", ["disable", "revert"])
-    def test_endpoint_rewrite_does_not_restore_older_codex_snapshot(
-        self, desktop, monkeypatch, operation
-    ):
-        path, service = desktop
-        endpoints = iter(
-            [
-                "http://127.0.0.1:43199/v1/traces",
-                "http://127.0.0.1:43200/v1/traces",
-            ]
-        )
-
-        def ensure(state):
-            service["starts"] += 1
-            service["endpoint"] = next(endpoints)
-            return service["endpoint"]
-
-        monkeypatch.setattr(codex.codex_otel_service, "ensure", ensure)
-        path.write_text('[otel]\ntrace_exporter = "none"\n')
-
-        codex.write_tool_config({"workspace": WS, "codex_otel_tracing": True})
-        codex.write_tool_config(
-            {"workspace": "https://newer.databricks.com", "codex_otel_tracing": True}
-        )
-
-        if operation == "disable":
-            codex.write_tool_config({"workspace": "https://newer.databricks.com"})
-        else:
-            codex.revert_managed_config()
-
-        final = read_toml_safe(path)
-        assert final["otel"]["trace_exporter"] == "none"
-        if operation == "disable":
-            assert (
-                final["model_providers"]["Databricks"]["base_url"]
-                == "https://newer.databricks.com/ai-gateway/codex/v1"
-            )
-        else:
-            assert "model_providers" not in final
-        assert service["stops"] == 1
-
-    @pytest.mark.parametrize("invalid_otel", ['otel = "invalid"\n', "[[otel]]\n"])
-    def test_invalid_otel_table_does_not_start_service(self, desktop, invalid_otel):
-        path, service = desktop
-        path.write_text(invalid_otel)
-
-        with pytest.raises(RuntimeError, match="otel as a table"):
-            codex.write_tool_config({"workspace": WS, "codex_otel_tracing": True})
-
-        assert service["starts"] == 0
-
-    def test_noninteractive_setup_does_not_start_a_service(self, desktop, monkeypatch):
-        _, service = desktop
-        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: False)
-        codex.write_tool_config({"workspace": WS, "codex_otel_tracing": True})
-        assert service["starts"] == 0
-
-    def test_dry_run_disable_preserves_exporter_and_service(self, desktop, monkeypatch):
-        path, service = desktop
-        codex.write_tool_config({"workspace": WS, "codex_otel_tracing": True})
-        before = path.read_text()
-        monkeypatch.setattr(config_io, "_dry_run", True)
-
-        codex.write_tool_config({"workspace": WS})
-
-        assert path.read_text() == before
-        assert service["stops"] == 0
-
-    def test_failed_exporter_write_removes_new_service(self, desktop, monkeypatch):
-        _, service = desktop
-        reconcile = codex.reconcile_managed_file
-
-        def fail_otel(*args, **kwargs):
-            if kwargs["tool"] == "codex-otel":
-                raise RuntimeError("exporter write failed")
-            return reconcile(*args, **kwargs)
-
-        monkeypatch.setattr(codex, "reconcile_managed_file", fail_otel)
-        with pytest.raises(RuntimeError, match="exporter write failed"):
-            codex.write_tool_config({"workspace": WS, "codex_otel_tracing": True})
-        assert service["endpoint"] is None
-        assert service["stops"] == 1
+        assert not unit_path.exists()
 
 
 class TestWriteConfigBackup:

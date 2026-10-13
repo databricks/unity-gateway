@@ -470,10 +470,9 @@ and real-shell copy/rename failure handling in temporary directories.
 `test_cli.py` covers the workspace configure session boundary.
 These are unit/component checks; they do not establish live sudo password-prompt behavior.
 
-Codex desktop OTEL component tests cover service-update retries, saved auth settings,
-stable-port proxying, collector-header isolation, and exporter-only restoration.
-An isolated subprocess checks readiness notification, SIGTERM exit, and port release.
-These do not establish a live desktop GUI or systemd login/reboot pass.
+Codex desktop OTEL component tests cover the startup unit, reuse of CLI proxy/auth,
+fixed-port collisions, and exporter restoration. They do not establish a live
+desktop GUI or systemd login/reboot pass.
 
 | Scenario | Status / requirement |
 | --- | --- |

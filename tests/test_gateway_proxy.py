@@ -93,40 +93,6 @@ class TestForwardedRequestHeaders:
         assert "X-Databricks-AI-Gateway-Token" not in out
         assert "Databricks-Model-Provider-Service" not in out
 
-    def test_otel_route_keeps_transport_headers_and_drops_collector_metadata(self):
-        handler = object.__new__(gateway_proxy._OtelProxyHandler)
-        handler.headers = {
-            "Authorization": "Bearer stale-collector-token",
-            "Content-Type": "application/x-protobuf",
-            "Content-Encoding": "gzip",
-            "Accept": "application/x-protobuf",
-            "User-Agent": "codex",
-            "X-Api-Key": "isaac-api-key",
-            "X-Workspace-Id": "isaac-workspace",
-            "X-Region": "us-west-2",
-            "X-Cloud": "aws-public",
-            "X-Target-Table": "isaac.target",
-            "X-Databricks-UC-Table-Name": "main.schema.table",
-        }
-        out = handler._request_headers(
-            "fresh-token", gateway_proxy.AUTHORIZATION_HEADER, frozenset()
-        )
-
-        assert out["Authorization"] == "Bearer fresh-token"
-        assert out["Content-Type"] == "application/x-protobuf"
-        assert out["Content-Encoding"] == "gzip"
-        assert out["Accept"] == "application/x-protobuf"
-        assert out["User-Agent"] == "codex"
-        for header in (
-            "X-Api-Key",
-            "X-Workspace-Id",
-            "X-Region",
-            "X-Cloud",
-            "X-Target-Table",
-            "X-Databricks-UC-Table-Name",
-        ):
-            assert header not in out
-
 
 class TestIsDatabricksRoutedModel:
     def test_namespace_qualified_ids_route_to_databricks(self):
@@ -537,6 +503,24 @@ class TestRetryOn401:
 
 
 class TestStartProxyPortFallback:
+    def test_otel_uses_fixed_port_and_rejects_collisions(self):
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        server, cache, client = gateway_proxy.start_otel_proxy(
+            "https://workspace.example", lambda _: "token", port=port
+        )
+        try:
+            assert server.server_address == ("127.0.0.1", port)
+            with pytest.raises(OSError):
+                gateway_proxy.start_otel_proxy(
+                    "https://workspace.example", lambda _: "token", port=port
+                )
+        finally:
+            server.server_close()
+            cache.stop()
+            client.close()
+
     def test_loopback_server_keeps_reuse_only_on_posix(self):
         assert gateway_proxy._LoopbackHTTPServer.allow_reuse_address is (
             gateway_proxy.ThreadingHTTPServer.allow_reuse_address and os.name != "nt"
@@ -580,55 +564,6 @@ class TestStartProxyPortFallback:
                 client.close()
         finally:
             occupied.close()
-
-    def test_otel_fixed_port_collision_raises_without_fallback(self, monkeypatch):
-        class _StubCache:
-            stopped = False
-
-            def run_refresher(self):
-                return None
-
-            def stop(self):
-                self.stopped = True
-
-        cache = _StubCache()
-        monkeypatch.setattr(
-            gateway_proxy,
-            "TokenCache",
-            lambda token_provider, **_kwargs: cache,
-        )
-        occupied = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        occupied.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        occupied.bind(("127.0.0.1", 0))
-        occupied.listen(1)
-        busy_port = occupied.getsockname()[1]
-        try:
-            with pytest.raises(OSError, match=rf"port {busy_port}"):
-                gateway_proxy.start_otel_proxy(
-                    "https://x.staging.cloud.databricks.com",
-                    lambda _force: "tok",
-                    port=busy_port,
-                )
-            assert cache.stopped
-        finally:
-            occupied.close()
-
-    def test_otel_fixed_port_binds_requested_port(self):
-        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        probe.bind(("127.0.0.1", 0))
-        requested_port = probe.getsockname()[1]
-        probe.close()
-        server, cache, client = gateway_proxy.start_otel_proxy(
-            "https://x.staging.cloud.databricks.com",
-            lambda _force: "tok",
-            port=requested_port,
-        )
-        try:
-            assert server.server_address[1] == requested_port
-        finally:
-            server.server_close()
-            cache.stop()
-            client.close()
 
 
 def _relayed_oss_handler(client, cache, wfile, *, headers, body) -> gateway_proxy._ProxyHandler:
