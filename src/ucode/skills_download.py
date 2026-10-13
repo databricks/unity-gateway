@@ -37,6 +37,7 @@ from ucode.skills_state import (
     remove_downloads,
     set_last_update_check,
 )
+from ucode.skills_usage import report_skill_usage_in_background
 from ucode.state import load_state
 from ucode.time_utils import parse_update_time
 from ucode.ui import (
@@ -311,6 +312,7 @@ def download_skills_from_schema_locations(
     """
     roots = skill_dir_roots(path)
     roots_display = " and ".join(str(root) for root in roots)
+    downloaded: list[SkillRef] = []
     for location in locations:
         catalog, schema = location.split(".")
         refs, reason = list_schema_skills(workspace, token, catalog, schema)
@@ -324,11 +326,13 @@ def download_skills_from_schema_locations(
             workspace, token, refs, roots, label=f"Fetching skills from {location}"
         )
         record_downloads(_skill_installs(written, roots, path, workspace))
+        downloaded.extend(written)
         count = len(written)
         skipped = f"; {total - count} skipped" if count < total else ""
         print_success(
             f"Downloaded {count}/{total} skill(s){skipped} from `{location}` in {roots_display}."
         )
+    report_skill_usage_in_background(workspace, token, downloaded)
 
 
 def download_selected_skills(workspace: str, token: str, fqns: list[str], path: str | None) -> None:
@@ -350,6 +354,7 @@ def download_selected_skills(workspace: str, token: str, fqns: list[str], path: 
         refs.append(ref)
     written, total = _download_refs(workspace, token, refs, roots, label="Fetching selected skills")
     record_downloads(_skill_installs(written, roots, path, workspace))
+    report_skill_usage_in_background(workspace, token, written)
     count = len(written)
     skipped = f"; {total - count} skipped" if count < total else ""
     print_success(f"Downloaded {count}/{total} skill(s){skipped} in {roots_display}.")
@@ -446,6 +451,7 @@ def reconcile_managed_skills(managed: dict) -> tuple[list[str], list[str]]:
         workspace, token, missing, roots, label="Fetching workspace skills"
     )
     record_downloads(_skill_installs(installed, roots, None, workspace, scope="managed"))
+    report_skill_usage_in_background(workspace, token, installed)
     return [ref.bundle_name for ref in installed], removed
 
 
