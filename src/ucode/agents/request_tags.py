@@ -1,12 +1,13 @@
-"""Request-tag header helper shared by coding-agent launchers."""
+"""Gateway header helpers shared by coding-agent launchers."""
 
 from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Mapping
 
-from ucode.constants import AI_GATEWAY_REQUEST_TAGS_ENV_VAR, TRAFFIC_ID_ENV_VAR
+from ucode.constants import AI_GATEWAY_REQUEST_TAGS_ENV_VAR, UG_HEADERS_ENV_VAR
 from ucode.ui import print_warning_err
 
 
@@ -46,10 +47,17 @@ def request_tags_header_value(env: Mapping[str, str] | None = None) -> str | Non
         return None
 
 
-def traffic_id_header_value() -> str | None:
-    """The ``x-databricks-traffic-id`` value from ``UG_TRAFFIC_ID``, or None when unset."""
-    value = os.environ.get(TRAFFIC_ID_ENV_VAR, "").strip()
-    if "\n" in value or "\r" in value:
-        print_warning_err(f"Ignoring {TRAFFIC_ID_ENV_VAR}: value contains line breaks.")
-        return None
-    return value or None
+_HEADER_NAME_RE = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+
+
+def ug_headers() -> dict[str, str]:
+    """``UG_HEADERS`` as ``{name: value}``, one ``Name: value`` per line."""
+    headers: dict[str, str] = {}
+    for line in os.environ.get(UG_HEADERS_ENV_VAR, "").splitlines():
+        if not line.strip():
+            continue
+        name, separator, value = line.partition(":")
+        if not separator or not _HEADER_NAME_RE.fullmatch(name.strip()):
+            raise RuntimeError(f"{UG_HEADERS_ENV_VAR}: expected `Name: value`, got {line!r}.")
+        headers[name.strip()] = value.strip()
+    return headers

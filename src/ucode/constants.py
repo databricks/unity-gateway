@@ -28,9 +28,8 @@ SMART_ROUTER_RECIPE_HEADER = "Databricks-Smart-Router-Recipe"
 AI_GATEWAY_REQUEST_TAGS_HEADER = "Databricks-Ai-Gateway-Request-Tags"
 AI_GATEWAY_REQUEST_TAGS_ENV_VAR = "AI_GATEWAY_REQUEST_TAGS"
 
-# LiteSwap routes a request to a swap unit by this header, e.g. `testenv://liteswap/<id>`.
-TRAFFIC_ID_HEADER = "x-databricks-traffic-id"
-TRAFFIC_ID_ENV_VAR = "UG_TRAFFIC_ID"
+# Extra gateway headers, one `Name: value` per line; `ug --header` sets it for a launch.
+UG_HEADERS_ENV_VAR = "UG_HEADERS"
 
 
 # MCP server registration scopes. Claude Code supports local/project/user; the

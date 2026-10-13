@@ -41,7 +41,6 @@ from ucode.constants import (
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
     SMART_ROUTER_RECIPE_HEADER,
-    TRAFFIC_ID_HEADER,
 )
 from ucode.custom_oauth import (
     CUSTOM_OAUTH_TIMEOUT_MS,
@@ -86,7 +85,7 @@ from ucode.ui import print_warning_err
 
 from .args import LaunchOptions
 from .codex_catalog import prepare_codex_catalog, validate_codex_catalog
-from .request_tags import request_tags_header_value, traffic_id_header_value
+from .request_tags import request_tags_header_value, ug_headers
 
 CODEX_CONFIG_DIR = Path.home() / ".codex"
 CODEX_PROFILE_NAME = "ucode"
@@ -214,9 +213,7 @@ def _provider_block(
     request_tags = request_tags_header_value()
     if request_tags:
         http_headers[AI_GATEWAY_REQUEST_TAGS_HEADER] = request_tags
-    traffic_id = traffic_id_header_value()
-    if traffic_id:
-        http_headers[TRAFFIC_ID_HEADER] = traffic_id
+    _apply_managed_headers(http_headers, ug_headers())
     _apply_managed_headers(http_headers, managed_http_headers)
     return {
         "name": "Databricks AI Gateway",

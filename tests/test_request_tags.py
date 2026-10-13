@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from ucode.agents.request_tags import request_tags_header_value, traffic_id_header_value
+import pytest
+
+from ucode.agents.request_tags import request_tags_header_value, ug_headers
 
 
 class TestRequestTagsHeaderValue:
@@ -47,7 +49,12 @@ class TestRequestTagsHeaderValue:
         assert "AI_GATEWAY_REQUEST_TAGS" in capsys.readouterr().err
 
 
-def test_traffic_id_with_line_break_is_skipped(monkeypatch, capsys):
-    monkeypatch.setenv("UG_TRAFFIC_ID", "testenv://liteswap/a\nX-Injected: 1")
-    assert traffic_id_header_value() is None
-    assert "UG_TRAFFIC_ID" in capsys.readouterr().err
+def test_ug_headers_parse_one_per_line(monkeypatch):
+    monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: testenv://liteswap/a\n\nX-B:  2 ")
+    assert ug_headers() == {"x-databricks-traffic-id": "testenv://liteswap/a", "X-B": "2"}
+
+
+def test_ug_headers_reject_malformed_line(monkeypatch):
+    monkeypatch.setenv("UG_HEADERS", "not a header")
+    with pytest.raises(RuntimeError, match="UG_HEADERS"):
+        ug_headers()

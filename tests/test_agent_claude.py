@@ -254,21 +254,11 @@ class TestRenderOverlay:
             "Databricks-Ai-Gateway-Request-Tags" not in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
         )
 
-    def test_traffic_id_header_added_when_env_set(self, monkeypatch):
-        monkeypatch.setenv("UG_TRAFFIC_ID", "testenv://liteswap/abc")
+    def test_ug_headers_added(self, monkeypatch):
+        monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: testenv://liteswap/abc")
         overlay, _ = claude.render_overlay(WS, "s4")
         headers = overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
         assert "x-databricks-traffic-id: testenv://liteswap/abc" in headers
-
-    def test_stale_traffic_id_header_removed_when_env_unset(self, monkeypatch):
-        monkeypatch.delenv("UG_TRAFFIC_ID", raising=False)
-        overlay, _ = claude.render_overlay(WS, "s4")
-        merged = claude._merge_anthropic_custom_headers(
-            "x-databricks-traffic-id: testenv://liteswap/old\nX-User: kept",
-            overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"],
-        )
-        assert "x-databricks-traffic-id" not in merged
-        assert "X-User: kept" in merged.splitlines()
 
     def test_does_not_disable_experimental_betas(self):
         # Would suppress the beta header 1h prompt caching needs.
@@ -866,6 +856,42 @@ class TestClaudeValidateCmd:
         assert "--max-turns" in cmd
         idx = cmd.index("--max-turns")
         assert cmd[idx + 1] == "1"
+
+
+class TestWriteToolConfigUgHeaders:
+    def test_header_removed_by_next_launch_without_it(self, monkeypatch):
+        files = {
+            str(claude.CLAUDE_SETTINGS_PATH): {"env": {"ANTHROPIC_CUSTOM_HEADERS": "X-User: keep"}}
+        }
+        monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
+        monkeypatch.setattr(claude, "read_json_safe", lambda path: files.get(str(path), {}))
+        monkeypatch.setattr(
+            claude, "write_json_file", lambda path, payload: files.__setitem__(str(path), payload)
+        )
+        monkeypatch.setattr(claude, "save_state", lambda state: None)
+        monkeypatch.setattr(claude, "_register_web_search_mcp", lambda *a, **kw: None)
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
+        # Without a workspace managed config ug keeps foreign header lines, so it must
+        # remember which names it wrote.
+        monkeypatch.setattr(
+            claude, "refresh_managed_config", lambda *a, **kw: _managed_config_result(None)
+        )
+        state = {"workspace": WS}
+
+        def header_lines():
+            return files[str(claude.CLAUDE_SETTINGS_PATH)]["env"][
+                "ANTHROPIC_CUSTOM_HEADERS"
+            ].splitlines()
+
+        monkeypatch.setenv("UG_HEADERS", "X-Route: a")
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        assert "X-Route: a" in header_lines()
+
+        monkeypatch.delenv("UG_HEADERS")
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        assert not any(line.startswith("X-Route") for line in header_lines())
+        assert "X-User: keep" in header_lines()
+        assert "claude_header_names" not in state
 
 
 class TestWriteToolConfigMcpRegistration:

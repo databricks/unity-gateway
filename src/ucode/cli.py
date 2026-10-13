@@ -45,8 +45,9 @@ from ucode.agents import (
 from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
+from ucode.agents.request_tags import ug_headers
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
-from ucode.constants import AGENT_CLAUDE, AGENT_CODEX, SMART_ROUTING_ENV_KEYS
+from ucode.constants import AGENT_CLAUDE, AGENT_CODEX, SMART_ROUTING_ENV_KEYS, UG_HEADERS_ENV_VAR
 from ucode.custom_oauth import (
     CUSTOM_OAUTH_CLI_ENV_VAR,
     custom_oauth_cli_enabled,
@@ -3407,8 +3408,23 @@ def default(
     ] = False,
     skip_preflight: SkipPreflightOption = False,
     workspace: WorkspaceOption = None,
+    header: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--header",
+            help="Extra `Name: value` header for agent gateway requests (repeatable), e.g. "
+            "`x-databricks-traffic-id: testenv://liteswap/<id>`.",
+        ),
+    ] = None,
 ) -> None:
     """Configure and launch coding agents through Databricks AI Gateway."""
+    if header:
+        os.environ[UG_HEADERS_ENV_VAR] = "\n".join(header)
+        try:
+            ug_headers()
+        except RuntimeError as exc:
+            print_err(str(exc))
+            raise typer.Exit(1) from None
     if ctx.invoked_subcommand is not None:
         return
     set_dry_run(dry_run)

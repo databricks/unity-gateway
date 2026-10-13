@@ -6248,3 +6248,10 @@ class TestChildStdoutLaunch:
         captured = capfd.readouterr()
         assert captured.out == '{"result":"child output"}\n'
         assert "Gateway status" in captured.err
+
+
+def test_invalid_header_flag_exits(monkeypatch):
+    monkeypatch.setenv("UG_HEADERS", "")  # restored after the CLI overwrites it
+    result = runner.invoke(app, ["--header", "bad", "status"])
+    assert result.exit_code == 1
+    assert "expected `Name: value`" in _strip_ansi(result.output)
