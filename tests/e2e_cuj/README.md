@@ -100,6 +100,10 @@ The wait uses the child's answer directly; parent-answer reconstruction is reser
 Offline checks reject parent-only answers and accept child answers before the parent replies.
 Offline evidence regressions do not establish a live CUJ pass.
 Selector cases have separate TUI artifact names, and the session environment is restored afterward.
+Each Claude preset session checks the visible bold green ON badge and routing scope,
+then a gray OFF badge and restored green ON badge after `/smart-router off` and `on`.
+These checks read the terminal's rendered text and colors; echoed command confirmations
+do not satisfy them. Offline terminal cases reject stale states, wrong scope, and unstyled text.
 Claude sessions start in auto mode; unless a routed first prompt switches the session to Haiku
 (which leaves it in manual mode), its classifier requests through the recording proxy trigger
 Claude's informational auto-mode classifier billing notice over the transcript. The CUJ terminal

@@ -19,6 +19,10 @@ TypeScript event-forwarding and launch-option tests in CI. The existing Claude
 skill-toggle integration journey checks the live recipe headers across on/off/on.
 See [the mod guide](../docs/claude-mod.md).
 
+CUJ 4's preset journeys check Claude's bold green ON and gray OFF status band,
+routing scope, and updates after off/on toggles. Offline terminal checks reject
+unstyled text, stale states, wrong routing scope, and command confirmations.
+
 Dedicated CUJs reuse `integration/utils` session/terminal mechanics and file-task
 and transcript readers, not its config stubs or pytest fixtures. Prompt/model
 correlation remains CUJ-specific. Concurrent runs may read the same CUJ workspace.
