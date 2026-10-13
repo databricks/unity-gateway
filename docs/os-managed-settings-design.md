@@ -40,9 +40,9 @@ prompt mode and stdin handling itself; the predicate does not probe or grant aut
 
 Windows has no `sudo`, so the terminal doesn't matter there: an elevated (or SYSTEM) process may
 write `C:\Program Files\ClaudeCode\managed-settings.json` directly, which lets device provisioning
-run `ug configure` headlessly. Standard users can't write under Program Files. For them an absent or
-compatible file stays local-only (with a warning when the machine-wide file is missing ug's
-settings), and a conflicting file stops the command with a request to rerun it elevated.
+run `ug configure` headlessly. Standard users can't write under Program Files. For them, as for a
+headless Linux/macOS run, an absent or compatible file stays local-only without a message, and a
+conflicting file stops the command with a request to rerun it elevated.
 
 This is a new shared ucode distinction. The previous implementation inferred interactivity from
 command shape in some flows and did not guard managed-file writes consistently.
