@@ -66,6 +66,51 @@ def test_configure_uses_full_gateway_catalog_and_absolute_helper(desktop):
     assert "component-token" not in json.dumps(profile)
 
 
+def test_reconfigure_refreshes_existing_profile_without_deletion(desktop, capsys):
+    state = {"workspace": "https://workspace.example", "profile": "chosen-profile"}
+    desktop_setup.configure_desktop_after_claude(state)
+    metadata_path = desktop / "_meta.json"
+    original_metadata = json.loads(metadata_path.read_text())
+    profile_id = original_metadata["appliedId"]
+    profile_path = desktop / f"{profile_id}.json"
+    profile = configured_profile(desktop)
+    profile["inferenceModels"] = [{"name": "user-model"}]
+    profile["inferenceGatewayBaseUrl"] = "https://outdated.example"
+    profile["inferenceCredentialHelper"] = "/old/install/ug"
+    profile["inferenceCustomHeaders"] = {"X-Outdated": "remove"}
+    profile["userOwned"] = {"keep": True}
+    profile_path.write_text(json.dumps(profile))
+    capsys.readouterr()
+
+    desktop_setup.configure_desktop_after_claude(
+        {
+            **state,
+            "profile": "updated-profile",
+            "claude_static_models": ["main.models.new"],
+            "claude_http_headers": {"X-Admin": "updated"},
+        }
+    )
+
+    refreshed = configured_profile(desktop)
+    assert json.loads(metadata_path.read_text()) == original_metadata
+    assert refreshed["inferenceModels"] == [{"name": "main.models.new"}]
+    assert refreshed["inferenceGatewayBaseUrl"] == "https://workspace.example/ai-gateway/anthropic"
+    assert refreshed["inferenceCredentialHelper"] == "/venv with spaces/bin/python"
+    assert refreshed["inferenceCredentialHelperArgs"][-2:] == ["--profile", "updated-profile"]
+    assert refreshed["inferenceCustomHeaders"] == {
+        "x-databricks-use-coding-agent-mode": "true",
+        "X-Admin": "updated",
+    }
+    assert refreshed["userOwned"] == {"keep": True}
+    assert {path.name for path in desktop.glob("*.json")} == {
+        "_meta.json",
+        f"{profile_id}.json",
+    }
+    output = capsys.readouterr().out
+    assert "gateway profile configured" in output
+    assert "Could not configure Claude Desktop" not in output
+
+
 def test_managed_static_catalog_does_not_fetch_discovery(desktop, monkeypatch):
     def forbidden(*args, **kwargs):
         pytest.fail("A managed static catalog must not trigger discovery")
@@ -182,3 +227,30 @@ def test_revert_uses_independent_profile_manifest(desktop):
     assert json.loads((desktop / "_meta.json").read_text()) == {"entries": []}
     assert list(desktop.glob("*.json")) == [desktop / "_meta.json"]
     assert desktop_setup.revert_desktop(state) == "unchanged"
+
+
+def test_reconfigure_recreates_deleted_profile_with_same_workspace_id(desktop, capsys):
+    state = {"workspace": "https://workspace.example", "profile": "chosen-profile"}
+    desktop_setup.configure_desktop_after_claude(state)
+    metadata_path = desktop / "_meta.json"
+    original_metadata = json.loads(metadata_path.read_text())
+    profile_id = original_metadata["appliedId"]
+    profile_path = desktop / f"{profile_id}.json"
+    profile_path.unlink()
+    metadata_path.write_text(json.dumps({"entries": []}))
+    capsys.readouterr()
+
+    desktop_setup.configure_desktop_after_claude(state)
+
+    assert json.loads(metadata_path.read_text()) == original_metadata
+    assert configured_profile(desktop)["inferenceModels"] == [
+        {"name": "system.ai.claude-haiku-4-5"},
+        {"name": "system.ai.oss-model"},
+    ]
+    assert {path.name for path in desktop.glob("*.json")} == {
+        "_meta.json",
+        f"{profile_id}.json",
+    }
+    output = capsys.readouterr().out
+    assert "gateway profile configured" in output
+    assert "Could not configure Claude Desktop" not in output

@@ -95,6 +95,39 @@ def test_codex_only_does_not_configure_desktop(configuration, monkeypatch):
     configure.assert_not_called()
 
 
+def test_self_managed_agent_add_does_not_configure_desktop(configuration, monkeypatch):
+    configure = Mock()
+    monkeypatch.setattr(desktop_setup, "configure_desktop_after_claude", configure)
+    cli._setup_single_agent(
+        [("https://workspace.example", "chosen-profile")], "claude", apply_managed=False
+    )
+    configure.assert_not_called()
+
+
+def test_single_managed_setup_passes_catalog_scope_to_desktop(configuration, monkeypatch):
+    configure = Mock()
+    monkeypatch.setattr(desktop_setup, "configure_desktop_after_claude", configure)
+    monkeypatch.setattr(
+        cli,
+        "refresh_managed_config",
+        lambda *a, **k: (
+            {
+                "enabled_agents": {
+                    "claude": {"model_config": {"unity_catalog_location": "main.models"}}
+                }
+            },
+            False,
+        ),
+    )
+    assert (
+        cli._configure_workspace_command(
+            tool="claude", workspaces=[("https://workspace.example", "chosen-profile")]
+        )
+        == 0
+    )
+    configure.assert_called_once_with(configuration, parent_schema="main.models")
+
+
 @pytest.mark.parametrize("flow", ["single", "managed", "selected"])
 def test_desktop_failure_preserves_successful_configure_exit(
     configuration, monkeypatch, capsys, flow
