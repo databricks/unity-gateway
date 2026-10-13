@@ -74,8 +74,9 @@ exercise.
 
 - Organize the suite around complete user journeys, with explicit names
   such as `test_ug_configure_claude_databricks` or
-  `test_smart_routing_codex_first_prompt`. Do not hide the agent/provider behind
-  generic parametrization in these tests.
+  `test_smart_routing_codex_first_prompt`. Shared journeys may parameterize `agent`
+  with explicit `pytest.param` cases, each carrying its agent marker and ID so
+  CI selects each agent separately. Keep differences in behavior visible in the test.
 - Every test has a docstring with **Scenario:** and **Expected:**. State what the
   user does and the observable evidence required for success, including limits.
 - Keep the configure command, launch, task, and assertions visible in the test.

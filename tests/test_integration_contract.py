@@ -431,6 +431,58 @@ def test_integration_suite_uses_only_public_process_boundaries():
     assert not violations, "\n".join(violations)
 
 
+def _integration_case_markers(node):
+    agent_parameters = []
+    decorators = []
+    for decorator in node.decorator_list:
+        if (
+            isinstance(decorator, ast.Call)
+            and "parametrize" in _markers([decorator.func])
+            and decorator.args
+            and isinstance(decorator.args[0], ast.Constant)
+            and decorator.args[0].value == "agent"
+        ):
+            assert not agent_parameters, f"Multiple agent parametrizations: {node.name}"
+            assert len(decorator.args) >= 2 and isinstance(decorator.args[1], (ast.List, ast.Tuple))
+            agent_parameters = decorator.args[1].elts
+            assert agent_parameters, f"Empty agent parametrization: {node.name}"
+        else:
+            decorators.append(decorator)
+    common = _markers(decorators)
+    return [common | _markers([param]) for param in agent_parameters] or [common]
+
+
+@pytest.mark.parametrize(
+    "decorators, valid",
+    [
+        ("@pytest.mark.claude", True),
+        ("", False),
+        ("@pytest.mark.claude\n@pytest.mark.codex", False),
+        (
+            '@pytest.mark.parametrize("agent", ['
+            'pytest.param("claude", marks=pytest.mark.claude), '
+            'pytest.param("codex", marks=pytest.mark.codex)])',
+            True,
+        ),
+        ('@pytest.mark.parametrize("agent", ["claude", "codex"])', False),
+        (
+            '@pytest.mark.parametrize("agent", ['
+            'pytest.param("claude", marks=[pytest.mark.claude, pytest.mark.codex])])',
+            False,
+        ),
+        (
+            '@pytest.mark.claude\n@pytest.mark.parametrize("agent", ['
+            'pytest.param("codex", marks=pytest.mark.codex)])',
+            False,
+        ),
+    ],
+)
+def test_integration_case_agent_marks(decorators, valid):
+    node = ast.parse(f"{decorators}\ndef test_example(): pass").body[0]
+    cases = _integration_case_markers(node)
+    assert all(len(marks & {"claude", "codex", "opencode"}) == 1 for marks in cases) == valid
+
+
 def test_live_integration_cases_belong_to_exactly_one_ci_agent():
     for path in (Path(__file__).parent / "integration").glob("test_*.py"):
         tree = ast.parse(path.read_text())
@@ -445,9 +497,10 @@ def test_live_integration_cases_belong_to_exactly_one_ci_agent():
         )
         for node in tree.body:
             if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
-                marks = module_marks | _markers(node.decorator_list)
-                if marks & {"live", "managed_fixture", "workspace_switch"}:
-                    assert len(marks & {"claude", "codex", "opencode"}) == 1, node.name
+                for case_marks in _integration_case_markers(node):
+                    marks = module_marks | case_marks
+                    if marks & {"live", "managed_fixture", "workspace_switch"}:
+                        assert len(marks & {"claude", "codex", "opencode"}) == 1, node.name
 
 
 def test_model_discovery_cases_match_current_launch_contract():

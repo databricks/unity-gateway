@@ -377,7 +377,7 @@ a new CLI confirmation in native tool-result records, and a new assistant answer
 skill invocation.
 Collapsed terminal output is allowed; the answer need not repeat the CLI's exact wording.
 Each following child still verifies whether a routing decision occurred.
-Separate Claude and Codex journeys set all three routing flags to `0` and leave
+A journey parameterized for Claude and Codex sets all three routing flags to `0` and leave
 the preset selector empty. In a fresh Claude session, `/skills` reports no skills
 and typing `/smart-router` offers no matching command. Codex first loads its
 built-in `$` skill picker, then filters with `$smart-router` and requires no
