@@ -106,8 +106,6 @@ class _Paths:
     metadata: Path
     state: Path
     lock: Path
-    metadata_was_absent: bool
-    directory_was_absent: bool
 
 
 def claude_desktop_root_directory(
@@ -376,6 +374,22 @@ def revert_claude_desktop(
     if not isinstance(workspace, str) or not workspace:
         raise ValueError("Claude Desktop workspace must be a non-empty string.")
     workspace = _normalize_workspace(workspace)
+    ownership_path = Path(state_path) if state_path is not None else APP_DIR / MANIFEST_FILENAME
+    if not ownership_path.exists():
+        return RevertResult(profile_id=None, changed=False)
+    directory_candidate = Path(directory) if directory is not None else claude_desktop_directory()
+    if directory_candidate is None:
+        raise ClaudeDesktopUnsupportedError("Claude Desktop profile location is not validated.")
+    directory_candidate = _select_profile_directory(directory_candidate)
+    _, record = _find_workspace_record(
+        _read_manifest(ownership_path), directory_candidate, workspace
+    )
+    if record is None:
+        return RevertResult(profile_id=None, changed=False)
+    if not directory_candidate.is_dir():
+        raise ClaudeDesktopUnavailableError(
+            "The recorded Claude Desktop profile directory is missing."
+        )
     paths = _resolve_paths(directory=directory, state_path=state_path)
     with _locked(paths.lock):
         manifest = _read_manifest(paths.state)
@@ -404,6 +418,10 @@ def revert_claude_desktop(
         assert isinstance(entries, list)
         entry = next((item for item in entries if item.get("id") == profile_id), None)
         if entry is not None and entry != record["entry_after"]:
+            if profile_original is None:
+                raise ClaudeDesktopConflictError(
+                    "The renamed Claude Desktop profile file is missing. Restore it before reverting."
+                )
             profile_after = profile_original
             profile_changed = False
             profile_drifted = True
@@ -499,7 +517,6 @@ def _resolve_paths(
     directory: Path | str | None,
     state_path: Path | str | None,
 ) -> _Paths:
-    directory_was_absent = False
     if directory is None:
         native_directory = claude_desktop_directory()
         if native_directory is None:
@@ -516,7 +533,6 @@ def _resolve_paths(
                     "Install/open Claude Desktop, then run configure again; Unity Gateway will not "
                     "install it."
                 )
-            directory_was_absent = True
             try:
                 resolved_directory.mkdir(parents=True, exist_ok=True)
             except OSError as exc:
@@ -528,7 +544,6 @@ def _resolve_paths(
         # detection, but we never present it as a supported Windows or Linux app location.
         resolved_directory = Path(directory)
         if not resolved_directory.exists():
-            directory_was_absent = True
             try:
                 resolved_directory.mkdir(parents=True, exist_ok=True)
             except OSError as exc:
@@ -546,8 +561,6 @@ def _resolve_paths(
         metadata=resolved_directory / META_FILENAME,
         state=resolved_state,
         lock=resolved_state.with_name(f".{resolved_state.name}.lock"),
-        metadata_was_absent=not (resolved_directory / META_FILENAME).exists(),
-        directory_was_absent=directory_was_absent,
     )
 
 
