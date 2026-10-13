@@ -3132,23 +3132,38 @@ class TestAutoConfigureOnFirstRun:
         assert calls["configure"].call_args.kwargs["relayed"] is True
 
     @pytest.mark.parametrize(
-        ("manifest", "expected_provider"),
-        [(None, "main.default.relay"), ({"claude": {}}, None)],
+        ("manifest", "launch_provider", "expected_provider"),
+        [
+            (None, "main.default.relay", "main.default.relay"),
+            ({"claude": {}}, "main.default.relay", None),
+            (None, None, None),
+        ],
     )
-    def test_auto_configure_forwards_provider_unless_managed(self, manifest, expected_provider):
+    def test_auto_configure_saves_provider_unless_managed(
+        self, manifest, launch_provider, expected_provider
+    ):
         # A managed config must still reject --provider with its own error later in the launch.
+        state = dict(MINIMAL_STATE)
         with (
-            patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
-            patch("ucode.cli.configure_shared_state", return_value=MINIMAL_STATE),
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.configure_shared_state", return_value=state),
             patch(
                 "ucode.cli._fetch_managed_config",
                 return_value=ManagedConfigResult(manifest, False),
             ),
-            patch("ucode.cli.configure_single_tool", return_value=MINIMAL_STATE) as mock_configure,
+            patch(
+                "ucode.cli.configure_single_tool", side_effect=lambda tool, state, **kw: state
+            ) as mock_configure,
+            patch("ucode.cli.print_note") as mock_note,
         ):
-            cli_mod._auto_configure_tool("claude", provider="main.default.relay")
+            cli_mod._auto_configure_tool("claude", provider=launch_provider)
 
-        mock_configure.assert_called_once_with("claude", MINIMAL_STATE, provider=expected_provider)
+        mock_configure.assert_called_once()
+        assert mock_configure.call_args.kwargs == {"provider": expected_provider}
+        # configure_single_tool persists the state it is given, so the next plain launch reuses it.
+        configured_state = mock_configure.call_args.args[1]
+        assert cli_mod.get_provider_service(configured_state, "claude") == expected_provider
+        assert mock_note.called is (expected_provider is not None)
 
     def test_skipped_when_already_configured(self):
         """Auto-configure is skipped when workspace and tool are already set up."""

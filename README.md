@@ -67,6 +67,9 @@ Without a managed workspace config, `ug claude` automatically discovers gateway
 models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when
 no provider or model location is selected. Use `--provider` or `--model-location`
 to select another model source; managed workspace configs control their own sources.
+On an agent's first launch, while nothing is saved for it yet (for example right
+after `ug revert`), `--provider` is saved as that agent's provider, the same as
+choosing it in `ug configure`. Later `--provider` flags apply to that launch only.
 
 `ug codex` validates discovered models with the installed Codex binary and publishes
 them to `~/.ucode/codex-model-catalog.json`, referenced by shared `~/.codex/config.toml`

@@ -155,8 +155,14 @@ def test_ug_claude_fresh_provider_launch(live_session, workspace, claude_provide
     Expected: ``ug claude --workspace`` with ``--provider`` starts the real installed Claude
     CLI without a configure step, reports the selected provider, and writes the provider header
     to its generated settings; ``--version`` exits successfully without inference or routing.
+    A later plain ``ug claude`` keeps that provider, as if it had been chosen in ``ug configure``.
     """
     session = live_session
+
+    def provider_headers() -> list[str]:
+        settings = json.loads((session.home / ".claude/ucode-settings.json").read_text())
+        return (settings.get("env") or {}).get("ANTHROPIC_CUSTOM_HEADERS", "").splitlines()
+
     result = session.run(
         "claude",
         "--workspace",
@@ -168,9 +174,10 @@ def test_ug_claude_fresh_provider_launch(live_session, workspace, claude_provide
         timeout=180,
     )
     assert claude_provider in result.stdout
-    settings = json.loads((session.home / ".claude/ucode-settings.json").read_text())
-    headers = (settings.get("env") or {}).get("ANTHROPIC_CUSTOM_HEADERS", "").splitlines()
-    assert f"Databricks-Model-Provider-Service: {claude_provider}" in headers
+    assert f"Databricks-Model-Provider-Service: {claude_provider}" in provider_headers()
+
+    session.run("claude", "--", "--version", timeout=180)
+    assert f"Databricks-Model-Provider-Service: {claude_provider}" in provider_headers()
     session.assert_not_routed()
 
 
