@@ -209,8 +209,11 @@ version is not executed here.
 first in PATH and a launching interpreter path containing spaces. Both agents' toggles
 must update the session controls through the launching installation. Launch tests check
 that Claude settings and Codex's shell policy carry the interpreter and session marker.
-These are component checks; they do not establish native skill permission matching or
-PowerShell execution.
+A launch-dispatch regression check covers both agents: a Claude or Codex launch with no
+smart-routing session removes the previously installed `smart-router` and
+`smart-router-orchestrator` bundles from that agent's skill directory and leaves other
+skills alone. These are component checks; they do not establish native skill permission
+matching or PowerShell execution.
 
 `test_skills.py` checks agent-specific instruction installation, bundle updates,
 and matching prompt/compaction hook content for Claude and Codex. It also covers
@@ -245,8 +248,9 @@ and on/off coverage; preset-specific behavior there is not covered.
 including collapsed-output records, and excludes user echoes and assistant claims.
 
 Dedicated regression coverage is missing for root-only Smart Router Orchestrator activation,
-compaction, retained skills in ineligible sessions,
-role-contract preservation, and isolation from legacy preference files. Codex's
+compaction, role-contract preservation, and isolation from legacy preference files.
+Skill removal in ineligible sessions is covered at the launch-dispatch level only, for both
+agents; live sessions are not exercised. Codex's
 native hook merging and project trust, automatic delegation, and execution of
 pre-existing hooks remain outside the integration suite.
 

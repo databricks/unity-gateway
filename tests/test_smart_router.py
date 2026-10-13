@@ -12,7 +12,8 @@ import pytest
 from typer.testing import CliRunner
 
 from ucode import cli, config_io, skills
-from ucode.skills import SMART_ROUTER_SKILL
+from ucode.agents import LaunchOptions, claude, codex
+from ucode.skills import SMART_ROUTER_ORCHESTRATOR_SKILL, SMART_ROUTER_SKILL
 from ucode.smart_routing import session_env, v2
 
 runner = CliRunner()
@@ -37,6 +38,35 @@ def test_smart_routed_session_installs_skill(tmp_path, monkeypatch, agent):
     assert session_path == Path(os.environ[session_env.SESSION_ENV_VAR])
     assert Path(os.environ[session_env.SESSION_ENV_VAR]).is_file()
     assert os.environ["UCODE_SMART_ROUTER_PYTHON"] == sys.executable
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_launch_without_smart_routing_removes_session_skills(tmp_path, monkeypatch, agent):
+    # An earlier routed launch installed both bundles; this launch has no session to control.
+    v2._prepare_smart_router_session(agent)
+    home = config_io.APP_DIR.parent
+    skills.install_skill(SMART_ROUTER_ORCHESTRATOR_SKILL, agent, home)
+    unrelated = skills.install_skill(SMART_ROUTER_SKILL, agent, home).with_name("other-skill")
+    unrelated.mkdir()
+
+    launches: list[list[str]] = []
+    if agent == "codex":
+        profile_path = tmp_path / "ucode.config.toml"
+        profile_path.write_text('model_provider = "ucode-databricks"\n', encoding="utf-8")
+        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile_path)
+        monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.144.0")
+        monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: launches.append(argv))
+        codex.launch({}, ["exec", "fix this"], options=LaunchOptions())
+    else:
+        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: launches.append(argv))
+        claude.launch({}, ["-p", "fix this"], options=LaunchOptions())
+
+    assert launches, "the agent still launches normally"
+    for skill in (SMART_ROUTER_SKILL, SMART_ROUTER_ORCHESTRATOR_SKILL):
+        assert not home.joinpath(f".{agent}/skills/{skill}").exists()
+    # Only ucode's own session controls are removed.
+    assert unrelated.is_dir()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Exercises the skill's POSIX shell commands")

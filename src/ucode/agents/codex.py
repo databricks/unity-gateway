@@ -1128,6 +1128,8 @@ def launch(
     if options.launch_smart_routing:
         _launch_smart_routing(state, tool_args)
         return
+    else:
+        smart_routing_v2.remove_smart_router_session_skills(AGENT_CODEX)
     clear_model_preferences(state)
     binary = SPEC["binary"]
     workspace = state.get("workspace")
