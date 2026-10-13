@@ -98,6 +98,9 @@ Child HTTP matching accepts Claude's single appended transport newline after the
 checkpoint; additional text, whitespace, and Codex prompt changes remain rejected.
 Offline CUJ regressions cover Codex delegated-turn completion and exact task-request matching;
 notifications alone, Claude title requests, and parent continuations do not qualify.
+Codex parent-turn evidence accepts native runtime-context updates for the same turn, including
+midnight date changes. Untagged, mixed user/context, and other-turn messages still end the match;
+duplicate prompts remain rejected.
 Unrelated and pre-checkpoint request bodies are excluded before JSON decoding.
 CUJ4 accepts both top-level tool definitions (Codex 0.154.0) and Responses Lite
 `additional_tools` input items (0.162.1). Encrypted child messages match the routed

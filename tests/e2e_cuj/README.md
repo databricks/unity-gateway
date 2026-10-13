@@ -90,6 +90,10 @@ requests and parent continuations from child-inference checks. Only Claude child
 after the routing checkpoint may append one transport newline to that exact prompt.
 Codex 0.162.1 encrypts child instructions, so those requests instead match the routed
 task name to the child message's recipient. The child's hidden-value and model checks remain.
+Codex parent evidence requires the exact prompt and a completed native turn. Runtime-context
+messages, including midnight date updates, are ignored only when their native metadata identifies
+context alone and the active turn. New or duplicate user prompts and other-turn updates remain
+rejected. Offline regressions cover each case.
 Parent and child requests use the same verified thinking-display recovery as CUJ3:
 only known display/safeguards rejections followed by native removal of the rejected field
 and a final non-empty 200 are accepted. Model, prompt, budget, and effort must remain unchanged.

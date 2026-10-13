@@ -71,6 +71,9 @@ Claude child HTTP prompts may carry one appended newline after the route-selecti
 offline cases reject any other prompt changes and retain exact Codex matching.
 Offline CUJ cases also cover Codex delegated-turn completion and task-request matching;
 see `../e2e_cuj/README.md` for the evidence requirements.
+Codex's native runtime-context updates within a turn, such as a date change at midnight, do not
+count as new user prompts. Offline checks require the context-only native kind and matching turn
+ID, and still reject untagged or mixed messages, other-turn updates, and duplicate prompts.
 
 The [catalog discovery journey](../e2e_cuj/README.md) uses the CUJ3 workspace to check
 agent-compatible pickers, schema exclusions, configured defaults, and real inference.
