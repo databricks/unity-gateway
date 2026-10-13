@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ucode.agents.request_tags import request_tags_header_value
+from ucode.agents.request_tags import request_tags_header_value, traffic_id_header_value
 
 
 class TestRequestTagsHeaderValue:
@@ -45,3 +45,9 @@ class TestRequestTagsHeaderValue:
         value = '"A string!"'
         assert request_tags_header_value({"AI_GATEWAY_REQUEST_TAGS": value}) is None
         assert "AI_GATEWAY_REQUEST_TAGS" in capsys.readouterr().err
+
+
+def test_traffic_id_with_line_break_is_skipped(monkeypatch, capsys):
+    monkeypatch.setenv("UCODE_TRAFFIC_ID", "testenv://liteswap/a\nX-Injected: 1")
+    assert traffic_id_header_value() is None
+    assert "UCODE_TRAFFIC_ID" in capsys.readouterr().err

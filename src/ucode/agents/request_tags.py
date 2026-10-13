@@ -6,7 +6,7 @@ import json
 import os
 from collections.abc import Mapping
 
-from ucode.constants import AI_GATEWAY_REQUEST_TAGS_ENV_VAR
+from ucode.constants import AI_GATEWAY_REQUEST_TAGS_ENV_VAR, TRAFFIC_ID_ENV_VAR
 from ucode.ui import print_warning_err
 
 
@@ -44,3 +44,12 @@ def request_tags_header_value(env: Mapping[str, str] | None = None) -> str | Non
             f"Ignoring {AI_GATEWAY_REQUEST_TAGS_ENV_VAR}: value is not valid JSON. Provide the tags as JSON on a single line.\n{e}"
         )
         return None
+
+
+def traffic_id_header_value() -> str | None:
+    """The ``x-databricks-traffic-id`` value from ``UCODE_TRAFFIC_ID``, or None when unset."""
+    value = os.environ.get(TRAFFIC_ID_ENV_VAR, "").strip()
+    if "\n" in value or "\r" in value:
+        print_warning_err(f"Ignoring {TRAFFIC_ID_ENV_VAR}: value contains line breaks.")
+        return None
+    return value or None

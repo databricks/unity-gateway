@@ -254,6 +254,22 @@ class TestRenderOverlay:
             "Databricks-Ai-Gateway-Request-Tags" not in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
         )
 
+    def test_traffic_id_header_added_when_env_set(self, monkeypatch):
+        monkeypatch.setenv("UCODE_TRAFFIC_ID", "testenv://liteswap/abc")
+        overlay, _ = claude.render_overlay(WS, "s4")
+        headers = overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
+        assert "x-databricks-traffic-id: testenv://liteswap/abc" in headers
+
+    def test_stale_traffic_id_header_removed_when_env_unset(self, monkeypatch):
+        monkeypatch.delenv("UCODE_TRAFFIC_ID", raising=False)
+        overlay, _ = claude.render_overlay(WS, "s4")
+        merged = claude._merge_anthropic_custom_headers(
+            "x-databricks-traffic-id: testenv://liteswap/old\nX-User: kept",
+            overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"],
+        )
+        assert "x-databricks-traffic-id" not in merged
+        assert "X-User: kept" in merged.splitlines()
+
     def test_does_not_disable_experimental_betas(self):
         # Would suppress the beta header 1h prompt caching needs.
         overlay, _ = claude.render_overlay(WS, "s4")
