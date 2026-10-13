@@ -47,7 +47,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(managed_config_mod, "REFRESH_TS_PATH", state_dir / "refresh_ts.json")
 
-    def install_test_policy(path, desired_text, *, interactive=False):
+    def install_test_policy(path, desired_text, *, interactive=False, allow_sudo=True):
         if path != managed_config_mod.MANAGED_CONFIG_PATH or not path.is_relative_to(tmp_path):
             pytest.fail(f"test attempted to install machine-wide policy at {path}")
         if config_io_mod.is_dry_run():

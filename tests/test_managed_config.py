@@ -889,17 +889,18 @@ class TestMachinePolicyRefresh:
         assert refresh_managed_config(_state()).manifest == normalize_managed_config(checked)
         assert load_managed_configuration(WORKSPACE) == RAW_MANIFEST
 
-    def test_changed_policy_allows_interactive_password_prompt(self, monkeypatch):
+    @pytest.mark.parametrize("force_refresh", [False, True])
+    def test_only_explicit_configure_allows_policy_elevation(self, monkeypatch, force_refresh):
         writes = []
         installer = mc_mod.update_workspace_policy
 
-        def install(path, desired_text, *, interactive=False):
-            writes.append(interactive)
-            installer(path, desired_text, interactive=interactive)
+        def install(path, desired_text, *, interactive=False, allow_sudo=True):
+            writes.append((interactive, allow_sudo))
+            installer(path, desired_text, interactive=interactive, allow_sudo=allow_sudo)
 
         monkeypatch.setattr(mc_mod, "update_workspace_policy", install)
-        refresh_managed_config(_state())
-        assert writes == [True]
+        refresh_managed_config(_state(), force_refresh=force_refresh)
+        assert writes == [(force_refresh, force_refresh)]
 
     def test_denied_changed_policy_warns_and_reuses_installed_policy(self, monkeypatch):
         save_managed_state(WORKSPACE, RAW_MANIFEST)
@@ -915,7 +916,9 @@ class TestMachinePolicyRefresh:
         result = refresh_managed_config(_state())
         assert result == (normalize_managed_config(RAW_MANIFEST), False)
         assert load_managed_configuration(WORKSPACE) == RAW_MANIFEST
-        assert "Workspace policy changed; run `ug configure`" in warnings[0]
+        assert "Ask your IT team or an administrator" in warnings[0]
+        assert "Continuing with the installed policy" in warnings[0]
+        assert "run `ug configure`" not in warnings[0]
         monkeypatch.setattr(
             mc_mod,
             "get_managed_config",
@@ -933,7 +936,8 @@ class TestMachinePolicyRefresh:
         monkeypatch.setattr(mc_mod, "print_warning", warnings.append)
         assert refresh_managed_config(_state()) == (None, False)
         assert not mc_mod.MANAGED_CONFIG_PATH.exists()
-        assert warnings
+        assert "Continuing without a local workspace policy" in warnings[0]
+        assert "Ask your IT team or an administrator" in warnings[0]
 
     def test_configure_reports_failed_install_and_preserves_policy(self, monkeypatch):
         save_managed_state(WORKSPACE, RAW_MANIFEST)

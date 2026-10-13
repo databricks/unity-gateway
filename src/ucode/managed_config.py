@@ -12,8 +12,8 @@ machine-wide file, ``/etc/unitygateway/managed-settings.json`` (root-owned, 0644
   re-fetching), falling back to the persisted copy when the read fails.
 
 Refresh timestamps live separately in ``~/.ucode/refresh_ts.json`` (0600), keyed by workspace.
-Unchanged remote reads never rewrite the protected policy. Interactive launches may prompt for sudo
-only when policy changes, and retain the installed policy when elevation is unavailable.
+Unchanged remote reads never rewrite the protected policy. Non-root launches never invoke sudo;
+they retain installed policy and request an administrator update when remote policy changes.
 
 :func:`refresh_managed_config` is the launch path's entry point. It is called before model discovery,
 because the manifest decides whether that discovery is needed at all; the launch path then hands the
@@ -640,7 +640,9 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-def save_managed_state(workspace: str, config: dict, *, interactive: bool = False) -> None:
+def save_managed_state(
+    workspace: str, config: dict, *, interactive: bool = False, allow_sudo: bool = True
+) -> None:
     """Install raw policy only when changed; remove a matching policy when it no longer exists."""
     workspace = normalize_workspace_url(workspace)
     existing = config_io.read_json_safe(MANAGED_CONFIG_PATH)
@@ -652,7 +654,9 @@ def save_managed_state(workspace: str, config: dict, *, interactive: bool = Fals
     )
     if not config:
         if matches:
-            update_workspace_policy(MANAGED_CONFIG_PATH, None, interactive=interactive)
+            update_workspace_policy(
+                MANAGED_CONFIG_PATH, None, interactive=interactive, allow_sudo=allow_sudo
+            )
         return
     existing_config = existing.get("config")
     if (
@@ -667,6 +671,7 @@ def save_managed_state(workspace: str, config: dict, *, interactive: bool = Fals
         MANAGED_CONFIG_PATH,
         json.dumps(payload, indent=2) + "\n",
         interactive=interactive,
+        allow_sudo=allow_sudo,
     )
 
 
@@ -775,7 +780,8 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
 
     ``force_refresh`` bypasses throttling for explicit configuration. The installed policy changes
     only when the workspace or configuration changes; unchanged reads update only refresh metadata.
-    Interactive changes may prompt for sudo, while non-interactive writes use ``sudo -n``.
+    Only explicit configuration may invoke sudo. Non-root launches are read-only regardless of
+    terminal attachment or cached sudo access; root launches can install without sudo.
 
     Failed launch writes warn and return the matching installed policy, recording the attempt to
     avoid repeated prompts within the TTL. Explicit configuration write failures raise instead.
@@ -802,16 +808,26 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
             fallback = _persisted_fallback(workspace, reason, refused=_is_permission_denied(reason))
             return ManagedConfigResult(fallback, False)
     try:
-        save_managed_state(workspace, raw or {}, interactive=True)
-    except RuntimeError as exc:
-        message = (
-            "Workspace policy changed; run `ug configure`. "
-            f"Could not update {MANAGED_CONFIG_PATH}: {exc}"
+        save_managed_state(
+            workspace, raw or {}, interactive=force_refresh, allow_sudo=force_refresh
         )
+    except RuntimeError as exc:
         if force_refresh:
+            message = (
+                "Workspace policy changed; run `ug configure` with administrator access. "
+                f"Could not update {MANAGED_CONFIG_PATH}: {exc}"
+            )
             raise RuntimeError(message) from exc
-        print_warning(message)
         result = ManagedConfigResult(load_managed_state(workspace), False)
+        fallback_message = (
+            "Continuing with the installed policy."
+            if result.manifest is not None
+            else "Continuing without a local workspace policy."
+        )
+        print_warning(
+            "Your workspace policy changed. Ask your IT team or an administrator to apply the "
+            f"update on this machine. {fallback_message}"
+        )
     else:
         result = ManagedConfigResult(
             normalize_managed_config(raw) if raw is not None else None,

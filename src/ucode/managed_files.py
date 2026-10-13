@@ -747,9 +747,13 @@ def _sudo_replace_command(mode: str, *args: str, non_interactive: bool = False) 
 
 
 def update_workspace_policy(
-    path: Path, desired_text: str | None, *, interactive: bool = False
+    path: Path,
+    desired_text: str | None,
+    *,
+    interactive: bool = False,
+    allow_sudo: bool = True,
 ) -> None:
-    """Install or remove changed policy, prompting only in an interactive terminal."""
+    """Install or remove changed policy; unprivileged launches never invoke sudo."""
     if path != UNITY_GATEWAY_MANAGED_SETTINGS_PATH:
         raise RuntimeError(f"Refusing unexpected workspace-policy target: {path}")
     _validate_sudo_replace_target(path)
@@ -766,6 +770,10 @@ def update_workspace_policy(
             f"{desired_text if desired_text is not None else '(remove)'}"
         )
         return
+    if not allow_sudo and os.geteuid() != 0:
+        raise ManagedFileWriteUnavailable(
+            "Workspace policy updates require an administrator or root provisioning run."
+        )
     try:
         if (
             desired_text is not None

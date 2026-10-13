@@ -19,8 +19,10 @@ The managed TTL journey installs `/etc/unitygateway/managed-settings.json` throu
 checks root ownership and readable modes, then ages only user-owned `~/.ucode/refresh_ts.json`.
 Warm launch leaves the timestamp unchanged; expired launch advances it without changing installed
 policy bytes, inode, mtime, or ctime when the workspace policy is unchanged. Unit/component tests
-cover changed-policy prompts, denied-update fallback, removal, and metadata-only drift.
-Live changed-policy password/denial coverage remains a gap requiring a clean disposable VM.
+cover configure-only elevation, non-root read-only launches, IT guidance, removal, and
+metadata-only drift. Root/non-root packaged-writer checks in a disposable Linux container are
+component evidence, not live MDM provisioning or Claude/Codex launch evidence. Running the full MDM
+bootstrap and agent journey still requires explicitly selected workspace provisioning credentials.
 
 ## Run a specific combination
 

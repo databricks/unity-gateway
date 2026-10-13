@@ -31,7 +31,9 @@ The existing privileged writer atomically installs allowlisted Claude/Codex sett
 - R12: Export and local status use installed policy; explicitly requested live status may query remote policy without installing it.
 - R13: Store workspace-keyed check timestamps, outcomes, and installed-file fingerprints in `~/.ucode/refresh_ts.json`, mode `0600`, without a second policy copy.
 - R14: Compare workspace and raw config excluding only volatile API `retrieved_time`; unchanged reads never rewrite protected policy.
-- R15: Changed interactive policy may prompt for sudo; scripts use `sudo -n`, and root provisioning needs no sudo.
+- R15: Only explicit configure may invoke sudo (interactive prompt or scripted `sudo -n`); root provisioning needs no sudo. Non-root launch policy writes/removals are deferred without even a sudo capability probe.
+- R16: Deferred launch updates direct users to IT/an administrator, not to a configure command they cannot run.
+- R17: Document that the arbitrary-string header schema does not prohibit secrets and that the entire readable raw policy must contain no secret values.
 
 ## Clarifications
 
@@ -49,6 +51,8 @@ The existing privileged writer atomically installs allowlisted Claude/Codex sett
   A6: Distinguish published, absent, and feature-disabled reads during the TTL without empty policy tombstones or duplicate content. Failed launch updates cache the effective installed fallback, delaying reattempt until TTL expiry.
 - Q7: Is the local config identical to the latest remote response?
   A7: `config` preserves raw fields when installed. Only API `retrieved_time` is ignored for drift comparison, so that informational field may remain from an earlier read until actual policy changes.
+- Q8: Does Bill's review request policy-controlled refresh intervals?
+  A8: UNRESOLVED. His comment asks about the workspace source of truth for refresh, not explicitly an interval. The supported schema has no interval field. Keep five minutes pending confirmation; do not invent a wire field.
 
 ## Acceptance Criteria
 
@@ -66,11 +70,12 @@ The existing privileged writer atomically installs allowlisted Claude/Codex sett
 - AC12: GIVEN successful installation WHEN metadata is inspected THEN directory is root-owned `0755`, file root-owned `0644`, and refresh metadata `0600`.
 - AC13: GIVEN symlinked or unsafe targets WHEN installing THEN replacement is refused.
 - AC14: GIVEN valid installed policy WHEN export or local status runs THEN the installed file is the policy source.
-- AC15: GIVEN changed policy during launch setup WHEN installation is attempted THEN interactive sudo may prompt, noninteractive sudo cannot prompt, and denial warns/falls back.
+- AC15: GIVEN changed policy during launch setup WHEN a non-root user launches THEN no sudo probe, password prompt, or protected write/removal occurs; IT guidance and installed fallback remain. GIVEN root refresh THEN installation proceeds directly without sudo.
 - AC16: GIVEN remote changes only to `retrieved_time` WHEN TTL expires THEN no protected write or sudo occurs.
 - AC17: GIVEN another process replaces or edits installed policy WHEN a still-warm refresh runs THEN its fingerprint invalidates the check.
 - AC18: GIVEN workspace without policy and no matching installed file WHEN refreshed THEN no protected file or directory is created.
-- AC19: GIVEN denied launch update WHEN immediately relaunched THEN the recorded attempt prevents another prompt within five minutes.
+- AC19: GIVEN deferred launch update WHEN immediately relaunched THEN the recorded check throttles another API request/warning within five minutes.
+- AC20: GIVEN explicit configure WHEN changed policy requires privilege THEN existing interactive/scripted sudo behavior remains available.
 
 ## Constraints
 
@@ -94,7 +99,7 @@ The existing privileged writer atomically installs allowlisted Claude/Codex sett
 ### Approach
 
 1. Change the authoritative policy path and persist only workspace/config. Normalize at consumption time; ignore only volatile retrieval metadata for comparison.
-2. Extend the existing atomic privileged writer with fixed policy installation/removal, root ownership, readable modes, interactive sudo, noninteractive `sudo -n`, and root support.
+2. Extend the existing atomic privileged writer with fixed policy installation/removal, root ownership, readable modes, configure-only sudo, a no-elevation launch guard, and root support.
 3. Move check metadata into the user-owned sidecar. Keep five-minute throttling, negative outcomes, and fingerprint invalidation without copying policy.
 4. Force refresh in all explicit agent configuration variants. Keep launch and indirect agent refreshes; after one check they reuse the sidecar.
 5. Handle changed installs and matching removals through the writer. Configure errors on failed writes; launches warn and use the installed fallback, throttling retries.
@@ -118,18 +123,18 @@ None. Continue using the existing coding-agent-configs GET. Internal policy save
 
 ### Risks and Trade-offs
 
-- Root-writable versus root-readable: policy can be read without sudo, but all machine users can see its configuration metadata, including administrator-authored headers.
+- Root-writable versus root-readable: policy can be read without sudo, but all machine users can see its configuration metadata. Arbitrary-string headers are not schema-safe for secrets; all raw policy fields must contain no secrets.
 - A single active machine workspace is intentional; switches affect other users, who never consume mismatched policy.
 - A user-owned timestamp avoids pointless privileged writes after unchanged checks but is mutable and not a security enforcement boundary.
 - TTL avoids every-launch API latency but delays change detection by up to five minutes. Fingerprints detect local changes, not remote freshness.
 - Warning/fallback favors availability over strict latest-policy enforcement. Denied updates/removals leave old policy active; retries are throttled for five minutes.
-- Interactive changed-only sudo permits password prompts. Noninteractive `sudo -n` cannot hang awaiting a password and falls back on failure.
+- Non-root launch writes are always deferred, even for administrators with cached sudo; this deliberately favors MDM ownership and zero elevation attempts over automatic privileged launch repair. Configure retains interactive sudo and scripted `sudo -n`; root refresh writes directly.
 - Ignoring `retrieved_time` avoids false drift but means that field does not necessarily represent the latest check; use the sidecar instead.
 - Deletion avoids empty tombstones; sidecar outcomes preserve absent/disabled semantics.
 - Refresh metadata atomic writes do not serialize simultaneous workspace checks; a lost timestamp entry causes an extra check, not an alternate policy copy.
 - Legacy home policy is intentionally not trusted/promoted; configure must retrieve/install authoritative workspace policy.
 - Existing forgiving readers remain, and this is not a fail-closed enforcement redesign.
-- Actual password interaction and platform ownership require live disposable-machine validation; unit shell tests cannot prove those workstation behaviors.
+- Packaged-writer root ownership and non-root TTY/script deferral are checked in a disposable Linux container. Actual configure password interaction and full MDM/agent provisioning still require separately selected credentials and machine policy.
 
 ## Tasks
 
@@ -152,7 +157,7 @@ None. Continue using the existing coding-agent-configs GET. Internal policy save
 - [x] T9: Add workspace-keyed user-owned refresh metadata.
 - [x] T10: Preserve five-minute launch throttling and local-only launch dry-run.
 - [x] T11: Share throttling with indirect Claude/AI Tools refresh checks.
-- [x] T12: Cover unchanged policy, retrieval-only drift, changed sudo, denial fallback, and fingerprint invalidation.
+- [x] T12: Cover unchanged policy, retrieval-only drift, configure-only sudo, deferred launch fallback, no-probe guards, and fingerprint invalidation.
 
 ### Phase 4 — Consumers and Documentation
 
@@ -162,4 +167,4 @@ None. Continue using the existing coding-agent-configs GET. Internal policy save
 
 ### Validation
 
-- [x] T-val: Run acceptance criteria verification, focused/full tests, integration contracts, lint, formatting, and types. Focused checks: 964 passed. Full suite: 2783 passed, 44 skipped, 9 unrelated/environment failures (documented in the PR). Live changed-policy password prompts and real root ownership remain unrun pending a disposable VM and explicitly selected workspace credentials.
+- [x] T-val: Rerun focused tests, integration contracts, lint, formatting, types, and root/non-root container component checks after review fixes. Focused checks: 970 passed; real container root ownership/modes and root/non-root persistence checks passed. Prior full suite: 2783 passed, 44 skipped, 9 unrelated/environment failures (documented in the PR). Full live MDM/agent provisioning remains pending explicitly selected workspace credentials.

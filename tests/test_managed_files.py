@@ -531,6 +531,39 @@ class TestWorkspacePolicyWriter:
         )
         managed_files.update_workspace_policy(policy_path, "installed", interactive=True)
 
+    @pytest.mark.parametrize("desired_text", ["new", None])
+    @pytest.mark.parametrize("interactive", [False, True])
+    def test_nonroot_launch_never_probes_or_invokes_sudo(
+        self, policy_path, monkeypatch, desired_text, interactive
+    ):
+        policy_path.write_text("old")
+        monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(
+            managed_files.subprocess,
+            "run",
+            lambda *args, **kwargs: pytest.fail("non-root launch must never invoke sudo"),
+        )
+        monkeypatch.setattr(
+            managed_files,
+            "_sudo_replace",
+            lambda *args, **kwargs: pytest.fail("non-root launch must never start a sudo worker"),
+        )
+        with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="administrator"):
+            managed_files.update_workspace_policy(
+                policy_path, desired_text, interactive=interactive, allow_sudo=False
+            )
+        assert policy_path.read_text() == "old"
+
+    def test_nonroot_launch_cannot_install_initial_policy(self, policy_path, monkeypatch):
+        monkeypatch.setattr(
+            managed_files.subprocess,
+            "run",
+            lambda *args, **kwargs: pytest.fail("initial launch install must not invoke sudo"),
+        )
+        with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="administrator"):
+            managed_files.update_workspace_policy(policy_path, "new", allow_sudo=False)
+        assert not policy_path.exists()
+
     def test_changed_interactive_policy_uses_existing_prompting_writer(
         self, policy_path, monkeypatch
     ):
@@ -597,7 +630,9 @@ class TestWorkspacePolicyWriter:
             return subprocess.CompletedProcess(command, 0)
 
         monkeypatch.setattr(managed_files.subprocess, "run", run)
-        managed_files.update_workspace_policy(policy_path, "new", interactive=True)
+        managed_files.update_workspace_policy(
+            policy_path, "new", interactive=True, allow_sudo=False
+        )
         assert calls[0][0:2] == ["/bin/sh", "-c"]
 
     def test_policy_dry_run_never_invokes_sudo(self, policy_path, monkeypatch):
