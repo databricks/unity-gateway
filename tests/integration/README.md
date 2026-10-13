@@ -269,7 +269,7 @@ constants in the runner; CI only needs `UG_MPS_DEFAULTS_CLIENT_SECRET` for west-
 mints short-lived tokens and passes bearers to pytest; each test selects its target bearer for
 `ug configure` and Claude. The client secrets do not enter the pytest process.
 The 14 retained numbered scenarios comprise 24 explicit journeys: 12 managed and 12 unmanaged
-executions; the complete integration suite collects 100 executions. See the named coverage and gaps matrix in
+executions; the complete integration suite collects 101 executions. See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
 ```bash
