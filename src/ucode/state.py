@@ -253,6 +253,52 @@ def clear_state() -> None:
         raise RuntimeError(f"Failed to clear state file: {STATE_PATH}") from exc
 
 
+SELF_MANAGED_AGENTS_KEY = "self_managed_agents"
+
+
+def self_managed_agents(state: dict) -> list[str]:
+    """The agents the developer has opted into self-managing for this workspace."""
+    value = state.get(SELF_MANAGED_AGENTS_KEY)
+    return list(value) if isinstance(value, list) else []
+
+
+def is_self_managed(state: dict, tool: str) -> bool:
+    """True when the developer has explicitly added ``tool`` to their self-managed list."""
+    return tool in self_managed_agents(state)
+
+
+def workspace_self_managed_agents(workspace: str) -> list[str]:
+    """The self-managed list persisted for ``workspace`` specifically (empty if none).
+
+    The opt-in is per workspace, so a configure that switches workspaces must read the
+    destination's own list rather than carry the source workspace's forward.
+    """
+    block = load_full_state().get("workspaces", {}).get(workspace, {})
+    value = block.get(SELF_MANAGED_AGENTS_KEY)
+    return list(value) if isinstance(value, list) else []
+
+
+def add_self_managed_agent(state: dict, tool: str) -> dict:
+    """Record ``tool`` as self-managed; no-op if already present."""
+    agents = self_managed_agents(state)
+    if tool not in agents:
+        agents.append(tool)
+        state[SELF_MANAGED_AGENTS_KEY] = agents
+    return state
+
+
+def remove_self_managed_agent(state: dict, tool: str) -> dict:
+    """Remove ``tool`` from the self-managed list; no-op if not present."""
+    agents = self_managed_agents(state)
+    if tool in agents:
+        agents.remove(tool)
+        if agents:
+            state[SELF_MANAGED_AGENTS_KEY] = agents
+        else:
+            state.pop(SELF_MANAGED_AGENTS_KEY, None)
+    return state
+
+
 def is_tool_managed(state: dict, tool: str) -> bool:
     """True once configure has written ucode's config for ``tool``.
 

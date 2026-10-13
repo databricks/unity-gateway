@@ -31,8 +31,8 @@ already uses). A token still reaches the process environment: `launch` exports
 from __future__ import annotations
 
 import os
+import shlex
 import signal
-import subprocess
 
 from ucode.config_io import (
     APP_DIR,
@@ -44,11 +44,12 @@ from ucode.config_io import (
 )
 from ucode.databricks import (
     ANTHROPIC_FAMILIES,
-    build_auth_shell_command,
+    build_auth_token_argv,
     build_pi_base_urls,
     classify_model_family,
     get_databricks_token,
 )
+from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
 
@@ -171,12 +172,17 @@ def build_pi_api_key(state: dict) -> str:
 
     No `--force-refresh`: pi has no token cache of its own on this path, so
     forcing a mint would round-trip to the workspace every turn. Plain
-    `auth-token` serves the CLI's cached token until it nears expiry."""
-    return "!" + build_auth_shell_command(
+    `auth-token` serves the CLI's cached token until it nears expiry.
+
+    Always POSIX-quoted: pi runs `!command` values through bash on every OS
+    (Git Bash on Windows), which strips the backslashes from a cmd.exe-style
+    ``C:\\...\\ug.exe`` path."""
+    argv = build_auth_token_argv(
         state["workspace"],
         state.get("profile"),
         use_pat=bool(state.get("use_pat")),
     )
+    return "!" + shlex.join(argv)
 
 
 def write_tool_config(
@@ -298,7 +304,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
     token = _configure_launch(state)
     env = build_runtime_env(token)
 
-    proc = subprocess.Popen([SPEC["binary"], *tool_args], env=env)
+    proc = subprocess_cross_os.popen([SPEC["binary"], *tool_args], env=env)
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:
