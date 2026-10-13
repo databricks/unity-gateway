@@ -12,6 +12,7 @@ import pytest
 from typer.testing import CliRunner
 
 from ucode import cli, config_io, skills
+from ucode.agents import LaunchOptions, claude
 from ucode.skills import SMART_ROUTER_SKILL
 from ucode.smart_routing import session_env, v2
 
@@ -37,6 +38,41 @@ def test_smart_routed_session_installs_skill(tmp_path, monkeypatch, agent):
     assert session_path == Path(os.environ[session_env.SESSION_ENV_VAR])
     assert Path(os.environ[session_env.SESSION_ENV_VAR]).is_file()
     assert os.environ["UCODE_SMART_ROUTER_PYTHON"] == sys.executable
+
+
+@pytest.mark.parametrize("setup_failed", [False, True], ids=["routing-off", "setup-failed"])
+def test_claude_launch_preserves_other_sessions_skills(monkeypatch, setup_failed):
+    monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+    monkeypatch.setenv(v2.ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR, "1")
+    session_path = v2._prepare_smart_router_session("claude")
+    skill_root = config_io.APP_DIR.parent / ".claude/skills"
+    installed = {path: path.read_bytes() for path in skill_root.rglob("*") if path.is_file()}
+    assert (skill_root / skills.SMART_ROUTER_SKILL / "SKILL.md") in installed
+    assert (skill_root / skills.SMART_ROUTER_ORCHESTRATOR_SKILL / "SKILL.md") in installed
+    session_contents = session_path.read_bytes()
+
+    # A second launch shares the skill directory, but has its own process environment.
+    monkeypatch.delenv(session_env.SESSION_ENV_VAR)
+    monkeypatch.delenv(session_env.SESSION_PYTHON_ENV_VAR)
+    monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "0")
+    monkeypatch.setenv(v2.ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR, "0")
+    monkeypatch.setattr(
+        v2, "launch_claude", Mock(side_effect=v2.ClaudeRoutingSetupError("setup failed"))
+    )
+    launch = Mock()
+    monkeypatch.setattr(claude, "exec_or_spawn", launch)
+
+    claude.launch({}, [], options=LaunchOptions(launch_smart_routing=setup_failed))
+
+    launch.assert_called_once()
+    assert {
+        path: path.read_bytes() for path in skill_root.rglob("*") if path.is_file()
+    } == installed
+    assert session_path.read_bytes() == session_contents
+    if setup_failed:
+        settings = json.loads(launch.call_args.args[0][-1])
+        assert settings["env"][v2.ENABLE_SMART_ROUTING_ENV_VAR] == "0"
+        assert settings["env"][v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "0"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Exercises the skill's POSIX shell commands")

@@ -1010,8 +1010,10 @@ processes with different resolved routing baselines. Python cases cover Claude-s
 unknown selectors, and absent versus empty flags. These checks do not establish gateway/TUI coverage.
 
 The plugin test host runs without a process capability, so the mod's session-control call
-is covered by the live skill-toggle journey rather than `claude plugin test`. No component
-check asserts that the launch paths withdraw the skills.
+is covered by the live skill-toggle journey rather than `claude plugin test`.
+`../test_smart_router.py` checks that routing-disabled Claude launches and setup-failure
+fallbacks preserve another session's installed routing skills and control file.
+These are component checks; concurrent live TUI sessions are not covered.
 
 `integration/test_ug_smart_routing_hooks.py` checks recipe headers in its existing
 Claude skill-toggle journey. The recorder forwards to the real workspace, configured
