@@ -209,10 +209,7 @@ version is not executed here.
 first in PATH and a launching interpreter path containing spaces. Both agents' toggles
 must update the session controls through the launching installation. Launch tests check
 that Claude settings and Codex's shell policy carry the interpreter and session marker.
-A launch-dispatch regression check covers both agents: a Claude or Codex launch with no
-smart-routing session removes the previously installed `smart-router` and
-`smart-router-orchestrator` bundles from that agent's skill directory and leaves other
-skills alone. These are component checks; they do not establish native skill permission
+These are component checks; they do not establish native skill permission
 matching or PowerShell execution.
 
 `test_skills.py` checks agent-specific instruction installation, bundle updates,
@@ -238,6 +235,10 @@ they verify the saved
 session controls and native
 tool-result confirmation after each toggle, and explicitly request their children,
 including while routing is off.
+Two additional live journeys set all three routing flags to `0` with an empty
+preset selector. Claude's native skills view is empty and `/smart-router` has
+no command suggestion; Codex's loaded `$` picker has no `$smart-router` match.
+Both complete a normal file-reading task and exit without routing.
 The managed-fixture banner journeys separately cover the selector unset (managed default) and
 `first_prompt_and_subagent_no_orch_v0` for real first-prompt tasks.
 Preset parameterization augments only routing hooks, skill toggles, and first-prompt routing;
@@ -249,8 +250,8 @@ including collapsed-output records, and excludes user echoes and assistant claim
 
 Dedicated regression coverage is missing for root-only Smart Router Orchestrator activation,
 compaction, role-contract preservation, and isolation from legacy preference files.
-Skill removal in ineligible sessions is covered at the launch-dispatch level only, for both
-agents; live sessions are not exercised. Codex's
+Fresh routing-disabled sessions have native skill-absence coverage; removal of
+skills retained from an earlier routed launch remains uncovered. Codex's
 native hook merging and project trust, automatic delegation, and execution of
 pre-existing hooks remain outside the integration suite.
 
@@ -311,6 +312,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_codex_app_server_client_initializes` | Connect a stdio client, direct/`--` separator, with legacy smart routing off/on | Actual JSON-RPC initialize response; no non-JSON stdout; no routing |
 | `test_smart_routing_claude_route_subagent_hook`, `test_smart_routing_codex_route_subagent_hook` | Pipe a real PreToolUse spawn payload to the installed route-subagent hook with legacy subagent routing or each supported routing preset | Allow decision against the live router; requested model replaced by a routed agent definition (Claude) or bundled catalog slug (Codex) from the offered models; one audited decision matching the session and task |
 | `test_smart_router_skill_toggles_claude_subagent_routing`, `test_smart_router_skill_toggles_codex_subagent_routing` | Configure, launch a real subagent-only TUI with legacy routing-only/orchestration flags or the three subagent-only presets, then spawn tagged children while invoking the installed Smart Router skill to switch routing on -> off -> on in the same session | Routing-only cases install `smart-router`; orchestration cases also install `smart-router-orchestrator`; all three native children complete; only routing-enabled phases show the subagent banner and produce a live routing decision correlated with the child; Claude's recorded task inference headers are launch recipe -> DISABLED -> launch recipe and receive successful gateway responses; opted-in banners include `[orchestrator on]`; no first-prompt routing wrapper; the customer full-mode preset is intentionally outside this journey; normal exit |
+| `test_smart_router_skill_absent_claude_when_routing_disabled`, `test_smart_router_skill_absent_codex_when_routing_disabled` | Configure and launch fresh Claude/Codex sessions with all routing flags `0` and no preset | Claude's `/skills` is empty and `/smart-router` offers no command; Codex's loaded `$` skill picker offers no `$smart-router` match; both complete a file-reading task and exit without routing |
 | `test_ug_configure_claude_repeat_and_revert`, `test_ug_configure_codex_repeat_and_revert` | Configure twice over user settings; complete a task; revert twice | Settings preserved; no bearer in ug state; generated config removed; status unconfigured |
 | `test_ug_configure_claude_cleans_stale_skills_mcp_on_workspace_switch` | Configure the first workspace, register its skills MCP, switch to a second real workspace, and use Claude | Old registration removed from Claude and the new workspace state; old workspace bucket preserved; repeat configure stays clean; real file task completes on the second workspace |
 | `test_ug_configure_claude_rejects_invalid_credentials`, `test_ug_configure_codex_rejects_invalid_credentials` | Configure with a rejected bearer against the real workspace | Authentication failure; no successful saved setup |

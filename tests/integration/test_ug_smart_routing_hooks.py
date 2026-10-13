@@ -9,10 +9,12 @@ Smart Router skill and spawn real children before and after its session-local to
 """
 
 import json
+import re
 from pathlib import Path
 
 import pytest
 from utils.evidence import (
+    FileTask,
     SubagentCalculation,
     agent_sessions,
     assert_subagent_routed,
@@ -538,4 +540,109 @@ def test_smart_router_skill_toggles_codex_subagent_routing(
         tui.exit_normally()
         transcript = "".join(tui.output)
     assert SMART_ROUTING_BANNER not in transcript, transcript
+    session.assert_not_routed()
+
+
+@pytest.mark.live
+@pytest.mark.claude
+@pytest.mark.managed_fixture
+def test_smart_router_skill_absent_claude_when_routing_disabled(live_session, workspace):
+    """Scenario: configure and launch Claude with every routing flag explicitly off.
+
+    Expected: the native /skills view reports no skills, and typing /smart-router
+    offers no matching command. A normal file-reading task completes without routing.
+    This covers a fresh session, not removal of skills from an earlier routed launch.
+    """
+    session = live_session
+    session.env.update(
+        {
+            "SMART_ROUTER_CONFIG_VERSION": "",
+            "ENABLE_SMART_ROUTING_V2": "0",
+            "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0",
+            "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
+        }
+    )
+    use_managed_config_fixture(session, "claude_smart_routing")
+    session.run(
+        "configure", "--workspace", workspace, "--skip-upgrade", "--disable-databricks-ai-tools"
+    )
+    task = FileTask(session)
+    with AgentTerminal(
+        session, "claude", [str(session.binary), "claude"], "smart-router-disabled"
+    ) as tui:
+        tui.boot()
+        tui.submit("/skills")
+        tui.wait_for(lambda screen: "No skills found" in screen, "the empty native skills view")
+        tui.send("\x1b", "close the skills view")
+        tui.wait_for(lambda screen: "No skills found" not in screen, "the prompt")
+        tui.send("/smart-router", "search native slash commands for Smart Router")
+        tui.wait_for(
+            lambda screen: re.search(r"(?m)^\s*❯\s*/smart-router\s*$", screen),
+            "the Smart Router command search",
+            stable_for=1,
+        )
+        matches = [line.strip() for line in tui.visible.splitlines() if "smart-router" in line]
+        assert len(matches) == 1, tui.visible
+        tui.send("\x15", "clear the unmatched command")
+        tui.wait_for(lambda screen: "/smart-router" not in screen, "the cleared prompt")
+        tui.submit(task.prompt)
+        tui.wait_for_task(task)
+        tui.exit_normally()
+        transcript = "".join(tui.output)
+    assert SMART_ROUTING_BANNER not in transcript, transcript
+    assert SMART_ROUTING_SUBAGENT_NOTICE not in transcript, transcript
+    assert not _routing_decisions(session, "claude")
+    session.assert_not_routed()
+
+
+@pytest.mark.live
+@pytest.mark.codex
+@pytest.mark.managed_fixture
+def test_smart_router_skill_absent_codex_when_routing_disabled(live_session, workspace):
+    """Scenario: configure and launch Codex with every routing flag explicitly off.
+
+    Expected: the native $ skill picker loads its built-in skills, but filtering with
+    $smart-router offers no matching skill. A normal file-reading task completes
+    without routing. This covers a fresh session, not cleanup after a routed launch.
+    """
+    session = live_session
+    session.env.update(
+        {
+            "SMART_ROUTER_CONFIG_VERSION": "",
+            "ENABLE_SMART_ROUTING_V2": "0",
+            "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0",
+            "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
+        }
+    )
+    use_managed_config_fixture(session, "codex_smart_routing")
+    session.run(
+        "configure", "--workspace", workspace, "--skip-upgrade", "--disable-databricks-ai-tools"
+    )
+    task = FileTask(session)
+    with AgentTerminal(
+        session, "codex", [str(session.binary), "codex"], "smart-router-disabled"
+    ) as tui:
+        tui.boot()
+        tui.send("$", "open the native skill picker")
+        tui.wait_for(lambda screen: "skill-creator" in screen, "the built-in skill picker")
+        tui.send("smart-router", "filter the native skill picker for Smart Router")
+        tui.wait_for(
+            lambda screen: (
+                "skill-creator" not in screen
+                and re.search(r"(?m)^\s*[›>]\s*\$smart-router\s*$", screen)
+            ),
+            "the unmatched Smart Router skill search",
+            stable_for=1,
+        )
+        matches = [line.strip() for line in tui.visible.splitlines() if "smart-router" in line]
+        assert len(matches) == 1, tui.visible
+        tui.send("\x15", "clear the unmatched skill mention")
+        tui.wait_for(lambda screen: "$smart-router" not in screen, "the cleared prompt")
+        tui.submit(task.prompt)
+        tui.wait_for_task(task)
+        tui.exit_normally()
+        transcript = "".join(tui.output)
+    assert SMART_ROUTING_BANNER not in transcript, transcript
+    assert SMART_ROUTING_SUBAGENT_NOTICE not in transcript, transcript
+    assert not _routing_decisions(session, "codex")
     session.assert_not_routed()
