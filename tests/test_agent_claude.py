@@ -1244,6 +1244,48 @@ class TestWriteToolConfigManagedSettings:
         assert managed_env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "developer-managed-sonnet"
         assert managed_env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "system.ai.claude-haiku-4-5"
 
+    @pytest.mark.parametrize(
+        ("source", "expected_defaults"),
+        [
+            # Allow-all Anthropic MPS: ug pins no family, so Claude Code sends its own ids.
+            ({"provider": "main.default.anthropic"}, {}),
+            (
+                {
+                    "provider": "main.default.bedrock",
+                    "provider_models": {"opus": "us.anthropic.claude-opus-4-6"},
+                },
+                {"ANTHROPIC_DEFAULT_OPUS_MODEL": "us.anthropic.claude-opus-4-6"},
+            ),
+            ({"parent_schema": "main.default"}, {}),
+        ],
+    )
+    def test_unmanaged_source_launch_drops_preexisting_family_defaults(
+        self, monkeypatch, source, expected_defaults
+    ):
+        monkeypatch.setattr(
+            claude, "refresh_managed_config", lambda *a, **kw: _managed_config_result(None)
+        )
+        private_writes: list = []
+        managed_writes: list = []
+        stale_env = {
+            "env": {
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": "system.ai.claude-opus-5[1m]",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL": "system.ai.claude-sonnet-5[1m]",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL": "system.ai.claude-haiku-4-5",
+            }
+        }
+        existing = {str(claude.CLAUDE_SETTINGS_PATH): stale_env, str(FAKE_MANAGED_PATH): stale_env}
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        state = {"workspace": WS, "claude_models": {"opus": "system.ai.claude-opus-5"}}
+
+        claude.write_tool_config(state, None, **source)
+
+        for env in (private_writes[0][1]["env"], json.loads(managed_writes[0][1])["env"]):
+            family_defaults = {
+                key: env[key] for key in claude.CLAUDE_DEFAULT_MODEL_ENV_KEYS.values() if key in env
+            }
+            assert family_defaults == expected_defaults
+
     def test_managed_file_wholesale_overwrite_survives_real_reconcile_round_trip(
         self, tmp_path, monkeypatch
     ):

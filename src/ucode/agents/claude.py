@@ -1445,12 +1445,16 @@ def write_tool_config(
         should_preserve_preexisting_claude_family_defaults = (
             not managed_config_present
             and not coding_agent_config_defaults
+            and not provider
+            and not parent_schema
             and isinstance(base_env, dict)
         )
         if should_preserve_preexisting_claude_family_defaults:
             # Without an admin Coding Agent Config, an existing family default belongs to the
             # developer. Discovery may fill an absent family, but must not replace a value they
-            # already selected in either the private or OS-managed settings file.
+            # already selected in either the private or OS-managed settings file. A provider or
+            # schema launch is excluded: its own map is complete, and a carried-over default
+            # (e.g. a system.ai id) is not servable through that source.
             target_env = overlay_for_merge["env"]
             for key in CLAUDE_DEFAULT_MODEL_ENV_KEYS.values():
                 existing_default = base_env.get(key)
