@@ -10,8 +10,9 @@ CUJ2 adds three separately collected cases for exact published MPS/MCP configura
 inference, and Claude inference. The config equality also accounts for the workspace's fixture
 skill name as data; skill download and invocation are not covered.
 
-The dedicated smart-routing CUJ in `../e2e_cuj/test_cuj4_smart_routing.py` leaves the original
-managed-default and explicit-model cases unchanged. One parameterized test runs all six
+The dedicated smart-routing CUJ in `../e2e_cuj/test_cuj4_smart_routing.py` runs the original
+managed-default and explicit-model cases, with explicit-model bypass assertions enabled for
+both Claude and Codex. One parameterized test runs all six
 `SMART_ROUTER_CONFIG_VERSION` values, checking both agents' first-prompt routing, orchestrator
 context in inference input, and completed explicitly requested native subagents.
 This is not automatic orchestrator-delegation coverage. No workspace configuration is modified.
@@ -1011,6 +1012,10 @@ Outside the Databricks network, use reachable package indexes explicitly instead
 Native launch-option component tests (`native_claude/test_mod.py`) check two real Claude
 processes with different resolved routing baselines. Python cases cover Claude-specific presets,
 unknown selectors, and absent versus empty flags. These checks do not establish gateway/TUI coverage.
+
+CUJ 4's preset journeys check Claude's visible ON/OFF status band and routing scope
+before work and after off/on toggles. Checks ignore terminal styling and trailing
+UI controls; offline cases reject stale states, wrong scope, and command confirmations.
 
 The plugin test host runs without a process capability, so the mod's session-control call
 is covered by the live skill-toggle journey rather than `claude plugin test`. No component

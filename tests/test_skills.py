@@ -108,6 +108,13 @@ def test_orchestrator_injects_the_installed_agent_instructions(
     assert context.endswith(f"\n\n{agent} instructions")
     assert context.endswith(installed.joinpath("SKILL.md").read_text())
 
+    session_env.set_session_environment({"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0"})
+    output = orchestrator.hook_output(payload, agent=agent)
+    assert output["hookSpecificOutput"]["additionalContext"] == orchestrator.DISABLED_CONTEXT
+    session_env.set_session_environment({})
+    output = orchestrator.hook_output(payload, agent=agent)
+    assert output["hookSpecificOutput"]["additionalContext"] == context
+
 
 def test_orchestrator_skill_version_reads_the_shipped_skill():
     assert re.fullmatch(r"\d+\.\d+\.\d+", orchestrator.skill_version(agent="claude") or "")

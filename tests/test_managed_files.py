@@ -19,6 +19,8 @@ import ucode.config_io as config_io
 from ucode import managed_files
 
 _REAL_SUDO_REPLACE = managed_files._sudo_replace
+# Captured before the autouse ``_supported`` fixture pins the module attribute to True.
+_REAL_MANAGED_FILES_SUPPORTED = managed_files.managed_files_supported
 
 
 @pytest.fixture(autouse=True)
@@ -676,6 +678,64 @@ chown() {
         assert staging_path.parent == parent
         assert staging_path.name.startswith(".managed_config.toml.ucode.")
         assert not list(parent.glob(".managed_config.toml.ucode.*"))
+
+
+class TestManagedSettingsSkipped:
+    """``UG_SKIP_OS_SETTINGS`` opts out of every OS-managed-file operation."""
+
+    def test_absent_env_does_not_skip(self, monkeypatch):
+        monkeypatch.delenv(managed_files.SKIP_OS_SETTINGS_ENV, raising=False)
+        assert managed_files.managed_settings_skipped() is False
+
+    @pytest.mark.parametrize("value", ["1", "true", "TRUE", "Yes", "on", " on "])
+    def test_truthy_values_skip(self, monkeypatch, value):
+        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, value)
+        assert managed_files.managed_settings_skipped() is True
+        # Skipping also reports the platform as unsupported so managed MCP falls back to user scope
+        # (the real gate; the autouse fixture otherwise pins support on).
+        assert _REAL_MANAGED_FILES_SUPPORTED() is False
+
+    @pytest.mark.parametrize("value", ["0", "false", "off", "no", ""])
+    def test_falsey_values_do_not_skip(self, monkeypatch, value):
+        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, value)
+        assert managed_files.managed_settings_skipped() is False
+
+    def test_skip_prevents_privileged_write(self, monkeypatch):
+        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        # Use the real gate so skipping short-circuits before sudo (fixture otherwise pins it on).
+        monkeypatch.setattr(managed_files, "managed_files_supported", _REAL_MANAGED_FILES_SUPPORTED)
+        monkeypatch.setattr(
+            managed_files, "_sudo_replace", lambda *args: pytest.fail("must not write")
+        )
+        result = managed_files.reconcile_managed_file(
+            Path("/tmp/ucode-test/managed.json"),
+            '{"ucode": true}\n',
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[["ucode"]],
+            parser=json.loads,
+        )
+        assert result == "unsupported"
+
+    def test_raise_on_skipped_managed_overrides_reports_stale_leaves(self):
+        with pytest.raises(RuntimeError) as excinfo:
+            managed_files.raise_on_skipped_managed_overrides(
+                Path("/etc/claude-code/managed-settings.json"),
+                ["env.ANTHROPIC_BASE_URL"],
+                display="Claude Code",
+            )
+        message = str(excinfo.value)
+        assert managed_files.SKIP_OS_SETTINGS_ENV in message
+        assert "stale" in message
+        assert "ug revert" in message
+
+    def test_raise_on_skipped_managed_overrides_silent_without_conflicts(self):
+        # No conflicts means nothing stale overrides the user config, so this must not raise.
+        managed_files.raise_on_skipped_managed_overrides(
+            Path("/etc/claude-code/managed-settings.json"),
+            [],
+            display="Claude Code",
+        )
 
 
 class TestManagedFileLifecycle:

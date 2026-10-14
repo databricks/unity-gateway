@@ -4,14 +4,16 @@ UG's smart-routed Claude launcher loads `hooks/register.ts` through the existing
 launch-scoped `ug-smart-router` plugin. Claude Code 2.1.290 or newer is required.
 
 The existing `_write_routed_claude_plugin()` copies the packaged TypeScript entry point
-from `src/ucode/agents/claude_mods/` and writes `hooks/hooks.json` into that plugin. Both full and subagent-only smart
+from `src/ucode/agents/claude_mods/` and writes `hooks/hooks.json` into that plugin.
+Every routed launch includes the status band above the prompt. Both full and subagent-only smart
 routing launches use this path, and the existing temporary-directory lifecycle
 cleans up the files when Claude exits.
 
 `constants.ts` holds the values the mod shares with UG's CLI and the gateway: the recipe
-header name, the disabled recipe, and the CLI module, agent, and routing flags. It ships
+header name, the disabled recipe, the CLI module, agent, and routing flags, and the
+routing keys used to read session overrides. It ships
 beside the entry point and stays out of `hooks.json`, which lists only `register.ts` as a
-module. Environment-variable names are deliberately not collected there. Claude's
+module. Claude's
 capability scanner requires a literal name at each `$.env.get`/`$.env.set` call site so it
 can list what the module reads and writes, and `plugin validate` rejects a variable in that
 position: "$.env.get takes a literal name as its first argument". Keep those names inline.

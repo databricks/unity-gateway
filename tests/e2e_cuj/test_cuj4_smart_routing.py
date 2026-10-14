@@ -1,5 +1,6 @@
 """Smart-routing CUJ: execute once, then report each contract assertion separately."""
 
+import re
 from dataclasses import dataclass
 
 import pytest
@@ -40,6 +41,15 @@ CUJ_NAME = "CUJ 4 · Smart routing"
 ROUTING_PATH = "/ai-gateway/routing/v1/routes:select"
 AGENTS = (CLAUDE, CODEX)
 ORCHESTRATOR_CONTEXT = "Smart Router Orchestrator is on for this session."
+
+
+def _smart_router_band_shown(tui, *, enabled, first_prompt):
+    state = "ON" if enabled else "OFF"
+    pattern = rf"\s*unity gateway smart router\s+{state}\b"
+    if enabled:
+        scope = "first prompt + subagents" if first_prompt else "subagents"
+        pattern += rf"\s+—\s+routing\s+{re.escape(scope)}\b"
+    return any(re.match(pattern, line) for line in tui.screen.display)
 
 
 @dataclass(frozen=True)
@@ -247,7 +257,8 @@ class TestCujSmartRouting(BaseCujTest):
 
         Expected: each agent's resolved flags determine first-prompt routing,
         orchestration, and child routing. One native child completes the delegated
-        task even when routing is disabled.
+        task even when routing is disabled. Claude's status band shows ON and the
+        preset's routing scope, then OFF and ON after toggles.
         """
         session, workspace, recorder = cuj
         previous = session.env.get("SMART_ROUTER_CONFIG_VERSION")
@@ -277,6 +288,13 @@ class TestCujSmartRouting(BaseCujTest):
                 recorder.prepare_launch()
                 with Terminal(session, f"{SMART_ROUTER_CONFIG_VERSION}-{agent}", [agent]) as tui:
                     tui.boot(timeout=150)
+                    if agent == CLAUDE:
+                        tui.wait_for(
+                            lambda _, first_prompt=first_prompt_routed: _smart_router_band_shown(
+                                tui, enabled=True, first_prompt=first_prompt
+                            ),
+                            "the ON Smart Router band with the preset's routing scope",
+                        )
                     tui.submit(task.prompt)
                     tui.task(evidence, task)
                     requests = recorder.requests_after(checkpoint)
@@ -368,6 +386,16 @@ class TestCujSmartRouting(BaseCujTest):
                         ), agent
                     if agent == CLAUDE:
                         tui.wait_for_background_tasks()
+                        for enabled in (False, True):
+                            tui.submit(f"/smart-router {'on' if enabled else 'off'}")
+                            tui.wait_for(
+                                lambda _, enabled=enabled, first_prompt=first_prompt_routed: (
+                                    _smart_router_band_shown(
+                                        tui, enabled=enabled, first_prompt=first_prompt
+                                    )
+                                ),
+                                f"the {'ON' if enabled else 'OFF'} Smart Router band",
+                            )
                     tui.exit_normally()
         finally:
             if previous is None:
@@ -446,18 +474,7 @@ class TestCujSmartRouting(BaseCujTest):
                 canonical_model(model) for model in completed_smart_routing_runs.supported[agent]
             }
 
-    @pytest.mark.parametrize(
-        "agent",
-        [
-            pytest.param(
-                CLAUDE,
-                marks=pytest.mark.skip(
-                    reason="TODO: Fix Claude model override precedence over managed defaults"
-                ),
-            ),
-            CODEX,
-        ],
-    )
+    @pytest.mark.parametrize("agent", AGENTS)
     def test_with_model_override_bypasses_router_and_uses_requested_model(
         self, completed_smart_routing_runs, agent
     ):

@@ -19,6 +19,10 @@ TypeScript event-forwarding and launch-option tests in CI. The existing Claude
 skill-toggle integration journey checks the live recipe headers across on/off/on.
 See [the mod guide](../docs/claude-mod.md).
 
+CUJ 4's preset journeys check Claude's ON/OFF status band, routing scope, and
+updates after off/on toggles. Checks ignore terminal styling and trailing UI controls;
+offline cases reject stale states, wrong routing scope, and command confirmations.
+
 Savings estimate coverage: `test_smart_routing_savings.py` prices the mod's token sums
 (per-entry and first-prompt baselines, unpriced or malformed entries, the pricer's single
 JSON line). `test_smart_routing_pricing.py` covers endpoint rates and the price cache.
@@ -80,7 +84,8 @@ Offline CUJ regressions cover Codex delegated-turn completion and exact task-req
 notifications alone, Claude title requests, and parent continuations do not qualify.
 Unrelated and pre-checkpoint request bodies are excluded before JSON decoding.
 The original smart-routing CUJ runs four fresh sessions: routed and explicit model for both
-Claude and Codex. One additional test has five `SMART_ROUTER_CONFIG_VERSION` cases.
+Claude and Codex, with explicit-model bypass assertions enabled for both agents.
+One additional test has five `SMART_ROUTER_CONFIG_VERSION` cases.
 Each case exercises both agents and checks first-prompt routing, orchestrator context in
 inference input, and a completed explicitly requested routed subagent. It does not establish
 automatic orchestrator delegation. Routing-disabled coverage is deferred until a separately
