@@ -567,8 +567,7 @@ def render_overlay(
         overlay["modelPicker"] = {
             "replaceBuiltInOptions": True,
             "options": [
-                {"model": maybe_add_gpt_1m_suffix(m), "label": _picker_label(m)}
-                for m in static_models
+                {"model": _maybe_add_1m_suffix(m), "label": _picker_label(m)} for m in static_models
             ],
         }
         keys += [[key] for key in CLAUDE_MANAGED_PICKER_KEYS]
@@ -578,7 +577,8 @@ def render_overlay(
             "options": [
                 _picker_option(
                     maybe_add_gpt_1m_suffix(model),
-                    picker_catalog.model_id_to_display_name.get(model) or _picker_label(model),
+                    picker_catalog.model_id_to_display_name.get(model)
+                    or _picker_label(model.removesuffix("[1m]")),
                     picker_catalog.model_id_to_description.get(model),
                 )
                 for model in picker_catalog.model_ids
@@ -683,12 +683,17 @@ def default_model_picker_catalog(
         display_names[model] = label
 
     if discovered_catalog is not None:
-        for model in discovered_catalog.model_ids:
-            if model not in model_ids:
+        for discovered in discovered_catalog.model_ids:
+            model = discovered
+            # Match the current model's exact id so Claude does not append a duplicate row.
+            if launch_model and model.removesuffix("[1m]") == launch_model.removesuffix("[1m]"):
+                model = launch_model
+            # A GPT family default is already listed with the `[1m]` hint the picker gives this row.
+            if model not in model_ids and maybe_add_gpt_1m_suffix(model) not in model_ids:
                 model_ids.append(model)
-            if label := discovered_catalog.model_id_to_display_name.get(model):
+            if label := discovered_catalog.model_id_to_display_name.get(discovered):
                 display_names[model] = label
-            if description := discovered_catalog.model_id_to_description.get(model):
+            if description := discovered_catalog.model_id_to_description.get(discovered):
                 descriptions[model] = description
 
     return AnthropicModelCatalog(
@@ -2268,7 +2273,7 @@ def launch(
     # Smart routing also spawns Claude directly, so it needs the native executable.
     binary = _resolve_launch_binary(binary)
     pinned_model = (
-        maybe_add_gpt_1m_suffix(options.user_pinned_model) if options.user_pinned_model else None
+        _maybe_add_1m_suffix(options.user_pinned_model) if options.user_pinned_model else None
     )
     routing_setup_failed = False
     if options.launch_smart_routing:
