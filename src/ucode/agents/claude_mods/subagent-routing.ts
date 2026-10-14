@@ -1,75 +1,66 @@
-import type { On } from 'claude-code'
+import type { On, PluginOptions } from 'claude-code'
 
-// The subagent-routing concern of ug's smart-routing UI mod (composed by
-// register.ts). ug suppresses its plain-text
-// subagent routing notice and this stacks a compact block under each Agent row:
-//
-//   ⏺ Agent(map the token refresh flow)
-//     ↳ explorer  claude-sonnet-5
-//       Reason: A focused task with an explicit target…
-//
-// The routed model comes off the Agent row's result (resolvedModel); the subagent
-// name and reason come from the router rationale and the tool input, which
-// ug's Python subagent hook writes (keyed by task) into a per-session file next to
-// UCODE_SESSION_ENV_FILE.
+type RoutingRecord = { model: string; rationale: string; name: string }
 
-type RoutingRecord = { model?: string; rationale?: string }
-
-// Reason text as the plain-text box showed it; only the trailing "Request: <task>"
-// echo is dropped, since the task is already named on the Agent row.
-function parseReason(text: string | undefined): string {
-  if (!text) return ''
-  return text.replace(/[.\s]*Request:.*$/is, '').trim()
-}
-
-// Drop the provider prefix so the model reads compactly (system.ai.X -> X).
 const shortModel = (model: string): string => model.replace(/^system\.ai\./, '').replace(/^databricks-/, '')
 
-const taskKey = (input: any): string =>
-  String(input?.prompt ?? input?.description ?? input?.subagent_type ?? '')
+export const registerSubagentRouting = (on: On, options: PluginOptions): void => {
+  const records = new Map<string, RoutingRecord>()
 
-async function readRouting($: any): Promise<Record<string, RoutingRecord>> {
-  let file: string | undefined
-  try {
-    file = await $.env.get('UCODE_SESSION_ENV_FILE')
-  } catch {}
-  if (!file) return {}
-  const dir = file.slice(0, Math.max(file.lastIndexOf('/'), file.lastIndexOf('\\')))
-  try {
-    const parsed = JSON.parse(await $.fs.read(`${dir}/mod-routing.json`))
-    return parsed && typeof parsed === 'object' ? parsed : {}
-  } catch {
-    return {}
-  }
-}
+  on('tool.call', { tool: ['Agent', 'Task'] }, async ($, e, next) => {
+    const command = options.routeCommand as readonly string[]
+    if (!command.length) return next(e)
+    const { tool, tool_use_id, agentId, ...input } = e
+    let route
+    try {
+      const session_id = await $.session.id()
+      const result = await $.process.run(command, {
+        stdin: JSON.stringify({ session_id, tool_use_id, tool_name: tool, tool_input: input }),
+        timeoutMs: 35000,
+      })
+      if (result.exitCode !== 0) throw new Error('Router command failed')
+      // An empty response means routing is disabled or no model could be selected.
+      if (result.stdout.trim()) {
+        route = JSON.parse(result.stdout)
+        if (typeof route?.model !== 'string' || !route.model ||
+            typeof route.rationale !== 'string' ||
+            typeof route.updatedInput?.subagent_type !== 'string' || !route.updatedInput.subagent_type) {
+          throw new Error('Invalid routing response')
+        }
+      }
+    } catch {
+      route = undefined
+      $.ui.log('Smart Router could not route this subagent; using its original settings.')
+    }
+    if (!route) return next(e)
+    if (tool_use_id) {
+      records.set(tool_use_id, {
+        model: route.model,
+        rationale: route.rationale,
+        name: typeof input.subagent_type === 'string' ? input.subagent_type : '',
+      })
+      $.ui.invalidate('ui.render')
+    }
+    // Preserve Claude's permission checks and every other mod's tool handlers.
+    return next({ ...route.updatedInput, tool, tool_use_id, agentId })
+  })
 
-export const registerSubagentRouting = (on: On): void => {
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
     const original = await next(e)
-    const props = e.props as any
-    if (props?.tool !== 'Agent' && props?.tool !== 'Task') return original
-
-    const routing = await readRouting($)
-    const record = routing[taskKey(props.input)] ?? {}
-    const model: string | undefined = props.output?.resolvedModel ?? record.model
-    const reason = parseReason(record.rationale)
-    const name = String(props.input?.subagent_type ?? '').trim()
+    const record = records.get(e.requestId)
+    if (!record) return original
 
     const { Box, Text } = $.ui.resolve(e)
-    // Until the subagent has a routed model, show "routing…" rather than a blank
-    // row — routing can take a moment and this is the only live progress signal.
     const header = Box({
       flexDirection: 'row',
       children: [
         Text({ dimColor: true, children: ['  ↳ '] }),
-        ...(name ? [Text({ color: 'primary', bold: true, children: [`${name}  `] })] : []),
-        Text({ color: 'primary', children: [model ? shortModel(model) : 'routing…'] }),
+        ...(record.name ? [Text({ color: 'primary', bold: true, children: [`${record.name}  `] })] : []),
+        Text({ color: 'primary', children: [shortModel(record.model)] }),
       ],
     })
-    // Stack the Reason on its own line below so neither the model nor the
-    // rationale gets squeezed/truncated by a shared row.
-    const children = reason
-      ? [original, header, Text({ dimColor: true, children: [`      Reason: ${reason}`] })]
+    const children = record.rationale
+      ? [original, header, Text({ dimColor: true, children: [`      Reason: ${record.rationale}`] })]
       : [original, header]
     return Box({ flexDirection: 'column', children })
   })

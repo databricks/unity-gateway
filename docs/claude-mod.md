@@ -9,9 +9,20 @@ Every routed launch includes the status band above the prompt. Both full and sub
 routing launches use this path, and the existing temporary-directory lifecycle
 cleans up the files when Claude exits.
 
-The same entry point renders subagent routing details under Agent/Task rows.
-Python hooks write the model and rationale to the session's `mod-routing.json`
-and suppress the plain-text notice and spinner label.
+The same entry point intercepts Agent/Task calls through native `tool.call` hooks.
+It runs `ug claude-router-hook route-subagent-mod` with a JSON payload on stdin.
+Python uses the same routing API client as Codex and returns the updated input,
+model, and rationale as JSON on stdout. The mod keeps that result in memory by
+`tool_use_id` and renders the model and rationale under the matching Agent row.
+It writes no routing sidecar file. Disabled routing or an unavailable route leaves
+the call unchanged; command failures and invalid responses also keep the original
+input and show a diagnostic. Other mods and Claude's permission checks still run.
+
+Launch settings pass the command's argument list through the native `routeCommand`
+plugin option, including the workspace, profile/PAT selection, and offered model IDs.
+SessionStart/SubagentStart audit hooks remain; the old routing PreToolUse hook is
+removed so the same call cannot be routed twice. UI details last for the loaded
+mod's lifetime; a plugin reload does not restore earlier routing annotations.
 
 `constants.ts` holds the values the mod shares with UG's CLI and the gateway: the recipe
 header name, the disabled recipe, the CLI module, agent, and routing flags, and the
@@ -42,8 +53,10 @@ routing hooks apply over the environment, so an "off" saved earlier by the CLI o
 cannot outlast the command. The mod writes no file itself: it runs the existing
 `--enable-smart-routing`/`--disable-smart-routing` entry point, which validates and replaces
 that file atomically. Session start restores only the launch baseline, so an override saved
-before `/clear` still survives it. The plugin test host provides no process capability, so
-this path is covered by the live skill-toggle journey rather than `claude plugin test`.
+before `/clear` still survives it. The live skill-toggle journey covers the real CLI write; native component tests
+use the test host's process stubs to check the subagent routing protocol and display.
+A native process check also runs the real disabled Python CLI and verifies inherited
+launch flags and a dummy token; it makes no gateway request.
 
 The existing Claude skill-toggle integration journey checks recorded inference
 headers during its three calculation phases: launch recipe, `DISABLED` after off,

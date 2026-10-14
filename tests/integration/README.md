@@ -355,11 +355,12 @@ A fixture file contains an unpredictable value absent from the prompt. Success
 requires an assistant answer in the real agent transcript containing that value,
 plus normal TUI exit. Codex evidence requires its task-complete event.
 Interactive first-prompt routing is covered by the managed_fixture smart-routing
-banner journeys below for both agents. The route-subagent hook journeys drive the real
-installed hook commands with a harness-shaped payload against the live router. The
+banner journeys below for both agents. The subagent routing command journeys drive the real
+installed Claude mod command and Codex hook with native payloads against the live router. The
 subagent-only TUI journeys additionally spawn three native children in one real session,
 invoke the installed Smart Router skill to turn routing off and back on, and require the
-subagent banner plus a correlated live decision only while routing is enabled. Plugin-refresh
+native model/rationale row (Claude) or subagent banner (Codex), plus a correlated
+live decision only while routing is enabled. Plugin-refresh
 survival, native daemon/background dispatch, interactive explicit-model bypass, and dedicated
 smart-routing CI shards remain deferred. Plugin generation and launch arguments are covered
 by component tests in `../test_claude_smart_routing_v2.py`, not by a live registration journey.
@@ -378,8 +379,9 @@ a new CLI confirmation in native tool-result records, and a new assistant answer
 skill invocation.
 Collapsed terminal output is allowed; the answer need not repeat the CLI's exact wording.
 Each following child still verifies whether a routing decision occurred.
-With orchestration enabled through legacy flags or a preset, both routed children
-must show `[orchestrator on]` in their own subagent banner.
+With orchestration enabled through legacy flags or a preset, both routed Codex children
+must show `[orchestrator on]` in their own subagent banner. Claude shows the selected
+model and rationale from each child's audited decision.
 Their off-phase child is an explicit user-requested delegation;
 these journeys do not establish automatic orchestration behavior. Root-only
 activation, compaction, retained skills in ineligible sessions,
@@ -1014,8 +1016,8 @@ CUJ 4's preset journeys check Claude's visible ON/OFF status band and routing sc
 before work and after off/on toggles. Checks ignore terminal styling and trailing
 UI controls; offline cases reject stale states, wrong scope, and command confirmations.
 
-The plugin test host runs without a process capability, so the mod's session-control call
-is covered by the live skill-toggle journey rather than `claude plugin test`. No component
+The real session-control process call is covered by the live skill-toggle journey;
+native component tests stub the subagent routing process protocol. No component
 check asserts that the launch paths withdraw the skills.
 
 `integration/test_ug_smart_routing_hooks.py` checks recipe headers in its existing
@@ -1029,6 +1031,11 @@ Local Claude mod confirmation replaces the old saved-control-file/assistant-turn
 Codex retains its CLI control-file checks. No extra TUI sessions or tasks are added.
 Clear/reload, compaction, and denied-write rollback are not independently checked.
 
-Subagent mod component checks cover routing records, suppression of plain-text notices, and
-packaging the subagent renderer beside the native status/toggle entry point. They do
-not establish live rendering of subagent routing lines.
+Subagent mod component checks cover the Python JSON routing response without file writes,
+replacement of the legacy routing hook, launch command arguments, and packaging the
+renderer beside the native status/toggle entry point. Native mod tests cover routing
+input/output, per-tool-call rendering, and fallback for disabled/failed routing using
+process stubs. A separate native component check runs the real disabled Python CLI
+and verifies inherited routing flags and a dummy auth token, without gateway traffic.
+The existing live Claude skill-toggle journey exercises the mod's real
+Python routing command; component tests do not establish live gateway/TUI coverage.

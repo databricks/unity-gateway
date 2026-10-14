@@ -108,5 +108,5 @@ export function register(on: On, options: PluginOptions): void {
     }
   });
   registerStatusBand(on);
-  registerSubagentRouting(on);
+  registerSubagentRouting(on, options);
 }

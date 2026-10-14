@@ -1134,6 +1134,55 @@ class TestSubcommandRouting:
         assert json.loads(result.output) == routed
         mock_v2_route.assert_called_once()
 
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_claude_mod_route_respects_session_controls(self, tmp_path, monkeypatch, enabled):
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
+        session_file = tmp_path / "env.json"
+        session_file.write_text(
+            json.dumps(
+                {
+                    "ENABLE_SMART_ROUTING_V2": "1" if enabled else "0",
+                    "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0",
+                }
+            )
+        )
+        routed = {
+            "model": "system.ai.claude-opus-4-8",
+            "rationale": "A focused task",
+            "updatedInput": {"prompt": "fix it", "subagent_type": "ug-smart-router:routed"},
+        }
+        with patch(
+            "ucode.cli.smart_routing_v2.route_claude_subagent", return_value=routed
+        ) as route:
+            result = runner.invoke(
+                app,
+                [
+                    "claude-router-hook",
+                    "route-subagent-mod",
+                    "--host",
+                    "https://example.com",
+                    "--profile",
+                    "my-profile",
+                    "--model",
+                    "system.ai.claude-opus-4-8",
+                ],
+                input='{"session_id":"s1","tool_name":"Agent","tool_input":{"prompt":"fix it"}}',
+                env={"OAUTH_TOKEN": "token", "UCODE_SESSION_ENV_FILE": str(session_file)},
+            )
+        assert result.exit_code == 0, result.output
+        if enabled:
+            assert json.loads(result.output) == routed
+            route.assert_called_once_with(
+                {"session_id": "s1", "tool_name": "Agent", "tool_input": {"prompt": "fix it"}},
+                workspace="https://example.com",
+                token="token",
+                available_models=["system.ai.claude-opus-4-8"],
+                audit_decision=True,
+            )
+        else:
+            assert result.output == ""
+            route.assert_not_called()
+
 
 class TestManagedConfigLaunchSourceGuard:
     @pytest.mark.parametrize(

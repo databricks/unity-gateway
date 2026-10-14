@@ -60,6 +60,8 @@ from ucode.skills import (
 from ucode.smart_routing import claude_routing, orchestrator, routing
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
+    ROUTE_SUBAGENT_MOD_EVENT,
+    routing_hook_argv,
     sync_first_prompt_hook,
     sync_smart_routing_hooks,
 )
@@ -346,6 +348,7 @@ def _claude_mod_launch_options(env: Mapping[str, str] | None = None) -> dict:
         # Native plugin options cannot represent null; preserve absent versus empty values.
         "unset": [key for key in SMART_ROUTING_ENV_KEYS if key not in source],
         "recipe": source.get(routing.ROUTER_NAME_ENV_VAR, "").strip() or routing.ROUTER_NAME,
+        "routeCommand": [],
     }
 
 
@@ -359,6 +362,13 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
             "description": "Launch-scoped agents for Unity Gateway smart routing.",
             "author": {"name": "Databricks"},
             "userConfig": {
+                "routeCommand": {
+                    "type": "string",
+                    "multiple": True,
+                    "default": [],
+                    "title": "Subagent router",
+                    "description": "CLI argument list for a subagent routing decision",
+                },
                 **{
                     key: {"type": "string", "title": key, "description": "Original routing flag"}
                     for key in SMART_ROUTING_ENV_KEYS
@@ -466,7 +476,7 @@ def _route_print_mode_prompt(
     return model_name(_unwrapped_claude_model_id(decision.model))
 
 
-def route_claude_pre_tool_use(
+def route_claude_subagent(
     payload: dict,
     *,
     workspace: str,
@@ -474,7 +484,7 @@ def route_claude_pre_tool_use(
     available_models: list[str],
     audit_decision: bool = False,
 ) -> dict | None:
-    """Route a Claude Agent call through a transient exact-model agent definition."""
+    """Return a routed Agent input and UI details using the shared Python client."""
     route = routing.resolve_spawn_route(
         payload,
         is_spawn_agent=claude_routing.is_spawn_agent_tool,
@@ -498,33 +508,38 @@ def route_claude_pre_tool_use(
         **{key: value for key, value in route.tool_input.items() if key != "model"},
         "subagent_type": _routed_claude_agent_name(route.routed_model),
     }
-    _record_mod_routing(route.task, route.routed_model, route.decision.rationale)
+    return {
+        "updatedInput": updated_input,
+        "model": route.routed_model,
+        "rationale": route.decision.rationale,
+    }
+
+
+def route_claude_pre_tool_use(
+    payload: dict,
+    *,
+    workspace: str,
+    token: str,
+    available_models: list[str],
+    audit_decision: bool = False,
+) -> dict | None:
+    """Keep the legacy CLI hook contract for previously configured callers."""
+    route = route_claude_subagent(
+        payload,
+        workspace=workspace,
+        token=token,
+        available_models=available_models,
+        audit_decision=audit_decision,
+    )
+    if route is None:
+        return None
     return {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "allow",
-            "updatedInput": updated_input,
+            "updatedInput": route["updatedInput"],
         }
     }
-
-
-def _record_mod_routing(task: str, model: str, rationale: str) -> None:
-    """Write a routing record the subagent-routing mod reads (keyed by task).
-
-    Lives next to the session env file so the mod can find it from
-    UCODE_SESSION_ENV_FILE; best-effort, never blocks routing.
-    """
-    session_file = os.environ.get(SESSION_ENV_VAR)
-    if not session_file:
-        return
-    path = Path(session_file).with_name("mod-routing.json")
-    try:
-        existing = read_json_safe(path)
-        records = existing if isinstance(existing, dict) else {}
-        records[task] = {"model": model, "rationale": rationale}
-        config_io.atomic_write_json(path, records)
-    except OSError:
-        pass
 
 
 def _is_claude_target_model(value: object) -> bool:
@@ -676,13 +691,7 @@ def launch_claude(
         **state,
         "claude_models": {str(index): model for index, model in enumerate(model_ids)},
     }
-    # The spinner notice is redundant when the mod renders the routing itself.
-    sync_smart_routing_hooks(
-        settings,
-        routing_state,
-        enabled=True,
-        subagent_status=None,
-    )
+    sync_smart_routing_hooks(settings, routing_state, enabled=True)
     if route_first_prompt:
         sync_first_prompt_hook(settings, hook_executable)
     orchestrator.sync_hooks(settings, agent="claude")
@@ -710,7 +719,10 @@ def launch_claude(
             env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
             settings.setdefault("pluginConfigs", {}).setdefault(CLAUDE_ROUTING_PLUGIN_NAME, {})[
                 "options"
-            ] = _claude_mod_launch_options({**resolve_environment(agent=AGENT_CLAUDE), **env})
+            ] = {
+                **_claude_mod_launch_options({**resolve_environment(agent=AGENT_CLAUDE), **env}),
+                "routeCommand": routing_hook_argv(routing_state, ROUTE_SUBAGENT_MOD_EVENT),
+            }
             try:
                 write_json_file(settings_path, settings)
                 _write_routed_claude_plugin(plugin_dir, model_ids)
