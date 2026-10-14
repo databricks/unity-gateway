@@ -92,19 +92,22 @@ def test_dedicated_cuj_ci_runs_each_discovered_file_on_its_own_runner():
     assert "test_cuj" not in job
 
 
-def test_latest_harness_ci_is_opt_in_and_non_blocking():
-    jobs = _integration_jobs()
-    job = jobs["harness-latest"]
+def test_latest_harness_is_scheduled_and_opt_in():
+    workflow = _workflow("harness-latest.yml")
+    trigger = workflow.split("\non:\n", 1)[1].split("\npermissions:\n", 1)[0]
+    assert "cron: '0 */6 * * *'" in trigger
+    assert "workflow_dispatch:" in trigger
+    assert "pull_request" not in trigger and "push:" not in trigger
+    assert "harness-latest" not in _integration_jobs()
 
     for package in ("@anthropic-ai/claude-code", "@openai/codex"):
-        assert f"npm view {package}@latest version" in job
-    assert "-m harness_latest" in job
-    assert "harness_latest and managed_fixture" in job
-    assert "harness_latest and not managed_fixture" in job
-    assert '-m "$TEST_MARKER"' in job
-    assert "-k " not in job
-    assert "continue-on-error: true" in job
-    assert "harness-latest" not in jobs["cujs"]
+        assert f"npm view {package}@latest version" in workflow
+    assert "-m harness_latest" in workflow
+    assert "harness_latest and managed_fixture" in workflow
+    assert "harness_latest and not managed_fixture" in workflow
+    assert '-m "$TEST_MARKER"' in workflow
+    assert "-k " not in workflow
+    assert "continue-on-error:" not in workflow
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="dedicated-cuj-plan runs on Linux")
@@ -150,7 +153,6 @@ SKIPPED_ON_FORK_PRS = {
     "opencode",
     "managed",
     "managed-opencode",
-    "harness-latest",
     "dedicated-cuj-plan",
     "dedicated-cuj",
     "cujs",

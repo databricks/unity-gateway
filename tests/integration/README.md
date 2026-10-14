@@ -722,10 +722,11 @@ cannot still be running when that gate passes. Full coverage on PRs needs no lab
 
 ### Opting into harness-latest
 
-The advisory **harness-latest** lane runs marked tests against the latest Claude and
-Codex releases, recording exact versions in its artifacts. It currently covers
+The **harness-latest** workflow runs every six hours on `main` (00:00, 06:00,
+12:00, and 18:00 UTC), or manually through Actions. It runs marked tests against the
+latest Claude and Codex releases, recording exact versions in its artifacts. It covers
 CUJ4, routing hooks, skill toggles (including Claude's recipe-header assertions),
-and first-prompt banners. Failures do not block merges; pinned lanes are unchanged.
+and first-prompt banners. It runs separately from PR checks, so failures do not block merges.
 
 Opt in a test or class with `@pytest.mark.harness_latest`, or a whole module with:
 
