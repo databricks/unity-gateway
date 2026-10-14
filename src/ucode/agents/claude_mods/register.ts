@@ -1,4 +1,5 @@
 import type { EngineInterface, On, PluginOptions } from 'claude-code';
+import { registerStatusBand } from './smart-routing-status.ts';
 import {
   CLI_AGENT,
   CLI_MODULE,
@@ -100,12 +101,10 @@ export function register(on: On, options: PluginOptions): void {
     if (!launchedEnabled) return {text: 'Smart Router was not enabled for this session.'};
     try {
       await setRouting($, options, action === 'on', true);
-      const guidance = options.ENABLE_SMART_ROUTER_ORCHESTRATOR !== '1' ? '' : action === 'off'
-        ? ' Earlier Smart Router Orchestrator instructions are superseded. Stop automatic delegation; honor explicit subagent requests using native model selection. Existing children can finish.'
-        : ' Apply the smart-router-orchestrator skill to further work.';
-      return {text: `Smart Router is ${action} for this session.${guidance}`};
+      return {text: `Smart Router is ${action}`};
     } catch {
       return {text: 'Could not update Smart Router. Check the recipe, ANTHROPIC_CUSTOM_HEADERS, and environment permissions; retry or restart through UG.'};
     }
   });
+  registerStatusBand(on);
 }

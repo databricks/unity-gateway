@@ -154,7 +154,7 @@ def _toggle_with_skill(
         # Claude's mod handles this locally; routing changes are checked by the next child.
         tui.submit(invocation)
         tui.wait_for(
-            lambda screen: confirmation in screen,
+            lambda screen: f"Smart Router is {state}" in screen,
             f"the Smart Router {state} confirmation",
             timeout=120,
         )

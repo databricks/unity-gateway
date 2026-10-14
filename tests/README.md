@@ -34,6 +34,10 @@ under `e2e_cuj/` and `integration/`; no workflow edit is needed. Integration cas
 retain their agent and workspace markers, including `managed_fixture` when needed.
 See [the harness opt-in guide](integration/README.md#opting-into-harness-latest).
 
+CUJ 4's preset journeys check Claude's ON/OFF status band, routing scope, and
+updates after off/on toggles. Checks ignore terminal styling and trailing UI controls;
+offline cases reject stale states, wrong routing scope, and command confirmations.
+
 Dedicated CUJs reuse `integration/utils` session/terminal mechanics and file-task
 and transcript readers, not its config stubs or pytest fixtures. Prompt/model
 correlation remains CUJ-specific. Concurrent runs may read the same CUJ workspace.
