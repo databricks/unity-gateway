@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -591,6 +592,7 @@ def launch_claude(
     compose_settings: Callable[[list[str]], tuple[dict, list[str]]],
     launch_model_args: Callable[[list[str], str | None], list[str]],
     model_name: Callable[[str], str],
+    routing_enabled: bool = True,
 ) -> NoReturn:
     """Launch Claude in the first-prompt routing PTY wrapper."""
     from ucode.agents.args import has_explicit_model_arg
@@ -620,7 +622,7 @@ def launch_claude(
         )
     model_ids = catalog.model_ids
 
-    route_first_prompt = first_prompt_routing_enabled(agent=AGENT_CLAUDE)
+    route_first_prompt = routing_enabled and first_prompt_routing_enabled(agent=AGENT_CLAUDE)
     settings, remaining = compose_settings(tool_args)
     routed_model: str | None = None
     stdin_prompt: bytes | None = None
@@ -651,8 +653,11 @@ def launch_claude(
     )
     if route_first_prompt:
         env[ENABLE_SMART_ROUTING_ENV_VAR] = "1"
-    else:
+    elif routing_enabled:
         env[ENABLE_SUBAGENT_ROUTING_ENV_VAR] = "1"
+    else:
+        env[ENABLE_SMART_ROUTING_ENV_VAR] = "0"
+        env[ENABLE_SUBAGENT_ROUTING_ENV_VAR] = "0"
     model_overrides = settings.setdefault("modelOverrides", {})
     if not isinstance(model_overrides, dict):
         raise RuntimeError("Claude settings 'modelOverrides' must be an object for smart routing.")
@@ -742,15 +747,29 @@ def _cached_routing_models(state: dict) -> list[str]:
     return routing_models(state)
 
 
-def _v2_hooks(state: dict, available_models: list[str]) -> dict:
-    # Codex combines hook sources itself; copying user hooks here would register them twice.
-    doc = {
-        "hooks": {
-            "PreToolUse": merge_pre_tool_use_hooks([], state, available_models=available_models),
-        }
-    }
+def _v2_hooks(state: dict, available_models: list[str], existing: dict | None = None) -> dict:
+    # Codex combines native sources itself; include only hooks from UG's supplied profile.
+    doc = {"hooks": copy.deepcopy(existing or {})}
+    doc["hooks"]["PreToolUse"] = merge_pre_tool_use_hooks(
+        doc["hooks"].get("PreToolUse", []), state, available_models=available_models
+    )
     orchestrator.sync_hooks(doc, agent="codex")
     return doc["hooks"]
+
+
+def codex_session_overlay(
+    state: dict, available_models: list[str], *, existing_hooks: dict | None = None
+) -> dict:
+    """Prepare routing hooks and controls without changing Codex's initial model."""
+    session_path = _prepare_smart_router_session("codex")
+    return {
+        "hooks": _v2_hooks(state, available_models, existing_hooks),
+        "features.hooks": True,
+        f"shell_environment_policy.set.{SESSION_ENV_VAR}": str(session_path),
+        f"shell_environment_policy.set.{SESSION_PYTHON_ENV_VAR}": os.environ[
+            SESSION_PYTHON_ENV_VAR
+        ],
+    }
 
 
 def launch_codex(
@@ -791,15 +810,9 @@ def launch_codex(
     catalog_path = custom_catalog_path()
     if catalog_path is not None:
         overlay["model_catalog_json"] = str(catalog_path)
-    overlay["hooks"] = _v2_hooks(state, available_models)
-    overlay["features.hooks"] = True
-    session_env_path = _prepare_smart_router_session("codex")
     # Codex constructs tool subprocess environments through its shell policy.
     # Pass both the session marker and its launching interpreter through that policy.
-    overlay[f"shell_environment_policy.set.{SESSION_ENV_VAR}"] = str(session_env_path)
-    overlay[f"shell_environment_policy.set.{SESSION_PYTHON_ENV_VAR}"] = os.environ[
-        SESSION_PYTHON_ENV_VAR
-    ]
+    overlay.update(codex_session_overlay(state, available_models))
     config_args = codex_config_args(overlay)
     if not first_prompt_routing_enabled(agent=AGENT_CODEX):
         # Subagent-only routing needs neither the app-server nor the interposer:

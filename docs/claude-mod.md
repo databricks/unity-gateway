@@ -5,7 +5,8 @@ launch-scoped `ug-smart-router` plugin. Claude Code 2.1.290 or newer is required
 
 The existing `_write_routed_claude_plugin()` copies the packaged TypeScript entry point
 from `src/ucode/agents/claude_mods/` and writes `hooks/hooks.json` into that plugin. Both full and subagent-only smart
-routing launches use this path, and the existing temporary-directory lifecycle
+routing launches, plus supported interactive launches that start with routing off,
+use this path. The existing temporary-directory lifecycle
 cleans up the files when Claude exits.
 
 `constants.ts` holds the values the mod shares with UG's CLI and the gateway: the recipe
@@ -20,6 +21,8 @@ The mod merges the launch recipe into the `Databricks-Smart-Router-Recipe` heade
 via `ANTHROPIC_CUSTOM_HEADERS` and intercepts the existing skill's `/smart-router on|off` command locally, without inference or command
 registration. Off sets every routing flag to `0` and the recipe to `DISABLED`; on
 restores the original flags and recipe, including originally absent variables.
+If neither launch routing flag was enabled, on sets subagent-only routing to `1`.
+The root model stays unchanged, and orchestration is restored only when opted in at launch.
 Unrelated headers are preserved, and `CLAUDE_CODE_EXTRA_BODY` is left untouched.
 Duplicate recipe headers are replaced case-insensitively. Recipe line breaks are rejected.
 A failed write attempts to restore prior values and reports failure; the native environment API does not provide an atomic transaction.
@@ -59,3 +62,6 @@ UG passes the resolved routing flags and recipe in the existing launch settings 
 `pluginConfigs["ug-smart-router"].options`. Claude supplies these to `register(on, options)`.
 `unset` lists originally absent flags because native options cannot carry null values.
 The source remains static; no additional launch snapshot file is created.
+Claude restores its launch flags before calling the CLI; Codex retains its launch
+environment. The CLI clears off overrides when routing is already enabled in that
+environment, or explicitly enables subagent routing when both flags are off.

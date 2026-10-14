@@ -2614,7 +2614,7 @@ def _smart_routing_v2_flag(enabled: bool | None, *, agent: str) -> Iterator[None
         smart_routing_v2.restore_smart_routing_env(previous)
 
 
-def _toggle_current_smart_routing_session(enabled: bool | None) -> bool:
+def _toggle_current_smart_routing_session(enabled: bool | None, *, agent: str) -> bool:
     if enabled is None:
         return False
     try:
@@ -2622,7 +2622,10 @@ def _toggle_current_smart_routing_session(enabled: bool | None) -> bool:
     except RuntimeError:
         return False
     try:
-        set_session_environment(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0") if not enabled else {})
+        values = {} if enabled else dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
+        if enabled and not smart_routing_v2.smart_routing_enabled(None, default=False, agent=agent):
+            values[smart_routing_v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] = "1"
+        set_session_environment(values)
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
@@ -2889,23 +2892,19 @@ def _launch_options(
     user_pinned_model: str | None,
     provider: str | None,
 ) -> LaunchOptions:
+    supported = (
+        tool in CAN_USE_CACHED_CONFIG_AGENTS
+        and provider is None
+        and _should_launch_smart_routing(
+            tool, tool_args, explicit_prompt=explicit_prompt, model=user_pinned_model
+        )
+    )
     return LaunchOptions(
         # Pinned models for providers are resolved above through the provider-specific launch path.
         user_pinned_model=user_pinned_model if provider is None else None,
-        launch_smart_routing=(
-            # Smart routing is enabled globally.
-            smart_routing_enabled
-            # Only Claude Code and Codex currently support smart routing.
-            and tool in CAN_USE_CACHED_CONFIG_AGENTS
-            # Smart routing does not currently support Model Provider Services.
-            and provider is None
-            # Route a supported interactive launch shape.
-            and _should_launch_smart_routing(
-                tool,
-                tool_args,
-                explicit_prompt=explicit_prompt,
-                model=user_pinned_model,
-            )
+        launch_smart_routing=supported and smart_routing_enabled,
+        prepare_smart_routing=(
+            supported and not smart_routing_enabled and not _child_owns_stdout(tool, tool_args)
         ),
     )
 
@@ -3544,7 +3543,7 @@ def codex_cmd(
     ] = None,
 ) -> None:
     """Launch Codex via Databricks."""
-    if _toggle_current_smart_routing_session(enable_smart_routing_flag):
+    if _toggle_current_smart_routing_session(enable_smart_routing_flag, agent=AGENT_CODEX):
         return
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
@@ -3632,7 +3631,7 @@ def claude_cmd(
     ] = None,
 ) -> None:
     """Launch Claude Code via Databricks."""
-    if _toggle_current_smart_routing_session(enable_smart_routing_flag):
+    if _toggle_current_smart_routing_session(enable_smart_routing_flag, agent=AGENT_CLAUDE):
         return
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)

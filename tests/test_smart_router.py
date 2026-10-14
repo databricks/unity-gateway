@@ -77,7 +77,7 @@ def test_skill_toggles_with_launch_installation_despite_shadowed_path(tmp_path, 
                 v2.ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
             }
             if action == "disable"
-            else {}
+            else {v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1"}
         )
         assert json.loads(session_path.read_text()) == expected
 
@@ -110,3 +110,77 @@ def test_launcher_flags_control_routing_hook(tmp_path, monkeypatch):
     assert runner.invoke(cli.app, ["codex", "--enable-smart-routing"], env=env).exit_code == 0
     assert runner.invoke(cli.app, hook_args, input=payload, env=env).exit_code == 0
     route.assert_called_once()
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+@pytest.mark.parametrize("orchestration", ["0", "1"])
+@pytest.mark.parametrize("launch_mode", [("0", "0"), ("1", "0"), ("0", "1"), (None, None)])
+def test_toggle_restores_launch_mode_and_routes_only_when_on(
+    monkeypatch, agent, orchestration, launch_mode
+):
+    for key, value in zip(
+        (v2.ENABLE_SMART_ROUTING_ENV_VAR, v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR),
+        launch_mode,
+        strict=True,
+    ):
+        if value is not None:
+            monkeypatch.setenv(key, value)
+    monkeypatch.setenv(v2.ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR, orchestration)
+    path = v2._prepare_smart_router_session(agent)
+    route = Mock(return_value=None)
+    monkeypatch.setattr(
+        f"ucode.smart_routing.{'codex_routing' if agent == 'codex' else 'v2'}."
+        f"{'route_pre_tool_use' if agent == 'codex' else 'route_claude_pre_tool_use'}",
+        route,
+    )
+    monkeypatch.setenv("DATABRICKS_BEARER", "token")
+    hook_args = [
+        f"{agent}-router-hook",
+        "route-subagent",
+        "--host",
+        "https://example.com",
+        "--model",
+        "system.ai.gpt-5-6-sol" if agent == "codex" else "system.ai.claude-sonnet-4-6",
+    ]
+    payload = json.dumps({"tool_name": "Agent", "tool_input": {"prompt": "inspect the parser"}})
+    expected_on = {} if "1" in launch_mode else {v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1"}
+    for action in ("disable", "enable", "disable", "enable"):
+        result = runner.invoke(cli.app, [agent, f"--{action}-smart-routing"])
+        assert result.exit_code == 0, result.output
+        expected = (
+            expected_on if action == "enable" else dict.fromkeys(v2.SMART_ROUTING_ENV_KEYS, "0")
+        )
+        assert json.loads(path.read_text()) == expected
+        effective = session_env.effective_environment(agent=agent)
+        assert effective[v2.ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] == (
+            orchestration if action == "enable" else "0"
+        )
+        route.reset_mock()
+        result = runner.invoke(cli.app, hook_args, input=payload)
+        assert result.exit_code == 0, result.output
+        assert route.call_count == (action == "enable")
+
+
+@pytest.mark.parametrize("contents", ['{"UNRELATED_KEY":"1"}', "not JSON"])
+def test_toggle_rejects_corrupt_session_controls(contents):
+    path = v2._prepare_smart_router_session("codex")
+    path.write_text(contents)
+    before = path.read_bytes()
+
+    result = runner.invoke(cli.app, ["codex", "--enable-smart-routing"])
+
+    assert result.exit_code == 1
+    assert "session controls" in result.output
+    assert path.read_bytes() == before
+
+
+def test_session_on_overrides_disabled_agent_preset(monkeypatch):
+    monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "subagent_orch_v0_claude_only")
+    path = v2._prepare_smart_router_session("codex")
+    assert not v2.smart_routing_enabled(None, default=False, agent="codex")
+    result = runner.invoke(cli.app, ["codex", "--enable-smart-routing"])
+    assert result.exit_code == 0, result.output
+    effective = session_env.effective_environment(agent="codex")
+    assert v2.smart_routing_enabled(effective, default=False, agent="codex")
+    assert effective[v2.ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] == "0"
+    assert json.loads(path.read_text())[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"

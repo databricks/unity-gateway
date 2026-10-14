@@ -59,9 +59,11 @@ async function setRouting(
   const headers = (previous.ANTHROPIC_CUSTOM_HEADERS || '').split('\n').filter(
     line => line.trim() &&
       line.split(':')[0].trim().toLowerCase() !== RECIPE_HEADER.toLowerCase());
+  const subagentOnly = options.ENABLE_SMART_ROUTING_V2 === '1'
+    ? original('ENABLE_SMART_ROUTING_SUBAGENT_ONLY') : '1';
   const environment = {
     ENABLE_SMART_ROUTING_V2: enabled ? original('ENABLE_SMART_ROUTING_V2') : '0',
-    ENABLE_SMART_ROUTING_SUBAGENT_ONLY: enabled ? original('ENABLE_SMART_ROUTING_SUBAGENT_ONLY') : '0',
+    ENABLE_SMART_ROUTING_SUBAGENT_ONLY: enabled ? subagentOnly : '0',
     ENABLE_SMART_ROUTER_ORCHESTRATOR: enabled ? original('ENABLE_SMART_ROUTER_ORCHESTRATOR') : '0',
     ANTHROPIC_CUSTOM_HEADERS: [...headers, `${RECIPE_HEADER}: ${recipe}`].join('\n'),
   };
@@ -81,15 +83,10 @@ async function setRouting(
 
 
 export function register(on: On, options: PluginOptions): void {
-  const launchedEnabled = options.ENABLE_SMART_ROUTING_V2 === '1' ||
-    options.ENABLE_SMART_ROUTING_SUBAGENT_ONLY === '1';
-
   on('session.start', async ($, e, next) => {
-    if (launchedEnabled) {
-      const current = await readEnvironment($);
-      await setRouting($, options, current.ENABLE_SMART_ROUTING_V2 === '1' ||
-        current.ENABLE_SMART_ROUTING_SUBAGENT_ONLY === '1', false);
-    }
+    const current = await readEnvironment($);
+    await setRouting($, options, current.ENABLE_SMART_ROUTING_V2 === '1' ||
+      current.ENABLE_SMART_ROUTING_SUBAGENT_ONLY === '1', false);
     return next(e);
   });
 
@@ -97,7 +94,6 @@ export function register(on: On, options: PluginOptions): void {
   on('command.run', {command: 'smart-router'}, async ($, e) => {
     const action = e.args.trim();
     if (action !== 'on' && action !== 'off') return {text: 'Usage: /smart-router on|off'};
-    if (!launchedEnabled) return {text: 'Smart Router was not enabled for this session.'};
     try {
       await setRouting($, options, action === 'on', true);
       const guidance = options.ENABLE_SMART_ROUTER_ORCHESTRATOR !== '1' ? '' : action === 'off'
