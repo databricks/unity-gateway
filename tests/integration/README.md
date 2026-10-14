@@ -360,8 +360,8 @@ installed hook commands with a harness-shaped payload against the live router. T
 subagent-only TUI journeys additionally spawn three native children in one real session,
 invoke the installed Smart Router skill to turn routing off and back on, and require the
 subagent banner plus a correlated live decision only while routing is enabled. Plugin-refresh
-survival, native daemon/background dispatch, interactive explicit-model bypass, and dedicated
-smart-routing CI shards remain deferred. Plugin generation and launch arguments are covered
+survival and native daemon/background dispatch remain deferred. CUJ4 covers interactive
+explicit-model bypass. Plugin generation and launch arguments are covered
 by component tests in `../test_claude_smart_routing_v2.py`, not by a live registration journey.
 
 PATH conflicts for the Smart Router skill have subprocess/component coverage in
@@ -716,6 +716,26 @@ and installation subsets do not select managed tests and do not require them.
 The advisory Windows installation and headless lanes are not yet included in that aggregate check.
 The existing required `e2e` context also waits for the complete integration workflow, so integration
 cannot still be running when that gate passes. Full coverage on PRs needs no label or opt-in.
+
+The required **Smart routing · latest** matrix adds three Linux runners alongside the
+pinned-version lanes. Each resolves npm's `@anthropic-ai/claude-code@latest` and
+`@openai/codex@latest` tags to exact versions before installing; no floating version
+is passed to `scripts/run_integration.py`. The selected versions and test evidence
+are uploaded as `smart-routing-latest-SUITE` artifacts, including on failure.
+
+| Suite | Selected tests | Workspace/auth |
+| --- | --- | --- |
+| `cuj4` | All of `e2e_cuj/test_cuj4_smart_routing.py`, including every preset, both agents, and explicit-model bypass | CUJ4's read-only workspace and `UG_CUJ_SP_CLIENT_*` |
+| `hooks` | `test_ug_smart_routing_hooks.py` with `not managed_fixture`: both agents' route-subagent hooks and all preset cases | `UCODE_TEST_WORKSPACE` / `DATABRICKS_BEARER` |
+| `managed` | `test_ug_smart_routing_hooks.py` and `smart_routing_banner` with `managed_fixture`: both agents' skill toggles and first-prompt banners, including every parameterized case | `E2E_ADMIN_WORKSPACE` / `E2E_ADMIN_SP_CLIENT_*` |
+
+The Claude skill-toggle test asserts `databricks-smart-router-recipe` values on
+real inference requests: launch recipe → `DISABLED` → launch recipe. The Codex
+toggle test checks native child completion and correlated routing decisions.
+The existing deferred routing-disabled CUJ4 case remains skipped. Cases run
+serially within each runner to isolate machine-wide settings. This matrix uses
+`fail-fast: false`; **All integration tests** requires all three jobs to pass.
+Fork PRs use the existing member-authorized `/integration-test` path for secrets.
 
 ### Managed-workspace journeys
 

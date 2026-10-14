@@ -19,6 +19,12 @@ TypeScript event-forwarding and launch-option tests in CI. The existing Claude
 skill-toggle integration journey checks the live recipe headers across on/off/on.
 See [the mod guide](../docs/claude-mod.md).
 
+The required **Smart routing · latest** CI lane resolves npm's `claude-code@latest`
+and `codex@latest` tags to exact versions and records them in its artifacts. Three
+isolated runners cover all of CUJ4, both agents' routing-hook cases, and the managed
+skill-toggle and first-prompt banner cases. The Claude toggle cases assert the actual
+recipe header values across on → off → on. Existing pinned-version lanes remain.
+
 Dedicated CUJs reuse `integration/utils` session/terminal mechanics and file-task
 and transcript readers, not its config stubs or pytest fixtures. Prompt/model
 correlation remains CUJ-specific. Concurrent runs may read the same CUJ workspace.
@@ -482,7 +488,7 @@ These are unit/component checks; they do not establish live sudo password-prompt
 | Fresh provider/parent validation and mixed Bedrock filtering | Not covered after removing the duplicate model-discovery suites |
 | TUI initial prompt supplied on the launch command line | Not yet covered; headless prompt arguments are covered |
 | Follow-up turns and conversation resume | Not covered; reopen proves startup, not conversation resume |
-| Claude/Codex interactive smart routing | First-prompt routing is covered by the `managed_fixture` banner journeys. The live subagent-only journeys spawn native children and invoke the installed Smart Router skill to verify routing on -> off -> on within one Claude/Codex session. Plugin-refresh survival, native daemon/background dispatch, interactive explicit-model bypass, and dedicated routing CI shards remain deferred. |
+| Claude/Codex interactive smart routing | First-prompt routing is covered by the `managed_fixture` banner journeys and CUJ4. The live subagent-only journeys spawn native children and invoke the installed Smart Router skill to verify routing on -> off -> on within one Claude/Codex session. The dedicated latest lane repeats CUJ4, routing hooks, skill toggles, and banners with both latest agents. Plugin-refresh survival and native daemon/background dispatch remain deferred. |
 | Full allow/deny tool-permission matrix | Not covered; onboarding/trust uses actual TUI choices |
 | Desktop Codex app, Isaac itself, auto-upgrades | Not covered by command forwarding or pinned-version tests |
 | Native macOS/Windows live TUI, managed settings, resize/signals | Windows fresh-install, CLI, local helpers, and the Claude headless gateway journey are advisory; Codex Windows CI is blocked on npm proxy access. Live PTY/TUI, managed settings, and signal behavior still need separate platform implementation and coverage |

@@ -92,6 +92,30 @@ def test_dedicated_cuj_ci_runs_each_discovered_file_on_its_own_runner():
     assert "test_cuj" not in job
 
 
+def test_latest_smart_routing_ci_covers_cuj_hooks_toggles_and_headers():
+    job = _integration_jobs()["smart-routing-latest"]
+
+    assert "suite: [cuj4, hooks, managed]" in job
+    assert "npm view @anthropic-ai/claude-code@latest version" in job
+    assert "npm view @openai/codex@latest version" in job
+    assert 'echo "CLAUDE_VERSION=$latest_claude" >> "$GITHUB_ENV"' in job
+    assert 'echo "CODEX_VERSION=$latest_codex" >> "$GITHUB_ENV"' in job
+    assert '"@anthropic-ai/claude-code@$CLAUDE_VERSION"' in job
+    assert '"@openai/codex@$CODEX_VERSION"' in job
+    assert "pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj/test_cuj4_smart_routing.py" in job
+    assert '--claude-version "$CLAUDE_VERSION" --codex-version "$CODEX_VERSION"' in job
+    assert "'managed_fixture' || 'not managed_fixture'" in job
+    assert '-m "$TEST_MARKER"' in job
+    assert "-k 'test_ug_smart_routing_hooks or smart_routing_banner'" in job
+    assert "secrets.E2E_ADMIN_WORKSPACE" in job and "secrets.UCODE_TEST_WORKSPACE" in job
+    assert "name: smart-routing-latest-${{ matrix.suite }}" in job
+    assert "smart-routing-latest-versions.txt" in job
+    assert "continue-on-error:" not in job
+    assert "fail-fast: false" in job
+    gate = _integration_jobs()["cujs"]
+    assert "smart-routing-latest" in re.search(r"needs: \[([^\]]+)\]", gate).group(1)
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="dedicated-cuj-plan runs on Linux")
 def test_every_cuj_file_is_discovered_with_a_unique_check_name(tmp_path):
     root = Path(__file__).parent.parent
@@ -135,6 +159,7 @@ SKIPPED_ON_FORK_PRS = {
     "opencode",
     "managed",
     "managed-opencode",
+    "smart-routing-latest",
     "dedicated-cuj-plan",
     "dedicated-cuj",
     "cujs",
