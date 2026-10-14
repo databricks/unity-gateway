@@ -14,7 +14,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import NoReturn, TextIO
 
-from ucode import config_io, mods
+from ucode import config_io
 from ucode.codex_config import (
     codex_config_args,
     custom_catalog_models,
@@ -29,7 +29,6 @@ from ucode.config_io import (
 from ucode.constants import (
     AGENT_CLAUDE,
     AGENT_CODEX,
-    ENABLE_CLAUDE_CODE_MODS_ENV_VAR,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
@@ -37,7 +36,6 @@ from ucode.constants import (
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
     TRUTHY_ENV_VALUES,
-    claude_code_mods_enabled,
 )
 from ucode.custom_oauth import custom_oauth_cli_enabled, get_custom_client_token
 from ucode.databricks import (
@@ -399,7 +397,10 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
             ),
         )
     orchestrator.add_claude_agents(plugin_dir)
-    mods.write_mod(plugin_dir, mods.SMART_ROUTING_UI)
+    mods_dir = Path(__file__).parents[1] / "agents" / "claude_mods"
+    for name in ("register.ts", "constants.ts", "smart-routing-status.ts", "subagent-routing.ts"):
+        write_text_file(plugin_dir / "hooks" / name, (mods_dir / name).read_text(encoding="utf-8"))
+    write_json_file(plugin_dir / "hooks" / "hooks.json", {"modules": ["./register.ts"]})
 
 
 def _request_claude_routing_decision(
@@ -497,32 +498,14 @@ def route_claude_pre_tool_use(
         **{key: value for key, value in route.tool_input.items() if key != "model"},
         "subagent_type": _routed_claude_agent_name(route.routed_model),
     }
-    # Under mods, the subagent-routing mod renders the routing in the TUI, so drop
-    # the plain-text notice entirely and hand the mod the model + rationale by task.
-    if claude_code_mods_enabled():
-        _record_mod_routing(route.task, route.routed_model, route.decision.rationale)
-        return {
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "allow",
-                "updatedInput": updated_input,
-            }
+    _record_mod_routing(route.task, route.routed_model, route.decision.rationale)
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "updatedInput": updated_input,
         }
-    agent_name = claude_routing.SUBAGENT_NOTICE_CONFIG.name(route.tool_input) or "subagent"
-    if orchestrator.enabled(agent=AGENT_CLAUDE):
-        agent_name += " [orchestrator on]"
-    routing_message = claude_routing.SUBAGENT_NOTICE_CONFIG.message(
-        route.decision,
-        route.routed_model,
-        {**route.tool_input, "subagent_type": agent_name},
-    )
-    hook_output = {
-        "hookEventName": "PreToolUse",
-        "permissionDecision": "allow",
-        "updatedInput": updated_input,
-        "permissionDecisionReason": routing_message,
     }
-    return {"systemMessage": routing_message, "hookSpecificOutput": hook_output}
 
 
 def _record_mod_routing(task: str, model: str, rationale: str) -> None:
@@ -685,11 +668,6 @@ def launch_claude(
         env[ENABLE_SMART_ROUTING_ENV_VAR] = "1"
     else:
         env[ENABLE_SUBAGENT_ROUTING_ENV_VAR] = "1"
-    # Propagate the mods flag into the hook subprocesses' environment so the
-    # subagent routing hook knows to stay silent (the mod renders instead).
-    mods_enabled = claude_code_mods_enabled()
-    if mods_enabled:
-        env[ENABLE_CLAUDE_CODE_MODS_ENV_VAR] = "1"
     model_overrides = settings.setdefault("modelOverrides", {})
     if not isinstance(model_overrides, dict):
         raise RuntimeError("Claude settings 'modelOverrides' must be an object for smart routing.")
@@ -703,7 +681,7 @@ def launch_claude(
         settings,
         routing_state,
         enabled=True,
-        subagent_status=None if mods_enabled else "Routing subagent model",
+        subagent_status=None,
     )
     if route_first_prompt:
         sync_first_prompt_hook(settings, hook_executable)

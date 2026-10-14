@@ -9,11 +9,9 @@ Every routed launch includes the status band above the prompt. Both full and sub
 routing launches use this path, and the existing temporary-directory lifecycle
 cleans up the files when Claude exits.
 
-With `ENABLE_CLAUDE_CODE_MODS=1` (or `true`), the same entry point also renders
-subagent routing details under Agent/Task rows. Python hooks write the model and
-rationale to the session's `mod-routing.json` and suppress the plain-text notice
-and spinner label. Without the flag, those notices remain and the subagent renderer
-passes rows through unchanged.
+The same entry point renders subagent routing details under Agent/Task rows.
+Python hooks write the model and rationale to the session's `mod-routing.json`
+and suppress the plain-text notice and spinner label.
 
 `constants.ts` holds the values the mod shares with UG's CLI and the gateway: the recipe
 header name, the disabled recipe, the CLI module, agent, and routing flags, and the

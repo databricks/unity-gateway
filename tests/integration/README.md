@@ -1029,6 +1029,6 @@ Local Claude mod confirmation replaces the old saved-control-file/assistant-turn
 Codex retains its CLI control-file checks. No extra TUI sessions or tasks are added.
 Clear/reload, compaction, and denied-write rollback are not independently checked.
 
-Subagent mod component checks cover flag-gated routing notices, routing records, and
+Subagent mod component checks cover routing records, suppression of plain-text notices, and
 packaging the subagent renderer beside the native status/toggle entry point. They do
 not establish live rendering of subagent routing lines.

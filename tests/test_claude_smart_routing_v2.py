@@ -12,7 +12,6 @@ from unittest.mock import Mock
 
 import pytest
 
-from ucode import mods
 from ucode.agents import LaunchOptions, claude
 from ucode.constants import AGENT_CLAUDE
 from ucode.databricks import AnthropicModelCatalog
@@ -335,6 +334,8 @@ class TestV2Launch:
             "claude-sonnet-5": "system.ai.claude-sonnet-5",
         }
         assert captured["settings"]["env"][v2.ENABLE_SMART_ROUTING_ENV_VAR] == "1"
+        hook = captured["settings"]["hooks"]["PreToolUse"][0]["hooks"][0]
+        assert "statusMessage" not in hook
         for key in (v2.SESSION_ENV_VAR, v2.SESSION_PYTHON_ENV_VAR):
             assert captured["settings"]["env"][key] == os.environ[key]
         assert claude_hooks.FIRST_PROMPT_SOCKET_ENV in captured["settings"]["env"]
@@ -659,7 +660,6 @@ class TestSubagentRouting:
         monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", "0")
         captured = {}
         decisions_path = tmp_path / "decisions.jsonl"
-        monkeypatch.delenv("ENABLE_CLAUDE_CODE_MODS", raising=False)  # plain-text notice path
         monkeypatch.setattr(v2.claude_routing, "DECISIONS_PATH", decisions_path)
 
         def fake_select(workspace, token, task, route_options, resolve, **kwargs):
@@ -710,20 +710,12 @@ class TestSubagentRouting:
         assert updated_input["subagent_type"] == v2._routed_claude_agent_name(
             "system.ai.claude-opus-4-8"
         )
-        expected_message = (
-            "\n┌───────────────────────────────────────────────────────────────────────────┐\n"
-            "│ Using Unity Gateway Smart Router - Subagent                               │\n"
-            "│ Subagent : Explore                                                        │\n"
-            "│ Selected Model : system.ai.claude-opus-4-8                                │\n"
-            "└───────────────────────────────────────────────────────────────────────────┘"
-        )
-        assert output["systemMessage"] == expected_message
-        assert output["hookSpecificOutput"]["permissionDecisionReason"] == expected_message
+        assert "systemMessage" not in output
+        assert "permissionDecisionReason" not in output["hookSpecificOutput"]
         decision_record = json.loads(decisions_path.read_text())
         assert decision_record["requested_model"] == "system.ai.claude-opus-4-8"
 
-    def test_mods_suppress_notice_and_record_routing_for_the_mod(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("ENABLE_CLAUDE_CODE_MODS", "1")
+    def test_records_routing_for_the_mod_without_plain_text_notice(self, tmp_path, monkeypatch):
         monkeypatch.setenv(v2.SESSION_ENV_VAR, str(tmp_path / "env.json"))
         monkeypatch.setattr(
             routing,
@@ -732,7 +724,7 @@ class TestSubagentRouting:
                 routing.RoutingDecision(
                     model="system.ai.claude-opus-4-8",
                     raw_model="claude-opus-4-8",
-                    rationale="Routed to Low because its task-only profile is low",
+                    rationale="A focused task with an explicit target",
                 ),
                 None,
             ),
@@ -757,7 +749,7 @@ class TestSubagentRouting:
         records = json.loads((tmp_path / "mod-routing.json").read_text())
         assert records["inspect the parser"] == {
             "model": "system.ai.claude-opus-4-8",
-            "rationale": "Routed to Low because its task-only profile is low",
+            "rationale": "A focused task with an explicit target",
         }
 
     def test_subagent_hook_status_label_is_omittable(self):
@@ -804,12 +796,16 @@ class TestSubagentRouting:
 
         v2._write_routed_claude_plugin(plugin_dir, ["system.ai.claude-opus-4-8"])
 
-        mod = mods.SMART_ROUTING_UI
         hooks_dir = plugin_dir / "hooks"
         hooks = json.loads((hooks_dir / "hooks.json").read_text())
         # One hooks module (register.ts) per plugin; the files it imports ride along.
         assert hooks == {"modules": ["./register.ts"]}
-        for name in (mod.source, *mod.extra):
+        for name in (
+            "register.ts",
+            "constants.ts",
+            "smart-routing-status.ts",
+            "subagent-routing.ts",
+        ):
             assert (hooks_dir / name).is_file()
         entry = (hooks_dir / "register.ts").read_text()
         assert "registerStatusBand" in entry and "registerSubagentRouting" in entry

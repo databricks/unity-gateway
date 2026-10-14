@@ -1,8 +1,5 @@
 """Shared UCode constants."""
 
-import os
-from collections.abc import Mapping
-
 LOCALHOST = "localhost"
 LOOPBACK_HOST = "127.0.0.1"
 
@@ -20,15 +17,6 @@ SMART_ROUTING_ENV_KEYS = (
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
 )
-
-ENABLE_CLAUDE_CODE_MODS_ENV_VAR = "ENABLE_CLAUDE_CODE_MODS"
-
-
-def claude_code_mods_enabled(env: Mapping[str, str] | None = None) -> bool:
-    """Whether the Claude Code mods experience is enabled."""
-    source = os.environ if env is None else env
-    return source.get(ENABLE_CLAUDE_CODE_MODS_ENV_VAR, "").strip().lower() in TRUTHY_ENV_VALUES
-
 
 MODEL_PROVIDER_SERVICE_HEADER = "Databricks-Model-Provider-Service"
 MODEL_SERVICE_PARENT_SCHEMA_HEADER = "Databricks-Model-Service-Parent-Schema"

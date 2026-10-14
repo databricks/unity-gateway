@@ -13,8 +13,8 @@ from unittest.mock import MagicMock, Mock
 
 import pytest
 
-from ucode import constants, gateway_proxy, managed_files
 from ucode import databricks as db_mod
+from ucode import gateway_proxy, managed_files
 from ucode.agents import LaunchOptions, claude
 from ucode.smart_routing import claude_routing, v2
 from ucode.state import MANAGED_OVERLAY_KEY
@@ -71,9 +71,7 @@ class TestMinimumVersion:
 
         assert claude.minimum_version_error() is None
 
-    @pytest.mark.parametrize("mods_enabled", ["0", "1"])
-    def test_older_version_requires_update(self, monkeypatch, mods_enabled):
-        monkeypatch.setenv("ENABLE_CLAUDE_CODE_MODS", mods_enabled)
+    def test_older_version_requires_update(self, monkeypatch):
         monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.1.289")
 
         assert claude.minimum_version_error() == (
@@ -84,16 +82,6 @@ class TestMinimumVersion:
         monkeypatch.setattr(claude, "agent_version", lambda _binary: "unknown")
 
         assert claude.minimum_version_error() is None
-
-
-class TestClaudeCodeModsFlag:
-    def test_enabled_for_one_or_true_case_insensitively(self):
-        assert constants.claude_code_mods_enabled({"ENABLE_CLAUDE_CODE_MODS": "1"})
-        assert constants.claude_code_mods_enabled({"ENABLE_CLAUDE_CODE_MODS": "true"})
-        assert constants.claude_code_mods_enabled({"ENABLE_CLAUDE_CODE_MODS": "TRUE"})
-        assert not constants.claude_code_mods_enabled({"ENABLE_CLAUDE_CODE_MODS": "yes"})
-        assert not constants.claude_code_mods_enabled({"ENABLE_CLAUDE_CODE_MODS": "0"})
-        assert not constants.claude_code_mods_enabled({})
 
 
 class TestRenderOverlay:
