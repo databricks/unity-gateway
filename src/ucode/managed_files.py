@@ -62,6 +62,8 @@ class OS(Enum):
     OTHER = "other"
 
 
+MANAGED_FILES_SUPPORTED_OSES = (OS.LINUX, OS.MACOS, OS.WINDOWS)
+
 _SUDO_REPLACE_TARGETS = {
     OS.LINUX: frozenset(
         {
@@ -113,7 +115,7 @@ def managed_files_supported() -> bool:
     """
     if managed_settings_skipped():
         return False
-    return current_os() in (OS.LINUX, OS.MACOS, OS.WINDOWS)
+    return current_os() in MANAGED_FILES_SUPPORTED_OSES
 
 
 def windows_claude_managed_settings_path() -> Path:

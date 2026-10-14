@@ -281,9 +281,9 @@ def _managed_settings_path() -> Path | None:
     Returns None on unsupported platforms."""
     if current_os() is OS.LINUX:
         return Path("/etc/claude-code/managed-settings.json")
-    if current_os() is OS.MACOS:
+    elif current_os() is OS.MACOS:
         return Path("/Library/Application Support/ClaudeCode/managed-settings.json")
-    if current_os() is OS.WINDOWS:
+    elif current_os() is OS.WINDOWS:
         return windows_claude_managed_settings_path()
     return None
 
