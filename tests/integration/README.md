@@ -314,6 +314,7 @@ test_ug_claude_commands.py              # command help forwarding
 test_ug_codex_commands.py               # command help and parser error forwarding
 test_ug_codex_app_server.py             # actual client/server initialize exchange
 test_ug_smart_routing_hooks.py           # live hook contract plus skill-driven subagent toggles
+test_ug_codex_v2_routing.py              # native v2 parent/child assignment routing CUJ
 test_ug_configure_claude_lifecycle.py   # repeat setup, revert, rejected credentials
 test_ug_configure_claude_workspace_switch.py # real skills MCP cleanup across two workspaces
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
@@ -376,6 +377,9 @@ is enabled. Claude checks each local mod confirmation and the recorded recipe he
 on the following calculation's real gateway requests. Codex verifies saved session controls,
 a new CLI confirmation in native tool-result records, and a new assistant answer after each
 skill invocation.
+Fresh remote Codex sessions can require approval to write the session controls. The
+driver accepts only the exact requested toggle command through the native permission
+dialog; unexpected commands fail, and sandbox settings are not changed.
 Collapsed terminal output is allowed; the answer need not repeat the CLI's exact wording.
 Each following child still verifies whether a routing decision occurred.
 With orchestration enabled through legacy flags or a preset, both routed children
@@ -515,6 +519,17 @@ configured unmanaged cases 7 and 8 run in `e2e_cuj/test_cuj7_model_discovery.py`
 The complete integration suite collects 129 executions (126 with Claude and Codex selected).
 See the named coverage and gaps matrix in
 [../README.md](../README.md).
+
+The native v2 CUJ uses a bundled v2 catalog and a user-owned observer hook to verify
+the exact assignment at the native call, PreToolUse, and router decision. It checks
+managed-provider selection and completion on the selected child model; it does not
+exercise compaction. The proxy component test checks that retained calls, results, and
+the compressed response pass through unchanged; it uses no patched behavior. Append
+`-- -k test_ug_codex_native_v2_plain_assignment_routing` to the version-pinned runner.
+A before/after comparison additionally needs fresh sessions with identical Codex, parent
+model, workspace, catalog, and prompt, capturing the provider spawn, hook, and router
+inputs. Only an actually encrypted baseline establishes the bug; a crash, missing
+spawn, or plaintext baseline is inconclusive. Encrypted-history resume is a separate check.
 
 ```bash
 # Append one of these selections to the runner command:

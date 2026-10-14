@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import gzip
 import io
 import json
 import os
@@ -11,6 +12,7 @@ import threading
 import time
 
 import httpx
+import pytest
 
 from ucode import gateway_proxy
 
@@ -149,11 +151,11 @@ class _BrokenPipeWriter(io.RawIOBase):
         raise BrokenPipeError(32, "Broken pipe")
 
 
-def _relay_handler(wfile) -> gateway_proxy._ProxyHandler:
+def _relay_handler(wfile, handler_type=gateway_proxy._ProxyHandler) -> gateway_proxy._ProxyHandler:
     # Bypass BaseHTTPRequestHandler.__init__ (which would service a socket);
     # we only exercise _relay_response's write path. Set the few attributes the
     # send_response/send_header machinery reads (normally populated by __init__).
-    handler = object.__new__(gateway_proxy._ProxyHandler)
+    handler = object.__new__(handler_type)
     handler.wfile = wfile
     handler.request_version = "HTTP/1.1"
     handler.requestline = "POST /v1/messages HTTP/1.1"
@@ -499,6 +501,105 @@ class TestRetryOn401:
         assert cache.refreshed == 1  # a refresh was attempted
         assert "databricks auth login" in capsys.readouterr().err
         assert b"401" in bytes(out.data)  # the response is still relayed
+
+
+class _ResponseChunks(httpx.SyncByteStream):
+    def __init__(self, data):
+        self.data = data
+
+    def __iter__(self):
+        for offset in range(0, len(self.data), 7):
+            yield self.data[offset : offset + 7]
+
+
+class TestCodexV2Proxy:
+    @pytest.mark.parametrize("streaming", [False, True])
+    def test_decodes_gzip_and_restores_native_calls(self, streaming):
+        item = {
+            "type": "function_call",
+            "name": "spawn_agent",
+            "namespace": "ucode_collaboration",
+            "arguments": '{"message":"Read the file.\\nPreserve punctuation: !?;"}',
+        }
+        out = _Collect()
+        handler = _relay_handler(out, gateway_proxy._CodexV2ProxyHandler)
+        handler.path = "/v1/responses"
+        body = b'{"tools":[{"type":"namespace","name":"collaboration","tools":[]}]}'
+        prepared = json.loads(handler._prepare_request_body(body))
+        assert prepared["tools"][0]["name"] == "ucode_collaboration"
+
+        payload = json.dumps({"output": [item]}).encode()
+        if streaming:
+            event = {"type": "response.output_item.done", "item": item}
+            data = b"\r\n".join(
+                b"data: " + line for line in json.dumps(event, indent=2).encode().splitlines()
+            )
+            payload = b": heartbeat\r\n\r\nid: evt-1\r\n" + data + b"\r\n\r\ndata: [DONE]\n\n"
+        response = httpx.Response(
+            200,
+            headers={
+                "Content-Type": "text/event-stream" if streaming else "application/json",
+                "Content-Encoding": "gzip",
+            },
+            stream=_ResponseChunks(gzip.compress(payload)),
+        )
+        handler._relay_response(response)
+        response.close()
+        headers, wire = bytes(out.data).split(b"\r\n\r\n", 1)
+        assert b"content-encoding" not in headers.lower()
+        assert b"content-length" not in headers.lower()
+        if streaming:
+            assert b": heartbeat\r\n\r\nid: evt-1\r\n" in wire
+            assert wire.endswith(b"data: [DONE]\n\n")
+            data = next(line[6:] for line in wire.splitlines() if line.startswith(b"data: "))
+            rewritten = json.loads(data)["item"]
+        else:
+            rewritten = json.loads(wire)["output"][0]
+        assert rewritten == {
+            **item,
+            "namespace": "collaboration",
+            "encrypted_function_args": [],
+        }
+
+    def test_compaction_preserves_retained_calls_and_results(self):
+        history = [
+            {
+                "type": "function_call",
+                "name": "spawn_agent",
+                "namespace": "collaboration",
+                "call_id": "prior",
+                "arguments": '{"message":"Read the file."}',
+            },
+            {
+                "type": "function_call_output",
+                "namespace": "collaboration",
+                "call_id": "prior",
+                "output": "File read successfully.",
+            },
+        ]
+        body = json.dumps({"model": "test-model", "input": history}).encode()
+        out = _Collect()
+        handler = _relay_handler(out, gateway_proxy._CodexV2ProxyHandler)
+        handler.path = "/v1/responses/compact"
+        assert handler._prepare_request_body(body) == body
+
+        payload = json.dumps(
+            {
+                "object": "response.compaction",
+                "output": [*history, {"type": "compaction", "encrypted_content": "opaque-summary"}],
+            }
+        ).encode()
+        compressed = gzip.compress(payload)
+        response = httpx.Response(
+            200,
+            headers={"Content-Type": "application/json", "Content-Encoding": "gzip"},
+            stream=_ResponseChunks(compressed),
+        )
+        handler._relay_response(response)
+        response.close()
+        headers, wire = bytes(out.data).split(b"\r\n\r\n", 1)
+        assert b"content-encoding: gzip" in headers.lower()
+        assert wire == compressed
 
 
 class TestStartProxyPortFallback:
