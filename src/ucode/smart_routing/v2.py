@@ -299,7 +299,7 @@ def _unwrapped_claude_model_id(model: str) -> str:
 
 def _claude_router_model_id(model: str) -> str:
     """Unwrap an Anthropic gateway id, then apply standard model normalization."""
-    return routing.normalize_model(_unwrapped_claude_model_id(model))
+    return routing.normalize_model(_unwrapped_claude_model_id(model).removesuffix("[1m]"))
 
 
 def _claude_model_overrides(model_ids: list[str]) -> dict[str, str]:
@@ -325,11 +325,13 @@ def _routed_claude_agent_name(model: str) -> str:
 
 
 def _routed_claude_agent_definitions(model_ids: list[str]) -> dict[str, dict[str, str]]:
+    from ucode.agents.claude import _add_gpt_1m_suffix
+
     return {
         _routed_claude_agent_name(model): {
             "description": f"Smart-routed coding agent using {model}",
             "prompt": CLAUDE_ROUTED_AGENT_PROMPT,
-            "model": model,
+            "model": _add_gpt_1m_suffix(model),
         }
         for model in _canonical_claude_models(model_ids)
     }

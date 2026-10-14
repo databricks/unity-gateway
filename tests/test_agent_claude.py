@@ -85,6 +85,18 @@ class TestMinimumVersion:
 
 
 class TestRenderOverlay:
+    def test_gpt_long_context_suffix(self):
+        assert claude._maybe_add_1m_suffix("system.ai.gpt-5-6-sol") == "system.ai.gpt-5-6-sol[1m]"
+        assert claude._add_gpt_1m_suffix("databricks-gpt-6-astra") == "databricks-gpt-6-astra[1m]"
+        for model in (
+            "system.ai.gpt-5-6-sol[1m]",
+            "system.ai.gpt-5-6-sol[200k]",
+            "system.ai.gpt-5-5",
+            "system.ai.gpt-oss-120b",
+            "system.ai.claude-opus-4-8",
+        ):
+            assert claude._add_gpt_1m_suffix(model) == model
+
     def test_long_context_suffix_supports_major_only_claude_versions(self):
         assert claude._maybe_add_1m_suffix("system.ai.claude-sonnet-5") == (
             "system.ai.claude-sonnet-5[1m]"
@@ -578,7 +590,7 @@ class TestRenderOverlay:
 
     def test_static_models_populates_picker(self):
         # Static models are written into the picker allow-list.
-        static = ["system.ai.claude-opus-4-8", "system.ai.claude-sonnet-4-6"]
+        static = ["system.ai.claude-opus-4-8", "system.ai.gpt-5-6-sol"]
         overlay, keys = claude.render_overlay(WS, "s4", static_models=static)
         assert overlay["availableModels"] == static
         assert overlay["enforceAvailableModels"] is True
@@ -586,6 +598,10 @@ class TestRenderOverlay:
         assert len(overlay["modelPicker"]["options"]) == 2
         assert overlay["modelPicker"]["options"][0]["model"] == "system.ai.claude-opus-4-8"
         assert overlay["modelPicker"]["options"][0]["label"] == "Claude Opus 4.8"
+        assert overlay["modelPicker"]["options"][1] == {
+            "model": "system.ai.gpt-5-6-sol[1m]",
+            "label": "GPT 5.6 Sol",
+        }
 
     def test_static_models_keys_tracked(self):
         # The picker keys are added to managed_keys so they're tracked in the managed file.

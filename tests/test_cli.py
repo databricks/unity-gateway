@@ -1568,10 +1568,16 @@ class TestClaudeModelFlag:
             == "system.ai.claude-opus-4-8"
         )
 
-    @pytest.mark.parametrize("model", ["system.ai.claude-sonnet-4-5", "system.ai.gpt-5-6-luna"])
+    @pytest.mark.parametrize(
+        ("model", "expected_model"),
+        [
+            ("system.ai.claude-sonnet-4-5", "system.ai.claude-sonnet-4-5"),
+            ("system.ai.gpt-5-6-luna", "system.ai.gpt-5-6-luna[1m]"),
+        ],
+    )
     @pytest.mark.parametrize("equals_form", [False, True], ids=["separate", "equals"])
     def test_unmanaged_claude_model_reaches_native_launcher(
-        self, monkeypatch, tmp_path, model, equals_form
+        self, monkeypatch, tmp_path, model, expected_model, equals_form
     ):
         """No workspace policy/catalog: explicit IDs reach native --model, not opus aliases."""
         from ucode.agents import claude
@@ -1606,9 +1612,9 @@ class TestClaudeModelFlag:
         assert calls["configure"].call_args.kwargs["custom_model"] is None
         calls["list_catalog"].assert_not_called()
         assert len(native_calls) == 1
-        assert native_calls[0][3:] == ["--model", model]
+        assert native_calls[0][3:] == ["--model", expected_model]
         settings = json.loads(native_calls[0][2])
-        assert settings["env"]["ANTHROPIC_MODEL"] == model
+        assert settings["env"]["ANTHROPIC_MODEL"] == expected_model
         for key, value in original_settings["env"].items():
             assert settings["env"][key] == value
         assert json.loads(settings_path.read_text()) == original_settings
