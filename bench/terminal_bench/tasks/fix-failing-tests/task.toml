@@ -1,0 +1,18 @@
+version = "1.0"
+
+[metadata]
+author_name = "Unity Gateway"
+difficulty = "easy"
+category = "debugging"
+tags = ["python", "testing", "edit-loop"]
+
+[verifier]
+timeout_sec = 120.0
+
+[agent]
+timeout_sec = 600.0
+
+[environment]
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
