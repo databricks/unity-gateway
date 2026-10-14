@@ -118,6 +118,8 @@ def _call_responses_api(query: str) -> dict[str, Any]:
     """POST to the Databricks Codex (Responses API) gateway and return the
     parsed JSON payload. Raises RuntimeError on any failure with a message
     suitable for surfacing as a tool error."""
+    from ucode.agents.request_tags import ug_headers  # the agent modules import this one
+
     workspace = os.environ.get("DATABRICKS_HOST", "").strip()
     model = os.environ.get("UCODE_WEB_SEARCH_MODEL", "").strip()
     profile = os.environ.get("DATABRICKS_CONFIG_PROFILE", "").strip() or None
@@ -148,6 +150,7 @@ def _call_responses_api(query: str) -> dict[str, Any]:
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
             "Accept": "application/json",
+            **ug_headers(),
         },
     )
     try:

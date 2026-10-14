@@ -3413,19 +3413,20 @@ def default(
         typer.Option(
             "--header",
             hidden=True,
-            help="Extra `Name: value` header for agent gateway requests (repeatable), e.g. "
-            "`x-databricks-traffic-id: testenv://liteswap/<id>`.",
+            help="Extra `Name: value` header for ug's, Claude's, and Codex's Databricks requests "
+            "(repeatable), e.g. `x-databricks-traffic-id: testenv://liteswap/<id>`.",
         ),
     ] = None,
 ) -> None:
     """Configure and launch coding agents through Databricks AI Gateway."""
     if header:
         os.environ[UG_HEADERS_ENV_VAR] = "\n".join(header)
-        try:
-            ug_headers()
-        except RuntimeError as exc:
-            print_err(str(exc))
-            raise typer.Exit(1) from None
+    # Every ug request reads these, so reject a bad env value here rather than mid-request.
+    try:
+        ug_headers()
+    except RuntimeError as exc:
+        print_err(str(exc))
+        raise typer.Exit(1) from None
     if ctx.invoked_subcommand is not None:
         return
     set_dry_run(dry_run)

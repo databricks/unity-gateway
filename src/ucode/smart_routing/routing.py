@@ -221,6 +221,8 @@ def select_route(
     None when the arm is unservable. Returns ``(decision, error)``; a failed
     call yields ``(None, reason)`` so callers can fail open.
     """
+    from ucode.agents.request_tags import ug_headers  # the agent modules import this one
+
     body = {
         "route_options": [{"model": model, "harness": harness} for model, harness in route_options],
         "task": {"prompt": task},
@@ -232,6 +234,7 @@ def select_route(
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
+            **ug_headers(),
         },
         method="POST",
     )

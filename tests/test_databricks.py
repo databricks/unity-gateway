@@ -60,6 +60,8 @@ WS_HOST = "example.databricks.com"
 class _FakeResponse:
     """Minimal urlopen context manager returning a JSON body, or raw bytes as given."""
 
+    status = 200
+
     def __init__(self, payload: dict | bytes):
         self._body = payload if isinstance(payload, bytes) else json.dumps(payload).encode("utf-8")
 
@@ -107,25 +109,6 @@ class TestFetchCodexMpsModelCatalog:
         assert result["models"][0]["slug"] == "gpt-mps"
         assert seen["url"] == f"{WS}/ai-gateway/codex/v1/models"
         assert seen["headers"] == {"Databricks-Model-Provider-Service": "main.default.openai"}
-
-    def test_sends_ug_headers(self, monkeypatch):
-        monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: testenv://liteswap/abc")
-        seen = {}
-
-        def fake_get(url, token, **kwargs):
-            seen.update(kwargs)
-            return {"models": [{"slug": "gpt-mps"}]}, None
-
-        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
-
-        db_mod._fetch_codex_model_catalog(
-            WS, "tok", source=db_mod.CodexCatalogSource.PROVIDER, identifier="main.default.openai"
-        )
-
-        assert seen["headers"] == {
-            "Databricks-Model-Provider-Service": "main.default.openai",
-            "x-databricks-traffic-id": "testenv://liteswap/abc",
-        }
 
     def test_rejects_empty_catalog(self, monkeypatch):
         monkeypatch.setattr(
@@ -402,22 +385,6 @@ class TestDiscoverClaudeModels:
             "token",
             {"max_retries": 2},
         )
-
-    def test_model_listing_sends_ug_headers(self, monkeypatch):
-        monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: testenv://liteswap/abc")
-        requests = []
-
-        def fake_get(url, token, **kwargs):
-            requests.append(kwargs)
-            return {"data": [{"id": "system.ai.claude-opus-5"}]}, None
-
-        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
-
-        db_mod.list_anthropic_models(WS, "token")
-
-        assert requests == [
-            {"max_retries": 2, "headers": {"x-databricks-traffic-id": "testenv://liteswap/abc"}}
-        ]
 
     @pytest.mark.parametrize(
         ("scope_kwargs", "expected_headers"),
@@ -3725,6 +3692,26 @@ class TestHttpGetJsonRetries:
 
         assert body == b"\x89PNG\x00"
         assert reason is None
+
+
+class TestHttpUgHeaders:
+    def test_get_and_send_carry_ug_headers(self, monkeypatch):
+        monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: testenv://liteswap/abc")
+        requests = []
+
+        def fake_urlopen(request, timeout=None):
+            requests.append(request)
+            return _FakeResponse({})
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+
+        db_mod._http_get_json(f"{WS}/get", "tok")
+        db_mod._http_post_json(f"{WS}/post", "tok", {})
+
+        assert [request.get_header("X-databricks-traffic-id") for request in requests] == [
+            "testenv://liteswap/abc",
+            "testenv://liteswap/abc",
+        ]
 
 
 class TestParseDatabricksCliVersion:

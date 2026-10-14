@@ -66,6 +66,8 @@ def _probe_oauth_client(workspace: str, client_id: str) -> bool | None:
     incident/rate-limit would flip every workspace to the direct-HTTP path. This is
     the only user-level check available — the authorize endpoint redirects to SSO
     before validating the client, and the published-app API needs account-admin."""
+    from ucode.agents.request_tags import ug_headers  # the agent modules import this one
+
     body = urlencode(
         {
             "grant_type": "authorization_code",
@@ -81,7 +83,7 @@ def _probe_oauth_client(workspace: str, client_id: str) -> bool | None:
         f"{workspace.rstrip('/')}/oidc/v1/token",
         data=body,
         method="POST",
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers={"Content-Type": "application/x-www-form-urlencoded", **ug_headers()},
     )
     try:
         urllib.request.urlopen(request, timeout=10)  # noqa: S310 - fixed https workspace URL

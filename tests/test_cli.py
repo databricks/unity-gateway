@@ -6255,3 +6255,10 @@ def test_invalid_header_flag_exits(monkeypatch):
     result = runner.invoke(app, ["--header", "bad", "status"])
     assert result.exit_code == 1
     assert "expected `Name: value`" in _strip_ansi(result.output)
+
+
+def test_invalid_ug_headers_env_exits(monkeypatch):
+    monkeypatch.setenv("UG_HEADERS", "bad")
+    result = runner.invoke(app, ["status"])
+    assert result.exit_code == 1
+    assert "expected `Name: value`" in _strip_ansi(result.output)

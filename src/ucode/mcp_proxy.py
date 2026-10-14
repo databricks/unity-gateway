@@ -43,6 +43,7 @@ from anyio import to_thread
 from mcp.client.streamable_http import streamable_http_client
 from mcp.server.stdio import stdio_server
 
+from ucode.agents.request_tags import ug_headers
 from ucode.databricks import (
     ensure_pat_bearer,
     get_databricks_token,
@@ -240,6 +241,7 @@ async def _run(url: str, workspace: str, profile: str | None, use_pat: bool = Fa
     # yields a (read, write) pair in both.
     async with httpx.AsyncClient(
         auth=auth,
+        headers=ug_headers(),
         timeout=httpx.Timeout(
             connect=30.0,
             read=300.0,

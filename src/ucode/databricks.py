@@ -322,11 +322,14 @@ def _http_get_bytes(
 
     Honors UCODE_DEBUG=1 to append status + truncated error body to ~/.ucode/debug.log.
     """
+    from ucode.agents.request_tags import ug_headers  # the agent modules import this one
+
     if max_retries < 0:
         raise ValueError("max_retries must be non-negative")
 
     request_headers = {"Authorization": f"Bearer {token}"}
     request_headers.update(headers or {})
+    request_headers.update(ug_headers())
     request = urllib_request.Request(url, headers=request_headers)
     for attempt in range(max_retries + 1):
         try:
@@ -428,11 +431,14 @@ def _http_send_json(
     ``allow_empty_body`` is for DELETE, whose success response is ``google.protobuf.Empty`` — an
     empty body there is the expected result, not a decode failure.
     """
+    from ucode.agents.request_tags import ug_headers  # the agent modules import this one
+
     body_bytes = json.dumps(payload).encode("utf-8") if payload is not None else None
     request_headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     if body_bytes is not None:
         request_headers["Content-Type"] = "application/json"
     request_headers.update(headers or {})
+    request_headers.update(ug_headers())
     request = urllib_request.Request(url, data=body_bytes, method=method, headers=request_headers)
     try:
         with urllib_request.urlopen(request, timeout=timeout) as response:
@@ -3276,20 +3282,17 @@ def _get_anthropic_models_json(
     parent_schema: str | None = None,
     provider: str | None = None,
 ) -> tuple[dict | list | None, str | None]:
-    from ucode.agents.request_tags import ug_headers  # the agent modules import this one
-
     origin = workspace_origin(workspace)
-    headers: dict[str, str] = {}
+    headers = None
     if provider is not None:
-        headers[MODEL_PROVIDER_SERVICE_HEADER] = provider
+        headers = {MODEL_PROVIDER_SERVICE_HEADER: provider}
     elif parent_schema is not None:
-        headers[MODEL_SERVICE_PARENT_SCHEMA_HEADER] = parent_schema
-    headers.update(ug_headers())
+        headers = {MODEL_SERVICE_PARENT_SCHEMA_HEADER: parent_schema}
     return _http_get_json(
         f"{origin}{ANTHROPIC_MODELS_PATH}?limit=1000",
         token,
         max_retries=_ANTHROPIC_MODEL_DISCOVERY_SETUP_MAX_RETRIES,
-        **({"headers": headers} if headers else {}),
+        **({"headers": headers} if headers is not None else {}),
     )
 
 
@@ -3711,14 +3714,12 @@ def _fetch_codex_model_catalog(
     source: CodexCatalogSource,
     identifier: str,
 ) -> dict:
-    from ucode.agents.request_tags import ug_headers  # the agent modules import this one
-
     header_name, kind = source.value
     payload, reason = _http_get_json(
         f"{build_tool_base_url('codex', workspace)}/models",
         token,
         max_retries=2,
-        headers={header_name: identifier, **ug_headers()},
+        headers={header_name: identifier},
     )
     if reason:
         message = f"Could not discover Codex models for {identifier}: {reason}"
