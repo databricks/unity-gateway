@@ -2994,6 +2994,48 @@ class TestClaudeLaunch:
         assert "ANTHROPIC_DEFAULT_MODEL" not in os.environ
         assert calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), "--debug"]]
 
+    @pytest.mark.parametrize("saved_model", ["stale", "system.ai.claude-sonnet-4-6"])
+    def test_dormant_controls_preserve_picker_start_model(self, tmp_path, monkeypatch, saved_model):
+        user_settings = tmp_path / "settings.json"
+        user_settings.write_text(json.dumps({"model": saved_model}))
+        settings = tmp_path / "ucode-settings.json"
+        settings.write_text('{"env":{"USER_SETTING":"keep"}}')
+        monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", user_settings)
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", settings)
+        launch = Mock()
+        monkeypatch.setattr(v2, "launch_claude", launch)
+
+        claude.launch(
+            {"workspace": WS, "_claude_launch_picker_models": ["system.ai.claude-sonnet-4-6"]},
+            [],
+            options=LaunchOptions(prepare_smart_routing=True),
+        )
+
+        assert launch.call_args.kwargs["routing_enabled"] is False
+        assert launch.call_args.kwargs["launch_model"] is None
+        composed, remaining = launch.call_args.kwargs["compose_settings"]([])
+        assert composed.get("model") == (
+            "system.ai.claude-sonnet-4-6" if saved_model == "stale" else None
+        )
+        assert composed["env"]["USER_SETTING"] == "keep"
+        assert remaining == []
+        assert json.loads(user_settings.read_text())["model"] == saved_model
+
+    def test_dormant_discovery_failure_keeps_normal_launch(self, monkeypatch):
+        monkeypatch.setattr(
+            v2, "launch_claude", Mock(side_effect=RuntimeError("catalog unavailable"))
+        )
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
+        launch = Mock()
+        monkeypatch.setattr(claude, "exec_or_spawn", launch)
+
+        claude.launch({"workspace": WS}, [], options=LaunchOptions(prepare_smart_routing=True))
+
+        launch.assert_called_once()
+        assert "--plugin-dir" not in launch.call_args.args[0]
+        assert os.environ[v2.ENABLE_SMART_ROUTING_ENV_VAR] == "0"
+        assert os.environ[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "0"
+
     def test_windows_launch_preserves_prompt_as_literal_argv(self, monkeypatch, tmp_path):
         native_binary = tmp_path / "Claude Code" / "claude.exe"
         prompt = 'keep "quotes" & pipes | and %PATH% literal'
@@ -3280,6 +3322,7 @@ class TestClaudeLaunch:
             compose_settings=claude._compose_v2_settings,
             launch_model_args=claude._launch_model_args,
             model_name=claude._maybe_add_1m_suffix,
+            routing_enabled=True,
         )
 
     def test_gateway_discovery_uses_direct_gateway(self, monkeypatch):

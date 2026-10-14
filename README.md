@@ -296,7 +296,13 @@ on/off controls retain their existing precedence over presets.
 
 `SMART_ROUTER_NAME` still selects the router independently of the preset.
 
-Smart-routed Claude and Codex sessions install `smart-router`. The `subagent_orch_v0`
+Supported interactive Claude and Codex launches install `smart-router` and prepare
+session controls even when routing starts off. `/smart-router on` (Claude) or
+`$smart-router on` (Codex) restores the launch routing mode; if both routing flags
+were off, it enables subagent-only routing. The root model stays unchanged.
+Explicit model pins, Model Provider Services, and native subcommands retain their
+routing exclusions; disabled headless launches do not prepare session controls.
+The `subagent_orch_v0`
 and `subagent_orch_v1` versions also install and activate the bundled `smart-router-orchestrator` skill.
 For example:
 

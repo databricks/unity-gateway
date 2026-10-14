@@ -2256,26 +2256,6 @@ def launch(
     # Smart routing also spawns Claude directly, so it needs the native executable.
     binary = _resolve_launch_binary(binary)
     routing_setup_failed = False
-    if options.launch_smart_routing:
-        try:
-            smart_routing_v2.launch_claude(
-                state,
-                tool_args,
-                binary=binary,
-                user_settings_path=CLAUDE_USER_SETTINGS_PATH,
-                # With no user pin, let Claude resolve its starting model from its own settings.
-                launch_model=options.user_pinned_model,
-                compose_settings=_compose_v2_settings,
-                launch_model_args=_launch_model_args,
-                model_name=_maybe_add_1m_suffix,
-            )
-        except smart_routing_v2.ClaudeRoutingSetupError:
-            _debug("Claude smart-routing setup failed; launching normally", traceback.format_exc())
-            routing_setup_failed = True
-        else:
-            return
-    if workspace and not custom_oauth_cli_enabled(state.get("custom_oauth")):
-        os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
     settings_override = None
     launch_args = list(tool_args)
     if options.user_pinned_model:
@@ -2303,6 +2283,41 @@ def launch(
                 # overwriting the user's saved selection. This also prevents Claude from appending
                 # that stale built-in selection to an otherwise replaced picker.
                 settings_override = {"model": picker_models[0]}
+    if options.launch_smart_routing or options.prepare_smart_routing:
+        compose_settings = _compose_v2_settings
+        if options.prepare_smart_routing:
+
+            def compose_settings(args: list[str]) -> tuple[dict, list[str]]:
+                settings, remaining = _compose_v2_settings(args)
+                return _merge_claude_settings(settings, settings_override or {}), remaining
+
+        try:
+            smart_routing_v2.launch_claude(
+                state,
+                tool_args,
+                binary=binary,
+                user_settings_path=CLAUDE_USER_SETTINGS_PATH,
+                # With no user pin, let Claude resolve its starting model from its own settings.
+                launch_model=options.user_pinned_model,
+                compose_settings=compose_settings,
+                launch_model_args=_launch_model_args,
+                model_name=_maybe_add_1m_suffix,
+                routing_enabled=options.launch_smart_routing,
+            )
+        except smart_routing_v2.ClaudeRoutingSetupError:
+            _debug("Claude smart-routing setup failed; launching normally", traceback.format_exc())
+            routing_setup_failed = True
+        except RuntimeError as exc:
+            if options.launch_smart_routing:
+                raise
+            print_warning(
+                f"Smart Router controls are unavailable ({exc}); launching with routing off."
+            )
+            routing_setup_failed = True
+        else:
+            return
+    if workspace and not custom_oauth_cli_enabled(state.get("custom_oauth")):
+        os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
     if routing_setup_failed:
         # Override inherited and saved routing flags for this launch only. Older
         # saved hooks must not route to agents whose plugin could not be written.

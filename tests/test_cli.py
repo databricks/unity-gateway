@@ -719,6 +719,43 @@ class TestSubcommandRouting:
 
         assert options.launch_smart_routing is expected
 
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    @pytest.mark.parametrize("enabled", [False, True])
+    @pytest.mark.parametrize(
+        "args, model, provider, supported",
+        [
+            ([], None, None, True),
+            (["update"], None, None, False),
+            ([], "fixed", None, False),
+            (["--model", "fixed"], None, None, False),
+            ([], None, "catalog.schema.service", False),
+        ],
+    )
+    def test_dormant_controls_follow_launch_eligibility(
+        self, tool, enabled, args, model, provider, supported
+    ):
+        options = cli_mod._launch_options(
+            tool,
+            args,
+            smart_routing_enabled=enabled,
+            explicit_prompt=False,
+            user_pinned_model=model,
+            provider=provider,
+        )
+        assert options.launch_smart_routing is (supported and enabled)
+        assert options.prepare_smart_routing is (supported and not enabled)
+
+    def test_disabled_headless_claude_does_not_prepare_controls(self):
+        options = cli_mod._launch_options(
+            "claude",
+            ["-p", "say hi"],
+            smart_routing_enabled=False,
+            explicit_prompt=False,
+            user_pinned_model=None,
+            provider=None,
+        )
+        assert not options.prepare_smart_routing
+
     def test_managed_claude_smart_routing_remains_enabled_on_windows(self, monkeypatch):
         monkeypatch.setattr(cli_mod.os, "name", "nt")
         managed = {

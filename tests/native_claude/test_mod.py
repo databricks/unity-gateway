@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -55,3 +56,25 @@ def test_native_options_are_launch_local(native_binary, tmp_path):
         assert a.observe()["options"] == _claude_mod_launch_options(env)
         assert b.observe()["options"] == _claude_mod_launch_options({})
         assert not (a.plugin / "hooks/launch.json").exists()
+
+
+@pytest.mark.parametrize("orchestration", ["0", "1"])
+def test_native_command_enables_initially_disabled_routing(native_binary, tmp_path, orchestration):
+    env = {
+        "ENABLE_SMART_ROUTING_V2": "0",
+        "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0",
+        "ENABLE_SMART_ROUTER_ORCHESTRATOR": orchestration,
+    }
+    with Session(native_binary, tmp_path / "session", env) as session:
+        assert session.observe()["environment"]["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] == "0"
+        for action in ("on", "off", "on"):
+            result = session.send(f"/smart-router {action}")
+            assert result["num_turns"] == 0 and result["usage"]["output_tokens"] == 0
+            assert f"Smart Router is {action}" in result["result"]
+            expected = {
+                "ENABLE_SMART_ROUTING_V2": "0",
+                "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1" if action == "on" else "0",
+                "ENABLE_SMART_ROUTER_ORCHESTRATOR": orchestration if action == "on" else "0",
+            }
+            assert session.observe()["environment"] == expected
+            assert json.loads(session.session_file.read_text()) == expected

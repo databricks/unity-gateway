@@ -430,11 +430,12 @@ class TestV2Launch:
             "theme": "dark",
         }
 
-    def test_subagent_only_launch_skips_first_prompt_routing(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_subagent_only_launch_skips_first_prompt_routing(self, tmp_path, monkeypatch, enabled):
         user_settings = tmp_path / "settings.json"
         user_settings.write_text(json.dumps({"model": "opus"}))
         monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
-        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1" if enabled else "0")
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "")
         monkeypatch.setenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "")
         monkeypatch.setattr(v2, "APP_DIR", tmp_path)
@@ -496,6 +497,7 @@ class TestV2Launch:
                 compose_settings=lambda args: ({}, args),
                 launch_model_args=claude._launch_model_args,
                 model_name=claude._maybe_add_1m_suffix,
+                routing_enabled=enabled,
             )
 
         assert exc.value.code == 4
@@ -504,10 +506,13 @@ class TestV2Launch:
             "options": v2._claude_mod_launch_options({**os.environ, **settings["env"]})
         }
         env = settings["env"]
-        assert env[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
+        assert env[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == ("1" if enabled else "0")
         for key in (v2.SESSION_ENV_VAR, v2.SESSION_PYTHON_ENV_VAR):
             assert env[key] == os.environ[key]
-        assert v2.ENABLE_SMART_ROUTING_ENV_VAR not in env
+        if enabled:
+            assert v2.ENABLE_SMART_ROUTING_ENV_VAR not in env
+        else:
+            assert env[v2.ENABLE_SMART_ROUTING_ENV_VAR] == "0"
         assert claude_hooks.FIRST_PROMPT_SOCKET_ENV not in env
         # Subagent routing is fully wired; only the first-prompt machinery is absent.
         assert "UserPromptSubmit" not in settings["hooks"]

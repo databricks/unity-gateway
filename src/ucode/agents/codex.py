@@ -1223,6 +1223,13 @@ def launch(
                 slugs = catalog_slugs(catalog)
                 if slugs:
                     profile_doc["model"] = slugs[0]
+    if options.prepare_smart_routing and workspace and not provider:
+        models = custom_catalog_models() or routing_models(state)
+        profile_doc.update(
+            smart_routing_v2.codex_session_overlay(
+                state, models, existing_hooks=profile_doc.get("hooks")
+            )
+        )
     _run_codex(
         state,
         [binary, *codex_config_args(profile_doc)],

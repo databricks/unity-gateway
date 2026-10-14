@@ -11,6 +11,7 @@ from pathlib import Path
 
 from ucode.constants import AGENT_CLAUDE
 from ucode.smart_routing.config import resolve_environment
+from ucode.smart_routing.session_env import start_session
 from ucode.smart_routing.v2 import (
     CLAUDE_ROUTING_PLUGIN_NAME,
     _claude_mod_launch_options,
@@ -40,6 +41,9 @@ class Session:
                 CLAUDE_ROUTING_PLUGIN_NAME: {"options": _claude_mod_launch_options(env)}
             },
         }
+        self.session_file = start_session(
+            settings["env"], baseline=resolve_environment(env, agent=AGENT_CLAUDE)
+        )
         process_env = {
             **{
                 key: os.environ[key]
@@ -124,3 +128,4 @@ class Session:
             reader.join(timeout=5)
         for stream in (self.proc.stdin, self.proc.stdout, self.proc.stderr):
             stream.close()
+        shutil.rmtree(self.session_file.parent)

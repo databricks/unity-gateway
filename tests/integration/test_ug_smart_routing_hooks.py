@@ -160,8 +160,11 @@ def _toggle_with_skill(
 
     controls = list(Path(session.env["TMPDIR"]).glob("ug-session-env-*/env.json"))
     assert len(controls) == 1, controls
+    baseline = json.loads(controls[0].with_name("baseline.json").read_text())
+    assert baseline["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] == "1"
+    assert baseline["ENABLE_SMART_ROUTER_ORCHESTRATOR"] == ("1" if orchestration_enabled else "0")
     expected = (
-        {}
+        baseline
         if enabled
         else {
             "ENABLE_SMART_ROUTING_V2": "0",

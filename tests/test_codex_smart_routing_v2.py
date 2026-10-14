@@ -41,6 +41,51 @@ def test_smart_routing_switch_message_wraps_to_fixed_width():
 
 
 class TestLaunchCodex:
+    @pytest.mark.parametrize("tracing", [False, True])
+    def test_dormant_launch_preserves_model_hooks_and_tracing(self, tmp_path, monkeypatch, tracing):
+        profile = tmp_path / "ucode.config.toml"
+        profile.write_text(
+            'model_provider = "Databricks"\nmodel = "user-default"\n'
+            '[[hooks.PreToolUse]]\nmatcher = "Bash"\n'
+            '[[hooks.PreToolUse.hooks]]\ntype = "command"\ncommand = "user-policy"\n'
+        )
+        before = profile.read_bytes()
+        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile)
+        monkeypatch.setattr(codex, "agent_version", lambda _: "0.148.0")
+        monkeypatch.setattr(codex, "clear_model_preferences", lambda _: False)
+        monkeypatch.setattr(codex, "custom_catalog_models", lambda: None)
+        monkeypatch.setattr(codex, "get_databricks_token", lambda *_args, **_kw: "token")
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "0")
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "0")
+        monkeypatch.setattr(v2, "launch_codex", lambda *_a, **_kw: pytest.fail("routed launch"))
+        launches = []
+        monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: launches.append((False, argv)))
+        monkeypatch.setattr(
+            codex,
+            "_launch_codex_with_otel_proxy",
+            lambda state, argv, args, workspace: launches.append((True, [*argv, *args])),
+        )
+        codex.launch(
+            {
+                "workspace": WS,
+                "codex_models": ["system.ai.gpt-5-6-sol"],
+                "codex_otel_tracing": tracing,
+            },
+            [],
+            options=LaunchOptions(prepare_smart_routing=True),
+        )
+        ((used_proxy, argv),) = launches
+        assert used_proxy is tracing
+        assert 'model="user-default"' in argv
+        hooks = next(arg for arg in argv if arg.startswith("hooks.PreToolUse="))
+        assert "user-policy" in hooks and "codex-router-hook route-subagent" in hooks
+        assert "features.hooks=true" in argv
+        assert any(
+            arg.startswith("shell_environment_policy.set.UCODE_SESSION_ENV_FILE=") for arg in argv
+        )
+        assert profile.read_bytes() == before
+        assert not v2.smart_routing_enabled(None, default=False, agent="codex")
+
     @pytest.mark.parametrize(
         ("tool_args", "options"),
         [
