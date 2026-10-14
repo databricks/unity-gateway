@@ -781,7 +781,7 @@ class TestWindowsManagedWrites:
 
     @pytest.mark.parametrize("admin", [True, False])
     def test_writes_follow_elevation_not_the_terminal(self, windows, monkeypatch, admin):
-        monkeypatch.setattr(managed_files, "_windows_is_admin", lambda: admin)
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: admin)
         monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: not admin)
 
         assert managed_files.managed_writes_allowed() is admin
@@ -790,7 +790,7 @@ class TestWindowsManagedWrites:
 
     def test_elevated_headless_run_creates_file(self, windows, monkeypatch):
         # Device provisioning runs `ug configure` elevated and without a terminal.
-        monkeypatch.setattr(managed_files, "_windows_is_admin", lambda: True)
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
         monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: False)
 
         assert self._reconcile(windows, '{"apiKeyHelper": "ug"}\n') == "created"
@@ -801,7 +801,7 @@ class TestWindowsManagedWrites:
     def test_non_admin_update_quits_with_admin_hint(self, windows, monkeypatch):
         windows.parent.mkdir(parents=True)
         windows.write_text('{"apiKeyHelper": "old"}\n', encoding="utf-8")
-        monkeypatch.setattr(managed_files, "_windows_is_admin", lambda: False)
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: False)
 
         with pytest.raises(RuntimeError, match="requires administrator rights.*ug configure"):
             self._reconcile(windows, '{"apiKeyHelper": "ug"}\n')
@@ -809,7 +809,7 @@ class TestWindowsManagedWrites:
         assert windows.read_text(encoding="utf-8") == '{"apiKeyHelper": "old"}\n'
 
     def test_elevated_revert_removes_created_file(self, windows, monkeypatch):
-        monkeypatch.setattr(managed_files, "_windows_is_admin", lambda: True)
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
         self._reconcile(windows, '{"apiKeyHelper": "ug"}\n')
 
         result = managed_files.revert_managed_file(
@@ -820,9 +820,9 @@ class TestWindowsManagedWrites:
         assert not windows.exists()
 
     def test_non_admin_revert_quits_with_admin_hint(self, windows, monkeypatch):
-        monkeypatch.setattr(managed_files, "_windows_is_admin", lambda: True)
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
         self._reconcile(windows, '{"apiKeyHelper": "ug"}\n')
-        monkeypatch.setattr(managed_files, "_windows_is_admin", lambda: False)
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: False)
 
         with pytest.raises(RuntimeError, match="requires administrator rights.*ug revert"):
             managed_files.revert_managed_file(
@@ -832,7 +832,7 @@ class TestWindowsManagedWrites:
         assert windows.exists()
 
     def test_refuses_unexpected_target(self, windows, tmp_path, monkeypatch):
-        monkeypatch.setattr(managed_files, "_windows_is_admin", lambda: True)
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
 
         with pytest.raises(RuntimeError, match="unexpected managed-settings target"):
             managed_files._windows_replace(tmp_path / "elsewhere.json", "{}")

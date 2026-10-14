@@ -112,6 +112,8 @@ literal argument preservation, and the shared `subprocess_cross_os.run` / `subpr
 entry points, including UTF-8 text decoding, explicit encoding/error overrides, and unchanged
 binary output. `test_launcher.py` covers terminal handoff and exit status.
 Ruff rejects direct subprocess launches outside `os_compatibility/subprocess_cross_os.py` and tests.
+`test_system_cross_os.py` covers the administrator check on Windows and elsewhere and the
+Program Files lookup.
 Claude's native resolver tests remain in
 `test_agent_claude.py`; installation failures are covered in `test_agents_init.py`.
 These are component checks, not live Windows coverage for every agent.

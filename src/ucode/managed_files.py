@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from ucode.config_io import APP_DIR, is_dry_run
-from ucode.os_compatibility import subprocess_cross_os
+from ucode.os_compatibility import subprocess_cross_os, system_cross_os
 from ucode.ui import console, print_note, print_success, print_warning
 
 # Absolute path so a stripped PATH (desktop/GUI launchers) still finds it.
@@ -117,13 +117,8 @@ def managed_files_supported() -> bool:
 
 
 def windows_claude_managed_settings_path() -> Path:
-    """The only machine-wide settings file Claude Code reads on Windows (standard users can't
-    write under Program Files)."""
-    # ProgramW6432 is the 64-bit folder even from a 32-bit Python, whose ProgramFiles is (x86).
-    program_files = (
-        os.environ.get("ProgramW6432") or os.environ.get("ProgramFiles") or r"C:\Program Files"
-    )
-    return Path(program_files) / "ClaudeCode" / "managed-settings.json"
+    """The only machine-wide settings file Claude Code reads on Windows."""
+    return system_cross_os.windows_program_files_dir() / "ClaudeCode" / "managed-settings.json"
 
 
 def read_managed_file(path: Path) -> str | None:
@@ -205,14 +200,6 @@ def _sudo_may_prompt() -> bool:
     return current_os() is not OS.WINDOWS and sys.stdin.isatty()
 
 
-def _windows_is_admin() -> bool:
-    if sys.platform != "win32":
-        return False
-    import ctypes
-
-    return bool(ctypes.windll.shell32.IsUserAnAdmin())
-
-
 def managed_writes_allowed(*, repair_existing: bool = False) -> bool:
     """Writes need either an interactive terminal or an existing file to repair in place.
 
@@ -220,7 +207,7 @@ def managed_writes_allowed(*, repair_existing: bool = False) -> bool:
     which lets device provisioning run ``ug configure`` without a terminal."""
     if current_os() is not OS.WINDOWS:
         return _sudo_may_prompt() or repair_existing
-    return _windows_is_admin()
+    return system_cross_os.is_admin()
 
 
 def _windows_admin_required_message(display: str, path: Path, command: str) -> str:
@@ -1336,7 +1323,7 @@ def _windows_replace(path: Path, desired_text: str) -> None:
     The temp file is created beside the target so the rename stays on one volume and the new file
     inherits the folder's ACL, which under Program Files lets standard users read but not write."""
     _validate_windows_target(path)
-    if not _windows_is_admin():
+    if not system_cross_os.is_admin():
         raise PermissionError("administrator rights are required")
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
