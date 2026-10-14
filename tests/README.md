@@ -517,11 +517,8 @@ Local Claude mod confirmation replaces the old saved-control-file/assistant-turn
 Codex retains its CLI control-file checks. No extra TUI sessions or tasks are added.
 Clear/reload, compaction, and denied-write rollback are not independently checked.
 
-Subagent mod component checks cover the Python JSON routing response without file writes,
-replacement of the legacy routing hook, launch command arguments, and packaging the
-renderer beside the native status/toggle entry point. Native mod tests cover routing
-input/output, per-tool-call rendering, and fallback for disabled/failed routing using
-process stubs. A separate native component check runs the real disabled Python CLI
-and verifies inherited routing flags and a dummy auth token, without gateway traffic.
-The existing live Claude skill-toggle journey exercises the mod's real
-Python routing command; component tests do not establish live gateway/TUI coverage.
+Subagent component checks cover Python's file-free JSON response, legacy hook replacement,
+launch arguments, per-call rendering, and disabled/failed routing. A native check runs the
+real disabled CLI with inherited flags and a dummy token. The live Claude skill-toggle
+journey exercises the routing command against the gateway; component passes do not prove
+live coverage. See [the mod guide](../docs/claude-mod.md).

@@ -693,7 +693,7 @@ class TestSubagentRouting:
             )
 
         monkeypatch.setattr(routing, "select_route", fake_select)
-        output = v2.route_claude_pre_tool_use(
+        output = v2.route_claude_subagent(
             {
                 "tool_name": "Agent",
                 "tool_input": {
@@ -720,13 +720,13 @@ class TestSubagentRouting:
                 ("claude-sonnet-5", "claude"),
             ],
         }
-        updated_input = output["hookSpecificOutput"]["updatedInput"]
+        updated_input = output["updatedInput"]
         assert "model" not in updated_input
         assert updated_input["subagent_type"] == v2._routed_claude_agent_name(
             "system.ai.claude-opus-4-8"
         )
         assert "systemMessage" not in output
-        assert "permissionDecisionReason" not in output["hookSpecificOutput"]
+        assert "permissionDecisionReason" not in output
         decision_record = json.loads(decisions_path.read_text())
         assert decision_record["requested_model"] == "system.ai.claude-opus-4-8"
 

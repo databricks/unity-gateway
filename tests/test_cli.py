@@ -1112,8 +1112,8 @@ class TestSubcommandRouting:
         }
         with (
             patch(
-                "ucode.cli.smart_routing_v2.route_claude_pre_tool_use",
-                return_value=routed,
+                "ucode.cli.smart_routing_v2.route_claude_subagent",
+                return_value={"updatedInput": routed["hookSpecificOutput"]["updatedInput"]},
             ) as mock_v2_route,
         ):
             result = runner.invoke(

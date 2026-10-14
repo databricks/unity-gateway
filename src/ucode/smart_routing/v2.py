@@ -504,41 +504,13 @@ def route_claude_subagent(
             route.decision,
             route.routed_model,
         )
-    updated_input = {
-        **{key: value for key, value in route.tool_input.items() if key != "model"},
-        "subagent_type": _routed_claude_agent_name(route.routed_model),
-    }
     return {
-        "updatedInput": updated_input,
+        "updatedInput": {
+            **{key: value for key, value in route.tool_input.items() if key != "model"},
+            "subagent_type": _routed_claude_agent_name(route.routed_model),
+        },
         "model": route.routed_model,
         "rationale": route.decision.rationale,
-    }
-
-
-def route_claude_pre_tool_use(
-    payload: dict,
-    *,
-    workspace: str,
-    token: str,
-    available_models: list[str],
-    audit_decision: bool = False,
-) -> dict | None:
-    """Keep the legacy CLI hook contract for previously configured callers."""
-    route = route_claude_subagent(
-        payload,
-        workspace=workspace,
-        token=token,
-        available_models=available_models,
-        audit_decision=audit_decision,
-    )
-    if route is None:
-        return None
-    return {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "allow",
-            "updatedInput": route["updatedInput"],
-        }
     }
 
 

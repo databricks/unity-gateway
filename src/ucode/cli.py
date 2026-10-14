@@ -2553,12 +2553,7 @@ def claude_router_hook_cmd(
             token = get_databricks_token(host, profile)
         except RuntimeError:
             return
-    route_subagent = (
-        smart_routing_v2.route_claude_subagent
-        if event == ROUTE_SUBAGENT_MOD_EVENT
-        else smart_routing_v2.route_claude_pre_tool_use
-    )
-    output = route_subagent(
+    output = smart_routing_v2.route_claude_subagent(
         payload,
         workspace=host,
         token=token,
@@ -2566,6 +2561,14 @@ def claude_router_hook_cmd(
         audit_decision=True,
     )
     if output is not None:
+        if event == "route-subagent":
+            output = {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "updatedInput": output["updatedInput"],
+                }
+            }
         sys.stdout.write(json.dumps(output))
 
 

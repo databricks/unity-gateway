@@ -20,13 +20,12 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       })
       if (result.exitCode !== 0) throw new Error('Router command failed')
       // An empty response means routing is disabled or no model could be selected.
-      if (result.stdout.trim()) {
-        route = JSON.parse(result.stdout)
-        if (typeof route?.model !== 'string' || !route.model ||
-            typeof route.rationale !== 'string' ||
-            typeof route.updatedInput?.subagent_type !== 'string' || !route.updatedInput.subagent_type) {
-          throw new Error('Invalid routing response')
-        }
+      route = result.stdout.trim() ? JSON.parse(result.stdout) : undefined
+      if (route !== undefined && (
+          typeof route?.model !== 'string' || !route.model ||
+          typeof route.rationale !== 'string' ||
+          typeof route.updatedInput?.subagent_type !== 'string' || !route.updatedInput.subagent_type)) {
+        throw new Error('Invalid routing response')
       }
     } catch {
       route = undefined
