@@ -10,7 +10,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from ucode import managed_files
+from ucode import gateway_proxy, managed_files
 from ucode.agents import LaunchOptions, codex
 from ucode.config_io import read_toml_safe
 from ucode.smart_routing import codex_routing
@@ -139,7 +139,7 @@ class TestRenderOverlay:
 
     @pytest.mark.parametrize("render", [codex.render_overlay, codex.render_legacy_overlay])
     @pytest.mark.parametrize("custom", [False, True])
-    def test_auth_timeout_allows_custom_browser_login_only(self, render, custom):
+    def test_auth_timeout_allows_browser_login(self, render, custom):
         config = (
             {
                 "client_id": "custom-client",
@@ -151,7 +151,15 @@ class TestRenderOverlay:
         )
         overlay = render(WS, custom_oauth=config)
         auth = overlay["model_providers"][codex.CODEX_MODEL_PROVIDER_NAME]["auth"]
-        assert auth["timeout_ms"] == (180_000 if custom else 5000)
+        assert auth["timeout_ms"] == 180_000
+        assert ("--browser-login" in auth["args"]) is not custom
+
+    @pytest.mark.parametrize("render", [codex.render_overlay, codex.render_legacy_overlay])
+    def test_pat_auth_skips_browser_login(self, render):
+        overlay = render(WS, use_pat=True)
+        auth = overlay["model_providers"][codex.CODEX_MODEL_PROVIDER_NAME]["auth"]
+        assert auth["timeout_ms"] == 5000
+        assert "--browser-login" not in auth["args"]
 
     def test_provider_adds_routing_header(self):
         overlay = codex.render_overlay(WS, provider="main.aarushi.aarushi-openai")
@@ -166,6 +174,20 @@ class TestRenderOverlay:
         overlay = codex.render_overlay(WS)
         headers = overlay["model_providers"]["Databricks"]["http_headers"]
         assert "Databricks-Model-Provider-Service" not in headers
+
+    def test_request_tags_header_added_when_env_set(self, monkeypatch):
+        # A JSON value stored as a TOML http_headers string is preserved verbatim.
+        tags = '{"team":"infra","env":"prod"}'
+        monkeypatch.setenv("AI_GATEWAY_REQUEST_TAGS", tags)
+        overlay = codex.render_overlay(WS)
+        headers = overlay["model_providers"]["Databricks"]["http_headers"]
+        assert headers["Databricks-Ai-Gateway-Request-Tags"] == tags
+
+    def test_request_tags_header_absent_when_env_unset(self, monkeypatch):
+        monkeypatch.delenv("AI_GATEWAY_REQUEST_TAGS", raising=False)
+        overlay = codex.render_overlay(WS)
+        headers = overlay["model_providers"]["Databricks"]["http_headers"]
+        assert "Databricks-Ai-Gateway-Request-Tags" not in headers
 
     def test_parent_adds_discovery_header(self):
         overlay = codex.render_overlay(WS, parent_schema="main.default")
@@ -1504,7 +1526,7 @@ class TestCodexLaunch:
             assert token_provider(False) == "tok"
             return server, cache, client
 
-        monkeypatch.setattr(codex.gateway_proxy, "start_otel_proxy", start_otel_proxy)
+        monkeypatch.setattr(gateway_proxy, "start_otel_proxy", start_otel_proxy)
         monkeypatch.setattr(codex.subprocess_cross_os, "popen", popen)
 
         with pytest.raises(SystemExit) as exc:
@@ -1645,6 +1667,55 @@ class TestCodexManagedConfig:
         assert "model" not in doc
         assert "Databricks" in doc["model_providers"]
         assert read_toml_safe(config_path)["model_provider"] == "Databricks"
+
+    def test_skip_env_bypasses_managed_config(self, tmp_path, monkeypatch):
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        # A privileged write must never be attempted when the developer opted out.
+        monkeypatch.setattr(
+            codex, "reconcile_managed_file", lambda *a, **kw: pytest.fail("must not write managed")
+        )
+
+        codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+
+        # The per-user config is still written; the OS-managed file is left untouched.
+        assert read_toml_safe(config_path)["model_provider"] == "Databricks"
+        assert not managed_path.exists()
+
+    def test_skip_env_errors_on_stale_managed_override(self, tmp_path, monkeypatch):
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+        # A managed file left from an earlier workspace still points at that workspace's gateway.
+        managed_path.parent.mkdir(parents=True, exist_ok=True)
+        managed_path.write_text(
+            'model_provider = "Databricks"\n'
+            "[model_providers.Databricks]\n"
+            'base_url = "https://old-workspace.databricks.com/ai-gateway/openai/v1"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        monkeypatch.setattr(
+            codex, "reconcile_managed_file", lambda *a, **kw: pytest.fail("must not write managed")
+        )
+
+        # A stale override silently defeats the reconfigure, so launching must fail loudly.
+        with pytest.raises(RuntimeError) as excinfo:
+            codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+
+        # The stale managed file is left in place and the user is told how to clear it.
+        assert managed_path.exists()
+        message = str(excinfo.value)
+        assert managed_files.SKIP_OS_SETTINGS_ENV in message
+        assert "stale" in message
+        assert "ug revert" in message
+
+    def test_skip_env_no_error_without_stale_override(self, tmp_path, monkeypatch):
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+
+        codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+
+        assert read_toml_safe(config_path)["model_provider"] == "Databricks"
+        assert not managed_path.exists()
 
     @pytest.mark.parametrize("previous_provider", ["ucode-databricks", "databricks"])
     def test_reconfigure_selects_databricks_in_existing_profile_and_managed_config(

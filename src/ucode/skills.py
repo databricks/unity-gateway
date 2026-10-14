@@ -96,6 +96,18 @@ def install_skill(skill_name: str, agent: str, home: Path | None = None) -> Path
     return destination
 
 
+def uninstall_agent_skill(skill_name: str, agent: str, home: Path | None = None) -> bool:
+    """Remove one skill from a single agent's directory, leaving other agents alone."""
+    _validate_skill_name(skill_name)
+    try:
+        root = _SKILL_ROOTS[agent]
+    except KeyError:
+        raise ValueError(f"Unsupported skill agent: {agent!r}") from None
+
+    base = Path.home() if home is None else home
+    return _remove_skill_path(base / root / skill_name)
+
+
 def uninstall_skill(skill_name: str, home: Path | None = None) -> list[Path]:
     """Remove one skill from current and legacy global skill directories."""
     _validate_skill_name(skill_name)

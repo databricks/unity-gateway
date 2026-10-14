@@ -56,7 +56,7 @@ class TestModelArgumentParsing:
 
 class TestToolSpecs:
     def test_all_tools_present(self):
-        assert set(TOOL_SPECS) == {"codex", "claude", "gemini", "opencode", "copilot", "pi"}
+        assert set(TOOL_SPECS) == {"codex", "claude", "gemini", "opencode", "kilo", "copilot", "pi"}
 
     def test_each_spec_has_required_keys(self):
         required = {"binary", "package", "display", "config_path", "backup_path"}
@@ -205,6 +205,24 @@ class TestConfigureWiresAiToolsInstall:
         )
 
         configure.assert_called_once_with("claude", state, parent_schema="main.default")
+
+    def test_explicit_relayed_provider_configures_relayed(self, monkeypatch):
+        state = {"workspace": "https://x.databricks.com"}
+        monkeypatch.setattr(
+            agents_mod,
+            "check_gateway_endpoint",
+            lambda *_a: pytest.fail("a provider must not require global model availability"),
+        )
+        monkeypatch.setattr(agents_mod, "resolve_provider_models", lambda *_a: (None, None, True))
+        configure = MagicMock(return_value=state)
+        monkeypatch.setattr(agents_mod, "configure_tool", configure)
+        monkeypatch.setattr(agents_mod, "save_state", lambda _state: None)
+
+        agents_mod.configure_single_tool("claude", state, provider="main.default.relay")
+
+        configure.assert_called_once_with(
+            "claude", state, None, provider="main.default.relay", provider_models=None, relayed=True
+        )
 
     def test_configure_selected_tools_triggers_install(self, monkeypatch):
         captured = self._stub_configure(monkeypatch)
@@ -785,6 +803,45 @@ class TestInstallToolBinary:
         assert install_tool_binary(tool) is True
         assert calls == [command]
         assert prompts == [(f"Upgrade {TOOL_SPECS[tool]['display']} if available?", True)]
+
+    @pytest.mark.parametrize(
+        ("tool", "command"),
+        [
+            ("claude", ["claude", "upgrade"]),
+            ("codex", ["codex", "update"]),
+        ],
+    )
+    def test_required_update_skips_prompt_when_auto_upgrade_set(self, monkeypatch, tool, command):
+        calls = []
+        monkeypatch.setenv("UG_AUTO_UPGRADE_AGENT", "1")
+        monkeypatch.setattr("ucode.agents.shutil.which", lambda binary: f"/usr/bin/{binary}")
+        monkeypatch.setattr("ucode.agents._too_new_downgrade", lambda _: None)
+        monkeypatch.setattr(
+            "ucode.agents.subprocess.run",
+            lambda args, **kwargs: calls.append(args) or subprocess.CompletedProcess(args, 0),
+        )
+        monkeypatch.setattr(
+            "ucode.agents.prompt_yes_no_default",
+            lambda prompt, *, default: (_ for _ in ()).throw(AssertionError("should not prompt")),
+        )
+        errors = iter(["must upgrade", None])
+        monkeypatch.setattr("ucode.agents._minimum_version_error", lambda _: next(errors))
+
+        assert install_tool_binary(tool) is True
+        assert calls == [command]
+
+    def test_auto_upgrade_still_fails_when_upgrade_leaves_tool_below_floor(self, monkeypatch):
+        monkeypatch.setenv("UG_AUTO_UPGRADE_AGENT", "1")
+        monkeypatch.setattr("ucode.agents.shutil.which", lambda binary: f"/usr/bin/{binary}")
+        monkeypatch.setattr("ucode.agents._too_new_downgrade", lambda _: None)
+        monkeypatch.setattr(
+            "ucode.agents.subprocess.run",
+            lambda args, **kwargs: subprocess.CompletedProcess(args, 0),
+        )
+        monkeypatch.setattr("ucode.agents._minimum_version_error", lambda _: "must upgrade")
+
+        with pytest.raises(RuntimeError, match="must upgrade"):
+            install_tool_binary("claude")
 
     @pytest.mark.parametrize(
         "catalog_ref",

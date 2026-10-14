@@ -71,6 +71,13 @@ class TestRenderEnvOverlay:
             "Databricks-Model-Provider-Service:cat.sch.gemini-enterprise"
         )
 
+    def test_request_tags_header_not_yet_supported(self, monkeypatch):
+        # TODO: Gemini request-tags support is deferred (GEMINI_CLI_CUSTOM_HEADERS
+        # would shred a JSON value); for now the header is never emitted.
+        monkeypatch.setenv("AI_GATEWAY_REQUEST_TAGS", '{"team":"infra","env":"prod"}')
+        env = gemini.render_env_overlay(WS, "gemini-2", "tok")
+        assert "Databricks-Ai-Gateway-Request-Tags" not in env["GEMINI_CLI_CUSTOM_HEADERS"]
+
 
 class TestBuildRuntimeEnv:
     def test_merges_os_environment(self):

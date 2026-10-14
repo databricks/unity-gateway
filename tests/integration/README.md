@@ -10,11 +10,15 @@ CUJ2 adds three separately collected cases for exact published MPS/MCP configura
 inference, and Claude inference. The config equality also accounts for the workspace's fixture
 skill name as data; skill download and invocation are not covered.
 
-The dedicated smart-routing CUJ in `../e2e_cuj/test_cuj4_smart_routing.py` leaves the original
-managed-default and explicit-model cases unchanged. One parameterized test runs all six
+The dedicated smart-routing CUJ in `../e2e_cuj/test_cuj4_smart_routing.py` runs the original
+managed-default and explicit-model cases, with explicit-model bypass assertions enabled for
+both Claude and Codex. One parameterized test runs all six
 `SMART_ROUTER_CONFIG_VERSION` values, checking both agents' first-prompt routing, orchestrator
 context in inference input, and completed explicitly requested native subagents.
 This is not automatic orchestrator-delegation coverage. No workspace configuration is modified.
+CUJ4 matches both Codex 0.154.0's top-level tools and 0.162.1's Responses Lite
+`additional_tools` input items. Encrypted child messages match the routed task name
+to the recipient; plaintext prompts still match exactly. Both require tools.
 The shared preset CUJ runs both agents for every version and derives routing and
 orchestration assertions from each agent's resolved flags. Both must complete a native
 child task. `subagent_orch_v0_claude_only` routes Claude's child; Codex uses the managed
@@ -24,6 +28,11 @@ Agent-specific smart-routing preset component checks cover shared base presets, 
 complete per-agent validation, session precedence, and preserving the preset selector
 until managed-default agent selection.
 These checks do not establish live agent coverage.
+
+The shared request recorder and native compatibility-retry checks live in
+`utils/request_recorder.py`. The CUJ adapter keeps its existing
+configuration glue and imports those helpers; request forwarding, header
+redaction, and paired response assertions retain their behavior.
 
 CUJ3 and CUJ4 require a non-empty HTTP 200 for inference. Claude 2.1.290's known
 thinking-display 400 is accepted only when the next inference request with the same system
@@ -54,8 +63,8 @@ or construct ug state files. The normal test suite checks these boundaries.
 
 The Claude mod entry point has separate native component checks in
 `../native_claude/test_mod.py`. Claude 2.1.290 validates the module and runs its
-TypeScript event-forwarding test in a dedicated CI job. These checks do not submit
-inference requests or replace this suite's live gateway/TUI journeys.
+TypeScript event-forwarding and launch-option tests in a dedicated CI job. The
+existing Claude skill-toggle journey checks the live recipe payload field across on/off/on.
 
 The existing unit tests keep their fixtures. Integration has an independent
 pytest configuration and uses `--confcutdir` so those fixtures cannot leak in.
@@ -71,6 +80,13 @@ It neither stops tasks nor confirms an exit dialog. Process exit retains its 30-
 timeout. Offline PTY checks cover this ordering.
 The shared wait also runs before CUJ4's Claude preset sessions exit, after delegated-task
 evidence is checked, because Claude can resume a child after its first completed answer.
+
+`../test_startup_imports.py` covers the bare version fast path, deferred imports,
+metadata fallback, and other-argument dispatch as component checks. Installation
+checks still exercise real console-script help and version output; neither suite
+asserts end-to-end agent startup latency. The component suite also checks that
+version output alone cannot establish CLI health when startup dependencies are
+absent; use `--help` for the startup-import probe.
 
 Agent-specific bundled instruction selection and prompt/compaction hook content
 are covered in `../test_skills.py`; those component checks do not run live agents.
@@ -149,6 +165,15 @@ tests in `../test_claude_search_discovery.py`, including legacy catalog fallback
 an explicit model override, and no available GPT model. Live search remains
 outside this integration suite.
 
+CLI token memoization and capability-gated `--no-browser` re-auth are covered by
+component tests in `../test_databricks.py` and `../test_mcp_web_search.py`, including
+wall/monotonic expiry across suspend or clock rollback, forced refresh, concurrent
+fetches, login invalidation, confirmed credential-error caching, and transient-failure
+recovery. Connection-login component tests also check invalidation on every login
+attempt and fresh tokens on async proxy retries. This suite
+does not assert live token-fetch counts, stale-profile recovery, or launch-time
+savings; credential/profile routing is unchanged.
+
 The sudo-session regression checks live in `../test_managed_files.py` and `../test_cli.py`.
 They cover shared-worker invocation counts, shutdown/cancellation, and temporary-file failure
 handling without sudo.
@@ -179,8 +204,9 @@ through them without changing existing journey commands or completion assertions
 Prerequisites: Python 3.12+, uv, and Node/npm. Live runs also require Databricks
 CLI 1.17.0. Full live/TUI runs require a POSIX host; Windows supports the explicit
 headless subset described below. The runner installs the requested agents into a new
-npm prefix and ug into a new virtualenv. Pytest and, for live runs, the PTY/screen
-libraries (pexpect and pyte) live in a different virtualenv, so they cannot accidentally
+npm prefix and ug into a new virtualenv. Pytest, the recorder's pinned `httpx`, and,
+for live runs, the PTY/screen libraries (pexpect and pyte) live in a different
+virtualenv, so they cannot accidentally
 supply a missing application dependency. No packages are installed into your
 existing agent installations or checkout's `.venv`.
 CI pins Databricks CLI 1.17.0 in the live and managed integration lanes. The
@@ -337,8 +363,8 @@ installed hook commands with a harness-shaped payload against the live router. T
 subagent-only TUI journeys additionally spawn three native children in one real session,
 invoke the installed Smart Router skill to turn routing off and back on, and require the
 subagent banner plus a correlated live decision only while routing is enabled. Plugin-refresh
-survival, native daemon/background dispatch, interactive explicit-model bypass, and dedicated
-smart-routing CI shards remain deferred. Plugin generation and launch arguments are covered
+survival and native daemon/background dispatch remain deferred. CUJ4 covers interactive
+explicit-model bypass. Plugin generation and launch arguments are covered
 by component tests in `../test_claude_smart_routing_v2.py`, not by a live registration journey.
 
 PATH conflicts for the Smart Router skill have subprocess/component coverage in
@@ -349,9 +375,10 @@ establish PowerShell command execution.
 The toggle journeys retain the legacy routing-only and orchestration cases and add each of
 the three subagent-only `SMART_ROUTER_CONFIG_VERSION` presets. They require only `smart-router`
 for routing-only cases, and both `smart-router-orchestrator` and `smart-router` when orchestration
-is enabled. They verify the saved session controls, a new CLI confirmation in the native
-tool-result records, and a new
-assistant answer after each skill invocation.
+is enabled. Claude checks each local mod confirmation and the recorded `smart_router_recipe_name`
+on the following calculation's real gateway requests. Codex verifies saved session controls,
+a new CLI confirmation in native tool-result records, and a new assistant answer after each
+skill invocation.
 Collapsed terminal output is allowed; the answer need not repeat the CLI's exact wording.
 Each following child still verifies whether a routing decision occurred.
 With orchestration enabled through legacy flags or a preset, both routed children
@@ -563,7 +590,8 @@ Each run writes a new `.integration-runs/<timestamp>/` directory containing:
   Databricks CLI, platform, source revision/diff, suite hash, and wheel hash when available.
 - `dependencies.txt` and `npm-lock.json`: the resolved Python and npm dependency
   graphs. Replay them with `--constraints` and `--npm-lock`.
-- `test-dependencies.txt`: the separately installed pytest/terminal-tool dependencies.
+- `test-dependencies.txt`: the separately installed pytest, recorder (`httpx`), and
+  terminal-tool dependencies.
 - `junit.xml`: exact test outcomes and parametrized case names.
 - `artifacts/`: command arguments, exit codes, timeout status, redacted output,
   app-server protocol diagnostics, and TUI transcripts/rendered screens plus
@@ -594,20 +622,19 @@ starting alongside unit tests and the existing agent e2e shards. Integration has
 no dependency on agent e2e; a failure there does not prevent integration from running.
 The final required `e2e` check waits for both suites and requires both to succeed.
 The required installation and live jobs run directly on fresh GitHub Ubuntu VMs,
-not inside the optional Docker image. An advisory `windows-server-latest` job runs
+not inside the optional Docker image. An advisory `windows-latest` job runs
 the five credential-free checks in `test_installation.py` (installation, CLI,
 auth-helper, and local MCP) and
 uploads `integration-installation-windows` evidence. It uses `continue-on-error`
 and is not part of `All integration tests` until the initial Windows issues are fixed.
-The Windows job authenticates to the Databricks JFrog package proxy using
-GitHub OIDC, following the organization's SDK CI setup. Its actual OS image is
-recorded in `versions.json`; the organization can update the image behind the
-runner label. The two POSIX version-floor journeys are outside this Windows subset.
+It installs from public PyPI and npm, needs no credentials, and also runs on
+fork PRs. Its actual OS image is recorded in `versions.json`; GitHub can update
+the image behind the runner label. The two POSIX version-floor journeys are outside this Windows subset.
 It installs only Claude as the runner prerequisite; the five selected checks
 exercise ug and its local helpers, not either agent's inference path.
 An advisory **Windows headless journey · Claude** job installs the temporary Windows-pinned
 Claude version (currently 2.1.278)
-on a native Windows runner using the same authenticated package proxies,
+on a native Windows runner from public PyPI and npm,
 reuses the existing e2e workspace/bearer,
 and requires the unpredictable file value in the agent's structured final answer.
 It uploads `integration-headless-windows-claude` evidence and remains outside
@@ -692,6 +719,25 @@ and installation subsets do not select managed tests and do not require them.
 The advisory Windows installation and headless lanes are not yet included in that aggregate check.
 The existing required `e2e` context also waits for the complete integration workflow, so integration
 cannot still be running when that gate passes. Full coverage on PRs needs no label or opt-in.
+
+### Opting into harness-latest
+
+The **harness-latest** workflow runs every six hours on `main` (00:00, 06:00,
+12:00, and 18:00 UTC), or manually through Actions. It runs marked tests against the
+latest Claude and Codex releases, recording exact versions in its artifacts. It covers
+CUJ4, routing hooks, skill toggles (including Claude's recipe-header assertions),
+and first-prompt banners. It runs separately from PR checks, so failures do not block merges.
+
+Opt in a test or class with `@pytest.mark.harness_latest`, or a whole module with:
+
+```python
+pytestmark = pytest.mark.harness_latest
+```
+
+Append the marker to an existing `pytestmark` list when present. CI discovers marked
+cases under `e2e_cuj/` and `integration/` without workflow edits. Keep existing agent
+and workspace markers: `managed_fixture` selects the managed integration runner.
+Tests use each runner's existing credentials and installed Claude/Codex CLIs.
 
 ### Managed-workspace journeys
 
@@ -981,3 +1027,31 @@ The runner returns nonzero on installation or test failure.
 Do not drop the mirror flags if public registries resolve to `127.0.0.1` or return
 `ECONNREFUSED`. The runner deliberately ignores host `.npmrc` and resolver settings.
 Outside the Databricks network, use reachable package indexes explicitly instead.
+
+Native launch-option component tests (`native_claude/test_mod.py`) check two real Claude
+processes with different resolved routing baselines. Python cases cover Claude-specific presets,
+unknown selectors, and absent versus empty flags. These checks do not establish gateway/TUI coverage.
+
+CUJ 4's preset journeys check Claude's visible ON/OFF status band and routing scope
+before work and after off/on toggles. Checks ignore terminal styling and trailing
+UI controls; offline cases reject stale states, wrong scope, and command confirmations.
+
+The plugin test host runs without a process capability, so the mod's session-control call
+is covered by the live skill-toggle journey rather than `claude plugin test`. No component
+check asserts that the launch paths withdraw the skills.
+The TypeScript launch test also checks event/result forwarding. Separate cases cover
+denied-write rollback, invalid request bodies, disabled launches, and body-merge validation;
+no simulated subprocess success is used to claim toggle coverage.
+
+`integration/test_ug_smart_routing_hooks.py` checks `smart_router_recipe_name` in its existing
+Claude skill-toggle journey. The recorder forwards to the real workspace, configured
+through public `ug configure --workspace <recorder-url>` without hand-writing ug state.
+Checkpoints and each calculation's unique marker correlate parent/child inference
+requests to the on/off/on phases. All matched tool-capable inference payloads must carry the
+launch recipe, `DISABLED`, then the launch recipe again, omit the recipe header, and reach non-empty HTTP 200
+responses, with only the existing verified native compatibility retries accepted.
+The expected launch recipe comes from the recorded routing request, so a default
+recipe change does not require editing the test.
+Local Claude mod confirmation replaces the old saved-control-file/assistant-turn wait;
+Codex retains its CLI control-file checks. No extra TUI sessions or tasks are added.
+Clear/reload, compaction, and denied-write rollback are not independently checked.

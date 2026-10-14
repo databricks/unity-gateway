@@ -109,6 +109,7 @@ from ucode.managed_resolve import (
 )
 from ucode.mcp import (
     MCP_CLIENTS,
+    MCP_ONLY_CLIENTS,
     McpServiceListingRateLimited,
     add_mcp_command,
     add_skills_command,
@@ -150,6 +151,7 @@ from ucode.state import (
     clear_state,
     get_provider_service,
     is_self_managed,
+    load_full_state,
     load_state,
     remove_self_managed_agent,
     save_state,
@@ -182,10 +184,10 @@ from ucode.usage import usage as usage_report
 CustomOAuthConfig = custom_oauth.CustomOAuthConfig
 
 _DISCOVERY_CONSUMERS: dict[str, tuple[str, ...]] = {
-    "claude": ("claude", "opencode", "copilot", "pi"),
+    "claude": ("claude", "opencode", "kilo", "copilot", "pi"),
     "codex": ("codex", "copilot", "pi"),
-    "gemini": ("gemini", "opencode", "pi"),
-    "oss": ("opencode",),
+    "gemini": ("gemini", "opencode", "kilo", "pi"),
+    "oss": ("opencode", "kilo"),
 }
 
 
@@ -616,16 +618,23 @@ def configure_shared_state(
         print_warning(f"Model service: {model_service_probe.detail}")
 
     want_claude = (
-        fetch_all or "claude" in tools or "opencode" in tools or "copilot" in tools or "pi" in tools
+        fetch_all
+        or "claude" in tools
+        or "opencode" in tools
+        or "kilo" in tools
+        or "copilot" in tools
+        or "pi" in tools
     )
-    want_gemini = fetch_all or "gemini" in tools or "opencode" in tools or "pi" in tools
+    want_gemini = (
+        fetch_all or "gemini" in tools or "opencode" in tools or "kilo" in tools or "pi" in tools
+    )
     # Claude's web-search server also needs a Responses-capable model.
     want_codex = (
         fetch_all or "codex" in tools or "claude" in tools or "copilot" in tools or "pi" in tools
     )
     # Codex smart routing can select OSS models such as GLM, so a Codex-only
     # configure must persist that discovered family too.
-    want_oss = fetch_all or "opencode" in tools or "codex" in tools
+    want_oss = fetch_all or "opencode" in tools or "kilo" in tools or "codex" in tools
 
     claude_reason: str | None = None
     gemini_reason: str | None = None
@@ -693,7 +702,8 @@ def configure_shared_state(
             state["codex_models"] = codex_models
         if want_oss:
             state["oss_models"] = oss_models
-        if fetch_all or "opencode" in tools:
+        if fetch_all or "opencode" in tools or "kilo" in tools:
+            # Kilo is an OpenCode fork and consumes the same discovered view.
             state["opencode_models"] = opencode_models
     save_state(state)
     # Scrub MCP entries that ucode wrote for the previous workspace so the new
@@ -1123,6 +1133,9 @@ def _status_models(tool: str, state: dict) -> list[str]:
         models = static_models
     elif tool in ("claude", "codex", "gemini", "opencode"):
         models = _model_values(state.get(f"{tool}_models"))
+    elif tool == "kilo":
+        # Kilo shares OpenCode's discovery; its models live under opencode_models.
+        models = _model_values(state.get("opencode_models"))
     elif tool == "copilot":
         models = _model_values(state.get("copilot_models")) or (
             _model_values(state.get("claude_models")) + _model_values(state.get("codex_models"))
@@ -1144,7 +1157,7 @@ def _status_default_model(tool: str, state: dict, models: list[str]) -> str | No
         return explicit
     # Claude and Codex deliberately leave the starting model to the agent unless a managed
     # config pins one. The other clients write the first resolved model into their ug config.
-    return models[0] if models and tool in ("gemini", "opencode", "copilot", "pi") else None
+    return models[0] if models and tool in ("gemini", "opencode", "kilo", "copilot", "pi") else None
 
 
 def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
@@ -1371,6 +1384,7 @@ _HELP_COMMAND_ORDER = (
     "cursor",
     "gemini",
     "opencode",
+    "kilo",
     "pi",
     "configure",
     "mcp",
@@ -1620,26 +1634,80 @@ def _version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
-def _configure_agents_for_mcp(requested: list[str]) -> set[str]:
+def _configure_agents_for_mcp(
+    requested: list[str],
+    workspace_entries: list[tuple[str, str | None]] | None = None,
+) -> set[str]:
     """Ensure the named coding agents are set up (workspace + models) so a
     subsequent `ug mcp add` / `ug skills add --via mcp` has them as targets, and
     return the full canonical name set. Agents already configured are left as-is;
     only the rest are bootstrapped. Model agents go through
     configure_workspace_command (which installs binaries and configures models);
     Cursor is MCP-only, so it just needs workspace state established and rides
-    along via MCP_ONLY_CLIENTS. Interactive — prompts for the workspace URL on
-    first run."""
+    along via MCP_ONLY_CLIENTS. ``workspace_entries`` (from `--workspace` /
+    `--profile`) makes that workspace current and skips the workspace prompt;
+    otherwise the prompt is shown on first run. If setup fails, the previous
+    current workspace is restored."""
     scope = {a if a == "cursor" else normalize_tool(a) for a in requested}
-    ready = set(configured_mcp_clients(load_state(), available_mcp_clients()))
+    installed = available_mcp_clients()
+    # Setup installs model agents but not MCP-only ones, so a missing MCP-only CLI
+    # would otherwise leave the agent permanently unready and re-enter setup every run.
+    not_installed = sorted(a for a in scope if a in MCP_ONLY_CLIENTS and a not in installed)
+    if not_installed:
+        raise RuntimeError(_not_installed_message(not_installed))
+    previous_workspace = load_full_state().get("current_workspace")
+    try:
+        _bootstrap_agents_for_mcp(scope, installed, workspace_entries)
+    except BaseException:
+        # Don't leave launches pointed at a workspace whose setup didn't finish.
+        if workspace_entries:
+            set_current_workspace(previous_workspace)
+        raise
+    return scope
+
+
+def _bootstrap_agents_for_mcp(
+    scope: set[str],
+    installed: list[str],
+    workspace_entries: list[tuple[str, str | None]] | None,
+) -> None:
+    workspace_known = True
+    if workspace_entries:
+        url = workspace_entries[0][0]
+        set_current_workspace(url)
+        workspace_known = url in (load_full_state().get("workspaces") or {})
+    ready = set(configured_mcp_clients(load_state(), installed)) if workspace_known else set()
     to_bootstrap = scope - ready
     model_agents = sorted(a for a in to_bootstrap if a != "cursor")
     if model_agents:
-        configure_workspace_command(selected_tools=model_agents)
+        if workspace_entries is None:
+            configure_workspace_command(selected_tools=model_agents)
+        else:
+            configure_workspace_command(selected_tools=model_agents, workspaces=workspace_entries)
     if "cursor" in to_bootstrap and not model_agents:
         _configure_shared_workspace_states(
-            [_prompt_for_configuration(None)], tools=[], force_login=True
+            workspace_entries or [_prompt_for_configuration(None)], tools=[], force_login=True
         )
-    return scope
+    state = load_state()
+    unready = sorted(scope - set(configured_mcp_clients(state, available_mcp_clients())))
+    if unready:
+        raise RuntimeError(_not_installed_message(unready))
+    # Setup saves an explicit --profile, but it's skipped when every agent is already
+    # ready; save it here so registration authenticates as that profile. A saved
+    # --use-pat belonged to the old profile, and --profile means OAuth without it.
+    profile = workspace_entries[0][1] if workspace_entries else None
+    if profile and state.get("profile") != profile:
+        state["profile"] = profile
+        state.pop("use_pat", None)
+        save_state(state)
+
+
+def _not_installed_message(agents: list[str]) -> str:
+    names = ", ".join(
+        f"{MCP_CLIENTS[a]['display']} (`{MCP_CLIENTS[a]['binary']}`)" if a in MCP_CLIENTS else a
+        for a in agents
+    )
+    return f"Not installed or not set up: {names}. Install the CLI on PATH, then rerun."
 
 
 def _configure_optional_setup(state: dict, tools: list[str]) -> None:
@@ -1655,6 +1723,7 @@ def _configure_optional_setup(state: dict, tools: list[str]) -> None:
 
 @mcp_app.command("add")
 def mcp_add(
+    ctx: typer.Context,
     location: Annotated[
         str | None,
         typer.Option(
@@ -1687,6 +1756,24 @@ def mcp_add(
             "the server is registered for every already-configured agent.",
         ),
     ] = None,
+    workspace: Annotated[
+        str | None,
+        typer.Option(
+            "--workspace",
+            help="Workspace URL to register --agents against (made the current workspace; set "
+            "up first if needed), skipping the workspace prompt. Defaults to the UG_WORKSPACE "
+            "environment variable when set.",
+        ),
+    ] = None,
+    profile: Annotated[
+        str | None,
+        typer.Option(
+            "--profile",
+            help="Existing Databricks CLI profile to register --agents against, like "
+            "--workspace. The profile's host supplies the workspace URL, and the profile is "
+            "saved as that workspace's profile.",
+        ),
+    ] = None,
 ) -> None:
     """Add Databricks MCP servers to installed coding tools.
 
@@ -1701,7 +1788,33 @@ def mcp_add(
         else ({a.strip().lower() for a in agents.split(",") if a.strip()} or None)
     )
     try:
-        scope = _configure_agents_for_mcp(sorted(requested_agents)) if requested_agents else None
+        # `ug --workspace <url> mcp add ...` is parsed by the root command, which
+        # returns early for subcommands, so forward its value here.
+        root_workspace = ctx.find_root().params.get("workspace")
+        if root_workspace is not None:
+            if workspace is not None and _parse_workspace_option(
+                workspace
+            ) != _parse_workspace_option(root_workspace):
+                raise RuntimeError(
+                    "Got two different --workspace values. Pass --workspace once, after `mcp add`."
+                )
+            workspace = root_workspace
+        if workspace is not None and profile is not None:
+            raise RuntimeError("Use either --workspace or --profile, not both.")
+        if (workspace is not None or profile is not None) and not requested_agents:
+            raise RuntimeError("--workspace and --profile only apply with --agents.")
+        if workspace is None and profile is None and requested_agents:
+            workspace = os.environ.get("UG_WORKSPACE") or None
+        workspace_entries = None
+        if profile is not None:
+            workspace_entries = _parse_profile_option(profile)
+        elif workspace is not None:
+            workspace_entries = _parse_workspace_option(workspace)
+        scope = (
+            _configure_agents_for_mcp(sorted(requested_agents), workspace_entries)
+            if requested_agents
+            else None
+        )
         add_mcp_command(location=location, services=selected, agents=scope)
     except RuntimeError as exc:
         print_err(str(exc))
@@ -2122,6 +2235,7 @@ def auth_token_cmd(
         bool,
         typer.Option("--force-refresh", help="Force the Databricks CLI to mint a new token."),
     ] = False,
+    browser_login: Annotated[bool, typer.Option("--browser-login", hidden=True)] = False,
     client_id: Annotated[
         str | None,
         typer.Option(
@@ -2201,7 +2315,9 @@ def auth_token_cmd(
                 force_refresh=force_refresh,
             )
         else:
-            token = get_databricks_token(workspace, profile, force_refresh=force_refresh)
+            token = get_databricks_token(
+                workspace, profile, force_refresh=force_refresh, browser_login=browser_login
+            )
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
@@ -2447,7 +2563,9 @@ def claude_router_hook_cmd(
         sys.stdout.write(json.dumps(output))
 
 
-def _auto_configure_tool(tool: str, custom_oauth: CustomOAuthConfig | None = None) -> None:
+def _auto_configure_tool(
+    tool: str, custom_oauth: CustomOAuthConfig | None = None, provider: str | None = None
+) -> None:
     """Configure a tool for launch without sending a separate validation prompt.
 
     The real agent session follows immediately; explicit configure retains the
@@ -2460,8 +2578,14 @@ def _auto_configure_tool(tool: str, custom_oauth: CustomOAuthConfig | None = Non
         workspace, profile = _prompt_for_configuration(tool)
     configure_kwargs = {"custom_oauth": custom_oauth} if custom_oauth is not None else {}
     state = configure_shared_state(workspace, profile=profile, tools=[tool], **configure_kwargs)
+    # A managed config rejects --provider later in the launch; resolving it here would replace that
+    # error with a lookup failure.
+    if provider is not None:
+        managed, _ = _fetch_managed_config(state)
+        if managed is not None:
+            provider = None
 
-    state = configure_single_tool(tool, state)
+    state = configure_single_tool(tool, state, provider=provider)
 
     spec = TOOL_SPECS[tool]
     console.print(
@@ -2862,10 +2986,12 @@ def _launch_tool(
             skip_cli_version_check=skip_preflight,
         )
         if needs_auto_configure:
+            # Configure through this launch's --provider: a default-gateway setup would write the
+            # managed auth keys that a relayed provider's launch then refuses to start over.
             if custom_oauth is None:
-                _auto_configure_tool(tool)
+                _auto_configure_tool(tool, provider=provider)
             else:
-                _auto_configure_tool(tool, custom_oauth=custom_oauth)
+                _auto_configure_tool(tool, custom_oauth=custom_oauth, provider=provider)
         state = ensure_provider_state(tool)
         # Remembered before the fallback below collapses the two cases: a managed config may not
         # silently override a provider the user typed on the command line (it errors instead).
@@ -3158,7 +3284,7 @@ def _launch_tool(
                 f"{TOOL_SPECS[tool]['display']} may require one-time hook review. Open "
                 "`/hooks` and trust the ug routing hooks if prompted."
             )
-        if tool in ("gemini", "opencode", "copilot", "pi"):
+        if tool in ("gemini", "opencode", "kilo", "copilot", "pi"):
             print_note(
                 f"{TOOL_SPECS[tool]['display']} token refresh is managed automatically "
                 f"every 30 minutes while the session is running."
@@ -3584,6 +3710,28 @@ def opencode_cmd(
 
 
 @app.command(
+    "kilo",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+    rich_help_panel="Launch",
+)
+def kilo_cmd(
+    ctx: typer.Context,
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            "-m",
+            help="Configured model ID or Kilo provider/model for this launch. "
+            "Pass before any `--` separator.",
+        ),
+    ] = None,
+    skip_preflight: SkipPreflightOption = False,
+) -> None:
+    """Launch Kilo via Databricks."""
+    _launch_tool("kilo", ctx, model=model, skip_preflight=skip_preflight)
+
+
+@app.command(
     "copilot",
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     rich_help_panel="Launch",
@@ -3656,7 +3804,7 @@ def configure(
         str | None,
         typer.Option(
             "--agent",
-            help="Configure only the named agent (e.g. claude, codex, gemini, opencode, copilot, pi).",
+            help="Configure only the named agent (e.g. claude, codex, gemini, opencode, kilo, copilot, pi).",
         ),
     ] = None,
     agents: Annotated[
@@ -4137,7 +4285,10 @@ def _upgrade_failure_detail(result: subprocess.CompletedProcess[str]) -> str:
 
 
 def _verify_upgraded_commands() -> None:
-    """Ensure both compatibility entry points were installed and can start."""
+    """Ensure both compatibility entry points were installed and can start.
+
+    Uses ``--help`` because the entry point answers a bare ``--version`` without importing the CLI.
+    """
     for command in ("ug", "ucode"):
         executable = shutil.which(command)
         if executable is None:
@@ -4146,7 +4297,7 @@ def _verify_upgraded_commands() -> None:
                 "Reinstall Unity Gateway and ensure the uv tool bin directory is on PATH."
             )
         result = subprocess_cross_os.run(
-            [executable, "--version"],
+            [executable, "--help"],
             check=False,
             capture_output=True,
             text=True,
@@ -4154,7 +4305,7 @@ def _verify_upgraded_commands() -> None:
         if result.returncode != 0:
             detail = _upgrade_failure_detail(result)
             raise RuntimeError(
-                f"Upgrade completed, but `{command} --version` failed"
+                f"Upgrade completed, but `{command} --help` failed"
                 f"{f': {detail}' if detail else '.'}"
             )
 
