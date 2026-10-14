@@ -315,8 +315,8 @@ class TestV2Launch:
             rationale="Selected for the parser task.",
         )
         assert captured["plugin_models"] == {
-            "system.ai.claude-opus-4-8",
-            "system.ai.claude-sonnet-5",
+            "system.ai.claude-opus-4-8[1m]",
+            "system.ai.claude-sonnet-5[1m]",
         }
         assert captured["settings"]["modelOverrides"] == {
             "claude-opus-4-8": "system.ai.claude-opus-4-8",
@@ -513,7 +513,7 @@ class TestV2Launch:
         assert "UserPromptSubmit" not in settings["hooks"]
         assert "route-subagent" in str(settings["hooks"]["PreToolUse"])
         assert settings["modelOverrides"] == {"claude-opus-4-8": "system.ai.claude-opus-4-8"}
-        assert captured["plugin_models"] == {"system.ai.claude-opus-4-8"}
+        assert captured["plugin_models"] == {"system.ai.claude-opus-4-8[1m]"}
         assert captured["argv"][3:5] == ["--model", "opus"]
         assert captured["argv"].count("--agents") == 1
         assert captured["argv"].count("--plugin-dir") == 2
@@ -719,7 +719,7 @@ class TestSubagentRouting:
         manifest = json.loads((plugin_dir / ".claude-plugin" / "plugin.json").read_text())
         assert manifest["name"] == "ug-smart-router"
         assert _plugin_agent_models(plugin_dir) == {
-            "system.ai.claude-opus-4-8",
+            "system.ai.claude-opus-4-8[1m]",
             "system.ai.glm-5-3",
             "system.ai.gpt-5-6-sol[1m]",
         }

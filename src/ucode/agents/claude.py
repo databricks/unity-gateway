@@ -47,7 +47,6 @@ from ucode.databricks import (
     build_otel_traces_endpoint,
     build_tool_base_url,
     get_databricks_token,
-    maybe_add_gpt_1m_suffix,
     ug_binary,
 )
 from ucode.launcher import exec_or_spawn
@@ -171,6 +170,8 @@ WEB_SEARCH_MCP_NAME = "web_search"
 _CLAUDE_MODEL_RE = re.compile(
     r"^(?:system\.ai\.)?(?:databricks-)?claude-(opus|sonnet)-(\d+)(?:-(\d+))?(.*)$"
 )
+# Claude Code sizes its context window from a `[1m]` id hint; gpt-oss's window is far below 1M.
+_GPT_1M_MODEL_RE = re.compile(r"^(?:system\.ai\.)?(?:databricks-)?gpt-\d[a-z0-9.-]*$")
 
 # OTLP trace-export keys owned by the managed configuration path.
 CLAUDE_OTEL_TRACE_ENV_KEYS = (
@@ -507,7 +508,7 @@ def render_overlay(
     # on the routed model rather than the family default.
     _ = model  # API stability; no longer pinned via env.
     if route_root_model:
-        env["ANTHROPIC_MODEL"] = maybe_add_gpt_1m_suffix(route_root_model)
+        env["ANTHROPIC_MODEL"] = _maybe_add_1m_suffix(route_root_model)
     # A Bedrock-backed provider needs its provider-side ids pinned verbatim
     # (Claude Code's canonical names aren't routable there). These come from the
     # service's targets, already de-duped to one id per family upstream.
@@ -576,9 +577,8 @@ def render_overlay(
             "replaceBuiltInOptions": True,
             "options": [
                 _picker_option(
-                    maybe_add_gpt_1m_suffix(model),
-                    picker_catalog.model_id_to_display_name.get(model)
-                    or _picker_label(model.removesuffix("[1m]")),
+                    _maybe_add_1m_suffix(model),
+                    picker_catalog.model_id_to_display_name.get(model) or _picker_label(model),
                     picker_catalog.model_id_to_description.get(model),
                 )
                 for model in picker_catalog.model_ids
@@ -640,7 +640,7 @@ def _maybe_add_1m_suffix(model: str) -> str:
         return model
     match = _CLAUDE_MODEL_RE.match(model)
     if not match:
-        return maybe_add_gpt_1m_suffix(model)
+        return f"{model}[1m]" if _GPT_1M_MODEL_RE.match(model) else model
 
     family, major_raw, minor_raw, _ = match.groups()
     major = int(major_raw)
@@ -683,17 +683,13 @@ def default_model_picker_catalog(
         display_names[model] = label
 
     if discovered_catalog is not None:
-        for discovered in discovered_catalog.model_ids:
-            model = discovered
-            # Match the current model's exact id so Claude does not append a duplicate row.
-            if launch_model and model.removesuffix("[1m]") == launch_model.removesuffix("[1m]"):
-                model = launch_model
-            # A GPT family default is already listed with the `[1m]` hint the picker gives this row.
-            if model not in model_ids and maybe_add_gpt_1m_suffix(model) not in model_ids:
+        for model in discovered_catalog.model_ids:
+            # A family default is already listed with the `[1m]` hint the picker gives this row.
+            if model not in model_ids and _maybe_add_1m_suffix(model) not in model_ids:
                 model_ids.append(model)
-            if label := discovered_catalog.model_id_to_display_name.get(discovered):
+            if label := discovered_catalog.model_id_to_display_name.get(model):
                 display_names[model] = label
-            if description := discovered_catalog.model_id_to_description.get(discovered):
+            if description := discovered_catalog.model_id_to_description.get(model):
                 descriptions[model] = description
 
     return AnthropicModelCatalog(

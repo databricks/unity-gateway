@@ -3232,12 +3232,7 @@ def _launch_tool(
             picker_catalog = claude_agent.default_model_picker_catalog(
                 coding_agent_config_defaults,
                 provider=provider,
-                # Match launch(), which adds the `[1m]` hint to a non-provider `--model`.
-                launch_model=(
-                    claude_agent._maybe_add_1m_suffix(model)
-                    if model and not provider
-                    else model or forwarded_model or route_root_model
-                ),
+                launch_model=model or forwarded_model or route_root_model,
                 discovered_catalog=picker_catalog,
             )
         state = configure_tool(

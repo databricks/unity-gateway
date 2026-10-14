@@ -90,8 +90,20 @@ class TestRenderOverlay:
             "system.ai.claude-sonnet-5[1m]"
         )
 
-    def test_long_context_suffix_supports_gpt(self):
-        assert claude._maybe_add_1m_suffix("system.ai.gpt-5-5") == ("system.ai.gpt-5-5[1m]")
+    @pytest.mark.parametrize(
+        ("model", "expected"),
+        [
+            ("system.ai.gpt-5-6-sol", "system.ai.gpt-5-6-sol[1m]"),
+            ("databricks-gpt-6-astra", "databricks-gpt-6-astra[1m]"),
+            ("system.ai.gpt-5-5", "system.ai.gpt-5-5[1m]"),
+            ("gpt-4.1", "gpt-4.1[1m]"),
+            ("system.ai.gpt-5-6-sol[1m]", "system.ai.gpt-5-6-sol[1m]"),
+            ("system.ai.gpt-5-6-sol[200k]", "system.ai.gpt-5-6-sol[200k]"),
+            ("system.ai.gpt-oss-120b", "system.ai.gpt-oss-120b"),
+        ],
+    )
+    def test_long_context_suffix_supports_gpt(self, model, expected):
+        assert claude._maybe_add_1m_suffix(model) == expected
 
     def test_does_not_set_anthropic_model_env(self):
         # We deliberately don't pin ANTHROPIC_MODEL: when set, Claude Code's
@@ -161,22 +173,25 @@ class TestRenderOverlay:
             "system.ai.claude-haiku-4-5": "Claude Haiku 4.5",
         }
 
-    def test_default_model_picker_catalog_lists_gpt_family_default_once(self):
-        gpt = "system.ai.gpt-5-6-sol"
+    @pytest.mark.parametrize(
+        ("family", "model"),
+        [("opus", "system.ai.claude-opus-4-8"), ("sonnet", "system.ai.gpt-5-6-sol")],
+    )
+    def test_default_model_picker_catalog_lists_family_default_once(self, family, model):
         catalog = claude.default_model_picker_catalog(
-            {"sonnet": gpt},
+            {family: model},
             discovered_catalog=db_mod.AnthropicModelCatalog(
-                model_ids=[gpt], model_id_to_display_name={}
+                model_ids=[model], model_id_to_display_name={}
             ),
         )
 
-        assert catalog.model_ids == [f"{gpt}[1m]"]
+        assert catalog.model_ids == [f"{model}[1m]"]
 
     def test_picker_lists_discovered_launch_model_under_its_id(self):
         sonnet = "system.ai.claude-sonnet-4-6"
         catalog = claude.default_model_picker_catalog(
             {"sonnet": "system.ai.claude-sonnet-5"},
-            launch_model=f"{sonnet}[1m]",
+            launch_model=sonnet,
             discovered_catalog=db_mod.AnthropicModelCatalog(
                 model_ids=[sonnet], model_id_to_display_name={}
             ),
@@ -3754,7 +3769,7 @@ class TestClaudeSmartRouting:
         claude.write_tool_config(
             state, "system.ai.claude-opus-4-8", route_root_model="system.ai.claude-sonnet-5"
         )
-        assert written[0]["env"]["ANTHROPIC_MODEL"] == "system.ai.claude-sonnet-5"
+        assert written[0]["env"]["ANTHROPIC_MODEL"] == "system.ai.claude-sonnet-5[1m]"
 
     def test_provider_suppresses_routing_hooks(self, monkeypatch):
         written: list = []

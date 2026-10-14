@@ -115,7 +115,7 @@ def test_windows_subagent_routing_uses_native_binary_without_unix_imports(tmp_pa
     assert captured["argv"][0] == str(native_binary)
     assert captured["argv"].count("--plugin-dir") == 2
     assert captured["argv"][-len(caller_args) :] == caller_args
-    assert captured["plugin_models"] == {"system.ai.claude-opus-4-8"}
+    assert captured["plugin_models"] == {"system.ai.claude-opus-4-8[1m]"}
     assert settings["env"][v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
     assert v2.ENABLE_SMART_ROUTING_ENV_VAR not in settings["env"]
     assert "UserPromptSubmit" not in settings["hooks"]
