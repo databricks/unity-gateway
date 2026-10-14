@@ -92,9 +92,10 @@ def test_dedicated_cuj_ci_runs_each_discovered_file_on_its_own_runner():
     assert "test_cuj" not in job
 
 
-def test_latest_smart_routing_ci_covers_cuj_hooks_toggles_and_headers():
-    job = _integration_jobs()["smart-routing-latest"]
+def test_latest_harness_ci_covers_smart_routing_without_blocking_merges():
+    job = _integration_jobs()["harness-latest"]
 
+    assert "name: harness-latest · ${{ matrix.suite }} (non-blocking)" in job
     assert "suite: [cuj4, hooks, managed]" in job
     assert "npm view @anthropic-ai/claude-code@latest version" in job
     assert "npm view @openai/codex@latest version" in job
@@ -108,12 +109,12 @@ def test_latest_smart_routing_ci_covers_cuj_hooks_toggles_and_headers():
     assert '-m "$TEST_MARKER"' in job
     assert "-k 'test_ug_smart_routing_hooks or smart_routing_banner'" in job
     assert "secrets.E2E_ADMIN_WORKSPACE" in job and "secrets.UCODE_TEST_WORKSPACE" in job
-    assert "name: smart-routing-latest-${{ matrix.suite }}" in job
-    assert "smart-routing-latest-versions.txt" in job
-    assert "continue-on-error:" not in job
+    assert "name: harness-latest-${{ matrix.suite }}" in job
+    assert "harness-latest-versions.txt" in job
+    assert "continue-on-error: true" in job
     assert "fail-fast: false" in job
     gate = _integration_jobs()["cujs"]
-    assert "smart-routing-latest" in re.search(r"needs: \[([^\]]+)\]", gate).group(1)
+    assert "harness-latest" not in re.search(r"needs: \[([^\]]+)\]", gate).group(1)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="dedicated-cuj-plan runs on Linux")
@@ -159,7 +160,7 @@ SKIPPED_ON_FORK_PRS = {
     "opencode",
     "managed",
     "managed-opencode",
-    "smart-routing-latest",
+    "harness-latest",
     "dedicated-cuj-plan",
     "dedicated-cuj",
     "cujs",

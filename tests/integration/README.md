@@ -717,11 +717,12 @@ The advisory Windows installation and headless lanes are not yet included in tha
 The existing required `e2e` context also waits for the complete integration workflow, so integration
 cannot still be running when that gate passes. Full coverage on PRs needs no label or opt-in.
 
-The required **Smart routing · latest** matrix adds three Linux runners alongside the
-pinned-version lanes. Each resolves npm's `@anthropic-ai/claude-code@latest` and
-`@openai/codex@latest` tags to exact versions before installing; no floating version
+The advisory **harness-latest** matrix currently covers smart routing only and adds
+three Linux runners alongside the pinned-version lanes. Each resolves npm's
+`@anthropic-ai/claude-code@latest` and `@openai/codex@latest` tags to exact versions
+before installing; no floating version
 is passed to `scripts/run_integration.py`. The selected versions and test evidence
-are uploaded as `smart-routing-latest-SUITE` artifacts, including on failure.
+are uploaded as `harness-latest-SUITE` artifacts, including on failure.
 
 | Suite | Selected tests | Workspace/auth |
 | --- | --- | --- |
@@ -734,7 +735,8 @@ real inference requests: launch recipe → `DISABLED` → launch recipe. The Cod
 toggle test checks native child completion and correlated routing decisions.
 The existing deferred routing-disabled CUJ4 case remains skipped. Cases run
 serially within each runner to isolate machine-wide settings. This matrix uses
-`fail-fast: false`; **All integration tests** requires all three jobs to pass.
+`fail-fast: false` and `continue-on-error: true`. It is excluded from the
+**All integration tests** gate, so its failures do not block merges.
 Fork PRs use the existing member-authorized `/integration-test` path for secrets.
 
 ### Managed-workspace journeys

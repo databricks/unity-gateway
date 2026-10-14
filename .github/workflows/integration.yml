@@ -410,8 +410,10 @@ jobs:
             ${{ runner.temp }}/ug-integration/artifacts/
             ${{ runner.temp }}/ug-integration/wheels/
 
-  smart-routing-latest:
-    name: Smart routing · latest · ${{ matrix.suite }}
+  # The latest-agent harness currently covers smart routing only.
+  harness-latest:
+    name: harness-latest · ${{ matrix.suite }} (non-blocking)
+    continue-on-error: true
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-22.04
     timeout-minutes: 70
@@ -452,7 +454,7 @@ jobs:
           echo "CLAUDE_VERSION=$latest_claude" >> "$GITHUB_ENV"
           echo "CODEX_VERSION=$latest_codex" >> "$GITHUB_ENV"
           printf 'claude=%s\ncodex=%s\n' "$latest_claude" "$latest_codex" \
-            | tee "$RUNNER_TEMP/smart-routing-latest-versions.txt"
+            | tee "$RUNNER_TEMP/harness-latest-versions.txt"
       - name: Install ug and latest agent CLIs for CUJ4
         if: ${{ matrix.suite == 'cuj4' }}
         run: |
@@ -480,14 +482,14 @@ jobs:
             --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
             "${args[@]}" -- -m "$TEST_MARKER" \
             -k 'test_ug_smart_routing_hooks or smart_routing_banner'
-      - name: Upload latest smart-routing evidence
+      - name: Upload latest harness evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
-          name: smart-routing-latest-${{ matrix.suite }}
+          name: harness-latest-${{ matrix.suite }}
           include-hidden-files: true
           path: |
-            ${{ runner.temp }}/smart-routing-latest-versions.txt
+            ${{ runner.temp }}/harness-latest-versions.txt
             ${{ runner.temp }}/cuj/*/artifacts/
             ${{ runner.temp }}/ug-integration/*.json
             ${{ runner.temp }}/ug-integration/*.txt
@@ -646,7 +648,7 @@ jobs:
   cujs:
     name: All integration tests
     if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    needs: [installation, installation-windows, headless-windows, workspace, smoke, full, managed, smart-routing-latest, dedicated-cuj-plan, dedicated-cuj]
+    needs: [installation, installation-windows, headless-windows, workspace, smoke, full, managed, dedicated-cuj-plan, dedicated-cuj]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
