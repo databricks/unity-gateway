@@ -36,6 +36,7 @@ from .helpers.tui_request_recorder import RecordedRequest, RecordedResponse
 from .helpers.workspace import Workspace
 
 CUJ_NAME = "CUJ 4 · Smart routing"
+pytestmark = pytest.mark.harness_latest
 
 ROUTING_PATH = "/ai-gateway/routing/v1/routes:select"
 AGENTS = (CLAUDE, CODEX)

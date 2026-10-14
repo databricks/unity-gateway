@@ -25,6 +25,8 @@ from utils.managed import use_managed_config_fixture
 from utils.request_recorder import TuiRequestRecorder, served_inference_request
 from utils.terminal import AgentTerminal
 
+pytestmark = pytest.mark.harness_latest
+
 SMART_ROUTING_BANNER = "Using Unity Gateway Smart Router."
 SMART_ROUTING_SUBAGENT_NOTICE = "Using Unity Gateway Smart Router - Subagent"
 CLAUDE_MODELS = [

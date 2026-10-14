@@ -726,9 +726,9 @@ are uploaded as `harness-latest-SUITE` artifacts, including on failure.
 
 | Suite | Selected tests | Workspace/auth |
 | --- | --- | --- |
-| `cuj4` | All of `e2e_cuj/test_cuj4_smart_routing.py`, including every preset, both agents, and explicit-model bypass | CUJ4's read-only workspace and `UG_CUJ_SP_CLIENT_*` |
-| `hooks` | `test_ug_smart_routing_hooks.py` with `not managed_fixture`: both agents' route-subagent hooks and all preset cases | `UCODE_TEST_WORKSPACE` / `DATABRICKS_BEARER` |
-| `managed` | `test_ug_smart_routing_hooks.py` and `smart_routing_banner` with `managed_fixture`: both agents' skill toggles and first-prompt banners, including every parameterized case | `E2E_ADMIN_WORKSPACE` / `E2E_ADMIN_SP_CLIENT_*` |
+| `cujs` | `e2e_cuj/` with `harness_latest`: currently all of CUJ4, including every preset, both agents, and explicit-model bypass | Each CUJ's read-only workspace and its existing CUJ credentials |
+| `live` | `integration/` with `harness_latest and not managed_fixture`: currently both agents' route-subagent hooks and all preset cases | `UCODE_TEST_WORKSPACE` / `DATABRICKS_BEARER` |
+| `managed` | `integration/` with `harness_latest and managed_fixture`: currently both agents' skill toggles and first-prompt banners, including every parameterized case | `E2E_ADMIN_WORKSPACE` / `E2E_ADMIN_SP_CLIENT_*` |
 
 The Claude skill-toggle test asserts `databricks-smart-router-recipe` values on
 real inference requests: launch recipe → `DISABLED` → launch recipe. The Codex
@@ -738,6 +738,33 @@ serially within each runner to isolate machine-wide settings. This matrix uses
 `fail-fast: false` and `continue-on-error: true`. It is excluded from the
 **All integration tests** gate, so its failures do not block merges.
 Fork PRs use the existing member-authorized `/integration-test` path for secrets.
+
+### Opting into harness-latest
+
+Use the registered `harness_latest` pytest marker to opt in without changing
+`integration.yml`. To select a whole module, add after its imports:
+
+```python
+pytestmark = pytest.mark.harness_latest
+```
+
+If the module already has `pytestmark`, append `pytest.mark.harness_latest` to its
+existing list. For a single test or class, add `@pytest.mark.harness_latest`.
+All parameterized cases inherit the marker. Keep existing agent and workspace
+markers: integration's `managed_fixture` determines which workspace runner is used.
+The lane discovers marked tests throughout `integration/` and `e2e_cuj/`; there is
+no filename or test-name allow list. Tests must use the selected runner's existing
+credentials and installed Claude/Codex CLIs; the marker does not provision resources.
+
+Preview selection without workspace access:
+
+```bash
+uv run pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj --collect-only -q -m harness_latest
+uv run pytest -c tests/integration/pytest.ini --confcutdir=tests/integration \
+  tests/integration --collect-only -q -m 'harness_latest and not managed_fixture'
+uv run pytest -c tests/integration/pytest.ini --confcutdir=tests/integration \
+  tests/integration --collect-only -q -m 'harness_latest and managed_fixture'
+```
 
 ### Managed-workspace journeys
 

@@ -28,6 +28,12 @@ recipe header values across on → off → on. It uses `continue-on-error: true`
 is excluded from the required integration gate, so failures do not block merges.
 Existing pinned-version lanes remain.
 
+Opt a test or class in with `@pytest.mark.harness_latest`, or an entire module
+with `pytestmark = pytest.mark.harness_latest`. The lane discovers marked cases
+under `e2e_cuj/` and `integration/`; no workflow edit is needed. Integration cases
+retain their agent and workspace markers, including `managed_fixture` when needed.
+See [the harness opt-in guide](integration/README.md#opting-into-harness-latest).
+
 Dedicated CUJs reuse `integration/utils` session/terminal mechanics and file-task
 and transcript readers, not its config stubs or pytest fixtures. Prompt/model
 correlation remains CUJ-specific. Concurrent runs may read the same CUJ workspace.

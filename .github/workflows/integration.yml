@@ -420,17 +420,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [cuj4, hooks, managed]
+        suite: [cujs, live, managed]
     env:
       UV_INDEX_URL: https://pypi.org/simple
+      UG_CUJ1_WORKSPACE: ${{ secrets.UG_CUJ1_WORKSPACE }}
       UG_CUJ_SP_CLIENT_ID: ${{ secrets.UG_CUJ_SP_CLIENT_ID }}
       UG_CUJ_SP_CLIENT_SECRET: ${{ secrets.UG_CUJ_SP_CLIENT_SECRET }}
+      UG_BUDGET_CUJ_SP_CLIENT_ID: ${{ secrets.UG_BUDGET_CUJ_SP_CLIENT_ID }}
+      UG_BUDGET_CUJ_SP_CLIENT_SECRET: ${{ secrets.UG_BUDGET_CUJ_SP_CLIENT_SECRET }}
       UCODE_TEST_WORKSPACE: ${{ matrix.suite == 'managed' && secrets.E2E_ADMIN_WORKSPACE || secrets.UCODE_TEST_WORKSPACE }}
       DATABRICKS_BEARER: ${{ matrix.suite != 'managed' && secrets.DATABRICKS_BEARER || '' }}
       DATABRICKS_CLIENT_ID: ${{ matrix.suite == 'managed' && secrets.E2E_ADMIN_SP_CLIENT_ID || '' }}
       DATABRICKS_CLIENT_SECRET: ${{ matrix.suite == 'managed' && secrets.E2E_ADMIN_SP_CLIENT_SECRET || '' }}
       DEPENDENCY: ${{ inputs.dependency }}
-      TEST_MARKER: ${{ matrix.suite == 'managed' && 'managed_fixture' || 'not managed_fixture' }}
+      TEST_MARKER: ${{ matrix.suite == 'managed' && 'harness_latest and managed_fixture' || 'harness_latest and not managed_fixture' }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
@@ -455,22 +458,22 @@ jobs:
           echo "CODEX_VERSION=$latest_codex" >> "$GITHUB_ENV"
           printf 'claude=%s\ncodex=%s\n' "$latest_claude" "$latest_codex" \
             | tee "$RUNNER_TEMP/harness-latest-versions.txt"
-      - name: Install ug and latest agent CLIs for CUJ4
-        if: ${{ matrix.suite == 'cuj4' }}
+      - name: Install ug and latest agent CLIs for opted-in CUJs
+        if: ${{ matrix.suite == 'cujs' }}
         run: |
           uv lock
           uv tool install .
           npm install -g \
             "@anthropic-ai/claude-code@$CLAUDE_VERSION" \
             "@openai/codex@$CODEX_VERSION"
-      - name: Run CUJ4 against the latest agents
-        if: ${{ matrix.suite == 'cuj4' }}
+      - name: Run opted-in CUJs against the latest agents
+        if: ${{ matrix.suite == 'cujs' }}
         run: |
           uv run --with pexpect==4.9.0 --with pyte==0.8.2 \
-            pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj/test_cuj4_smart_routing.py \
-            -v --basetemp "$RUNNER_TEMP/cuj"
-      - name: Run routing hooks, skill toggles, and first-prompt banners against the latest agents
-        if: ${{ matrix.suite != 'cuj4' }}
+            pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj \
+            -m harness_latest -v --basetemp "$RUNNER_TEMP/cuj"
+      - name: Run opted-in integration tests against the latest agents
+        if: ${{ matrix.suite != 'cujs' }}
         shell: bash
         run: |
           args=(--claude-version "$CLAUDE_VERSION" --codex-version "$CODEX_VERSION")
@@ -480,8 +483,7 @@ jobs:
           uv run --no-project --python 3.12 python scripts/run_integration.py \
             --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
             --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
-            "${args[@]}" -- -m "$TEST_MARKER" \
-            -k 'test_ug_smart_routing_hooks or smart_routing_banner'
+            "${args[@]}" -- -m "$TEST_MARKER"
       - name: Upload latest harness evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
