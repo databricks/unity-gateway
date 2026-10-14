@@ -3276,17 +3276,20 @@ def _get_anthropic_models_json(
     parent_schema: str | None = None,
     provider: str | None = None,
 ) -> tuple[dict | list | None, str | None]:
+    from ucode.agents.request_tags import ug_headers  # the agent modules import this one
+
     origin = workspace_origin(workspace)
-    headers = None
+    headers: dict[str, str] = {}
     if provider is not None:
-        headers = {MODEL_PROVIDER_SERVICE_HEADER: provider}
+        headers[MODEL_PROVIDER_SERVICE_HEADER] = provider
     elif parent_schema is not None:
-        headers = {MODEL_SERVICE_PARENT_SCHEMA_HEADER: parent_schema}
+        headers[MODEL_SERVICE_PARENT_SCHEMA_HEADER] = parent_schema
+    headers.update(ug_headers())
     return _http_get_json(
         f"{origin}{ANTHROPIC_MODELS_PATH}?limit=1000",
         token,
         max_retries=_ANTHROPIC_MODEL_DISCOVERY_SETUP_MAX_RETRIES,
-        **({"headers": headers} if headers is not None else {}),
+        **({"headers": headers} if headers else {}),
     )
 
 
@@ -3708,12 +3711,14 @@ def _fetch_codex_model_catalog(
     source: CodexCatalogSource,
     identifier: str,
 ) -> dict:
+    from ucode.agents.request_tags import ug_headers  # the agent modules import this one
+
     header_name, kind = source.value
     payload, reason = _http_get_json(
         f"{build_tool_base_url('codex', workspace)}/models",
         token,
         max_retries=2,
-        headers={header_name: identifier},
+        headers={header_name: identifier, **ug_headers()},
     )
     if reason:
         message = f"Could not discover Codex models for {identifier}: {reason}"

@@ -108,6 +108,25 @@ class TestFetchCodexMpsModelCatalog:
         assert seen["url"] == f"{WS}/ai-gateway/codex/v1/models"
         assert seen["headers"] == {"Databricks-Model-Provider-Service": "main.default.openai"}
 
+    def test_sends_ug_headers(self, monkeypatch):
+        monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: testenv://liteswap/abc")
+        seen = {}
+
+        def fake_get(url, token, **kwargs):
+            seen.update(kwargs)
+            return {"models": [{"slug": "gpt-mps"}]}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        db_mod._fetch_codex_model_catalog(
+            WS, "tok", source=db_mod.CodexCatalogSource.PROVIDER, identifier="main.default.openai"
+        )
+
+        assert seen["headers"] == {
+            "Databricks-Model-Provider-Service": "main.default.openai",
+            "x-databricks-traffic-id": "testenv://liteswap/abc",
+        }
+
     def test_rejects_empty_catalog(self, monkeypatch):
         monkeypatch.setattr(
             db_mod, "_http_get_json", lambda *args, **kwargs: ({"models": []}, None)
@@ -383,6 +402,22 @@ class TestDiscoverClaudeModels:
             "token",
             {"max_retries": 2},
         )
+
+    def test_model_listing_sends_ug_headers(self, monkeypatch):
+        monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: testenv://liteswap/abc")
+        requests = []
+
+        def fake_get(url, token, **kwargs):
+            requests.append(kwargs)
+            return {"data": [{"id": "system.ai.claude-opus-5"}]}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        db_mod.list_anthropic_models(WS, "token")
+
+        assert requests == [
+            {"max_retries": 2, "headers": {"x-databricks-traffic-id": "testenv://liteswap/abc"}}
+        ]
 
     @pytest.mark.parametrize(
         ("scope_kwargs", "expected_headers"),
