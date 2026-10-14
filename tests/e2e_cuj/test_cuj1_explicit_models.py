@@ -6,11 +6,10 @@ import json
 import os
 import re
 import tomllib
-import uuid
 
 import pytest
 
-from tests.integration.utils.evidence import FileTask
+from tests.integration.utils.evidence import FileTask, fresh_id
 from tests.integration.utils.sql import query_count, resolve_trace_table, resolve_warehouse_id
 from tests.integration.utils.terminal import AgentTerminal
 
@@ -451,7 +450,7 @@ class TestCujManagedClaude(BaseCujTest):
         run_id = claude_headers[RUN_HEADER]
 
         root_task = FileTask(session)
-        root_marker = f"ug-managed-claude-{uuid.uuid4().hex}-root"
+        root_marker = f"ug-managed-claude-{fresh_id()}-root"
         root_task.prompt += f" Inference marker: {root_marker}"
         session.env["OTEL_RESOURCE_ATTRIBUTES"] = f"ug_integration_marker={root_marker}"
         evidence = SessionEvidence(session.home, CLAUDE)
@@ -477,7 +476,7 @@ class TestCujManagedClaude(BaseCujTest):
         )
 
         claude_opus_task = FileTask(session)
-        claude_opus_marker = f"ug-managed-claude-{uuid.uuid4().hex}-opus"
+        claude_opus_marker = f"ug-managed-claude-{fresh_id()}-opus"
         claude_opus_task.prompt += f" Inference marker: {claude_opus_marker}"
         session.env["OTEL_RESOURCE_ATTRIBUTES"] = f"ug_integration_marker={claude_opus_marker}"
         evidence = SessionEvidence(session.home, CLAUDE)
@@ -506,7 +505,7 @@ class TestCujManagedClaude(BaseCujTest):
         )
 
         claude_sonnet_task = FileTask(session)
-        claude_sonnet_marker = f"ug-managed-claude-{uuid.uuid4().hex}-sonnet"
+        claude_sonnet_marker = f"ug-managed-claude-{fresh_id()}-sonnet"
         claude_sonnet_task.prompt += f" Inference marker: {claude_sonnet_marker}"
         session.env["OTEL_RESOURCE_ATTRIBUTES"] = f"ug_integration_marker={claude_sonnet_marker}"
         evidence = SessionEvidence(session.home, CLAUDE)
@@ -535,7 +534,7 @@ class TestCujManagedClaude(BaseCujTest):
         )
 
         claude_haiku_task = FileTask(session)
-        claude_haiku_marker = f"ug-managed-claude-{uuid.uuid4().hex}-haiku"
+        claude_haiku_marker = f"ug-managed-claude-{fresh_id()}-haiku"
         claude_haiku_task.prompt += f" Inference marker: {claude_haiku_marker}"
         session.env["OTEL_RESOURCE_ATTRIBUTES"] = f"ug_integration_marker={claude_haiku_marker}"
         evidence = SessionEvidence(session.home, CLAUDE)
@@ -603,7 +602,7 @@ class TestCujManagedCodex(BaseCujTest):
         session.env.pop("OTEL_RESOURCE_ATTRIBUTES", None)
 
         codex_default_task = FileTask(session)
-        codex_default_marker = f"ug-managed-codex-{uuid.uuid4().hex}-default"
+        codex_default_marker = f"ug-managed-codex-{fresh_id()}-default"
         codex_default_task.prompt += f" Inference marker: {codex_default_marker}"
         evidence = SessionEvidence(session.home, CODEX)
         recorder.prepare_launch()
@@ -637,7 +636,7 @@ class TestCujManagedCodex(BaseCujTest):
         )
 
         codex_luna_task = FileTask(session)
-        codex_luna_marker = f"ug-managed-codex-{uuid.uuid4().hex}-luna"
+        codex_luna_marker = f"ug-managed-codex-{fresh_id()}-luna"
         codex_luna_task.prompt += f" Inference marker: {codex_luna_marker}"
         evidence = SessionEvidence(session.home, CODEX)
         recorder.prepare_launch()
@@ -703,7 +702,7 @@ class TestCujManagedTracing(BaseCujTest):
         trace_table = resolve_trace_table(workspace.url, bearer)
         warehouse_id = os.environ.get("UG_INTEGRATION_WAREHOUSE_ID", "").strip()
         warehouse_id = warehouse_id or resolve_warehouse_id(workspace.url, bearer)
-        run_id = uuid.uuid4().hex
+        run_id = fresh_id()
         trace_pairs: list[tuple[str, str, str]] = []
 
         claude_task = FileTask(session)

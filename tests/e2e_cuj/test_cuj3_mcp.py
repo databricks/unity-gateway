@@ -3,13 +3,13 @@
 import hashlib
 import json
 import re
-import uuid
 
 import pytest
 
 from tests.integration.utils.evidence import (
     agent_sessions,
     assistant_answers,
+    fresh_id,
     is_child_session,
 )
 from tests.integration.utils.mcp import open_claude_mcp_inventory, open_codex_mcp_inventory
@@ -32,8 +32,7 @@ SERVICES = {
 
 class McpFixtureTask:
     def __init__(self):
-        # Short ids: models have dropped characters copying a 32-char hex id.
-        self.run_id = uuid.uuid4().hex[:12]
+        self.run_id = fresh_id()
         self.expected = {
             tool: hashlib.sha256(
                 b"unity-gateway-cuj-fixture\0"
