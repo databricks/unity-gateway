@@ -314,11 +314,14 @@ class TestCujSmartRouting(BaseCujTest):
                     checkpoint = recorder.checkpoint()
                     existing_sessions = set(agent_sessions(session, agent))
                     tui.submit(child_task.prompt)
+                    # The parent can resume a finished child before replying; wait for its
+                    # reply so /tasks sees that run.
                     tui.wait_until(
-                        lambda task=child_task, agent=agent: task.completed(
-                            session, agent, child=True
+                        lambda task=child_task, agent=agent: (
+                            task.completed(session, agent, child=True)
+                            and task.completed(session, agent)
                         ),
-                        "completed native subagent file task",
+                        "completed native subagent file task and parent reply",
                     )
                     children = {
                         path: records
