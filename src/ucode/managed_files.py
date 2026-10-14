@@ -260,7 +260,6 @@ class ManagedFileSnapshots:
     ug_picker: dict | None = None
     # ``[path, value]`` leaves ug last delivered here from the admin's agent_native_settings.
     settings_passthrough: list | None = None
-    owned_paths: list | None = None
 
 
 def managed_file_snapshots(tool: str, parser: ManagedParser) -> ManagedFileSnapshots:
@@ -288,13 +287,11 @@ def managed_file_snapshots(tool: str, parser: ManagedParser) -> ManagedFileSnaps
             return ManagedFileSnapshots(None, None)
         ug_picker = entry.get("ug_picker")
         passthrough = entry.get("settings_passthrough")
-        owned_paths = entry.get("owned_paths")
         return ManagedFileSnapshots(
             _parse(_snapshot_text(entry, "backup_file")),
             _parse(_snapshot_text(entry, "last_applied_file")),
             ug_picker if isinstance(ug_picker, dict) else None,
             passthrough if isinstance(passthrough, list) else None,
-            owned_paths if isinstance(owned_paths, list) else None,
         )
     except RuntimeError:
         return ManagedFileSnapshots(None, None)

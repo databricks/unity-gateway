@@ -2336,17 +2336,11 @@ def otel_proxy_cmd(
         if not state:
             raise RuntimeError(f"No saved configuration for {host}. Run `ug configure` first.")
         apply_pat_environment(state)
-        server, cache, client = gateway_proxy.start_otel_proxy(
+        server, _cache, _client = gateway_proxy.start_otel_proxy(
             host, codex_agent._otel_token_provider(state, host), port=port
         )
-        try:
-            server.serve_forever()
-        except KeyboardInterrupt:
-            pass
-        finally:
-            server.server_close()
-            cache.stop()
-            client.close()
+        # systemd stops this with SIGTERM, which exits without cleanup, and nothing needs it.
+        server.serve_forever()
     except (OSError, RuntimeError) as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None

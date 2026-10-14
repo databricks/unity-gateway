@@ -297,9 +297,6 @@ the pinned Claude version (currently 2.1.280 in CI).
 
 ## Test layout and format
 
-Linux Codex desktop OTEL configuration/proxy behavior has component coverage.
-Desktop GUI export and login/reboot startup are not covered by this live suite.
-
 All user journeys are top-level tests. There is no separate regressions category:
 
 ```text
