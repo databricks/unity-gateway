@@ -536,6 +536,8 @@ agents are outside this focused revision.
 The Claude and Codex custom OAuth boot journeys pass `--client-id databricks-cli`
 without a feature flag, exercising the default dedicated CLI profile setup. They
 assert profile persistence and TUI input/exit, not browser consent or inference.
+`../test_custom_oauth.py` separately checks public/hidden OAuth help options with
+plain and forced-color output; this is component coverage.
 Custom OAuth search dispatch and refresh are covered by component tests in
 `../test_mcp_web_search.py`; no live search request, delegated search, or classifier
 permission decision is asserted by those tests or this integration suite.

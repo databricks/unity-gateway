@@ -461,6 +461,7 @@ which runs automatically only for in-repo PRs.
 reuse, and forced refresh without a feature flag, including an inherited retired
 flag set to `0`. It also checks that `ug configure --help` advertises `--client-id`
 for a custom OAuth application while the other custom OAuth options remain hidden.
+These help assertions cover both plain and forced-color output, ignoring ANSI styling.
 The SDK cache/consent tests and offline OAuth-storm reproduction
 were removed with the SDK backend. CLI token memoization and concurrency remain
 covered in `test_databricks.py`; cross-platform lock behavior remains covered in

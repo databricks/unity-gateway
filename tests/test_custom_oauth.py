@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from unittest.mock import Mock, patch
 
 import pytest
@@ -308,16 +309,19 @@ class TestConfigureCustomOAuth:
 
 
 class TestLaunchCustomOAuth:
+    @pytest.mark.parametrize("force_terminal", [False, True])
     @pytest.mark.parametrize("command", ["auth-token", "configure", "claude", "codex"])
-    def test_client_id_is_public_for_configure(self, command):
+    def test_client_id_is_public_for_configure(self, monkeypatch, command, force_terminal):
+        monkeypatch.setattr("typer.rich_utils.FORCE_TERMINAL", force_terminal)
         result = runner.invoke(app, [command, "--help"])
         assert result.exit_code == 0
-        assert ("--client-id" in result.output) == (command == "configure")
+        output = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+        assert ("--client-id" in output) == (command == "configure")
         if command == "configure":
-            help_text = " ".join(result.output.replace("│", "").split())
+            help_text = " ".join(output.replace("│", "").split())
             assert "custom OAuth application client ID" in help_text
-        assert "--redirect-url" not in result.output
-        assert "--scopes" not in result.output
+        assert "--redirect-url" not in output
+        assert "--scopes" not in output
 
     @pytest.mark.parametrize("tool", ["claude", "codex"])
     def test_launch_forwards_custom_oauth(self, tool):
