@@ -71,7 +71,15 @@ def write_usage(tmp_path: Path, entries: list, *, start_model: str | None = OPUS
     return path
 
 
-def priced(usage: Path, price_cache: Path, *, first_prompt: bool = False) -> str | None:
+def saved(amount: str, percent: str) -> dict:
+    return {"saved": True, "amount": amount, "percent": percent}
+
+
+def cost_more(amount: str, percent: str) -> dict:
+    return {"saved": False, "amount": amount, "percent": percent}
+
+
+def priced(usage: Path, price_cache: Path, *, first_prompt: bool = False) -> dict | None:
     line = savings.usage_output(usage, price_cache=price_cache, baseline_session_start=first_prompt)
     assert "\n" not in line
     return json.loads(line)["savings"]
@@ -85,9 +93,7 @@ class TestUsageSavings:
         ]
 
         # Baseline $0.38005 - actual $0.19705.
-        assert priced(write_usage(tmp_path, entries), price_cache) == (
-            "💰 Est. saved with smart routing: $0.18 (48%)"
-        )
+        assert priced(write_usage(tmp_path, entries), price_cache) == saved("$0.18", "48%")
 
     def test_an_entrys_baseline_is_the_main_model_when_its_request_ran(self, tmp_path, price_cache):
         entries = [
@@ -98,9 +104,7 @@ class TestUsageSavings:
             entry("a1", SONNET_ID, SONNET_ID, SUBAGENT_USAGE),
         ]
 
-        assert priced(write_usage(tmp_path, entries), price_cache) == (
-            "💰 Est. saved with smart routing: $0.18 (34%)"
-        )
+        assert priced(write_usage(tmp_path, entries), price_cache) == saved("$0.18", "34%")
 
     def test_shows_a_net_cost_increase_honestly(self, tmp_path, price_cache):
         entries = [
@@ -109,9 +113,7 @@ class TestUsageSavings:
         ]
 
         # Baseline $0.15202 vs actual $0.33502.
-        assert priced(write_usage(tmp_path, entries), price_cache) == (
-            "Smart routing cost $0.18 more (120%)"
-        )
+        assert priced(write_usage(tmp_path, entries), price_cache) == cost_more("$0.18", "120%")
 
     def test_nothing_to_claim_until_a_model_was_swapped(self, tmp_path, price_cache):
         entries = [entry("main", OPUS_ID, OPUS_ID, MAIN_USAGE)]
@@ -131,7 +133,7 @@ class TestUsageSavings:
         # SUBAGENT_USAGE does: $0.122 on Sonnet vs $0.305 at Opus rates.
         assert priced(
             write_usage(tmp_path, [entry("a1", OPUS_ID, SONNET_ID, usage)]), price_cache
-        ) == ("💰 Est. saved with smart routing: $0.18 (60%)")
+        ) == saved("$0.18", "60%")
 
     def test_honors_an_explicit_cache_write_split(self, tmp_path, price_cache):
         usage = {
@@ -144,7 +146,7 @@ class TestUsageSavings:
         # The split says 5-minute writes: $0.092 on Sonnet vs $0.23 at Opus rates.
         assert priced(
             write_usage(tmp_path, [entry("a1", OPUS_ID, SONNET_ID, usage)]), price_cache
-        ) == ("💰 Est. saved with smart routing: $0.14 (60%)")
+        ) == saved("$0.14", "60%")
 
     def test_skips_entries_without_tokens(self, tmp_path, price_cache):
         entries = [
@@ -152,9 +154,7 @@ class TestUsageSavings:
             entry("a2", "unpriced-baseline", "unpriced-served", {"input_tokens": 0}),
         ]
 
-        assert priced(write_usage(tmp_path, entries), price_cache) == (
-            "💰 Est. saved with smart routing: $0.18 (60%)"
-        )
+        assert priced(write_usage(tmp_path, entries), price_cache) == saved("$0.18", "60%")
 
     def test_first_prompt_routing_prices_against_the_start_model(self, tmp_path, price_cache):
         # Under first-prompt routing the router picks the main model too, so an entry's own
@@ -167,9 +167,7 @@ class TestUsageSavings:
         usage = write_usage(tmp_path, entries, start_model=OPUS_ID)
 
         # Baseline $0.38005 at Opus vs actual $0.15202 on Sonnet.
-        assert priced(usage, price_cache, first_prompt=True) == (
-            "💰 Est. saved with smart routing: $0.23 (60%)"
-        )
+        assert priced(usage, price_cache, first_prompt=True) == saved("$0.23", "60%")
         assert priced(usage, price_cache) is None
 
     def test_first_prompt_routing_prices_entries_after_a_user_switch_as_their_own(
@@ -185,9 +183,7 @@ class TestUsageSavings:
         usage = write_usage(tmp_path, entries, start_model=OPUS_ID)
 
         # Baseline $0.48512 - actual $0.25709.
-        assert priced(usage, price_cache, first_prompt=True) == (
-            "💰 Est. saved with smart routing: $0.23 (47%)"
-        )
+        assert priced(usage, price_cache, first_prompt=True) == saved("$0.23", "47%")
 
     @pytest.mark.parametrize("start_model", [None, ""])
     def test_first_prompt_routing_without_a_start_model_has_no_estimate(
@@ -255,24 +251,19 @@ class TestUsageSavings:
             savings.usage_savings(usage, price_cache=price_cache, baseline_session_start=False)
 
 
-class TestSavingsText:
+class TestSavingsSegment:
     def test_rounds_to_cents_and_whole_percent(self):
-        assert (
-            savings.savings_text(Decimal("1234.565"), Decimal("2469.13"))
-            == "💰 Est. saved with smart routing: $1,234.57 (50%)"
+        assert savings.savings_segment(Decimal("1234.565"), Decimal("2469.13")) == saved(
+            "$1,234.57", "50%"
         )
 
     def test_negative_reads_as_a_cost_increase(self):
-        assert (
-            savings.savings_text(Decimal("-0.04"), Decimal("0.40"))
-            == "Smart routing cost $0.04 more (10%)"
+        assert savings.savings_segment(Decimal("-0.04"), Decimal("0.40")) == cost_more(
+            "$0.04", "10%"
         )
 
     def test_sub_cent_amounts_are_not_shown_as_zero(self):
-        assert (
-            savings.savings_text(Decimal("0.004"), Decimal("1"))
-            == "💰 Est. saved with smart routing: <$0.01 (0%)"
-        )
+        assert savings.savings_segment(Decimal("0.004"), Decimal("1")) == saved("<$0.01", "0%")
 
 
 class TestPricerCommand:
@@ -301,7 +292,7 @@ class TestPricerCommand:
         env.pop("ENABLE_SMART_ROUTING_SAVINGS", None)
         if flag is not None:
             env["ENABLE_SMART_ROUTING_SAVINGS"] = flag
-        # An ASCII stdout locale must not cost the money bag.
+        # The line must survive an ASCII stdout locale.
         return subprocess.run(
             [*argv, "--usage", str(usage)],
             capture_output=True,
@@ -310,16 +301,14 @@ class TestPricerCommand:
             check=False,
         )
 
-    def test_prints_exactly_one_utf8_json_line(self, tmp_path, price_cache):
+    def test_prints_exactly_one_json_line(self, tmp_path, price_cache):
         usage = write_usage(tmp_path, [entry("a1", OPUS_ID, SONNET_ID, SUBAGENT_USAGE)])
 
         result = self.run(price_cache, usage)
 
         assert result.returncode == 0, result.stderr
         assert result.stdout.count(b"\n") == 1
-        assert json.loads(result.stdout.decode("utf-8")) == {
-            "savings": "💰 Est. saved with smart routing: $0.18 (60%)"
-        }
+        assert json.loads(result.stdout.decode("utf-8")) == {"savings": saved("$0.18", "60%")}
 
     def test_never_fails_the_mod(self, tmp_path, price_cache):
         result = self.run(price_cache, tmp_path / "missing.json", first_prompt=True)

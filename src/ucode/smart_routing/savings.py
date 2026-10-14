@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
@@ -122,16 +121,14 @@ def usage_savings(
     return baseline_total - actual_total, baseline_total
 
 
-def savings_text(saved: Decimal, baseline: Decimal) -> str:
-    """A money-bag estimate when positive, an honest cost increase when not."""
+def savings_segment(saved: Decimal, baseline: Decimal) -> dict[str, object]:
+    """The estimate's parts, for the mod to style: a saving, or an honest cost increase."""
     percent = (abs(saved) / baseline * 100).quantize(Decimal(1), rounding=ROUND_HALF_UP)
     magnitude = abs(saved)
     amount = (
         "<$0.01" if magnitude < _CENT else f"${magnitude.quantize(_CENT, rounding=ROUND_HALF_UP):,}"
     )
-    if saved >= 0:
-        return f"💰 Est. saved with smart routing: {amount} ({percent}%)"
-    return f"Smart routing cost {amount} more ({percent}%)"
+    return {"saved": saved >= 0, "amount": amount, "percent": f"{percent}%"}
 
 
 def usage_output(usage_path: Path, *, price_cache: Path, baseline_session_start: bool) -> str:
@@ -142,10 +139,10 @@ def usage_output(usage_path: Path, *, price_cache: Path, baseline_session_start:
         computed = usage_savings(
             usage_path, price_cache=price_cache, baseline_session_start=baseline_session_start
         )
-        savings = None if computed is None else savings_text(*computed)
+        savings = None if computed is None else savings_segment(*computed)
     except Exception:  # noqa: BLE001
         pass
-    return json.dumps({"savings": savings}, ensure_ascii=False)
+    return json.dumps({"savings": savings})
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -165,8 +162,7 @@ def main(argv: list[str] | None = None) -> int:
         if resolve_environment(agent=AGENT_CLAUDE).get(ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR) == "1"
         else json.dumps({"savings": None})
     )
-    # Write bytes so the money bag survives a non-UTF-8 stdout locale.
-    sys.stdout.buffer.write((line + "\n").encode("utf-8"))
+    print(line)
     return 0
 
 

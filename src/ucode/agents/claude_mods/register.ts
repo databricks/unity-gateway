@@ -116,9 +116,10 @@ export function register(on: On, options: PluginOptions): void {
   registerStatusBand(on);
 }
 
-// Smart-routing savings estimate, drawn above the prompt with the Smart Router
-// Orchestrator skill version. Per turn request (main agent and subagents) it sums
-// token usage by (agent, baseline, served, before_user_switch), where served is
+// Smart-routing savings estimate, drawn above the prompt under the status band, with
+// the orchestrator skill version labeled as the Unity Gateway Smart Router's. Per
+// turn request (main agent and subagents) it sums token usage by
+// (agent, baseline, served, before_user_switch), where served is
 // the model the request named (the model service billed; the id the API reports
 // back is a gateway deployment's, which drifts) and baseline is what the request
 // would have used without routing: the main model in effect for a subagent, served
@@ -152,6 +153,8 @@ type Entry = {
   before_user_switch: boolean;
   usage: Totals;
 };
+// The pricer's segment: a saving, or a cost increase when routing chose pricier models.
+type Estimate = { saved: boolean; amount: string; percent: string };
 
 const num = (value: unknown): number =>
   typeof value === 'number' && Number.isFinite(value) ? value : 0;
@@ -175,7 +178,7 @@ let firstMainModel: string | null = null;
 // Whether a main request has since named another model, which only the user does.
 let userSwitched = false;
 let seeding: Promise<void> | undefined;
-let estimate: string | null = null;
+let estimate: Estimate | null = null;
 let dirty = false;
 let running = false;
 let rerun = false;
@@ -254,15 +257,22 @@ async function ready($: any): Promise<boolean> {
   return true;
 }
 
+function estimateOf(value: any): Estimate | null {
+  if (!value || typeof value !== 'object' || typeof value.saved !== 'boolean') return null;
+  const amount = str(value.amount);
+  const percent = str(value.percent);
+  return amount && percent ? { saved: value.saved, amount, percent } : null;
+}
+
 // The pricer's last stdout line; a failed run drops the estimate, which would be stale.
-async function runPricer($: any): Promise<string | null> {
+async function runPricer($: any): Promise<Estimate | null> {
   try {
     const run = await $.process.run([...pricer, '--usage', usagePath], {
       timeoutMs: PRICER_TIMEOUT_MS,
     });
     if (run?.exitCode === 0) {
       const out = JSON.parse(String(run.stdout ?? '').trim().split('\n').pop() ?? '');
-      if (out && typeof out === 'object') return str(out.savings);
+      if (out && typeof out === 'object') return estimateOf(out.savings);
     }
   } catch {}
   return null;
@@ -288,7 +298,7 @@ async function writeAndPrice($: any): Promise<void> {
     throw error;
   }
   const next = await runPricer($);
-  if (next !== estimate) {
+  if (JSON.stringify(next) !== JSON.stringify(estimate)) {
     estimate = next;
     // Claude Code only redraws the band when its props change, not when module state does.
     $.ui.invalidate('ui.render');
@@ -314,9 +324,26 @@ async function flush($: any): Promise<void> {
   }
 }
 
-const line = (): string | null =>
-  [estimate, version && `Smart Router Orchestrator v${version}`].filter(Boolean).join(' · ') ||
-  null;
+// Styled like the status band: a bold label, the amount in a pill, a dim italic trailer.
+function savingsRow({ Box, Text }: any): unknown {
+  const children: unknown[] = [];
+  if (estimate) {
+    const color = estimate.saved ? 'green' : 'yellow';
+    children.push(
+      Text({
+        bold: true,
+        children: [estimate.saved ? '💰 Est. saved with smart routing' : 'Smart routing cost'],
+      }),
+      Text({ bold: true, color: 'black', backgroundColor: color, children: [` ${estimate.amount} `] }),
+      Text({ color, children: [`${estimate.saved ? '' : 'more '}(${estimate.percent})`] }),
+    );
+  }
+  if (version) {
+    const label = `Unity Gateway Smart Router v${version}`;
+    children.push(Text({ dimColor: true, italic: true, children: [estimate ? `— ${label}` : label] }));
+  }
+  return children.length ? Box({ flexDirection: 'row', columnGap: 1, children }) : null;
+}
 
 function registerSavings(on: On, options: PluginOptions): void {
   if (options.ENABLE_SMART_ROUTING_SAVINGS !== '1') return;
@@ -370,11 +397,12 @@ function registerSavings(on: On, options: PluginOptions): void {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const theirs = await next(e);
     if (!enabled || await $.env.get('ENABLE_SMART_ROUTING_SAVINGS') !== '1') return theirs;
-    const text = line();
-    if (text === null) return theirs;
-    const { Box, Text } = $.ui.resolve(e);
-    const row = Text({ dimColor: true, children: [text] });
-    return theirs ? Box({ flexDirection: 'column', children: [row, theirs] }) : row;
+    const ui = $.ui.resolve(e);
+    const row = savingsRow(ui);
+    if (row === null) return theirs;
+    // Going after the inner handlers' output puts the row under the status band
+    // whichever handler Claude Code runs first.
+    return theirs ? ui.Box({ flexDirection: 'column', children: [theirs, row] }) : row;
   });
 }
 
