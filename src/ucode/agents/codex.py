@@ -15,7 +15,6 @@ from pathlib import Path
 import tomlkit
 from tomlkit.exceptions import ParseError
 
-from ucode import gateway_proxy
 from ucode.codex_config import (
     catalog_slugs,
     codex_config_args,
@@ -37,6 +36,7 @@ from ucode.config_io import (
 )
 from ucode.constants import (
     AGENT_CODEX,
+    AI_GATEWAY_REQUEST_TAGS_HEADER,
     LOOPBACK_HOST,
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
@@ -59,11 +59,13 @@ from ucode.databricks import (
 from ucode.launcher import exec_or_spawn
 from ucode.managed_files import (
     ManagedFileWriteUnavailable,
+    check_skipped_managed_overrides,
     managed_file_conflicts,
     managed_file_is_verified,
     managed_file_scope,
     managed_file_status,
     managed_files_supported,
+    managed_settings_skipped,
     managed_writes_allowed,
     mark_managed_file_verified,
     read_managed_file,
@@ -85,6 +87,7 @@ from ucode.ui import print_warning_err
 
 from .args import LaunchOptions
 from .codex_catalog import prepare_codex_catalog, validate_codex_catalog
+from .request_tags import request_tags_header_value
 
 CODEX_CONFIG_DIR = Path.home() / ".codex"
 CODEX_PROFILE_NAME = "ucode"
@@ -199,6 +202,9 @@ def _provider_block(
         auth_argv = build_custom_auth_token_argv(workspace, custom_oauth)
     else:
         auth_argv = build_auth_token_argv(workspace, databricks_profile, use_pat=use_pat)
+        if not use_pat:
+            # Desktop helpers have no terminal for interactive sign-in.
+            auth_argv.append("--browser-login")
     base_url = build_tool_base_url("codex", workspace)
     http_headers = {
         "User-Agent": f"ucode/{ug_version()} codex/{agent_version('codex')}",
@@ -209,6 +215,9 @@ def _provider_block(
         http_headers[MODEL_SERVICE_PARENT_SCHEMA_HEADER] = parent_schema
     if smart_routing_v2.smart_routing_enabled(None, default=False, agent=AGENT_CODEX):
         http_headers[SMART_ROUTER_RECIPE_HEADER] = configured_router_name()
+    request_tags = request_tags_header_value()
+    if request_tags:
+        http_headers[AI_GATEWAY_REQUEST_TAGS_HEADER] = request_tags
     _apply_managed_headers(http_headers, managed_http_headers)
     return {
         "name": "Databricks AI Gateway",
@@ -220,7 +229,7 @@ def _provider_block(
         "auth": {
             "command": auth_argv[0],
             "args": auth_argv[1:],
-            "timeout_ms": CUSTOM_OAUTH_TIMEOUT_MS if custom_oauth else 5000,
+            "timeout_ms": CUSTOM_OAUTH_TIMEOUT_MS if custom_oauth or not use_pat else 5000,
             "refresh_interval_ms": 900000,
         },
     }
@@ -587,6 +596,15 @@ def revert_managed_config() -> str:
 
 def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> None:
     """Reconcile Codex's highest-precedence config while preserving unrelated policy."""
+    if managed_settings_skipped():
+        check_skipped_managed_overrides(
+            codex_managed_config_path(),
+            parser=_parse_managed_config,
+            compose=compose,
+            owned_paths=MANAGED_KEYS,
+            display="Codex",
+        )
+        return
     path = codex_managed_config_path()
     if path is None:
         print_warning_err(
@@ -1074,6 +1092,9 @@ def _launch_codex_with_otel_proxy(
     exec-replacing this process; mirrors Claude's relayed launch. The proxy binds an
     OS-assigned port and tears everything down when Codex exits (or fails to spawn).
     """
+    # Only tracing launches need the proxy (and its `httpx` import).
+    from ucode import gateway_proxy
+
     server, cache, client = gateway_proxy.start_otel_proxy(
         workspace, _otel_token_provider(state, workspace)
     )

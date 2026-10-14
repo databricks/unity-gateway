@@ -22,7 +22,10 @@ from utils.evidence import (
     tool_outputs,
 )
 from utils.managed import use_managed_config_fixture
+from utils.request_recorder import TuiRequestRecorder, served_inference_request
 from utils.terminal import AgentTerminal
+
+pytestmark = pytest.mark.harness_latest
 
 SMART_ROUTING_BANNER = "Using Unity Gateway Smart Router."
 SMART_ROUTING_SUBAGENT_NOTICE = "Using Unity Gateway Smart Router - Subagent"
@@ -114,7 +117,7 @@ def _run_calculation(
             tui.visible
         )
         assert not new_decisions, new_decisions
-        return
+        return task
 
     assert len(new_decisions) == 1, new_decisions
     decision = new_decisions[0]
@@ -125,6 +128,8 @@ def _run_calculation(
         task,
         decision_ids={decision["decision_id"]},
     )
+
+    return task
 
 
 def _toggle_with_skill(
@@ -144,6 +149,17 @@ def _toggle_with_skill(
 
     state = "on" if enabled else "off"
     invocation = f"/smart-router {state}" if agent == "claude" else f"$smart-router {state}"
+    confirmation = f"Smart Router is {state} for this session"
+    if agent == "claude":
+        # Claude's mod handles this locally; routing changes are checked by the next child.
+        tui.submit(invocation)
+        tui.wait_for(
+            lambda screen: f"Smart Router is {state}" in screen,
+            f"the Smart Router {state} confirmation",
+            timeout=120,
+        )
+        return
+
     controls = list(Path(session.env["TMPDIR"]).glob("ug-session-env-*/env.json"))
     assert len(controls) == 1, controls
     expected = (
@@ -156,8 +172,6 @@ def _toggle_with_skill(
         }
     )
     assert json.loads(controls[0].read_text()) != expected
-
-    confirmation = f"Smart Router is {state} for this session"
 
     def completion_counts():
         answers = confirmations = 0
@@ -364,12 +378,14 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
     back on through the skill, and spawn a third child in the same real TUI session.
 
     Expected: routing-only cases install Smart Router; enabling orchestration also installs
-    Smart Router Orchestrator. Each invocation records the CLI
-    confirmation in the native transcript and changes the saved routing controls, even with
-    collapsed terminal output; all three uniquely tagged calculations complete in native child
-    sessions; only the first and third show the subagent-routing banner and produce live gateway
-    decisions correlated with those children. Claude's native task view reports no running
-    tasks before /exit is submitted. No first-prompt routing wrapper starts.
+    Smart Router Orchestrator. Each local invocation confirms the new state in the TUI.
+    All three uniquely tagged calculations complete in native parent and child sessions;
+    their recorded inference payloads carry smart_router_recipe_name with the launch
+    recipe, DISABLED, then the launch recipe again, without a recipe header, and receive
+    non-empty HTTP 200 responses (including verified native
+    compatibility retries). Only the first and third show the subagent-routing banner
+    and produce live gateway decisions correlated with those children. Claude's native
+    task view reports no running tasks before /exit. No first-prompt routing wrapper starts.
     With orchestration enabled, both routed banners must include [orchestrator on].
     """
     session = live_session
@@ -382,38 +398,90 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
     else:
         session.env["SMART_ROUTER_CONFIG_VERSION"] = SMART_ROUTER_CONFIG_VERSION
     use_managed_config_fixture(session, "claude_smart_routing")
-    session.run(
-        "configure",
-        "--workspace",
-        workspace,
-        "--skip-validate",
-        "--skip-upgrade",
-        "--disable-databricks-ai-tools",
-    )
-    with AgentTerminal(
-        session, "claude", [str(session.binary), "claude"], "smart-router-skill-toggle"
-    ) as tui:
-        tui.boot()
-        _run_calculation(tui, session, "claude", "1+1", "2", orchestration_enabled, routed=True)
-        _toggle_with_skill(
-            tui,
-            session,
-            "claude",
-            enabled=False,
-            orchestration_enabled=orchestration_enabled,
+    with TuiRequestRecorder(workspace) as recorder:
+        # Configure through the forwarding URL using the public CLI, keeping ug state real.
+        session.run(
+            "configure",
+            "--workspace",
+            recorder.url,
+            "--skip-validate",
+            "--skip-upgrade",
+            "--disable-databricks-ai-tools",
         )
-        _run_calculation(tui, session, "claude", "1+2", "3", False, routed=False)
-        _toggle_with_skill(
-            tui,
-            session,
-            "claude",
-            enabled=True,
-            orchestration_enabled=orchestration_enabled,
-        )
-        _run_calculation(tui, session, "claude", "2+2", "4", orchestration_enabled, routed=True)
-        tui.wait_for_background_tasks()
-        tui.exit_normally()
-        transcript = "".join(tui.output)
+        with AgentTerminal(
+            session, "claude", [str(session.binary), "claude"], "smart-router-skill-toggle"
+        ) as tui:
+            tui.boot()
+            launch_recipe = None
+            for expression, result, routed in [
+                ("1+1", "2", True),
+                ("1+2", "3", False),
+                ("2+2", "4", True),
+            ]:
+                if expression != "1+1":
+                    _toggle_with_skill(
+                        tui,
+                        session,
+                        "claude",
+                        enabled=routed,
+                        orchestration_enabled=orchestration_enabled,
+                    )
+                checkpoint = recorder.checkpoint()
+                task = _run_calculation(
+                    tui,
+                    session,
+                    "claude",
+                    expression,
+                    result,
+                    orchestration_enabled if routed else False,
+                    routed=routed,
+                )
+                requests = recorder.requests_after(checkpoint)
+                inferences = [
+                    request
+                    for request in requests
+                    if request.method == "POST"
+                    and request.path == "/ai-gateway/anthropic/v1/messages"
+                    and request.payload.get("tools")
+                    and task.marker in json.dumps(request.payload.get("messages", []))
+                ]
+                assert inferences, f"No recorded inference for {task.marker}"
+                if routed:
+                    routes = [
+                        request
+                        for request in requests
+                        if request.method == "POST"
+                        and request.path == "/ai-gateway/routing/v1/routes:select"
+                        and task.marker in request.payload.get("task", {}).get("prompt", "")
+                    ]
+                    assert len(routes) == 1, (task.marker, routes)
+                    recipe = routes[0].payload.get("route_selector", {}).get("router_name")
+                    assert isinstance(recipe, str) and recipe.strip() and recipe != "DISABLED", (
+                        task.marker,
+                        routes[0].sequence,
+                        routes[0].payload.get("route_selector"),
+                    )
+                    if launch_recipe is None:
+                        launch_recipe = recipe
+                    else:
+                        assert recipe == launch_recipe, (task.marker, recipe, launch_recipe)
+                else:
+                    recipe = "DISABLED"
+                for request in inferences:
+                    assert request.payload.get("smart_router_recipe_name") == recipe, (
+                        task.marker,
+                        request.sequence,
+                        request.payload.get("smart_router_recipe_name"),
+                        recipe,
+                    )
+                    assert "databricks-smart-router-recipe" not in request.headers, (
+                        task.marker,
+                        request.sequence,
+                    )
+                    served_inference_request(recorder, requests, request, "claude")
+            tui.wait_for_background_tasks()
+            tui.exit_normally()
+            transcript = "".join(tui.output)
     assert SMART_ROUTING_BANNER not in transcript, transcript
     session.assert_not_routed()
     canary = session.home / ".ucode" / "claude-smart-routing-canary.json"

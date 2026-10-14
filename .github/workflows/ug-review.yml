@@ -1,27 +1,28 @@
 name: UG Review
 
-# The reviewer always runs trusted code from the default branch. PR-controlled
-# metadata and patches are fetched as untrusted text and are never executed.
+# An org member comments `/ug-review` on a PR. The reviewer always runs trusted code from
+# the default branch. PR-controlled metadata and patches are fetched as untrusted text and
+# are never executed.
 on:
-  pull_request_target:  # zizmor: ignore[dangerous-triggers]
-    types: [opened, synchronize, reopened, ready_for_review, labeled]
+  issue_comment:
+    types: [created]
 
 permissions:
   contents: read
-
-concurrency:
-  group: ug-review-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
 
 jobs:
   review:
     name: Review with the UG rubric
     if: >-
       ${{
-        !github.event.pull_request.draft &&
-        contains(github.event.pull_request.labels.*.name, 'ug-review') &&
-        (github.event.action != 'labeled' || github.event.label.name == 'ug-review')
+        github.event.issue.pull_request &&
+        github.event.comment.body == '/ug-review' &&
+        contains(fromJSON('["MEMBER", "OWNER"]'), github.event.comment.author_association)
       }}
+    # Job-level so ordinary PR comments, which skip this job, never cancel a review.
+    concurrency:
+      group: ug-review-${{ github.event.issue.number }}
+      cancel-in-progress: true
     permissions:
       contents: read
       issues: write
@@ -46,7 +47,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ github.event.issue.number }}
           DATABRICKS_HOST: https://ai-oss-ecosystem-integration-testing.cloud.databricks.com
           DATABRICKS_CLIENT_ID: 6476a5e7-7f32-4073-abc5-ee30bb7d0060
           DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_CLI_REVIEW_BOT_SP_CLIENT_SECRET }}

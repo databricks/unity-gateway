@@ -27,6 +27,7 @@ Tests live in `tests/`.
 - Use `acquire_exclusive_file_lock` / `release_file_lock` from `ucode.os_compatibility.file_lock_cross_os` instead of calling `fcntl.flock`, `fcntl.lockf`, or `msvcrt.locking` directly. Ruff enforces this outside the compatibility module and tests.
 - Use `launcher.exec_or_spawn` when handing the terminal to an agent. Shell strings and explicit executable overrides keep their existing subprocess semantics.
 - Add or update focused tests for behavior changes.
+- Never trigger a workflow with `pull_request_target`; `tests/test_integration_contract.py` rejects it. Use `pull_request` for checks that need no secrets, and a member-only `issue_comment` command that checks out the default branch (as in `fork-integration.yml`) for checks that need secrets on fork PRs.
 - Do not modify generated or lock files unless the dependency graph intentionally changes.
 
 ## Smart-routing configuration
@@ -44,6 +45,13 @@ Restore the inherited environment on every exit.
 Explicit launch/session on/off controls still apply after version expansion.
 Managed routing defaults must not rewrite already-resolved version flags.
 
+Every new `smart_routing` or `smart_router` environment variable must be registered in
+`SMART_ROUTING_ENV_KEYS` in the same change, including orchestration controls.
+Pass Claude's resolved launch baseline through native `pluginConfigs` options in the existing
+launch settings. Keep the TypeScript static; toggles must not write configuration files. An explicit toggle
+may delegate the session-control write to UG's CLI, which validates and replaces that file
+atomically; the mod itself still writes no file.
+
 ### Adding a parameter
 
 1. Define its environment-variable constant in `src/ucode/constants.py` and add it to
@@ -58,6 +66,7 @@ Managed routing defaults must not rewrite already-resolved version flags.
    off overrides. Keep routing activation limited to the V2 and subagent-only flags:
    orchestration alone must not enable routing. Add regression tests for the new parameter's
    controls. Session overrides must apply after version resolution.
+   Update the native Claude mod's literal setters and registry coverage test in the same change.
 
 `_validate_versions` runs at module import and rejects missing keys, unknown keys, and
 invalid values. Do not weaken the complete-key check or infer required keys from `_VERSIONS`.

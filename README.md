@@ -18,7 +18,13 @@ package is still named `ucode` for compatibility.
 ```bash
 uv tool install git+https://github.com/databricks/unity-gateway
 ug --version
+ug --help
 ```
+
+`--version` reports installed package metadata without loading the CLI. Use
+`ug --help` (or `ucode --help`) to verify that the CLI's startup imports work;
+version output alone is not an installation health check. Help does not validate
+workspace authentication or agent runtime behavior.
 
 ### Migrating from ucode
 
@@ -29,6 +35,8 @@ uv tool uninstall ucode
 uv tool install git+https://github.com/databricks/unity-gateway
 ug --version
 ucode --version
+ug --help
+ucode --help
 ```
 
 Future upgrades can use `ug upgrade` or `uv tool upgrade unity-gateway`.
@@ -50,6 +58,10 @@ ug cursor   # Cursor Agent, MCP-only
 On first launch of a model-backed agent, `ug` prompts for a Databricks
 workspace, authenticates, and writes local agent config. Later launches reuse
 the saved workspace and credentials.
+
+When Claude Code or Codex is older than the minimum version `ug` supports, `ug`
+asks before upgrading it in place. Set `UG_AUTO_UPGRADE_AGENT=1` to upgrade
+without asking, for example from a launcher that manages the agent install.
 
 Use `ug opencode --model system.ai.glm-5-3` (or `-m`) to select a configured
 model for one launch. OpenCode's `provider/model` form is also accepted.
@@ -112,7 +124,13 @@ Use `ug mcp add` to add servers without removing existing registrations:
 ug mcp add --location system.ai
 ug mcp add --names system.ai.slack,system.ai.github
 ug mcp add --agents claude,codex --location system.ai
+ug mcp add --agents cursor --names system.ai.github --workspace https://first.databricks.com
+ug mcp add --agents codex --names system.ai.github --profile DEFAULT
 ```
+
+With `--agents`, agents that aren't set up yet are set up first. Pass `--workspace`
+or `--profile` to pick the workspace instead of the picker; it becomes the current
+workspace.
 
 Remove configured servers:
 

@@ -11,6 +11,7 @@ below and to `TOOL_ALIASES` if needed.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -42,7 +43,7 @@ from ucode.ui import (
     status_subprocess_stdout,
 )
 
-from . import claude, codex, copilot, gemini, opencode, pi
+from . import claude, codex, copilot, gemini, kilo, opencode, pi
 from .args import LaunchOptions as LaunchOptions
 from .args import explicit_model_arg_value as explicit_model_arg_value
 
@@ -51,6 +52,7 @@ _MODULES = {
     "claude": claude,
     "gemini": gemini,
     "opencode": opencode,
+    "kilo": kilo,
     "copilot": copilot,
     "pi": pi,
 }
@@ -69,6 +71,8 @@ TOOL_ALIASES = {
     "gemini": "gemini",
     "gemini-cli": "gemini",
     "opencode": "opencode",
+    "kilo": "kilo",
+    "kilocode": "kilo",
     "copilot": "copilot",
     "pi": "pi",
 }
@@ -80,6 +84,10 @@ _NATIVE_UPGRADE_COMMANDS = {
     "claude": ["claude", "upgrade"],
     "codex": ["codex", "update"],
 }
+# Lets launchers that already own the agent install (e.g. Isaac) skip the
+# required-upgrade confirmation; declining it would only fail the launch.
+AUTO_UPGRADE_AGENT_ENV = "UG_AUTO_UPGRADE_AGENT"
+_TRUE_VALUES = {"1", "true", "yes", "on"}
 
 # ucode tool -> `databricks aitools` agent id. gemini/pi aren't supported.
 AITOOLS_AGENT_TOKENS = {
@@ -117,7 +125,7 @@ def normalize_tool(tool: str) -> str:
     normalized = TOOL_ALIASES.get(tool.strip().lower())
     if not normalized:
         raise RuntimeError(
-            f"Unsupported tool '{tool}'. Use one of: codex, claude, gemini, opencode, copilot, pi."
+            f"Unsupported tool '{tool}'. Use one of: codex, claude, gemini, opencode, kilo, copilot, pi."
         )
     return normalized
 
@@ -149,6 +157,10 @@ def _update_installed_tool_binary(tool: str, version: str | None = None) -> bool
     print_success(f"{spec['display']} is up to date")
     agent_version.cache_clear()
     return bool(shutil.which(binary))
+
+
+def _auto_upgrade_agent_enabled() -> bool:
+    return os.environ.get(AUTO_UPGRADE_AGENT_ENV, "").strip().lower() in _TRUE_VALUES
 
 
 def _minimum_version_error(tool: str) -> str | None:
@@ -210,8 +222,12 @@ def install_tool_binary(
             print_warning(version_error)
             # Native upgraders run in place, so confirm before mutating the install;
             # EOF/piped runs take the default and upgrade (a required fix must not stall).
-            if tool in _NATIVE_UPGRADE_COMMANDS and not prompt_yes_no_default(
-                f"Upgrade {spec['display']} if available?", default=True
+            if (
+                tool in _NATIVE_UPGRADE_COMMANDS
+                and not _auto_upgrade_agent_enabled()
+                and not prompt_yes_no_default(
+                    f"Upgrade {spec['display']} if available?", default=True
+                )
             ):
                 raise RuntimeError(version_error)
             if not _update_installed_tool_binary(tool):
@@ -445,6 +461,8 @@ def configure_tool(
             result = copilot.write_tool_config(state, model)
         elif tool == "pi":
             result = pi.write_tool_config(state, model)
+        elif tool == "kilo":
+            result = kilo.write_tool_config(state, model)
         else:
             result = opencode.write_tool_config(state, model)
     # gemini/opencode/copilot/pi return (state, token); codex/claude return state
@@ -486,7 +504,7 @@ def check_gateway_endpoint(state: dict, tool: str) -> bool:
     """V2-only: a tool is available iff we discovered models for it."""
     if tool == "claude":
         return bool(state.get("claude_models"))
-    if tool == "opencode":
+    if tool in ("opencode", "kilo"):
         return bool(state.get("opencode_models"))
     if tool == "codex":
         return bool(state.get("codex_models"))
@@ -506,6 +524,7 @@ def check_gateway_endpoint(state: dict, tool: str) -> bool:
 _TOOL_DISCOVERY_SOURCES: dict[str, tuple[str, ...]] = {
     "claude": ("claude",),
     "opencode": ("claude", "gemini", "oss"),
+    "kilo": ("claude", "gemini", "oss"),
     "codex": ("codex",),
     "gemini": ("gemini",),
     "copilot": ("claude", "codex"),
@@ -524,9 +543,11 @@ def _availability_failure_detail(tool: str, state: dict) -> str:
     return " (" + "; ".join(parts) + ")"
 
 
-def configure_single_tool(tool: str, state: dict, *, parent_schema: str | None = None) -> dict:
+def configure_single_tool(
+    tool: str, state: dict, *, parent_schema: str | None = None, provider: str | None = None
+) -> dict:
     """Check availability, configure, and persist state for one tool only."""
-    provider = None if parent_schema else get_provider_service(state, tool)
+    provider = None if parent_schema else provider or get_provider_service(state, tool)
     # A Model Provider Service or parent schema routes through the same gateway and pins no
     # globally discovered Databricks model, so the availability check doesn't apply.
     if not provider and not parent_schema:

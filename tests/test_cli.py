@@ -25,7 +25,8 @@ import ucode.cli as cli_mod
 import ucode.databricks as db_mod
 from ucode.cli import app
 from ucode.databricks import GatewayProbe
-from ucode.managed_config import normalize_managed_config
+from ucode.managed_config import ManagedConfigResult, normalize_managed_config
+from ucode.state import save_state as real_save_state
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -120,7 +121,7 @@ class TestHelp:
             "Manage": output[panels["Manage"] : panels["Usage"]],
             "Usage": output[panels["Usage"] : global_options],
         }
-        for command in ("claude", "codex", "copilot", "cursor", "gemini", "opencode", "pi"):
+        for command in ("claude", "codex", "copilot", "cursor", "gemini", "opencode", "kilo", "pi"):
             assert command in sections["Launch"]
         assert "configure" in sections["Setup"]
         for command in ("mcp", "skills"):
@@ -195,8 +196,8 @@ class TestProjectScripts:
             "project"
         ]["scripts"]
 
-        assert scripts["ug"] == "ucode.cli:main"
-        assert scripts["ucode"] == "ucode.cli:main"
+        assert scripts["ug"] == "ucode.entrypoint:main"
+        assert scripts["ucode"] == "ucode.entrypoint:main"
 
 
 class TestUpgrade:
@@ -267,13 +268,13 @@ class TestUpgrade:
             call(["uv", "tool", "uninstall", "ucode"], check=True),
             call(["uv", "tool", "install", "--force", git_url], check=True),
             call(
-                ["/tools/ug", "--version"],
+                ["/tools/ug", "--help"],
                 check=False,
                 capture_output=True,
                 text=True,
             ),
             call(
-                ["/tools/ucode", "--version"],
+                ["/tools/ucode", "--help"],
                 check=False,
                 capture_output=True,
                 text=True,
@@ -1153,6 +1154,23 @@ class TestManagedConfigLaunchSourceGuard:
         assert "`--provider` or `--model-location` is not allowed" in _strip_ansi(result.output)
         calls["launch"].assert_not_called()
 
+    def test_fresh_state_still_rejects_provider_under_managed_config(self):
+        with (
+            _launch_policy_patches({}) as calls,
+            patch("ucode.cli.load_state", return_value={}),
+            patch(
+                "ucode.cli._prompt_for_configuration",
+                return_value=(MINIMAL_STATE["workspace"], None),
+            ),
+            patch("ucode.cli.configure_single_tool", return_value=MINIMAL_STATE) as mock_configure,
+        ):
+            result = runner.invoke(app, ["claude", "--provider", "main.default.provider"])
+
+        assert result.exit_code == 1
+        assert "`--provider` or `--model-location` is not allowed" in _strip_ansi(result.output)
+        mock_configure.assert_called_once_with("claude", MINIMAL_STATE, provider=None)
+        calls["launch"].assert_not_called()
+
     def test_persisted_provider_is_not_mistaken_for_an_explicit_option(self):
         with _launch_policy_patches({}, persisted_provider="main.default.provider") as calls:
             result = runner.invoke(app, ["claude"])
@@ -1891,7 +1909,8 @@ class TestAuthTokenCommand:
             os.environ["DATABRICKS_BEARER"] = original
 
     @pytest.mark.parametrize("selector", [None, "unsupported_v99"])
-    def test_prints_only_the_token_to_stdout(self, monkeypatch, selector):
+    @pytest.mark.parametrize("browser_login", [False, True])
+    def test_prints_only_the_token_to_stdout(self, monkeypatch, selector, browser_login):
         if selector is not None:
             monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", selector)
         previous = dict(os.environ)
@@ -1899,12 +1918,15 @@ class TestAuthTokenCommand:
             patch("ucode.cli.load_state", return_value={"workspace": "https://ws"}),
             patch("ucode.cli.get_databricks_token", return_value="tok-123") as fetch,
         ):
-            result = runner.invoke(app, ["auth-token"])
+            args = ["auth-token", "--browser-login"] if browser_login else ["auth-token"]
+            result = runner.invoke(app, args)
         assert result.exit_code == 0
         # Nothing but the bare token (plus trailing newline) may reach stdout,
         # or the consuming agent will treat the noise as part of the token.
         assert result.stdout == "tok-123\n"
-        fetch.assert_called_once_with("https://ws", None, force_refresh=False)
+        fetch.assert_called_once_with(
+            "https://ws", None, force_refresh=False, browser_login=browser_login
+        )
         assert dict(os.environ) == previous
 
     def test_host_and_profile_override_state(self):
@@ -1916,7 +1938,9 @@ class TestAuthTokenCommand:
                 app, ["auth-token", "--host", "https://override", "--profile", "prod"]
             )
         assert result.exit_code == 0
-        fetch.assert_called_once_with("https://override", "prod", force_refresh=False)
+        fetch.assert_called_once_with(
+            "https://override", "prod", force_refresh=False, browser_login=False
+        )
 
     def test_force_refresh_is_forwarded(self):
         with (
@@ -1925,7 +1949,7 @@ class TestAuthTokenCommand:
         ):
             result = runner.invoke(app, ["auth-token", "--force-refresh"])
         assert result.exit_code == 0
-        fetch.assert_called_once_with("https://ws", None, force_refresh=True)
+        fetch.assert_called_once_with("https://ws", None, force_refresh=True, browser_login=False)
 
     def test_errors_without_workspace(self):
         with patch("ucode.cli.load_state", return_value={}):
@@ -2543,7 +2567,9 @@ class TestConfigureAgentsForMcp:
         with (
             patch("ucode.cli.load_state", return_value={"workspace": "https://ws"}),
             patch("ucode.cli.available_mcp_clients", return_value=["claude", "codex"]),
-            patch("ucode.cli.configured_mcp_clients", return_value=["claude"]),
+            patch(
+                "ucode.cli.configured_mcp_clients", side_effect=[["claude"], ["claude", "codex"]]
+            ),
             patch("ucode.cli.configure_workspace_command") as mock_cfg,
         ):
             scope = cli_mod._configure_agents_for_mcp(["claude", "codex"])
@@ -2562,6 +2588,293 @@ class TestConfigureAgentsForMcp:
 
         assert scope == {"claude", "codex"}
         mock_cfg.assert_not_called()
+
+    def test_workspace_entries_select_workspace_and_forward_to_bootstrap(self):
+        entries = [("https://ws", None)]
+        with (
+            patch("ucode.cli.set_current_workspace") as mock_switch,
+            patch("ucode.cli.load_full_state", return_value={"workspaces": {}}),
+            patch("ucode.cli.load_state", return_value={}),
+            patch("ucode.cli.available_mcp_clients", return_value=["claude"]),
+            patch("ucode.cli.configured_mcp_clients", return_value=["claude"]),
+            patch("ucode.cli.configure_workspace_command") as mock_cfg,
+        ):
+            cli_mod._configure_agents_for_mcp(["claude"], entries)
+
+        mock_switch.assert_called_once_with("https://ws")
+        mock_cfg.assert_called_once_with(selected_tools=["claude"], workspaces=entries)
+
+    def test_known_workspace_with_ready_agents_switches_without_bootstrap(self):
+        entries = [("https://ws", None)]
+        with (
+            patch("ucode.cli.set_current_workspace") as mock_switch,
+            patch("ucode.cli.load_full_state", return_value={"workspaces": {"https://ws": {}}}),
+            patch("ucode.cli.load_state", return_value={"workspace": "https://ws"}),
+            patch("ucode.cli.available_mcp_clients", return_value=["claude", "cursor"]),
+            patch("ucode.cli.configured_mcp_clients", return_value=["claude", "cursor"]),
+            patch("ucode.cli.configure_workspace_command") as mock_cfg,
+            patch("ucode.cli._configure_shared_workspace_states") as mock_states,
+        ):
+            scope = cli_mod._configure_agents_for_mcp(["claude", "cursor"], entries)
+
+        assert scope == {"claude", "cursor"}
+        mock_switch.assert_called_once_with("https://ws")
+        mock_cfg.assert_not_called()
+        mock_states.assert_not_called()
+
+    def test_cursor_on_unseen_workspace_sets_it_up_without_prompting(self):
+        entries = [("https://ws", None)]
+        with (
+            patch("ucode.cli.set_current_workspace"),
+            patch("ucode.cli.load_full_state", return_value={"workspaces": {}}),
+            patch("ucode.cli.load_state", return_value={}),
+            patch("ucode.cli.available_mcp_clients", return_value=["cursor"]),
+            patch("ucode.cli.configured_mcp_clients", return_value=["cursor"]),
+            patch("ucode.cli._prompt_for_configuration") as mock_prompt,
+            patch("ucode.cli._configure_shared_workspace_states") as mock_states,
+        ):
+            scope = cli_mod._configure_agents_for_mcp(["cursor"], entries)
+
+        assert scope == {"cursor"}
+        mock_prompt.assert_not_called()
+        mock_states.assert_called_once_with(entries, tools=[], force_login=True)
+
+    def test_missing_mcp_only_cli_errors_instead_of_prompting(self):
+        with (
+            patch("ucode.cli.load_state", return_value={}),
+            patch("ucode.cli.available_mcp_clients", return_value=[]),
+            patch("ucode.cli._prompt_for_configuration") as mock_prompt,
+            pytest.raises(RuntimeError, match="cursor-agent"),
+        ):
+            cli_mod._configure_agents_for_mcp(["cursor"])
+
+        mock_prompt.assert_not_called()
+
+    def test_agent_still_unready_after_setup_errors(self):
+        with (
+            patch("ucode.cli.load_state", return_value={}),
+            patch("ucode.cli.available_mcp_clients", return_value=[]),
+            patch("ucode.cli.configured_mcp_clients", return_value=[]),
+            patch("ucode.cli.configure_workspace_command"),
+            pytest.raises(RuntimeError, match="Not installed or not set up: Codex"),
+        ):
+            cli_mod._configure_agents_for_mcp(["codex"])
+
+
+class TestMcpAddWorkspace:
+    def test_workspace_flag_forwarded_to_agent_setup(self):
+        with (
+            patch("ucode.cli._configure_agents_for_mcp", return_value={"cursor"}) as configure,
+            patch("ucode.cli.add_mcp_command") as mock_add,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "mcp",
+                    "add",
+                    "--agents",
+                    "cursor",
+                    "--names",
+                    "a.b.c",
+                    "--workspace",
+                    "https://ws",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        configure.assert_called_once_with(["cursor"], [("https://ws", None)])
+        mock_add.assert_called_once_with(location=None, services={"a.b.c"}, agents={"cursor"})
+
+    def test_ug_workspace_env_used_when_no_flag(self, monkeypatch):
+        monkeypatch.setenv("UG_WORKSPACE", "https://ws")
+        with (
+            patch("ucode.cli._configure_agents_for_mcp", return_value={"cursor"}) as configure,
+            patch("ucode.cli.add_mcp_command"),
+        ):
+            result = runner.invoke(app, ["mcp", "add", "--agents", "cursor", "--names", "a.b.c"])
+
+        assert result.exit_code == 0, result.output
+        configure.assert_called_once_with(["cursor"], [("https://ws", None)])
+
+    def test_workspace_without_agents_exit_1(self):
+        with patch("ucode.cli.add_mcp_command") as mock_add:
+            result = runner.invoke(
+                app, ["mcp", "add", "--names", "a.b.c", "--workspace", "https://ws"]
+            )
+
+        assert result.exit_code == 1
+        assert "only apply with --agents" in _strip_ansi(result.output)
+        mock_add.assert_not_called()
+
+    def test_workspace_and_profile_together_exit_1(self):
+        with patch("ucode.cli.add_mcp_command") as mock_add:
+            result = runner.invoke(
+                app,
+                ["mcp", "add", "--agents", "cursor", "--workspace", "https://ws", "--profile", "P"],
+            )
+
+        assert result.exit_code == 1
+        assert "not both" in _strip_ansi(result.output)
+        mock_add.assert_not_called()
+
+
+class TestMcpAddWorkspaceState:
+    """`ug mcp add --agents` against real (temporary) state, so persisted side effects show."""
+
+    WS_A = "https://ws-a.cloud.databricks.com"
+    WS_B = "https://ws-b.cloud.databricks.com"
+
+    @pytest.fixture(autouse=True)
+    def _real_state_writes(self):
+        # Undo `no_state_writes`; conftest already points the state file at tmp_path.
+        with (
+            patch("ucode.state.save_state", real_save_state),
+            patch("ucode.cli.save_state", real_save_state),
+        ):
+            yield
+
+    @staticmethod
+    def _save_workspace(workspace: str, **extra) -> None:
+        real_save_state({"workspace": workspace, "available_tools": ["codex"], **extra})
+
+    def test_profile_used_for_auth_when_workspace_already_ready(self):
+        from ucode.mcp import setup_mcp_clients
+        from ucode.state import load_state
+
+        self._save_workspace(self.WS_A, profile="OLD")
+        profiles = [{"name": "OLD", "host": self.WS_A}, {"name": "NEW", "host": self.WS_A}]
+
+        def register(**kwargs):
+            setup_mcp_clients(load_state(), "MCP servers", agents=kwargs["agents"])
+
+        with (
+            patch("ucode.cli.list_profile_entries", return_value=profiles),
+            patch("ucode.cli.available_mcp_clients", return_value=["codex"]),
+            patch("ucode.mcp.available_mcp_clients", return_value=["codex"]),
+            patch("ucode.mcp.purge_cross_workspace_mcp_residue"),
+            patch("ucode.mcp.ensure_databricks_auth") as mock_auth,
+            patch("ucode.cli.configure_workspace_command") as mock_cfg,
+            patch("ucode.cli.add_mcp_command", side_effect=register),
+        ):
+            result = runner.invoke(
+                app, ["mcp", "add", "--agents", "codex", "--names", "a.b.c", "--profile", "NEW"]
+            )
+
+        assert result.exit_code == 0, result.output
+        mock_cfg.assert_not_called()
+        mock_auth.assert_called_once_with(self.WS_A, "NEW")
+        assert load_state()["profile"] == "NEW"
+
+    def test_new_profile_drops_saved_pat_mode(self):
+        from ucode.state import load_state
+
+        self._save_workspace(self.WS_A, profile="OLD", use_pat=True)
+        profiles = [{"name": "OLD", "host": self.WS_A}, {"name": "NEW", "host": self.WS_A}]
+        with patch("ucode.cli.list_profile_entries", return_value=profiles):
+            cli_mod._configure_agents_for_mcp([], [(self.WS_A, "NEW")])
+
+        state = load_state()
+        assert state["profile"] == "NEW"
+        assert "use_pat" not in state
+
+    def test_failed_setup_with_no_previous_workspace_clears_current(self):
+        from ucode.state import load_full_state
+
+        with (
+            patch("ucode.cli.available_mcp_clients", return_value=["codex"]),
+            patch("ucode.cli.configure_workspace_command", side_effect=RuntimeError("boom")),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            cli_mod._configure_agents_for_mcp(["codex"], [(self.WS_B, None)])
+
+        assert load_full_state()["current_workspace"] is None
+
+    @pytest.mark.parametrize(
+        ("error", "exit_code"), [(RuntimeError("boom"), 1), (KeyboardInterrupt(), 130)]
+    )
+    def test_failed_setup_restores_previous_workspace(self, error, exit_code):
+        from ucode.state import load_full_state
+
+        self._save_workspace(self.WS_A)
+        with (
+            patch("ucode.cli.available_mcp_clients", return_value=["codex"]),
+            patch("ucode.cli.configure_workspace_command", side_effect=error),
+            patch("ucode.cli.add_mcp_command") as mock_add,
+        ):
+            result = runner.invoke(
+                app,
+                ["mcp", "add", "--agents", "codex", "--names", "a.b.c", "--workspace", self.WS_B],
+            )
+
+        assert result.exit_code == exit_code, result.output
+        mock_add.assert_not_called()
+        full = load_full_state()
+        assert full["current_workspace"] == self.WS_A
+        assert self.WS_B not in full["workspaces"]
+
+
+class TestMcpAddRootWorkspace:
+    """`ug --workspace <url> mcp add ...` is forwarded rather than silently ignored."""
+
+    def test_root_workspace_forwarded_to_agent_setup(self):
+        with (
+            patch("ucode.cli._configure_agents_for_mcp", return_value={"codex"}) as configure,
+            patch("ucode.cli.add_mcp_command"),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "--workspace",
+                    "https://ws",
+                    "mcp",
+                    "add",
+                    "--agents",
+                    "codex",
+                    "--names",
+                    "a.b.c",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        configure.assert_called_once_with(["codex"], [("https://ws", None)])
+
+    def test_same_workspace_in_both_positions_is_accepted(self):
+        with (
+            patch("ucode.cli._configure_agents_for_mcp", return_value={"codex"}) as configure,
+            patch("ucode.cli.add_mcp_command"),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "--workspace",
+                    "https://ws",
+                    "mcp",
+                    "add",
+                    "--agents",
+                    "codex",
+                    "--workspace",
+                    "https://ws/",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        configure.assert_called_once_with(["codex"], [("https://ws", None)])
+
+    @pytest.mark.parametrize(
+        ("extra", "message"),
+        [
+            (["--agents", "codex", "--workspace", "https://other"], "two different --workspace"),
+            (["--agents", "codex", "--profile", "P"], "not both"),
+            (["--names", "a.b.c"], "only apply with --agents"),
+        ],
+    )
+    def test_root_workspace_conflicts_exit_1(self, extra, message):
+        with patch("ucode.cli.add_mcp_command") as mock_add:
+            result = runner.invoke(app, ["--workspace", "https://ws", "mcp", "add", *extra])
+
+        assert result.exit_code == 1
+        assert message in _strip_ansi(result.output)
+        mock_add.assert_not_called()
 
 
 class TestSkillsRemoveCommand:
@@ -3043,7 +3356,7 @@ class TestAutoConfigureOnFirstRun:
             result = runner.invoke(app, [tool])
 
         assert result.exit_code == 0, result.output
-        mock_configure.assert_called_once_with(tool, configured_state)
+        mock_configure.assert_called_once_with(tool, configured_state, provider=None)
         mock_restore.assert_not_called()
         mock_launch.assert_called_once()
         assert mock_launch.call_args.args[:2] == (tool, configured_state)
@@ -3072,7 +3385,7 @@ class TestAutoConfigureOnFirstRun:
             result = runner.invoke(app, ["claude"])
         assert result.exit_code == 0, result.output
         mock_bootstrap.assert_called_once_with("claude", skip_cli_version_check=False)
-        mock_auto.assert_called_once_with("claude")
+        mock_auto.assert_called_once_with("claude", provider=None)
 
     def test_triggers_when_tool_not_in_available_tools(self):
         """Auto-configure runs when workspace exists but the tool wasn't configured."""
@@ -3097,7 +3410,41 @@ class TestAutoConfigureOnFirstRun:
             result = runner.invoke(app, ["claude"])
         assert result.exit_code == 0, result.output
         mock_bootstrap.assert_called_once_with("claude", skip_cli_version_check=False)
-        mock_auto.assert_called_once_with("claude")
+        mock_auto.assert_called_once_with("claude", provider=None)
+
+    def test_first_run_configures_through_launch_provider(self):
+        """A default-gateway first-run setup would write the managed auth keys that a relayed
+        provider's launch then refuses to start over."""
+        with (
+            _launch_policy_patches(None) as calls,
+            patch("ucode.cli.load_state", return_value={}),
+            patch("ucode.cli._auto_configure_tool") as mock_auto,
+        ):
+            calls["resolve_provider"].return_value = (None, None, True)
+            result = runner.invoke(app, ["claude", "--provider", "main.default.relay"])
+
+        assert result.exit_code == 0, result.output
+        mock_auto.assert_called_once_with("claude", provider="main.default.relay")
+        assert calls["configure"].call_args.kwargs["relayed"] is True
+
+    @pytest.mark.parametrize(
+        ("manifest", "expected_provider"),
+        [(None, "main.default.relay"), ({"claude": {}}, None)],
+    )
+    def test_auto_configure_forwards_provider_unless_managed(self, manifest, expected_provider):
+        # A managed config must still reject --provider with its own error later in the launch.
+        with (
+            patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
+            patch("ucode.cli.configure_shared_state", return_value=MINIMAL_STATE),
+            patch(
+                "ucode.cli._fetch_managed_config",
+                return_value=ManagedConfigResult(manifest, False),
+            ),
+            patch("ucode.cli.configure_single_tool", return_value=MINIMAL_STATE) as mock_configure,
+        ):
+            cli_mod._auto_configure_tool("claude", provider="main.default.relay")
+
+        mock_configure.assert_called_once_with("claude", MINIMAL_STATE, provider=expected_provider)
 
     def test_skipped_when_already_configured(self):
         """Auto-configure is skipped when workspace and tool are already set up."""
@@ -3482,7 +3829,9 @@ class TestConfigureAgentFlag:
             result = runner.invoke(app, ["configure", "--agents", "claude,bogus"])
         assert result.exit_code != 0
         assert "Unsupported tool 'bogus'" in result.output
-        assert "codex, claude, gemini, opencode, copilot, pi" in " ".join(result.output.split())
+        assert "codex, claude, gemini, opencode, kilo, copilot, pi" in " ".join(
+            result.output.split()
+        )
         mock_cfg.assert_not_called()
 
     def test_agents_flag_rejects_empty_list(self):
