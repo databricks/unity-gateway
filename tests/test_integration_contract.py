@@ -92,6 +92,24 @@ def test_dedicated_cuj_ci_runs_each_discovered_file_on_its_own_runner():
     assert "test_cuj" not in job
 
 
+def test_latest_harness_is_scheduled_and_opt_in():
+    workflow = _workflow("harness-latest.yml")
+    trigger = workflow.split("\non:\n", 1)[1].split("\npermissions:\n", 1)[0]
+    assert "cron: '0 */6 * * *'" in trigger
+    assert "workflow_dispatch:" in trigger
+    assert "pull_request" not in trigger and "push:" not in trigger
+    assert "harness-latest" not in _integration_jobs()
+
+    for package in ("@anthropic-ai/claude-code", "@openai/codex"):
+        assert f"npm view {package}@latest version" in workflow
+    assert "-m harness_latest" in workflow
+    assert "harness_latest and managed_fixture" in workflow
+    assert "harness_latest and not managed_fixture" in workflow
+    assert '-m "$TEST_MARKER"' in workflow
+    assert "-k " not in workflow
+    assert "continue-on-error:" not in workflow
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="dedicated-cuj-plan runs on Linux")
 def test_every_cuj_file_is_discovered_with_a_unique_check_name(tmp_path):
     root = Path(__file__).parent.parent

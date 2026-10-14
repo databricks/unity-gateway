@@ -37,6 +37,7 @@ from .helpers.tui_request_recorder import RecordedRequest, RecordedResponse
 from .helpers.workspace import Workspace
 
 CUJ_NAME = "CUJ 4 · Smart routing"
+pytestmark = pytest.mark.harness_latest
 
 ROUTING_PATH = "/ai-gateway/routing/v1/routes:select"
 AGENTS = (CLAUDE, CODEX)
@@ -100,7 +101,7 @@ def _run_session(session, recorder, agent, task, launch_args):
 
 
 def _task_inference_request(requests, agent, prompt, *, after=0):
-    """Match the task payload, allowing Claude's single child-prompt newline."""
+    """Match plaintext task prompts or Codex's encrypted child task name."""
     prompts = {prompt}
     if agent == CLAUDE and after:
         prompts.add(prompt + "\n")
@@ -112,10 +113,22 @@ def _task_inference_request(requests, agent, prompt, *, after=0):
         ):
             continue
         payload = request.payload
+        entries = payload.get("messages" if agent == CLAUDE else "input", [])
         tools = payload.get("tools")
+        if agent == CODEX and not tools and isinstance(entries, list):
+            # Responses Lite carries tool definitions in developer input items.
+            tools = next(
+                (
+                    entry.get("tools")
+                    for entry in entries
+                    if isinstance(entry, dict)
+                    and entry.get("type") == "additional_tools"
+                    and entry.get("role") == "developer"
+                ),
+                None,
+            )
         if not isinstance(tools, list) or not tools:
             continue
-        entries = payload.get("messages" if agent == CLAUDE else "input", [])
         if isinstance(entries, str):
             if entries in prompts:
                 return request
@@ -123,6 +136,23 @@ def _task_inference_request(requests, agent, prompt, *, after=0):
         if not isinstance(entries, list):
             continue
         for entry in entries:
+            # Encrypted Codex child instructions leave only task_name readable.
+            if (
+                agent == CODEX
+                and after
+                and isinstance(entry, dict)
+                and entry.get("type") == "agent_message"
+                and isinstance(entry.get("recipient"), str)
+                and entry["recipient"].rsplit("/", 1)[-1] == prompt
+                and any(
+                    isinstance(part, dict)
+                    and part.get("type") == "encrypted_content"
+                    and isinstance(part.get("encrypted_content"), str)
+                    and part["encrypted_content"]
+                    for part in entry.get("content", [])
+                )
+            ):
+                return request
             if not isinstance(entry, dict) or entry.get("role") != "user":
                 continue
             content = entry.get("content", [])
@@ -314,9 +344,22 @@ class TestCujSmartRouting(BaseCujTest):
                         expected_model
                     )
                     evidence.assert_applied(task, supported, expected=expected_model)
-                    assert (
-                        "databricks-smart-router-recipe" in inference.headers
-                    ) == subagent_routed, agent
+                    if agent == CLAUDE:
+                        launch_recipe = inference.payload.get("smart_router_recipe_name")
+                        assert (
+                            isinstance(launch_recipe, str)
+                            and launch_recipe.strip()
+                            and launch_recipe != "DISABLED"
+                        )
+                        if first_prompt_routed:
+                            assert (
+                                routes[0].payload["route_selector"]["router_name"] == launch_recipe
+                            )
+                        assert "databricks-smart-router-recipe" not in inference.headers
+                    else:
+                        assert (
+                            "databricks-smart-router-recipe" in inference.headers
+                        ) == subagent_routed, agent
                     assert (
                         ORCHESTRATOR_CONTEXT.encode() in inference.body
                     ) == orchestrator_enabled, agent
@@ -361,7 +404,9 @@ class TestCujSmartRouting(BaseCujTest):
                             decision_ids={decision["decision_id"] for decision in decisions},
                         )
                         route_prompt = routes[0].payload["task"]["prompt"]
-                        assert child_task.filename in route_prompt
+                        assert isinstance(route_prompt, str) and route_prompt.strip()
+                        if agent == CLAUDE:
+                            assert child_task.filename in route_prompt
                         response = recorder.response_for(routes[0])
                         assert response.status_code == 200
                         selections = response.payload["route_selection"]
@@ -376,11 +421,21 @@ class TestCujSmartRouting(BaseCujTest):
                         assert canonical_model(inference.payload["model"]) == canonical_model(
                             selections[0]["route_option"]["model"]
                         )
-                        assert "databricks-smart-router-recipe" in inference.headers
+                        if agent == CLAUDE:
+                            assert (
+                                routes[0].payload["route_selector"]["router_name"] == launch_recipe
+                            )
+                            assert (
+                                inference.payload.get("smart_router_recipe_name") == launch_recipe
+                            )
+                            assert "databricks-smart-router-recipe" not in inference.headers
+                        else:
+                            assert "databricks-smart-router-recipe" in inference.headers
                     else:
                         assert read_jsonl(decisions_path) == original_decisions
                         assert not any(
                             "databricks-smart-router-recipe" in request.headers
+                            or "smart_router_recipe_name" in request.payload
                             or ORCHESTRATOR_CONTEXT.encode() in request.body
                             for request in requests
                         ), agent

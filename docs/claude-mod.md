@@ -10,7 +10,7 @@ routing launches use this path, and the existing temporary-directory lifecycle
 cleans up the files when Claude exits.
 
 `constants.ts` holds the values the mod shares with UG's CLI and the gateway: the recipe
-header name, the disabled recipe, the CLI module, agent, and routing flags, and the
+body field, the disabled recipe, the CLI module, agent, and routing flags, and the
 routing keys used to read session overrides. It ships
 beside the entry point and stays out of `hooks.json`, which lists only `register.ts` as a
 module. Claude's
@@ -18,16 +18,17 @@ capability scanner requires a literal name at each `$.env.get`/`$.env.set` call 
 can list what the module reads and writes, and `plugin validate` rejects a variable in that
 position: "$.env.get takes a literal name as its first argument". Keep those names inline.
 
-The mod merges the launch recipe into the `Databricks-Smart-Router-Recipe` header
-via `ANTHROPIC_CUSTOM_HEADERS` and intercepts the existing skill's `/smart-router on|off` command locally, without inference or command
+The mod merges the launch recipe into `CLAUDE_CODE_EXTRA_BODY` as
+`smart_router_recipe_name` and intercepts the existing skill's `/smart-router on|off` command locally, without inference or command
 registration. Off sets every routing flag to `0` and the recipe to `DISABLED`; on
 restores the original flags and recipe, including originally absent variables.
-Unrelated headers are preserved, and `CLAUDE_CODE_EXTRA_BODY` is left untouched.
-Duplicate recipe headers are replaced case-insensitively. Recipe line breaks are rejected.
+Other request-body fields are preserved. The mod leaves `ANTHROPIC_CUSTOM_HEADERS`
+untouched, and UG no longer adds a recipe header to Claude's settings.
+Recipe line breaks and extra bodies that are not JSON objects are rejected.
 A failed write attempts to restore prior values and reports failure; the native environment API does not provide an atomic transaction.
 
-If a caller supplies `smart_router_recipe_name` in the request body, gateways with
-body-recipe parsing enabled give it precedence over the header; toggles preserve that override.
+The launch and explicit toggles replace any existing `smart_router_recipe_name` body field.
+The gateway must support body-recipe parsing.
 
 The baseline comes from native plugin options and survives `/clear`, `/compact`, and
 plugin reloads. Toggles affect future requests and newly spawned hooks; already running
@@ -42,9 +43,9 @@ before `/clear` still survives it. The plugin test host provides no process capa
 this path is covered by the live skill-toggle journey rather than `claude plugin test`.
 
 The existing Claude skill-toggle integration journey checks recorded inference
-headers during its three calculation phases: launch recipe, `DISABLED` after off,
+payloads during its three calculation phases: launch recipe, `DISABLED` after off,
 and launch recipe after on. Each phase retains completed native parent/child
-answers and requires successful real gateway responses.
+answers and requires successful real gateway responses, with no recipe header.
 
 The `Claude mod · 2.1.290` CI job validates the packaged module and checks event
 forwarding and launch-local options. To run those component checks locally:

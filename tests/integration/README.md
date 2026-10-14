@@ -16,6 +16,9 @@ both Claude and Codex. One parameterized test runs all six
 `SMART_ROUTER_CONFIG_VERSION` values, checking both agents' first-prompt routing, orchestrator
 context in inference input, and completed explicitly requested native subagents.
 This is not automatic orchestrator-delegation coverage. No workspace configuration is modified.
+CUJ4 matches both Codex 0.154.0's top-level tools and 0.162.1's Responses Lite
+`additional_tools` input items. Encrypted child messages match the routed task name
+to the recipient; plaintext prompts still match exactly. Both require tools.
 The shared preset CUJ runs both agents for every version and derives routing and
 orchestration assertions from each agent's resolved flags. Both must complete a native
 child task. `subagent_orch_v0_claude_only` routes Claude's child; Codex uses the managed
@@ -61,7 +64,7 @@ or construct ug state files. The normal test suite checks these boundaries.
 The Claude mod entry point has separate native component checks in
 `../native_claude/test_mod.py`. Claude 2.1.290 validates the module and runs its
 TypeScript event-forwarding and launch-option tests in a dedicated CI job. The
-existing Claude skill-toggle journey checks the live recipe headers across on/off/on.
+existing Claude skill-toggle journey checks the live recipe payload field across on/off/on.
 
 The existing unit tests keep their fixtures. Integration has an independent
 pytest configuration and uses `--confcutdir` so those fixtures cannot leak in.
@@ -360,8 +363,8 @@ installed hook commands with a harness-shaped payload against the live router. T
 subagent-only TUI journeys additionally spawn three native children in one real session,
 invoke the installed Smart Router skill to turn routing off and back on, and require the
 subagent banner plus a correlated live decision only while routing is enabled. Plugin-refresh
-survival, native daemon/background dispatch, interactive explicit-model bypass, and dedicated
-smart-routing CI shards remain deferred. Plugin generation and launch arguments are covered
+survival and native daemon/background dispatch remain deferred. CUJ4 covers interactive
+explicit-model bypass. Plugin generation and launch arguments are covered
 by component tests in `../test_claude_smart_routing_v2.py`, not by a live registration journey.
 
 PATH conflicts for the Smart Router skill have subprocess/component coverage in
@@ -372,7 +375,7 @@ establish PowerShell command execution.
 The toggle journeys retain the legacy routing-only and orchestration cases and add each of
 the three subagent-only `SMART_ROUTER_CONFIG_VERSION` presets. They require only `smart-router`
 for routing-only cases, and both `smart-router-orchestrator` and `smart-router` when orchestration
-is enabled. Claude checks each local mod confirmation and the recorded recipe header
+is enabled. Claude checks each local mod confirmation and the recorded `smart_router_recipe_name`
 on the following calculation's real gateway requests. Codex verifies saved session controls,
 a new CLI confirmation in native tool-result records, and a new assistant answer after each
 skill invocation.
@@ -717,6 +720,25 @@ The advisory Windows installation and headless lanes are not yet included in tha
 The existing required `e2e` context also waits for the complete integration workflow, so integration
 cannot still be running when that gate passes. Full coverage on PRs needs no label or opt-in.
 
+### Opting into harness-latest
+
+The **harness-latest** workflow runs every six hours on `main` (00:00, 06:00,
+12:00, and 18:00 UTC), or manually through Actions. It runs marked tests against the
+latest Claude and Codex releases, recording exact versions in its artifacts. It covers
+CUJ4, routing hooks, skill toggles (including Claude's recipe-header assertions),
+and first-prompt banners. It runs separately from PR checks, so failures do not block merges.
+
+Opt in a test or class with `@pytest.mark.harness_latest`, or a whole module with:
+
+```python
+pytestmark = pytest.mark.harness_latest
+```
+
+Append the marker to an existing `pytestmark` list when present. CI discovers marked
+cases under `e2e_cuj/` and `integration/` without workflow edits. Keep existing agent
+and workspace markers: `managed_fixture` selects the managed integration runner.
+Tests use each runner's existing credentials and installed Claude/Codex CLIs.
+
 ### Managed-workspace journeys
 
 The managed lanes run `managed_fixture` journeys (and `workspace_switch`) on the single managed
@@ -1017,14 +1039,19 @@ UI controls; offline cases reject stale states, wrong scope, and command confirm
 The plugin test host runs without a process capability, so the mod's session-control call
 is covered by the live skill-toggle journey rather than `claude plugin test`. No component
 check asserts that the launch paths withdraw the skills.
+The TypeScript launch test also checks event/result forwarding. Separate cases cover
+denied-write rollback, invalid request bodies, disabled launches, and body-merge validation;
+no simulated subprocess success is used to claim toggle coverage.
 
-`integration/test_ug_smart_routing_hooks.py` checks recipe headers in its existing
+`integration/test_ug_smart_routing_hooks.py` checks `smart_router_recipe_name` in its existing
 Claude skill-toggle journey. The recorder forwards to the real workspace, configured
 through public `ug configure --workspace <recorder-url>` without hand-writing ug state.
 Checkpoints and each calculation's unique marker correlate parent/child inference
-requests to the on/off/on phases. All matched tool-capable requests must carry the
-launch recipe, `DISABLED`, then the launch recipe again and reach non-empty HTTP 200
+requests to the on/off/on phases. All matched tool-capable inference payloads must carry the
+launch recipe, `DISABLED`, then the launch recipe again, omit the recipe header, and reach non-empty HTTP 200
 responses, with only the existing verified native compatibility retries accepted.
+The expected launch recipe comes from the recorded routing request, so a default
+recipe change does not require editing the test.
 Local Claude mod confirmation replaces the old saved-control-file/assistant-turn wait;
 Codex retains its CLI control-file checks. No extra TUI sessions or tasks are added.
 Clear/reload, compaction, and denied-write rollback are not independently checked.

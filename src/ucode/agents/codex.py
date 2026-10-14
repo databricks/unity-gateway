@@ -202,6 +202,9 @@ def _provider_block(
         auth_argv = build_custom_auth_token_argv(workspace, custom_oauth)
     else:
         auth_argv = build_auth_token_argv(workspace, databricks_profile, use_pat=use_pat)
+        if not use_pat:
+            # Desktop helpers have no terminal for interactive sign-in.
+            auth_argv.append("--browser-login")
     base_url = build_tool_base_url("codex", workspace)
     http_headers = {
         "User-Agent": f"ucode/{ug_version()} codex/{agent_version('codex')}",
@@ -226,7 +229,7 @@ def _provider_block(
         "auth": {
             "command": auth_argv[0],
             "args": auth_argv[1:],
-            "timeout_ms": CUSTOM_OAUTH_TIMEOUT_MS if custom_oauth else 5000,
+            "timeout_ms": CUSTOM_OAUTH_TIMEOUT_MS if custom_oauth or not use_pat else 5000,
             "refresh_interval_ms": 900000,
         },
     }

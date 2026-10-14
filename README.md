@@ -59,6 +59,10 @@ On first launch of a model-backed agent, `ug` prompts for a Databricks
 workspace, authenticates, and writes local agent config. Later launches reuse
 the saved workspace and credentials.
 
+When Claude Code or Codex is older than the minimum version `ug` supports, `ug`
+asks before upgrading it in place. Set `UG_AUTO_UPGRADE_AGENT=1` to upgrade
+without asking, for example from a launcher that manages the agent install.
+
 Use `ug opencode --model system.ai.glm-5-3` (or `-m`) to select a configured
 model for one launch. OpenCode's `provider/model` form is also accepted.
 Unknown Databricks models produce an error; this option does not add models
