@@ -1267,15 +1267,24 @@ class TestWriteToolConfigManagedSettings:
         )
         private_writes: list = []
         managed_writes: list = []
-        stale_env = {
+        preexisting = {
             "env": {
                 "ANTHROPIC_DEFAULT_OPUS_MODEL": "system.ai.claude-opus-5[1m]",
                 "ANTHROPIC_DEFAULT_SONNET_MODEL": "system.ai.claude-sonnet-5[1m]",
                 "ANTHROPIC_DEFAULT_HAIKU_MODEL": "system.ai.claude-haiku-4-5",
             }
         }
-        existing = {str(claude.CLAUDE_SETTINGS_PATH): stale_env, str(FAKE_MANAGED_PATH): stale_env}
+        existing = {
+            str(claude.CLAUDE_SETTINGS_PATH): preexisting,
+            str(FAKE_MANAGED_PATH): preexisting,
+        }
         self._patch(monkeypatch, private_writes, managed_writes, existing)
+        # As right after `ug revert`: the managed file ug first found already had these defaults.
+        monkeypatch.setattr(
+            claude,
+            "managed_file_snapshots",
+            lambda tool, parser: managed_files.ManagedFileSnapshots(preexisting, None),
+        )
         state = {"workspace": WS, "claude_models": {"opus": "system.ai.claude-opus-5"}}
 
         claude.write_tool_config(state, None, **source)
