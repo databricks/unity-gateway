@@ -1010,6 +1010,10 @@ Native launch-option component tests (`native_claude/test_mod.py`) check two rea
 processes with different resolved routing baselines. Python cases cover Claude-specific presets,
 unknown selectors, and absent versus empty flags. These checks do not establish gateway/TUI coverage.
 
+CUJ 4's preset journeys check Claude's visible ON/OFF status band and routing scope
+before work and after off/on toggles. Checks ignore terminal styling and trailing
+UI controls; offline cases reject stale states, wrong scope, and command confirmations.
+
 The plugin test host runs without a process capability, so the mod's session-control call
 is covered by the live skill-toggle journey rather than `claude plugin test`. No component
 check asserts that the launch paths withdraw the skills.
