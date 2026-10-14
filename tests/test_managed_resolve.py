@@ -9,6 +9,7 @@ import pytest
 import ucode.agents.claude as claude
 import ucode.agents.opencode as opencode
 import ucode.config_io as config_io
+import ucode.managed_config as managed_config
 import ucode.state as state_mod
 from ucode.managed_config import normalize_managed_config
 from ucode.managed_resolve import (
@@ -64,6 +65,10 @@ def _state(**overrides) -> dict:
     return state
 
 
+def _unauthenticated(*_args, **_kwargs):
+    raise RuntimeError("Databricks CLI is not authenticated")
+
+
 class TestOtelTracing:
     def test_accessor_reads_only_per_agent_flag(self):
         managed = {"enabled_agents": {"claude": {"otel_tracing_enabled": True}}}
@@ -110,6 +115,25 @@ class TestHttpHeaders:
         assert resolve_state(managed, _state(), "claude")["claude_http_headers"] == {
             "x-team": "aig"
         }
+
+
+class TestSettingsPassthrough:
+    def test_state_override_carries_settings_for_claude(self):
+        managed = {"enabled_agents": {"claude": {"agent_native_settings": {"a": {"b": 1}}}}}
+        assert managed_state_overrides(managed, "claude")["claude_settings_passthrough"] == {
+            "a": {"b": 1}
+        }
+
+    @pytest.mark.parametrize("tool", ["codex", "gemini"])
+    def test_other_agents_get_no_override(self, tool):
+        managed = {"enabled_agents": {tool: {"agent_native_settings": {"a": 1}}}}
+        assert f"{tool}_settings_passthrough" not in managed_state_overrides(managed, tool)
+
+    def test_resolve_state_keeps_settings_out_of_persisted_state(self):
+        managed = {"enabled_agents": {"claude": {"agent_native_settings": {"a": 1}}}}
+        resolved = resolve_state(managed, _state(), "claude")
+        assert resolved["claude_settings_passthrough"] == {"a": 1}
+        assert resolved[MANAGED_OVERLAY_KEY]["claude_settings_passthrough"] is None
 
 
 class TestClaudeModels:
@@ -297,6 +321,8 @@ class TestStateFileIsNotRewritten:
     def real_state_file(self, tmp_path, monkeypatch):
         """Redirect state.json and both Claude settings files into tmp_path, unstubbed."""
         monkeypatch.setattr(config_io, "APP_DIR", tmp_path)
+        # No live managed config: fail the token fetch like an unauthenticated Databricks CLI.
+        monkeypatch.setattr(managed_config, "get_databricks_token", _unauthenticated)
         monkeypatch.setattr(state_mod, "STATE_PATH", tmp_path / "state.json")
         monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", tmp_path / "ucode-settings.json")
         monkeypatch.setattr(claude, "CLAUDE_BACKUP_PATH", tmp_path / "backup.json")

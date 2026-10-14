@@ -1,6 +1,4 @@
-import type { Register } from 'claude-code'
-
-type On = Parameters<Register>[0]
+import type { On } from 'claude-code'
 
 // The subagent-routing concern of ug's smart-routing UI mod (composed by
 // register.ts). Under ENABLE_CLAUDE_CODE_MODS, ug suppresses its plain-text
@@ -64,6 +62,8 @@ export const registerSubagentRouting = (on: On): void => {
     const original = await next(e)
     const props = e.props as any
     if (props?.tool !== 'Agent' && props?.tool !== 'Task') return original
+    const enabled = await $.env.get('ENABLE_CLAUDE_CODE_MODS')
+    if (enabled?.trim().toLowerCase() !== '1' && enabled?.trim().toLowerCase() !== 'true') return original
 
     const routing = await readRouting($)
     const record = routing[taskKey(props.input)] ?? {}

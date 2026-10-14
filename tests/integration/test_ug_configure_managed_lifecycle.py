@@ -7,23 +7,18 @@ previous config listed); switching to an MPS clears the static list (the header 
 configuring a workspace with no managed config clears ug's static picker/catalog so an unmanaged
 workspace never enforces a stale list.
 
-The configs are injected via ``UCODE_MANAGED_CONFIG_STUB`` (an explicit ``null`` for the no-config
-states) so the transitions run without republishing the live workspace's config; auth, the config
-writers, the agent binaries, and the workspace stay real. The MPS states reference real provider
-services published on the managed e2e workspace. These assert the generated files because the whole
-point is file-level reconciliation across transitions, which the TUI cannot show.
+The configs are checked-in JSON fixtures (tests/fixtures/managed_config/; ``no_config`` is an
+explicit ``null``) injected via ``UCODE_MANAGED_CONFIG_STUB`` so the transitions run without
+republishing the managed workspace's config; auth, the config writers, the agent binaries, and the
+workspace stay real. The MPS fixtures reference real provider services on that workspace. These
+assert the generated files because the whole point is file-level reconciliation across
+transitions, which the TUI cannot show.
 """
 
 import json
 
 import pytest
-from utils.managed import (
-    build_claude_agent_config,
-    build_codex_agent_config,
-    build_coding_agent_config,
-    build_mps_agent_config,
-    set_managed_config_stub,
-)
+from utils.managed import use_managed_config_fixture
 
 # Claude model ids are written to the picker verbatim, so any real system.ai ids work.
 CLAUDE_A = [
@@ -35,9 +30,6 @@ CLAUDE_B = ["system.ai.claude-sonnet-4-6", "system.ai.claude-haiku-4-5"]
 # Codex ids must survive the bundled-catalog build; both of these are used elsewhere in the suite.
 CODEX_A = ["system.ai.gpt-5-6-sol", "system.ai.gpt-5-4-nano"]
 CODEX_B = ["system.ai.gpt-5-4-nano"]
-# Model Provider Services published on the managed e2e workspace for these transitions.
-CLAUDE_MPS = "main.default.ci_e2e_anthropic_mps"
-CODEX_MPS = "main.default.ci_e2e_openai_mps"
 
 
 def _configure_managed(session, workspace):
@@ -66,7 +58,7 @@ def _codex_listed(session):
 
 @pytest.mark.managed_fixture
 @pytest.mark.claude
-def test_managed_fixture_claude_model_lifecycle(live_session, workspace, tmp_path):
+def test_managed_fixture_claude_model_lifecycle(live_session, workspace):
     """Scenario: configure Claude across no config -> static A -> static B -> MPS -> no config,
     injecting each config (and an explicit null for the no-config states) via the stub.
 
@@ -77,48 +69,33 @@ def test_managed_fixture_claude_model_lifecycle(live_session, workspace, tmp_pat
     """
     session = live_session
 
-    set_managed_config_stub(session, tmp_path, None)
+    use_managed_config_fixture(session, "no_config")
     _configure_unmanaged(session, workspace, "claude")
     assert _claude_picker(session) is None
 
-    set_managed_config_stub(
-        session,
-        tmp_path,
-        build_coding_agent_config("CODING_AGENT_CLAUDE_CODE", build_claude_agent_config(CLAUDE_A)),
-    )
+    use_managed_config_fixture(session, "claude_lifecycle_a")
     _configure_managed(session, workspace)
     assert _claude_picker(session) == CLAUDE_A
 
-    set_managed_config_stub(
-        session,
-        tmp_path,
-        build_coding_agent_config("CODING_AGENT_CLAUDE_CODE", build_claude_agent_config(CLAUDE_B)),
-    )
+    use_managed_config_fixture(session, "claude_lifecycle_b")
     _configure_managed(session, workspace)
     assert _claude_picker(session) == CLAUDE_B
     assert "system.ai.claude-opus-4-8" not in _claude_picker(session)
 
     # Model discovery via MPS: the header routes, so the static picker is cleared.
-    set_managed_config_stub(
-        session,
-        tmp_path,
-        build_coding_agent_config(
-            "CODING_AGENT_CLAUDE_CODE",
-            build_mps_agent_config("CODING_AGENT_CLAUDE_CODE", CLAUDE_MPS),
-        ),
-    )
+    use_managed_config_fixture(session, "claude_mps")
     _configure_managed(session, workspace)
     assert _claude_picker(session) is None
 
     # Config gone: the picker stays cleared, so an unmanaged workspace enforces no stale list.
-    set_managed_config_stub(session, tmp_path, None)
+    use_managed_config_fixture(session, "no_config")
     _configure_unmanaged(session, workspace, "claude")
     assert _claude_picker(session) is None
 
 
 @pytest.mark.managed_fixture
 @pytest.mark.codex
-def test_managed_fixture_codex_model_lifecycle(live_session, workspace, tmp_path):
+def test_managed_fixture_codex_model_lifecycle(live_session, workspace):
     """Scenario: configure Codex across no config -> static A -> static B -> MPS -> no config,
     injecting each config (and an explicit null for the no-config states) via the stub.
 
@@ -130,39 +107,25 @@ def test_managed_fixture_codex_model_lifecycle(live_session, workspace, tmp_path
     """
     session = live_session
 
-    set_managed_config_stub(session, tmp_path, None)
+    use_managed_config_fixture(session, "no_config")
     _configure_unmanaged(session, workspace, "codex")
     assert _codex_listed(session) == []
 
-    set_managed_config_stub(
-        session,
-        tmp_path,
-        build_coding_agent_config("CODING_AGENT_CODEX", build_codex_agent_config(models=CODEX_A)),
-    )
+    use_managed_config_fixture(session, "codex_lifecycle_a")
     _configure_managed(session, workspace)
     assert _codex_listed(session) == CODEX_A, _codex_listed(session)
 
-    set_managed_config_stub(
-        session,
-        tmp_path,
-        build_coding_agent_config("CODING_AGENT_CODEX", build_codex_agent_config(models=CODEX_B)),
-    )
+    use_managed_config_fixture(session, "codex_lifecycle_b")
     _configure_managed(session, workspace)
     assert _codex_listed(session) == CODEX_B, _codex_listed(session)
     assert "system.ai.gpt-5-6-sol" not in _codex_listed(session)
 
     # Model discovery via MPS: the header routes, so the static catalog is cleared.
-    set_managed_config_stub(
-        session,
-        tmp_path,
-        build_coding_agent_config(
-            "CODING_AGENT_CODEX", build_mps_agent_config("CODING_AGENT_CODEX", CODEX_MPS)
-        ),
-    )
+    use_managed_config_fixture(session, "codex_mps")
     _configure_managed(session, workspace)
     assert _codex_listed(session) == []
 
     # Config gone: the catalog stays cleared, so an unmanaged workspace uses its own discovery.
-    set_managed_config_stub(session, tmp_path, None)
+    use_managed_config_fixture(session, "no_config")
     _configure_unmanaged(session, workspace, "codex")
     assert _codex_listed(session) == []

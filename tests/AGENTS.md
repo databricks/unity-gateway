@@ -29,11 +29,12 @@ tests. Keep work scoped to the behavior requested by the user.
    and regression coverage. Report failures instead of concealing them. The sole
    exception is the `managed_fixture` marker: it uses the built-in
    `UCODE_MANAGED_CONFIG_STUB` hook to inject the admin CodingAgentConfig INPUT so the
-   real `ug configure` path can be exercised across config shapes the live workspace does
-   not publish and one workspace fetch can be replayed across isolated cases. The gateway,
-   agent binaries, ug internals, and ug state stay real; the config fetch/wire contract stays
-   covered by the un-stubbed `managed` tests; and the hook must never be used to disable
-   validation or conceal a failure.
+   real `ug configure` path runs against a known config on the common managed workspace.
+   Every injected config is a checked-in JSON file in `fixtures/managed_config/` (the GET
+   shape of one CodingAgentConfig), so `ug configure --file` (#866) can replace the hook
+   mechanically. The gateway, agent binaries, ug internals, and ug state stay real; the
+   config fetch/wire contract is covered by unit tests and the read-only `e2e_cuj/` CUJs;
+   and the hook must never be used to disable validation or conceal a failure.
 5. **Real responses and binaries.** Pin requested ug and agent versions. Never
    substitute a missing binary/service. Reuse explicit e2e workspace/auth settings;
    never pick a developer's Databricks profile automatically.

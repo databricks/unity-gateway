@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Post a label-triggered, LLM-generated Unity Gateway pull-request review.
+"""Post a comment-triggered, LLM-generated Unity Gateway pull-request review.
 
-The script runs from the trusted default branch under ``pull_request_target``.
+The script runs from the trusted default branch, triggered by a ``/ug-review`` comment.
 It retrieves PR-controlled metadata and patches as untrusted text through the
 GitHub API; it never checks out or executes code from the PR head.
 """
@@ -272,7 +272,7 @@ def build_responses_request(
         "instructions": build_system_prompt(review_policy, repository_policy),
         "input": user_prompt,
         "reasoning": {"effort": "high"},
-        "max_output_tokens": 4_000,
+        "max_output_tokens": 16_000,
         "store": False,
     }
 
@@ -405,7 +405,10 @@ def _request_review(
         raise ReviewError("Databricks returned an unexpected review response.")
     content = extract_response_text(payload)
     if not content:
-        raise ReviewError("Databricks Responses API returned no output text.")
+        incomplete = payload.get("incomplete_details")
+        cause = incomplete.get("reason") if isinstance(incomplete, dict) else None
+        reason = f" (incomplete: {cause})" if cause else ""
+        raise ReviewError(f"Databricks Responses API returned no output text{reason}.")
     return parse_review(content, bundle)
 
 

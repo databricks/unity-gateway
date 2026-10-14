@@ -71,8 +71,9 @@ def supports_provider_service(tool: str, provider_type: str) -> bool:
     """True when ``tool`` can route through a ``provider_type`` Model Provider Service.
 
     Thin pass-through to :func:`ucode.databricks.tool_supports_provider_type` so the wizard has one
-    obvious place to ask. Only claude (anthropic / amazon_bedrock) and codex (openai) have MPS
-    support today; the other harnesses are Databricks-hosted only.
+    obvious place to ask. Only claude (anthropic / amazon_bedrock / bedrock_mantle) and codex
+    (openai / azure_openai / microsoft_foundry / amazon_bedrock / bedrock_mantle) have MPS support
+    today; the other harnesses are Databricks-hosted only.
     """
     return tool_supports_provider_type(tool, provider_type)
 
@@ -229,6 +230,9 @@ def _enabled_agent_payload(tool: str, agent_config: dict) -> dict:
     tracing_enabled = agent_config.get("otel_tracing_enabled")
     if isinstance(tracing_enabled, bool):
         config["tracing"] = {"enabled": tracing_enabled}
+    settings = agent_config.get("agent_native_settings")
+    if isinstance(settings, dict) and settings:
+        config["agent_native_settings"] = settings
 
     entry: dict = {"agent": AGENT_TOOL_TO_ENUM[tool]}
     if config:
