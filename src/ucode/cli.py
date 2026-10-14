@@ -3412,6 +3412,7 @@ def default(
         list[str] | None,
         typer.Option(
             "--header",
+            hidden=True,
             help="Extra `Name: value` header for agent gateway requests (repeatable), e.g. "
             "`x-databricks-traffic-id: testenv://liteswap/<id>`.",
         ),
