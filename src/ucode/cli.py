@@ -3849,7 +3849,9 @@ def configure(
     ] = False,
     client_id: Annotated[
         str | None,
-        typer.Option("--client-id", hidden=True, help="Custom OAuth client ID for apiKeyHelper."),
+        typer.Option(
+            "--client-id", help="Authenticate using a custom OAuth application client ID."
+        ),
     ] = None,
     redirect_url: Annotated[
         str | None,

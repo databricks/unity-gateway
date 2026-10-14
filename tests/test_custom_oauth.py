@@ -309,10 +309,13 @@ class TestConfigureCustomOAuth:
 
 class TestLaunchCustomOAuth:
     @pytest.mark.parametrize("command", ["auth-token", "configure", "claude", "codex"])
-    def test_options_are_hidden(self, command):
+    def test_client_id_is_public_for_configure(self, command):
         result = runner.invoke(app, [command, "--help"])
         assert result.exit_code == 0
-        assert "--client-id" not in result.output
+        assert ("--client-id" in result.output) == (command == "configure")
+        if command == "configure":
+            help_text = " ".join(result.output.replace("│", "").split())
+            assert "custom OAuth application client ID" in help_text
         assert "--redirect-url" not in result.output
         assert "--scopes" not in result.output
 

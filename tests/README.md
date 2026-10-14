@@ -459,7 +459,9 @@ which runs automatically only for in-repo PRs.
 
 `test_custom_oauth.py` covers default scopes, validation, dedicated CLI profile setup,
 reuse, and forced refresh without a feature flag, including an inherited retired
-flag set to `0`. The SDK cache/consent tests and offline OAuth-storm reproduction
+flag set to `0`. It also checks that `ug configure --help` advertises `--client-id`
+for a custom OAuth application while the other custom OAuth options remain hidden.
+The SDK cache/consent tests and offline OAuth-storm reproduction
 were removed with the SDK backend. CLI token memoization and concurrency remain
 covered in `test_databricks.py`; cross-platform lock behavior remains covered in
 `test_file_lock_cross_os.py`. Native Windows browser consent and concurrent CLI
