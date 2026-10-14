@@ -32,7 +32,8 @@ SERVICES = {
 
 class McpFixtureTask:
     def __init__(self):
-        self.run_id = uuid.uuid4().hex
+        # Short ids: models have dropped characters copying a 32-char hex id.
+        self.run_id = uuid.uuid4().hex[:12]
         self.expected = {
             tool: hashlib.sha256(
                 b"unity-gateway-cuj-fixture\0"
