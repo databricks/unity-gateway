@@ -805,6 +805,45 @@ class TestInstallToolBinary:
         assert prompts == [(f"Upgrade {TOOL_SPECS[tool]['display']} if available?", True)]
 
     @pytest.mark.parametrize(
+        ("tool", "command"),
+        [
+            ("claude", ["claude", "upgrade"]),
+            ("codex", ["codex", "update"]),
+        ],
+    )
+    def test_required_update_skips_prompt_when_auto_upgrade_set(self, monkeypatch, tool, command):
+        calls = []
+        monkeypatch.setenv("UG_AUTO_UPGRADE_AGENT", "1")
+        monkeypatch.setattr("ucode.agents.shutil.which", lambda binary: f"/usr/bin/{binary}")
+        monkeypatch.setattr("ucode.agents._too_new_downgrade", lambda _: None)
+        monkeypatch.setattr(
+            "ucode.agents.subprocess.run",
+            lambda args, **kwargs: calls.append(args) or subprocess.CompletedProcess(args, 0),
+        )
+        monkeypatch.setattr(
+            "ucode.agents.prompt_yes_no_default",
+            lambda prompt, *, default: (_ for _ in ()).throw(AssertionError("should not prompt")),
+        )
+        errors = iter(["must upgrade", None])
+        monkeypatch.setattr("ucode.agents._minimum_version_error", lambda _: next(errors))
+
+        assert install_tool_binary(tool) is True
+        assert calls == [command]
+
+    def test_auto_upgrade_still_fails_when_upgrade_leaves_tool_below_floor(self, monkeypatch):
+        monkeypatch.setenv("UG_AUTO_UPGRADE_AGENT", "1")
+        monkeypatch.setattr("ucode.agents.shutil.which", lambda binary: f"/usr/bin/{binary}")
+        monkeypatch.setattr("ucode.agents._too_new_downgrade", lambda _: None)
+        monkeypatch.setattr(
+            "ucode.agents.subprocess.run",
+            lambda args, **kwargs: subprocess.CompletedProcess(args, 0),
+        )
+        monkeypatch.setattr("ucode.agents._minimum_version_error", lambda _: "must upgrade")
+
+        with pytest.raises(RuntimeError, match="must upgrade"):
+            install_tool_binary("claude")
+
+    @pytest.mark.parametrize(
         "catalog_ref",
         [None, "/user/isaac-app-model-catalog.json"],
         ids=["ug-catalog", "custom-catalog"],
