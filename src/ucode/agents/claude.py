@@ -26,7 +26,6 @@ from ucode.config_io import (
     write_json_file,
 )
 from ucode.constants import (
-    AGENT_CLAUDE,
     AI_GATEWAY_REQUEST_TAGS_HEADER,
     LOOPBACK_HOST,
     MCP_CLEANUP_SCOPES,
@@ -58,6 +57,7 @@ from ucode.managed_files import (
     ManagedFileWriteUnavailable,
     SettingsPassthrough,
     apply_settings_passthrough,
+    check_skipped_managed_overrides,
     current_os,
     managed_file_conflicts,
     managed_file_is_verified,
@@ -65,6 +65,7 @@ from ucode.managed_files import (
     managed_file_snapshots,
     managed_file_status,
     managed_files_supported,
+    managed_settings_skipped,
     managed_writes_allowed,
     mark_managed_file_verified,
     plan_settings_passthrough,
@@ -95,7 +96,6 @@ from ucode.smart_routing.claude_hooks import (
     remove_smart_routing_hooks,
     sync_smart_routing_hooks,
 )
-from ucode.smart_routing.routing import configured_router_name
 from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
 from ucode.ui import print_note, print_success, print_warning
@@ -242,7 +242,7 @@ CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
         "user-agent",
         MODEL_PROVIDER_SERVICE_HEADER.casefold(),
         MODEL_SERVICE_PARENT_SCHEMA_HEADER.casefold(),
-        SMART_ROUTER_RECIPE_HEADER.casefold(),
+        SMART_ROUTER_RECIPE_HEADER.casefold(),  # Remove recipe headers written by older ug versions.
     }
 )
 # ug replaces these only when it emits them (e.g. AI_GATEWAY_REQUEST_TAGS is set); otherwise an
@@ -476,8 +476,6 @@ def render_overlay(
         header_lines.append(f"{MODEL_PROVIDER_SERVICE_HEADER}: {provider}")
     elif parent_schema:
         header_lines.append(f"{MODEL_SERVICE_PARENT_SCHEMA_HEADER}: {parent_schema}")
-    if smart_routing_v2.smart_routing_enabled(None, default=False, agent=AGENT_CLAUDE):
-        header_lines.append(f"{SMART_ROUTER_RECIPE_HEADER}: {configured_router_name()}")
     request_tags = request_tags_header_value()
     if request_tags:
         header_lines.append(f"{AI_GATEWAY_REQUEST_TAGS_HEADER}: {request_tags}")
@@ -1834,6 +1832,15 @@ def _reconcile_managed_settings(
     Relayed launches are skipped: they depend on a per-session loopback refresh proxy that only runs
     during `ucode claude`, so a bare `claude` could not reach the gateway anyway.
     """
+    if managed_settings_skipped():
+        check_skipped_managed_overrides(
+            _managed_settings_path(),
+            parser=_parse_managed_settings,
+            compose=compose,
+            owned_paths=owned_paths,
+            display="Claude Code",
+        )
+        return
     path = _managed_settings_path()
     if path is None:
         print_warning(
@@ -2286,10 +2293,6 @@ def launch(
             routing_setup_failed = True
         else:
             return
-    else:
-        # If smart routing is not enabled by any environment flags, then remove the
-        # /smart-router and smart router orchestrator skills
-        smart_routing_v2.remove_smart_router_session_skills(AGENT_CLAUDE)
     if workspace and not custom_oauth_cli_enabled(state.get("custom_oauth")):
         os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
     settings_override = None
@@ -2329,8 +2332,6 @@ def launch(
         }
         settings_override = _merge_claude_settings(settings_override or {}, {"env": fallback_env})
         os.environ.update(fallback_env)
-        # Setup installed the controls before it failed, and this launch has no mod for them.
-        smart_routing_v2.remove_smart_router_session_skills(AGENT_CLAUDE)
     exec_or_spawn(_build_claude_argv(binary, launch_args, settings_override=settings_override))
 
 

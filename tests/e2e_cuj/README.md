@@ -95,11 +95,19 @@ Each preset session then explicitly requests one child for a separate hidden-val
 file task. Assertions require a new native child transcript containing the value,
 a correlated spawn-routing decision and successful child inference on the
 router's selected model when routing is enabled. Disabled routing requires no router
-requests, new routing decisions, recipe headers, or orchestrator context. This tests requested delegation, not automatic orchestrator delegation.
+requests, new routing decisions, recipe metadata, or orchestrator context. Claude's parent
+and child inference payloads carry the launch recipe in `smart_router_recipe_name`
+without a recipe header; Codex retains the recipe header. This tests requested delegation, not automatic orchestrator delegation.
+Claude's recipe is compared with the recorded routing request's selector rather than
+a hardcoded default recipe name.
 The wait uses the child's answer directly; parent-answer reconstruction is reserved for first-prompt tasks.
 Offline checks reject parent-only answers and accept child answers before the parent replies.
 Offline evidence regressions do not establish a live CUJ pass.
 Selector cases have separate TUI artifact names, and the session environment is restored afterward.
+Each Claude preset session checks the visible ON state and routing scope,
+then OFF and restored ON after `/smart-router off` and `on`.
+These checks read the terminal's rendered text, ignoring styling and trailing UI controls.
+Offline cases reject stale states, wrong scope, and echoed command confirmations.
 Claude sessions start in auto mode; unless a routed first prompt switches the session to Haiku
 (which leaves it in manual mode), its classifier requests through the recording proxy trigger
 Claude's informational auto-mode classifier billing notice over the transcript. The CUJ terminal
@@ -110,7 +118,7 @@ until no background work remains, including a child resumed after its initial an
 Only then does the test close the task view and submit `/exit`.
 Each preset also runs public `ug revert` in cleanup, including after a failed assertion, so
 interactive launches' OS-managed settings cannot contaminate the next preset's configuration.
-The existing Claude explicit-model precedence case remains skipped; the routing-disabled case
+The Claude and Codex explicit-model precedence cases both run; the routing-disabled case
 still requires a separately preconfigured workspace.
 
 With the same live prerequisites:

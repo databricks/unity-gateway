@@ -32,6 +32,9 @@ from ucode.ui import console, print_note, print_success, print_warning
 
 # Absolute path so a stripped PATH (desktop/GUI launchers) still finds it.
 _SUDO = "/usr/bin/sudo"
+# Opt out of all OS-managed settings work (read, conflict check, and the privileged sudo write).
+SKIP_OS_SETTINGS_ENV = "UG_SKIP_OS_SETTINGS"
+_TRUE_VALUES = {"1", "true", "yes", "on"}
 MANAGED_BACKUP_DIR = APP_DIR / "managed-backups"
 MANAGED_BACKUP_MANIFEST_PATH = MANAGED_BACKUP_DIR / "manifest.json"
 MANAGED_FINGERPRINT_VERSION = 1
@@ -86,12 +89,29 @@ def current_os() -> OS:
     return OS.OTHER
 
 
+def managed_settings_skipped() -> bool:
+    """Whether the developer opted out of OS-managed settings via ``UG_SKIP_OS_SETTINGS``.
+
+    Set the variable to ``1``/``true``/``yes``/``on`` to make ucode neither read nor update the
+    root-owned managed files (Claude Code ``managed-settings.json``, Codex ``managed_config.toml``).
+    ucode then relies solely on its per-user settings, which is enough for a single-user setup that
+    always launches through ``ug`` and never needs a bare ``claude``/``codex`` to reach the gateway.
+    Skips the privileged ``sudo`` step entirely, so an interactive run is never prompted for a
+    password and never hits the "OS-managed settings could not be updated" failure on hosts where
+    that write is blocked.
+    """
+    return os.environ.get(SKIP_OS_SETTINGS_ENV, "").strip().lower() in _TRUE_VALUES
+
+
 def managed_files_supported() -> bool:
     """True on the platforms whose managed-settings write path is implemented (Linux, macOS).
 
     The write path needs `sudo` (`sudo cp`, `chattr`/`chflags`), which is Unix-only — so Windows and
-    any other platform are unsupported.
+    any other platform are unsupported. ``UG_SKIP_OS_SETTINGS`` also opts out entirely, which
+    routes managed MCP servers to the user scope instead of the sudo-backed OS-managed file.
     """
+    if managed_settings_skipped():
+        return False
     return current_os() in (OS.LINUX, OS.MACOS)
 
 
@@ -353,6 +373,55 @@ def managed_file_conflicts(
         if existing_value != _path_value(desired, path):
             conflicts.append(".".join(path))
     return conflicts
+
+
+def raise_on_skipped_managed_overrides(
+    path: Path,
+    conflicts: list[str],
+    *,
+    display: str,
+) -> None:
+    """Fail when an opt-out left a stale OS-managed file overriding the new user config."""
+    if not conflicts:
+        return
+    raise RuntimeError(
+        f"the OS-managed {display} settings at {path} are stale and conflict with your per-user settings."
+        f" {SKIP_OS_SETTINGS_ENV} is set, so the OS-managed settings were not modified. Run `ug revert` "
+        f"from an interactive terminal or remove {path}"
+    )
+
+
+def check_skipped_managed_overrides(
+    path: Path | None,
+    *,
+    parser: ManagedParser,
+    compose: Callable[[dict], dict],
+    owned_paths: list[list[str]],
+    display: str,
+) -> None:
+    """When opting out, fail if a stale OS-managed file still overrides the new user config.
+
+    `UG_SKIP_OS_SETTINGS` leaves the root-owned managed file untouched. A file from an earlier
+    workspace keeps its highest-precedence gateway values, so refuse to proceed when the conflicting
+    keys would let a bare agent silently reach the old workspace. Reads only (no sudo); best-effort,
+    so an unsupported platform, symlink, or unparseable file is left to the normal reconcile path.
+    """
+    if path is None or path.is_symlink():
+        return
+    current_text = read_managed_file(path)
+    if current_text is None:
+        return
+    try:
+        existing = parser(current_text)
+    except RuntimeError:
+        return
+    # `compose` mutates its argument in place, so snapshot the on-disk state before composing.
+    managed_before = deepcopy(existing)
+    raise_on_skipped_managed_overrides(
+        path,
+        managed_file_conflicts(managed_before, compose(existing), owned_paths),
+        display=display,
+    )
 
 
 def _unwrap(value: object) -> object:

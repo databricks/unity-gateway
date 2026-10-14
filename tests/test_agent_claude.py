@@ -238,6 +238,24 @@ class TestRenderOverlay:
         overlay, _ = claude.render_overlay(WS, "s4")
         assert "x-databricks-use-coding-agent-mode" in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
 
+    @pytest.mark.parametrize(
+        "routing_flag", ["ENABLE_SMART_ROUTING_V2", "ENABLE_SMART_ROUTING_SUBAGENT_ONLY"]
+    )
+    def test_routing_recipe_is_not_added_to_custom_headers(self, monkeypatch, routing_flag):
+        monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "0")
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "0")
+        monkeypatch.setenv(routing_flag, "1")
+        overlay, _ = claude.render_overlay(WS, "s4")
+        headers = overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        assert "Databricks-Smart-Router-Recipe" not in headers
+        # Drop the recipe ug used to write while preserving other caller headers.
+        merged = claude._merge_anthropic_custom_headers(
+            "Databricks-Smart-Router-Recipe: old\nx-caller: keep", headers
+        )
+        assert "Databricks-Smart-Router-Recipe" not in merged
+        assert "x-caller: keep" in merged
+
     def test_request_tags_header_added_when_env_set(self, monkeypatch):
         # A JSON value (commas + colons) must survive intact: ANTHROPIC_CUSTOM_HEADERS
         # is newline-delimited and split on the first colon, so the value is preserved.
@@ -1033,13 +1051,15 @@ class TestWriteToolConfigManagedSettings:
         )
         # Deterministic managed path, and a mocked sudo writer so NO real sudo/`/etc` write happens.
         monkeypatch.setattr(claude, "_managed_settings_path", lambda: FAKE_MANAGED_PATH)
-        monkeypatch.setattr(
-            claude,
-            "read_managed_file",
-            lambda path: (
-                json.dumps(existing_by_path[str(path)]) if str(path) in existing_by_path else None
-            ),
-        )
+
+        def fake_read(path):
+            if str(path) in existing_by_path:
+                return json.dumps(existing_by_path[str(path)])
+            return None
+
+        monkeypatch.setattr(claude, "read_managed_file", fake_read)
+        # The skip-opt-out check reads through managed_files directly, so patch both bindings.
+        monkeypatch.setattr(managed_files, "read_managed_file", fake_read)
         monkeypatch.setattr(claude, "mark_managed_file_verified", lambda *a, **kw: None)
 
         def fake_write_managed(path, text, **kwargs):
@@ -1102,6 +1122,59 @@ class TestWriteToolConfigManagedSettings:
         assert [p for p, _ in managed_writes] == [str(FAKE_MANAGED_PATH)]
         assert "modelPicker" not in private_writes[0][1]
         assert "modelPicker" not in json.loads(managed_writes[0][1])
+
+    def test_skip_env_bypasses_managed_file(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        # A privileged write must never be attempted when the developer opted out.
+        monkeypatch.setattr(
+            claude, "reconcile_managed_file", lambda *a, **kw: pytest.fail("must not write managed")
+        )
+        state = {"workspace": WS, "codex_models": []}
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        # Private file still written; the OS-managed file is left untouched.
+        assert str(claude.CLAUDE_SETTINGS_PATH) in [p for p, _ in private_writes]
+        assert managed_writes == []
+
+    def test_skip_env_errors_on_stale_managed_override(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        # A managed file left from an earlier workspace still points at that workspace's gateway.
+        existing = {
+            str(FAKE_MANAGED_PATH): {
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://old-workspace.databricks.com/ai-gateway/anthropic"
+                }
+            }
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        monkeypatch.setattr(
+            claude, "reconcile_managed_file", lambda *a, **kw: pytest.fail("must not write managed")
+        )
+        state = {"workspace": WS, "codex_models": []}
+        # A stale override silently defeats the reconfigure, so launching must fail loudly.
+        with pytest.raises(RuntimeError) as excinfo:
+            claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        assert managed_writes == []
+        message = str(excinfo.value)
+        assert managed_files.SKIP_OS_SETTINGS_ENV in message
+        assert "stale" in message
+        assert "ug revert" in message
+
+    def test_skip_env_no_error_without_stale_override(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        # No managed file on disk, so there is nothing stale to fail on.
+        self._patch(monkeypatch, private_writes, managed_writes)
+        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        state = {"workspace": WS, "codex_models": []}
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        assert managed_writes == []
 
     def test_managed_file_preserves_other_keys(self, monkeypatch):
         private_writes: list = []

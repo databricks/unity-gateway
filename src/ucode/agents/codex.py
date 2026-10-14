@@ -59,11 +59,13 @@ from ucode.databricks import (
 from ucode.launcher import exec_or_spawn
 from ucode.managed_files import (
     ManagedFileWriteUnavailable,
+    check_skipped_managed_overrides,
     managed_file_conflicts,
     managed_file_is_verified,
     managed_file_scope,
     managed_file_status,
     managed_files_supported,
+    managed_settings_skipped,
     managed_writes_allowed,
     mark_managed_file_verified,
     read_managed_file,
@@ -592,6 +594,15 @@ def revert_managed_config() -> str:
 
 def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> None:
     """Reconcile Codex's highest-precedence config while preserving unrelated policy."""
+    if managed_settings_skipped():
+        check_skipped_managed_overrides(
+            codex_managed_config_path(),
+            parser=_parse_managed_config,
+            compose=compose,
+            owned_paths=MANAGED_KEYS,
+            display="Codex",
+        )
+        return
     path = codex_managed_config_path()
     if path is None:
         print_warning_err(

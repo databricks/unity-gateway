@@ -19,9 +19,28 @@ from tests.e2e_cuj.helpers.evidence import (
     get_cuj_helper,
 )
 from tests.e2e_cuj.helpers.tui_request_recorder import RecordedRequest, RecordedResponse
-from tests.e2e_cuj.test_cuj4_smart_routing import _task_inference_request
+from tests.e2e_cuj.test_cuj4_smart_routing import _smart_router_band_shown, _task_inference_request
 from tests.integration.utils.evidence import FileTask, read_jsonl
 from tests.integration.utils.provider_catalog import MODEL_SERVICE_PARENT_SCHEMA_HEADER
+
+
+@pytest.mark.parametrize("enabled, first_prompt", [(True, True), (True, False), (False, False)])
+def test_cuj4_status_band_requires_current_state_and_scope(enabled, first_prompt):
+    state = "ON" if enabled else "OFF"
+    trailer = (
+        ("— routing first prompt + subagents" if first_prompt else "— routing subagents")
+        if enabled
+        else "— Reenable with '/smart-router on'"
+    )
+    tui = SimpleNamespace(
+        screen=SimpleNamespace(display=[f"unity gateway smart router  {state}  {trailer}    [-]"])
+    )
+    assert _smart_router_band_shown(tui, enabled=enabled, first_prompt=first_prompt)
+    assert not _smart_router_band_shown(tui, enabled=not enabled, first_prompt=first_prompt)
+    if enabled:
+        assert not _smart_router_band_shown(tui, enabled=enabled, first_prompt=not first_prompt)
+    tui.screen.display = [f"Smart Router is {state.lower()} for this session."]
+    assert not _smart_router_band_shown(tui, enabled=enabled, first_prompt=first_prompt)
 
 
 def records(agent, task, model):

@@ -152,7 +152,7 @@ def _toggle_with_skill(
         # Claude's mod handles this locally; routing changes are checked by the next child.
         tui.submit(invocation)
         tui.wait_for(
-            lambda screen: confirmation in screen,
+            lambda screen: f"Smart Router is {state}" in screen,
             f"the Smart Router {state} confirmation",
             timeout=120,
         )
@@ -378,8 +378,9 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
     Expected: routing-only cases install Smart Router; enabling orchestration also installs
     Smart Router Orchestrator. Each local invocation confirms the new state in the TUI.
     All three uniquely tagged calculations complete in native parent and child sessions;
-    their recorded inference requests carry the launch recipe, DISABLED, then the launch
-    recipe again, and receive non-empty HTTP 200 responses (including verified native
+    their recorded inference payloads carry smart_router_recipe_name with the launch
+    recipe, DISABLED, then the launch recipe again, without a recipe header, and receive
+    non-empty HTTP 200 responses (including verified native
     compatibility retries). Only the first and third show the subagent-routing banner
     and produce live gateway decisions correlated with those children. Claude's native
     task view reports no running tasks before /exit. No first-prompt routing wrapper starts.
@@ -409,7 +410,7 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
             session, "claude", [str(session.binary), "claude"], "smart-router-skill-toggle"
         ) as tui:
             tui.boot()
-            launch_recipe = session.env.get("SMART_ROUTER_NAME", "").strip() or "task_v3"
+            launch_recipe = None
             for expression, result, routed in [
                 ("1+1", "2", True),
                 ("1+2", "3", False),
@@ -443,13 +444,37 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
                     and task.marker in json.dumps(request.payload.get("messages", []))
                 ]
                 assert inferences, f"No recorded inference for {task.marker}"
-                recipe = launch_recipe if routed else "DISABLED"
+                if routed:
+                    routes = [
+                        request
+                        for request in requests
+                        if request.method == "POST"
+                        and request.path == "/ai-gateway/routing/v1/routes:select"
+                        and task.marker in request.payload.get("task", {}).get("prompt", "")
+                    ]
+                    assert len(routes) == 1, (task.marker, routes)
+                    recipe = routes[0].payload.get("route_selector", {}).get("router_name")
+                    assert isinstance(recipe, str) and recipe.strip() and recipe != "DISABLED", (
+                        task.marker,
+                        routes[0].sequence,
+                        routes[0].payload.get("route_selector"),
+                    )
+                    if launch_recipe is None:
+                        launch_recipe = recipe
+                    else:
+                        assert recipe == launch_recipe, (task.marker, recipe, launch_recipe)
+                else:
+                    recipe = "DISABLED"
                 for request in inferences:
-                    assert request.headers.get("databricks-smart-router-recipe") == recipe, (
+                    assert request.payload.get("smart_router_recipe_name") == recipe, (
                         task.marker,
                         request.sequence,
-                        request.headers.get("databricks-smart-router-recipe"),
+                        request.payload.get("smart_router_recipe_name"),
                         recipe,
+                    )
+                    assert "databricks-smart-router-recipe" not in request.headers, (
+                        task.marker,
+                        request.sequence,
                     )
                     served_inference_request(recorder, requests, request, "claude")
             tui.wait_for_background_tasks()
