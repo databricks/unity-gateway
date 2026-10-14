@@ -59,11 +59,11 @@ async function setRouting(
   const headers = (previous.ANTHROPIC_CUSTOM_HEADERS || '').split('\n').filter(
     line => line.trim() &&
       line.split(':')[0].trim().toLowerCase() !== RECIPE_HEADER.toLowerCase());
+  const subagentOnly = options.ENABLE_SMART_ROUTING_V2 === '1'
+    ? original('ENABLE_SMART_ROUTING_SUBAGENT_ONLY') : '1';
   const environment = {
     ENABLE_SMART_ROUTING_V2: enabled ? original('ENABLE_SMART_ROUTING_V2') : '0',
-    ENABLE_SMART_ROUTING_SUBAGENT_ONLY: !enabled ? '0'
-      : options.ENABLE_SMART_ROUTING_V2 !== '1' && options.ENABLE_SMART_ROUTING_SUBAGENT_ONLY !== '1'
-        ? '1' : original('ENABLE_SMART_ROUTING_SUBAGENT_ONLY'),
+    ENABLE_SMART_ROUTING_SUBAGENT_ONLY: enabled ? subagentOnly : '0',
     ENABLE_SMART_ROUTER_ORCHESTRATOR: enabled ? original('ENABLE_SMART_ROUTER_ORCHESTRATOR') : '0',
     ANTHROPIC_CUSTOM_HEADERS: [...headers, `${RECIPE_HEADER}: ${recipe}`].join('\n'),
   };

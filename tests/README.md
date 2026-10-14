@@ -23,7 +23,7 @@ Initially disabled routing has component coverage in `test_cli.py`,
 `test_smart_router.py`, `test_claude_smart_routing_v2.py`, `test_agent_claude.py`, and
 `test_codex_smart_routing_v2.py`: dormant launch eligibility and setup, unchanged
 initial models and Codex tracing, preserved hooks, off/on/off/on routing gates,
-launch-baseline restoration, orchestration opt-in, corrupt baselines, and session
+launch-mode restoration, orchestration opt-in, corrupt session controls, and session
 precedence over an agent-disabled preset. The native Claude suite also runs
 on/off/on from a `0/0` launch without inference and checks environment plus saved
 controls. These checks do not establish live gateway routing from a disabled launch.

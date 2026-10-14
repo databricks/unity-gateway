@@ -371,11 +371,9 @@ establish PowerShell command execution.
 
 Initially disabled launches have component coverage in `../test_cli.py`,
 `../test_smart_router.py`, the Claude/Codex launcher tests, and
-`../native_claude/test_mod.py`. These cover dormant setup, baseline restoration,
+`../native_claude/test_mod.py`. These cover dormant setup, launch-mode restoration,
 off/on/off/on hook gates, and native Claude on/off/on environment/control-file
 updates. They do not establish live gateway routing from a disabled launch.
-Codex's existing enabled-launch journey checks that on writes the launch baseline
-back into the session overrides rather than merely clearing the file.
 
 The toggle journeys retain the legacy routing-only and orchestration cases and add each of
 the three subagent-only `SMART_ROUTER_CONFIG_VERSION` presets. They require only `smart-router`

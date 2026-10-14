@@ -61,7 +61,7 @@ See [Claude Mods](https://code.claude.com/docs/en/plugins/mods/overview).
 UG passes the resolved routing flags and recipe in the existing launch settings under
 `pluginConfigs["ug-smart-router"].options`. Claude supplies these to `register(on, options)`.
 `unset` lists originally absent flags because native options cannot carry null values.
-The TypeScript source remains static. Python also saves the resolved routing flags
-in `baseline.json` beside the temporary session-control file so the CLI can restore
-them after the native off command zeros its environment. Toggles replace only the
-override file; the baseline remains unchanged.
+The source remains static; no additional launch snapshot file is created.
+Claude restores its launch flags before calling the CLI; Codex retains its launch
+environment. The CLI clears off overrides when routing is already enabled in that
+environment, or explicitly enables subagent routing when both flags are off.

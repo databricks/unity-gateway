@@ -41,9 +41,7 @@ class Session:
                 CLAUDE_ROUTING_PLUGIN_NAME: {"options": _claude_mod_launch_options(env)}
             },
         }
-        self.session_file = start_session(
-            settings["env"], baseline=resolve_environment(env, agent=AGENT_CLAUDE)
-        )
+        self.session_file = start_session(settings["env"])
         process_env = {
             **{
                 key: os.environ[key]

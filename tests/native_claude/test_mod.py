@@ -77,4 +77,6 @@ def test_native_command_enables_initially_disabled_routing(native_binary, tmp_pa
                 "ENABLE_SMART_ROUTER_ORCHESTRATOR": orchestration if action == "on" else "0",
             }
             assert session.observe()["environment"] == expected
-            assert json.loads(session.session_file.read_text()) == expected
+            assert json.loads(session.session_file.read_text()) == (
+                {} if action == "on" else expected
+            )

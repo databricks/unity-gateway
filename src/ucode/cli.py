@@ -142,7 +142,6 @@ from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import FIRST_PROMPT_SOCKET_ENV, ROUTE_FIRST_PROMPT_EVENT
 from ucode.smart_routing.session_env import (
     effective_environment,
-    enabled_session_environment,
     session_env_path,
     set_session_environment,
 )
@@ -2623,11 +2622,10 @@ def _toggle_current_smart_routing_session(enabled: bool | None, *, agent: str) -
     except RuntimeError:
         return False
     try:
-        set_session_environment(
-            enabled_session_environment(agent=agent)
-            if enabled
-            else dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
-        )
+        values = {} if enabled else dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
+        if enabled and not smart_routing_v2.smart_routing_enabled(None, default=False, agent=agent):
+            values[smart_routing_v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] = "1"
+        set_session_environment(values)
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
