@@ -1,6 +1,6 @@
 import type { On } from 'claude-code';
 import { expect, test } from 'claude-code/testing';
-import { DISABLED_RECIPE, RECIPE_FIELD } from '../hooks/constants.ts';
+import { RECIPE_FIELD } from '../hooks/constants.ts';
 import { mergeExtraBody } from '../hooks/extra-body.ts';
 
 const RECIPE = 'task_v3';
@@ -24,11 +24,8 @@ function setup(on: On, { body = CALLER_BODY, pinned = '', launched = true } = {}
     ENABLE_SMART_ROUTING_V2: launched ? ROUTED.ENABLE_SMART_ROUTING_V2 : '0',
     ENABLE_SMART_ROUTING_SUBAGENT_ONLY: launched ? ROUTED.ENABLE_SMART_ROUTING_SUBAGENT_ONLY : '0',
     ENABLE_SMART_ROUTER_ORCHESTRATOR: launched ? ROUTED.ENABLE_SMART_ROUTER_ORCHESTRATOR : '0',
-    UCODE_SMART_ROUTER_PYTHON: '/launch/python',
-    UCODE_SESSION_ENV_FILE: '/session/env.json',
   };
   const writes: string[] = [];
-  const argv: string[][] = [];
   on('env.get', ($, e) => ({ value: env[e.name] }));
   on('env.set', ($, e) => {
     writes.push(e.name);
@@ -36,56 +33,24 @@ function setup(on: On, { body = CALLER_BODY, pinned = '', launched = true } = {}
     env[e.name] = e.value;
     return { value: undefined };
   });
-  on('process.run', ($, e) => {
-    argv.push([...e.argv]);
-    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } };
-  });
-  on('session.start', () => ({ cwd: '/work' }));
-  return { env, writes, argv };
+  return { env, writes };
 }
 
-test('session start forwards the event and result', async ($, on) => {
-  const event = { surface: 'terminal', isInteractive: true, cwd: '/work' } as const;
+test('session start carries the launch recipe and forwards the event and result', { options: ROUTED }, async ($, on) => {
+  const { env, writes } = setup(on);
   let calls = 0;
   on('session.start', ($, e) => {
     calls += 1;
-    expect(e).toMatchObject(event);
+    expect(e).toMatchObject(start);
     return { cwd: '/resolved-work' };
   });
 
-  const result = await $.session.start(event);
+  const result = await $.session.start(start);
   expect(calls).toBe(1);
   expect(result).toEqual({ cwd: '/resolved-work' });
-});
-
-test('session start carries the launch recipe in the extra body', { options: ROUTED }, async ($, on) => {
-  const { env, writes } = setup(on);
-
-  await $.session.start(start);
-
   expect(JSON.parse(env.CLAUDE_CODE_EXTRA_BODY!)).toEqual({ caller_field: 'keep', [RECIPE_FIELD]: RECIPE });
   // The recipe left ANTHROPIC_CUSTOM_HEADERS, which a managed config pins.
   expect(writes).not.toContain('ANTHROPIC_CUSTOM_HEADERS');
-});
-
-test('the toggle rewrites the recipe and the routing flags', { options: ROUTED }, async ($, on) => {
-  const { env, argv } = setup(on);
-  await $.session.start(start);
-
-  const off = await $.command.run({ command: 'smart-router', args: 'off' });
-
-  expect(off.text).toContain('Smart Router is off');
-  expect(JSON.parse(env.CLAUDE_CODE_EXTRA_BODY!)).toEqual({ caller_field: 'keep', [RECIPE_FIELD]: DISABLED_RECIPE });
-  expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('0');
-  expect(env.ENABLE_SMART_ROUTER_ORCHESTRATOR).toBe('0');
-  expect(argv).toEqual([['/launch/python', '-m', 'ucode.cli', 'claude', '--disable-smart-routing']]);
-
-  const on_ = await $.command.run({ command: 'smart-router', args: 'on' });
-
-  expect(on_.text).toContain('Smart Router is on');
-  expect(JSON.parse(env.CLAUDE_CODE_EXTRA_BODY!)).toEqual({ caller_field: 'keep', [RECIPE_FIELD]: RECIPE });
-  expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');
-  expect(argv[1]).toEqual(['/launch/python', '-m', 'ucode.cli', 'claude', '--enable-smart-routing']);
 });
 
 test('a denied extra-body write restores the environment and reports failure', { options: ROUTED }, async ($, on) => {
@@ -110,6 +75,7 @@ test('a caller body that is not a JSON object is left alone', { options: ROUTED 
 
 test('a launch without routing keeps the command inert', { options: { ...ROUTED, ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '0' } }, async ($, on) => {
   const { env } = setup(on, { launched: false });
+  on('session.start', () => ({ cwd: '/work' }));
   await $.session.start(start);
 
   const reply = await $.command.run({ command: 'smart-router', args: 'off' });

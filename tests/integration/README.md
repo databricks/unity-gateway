@@ -1017,6 +1017,9 @@ UI controls; offline cases reject stale states, wrong scope, and command confirm
 The plugin test host runs without a process capability, so the mod's session-control call
 is covered by the live skill-toggle journey rather than `claude plugin test`. No component
 check asserts that the launch paths withdraw the skills.
+The TypeScript launch test also checks event/result forwarding. Separate cases cover
+denied-write rollback, invalid request bodies, disabled launches, and body-merge validation;
+no simulated subprocess success is used to claim toggle coverage.
 
 `integration/test_ug_smart_routing_hooks.py` checks recipe headers in its existing
 Claude skill-toggle journey. The recorder forwards to the real workspace, configured
