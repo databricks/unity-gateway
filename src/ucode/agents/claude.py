@@ -96,7 +96,13 @@ from ucode.smart_routing.claude_hooks import (
     remove_smart_routing_hooks,
     sync_smart_routing_hooks,
 )
-from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
+from ucode.state import (
+    MANAGED_OVERLAY_KEY,
+    is_tool_managed,
+    load_full_state,
+    mark_tool_managed,
+    save_state,
+)
 from ucode.telemetry import agent_version, ug_version
 from ucode.ui import print_note, print_success, print_warning
 
@@ -1383,7 +1389,16 @@ def write_tool_config(
 
     # Remember the `ug --header` names written, so a later launch without them removes them.
     header_names = sorted(name.casefold() for name in ug_headers())
-    owned_header_names = {*header_names, *(state.get("claude_header_names") or [])}
+    # The settings file is shared by every workspace, so also own names saved under other ones.
+    owned_header_names = {
+        *header_names,
+        *(state.get("claude_header_names") or []),
+        *(
+            name
+            for ws_state in load_full_state()["workspaces"].values()
+            for name in ws_state.get("claude_header_names") or []
+        ),
+    }
     if header_names:
         state["claude_header_names"] = header_names
     else:

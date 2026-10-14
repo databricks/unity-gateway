@@ -57,7 +57,7 @@ def ug_headers() -> dict[str, str]:
         if not line.strip():
             continue
         name, separator, value = line.partition(":")
-        if not separator or not _HEADER_NAME_RE.fullmatch(name.strip()):
+        if not separator or not _HEADER_NAME_RE.fullmatch(name.strip()) or not value.strip():
             raise RuntimeError(f"{UG_HEADERS_ENV_VAR}: expected `Name: value`, got {line!r}.")
         headers[name.strip()] = value.strip()
     return headers

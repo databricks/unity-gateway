@@ -911,6 +911,37 @@ class TestWriteToolConfigUgHeaders:
         assert "X-User: keep" in header_lines()
         assert "claude_header_names" not in state
 
+    def test_header_from_another_workspace_removed(self, monkeypatch):
+        files = {
+            str(claude.CLAUDE_SETTINGS_PATH): {
+                "env": {"ANTHROPIC_CUSTOM_HEADERS": "X-User: keep\nX-Route: a"}
+            }
+        }
+        monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
+        monkeypatch.setattr(claude, "read_json_safe", lambda path: files.get(str(path), {}))
+        monkeypatch.setattr(
+            claude, "write_json_file", lambda path, payload: files.__setitem__(str(path), payload)
+        )
+        monkeypatch.setattr(claude, "save_state", lambda state: None)
+        monkeypatch.setattr(claude, "_register_web_search_mcp", lambda *a, **kw: None)
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
+        monkeypatch.setattr(
+            claude, "refresh_managed_config", lambda *a, **kw: _managed_config_result(None)
+        )
+        # A launch on another workspace wrote X-Route into the shared settings file.
+        monkeypatch.setattr(
+            claude,
+            "load_full_state",
+            lambda: {
+                "workspaces": {"https://other.example.com": {"claude_header_names": ["x-route"]}}
+            },
+        )
+
+        claude.write_tool_config({"workspace": WS}, "databricks-claude-sonnet-4")
+        lines = files[str(claude.CLAUDE_SETTINGS_PATH)]["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        assert "X-Route" not in lines
+        assert "X-User: keep" in lines.splitlines()
+
 
 class TestWriteToolConfigMcpRegistration:
     def _common_patches(self, monkeypatch, calls):

@@ -54,7 +54,8 @@ def test_ug_headers_parse_one_per_line(monkeypatch):
     assert ug_headers() == {"x-databricks-traffic-id": "testenv://liteswap/a", "X-B": "2"}
 
 
-def test_ug_headers_reject_malformed_line(monkeypatch):
-    monkeypatch.setenv("UG_HEADERS", "not a header")
+@pytest.mark.parametrize("value", ["not a header", "x-databricks-traffic-id:  "])
+def test_ug_headers_reject_malformed_line(monkeypatch, value):
+    monkeypatch.setenv("UG_HEADERS", value)
     with pytest.raises(RuntimeError, match="UG_HEADERS"):
         ug_headers()
