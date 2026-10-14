@@ -780,8 +780,7 @@ class TestGeminiLaunch:
                 f"({gemini.MAX_GEMINI_VERSION_TEXT}); run `ucode gemini` to downgrade."
             )
         gemini_models: list = e2e_state.get("gemini_models") or []
-        # Windows CI installs Gemini CLI from JFrog, which still serves a build under the ceiling, so
-        # it's the lane that launches these. Image-only models can't serve its tool calls.
+        # Image-only models can't serve Gemini CLI's tool calls.
         if os.name == "nt":
             gemini_models = [m for m in gemini_models if not m.endswith("-image")]
         if not gemini_models:

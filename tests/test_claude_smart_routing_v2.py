@@ -13,6 +13,7 @@ from unittest.mock import Mock
 import pytest
 
 from ucode.agents import LaunchOptions, claude
+from ucode.constants import AGENT_CLAUDE
 from ucode.databricks import AnthropicModelCatalog
 from ucode.smart_routing import claude_hooks, routing, v2
 
@@ -199,22 +200,22 @@ class TestSmartRoutingEnvVars:
     def test_either_flag_enables_smart_routing(self, monkeypatch):
         monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
         monkeypatch.delenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, raising=False)
-        assert not v2.smart_routing_enabled()
+        assert not v2.smart_routing_enabled(None, default=False, agent=AGENT_CLAUDE)
         monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
-        assert v2.smart_routing_enabled()
+        assert v2.smart_routing_enabled(None, default=False, agent=AGENT_CLAUDE)
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
-        assert v2.smart_routing_enabled()
+        assert v2.smart_routing_enabled(None, default=False, agent=AGENT_CLAUDE)
 
     def test_subagent_only_flag_suppresses_first_prompt_routing(self, monkeypatch):
         monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
         monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
-        assert not v2.first_prompt_routing_enabled()
+        assert not v2.first_prompt_routing_enabled(agent=AGENT_CLAUDE)
         # Subagent-only wins when both are set: an ambient full flag cannot
         # override an explicit subagent-only session.
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
-        assert not v2.first_prompt_routing_enabled()
+        assert not v2.first_prompt_routing_enabled(agent=AGENT_CLAUDE)
         monkeypatch.delenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR)
-        assert v2.first_prompt_routing_enabled()
+        assert v2.first_prompt_routing_enabled(agent=AGENT_CLAUDE)
 
 
 class TestV2Launch:
@@ -499,6 +500,9 @@ class TestV2Launch:
 
         assert exc.value.code == 4
         settings = captured["settings"]
+        assert settings["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME] == {
+            "options": v2._claude_mod_launch_options({**os.environ, **settings["env"]})
+        }
         env = settings["env"]
         assert env[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
         for key in (v2.SESSION_ENV_VAR, v2.SESSION_PYTHON_ENV_VAR):
@@ -859,8 +863,129 @@ capture_path.write_text(json.dumps({
         )
 
         assert result == 0
-        assert json.loads(capture.read_text()) == {
-            "command": "/model system.ai.claude-sonnet-5\r",
-            "replayed": "\x1b[200~fix\nthe parser\x1b[201~\r",
-            "restored_before_replay": True,
-        }
+        captured = json.loads(capture.read_text())
+        # Claude Code 2.1.295+ keeps the blocked prompt in the input box, so both
+        # writes start with Ctrl-U presses that clear it.
+        for key, payload in (
+            ("command", "/model system.ai.claude-sonnet-5\r"),
+            ("replayed", "\x1b[200~fix\nthe parser\x1b[201~\r"),
+        ):
+            written = captured[key]
+            assert written.endswith(payload)
+            clear = written[: -len(payload)]
+            assert clear and set(clear) == {"\x15"}, f"{key} must start with Ctrl-U presses"
+        assert captured["restored_before_replay"] is True
+
+
+class TestV2HeadlessClaude:
+    """Print-mode launches route the prompt before launch instead of through the PTY."""
+
+    @staticmethod
+    def _launch(monkeypatch, tmp_path, tool_args, *, stdin=None, route=None):
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
+        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
+        monkeypatch.setattr(v2, "_model_picker_catalog", lambda: None)
+        monkeypatch.setattr(
+            v2,
+            "list_anthropic_model_catalog",
+            lambda *_args: AnthropicModelCatalog(
+                model_ids=["system.ai.claude-opus-4-8", "system.ai.claude-sonnet-5"],
+                model_id_to_display_name={"system.ai.claude-sonnet-5": "Claude Sonnet 5"},
+            ),
+        )
+        prompts: list[str] = []
+
+        def fake_route(_state, _token, prompt, _model_ids):
+            prompts.append(prompt)
+            if route is not None:
+                return route()
+            return v2.routing.RoutingDecision(
+                model="system.ai.claude-sonnet-5", raw_model="claude-sonnet-5", rationale="parser"
+            )
+
+        monkeypatch.setattr(v2, "_route_claude_prompt", fake_route)
+        if sys.platform != "win32":
+            monkeypatch.setattr(
+                claude_pty, "run_claude_pty", Mock(side_effect=AssertionError("PTY used"))
+            )
+        monkeypatch.setattr(
+            v2.sys,
+            "stdin",
+            Mock(isatty=lambda: stdin is None, buffer=Mock(read=lambda: stdin or b"")),
+        )
+        launched: dict = {}
+
+        class FakeProc:
+            def __init__(self, argv, **kwargs):
+                launched["argv"] = argv
+                launched["settings"] = json.loads(
+                    Path(argv[argv.index("--settings") + 1]).read_text()
+                )
+                launched["stdin_bytes"] = b""
+                self.stdin = (
+                    Mock(write=lambda data: launched.update(stdin_bytes=data))
+                    if kwargs.get("stdin") is not None
+                    else None
+                )
+
+            def wait(self):
+                return 0
+
+        monkeypatch.setattr(v2.subprocess, "Popen", FakeProc)
+        with pytest.raises(SystemExit) as exc:
+            v2.launch_claude(
+                {"workspace": "https://example.com"},
+                tool_args,
+                binary="claude",
+                user_settings_path=tmp_path / "settings.json",
+                launch_model=None,
+                compose_settings=lambda args: ({}, list(args)),
+                launch_model_args=claude._launch_model_args,
+                model_name=claude._maybe_add_1m_suffix,
+            )
+        assert exc.value.code == 0
+        return launched, prompts
+
+    def test_stdin_prompt_is_routed_and_passed_to_claude(self, tmp_path, monkeypatch):
+        launched, prompts = self._launch(
+            monkeypatch, tmp_path, ["-p", "--output-format", "json"], stdin=b"fix the parser\n"
+        )
+
+        assert prompts == ["fix the parser"]
+        argv = launched["argv"]
+        assert argv[argv.index("--model") + 1] == "system.ai.claude-sonnet-5[1m]"
+        assert launched["stdin_bytes"] == b"fix the parser\n"
+        # Subagents still route; the PTY's first-prompt hook isn't installed.
+        assert launched["settings"]["env"][v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
+        assert v2.FIRST_PROMPT_SOCKET_ENV not in launched["settings"]["env"]
+
+    def test_prompt_argument_is_routed_without_reading_stdin(self, tmp_path, monkeypatch):
+        launched, prompts = self._launch(
+            monkeypatch, tmp_path, ["-p", "fix the parser", "--output-format", "json"]
+        )
+
+        assert prompts == ["fix the parser"]
+        argv = launched["argv"]
+        assert argv[argv.index("--model") + 1] == "system.ai.claude-sonnet-5[1m]"
+        assert argv[-4:] == ["-p", "fix the parser", "--output-format", "json"]
+
+    def test_explicit_model_skips_routing(self, tmp_path, monkeypatch):
+        launched, prompts = self._launch(
+            monkeypatch, tmp_path, ["-p", "fix the parser", "--model", "opus"]
+        )
+
+        assert prompts == []
+        assert launched["argv"].count("--model") == 1
+
+    def test_router_failure_launches_on_claude_default(self, tmp_path, monkeypatch):
+        def fail():
+            raise RuntimeError("router timed out")
+
+        launched, prompts = self._launch(
+            monkeypatch, tmp_path, ["-p", "fix the parser"], route=fail
+        )
+
+        assert prompts == ["fix the parser"]
+        assert "--model" not in launched["argv"]

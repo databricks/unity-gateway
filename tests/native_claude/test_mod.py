@@ -8,8 +8,10 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from session import Session
 
-from ucode.smart_routing.v2 import _write_routed_claude_plugin
+from ucode.smart_routing import config
+from ucode.smart_routing.v2 import _claude_mod_launch_options, _write_routed_claude_plugin
 
 
 @pytest.fixture(scope="module")
@@ -39,3 +41,17 @@ def test_mod_validation_and_event_forwarding(native_binary, tmp_path):
         assert result.returncode == 0, result.stdout + result.stderr
         if command == "validate":
             assert "./register.ts hooks: session.start" in result.stdout
+
+
+def test_native_options_are_launch_local(native_binary, tmp_path):
+    env = {
+        "SMART_ROUTER_CONFIG_VERSION": config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+        "SMART_ROUTER_NAME": 'custom "quoted" λ',
+    }
+    with (
+        Session(native_binary, tmp_path / "a", env) as a,
+        Session(native_binary, tmp_path / "b", {}) as b,
+    ):
+        assert a.observe()["options"] == _claude_mod_launch_options(env)
+        assert b.observe()["options"] == _claude_mod_launch_options({})
+        assert not (a.plugin / "hooks/launch.json").exists()

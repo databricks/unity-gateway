@@ -65,10 +65,11 @@ uv run pytest -c tests/e2e_cuj/pytest.ini --confcutdir=tests/e2e_cuj \
 ## Smart-routing CUJ
 
 `test_cuj4_smart_routing.py` uses its own read-only workspace with managed smart routing enabled.
-It runs the original routed/explicit-model journeys and five
+It runs the original routed/explicit-model journeys and six
 `SMART_ROUTER_CONFIG_VERSION` cases using the shared version constants; each launches Claude
 and Codex once.
-The independent expectation table is:
+The CUJ derives routing and orchestration assertions from each agent's resolved preset flags.
+Component tests independently verify the preset values. The resulting expectations are:
 
 | Selector | First prompt routed | Orchestrator context | Child on first prompt | Explicitly requested child |
 | --- | --- | --- | --- | --- |
@@ -77,6 +78,7 @@ The independent expectation table is:
 | `subagent_only_v1` | No | No | No | Yes, routed |
 | `subagent_orch_v0` | No | Yes | No | Yes, routed |
 | `subagent_orch_v1` | No | Yes | No | Yes, routed |
+| `subagent_orch_v0_claude_only` | No | Claude only | No | Yes for both; only Claude routed |
 
 First prompts explicitly forbid delegation to isolate first-prompt routing. Assertions require
 the expected presence/absence of a prompt-correlated router request, successful inference on
@@ -91,12 +93,17 @@ only known display/safeguards rejections followed by native removal of the rejec
 and a final non-empty 200 are accepted. Model, prompt, budget, and effort must remain unchanged.
 Each preset session then explicitly requests one child for a separate hidden-value
 file task. Assertions require a new native child transcript containing the value,
-a correlated spawn-routing decision, and successful child inference on the
-router's selected model. This tests requested delegation, not automatic orchestrator delegation.
+a correlated spawn-routing decision and successful child inference on the
+router's selected model when routing is enabled. Disabled routing requires no router
+requests, new routing decisions, recipe headers, or orchestrator context. This tests requested delegation, not automatic orchestrator delegation.
 The wait uses the child's answer directly; parent-answer reconstruction is reserved for first-prompt tasks.
 Offline checks reject parent-only answers and accept child answers before the parent replies.
 Offline evidence regressions do not establish a live CUJ pass.
 Selector cases have separate TUI artifact names, and the session environment is restored afterward.
+Each Claude preset session checks the visible ON state and routing scope,
+then OFF and restored ON after `/smart-router off` and `on`.
+These checks read the terminal's rendered text, ignoring styling and trailing UI controls.
+Offline cases reject stale states, wrong scope, and echoed command confirmations.
 Claude sessions start in auto mode; unless a routed first prompt switches the session to Haiku
 (which leaves it in manual mode), its classifier requests through the recording proxy trigger
 Claude's informational auto-mode classifier billing notice over the transcript. The CUJ terminal
@@ -107,7 +114,7 @@ until no background work remains, including a child resumed after its initial an
 Only then does the test close the task view and submit `/exit`.
 Each preset also runs public `ug revert` in cleanup, including after a failed assertion, so
 interactive launches' OS-managed settings cannot contaminate the next preset's configuration.
-The existing Claude explicit-model precedence case remains skipped; the routing-disabled case
+The Claude and Codex explicit-model precedence cases both run; the routing-disabled case
 still requires a separately preconfigured workspace.
 
 With the same live prerequisites:

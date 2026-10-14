@@ -7,11 +7,17 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
 
-import httpx
-
 from tests.integration.utils.evidence import FileTask, read_jsonl
+from tests.integration.utils.model_discovery import claude_discovery_model_id
+from tests.integration.utils.provider_catalog import MODEL_SERVICE_PARENT_SCHEMA_HEADER
+from tests.integration.utils.request_recorder import (
+    assert_served as assert_served,
+)
+from tests.integration.utils.request_recorder import (
+    served_inference_request as served_inference_request,
+)
 
-from .constants import CLAUDE, CODEX, NATIVE_MODEL_ALIASES
+from .constants import CLAUDE, CODEX, INFERENCE_PATHS, NATIVE_MODEL_ALIASES
 
 
 def canonical_model(value):
@@ -33,85 +39,65 @@ def assert_models(models, expected):
     assert actual == {canonical_model(expected)}, (models, expected)
 
 
-def assert_served(recorder, request, model):
-    """The request asked for `model` and its paired response was a non-empty HTTP 200."""
-    assert request.payload["model"] == model, request.payload
-    response = recorder.response_for(request, timeout=240)
-    assert response.status_code == 200, {
-        "status": response.status_code,
-        "model": request.payload["model"],
-        "output_config": request.payload.get("output_config"),
-        "thinking": request.payload.get("thinking"),
-        "response_body": httpx.Response(
-            response.status_code, headers=response.headers, content=response.body
-        ).text[:2000],
+def assert_claude_headless_model(result, expected):
+    final = None
+    for line in result.stdout.splitlines():
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict) and payload.get("type") == "result":
+            final = payload
+    assert final is not None and not final.get("is_error"), result.stdout
+    usage = final["modelUsage"]
+    assert set(usage) == {expected}, {"expected": expected, "observed": sorted(usage)}
+    assert usage[expected]["outputTokens"] > 0, usage
+
+
+def _request_contains_task(request, agent, task):
+    field = "messages" if agent == CLAUDE else "input"
+    entries = request.payload.get(field)
+    if not isinstance(entries, (list, str)):
+        return False
+    if isinstance(entries, str):
+        return entries == task.prompt
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("role") != "user":
+            continue
+        content = entry.get("content", "")
+        if isinstance(content, str) and content == task.prompt:
+            return True
+        if isinstance(content, list) and any(
+            message_text([part]) == task.prompt for part in content if isinstance(part, dict)
+        ):
+            return True
+    return False
+
+
+def assert_inference_evidence(recorder, checkpoint, agent, task, expected, *, parent_schema=None):
+    expected_wire_model = claude_discovery_model_id(expected) if agent == CLAUDE else expected
+    requests = recorder.requests_after(checkpoint)
+    inference_requests = [
+        request
+        for request in requests
+        if request.method == "POST" and request.path == INFERENCE_PATHS[agent]
+    ]
+    assert inference_requests, {
+        "agent": agent,
+        "path": INFERENCE_PATHS[agent],
+        "requests": [(request.method, request.path) for request in requests],
     }
-    assert response.body, "Inference response was empty"
-
-
-def served_inference_request(recorder, requests, request, agent):
-    """Require HTTP 200 or verified native Claude compatibility retries."""
-    model = request.payload["model"]
-    # Claude 2.1.290 may remove display, then safeguards after separate Bedrock
-    # validation errors. Inspect recorded traffic only; never replay or edit it.
-    # Each field may disappear once, and the full task/model/budget/effort must survive.
-    for _ in range(3):
-        payload = request.payload
-        thinking = payload.get("thinking", {})
-        thinking_type = thinking.get("type")
-        response = recorder.response_for(request, timeout=240)
-        error_message = None
-        if agent == CLAUDE and response.status_code == 400:
-            try:
-                error = httpx.Response(
-                    response.status_code, headers=response.headers, content=response.body
-                ).json()
-                if isinstance(error, dict) and error.get("error_code") == "BAD_REQUEST":
-                    detail = json.loads(error.get("message", ""))
-                    if isinstance(detail, dict) and set(detail) == {"message"}:
-                        error_message = detail["message"]
-            except (ValueError, TypeError):
-                pass
-        expected_retry = None
-        if (
-            thinking_type in {"adaptive", "enabled"}
-            and thinking.get("display") == "updates"
-            and error_message
-            == f"thinking.{thinking_type}.display: Input should be 'summarized', 'omitted'"
-        ):
-            expected_retry = {
-                **payload,
-                "thinking": {key: value for key, value in thinking.items() if key != "display"},
-            }
-        elif (
-            "safeguards" in payload
-            and error_message == "safeguards: Extra inputs are not permitted"
-        ):
-            expected_retry = {key: value for key, value in payload.items() if key != "safeguards"}
-        if expected_retry is None:
-            assert_served(recorder, request, model)
-            return request
-        following = requests[requests.index(request) + 1 :]
-        # Parent and child traffic can interleave on the same endpoint.
-        retry = next(
-            (
-                candidate
-                for candidate in following
-                if candidate.method == request.method
-                and candidate.path == request.path
-                and candidate.payload.get("system") == payload.get("system")
-                and candidate.payload.get("metadata") == payload.get("metadata")
-            ),
-            None,
-        )
-        assert retry is not None, "Claude compatibility rejection had no retry"
-        assert retry.payload == expected_retry, (
-            "Claude compatibility retry changed more than the rejected field",
-            error_message,
-            retry.payload,
-        )
-        request = retry
-    raise AssertionError("Claude compatibility retries did not reach a successful response")
+    task_requests = [
+        request for request in inference_requests if _request_contains_task(request, agent, task)
+    ]
+    assert task_requests, "No inference request contained the submitted task prompt"
+    for request in task_requests:
+        if parent_schema is not None:
+            assert (
+                request.headers.get(MODEL_SERVICE_PARENT_SCHEMA_HEADER.lower()) == parent_schema
+            ), request.headers
+        served = served_inference_request(recorder, task_requests, request, agent)
+        assert_served(recorder, served, expected_wire_model)
 
 
 def claude_file_task(session):
