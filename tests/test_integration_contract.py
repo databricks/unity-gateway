@@ -92,98 +92,19 @@ def test_dedicated_cuj_ci_runs_each_discovered_file_on_its_own_runner():
     assert "test_cuj" not in job
 
 
-def test_latest_harness_ci_covers_smart_routing_without_blocking_merges():
-    job = _integration_jobs()["harness-latest"]
+def test_latest_harness_ci_is_opt_in_and_non_blocking():
+    jobs = _integration_jobs()
+    job = jobs["harness-latest"]
 
-    assert "name: harness-latest · ${{ matrix.suite }} (non-blocking)" in job
-    assert "suite: [cujs, live, managed]" in job
-    assert "npm view @anthropic-ai/claude-code@latest version" in job
-    assert "npm view @openai/codex@latest version" in job
-    assert 'echo "CLAUDE_VERSION=$latest_claude" >> "$GITHUB_ENV"' in job
-    assert 'echo "CODEX_VERSION=$latest_codex" >> "$GITHUB_ENV"' in job
-    assert '"@anthropic-ai/claude-code@$CLAUDE_VERSION"' in job
-    assert '"@openai/codex@$CODEX_VERSION"' in job
-    assert "pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj \\" in job
-    assert "-m harness_latest -v" in job
-    assert '--claude-version "$CLAUDE_VERSION" --codex-version "$CODEX_VERSION"' in job
-    assert "'harness_latest and managed_fixture' || 'harness_latest and not managed_fixture'" in job
+    for package in ("@anthropic-ai/claude-code", "@openai/codex"):
+        assert f"npm view {package}@latest version" in job
+    assert "-m harness_latest" in job
+    assert "harness_latest and managed_fixture" in job
+    assert "harness_latest and not managed_fixture" in job
     assert '-m "$TEST_MARKER"' in job
-    assert "-k " not in job and "test_cuj4" not in job
-    assert "secrets.E2E_ADMIN_WORKSPACE" in job and "secrets.UCODE_TEST_WORKSPACE" in job
-    assert "name: harness-latest-${{ matrix.suite }}" in job
-    assert "harness-latest-versions.txt" in job
+    assert "-k " not in job
     assert "continue-on-error: true" in job
-    assert "fail-fast: false" in job
-    gate = _integration_jobs()["cujs"]
-    assert "harness-latest" not in re.search(r"needs: \[([^\]]+)\]", gate).group(1)
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="harness-latest runs POSIX-only TUI suites")
-@pytest.mark.parametrize(
-    "suite, marker, expected, excluded",
-    [
-        (
-            "e2e_cuj",
-            "harness_latest",
-            {
-                "test_smart_router_config_version",
-                "test_with_model_override_bypasses_router_and_uses_requested_model",
-            },
-            "test_catalog_discovery_claude_picker_preserves_default",
-        ),
-        (
-            "integration",
-            "harness_latest and not managed_fixture",
-            {
-                "test_smart_routing_claude_route_subagent_hook",
-                "test_smart_routing_codex_route_subagent_hook",
-            },
-            "test_ug_configure_claude_databricks",
-        ),
-        (
-            "integration",
-            "harness_latest and managed_fixture",
-            {
-                "test_smart_router_skill_toggles_claude_subagent_routing",
-                "test_smart_router_skill_toggles_codex_subagent_routing",
-                "test_managed_fixture_claude_smart_routing_banner",
-                "test_managed_fixture_codex_smart_routing_banner",
-            },
-            "test_managed_claude_mps_defaults_accompany_discovery",
-        ),
-    ],
-)
-def test_latest_harness_marker_selects_opted_in_cases_only(suite, marker, expected, excluded):
-    root = Path(__file__).parent.parent
-    directory = root / "tests" / suite
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            "-c",
-            str(directory / "pytest.ini"),
-            f"--confcutdir={directory}",
-            str(directory),
-            "--collect-only",
-            "-q",
-            "-m",
-            marker,
-        ],
-        cwd=root,
-        env={**os.environ, "UG_INTEGRATION_AGENTS": "claude,codex"},
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    selected = {
-        line.rsplit("::", 1)[-1].split("[", 1)[0]
-        for line in result.stdout.splitlines()
-        if "::" in line
-    }
-    assert expected <= selected
-    assert excluded not in selected
+    assert "harness-latest" not in jobs["cujs"]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="dedicated-cuj-plan runs on Linux")

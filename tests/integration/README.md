@@ -717,54 +717,23 @@ The advisory Windows installation and headless lanes are not yet included in tha
 The existing required `e2e` context also waits for the complete integration workflow, so integration
 cannot still be running when that gate passes. Full coverage on PRs needs no label or opt-in.
 
-The advisory **harness-latest** matrix currently covers smart routing only and adds
-three Linux runners alongside the pinned-version lanes. Each resolves npm's
-`@anthropic-ai/claude-code@latest` and `@openai/codex@latest` tags to exact versions
-before installing; no floating version
-is passed to `scripts/run_integration.py`. The selected versions and test evidence
-are uploaded as `harness-latest-SUITE` artifacts, including on failure.
-
-| Suite | Selected tests | Workspace/auth |
-| --- | --- | --- |
-| `cujs` | `e2e_cuj/` with `harness_latest`: currently all of CUJ4, including every preset, both agents, and explicit-model bypass | Each CUJ's read-only workspace and its existing CUJ credentials |
-| `live` | `integration/` with `harness_latest and not managed_fixture`: currently both agents' route-subagent hooks and all preset cases | `UCODE_TEST_WORKSPACE` / `DATABRICKS_BEARER` |
-| `managed` | `integration/` with `harness_latest and managed_fixture`: currently both agents' skill toggles and first-prompt banners, including every parameterized case | `E2E_ADMIN_WORKSPACE` / `E2E_ADMIN_SP_CLIENT_*` |
-
-The Claude skill-toggle test asserts `databricks-smart-router-recipe` values on
-real inference requests: launch recipe → `DISABLED` → launch recipe. The Codex
-toggle test checks native child completion and correlated routing decisions.
-The existing deferred routing-disabled CUJ4 case remains skipped. Cases run
-serially within each runner to isolate machine-wide settings. This matrix uses
-`fail-fast: false` and `continue-on-error: true`. It is excluded from the
-**All integration tests** gate, so its failures do not block merges.
-Fork PRs use the existing member-authorized `/integration-test` path for secrets.
-
 ### Opting into harness-latest
 
-Use the registered `harness_latest` pytest marker to opt in without changing
-`integration.yml`. To select a whole module, add after its imports:
+The advisory **harness-latest** lane runs marked tests against the latest Claude and
+Codex releases, recording exact versions in its artifacts. It currently covers
+CUJ4, routing hooks, skill toggles (including Claude's recipe-header assertions),
+and first-prompt banners. Failures do not block merges; pinned lanes are unchanged.
+
+Opt in a test or class with `@pytest.mark.harness_latest`, or a whole module with:
 
 ```python
 pytestmark = pytest.mark.harness_latest
 ```
 
-If the module already has `pytestmark`, append `pytest.mark.harness_latest` to its
-existing list. For a single test or class, add `@pytest.mark.harness_latest`.
-All parameterized cases inherit the marker. Keep existing agent and workspace
-markers: integration's `managed_fixture` determines which workspace runner is used.
-The lane discovers marked tests throughout `integration/` and `e2e_cuj/`; there is
-no filename or test-name allow list. Tests must use the selected runner's existing
-credentials and installed Claude/Codex CLIs; the marker does not provision resources.
-
-Preview selection without workspace access:
-
-```bash
-uv run pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj --collect-only -q -m harness_latest
-uv run pytest -c tests/integration/pytest.ini --confcutdir=tests/integration \
-  tests/integration --collect-only -q -m 'harness_latest and not managed_fixture'
-uv run pytest -c tests/integration/pytest.ini --confcutdir=tests/integration \
-  tests/integration --collect-only -q -m 'harness_latest and managed_fixture'
-```
+Append the marker to an existing `pytestmark` list when present. CI discovers marked
+cases under `e2e_cuj/` and `integration/` without workflow edits. Keep existing agent
+and workspace markers: `managed_fixture` selects the managed integration runner.
+Tests use each runner's existing credentials and installed Claude/Codex CLIs.
 
 ### Managed-workspace journeys
 
