@@ -95,7 +95,9 @@ Each preset session then explicitly requests one child for a separate hidden-val
 file task. Assertions require a new native child transcript containing the value,
 a correlated spawn-routing decision and successful child inference on the
 router's selected model when routing is enabled. Disabled routing requires no router
-requests, new routing decisions, recipe headers, or orchestrator context. This tests requested delegation, not automatic orchestrator delegation.
+requests, new routing decisions, recipe metadata, or orchestrator context. Claude's parent
+and child inference payloads carry the launch recipe in `smart_router_recipe_name`
+without a recipe header; Codex retains the recipe header. This tests requested delegation, not automatic orchestrator delegation.
 The wait uses the child's answer directly; parent-answer reconstruction is reserved for first-prompt tasks.
 Offline checks reject parent-only answers and accept child answers before the parent replies.
 Offline evidence regressions do not establish a live CUJ pass.

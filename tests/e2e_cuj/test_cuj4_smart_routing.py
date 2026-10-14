@@ -314,9 +314,16 @@ class TestCujSmartRouting(BaseCujTest):
                         expected_model
                     )
                     evidence.assert_applied(task, supported, expected=expected_model)
-                    assert (
-                        "databricks-smart-router-recipe" in inference.headers
-                    ) == subagent_routed, agent
+                    if agent == CLAUDE:
+                        launch_recipe = (
+                            session.env.get("SMART_ROUTER_NAME", "").strip() or "task_v3"
+                        )
+                        assert inference.payload.get("smart_router_recipe_name") == launch_recipe
+                        assert "databricks-smart-router-recipe" not in inference.headers
+                    else:
+                        assert (
+                            "databricks-smart-router-recipe" in inference.headers
+                        ) == subagent_routed, agent
                     assert (
                         ORCHESTRATOR_CONTEXT.encode() in inference.body
                     ) == orchestrator_enabled, agent
@@ -376,11 +383,18 @@ class TestCujSmartRouting(BaseCujTest):
                         assert canonical_model(inference.payload["model"]) == canonical_model(
                             selections[0]["route_option"]["model"]
                         )
-                        assert "databricks-smart-router-recipe" in inference.headers
+                        if agent == CLAUDE:
+                            assert (
+                                inference.payload.get("smart_router_recipe_name") == launch_recipe
+                            )
+                            assert "databricks-smart-router-recipe" not in inference.headers
+                        else:
+                            assert "databricks-smart-router-recipe" in inference.headers
                     else:
                         assert read_jsonl(decisions_path) == original_decisions
                         assert not any(
                             "databricks-smart-router-recipe" in request.headers
+                            or "smart_router_recipe_name" in request.payload
                             or ORCHESTRATOR_CONTEXT.encode() in request.body
                             for request in requests
                         ), agent

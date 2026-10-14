@@ -378,8 +378,9 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
     Expected: routing-only cases install Smart Router; enabling orchestration also installs
     Smart Router Orchestrator. Each local invocation confirms the new state in the TUI.
     All three uniquely tagged calculations complete in native parent and child sessions;
-    their recorded inference requests carry the launch recipe, DISABLED, then the launch
-    recipe again, and receive non-empty HTTP 200 responses (including verified native
+    their recorded inference payloads carry smart_router_recipe_name with the launch
+    recipe, DISABLED, then the launch recipe again, without a recipe header, and receive
+    non-empty HTTP 200 responses (including verified native
     compatibility retries). Only the first and third show the subagent-routing banner
     and produce live gateway decisions correlated with those children. Claude's native
     task view reports no running tasks before /exit. No first-prompt routing wrapper starts.
@@ -445,11 +446,15 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
                 assert inferences, f"No recorded inference for {task.marker}"
                 recipe = launch_recipe if routed else "DISABLED"
                 for request in inferences:
-                    assert request.headers.get("databricks-smart-router-recipe") == recipe, (
+                    assert request.payload.get("smart_router_recipe_name") == recipe, (
                         task.marker,
                         request.sequence,
-                        request.headers.get("databricks-smart-router-recipe"),
+                        request.payload.get("smart_router_recipe_name"),
                         recipe,
+                    )
+                    assert "databricks-smart-router-recipe" not in request.headers, (
+                        task.marker,
+                        request.sequence,
                     )
                     served_inference_request(recorder, requests, request, "claude")
             tui.wait_for_background_tasks()
