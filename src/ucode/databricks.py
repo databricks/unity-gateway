@@ -70,7 +70,11 @@ TOKEN_REFRESH_INTERVAL_SECONDS = 1800
 _TOKEN_CACHE_LOCK_MARKERS = ("cache update", "exit status 45")
 _TOKEN_FETCH_MAX_ATTEMPTS = 4
 # Match expired/missing logins, not the generic login hint also used for network errors.
-_LOGIN_REQUIRED_MARKERS = ("not configured for this host", "refresh token is invalid")
+_LOGIN_REQUIRED_MARKERS = (
+    "not configured for this host",
+    "refresh token is invalid",
+    "no cached credentials",
+)
 # End login before Codex's 180 s timeout kills the helper and orphans the CLI.
 _BROWSER_LOGIN_TIMEOUT_SECONDS = 150
 _BROWSER_LOGIN_LOCK_PATH = APP_DIR / "auth-login.lock"

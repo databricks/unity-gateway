@@ -2202,11 +2202,18 @@ class TestGetDatabricksToken:
         token = get_databricks_token(WS)
         assert token == "refreshed-token"
 
-    def test_browser_login_signs_in_when_refresh_token_is_invalid(
-        self, tmp_path, monkeypatch, capfd
+    @pytest.mark.parametrize(
+        "auth_error",
+        [
+            'echo \'{"message": "refresh token is invalid. Run: databricks auth login"}\'',
+            "echo 'Error: cache: no cached credentials; run `databricks auth login` to sign in' >&2",
+        ],
+    )
+    def test_browser_login_signs_in_when_login_is_required(
+        self, tmp_path, monkeypatch, capfd, auth_error
     ):
-        # A desktop app's helper has no terminal, so an invalid refresh token
-        # (reported as JSON on stdout) opens a browser login, not `--no-browser`.
+        # A desktop app's helper has no terminal, so missing or expired credentials
+        # open a browser login, not `--no-browser`.
         signed_in = tmp_path / "signed-in"
         login_argv = tmp_path / "login-argv"
         env = self._fake_databricks(
@@ -2218,7 +2225,7 @@ class TestGetDatabricksToken:
             f"if [ -f {signed_in} ]; then\n"
             '  echo \'{"access_token": "signed-in-token", "token_type": "Bearer"}\'\n'
             "else\n"
-            '  echo \'{"message": "refresh token is invalid. Run: databricks auth login"}\'\n'
+            f"  {auth_error}\n"
             "  exit 1\n"
             "fi",
         )
