@@ -56,7 +56,6 @@ fallback-version = "0.0.0"
 
 [dependency-groups]
 dev = [
-    # Workspace CUJs use the SDK; runtime authentication uses the Databricks CLI.
     "databricks-sdk>=0.135.0",
     "pytest>=9.0.3",
     "pexpect>=4.9.0",
