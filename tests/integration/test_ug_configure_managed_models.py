@@ -127,24 +127,21 @@ def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session,
         env = settings.get("env") or {}
         expected_header = f"Databricks-Model-Service-Parent-Schema: {parent_schema}"
         assert expected_header in env.get("ANTHROPIC_CUSTOM_HEADERS", "").splitlines(), settings
-        assert env.get("ANTHROPIC_MODEL") == defaults["default_model"], settings
+        assert env.get("ANTHROPIC_MODEL") == defaults["default_model"] + "[1m]", settings
         expected_picker_models = []
         for config_key, env_key in MANAGED_CLAUDE_DEFAULT_ENV_KEYS.items():
             expected = defaults[config_key]
             if config_key in {"default_opus_model", "default_sonnet_model"}:
                 expected += "[1m]"
             assert env.get(env_key) == expected, settings
-            expected_picker_models.append(
-                defaults[config_key]
-                if defaults[config_key] == defaults["default_model"]
-                else expected
-            )
+            expected_picker_models.append(defaults[config_key])
         picker = settings["modelPicker"]
         assert picker["replaceBuiltInOptions"] is True, picker
         expected_picker_models = set(expected_picker_models) | set(catalog.model_ids)
-        assert sorted(option["model"] for option in picker["options"]) == sorted(
-            expected_picker_models
-        ), picker
+        # Opus and Sonnet rows carry Claude Code's `[1m]` hint; each model is listed once.
+        assert sorted(
+            option["model"].removesuffix("[1m]") for option in picker["options"]
+        ) == sorted(expected_picker_models), picker
         for option in picker["options"]:
             if display_name := catalog.display_names.get(option["model"]):
                 assert option["label"] == display_name, option

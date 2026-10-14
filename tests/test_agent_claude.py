@@ -204,6 +204,22 @@ class TestRenderOverlay:
             "behavesAs": "claude-sonnet-4-6",
         }
 
+    def test_provider_model_ids_stay_verbatim(self):
+        sonnet = "claude-sonnet-4-6"
+        overlay, _ = claude.render_overlay(
+            WS,
+            None,
+            provider="main.default.anthropic-mps",
+            provider_models={"sonnet": sonnet},
+            route_root_model=sonnet,
+            picker_catalog=db_mod.AnthropicModelCatalog(
+                model_ids=[sonnet], model_id_to_display_name={}
+            ),
+        )
+
+        assert overlay["env"]["ANTHROPIC_MODEL"] == sonnet
+        assert [option["model"] for option in overlay["modelPicker"]["options"]] == [sonnet]
+
     def test_mps_picker_renders_default_shortcuts_before_catalog_rows(self):
         provider = "main.default.anthropic-mps"
         sonnet = "anthropic.claude-sonnet-4-6"

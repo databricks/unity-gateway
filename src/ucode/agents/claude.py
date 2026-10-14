@@ -508,7 +508,10 @@ def render_overlay(
     # on the routed model rather than the family default.
     _ = model  # API stability; no longer pinned via env.
     if route_root_model:
-        env["ANTHROPIC_MODEL"] = _maybe_add_1m_suffix(route_root_model)
+        # A Model Provider Service gets its model names verbatim (see below).
+        env["ANTHROPIC_MODEL"] = (
+            route_root_model if provider else _maybe_add_1m_suffix(route_root_model)
+        )
     # A Bedrock-backed provider needs its provider-side ids pinned verbatim
     # (Claude Code's canonical names aren't routable there). These come from the
     # service's targets, already de-duped to one id per family upstream.
@@ -577,7 +580,7 @@ def render_overlay(
             "replaceBuiltInOptions": True,
             "options": [
                 _picker_option(
-                    _maybe_add_1m_suffix(model),
+                    model if provider else _maybe_add_1m_suffix(model),
                     picker_catalog.model_id_to_display_name.get(model) or _picker_label(model),
                     picker_catalog.model_id_to_description.get(model),
                 )

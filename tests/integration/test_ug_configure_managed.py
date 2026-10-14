@@ -20,6 +20,12 @@ MANAGED_CLAUDE_MODELS = [
     "system.ai.claude-sonnet-4-6",
     "system.ai.claude-haiku-4-5",
 ]
+# ug writes the Opus and Sonnet picker rows with Claude Code's `[1m]` context hint.
+MANAGED_CLAUDE_PICKER_MODELS = [
+    "system.ai.claude-opus-4-8[1m]",
+    "system.ai.claude-sonnet-4-6[1m]",
+    "system.ai.claude-haiku-4-5",
+]
 MANAGED_CODEX_MODEL = "system.ai.gpt-5-6-sol"
 
 
@@ -41,7 +47,7 @@ def test_ug_configure_managed_claude(live_session, workspace):
     settings = json.loads((session.home / ".claude" / "ucode-settings.json").read_text())
     assert settings.get("availableModels") == MANAGED_CLAUDE_MODELS, settings
     options = (settings.get("modelPicker") or {}).get("options", [])
-    assert [option.get("model") for option in options] == MANAGED_CLAUDE_MODELS, settings
+    assert [option.get("model") for option in options] == MANAGED_CLAUDE_PICKER_MODELS, settings
 
     # Drive the real agent: with the managed models in place it must reach a usable
     # gateway prompt, not Claude's own login flow (boot asserts the latter never appears).
@@ -112,7 +118,7 @@ def test_ug_configure_managed_is_idempotent(live_session, workspace):
         listed = [m.get("slug") for m in catalog.get("models", []) if m.get("visibility") == "list"]
         runs.append((settings.get("availableModels"), picker, listed))
 
-    expected = (MANAGED_CLAUDE_MODELS, MANAGED_CLAUDE_MODELS, [MANAGED_CODEX_MODEL])
+    expected = (MANAGED_CLAUDE_MODELS, MANAGED_CLAUDE_PICKER_MODELS, [MANAGED_CODEX_MODEL])
     assert runs == [expected, expected], runs
 
 

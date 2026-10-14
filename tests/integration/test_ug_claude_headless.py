@@ -213,7 +213,11 @@ def test_ug_claude_headless_explicit_model_bypasses_routing(
         timeout=180,
     )
     task.assert_headless_answer("claude", result)
-    usage = json.loads(result.stdout)["modelUsage"]
+    # ug passes its own `--model` on with Claude Code's `[1m]` context hint.
+    usage = {
+        model_id.removesuffix("[1m]"): value
+        for model_id, value in json.loads(result.stdout)["modelUsage"].items()
+    }
     assert set(usage) == {model}, {"expected": model, "observed": sorted(usage)}
     assert usage[model]["outputTokens"] > 0, usage
     session.assert_not_routed()
