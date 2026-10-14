@@ -103,10 +103,22 @@ def _task_inference_request(requests, agent, prompt, *, after=0):
         ):
             continue
         payload = request.payload
+        entries = payload.get("messages" if agent == CLAUDE else "input", [])
         tools = payload.get("tools")
+        if agent == CODEX and not tools and isinstance(entries, list):
+            # Responses Lite carries tool definitions in developer input items.
+            tools = next(
+                (
+                    entry.get("tools")
+                    for entry in entries
+                    if isinstance(entry, dict)
+                    and entry.get("type") == "additional_tools"
+                    and entry.get("role") == "developer"
+                ),
+                None,
+            )
         if not isinstance(tools, list) or not tools:
             continue
-        entries = payload.get("messages" if agent == CLAUDE else "input", [])
         if isinstance(entries, str):
             if entries in prompts:
                 return request
