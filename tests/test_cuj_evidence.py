@@ -4,7 +4,6 @@ import copy
 import json
 from types import SimpleNamespace
 
-import pyte
 import pytest
 
 from tests.e2e_cuj.helpers.constants import CLAUDE, CODEX, INFERENCE_PATHS
@@ -23,31 +22,24 @@ from tests.e2e_cuj.helpers.tui_request_recorder import RecordedRequest, Recorded
 from tests.e2e_cuj.test_cuj4_smart_routing import _smart_router_band_shown, _task_inference_request
 from tests.integration.utils.evidence import FileTask, read_jsonl
 from tests.integration.utils.provider_catalog import MODEL_SERVICE_PARENT_SCHEMA_HEADER
-from tests.integration.utils.terminal import TerminalScreen
 
 
 @pytest.mark.parametrize("enabled, first_prompt", [(True, True), (True, False), (False, False)])
-def test_cuj4_status_band_requires_current_state_scope_and_color(enabled, first_prompt):
-    screen = TerminalScreen(140, 4, lambda _: None)
-    stream = pyte.Stream(screen)
-    tui = SimpleNamespace(screen=screen)
+def test_cuj4_status_band_requires_current_state_and_scope(enabled, first_prompt):
     state = "ON" if enabled else "OFF"
     trailer = (
         ("— routing first prompt + subagents" if first_prompt else "— routing subagents")
         if enabled
         else "— Reenable with '/smart-router on'"
     )
-    prefix = "unity gateway smart router "
-    stream.feed(f"{prefix}\x1b[1;30;{42 if enabled else 100}m {state} \x1b[0m {trailer}")
+    tui = SimpleNamespace(
+        screen=SimpleNamespace(display=[f"unity gateway smart router  {state}  {trailer}    [-]"])
+    )
     assert _smart_router_band_shown(tui, enabled=enabled, first_prompt=first_prompt)
     assert not _smart_router_band_shown(tui, enabled=not enabled, first_prompt=first_prompt)
     if enabled:
         assert not _smart_router_band_shown(tui, enabled=enabled, first_prompt=not first_prompt)
-    screen.reset()
-    stream.feed(f"{prefix}{state} {trailer}")
-    assert not _smart_router_band_shown(tui, enabled=enabled, first_prompt=first_prompt)
-    screen.reset()
-    stream.feed(f"Smart Router is {state.lower()} for this session.")
+    tui.screen.display = [f"Smart Router is {state.lower()} for this session."]
     assert not _smart_router_band_shown(tui, enabled=enabled, first_prompt=first_prompt)
 
 

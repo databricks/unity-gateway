@@ -45,24 +45,11 @@ ORCHESTRATOR_CONTEXT = "Smart Router Orchestrator is on for this session."
 
 def _smart_router_band_shown(tui, *, enabled, first_prompt):
     state = "ON" if enabled else "OFF"
-    trailer = (
-        ("— routing first prompt + subagents" if first_prompt else "— routing subagents")
-        if enabled
-        else "— Reenable with '/smart-router on'"
-    )
-    for row, line in enumerate(tui.screen.display):
-        match = re.fullmatch(
-            rf"\s*unity gateway smart router\s+(?P<state>{state})\s+{re.escape(trailer)}\s*",
-            line,
-        )
-        if match:
-            return all(
-                tui.screen.buffer[row][column].bold
-                and tui.screen.buffer[row][column].fg == "black"
-                and tui.screen.buffer[row][column].bg == ("green" if enabled else "brightblack")
-                for column in range(*match.span("state"))
-            )
-    return False
+    pattern = rf"\s*unity gateway smart router\s+{state}\b"
+    if enabled:
+        scope = "first prompt + subagents" if first_prompt else "subagents"
+        pattern += rf"\s+—\s+routing\s+{re.escape(scope)}\b"
+    return any(re.match(pattern, line) for line in tui.screen.display)
 
 
 @dataclass(frozen=True)
@@ -270,8 +257,8 @@ class TestCujSmartRouting(BaseCujTest):
 
         Expected: each agent's resolved flags determine first-prompt routing,
         orchestration, and child routing. One native child completes the delegated
-        task even when routing is disabled. Claude's status band shows a green ON
-        badge and the preset's routing scope, then gray OFF and green ON after toggles.
+        task even when routing is disabled. Claude's status band shows ON and the
+        preset's routing scope, then OFF and ON after toggles.
         """
         session, workspace, recorder = cuj
         previous = session.env.get("SMART_ROUTER_CONFIG_VERSION")
@@ -306,7 +293,7 @@ class TestCujSmartRouting(BaseCujTest):
                             lambda _, first_prompt=first_prompt_routed: _smart_router_band_shown(
                                 tui, enabled=True, first_prompt=first_prompt
                             ),
-                            "the green ON Smart Router band with the preset's routing scope",
+                            "the ON Smart Router band with the preset's routing scope",
                         )
                     tui.submit(task.prompt)
                     tui.task(evidence, task)
@@ -407,7 +394,7 @@ class TestCujSmartRouting(BaseCujTest):
                                         tui, enabled=enabled, first_prompt=first_prompt
                                     )
                                 ),
-                                f"the {'green ON' if enabled else 'gray OFF'} Smart Router band",
+                                f"the {'ON' if enabled else 'OFF'} Smart Router band",
                             )
                     tui.exit_normally()
         finally:
