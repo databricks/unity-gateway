@@ -2980,6 +2980,15 @@ def map_claude_family_models(targets: list[str]) -> dict[str, str]:
     return result
 
 
+# Claude Code sizes its context window from a `[1m]` id hint; GPT 5.6 and GPT 6 serve 1M tokens.
+_GPT_1M_MODEL_RE = re.compile(r"^(?:system\.ai\.)?(?:databricks-)?gpt-(?:5-6|6)(?:-[a-z0-9]+)*$")
+
+
+def maybe_add_gpt_1m_suffix(model: str) -> str:
+    """Add Claude Code's `[1m]` hint to GPT 5.6 and GPT 6 ids; return other ids unchanged."""
+    return f"{model}[1m]" if _GPT_1M_MODEL_RE.match(model) else model
+
+
 # A bare launch pins the first tier the service offers, so it never dead-ends on a model the
 # gateway 403s. Sonnet first: it's Claude Code's own default tier, so we keep that balanced default
 # rather than jumping to opus, then fall back to the next offered tier when sonnet isn't allowed.

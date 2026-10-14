@@ -48,6 +48,7 @@ from ucode.databricks import (
     build_otel_traces_endpoint,
     build_tool_base_url,
     get_databricks_token,
+    maybe_add_gpt_1m_suffix,
     ug_binary,
 )
 from ucode.launcher import exec_or_spawn
@@ -171,9 +172,6 @@ WEB_SEARCH_MCP_NAME = "web_search"
 # model-services form (`system.ai.claude-opus-4-8`).
 _CLAUDE_MODEL_RE = re.compile(
     r"^(?:system\.ai\.)?(?:databricks-)?claude-(opus|sonnet)-(\d+)(?:-(\d+))?(.*)$"
-)
-_GPT_1M_MODEL_RE = re.compile(
-    r"^(?:system\.ai\.|databricks-)?gpt-(?:5[-.]6|6)(?:[-.][a-z0-9]+)*$", re.IGNORECASE
 )
 
 # OTLP trace-export keys owned by the managed configuration path.
@@ -513,7 +511,7 @@ def render_overlay(
     # on the routed model rather than the family default.
     _ = model  # API stability; no longer pinned via env.
     if route_root_model:
-        env["ANTHROPIC_MODEL"] = _add_gpt_1m_suffix(route_root_model)
+        env["ANTHROPIC_MODEL"] = maybe_add_gpt_1m_suffix(route_root_model)
     # A Bedrock-backed provider needs its provider-side ids pinned verbatim
     # (Claude Code's canonical names aren't routable there). These come from the
     # service's targets, already de-duped to one id per family upstream.
@@ -573,7 +571,8 @@ def render_overlay(
         overlay["modelPicker"] = {
             "replaceBuiltInOptions": True,
             "options": [
-                {"model": _add_gpt_1m_suffix(m), "label": _picker_label(m)} for m in static_models
+                {"model": maybe_add_gpt_1m_suffix(m), "label": _picker_label(m)}
+                for m in static_models
             ],
         }
         keys += [[key] for key in CLAUDE_MANAGED_PICKER_KEYS]
@@ -582,7 +581,7 @@ def render_overlay(
             "replaceBuiltInOptions": True,
             "options": [
                 _picker_option(
-                    _add_gpt_1m_suffix(model),
+                    maybe_add_gpt_1m_suffix(model),
                     picker_catalog.model_id_to_display_name.get(model) or _picker_label(model),
                     picker_catalog.model_id_to_description.get(model),
                 )
@@ -639,17 +638,13 @@ def _picker_option(model: str, label: str, description: str | None = None) -> di
     return option
 
 
-def _add_gpt_1m_suffix(model: str) -> str:
-    """GPT 5.6 and 6 serve 1M tokens; Claude Code only sizes its window from the `[1m]` hint."""
-    return f"{model}[1m]" if _GPT_1M_MODEL_RE.fullmatch(model) else model
-
-
 def _maybe_add_1m_suffix(model: str) -> str:
+    """Add Claude Code's `[1m]` hint to Claude Opus/Sonnet 4.6+ ids and GPT 5.6/6 ids."""
     if model.endswith("[1m]"):
         return model
     match = _CLAUDE_MODEL_RE.match(model)
     if not match:
-        return _add_gpt_1m_suffix(model)
+        return maybe_add_gpt_1m_suffix(model)
 
     family, major_raw, minor_raw, _ = match.groups()
     major = int(major_raw)
@@ -2262,7 +2257,6 @@ def launch(
     options: LaunchOptions,
 ) -> None:
     tool_args = _external_web_search_args(state, tool_args)
-    pinned_model = options.user_pinned_model and _add_gpt_1m_suffix(options.user_pinned_model)
     binary = SPEC["binary"]
     workspace = state.get("workspace")
     if workspace and os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) == "1":
@@ -2277,6 +2271,9 @@ def launch(
         os.environ["ANTHROPIC_DEFAULT_MODEL"] = launch_default_model
     # Smart routing also spawns Claude directly, so it needs the native executable.
     binary = _resolve_launch_binary(binary)
+    pinned_model = (
+        maybe_add_gpt_1m_suffix(options.user_pinned_model) if options.user_pinned_model else None
+    )
     routing_setup_failed = False
     if options.launch_smart_routing:
         try:

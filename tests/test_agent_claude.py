@@ -85,22 +85,13 @@ class TestMinimumVersion:
 
 
 class TestRenderOverlay:
-    def test_gpt_long_context_suffix(self):
-        assert claude._maybe_add_1m_suffix("system.ai.gpt-5-6-sol") == "system.ai.gpt-5-6-sol[1m]"
-        assert claude._add_gpt_1m_suffix("databricks-gpt-6-astra") == "databricks-gpt-6-astra[1m]"
-        for model in (
-            "system.ai.gpt-5-6-sol[1m]",
-            "system.ai.gpt-5-6-sol[200k]",
-            "system.ai.gpt-5-5",
-            "system.ai.gpt-oss-120b",
-            "system.ai.claude-opus-4-8",
-        ):
-            assert claude._add_gpt_1m_suffix(model) == model
-
     def test_long_context_suffix_supports_major_only_claude_versions(self):
         assert claude._maybe_add_1m_suffix("system.ai.claude-sonnet-5") == (
             "system.ai.claude-sonnet-5[1m]"
         )
+
+    def test_long_context_suffix_supports_gpt_5_6_and_6(self):
+        assert claude._maybe_add_1m_suffix("system.ai.gpt-5-6-sol") == ("system.ai.gpt-5-6-sol[1m]")
 
     def test_does_not_set_anthropic_model_env(self):
         # We deliberately don't pin ANTHROPIC_MODEL: when set, Claude Code's
