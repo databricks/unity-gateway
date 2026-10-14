@@ -17,7 +17,8 @@ both Claude and Codex. One parameterized test runs all six
 context in inference input, and completed explicitly requested native subagents.
 This is not automatic orchestrator-delegation coverage. No workspace configuration is modified.
 CUJ4 matches both Codex 0.154.0's top-level tools and 0.162.1's Responses Lite
-`additional_tools` input items, requiring nonempty tools and the exact task prompt.
+`additional_tools` input items. Encrypted child messages match the routed task name
+to the recipient; plaintext prompts still match exactly. Both require tools.
 The shared preset CUJ runs both agents for every version and derives routing and
 orchestration assertions from each agent's resolved flags. Both must complete a native
 child task. `subagent_orch_v0_claude_only` routes Claude's child; Codex uses the managed

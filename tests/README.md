@@ -82,7 +82,8 @@ Offline CUJ regressions cover Codex delegated-turn completion and exact task-req
 notifications alone, Claude title requests, and parent continuations do not qualify.
 Unrelated and pre-checkpoint request bodies are excluded before JSON decoding.
 CUJ4 accepts both top-level tool definitions (Codex 0.154.0) and Responses Lite
-`additional_tools` input items (0.162.1), retaining exact prompt and nonempty-tool checks.
+`additional_tools` input items (0.162.1). Encrypted child messages match the routed
+task name to the recipient; plaintext prompts still match exactly. Both require tools.
 The original smart-routing CUJ runs four fresh sessions: routed and explicit model for both
 Claude and Codex, with explicit-model bypass assertions enabled for both agents.
 One additional test has five `SMART_ROUTER_CONFIG_VERSION` cases.
