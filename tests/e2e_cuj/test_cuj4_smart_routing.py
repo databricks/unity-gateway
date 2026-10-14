@@ -315,10 +315,16 @@ class TestCujSmartRouting(BaseCujTest):
                     )
                     evidence.assert_applied(task, supported, expected=expected_model)
                     if agent == CLAUDE:
-                        launch_recipe = (
-                            session.env.get("SMART_ROUTER_NAME", "").strip() or "task_v3"
+                        launch_recipe = inference.payload.get("smart_router_recipe_name")
+                        assert (
+                            isinstance(launch_recipe, str)
+                            and launch_recipe.strip()
+                            and launch_recipe != "DISABLED"
                         )
-                        assert inference.payload.get("smart_router_recipe_name") == launch_recipe
+                        if first_prompt_routed:
+                            assert (
+                                routes[0].payload["route_selector"]["router_name"] == launch_recipe
+                            )
                         assert "databricks-smart-router-recipe" not in inference.headers
                     else:
                         assert (
@@ -384,6 +390,9 @@ class TestCujSmartRouting(BaseCujTest):
                             selections[0]["route_option"]["model"]
                         )
                         if agent == CLAUDE:
+                            assert (
+                                routes[0].payload["route_selector"]["router_name"] == launch_recipe
+                            )
                             assert (
                                 inference.payload.get("smart_router_recipe_name") == launch_recipe
                             )

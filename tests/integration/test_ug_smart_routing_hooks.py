@@ -410,7 +410,7 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
             session, "claude", [str(session.binary), "claude"], "smart-router-skill-toggle"
         ) as tui:
             tui.boot()
-            launch_recipe = session.env.get("SMART_ROUTER_NAME", "").strip() or "task_v3"
+            launch_recipe = None
             for expression, result, routed in [
                 ("1+1", "2", True),
                 ("1+2", "3", False),
@@ -444,7 +444,23 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
                     and task.marker in json.dumps(request.payload.get("messages", []))
                 ]
                 assert inferences, f"No recorded inference for {task.marker}"
-                recipe = launch_recipe if routed else "DISABLED"
+                if routed:
+                    routes = [
+                        request
+                        for request in requests
+                        if request.method == "POST"
+                        and request.path == "/ai-gateway/routing/v1/routes:select"
+                        and task.marker in request.payload.get("task", {}).get("prompt", "")
+                    ]
+                    assert len(routes) == 1, (task.marker, routes)
+                    recipe = routes[0].payload["route_selector"]["router_name"]
+                    assert isinstance(recipe, str) and recipe.strip() and recipe != "DISABLED"
+                    if launch_recipe is None:
+                        launch_recipe = recipe
+                    else:
+                        assert recipe == launch_recipe, (task.marker, recipe, launch_recipe)
+                else:
+                    recipe = "DISABLED"
                 for request in inferences:
                     assert request.payload.get("smart_router_recipe_name") == recipe, (
                         task.marker,
