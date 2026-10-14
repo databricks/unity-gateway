@@ -635,7 +635,7 @@ def _picker_option(model: str, label: str, description: str | None = None) -> di
 
 
 def _maybe_add_1m_suffix(model: str) -> str:
-    """Add Claude Code's `[1m]` hint to Claude Opus/Sonnet 4.6+ ids and GPT 5.6/6 ids."""
+    """Add Claude Code's `[1m]` hint to Claude Opus/Sonnet 4.6+ ids and GPT ids except gpt-oss."""
     if model.endswith("[1m]"):
         return model
     match = _CLAUDE_MODEL_RE.match(model)

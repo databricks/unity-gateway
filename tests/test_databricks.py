@@ -960,12 +960,14 @@ class TestMaybeAddGpt1mSuffix:
             ("databricks-gpt-6-astra", "databricks-gpt-6-astra[1m]"),
             ("system.ai.gpt-5-6-sol[1m]", "system.ai.gpt-5-6-sol[1m]"),
             ("system.ai.gpt-5-6-sol[200k]", "system.ai.gpt-5-6-sol[200k]"),
-            ("system.ai.gpt-5-5", "system.ai.gpt-5-5"),
+            ("system.ai.gpt-5-5", "system.ai.gpt-5-5[1m]"),
+            ("system.ai.gpt-5-4-nano", "system.ai.gpt-5-4-nano[1m]"),
+            ("gpt-4.1", "gpt-4.1[1m]"),
             ("system.ai.gpt-oss-120b", "system.ai.gpt-oss-120b"),
             ("system.ai.claude-opus-4-8", "system.ai.claude-opus-4-8"),
         ],
     )
-    def test_adds_hint_to_gpt_5_6_and_6_only(self, model, expected):
+    def test_adds_hint_to_versioned_gpt_ids_only(self, model, expected):
         assert db_mod.maybe_add_gpt_1m_suffix(model) == expected
 
 
