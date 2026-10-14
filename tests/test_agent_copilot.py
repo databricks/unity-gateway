@@ -28,8 +28,25 @@ class TestCopilotSpec:
 
 class TestRenderEnvOverlay:
     def test_sets_provider_base_url(self):
-        env = copilot.render_env_overlay(WS, "claude-sonnet-4-6", "tok")
+        env = copilot.render_env_overlay(WS, "gpt-5", "tok")
         assert env["COPILOT_PROVIDER_BASE_URL"] == f"{WS}/ai-gateway/mlflow/v1"
+
+    def test_claude_uses_anthropic_provider_with_catalog_model_id(self):
+        env = copilot.render_env_overlay(WS, "system.ai.claude-sonnet-5-5", "tok")
+
+        assert env["COPILOT_PROVIDER_TYPE"] == "anthropic"
+        assert env["COPILOT_PROVIDER_BASE_URL"] == f"{WS}/ai-gateway/anthropic"
+        assert env["COPILOT_PROVIDER_MODEL_ID"] == "claude-sonnet-5.5"
+        assert env["COPILOT_MODEL"] == "system.ai.claude-sonnet-5-5"
+        assert "COPILOT_PROVIDER_WIRE_API" not in env
+
+    def test_claude_wire_model_override_selects_anthropic_provider(self):
+        env = copilot.render_env_overlay(
+            WS, "gpt-5", "tok", override_model="system.ai.claude-opus-4-7"
+        )
+
+        assert env["COPILOT_PROVIDER_TYPE"] == "anthropic"
+        assert env["COPILOT_PROVIDER_MODEL_ID"] == "claude-opus-4.7"
 
     def test_sets_provider_type(self):
         env = copilot.render_env_overlay(WS, "m", "t")
@@ -51,10 +68,11 @@ class TestRenderEnvOverlay:
         ("selected_model", "override_model", "expected_api"),
         [
             ("gpt-6.1-sol", None, "responses"),
-            ("system.ai.gpt-6-astra", "gpt-5", "completions"),
+            ("system.ai.gpt-6-astra", "gpt-4.1", "completions"),
             ("system.ai.gpt-5-6-sol", "databricks-gpt-6-1-sol", "responses"),
             ("system.ai.gpt-6-astra", "", "responses"),
-            ("gpt-5", "", "completions"),
+            ("gpt-5", "", "responses"),
+            ("gpt-4.1", "", "completions"),
         ],
     )
     def test_selects_wire_api_from_override_and_keeps_selected_model(
@@ -81,14 +99,14 @@ class TestBuildRuntimeEnv:
         assert env["OAUTH_TOKEN"] == "tok"
 
     def test_inherited_wire_model_overrides_route_without_being_cleared(self, monkeypatch):
-        monkeypatch.setenv("COPILOT_PROVIDER_WIRE_MODEL", "gpt-5")
+        monkeypatch.setenv("COPILOT_PROVIDER_WIRE_MODEL", "gpt-4.1")
         monkeypatch.setenv("COPILOT_PROVIDER_WIRE_API", "responses")
         monkeypatch.setenv("COPILOT_PROVIDER_MODEL_ID", "user-model-id")
         monkeypatch.setenv("COPILOT_PROVIDER_MODEL_LIMITS_ID", "user-model-limits")
 
         env = copilot.build_runtime_env(WS, "system.ai.gpt-6-astra", "tok")
 
-        assert env["COPILOT_PROVIDER_WIRE_MODEL"] == "gpt-5"
+        assert env["COPILOT_PROVIDER_WIRE_MODEL"] == "gpt-4.1"
         assert env["COPILOT_PROVIDER_WIRE_API"] == "completions"
         assert env["COPILOT_PROVIDER_MODEL_ID"] == "user-model-id"
         assert env["COPILOT_PROVIDER_MODEL_LIMITS_ID"] == "user-model-limits"
@@ -219,9 +237,44 @@ class TestDefaultModel:
         assert copilot.default_model(state) is None
 
 
+class TestCopilotCatalogModelId:
+    @pytest.mark.parametrize(
+        ("model", "expected"),
+        [
+            ("system.ai.claude-sonnet-5-5", "claude-sonnet-5.5"),
+            ("system.ai.claude-opus-5-5[1m]", "claude-opus-5.5"),
+            ("system.ai.claude-opus-4-7", "claude-opus-4.7"),
+            ("system.ai.claude-sonnet-5", "claude-sonnet-5"),
+            ("system.ai.claude-haiku-4-5", "claude-haiku-4.5"),
+            ("system.ai.claude-haiku-5-5", "claude-sonnet-5.5"),
+            ("system.ai.claude-haiku-6", "claude-sonnet-6"),
+        ],
+    )
+    def test_maps_claude_ids(self, model, expected):
+        assert copilot.copilot_catalog_model_id(model) == expected
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "gpt-5",
+            "system.ai.gpt-6-astra",
+            "claude-sonnet-4-6",
+            "databricks-claude-opus-4-7",
+            "global.anthropic.claude-opus-4-8",
+            "main.schema.my-claude-finetune",
+            "system.ai.myclaude-model",
+        ],
+    )
+    def test_non_system_claude_ids_return_none(self, model):
+        assert copilot.copilot_catalog_model_id(model) is None
+
+
 class TestModelUsesResponsesApi:
     def test_numeric_gpt_majors_and_gateway_aliases_use_responses(self):
         for model in (
+            "gpt-5",
+            "databricks-gpt-5-mini",
+            "system.ai.gpt-5-4",
             "gpt-6",
             "gpt-6.1-sol",
             "system.ai.gpt-6-astra",
@@ -231,10 +284,10 @@ class TestModelUsesResponsesApi:
         ):
             assert copilot.model_uses_responses_api(model), model
 
-    def test_older_non_gpt_and_unsupported_alias_shapes_use_completions(self):
+    def test_pre_gpt5_non_gpt_and_unsupported_alias_shapes_use_completions(self):
         for model in (
-            "gpt-5",
-            "gpt-5.10-sol",
+            "gpt-4.1",
+            "gpt-4o",
             "claude-sonnet-4-6",
             "my-gpt-6-model",
             "gpt6",
@@ -282,11 +335,23 @@ class TestWriteToolConfig:
         assert written["COPILOT_MODEL"] == "system.ai.gpt-5-6-sol"
         assert written["COPILOT_PROVIDER_WIRE_API"] == "responses"
         assert written["COPILOT_PROVIDER_WIRE_MODEL"] == "system.ai.gpt-6-1-sol"
-        assert written["COPILOT_PROVIDER_MODEL_ID"] == "user-model-id"
+        assert "COPILOT_PROVIDER_MODEL_ID" not in written
         assert written["COPILOT_PROVIDER_MODEL_LIMITS_ID"] == "user-model-limits"
         assert written["USER_SETTING"] == "keep"
         assert "COPILOT_PROVIDER_WIRE_API" in state["managed_configs"]["copilot"]["keys"]
         assert "COPILOT_PROVIDER_WIRE_MODEL" not in state["managed_configs"]["copilot"]["keys"]
+
+    def test_claude_drops_stale_wire_api_from_env_file(self, tmp_path, monkeypatch):
+        env_path = isolate_copilot_config_paths(monkeypatch, tmp_path)
+        env_path.parent.mkdir(parents=True)
+        env_path.write_text("COPILOT_PROVIDER_WIRE_API=completions\n", encoding="utf-8")
+
+        copilot.write_tool_config({"workspace": WS}, "system.ai.claude-sonnet-5-5", token="tok")
+
+        written = copilot.parse_dotenv(env_path)
+        assert "COPILOT_PROVIDER_WIRE_API" not in written
+        assert written["COPILOT_PROVIDER_TYPE"] == "anthropic"
+        assert written["COPILOT_PROVIDER_MODEL_ID"] == "claude-sonnet-5.5"
 
 
 class TestLaunch:
@@ -294,7 +359,7 @@ class TestLaunch:
         ("tool_args", "pinned_model", "default", "expected_model", "expected_api"),
         [
             (["--model", "gpt-6.1-sol"], "gpt-5", "gpt-5", "gpt-6.1-sol", "responses"),
-            ([], "system.ai.gpt-5-6-sol", "gpt-6", "system.ai.gpt-5-6-sol", "completions"),
+            ([], "system.ai.gpt-4-1", "gpt-6", "system.ai.gpt-4-1", "completions"),
             ([], None, "system.ai.gpt-10", "system.ai.gpt-10", "responses"),
         ],
     )

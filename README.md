@@ -18,7 +18,13 @@ package is still named `ucode` for compatibility.
 ```bash
 uv tool install git+https://github.com/databricks/unity-gateway
 ug --version
+ug --help
 ```
+
+`--version` reports installed package metadata without loading the CLI. Use
+`ug --help` (or `ucode --help`) to verify that the CLI's startup imports work;
+version output alone is not an installation health check. Help does not validate
+workspace authentication or agent runtime behavior.
 
 ### Migrating from ucode
 
@@ -29,6 +35,8 @@ uv tool uninstall ucode
 uv tool install git+https://github.com/databricks/unity-gateway
 ug --version
 ucode --version
+ug --help
+ucode --help
 ```
 
 Future upgrades can use `ug upgrade` or `uv tool upgrade unity-gateway`.
@@ -56,9 +64,9 @@ model for one launch. OpenCode's `provider/model` form is also accepted.
 Unknown Databricks models produce an error; this option does not add models
 to discovery or change ug's saved default.
 
-`ug copilot` uses the Responses API for GPT-6 and newer model IDs, and Chat
-Completions for other models. The model selected at launch (including `--model`)
-determines the API. An inherited `COPILOT_PROVIDER_WIRE_MODEL` takes precedence
+`ug copilot` uses the Anthropic Messages API for Claude model IDs, the Responses
+API for GPT-5 and newer model IDs, and Chat Completions for other models. The
+model selected at launch (including `--model`) determines the API. An inherited `COPILOT_PROVIDER_WIRE_MODEL` takes precedence
 because it overrides the model sent to the gateway. Restart Copilot through `ug`
 to change the wire model or API; in-session model selection does not rebuild its
 provider configuration.
@@ -112,7 +120,13 @@ Use `ug mcp add` to add servers without removing existing registrations:
 ug mcp add --location system.ai
 ug mcp add --names system.ai.slack,system.ai.github
 ug mcp add --agents claude,codex --location system.ai
+ug mcp add --agents cursor --names system.ai.github --workspace https://first.databricks.com
+ug mcp add --agents codex --names system.ai.github --profile DEFAULT
 ```
+
+With `--agents`, agents that aren't set up yet are set up first. Pass `--workspace`
+or `--profile` to pick the workspace instead of the picker; it becomes the current
+workspace.
 
 Remove configured servers:
 
@@ -219,6 +233,9 @@ ug skills remove --location main.default --via mcp
 | `ug mcp add` | Add MCP servers without removing existing registrations |
 | `ug mcp remove` | Unregister configured MCP servers |
 | `ug mcp list` | List configured MCP servers and connection status |
+| `ug agents add <agent>` | Allow a non-admin-enabled agent to run self-managed |
+| `ug agents remove <agent>` | Remove an agent from your self-managed list |
+| `ug agents list` | Show the admin-managed and self-managed agents |
 | `ug skills` | Set up the Databricks skills MCP so agents can create and manage skills |
 | `ug skills list` | List configured skills and how each was configured |
 | `ug skills add` | Add skill MCP scopes or download skills |
@@ -248,14 +265,62 @@ The generated shell hooks expect Git Bash; PowerShell-only setups are not covere
 
 ### Smart Router Orchestrator
 
-Smart-routed Claude and Codex sessions install `smart-router`. Set
-`ENABLE_SMART_ROUTER_ORCHESTRATOR=1` at launch to also install and activate Smart Router
-Orchestrator through the bundled `smart-router-orchestrator` skill; orchestration is off by
-default. For example:
+Use `SMART_ROUTER_CONFIG_VERSION` at launch to select a smart-routing configuration.
+Each version defines separate Claude Code and Codex flag mappings; the existing versions
+use identical mappings for both agents. The Claude-only version disables routing for Codex:
+
+| Version | Routed agents | Subagent routing | First-prompt routing | Orchestrator |
+| --- | --- | --- | --- | --- |
+| `first_prompt_and_subagent_no_orch_v0` | Claude, Codex | On | On | Off |
+| `subagent_only_v0` | Claude, Codex | On | Off | Off |
+| `subagent_only_v1` | Claude, Codex | On | Off | Off |
+| `subagent_orch_v0` | Claude, Codex | On | Off | On |
+| `subagent_orch_v1` | Claude, Codex | On | Off | On |
+| `subagent_orch_v0_claude_only` | Claude | On | Off | On |
+
+`first_prompt_and_subagent_no_orch_v0` is the customer configuration for first-prompt
+and subagent routing without orchestration: `ENABLE_SMART_ROUTING_V2=1`,
+`ENABLE_SMART_ROUTING_SUBAGENT_ONLY=0`, and `ENABLE_SMART_ROUTER_ORCHESTRATOR=0`.
+
+`subagent_only_v1` sets both `ENABLE_SMART_ROUTING_V2` and
+`ENABLE_SMART_ROUTING_SUBAGENT_ONLY` to `"1"`. Subagent-only takes precedence,
+so first-prompt routing remains off; orchestration is also off.
+
+`subagent_orch_v1` enables all three legacy flags. Like `subagent_only_v1`, it routes
+subagents rather than the first prompt, and it additionally enables orchestration.
+
+`subagent_orch_v0_claude_only` keeps Claude's `subagent_orch_v0` flags (`0`, `1`, `1`)
+and sets all three flags to `"0"` for Codex. Codex uses its ordinary launch and
+managed default model, without routing or orchestration. Explicit launch/session
+on/off controls retain their existing precedence over presets.
+
+`SMART_ROUTER_NAME` still selects the router independently of the preset.
+
+Smart-routed Claude and Codex sessions install `smart-router`. The `subagent_orch_v0`
+and `subagent_orch_v1` versions also install and activate the bundled `smart-router-orchestrator` skill.
+For example:
 
 ```bash
-ENABLE_SMART_ROUTER_ORCHESTRATOR=1 ENABLE_SMART_ROUTING_SUBAGENT_ONLY=1 ug claude
+SMART_ROUTER_CONFIG_VERSION=subagent_orch_v0 ug claude
 ```
+
+The version takes precedence over conflicting legacy flags. Once the agent is selected,
+UG expands its mapping into
+`ENABLE_SMART_ROUTING_V2`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY`, and
+`ENABLE_SMART_ROUTER_ORCHESTRATOR` for the launched session. When the version is
+unset or empty, these legacy flags retain their existing behavior, including
+first-prompt routing through `ENABLE_SMART_ROUTING_V2=1`. Unknown versions are ignored:
+no preset is applied, the inherited environment is unchanged, and commands continue normally.
+Explicit launch/session on/off controls apply after expansion. Orchestration remains off by default.
+Workspace smart-routing defaults do not rewrite the selected version's flags.
+
+Version names require an explicit suffix. Future revisions use new `_v1`, `_v2`,
+etc. names without changing existing versions.
+
+Version definitions require both Claude and Codex mappings and fail validation at module import if any flag in
+`SMART_ROUTING_ENV_KEYS` is missing, has a value other than `"0"` or `"1"`,
+or an unknown flag is present. Register new managed flags in that tuple and
+explicitly set them for both agents in every version.
 
 Use `ug codex` in the same command for Codex. Smart Router Orchestrator assigns bounded work
 to explorer, researcher, worker, tester, and reviewer roles while the root plans,
@@ -271,8 +336,8 @@ Once opted in, orchestration follows the existing smart-routing launch eligibili
 and session controls. Turning Smart Router off through its skill stops new automatic delegation;
 turning it on restores orchestration only in opted-in sessions. Explicit user
 requests for subagents still use normal harness behavior while routing is off.
-Stored skill files do not activate orchestration when the feature flag is unset or
-`ENABLE_SMART_ROUTER_ORCHESTRATOR=0`, or in non-routed sessions. Existing Isaac pilot gating
+Stored skill files do not activate orchestration without an opted-in configuration,
+or in non-routed sessions. Existing Isaac pilot gating
 and UG launch exclusions still apply.
 
 Hooks refresh orchestration state before each prompt and after compaction. A

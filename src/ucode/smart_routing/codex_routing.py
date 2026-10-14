@@ -19,6 +19,7 @@ from dataclasses import replace
 from typing import Any
 
 from ucode.config_io import APP_DIR
+from ucode.constants import AGENT_CODEX
 from ucode.smart_routing import orchestrator, routing
 from ucode.smart_routing.routing import RoutingDecision
 
@@ -110,7 +111,7 @@ def route_pre_tool_use(
         def record(payload, task, decision, requested):
             routing.write_decision_record(DECISIONS_PATH, payload, task, decision, requested)
 
-    name_suffix = " [orchestrator on]" if orchestrator.enabled() else ""
+    name_suffix = " [orchestrator on]" if orchestrator.enabled(agent=AGENT_CODEX) else ""
     return routing.route_spawn_tool(
         payload,
         is_spawn_agent=is_spawn_agent_tool,

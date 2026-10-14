@@ -24,7 +24,7 @@ def assert_no_terminal_api_error(screen: str) -> None:
 def read_jsonl(path: Path) -> list[dict]:
     if not path.is_file():
         return []
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     lines = text.splitlines(keepends=True)
     records = []
     for index, line in enumerate(lines):
@@ -43,7 +43,8 @@ def read_jsonl(path: Path) -> list[dict]:
 def agent_sessions(session, agent: str) -> dict[str, list[dict]]:
     directory = session.home / _AGENT_HELPERS.get(agent, codex).SESSION_DIRECTORY
     return {
-        str(path.relative_to(directory)): read_jsonl(path) for path in directory.rglob("*.jsonl")
+        path.relative_to(directory).as_posix(): read_jsonl(path)
+        for path in directory.rglob("*.jsonl")
     }
 
 

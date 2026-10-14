@@ -5,6 +5,12 @@ import re
 import pyte
 
 
+def _claude_mcp_row_key(line: str) -> str:
+    """Identify the selected server independently of its spinner/status/tool count."""
+    match = re.search(r"[\w][\w.-]*", line)
+    return match.group() if match else ""
+
+
 def open_claude_mcp_inventory(tui, services: dict[str, str]) -> str:
     tui.submit("/mcp")
     tui.wait_for(
@@ -17,17 +23,17 @@ def open_claude_mcp_inventory(tui, services: dict[str, str]) -> str:
         "Claude's MCP startup checks to finish before opening server details",
         timeout=120,
     )
-    first = tui.selected_line()
+    first = _claude_mcp_row_key(tui.selected_line())
     screens = []
     for _ in range(100):
         screens.append(tui.visible)
-        current = tui.selected_line()
+        current = _claude_mcp_row_key(tui.selected_line())
         tui.send("\x1b[B", "inspect the next MCP inventory row")
         tui.wait_for(
-            lambda screen, current=current: tui.selected_line() != current,
+            lambda screen, current=current: _claude_mcp_row_key(tui.selected_line()) != current,
             "the next MCP inventory row",
         )
-        if tui.selected_line() == first:
+        if _claude_mcp_row_key(tui.selected_line()) == first:
             break
     else:
         raise AssertionError("Claude's MCP inventory did not wrap within 100 rows")

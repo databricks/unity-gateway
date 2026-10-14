@@ -32,6 +32,7 @@ def clean_environment(home: Path) -> dict[str, str]:
     # imports, and routing flags from silently changing the tested combination.
     keep = (
         "PATH",
+        "PATHEXT",
         "SYSTEMROOT",
         "COMSPEC",
         "LANG",
@@ -119,7 +120,7 @@ class UserSession:
         *args: str,
         timeout: int = 120,
         ok: bool = True,
-        binary=None,
+        binary: Path | None = None,
         input_text: str | None = None,
         strip_ansi: bool = True,
     ):
@@ -131,7 +132,8 @@ class UserSession:
             stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             **process_group_options(),
         )
         timed_out = False
@@ -166,6 +168,21 @@ class UserSession:
         if ok:
             assert result.returncode == 0, detail
         return result
+
+    def which(self, name: str) -> Path:
+        # Windows CreateProcess ignores PATHEXT, so npm's `claude.cmd`-style shims need a full path.
+        resolved = shutil.which(name, path=self.env.get("PATH"))
+        assert resolved, f"{name} is not on the session PATH"
+        return Path(resolved)
+
+    def choose_codex_windows_sandbox(self) -> None:
+        # The Codex TUI asks users to pick a Windows sandbox on first run; `codex exec` can't ask
+        # and rejects every shell command until one is configured.
+        if os.name != "nt":
+            return
+        config = self.home / ".codex/config.toml"
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text('[windows]\nsandbox = "unelevated"\n')
 
     def record(self, name: str, value: object) -> None:
         (self.artifacts / name).write_text(self.redact(json.dumps(value, indent=2)))
@@ -265,10 +282,10 @@ class UserSession:
         timeout: int = 120,
         request: tuple[str, dict] | None = None,
         name: str = "app-server",
-        binary: str | None = None,
+        binary: Path | None = None,
     ) -> dict:
         """Speak the real Codex stdio protocol and require an initialize response."""
-        command = [binary, *args] if binary else [str(self.binary), "codex", *args]
+        command = [str(binary), *args] if binary else [str(self.binary), "codex", *args]
         messages: queue.Queue = queue.Queue()
         transcript: list[str] = []
         diagnostics: list[str] = []
@@ -279,7 +296,8 @@ class UserSession:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
             **process_group_options(),
         )
@@ -356,7 +374,7 @@ class UserSession:
             )
 
     def codex_model_ids(
-        self, args: list[str], name: str = "codex-models", *, binary: str | None = None
+        self, args: list[str], name: str = "codex-models", *, binary: Path | None = None
     ) -> list[str]:
         """Ask the real Codex app-server for the catalog its model picker uses."""
         response = self.app_server_handshake(

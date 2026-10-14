@@ -18,7 +18,7 @@ from ucode.ui import normalize_workspace_url
 
 # The integration suite has its own configuration and subprocess-only fixtures.
 # Run it through scripts/run_integration.py, outside this fixture hierarchy.
-collect_ignore = ["integration", "e2e_cuj"]
+collect_ignore = ["integration", "e2e_cuj", "native_claude"]
 
 
 @pytest.fixture(autouse=True)
@@ -68,6 +68,15 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.delenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", raising=False)
     monkeypatch.delenv("UCODE_SESSION_ENV_FILE", raising=False)
     monkeypatch.delenv("UCODE_SMART_ROUTER_PYTHON", raising=False)
+    # When the suite runs inside a ug smart-routing session, these ambient env vars
+    # make smart_routing_enabled()/configured_router_name() read the host's live
+    # routing state, leaking a Databricks-Smart-Router-Recipe header into
+    # header-rendering tests. Clear them so routing stays off unless a test opts in.
+    monkeypatch.delenv("ENABLE_SMART_ROUTING_V2", raising=False)
+    monkeypatch.delenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", raising=False)
+    monkeypatch.delenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", raising=False)
+    monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
+    monkeypatch.delenv("SMART_ROUTER_NAME", raising=False)
     # On Windows, resolve_command swaps a bare program name for whatever `shutil.which`
     # finds on the developer's PATH (e.g. a real `codex.CMD`). Rebind only the compatibility
     # helper's `shutil` so argv stays host-independent; helper tests patch `which` explicitly.
@@ -84,6 +93,9 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     # process; a real resolution (or a prior test's patched one) must not leak
     # into a test that assumes a bare "databricks" or a specific fake CLI.
     databricks_mod.clear_databricks_cli_cache()
+    # Tokens and token failures are memoized for the process; a fake CLI's answer
+    # in one test must not satisfy (or fail) a fetch in the next.
+    databricks_mod.clear_databricks_token_cache()
 
 
 def _workspace() -> str:

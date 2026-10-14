@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -53,6 +54,7 @@ RAW_MANIFEST = {
                 "smart_routing": {"enabled": True},
                 "tracing": {"enabled": True},
                 "http_headers": {"x-databricks-workspace": "eng-ml-inference"},
+                "agent_native_settings": {"allowManagedMcpServersOnly": True, "env": {"FOO": "1"}},
             },
         },
         {
@@ -103,6 +105,24 @@ class TestNormalize:
     def test_http_headers_map_to_http_headers(self):
         claude = normalize_managed_config(RAW_MANIFEST)["enabled_agents"]["claude"]
         assert claude["http_headers"] == {"x-databricks-workspace": "eng-ml-inference"}
+
+    def test_settings_are_carried_verbatim(self):
+        agents = normalize_managed_config(RAW_MANIFEST)["enabled_agents"]
+        assert agents["claude"]["agent_native_settings"] == {
+            "allowManagedMcpServersOnly": True,
+            "env": {"FOO": "1"},
+        }
+        assert "agent_native_settings" not in agents["codex"]
+
+    def test_non_object_settings_are_dropped(self):
+        raw = {
+            "enabled_agents": [
+                {"agent": "CODING_AGENT_CODEX", "config": {"agent_native_settings": "x"}}
+            ]
+        }
+        assert (
+            "agent_native_settings" not in normalize_managed_config(raw)["enabled_agents"]["codex"]
+        )
 
     def test_smart_routing_maps_to_agent_switch(self):
         claude = normalize_managed_config(RAW_MANIFEST)["enabled_agents"]["claude"]
@@ -372,6 +392,7 @@ class TestPersistence:
             RAW_MANIFEST
         )
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no POSIX file modes")
     def test_saved_file_is_0600(self, _managed_path):
         save_managed_state("https://ws.example.com", {"default_agent": "claude"})
         mode = stat.S_IMODE(os.stat(_managed_path).st_mode)

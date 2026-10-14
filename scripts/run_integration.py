@@ -7,6 +7,7 @@ or the developer's installed agents. Only the live workspace is shared with e2e.
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 import contextlib
 import datetime as dt
@@ -32,49 +33,15 @@ AGENT_PACKAGES = {
     "opencode": "opencode-ai",
 }
 WINDOWS_PATHEXT = ".COM;.EXE;.BAT;.CMD"
-UV_INDEX_CREDENTIAL_ENV = (
-    "UV_INDEX_DATABRICKS_PYPI_USERNAME",
-    "UV_INDEX_DATABRICKS_PYPI_PASSWORD",
-)
-NPM_TOKEN_ENV = "UG_INTEGRATION_NPM_TOKEN"
-INSTALLER_CREDENTIAL_ENV = (*UV_INDEX_CREDENTIAL_ENV, NPM_TOKEN_ENV)
+PTY_MODULES = {"pexpect", "pyte"}
+PTY_HELPERS = {"utils.terminal", "utils.mcp"}
+# Claude exports no spans on Windows, where ug writes no machine-wide Claude settings.
+WINDOWS_UNSUPPORTED_MODULES = {"test_ug_claude_tracing.py"}
 HEADLESS_TEST_NODES = {
     "claude": "test_ug_claude_headless.py::test_ug_claude_headless_prompt_argument",
     "codex": "test_ug_codex_headless.py::test_ug_codex_headless_prompt_argument",
     "opencode": "test_ug_opencode_headless.py::test_ug_opencode_headless_prompt_argument",
 }
-
-
-def installer_environment(
-    base_environment: Mapping[str, str],
-    source_environment: Mapping[str, str],
-    credential_keys: Iterable[str],
-    npm_user_config: Path | None = None,
-) -> dict[str, str]:
-    """Add only supported installer credentials to an isolated environment."""
-    environment = dict(base_environment)
-    for key in credential_keys:
-        if value := source_environment.get(key):
-            environment[key] = value
-    if npm_user_config is not None:
-        environment["npm_config_userconfig"] = str(npm_user_config)
-    return environment
-
-
-def npm_user_config(registry: str) -> str:
-    """Configure npm auth through an environment reference, never a raw token."""
-    parsed = urllib.parse.urlsplit(registry)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError("The npm registry must be an absolute HTTP(S) URL.")
-    if parsed.username or parsed.password:
-        raise ValueError("The npm registry URL must not contain credentials.")
-    registry = registry.rstrip("/") + "/"
-    auth_path = parsed.path.rstrip("/") + "/"
-    return (
-        f"registry={registry}\n"
-        f"//{parsed.netloc}{auth_path}:_authToken=${{{NPM_TOKEN_ENV}}}\n"
-        "always-auth=true\n"
-    )
 
 
 def redact_secrets(value: str, secrets: Iterable[str]) -> str:
@@ -160,7 +127,33 @@ def integration_test_targets(
         return targets
     if platform_name == "nt" and installation_only:
         return [str(suite / "test_installation.py")]
+    if platform_name == "nt":
+        return [
+            str(module)
+            for module in sorted(suite.glob("test_*.py"))
+            if module.name not in WINDOWS_UNSUPPORTED_MODULES and not uses_pty(module)
+        ]
     return [str(suite)]
+
+
+def uses_pty(module: Path) -> bool:
+    """Whether a suite module drives agents through the POSIX-only PTY helpers."""
+    imported_names = []
+    for node in ast.walk(ast.parse(module.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.ImportFrom):
+            imported_names.append(node.module or "")
+            imported_names.extend(
+                f"{node.module}.{alias.name}" if node.module else alias.name
+                for alias in node.names
+                if alias.name != "*"
+            )
+        elif isinstance(node, ast.Import):
+            imported_names.extend(alias.name for alias in node.names)
+    return any(
+        name.split(".")[0] in PTY_MODULES
+        or any(name == helper or name.endswith(f".{helper}") for helper in PTY_HELPERS)
+        for name in imported_names
+    )
 
 
 def process_group_options() -> dict:
@@ -359,11 +352,6 @@ def arguments(
         "pytest_args", nargs=argparse.REMAINDER, help="After --, pass pytest filters."
     )
     args = parser.parse_args(argv)
-    if platform_name != "posix" and not (args.installation_only or args.headless_only):
-        parser.error(
-            "Live agent/TUI integration requires POSIX PTY, managed-settings, and signal "
-            "support. Use --installation-only or --headless-only on Windows."
-        )
     # Only selection/early-stop controls are accepted. Pytest configuration,
     # plugins and report destinations are part of the suite's isolation contract.
     filters = argparse.ArgumentParser(add_help=False)
@@ -493,16 +481,6 @@ def main() -> int:
     base_env["npm_config_fetch_timeout"] = "30000"
     base_env["UV_CACHE_DIR"] = str(output / "cache")
     base_env["UV_DEFAULT_INDEX"] = args.default_index
-    npm_token = os.environ.get(NPM_TOKEN_ENV, "")
-    npm_config = None
-    if npm_token:
-        npm_config = output / "installer.npmrc"
-        # npm expands the environment reference at request time. The short-lived
-        # token is never written to disk or included in an argument or URL.
-        npm_config.write_text(npm_user_config(args.npm_registry))
-    python_install_env = installer_environment(base_env, os.environ, UV_INDEX_CREDENTIAL_ENV)
-    npm_install_env = installer_environment(base_env, os.environ, (NPM_TOKEN_ENV,), npm_config)
-    installer_secrets = tuple(os.environ.get(key, "") for key in INSTALLER_CREDENTIAL_ENV)
     bearer = os.environ.get("DATABRICKS_BEARER", "").strip()
     second_bearer = os.environ.get("DATABRICKS_SECOND_BEARER", "").strip()
     oauth_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
@@ -516,7 +494,6 @@ def main() -> int:
                 second_bearer,
                 oauth_token,
                 *client_secrets,
-                *installer_secrets,
             ),
         )
 
@@ -529,7 +506,8 @@ def main() -> int:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
         ) as proc:
             try:
                 stdout, stderr = proc.communicate(timeout=timeout)
@@ -604,7 +582,6 @@ def main() -> int:
             run(
                 [uv, "build", "--wheel", "--out-dir", wheels, ROOT],
                 cwd=ROOT,
-                env=python_install_env,
             )
             (wheel,) = wheels.glob("*.whl")
             report["git_commit"] = run(["git", "rev-parse", "HEAD"], cwd=ROOT)
@@ -637,7 +614,6 @@ def main() -> int:
                 constraints.as_uri(),
                 package,
             ],
-            env=python_install_env,
         )
         run([uv, "pip", "check", "--python", python])
         freeze = run([uv, "pip", "freeze", "--python", python])
@@ -704,7 +680,6 @@ def main() -> int:
                     "--registry",
                     args.npm_registry,
                 ],
-                env=npm_install_env,
             )
         else:
             run(
@@ -720,7 +695,6 @@ def main() -> int:
                     args.npm_registry,
                     *[f"{AGENT_PACKAGES[a]}@{getattr(args, f'{a}_version')}" for a in agents],
                 ],
-                env=npm_install_env,
             )
         shutil.copyfile(npm_prefix / "package-lock.json", output / "npm-lock.json")
         report["npm_packages"] = json.loads(
@@ -793,7 +767,8 @@ def main() -> int:
                 ],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
+                encoding="utf-8",
+                errors="replace",
                 stdin=subprocess.DEVNULL,
             ) as auth:
                 auth_stdout, _ = auth.communicate(timeout=30)
@@ -811,7 +786,7 @@ def main() -> int:
             if client_id and client_secret:
                 bearer = mint_m2m_token(args.workspace, client_id, client_secret)
 
-        test_dependencies = ["pytest==9.0.3"]
+        test_dependencies = ["pytest==9.0.3", "httpx==0.28.1"]
         if os.name == "posix":
             test_dependencies.extend(["pexpect==4.9.0", "pyte==0.8.2"])
         run(
@@ -825,7 +800,6 @@ def main() -> int:
                 args.default_index,
                 *test_dependencies,
             ],
-            env=python_install_env,
         )
         (output / "test-dependencies.txt").write_text(
             run([uv, "pip", "freeze", "--python", test_python]) + "\n"

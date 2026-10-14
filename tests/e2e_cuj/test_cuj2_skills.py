@@ -24,6 +24,8 @@ from .helpers.skills import (
 )
 from .test_cuj2_mps_mcp import _assert_cuj2_config, _Cuj2Base
 
+CUJ_NAME = "CUJ 2 · Named skills"
+
 OTHER_SKILLS = tuple(map(skill_name, (FIXTURE_NOTES_SKILL_NAME, FIXTURE_CATALOG_LOOKUP_SKILL_NAME)))
 
 
