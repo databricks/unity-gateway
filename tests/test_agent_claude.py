@@ -241,6 +241,24 @@ class TestRenderOverlay:
         overlay, _ = claude.render_overlay(WS, "s4")
         assert "x-databricks-use-coding-agent-mode" in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
 
+    @pytest.mark.parametrize(
+        "routing_flag", ["ENABLE_SMART_ROUTING_V2", "ENABLE_SMART_ROUTING_SUBAGENT_ONLY"]
+    )
+    def test_routing_recipe_is_not_added_to_custom_headers(self, monkeypatch, routing_flag):
+        monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "0")
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "0")
+        monkeypatch.setenv(routing_flag, "1")
+        overlay, _ = claude.render_overlay(WS, "s4")
+        headers = overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        assert "Databricks-Smart-Router-Recipe" not in headers
+        # Drop the recipe ug used to write while preserving other caller headers.
+        merged = claude._merge_anthropic_custom_headers(
+            "Databricks-Smart-Router-Recipe: old\nx-caller: keep", headers
+        )
+        assert "Databricks-Smart-Router-Recipe" not in merged
+        assert "x-caller: keep" in merged
+
     def test_request_tags_header_added_when_env_set(self, monkeypatch):
         # A JSON value (commas + colons) must survive intact: ANTHROPIC_CUSTOM_HEADERS
         # is newline-delimited and split on the first colon, so the value is preserved.
