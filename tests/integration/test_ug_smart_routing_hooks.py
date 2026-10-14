@@ -453,8 +453,12 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
                         and task.marker in request.payload.get("task", {}).get("prompt", "")
                     ]
                     assert len(routes) == 1, (task.marker, routes)
-                    recipe = routes[0].payload["route_selector"]["router_name"]
-                    assert isinstance(recipe, str) and recipe.strip() and recipe != "DISABLED"
+                    recipe = routes[0].payload.get("route_selector", {}).get("router_name")
+                    assert isinstance(recipe, str) and recipe.strip() and recipe != "DISABLED", (
+                        task.marker,
+                        routes[0].sequence,
+                        routes[0].payload.get("route_selector"),
+                    )
                     if launch_recipe is None:
                         launch_recipe = recipe
                     else:
