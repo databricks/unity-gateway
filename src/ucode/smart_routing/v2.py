@@ -36,7 +36,7 @@ from ucode.constants import (
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
 )
-from ucode.custom_oauth import custom_oauth_cli_enabled, get_custom_client_token
+from ucode.custom_oauth import get_custom_client_token
 from ucode.databricks import (
     AnthropicModelCatalog,
     build_auth_token_argv,
@@ -115,7 +115,7 @@ def remove_smart_router_session_skills(agent: str) -> None:
 
 def _launch_token(state: dict, workspace: str) -> str:
     custom_oauth = state.get("custom_oauth")
-    if custom_oauth_cli_enabled(custom_oauth) and isinstance(custom_oauth, dict):
+    if isinstance(custom_oauth, dict):
         return get_custom_client_token(
             workspace,
             custom_oauth["client_id"],
@@ -785,7 +785,7 @@ def launch_codex(
         start_model,
         state.get("profile"),
         use_pat=bool(state.get("use_pat")),
-        custom_oauth=(custom_oauth if custom_oauth_cli_enabled(custom_oauth) else None),
+        custom_oauth=custom_oauth,
         managed_http_headers=state.get("codex_http_headers"),
     )
     catalog_path = custom_catalog_path()

@@ -152,6 +152,13 @@ Claude-only setup also discovers GPT models for its generated `web_search`
 server; installing or configuring Codex is not required. Search registration
 requires an available Responses-capable model.
 
+Passing `--client-id` to `ug configure`, `ug claude`, or `ug codex` uses a
+dedicated Databricks CLI OAuth profile (CLI 1.17.0 or newer). No feature flag is
+required; scopes default to `offline_access,all-apis`. Existing SDK token caches
+are no longer used, so users may need to sign in once to create the CLI profile.
+The CLI manages the browser callback; `--redirect-url` remains accepted for
+compatibility with saved helper commands.
+
 Claude's generated `web_search` server uses the same saved custom OAuth CLI
 profile as its harness, when configured. It stores the profile name, not an
 access token, and refreshes credentials for search requests. This does not

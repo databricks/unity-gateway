@@ -112,8 +112,8 @@ The live Claude/Codex headless prompt-argument and stdin journeys also require r
 parse as JSON/JSONL without stripping UG messages; those assertions still require a live run.
 
 `test_mcp_web_search.py` and `test_agent_claude.py` cover custom OAuth search
-registration, stale registration repair, SDK cache reuse/refresh, CLI profile
-selection, and errors without browser consent through the MCP handler. These
+registration, stale registration repair, CLI profile selection and refresh, and
+errors without browser consent through the MCP handler. These
 component checks replace external auth/network boundaries; they do not establish
 live search, parent/child discovery, or classifier permission behavior.
 
@@ -280,7 +280,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_configure_claude_anthropic_mps` | Select Anthropic MPS in the real configure picker; launch Claude | Saved provider in status; completed TUI file task; normal exit |
 | `test_ug_configure_codex_databricks` | Configure Databricks Hosted; execute the generated auth helper; open Codex TUI and read a file | Generated helper invokes `ug` with clean token stdout; completed assistant answer contains the file value; normal exit and reopen |
 | `test_ug_configure_codex_openai_mps` | Select OpenAI MPS in the real configure picker; launch Codex | Saved provider in status; completed TUI file task; normal exit |
-| `test_ug_claude_custom_oauth_cli_boots`, `test_ug_codex_custom_oauth_cli_boots` | Launch with `ENABLE_CUSTOM_OAUTH_FROM_CLI=1`, `--workspace`, and `--client-id databricks-cli` | Real TUI reaches a usable prompt, accepts keyboard input, exits normally, and saves `client_id = databricks-cli` in its generated CLI profile; Claude also reads the OS-managed settings and requires a profile-only `apiKeyHelper` |
+| `test_ug_claude_custom_oauth_cli_boots`, `test_ug_codex_custom_oauth_cli_boots` | Launch with `--workspace` and `--client-id databricks-cli`, without a feature flag | Real TUI reaches a usable prompt, accepts keyboard input, exits normally, and saves `client_id = databricks-cli` in its generated CLI profile; Claude also reads the OS-managed settings and requires a profile-only `apiKeyHelper` |
 | `test_case_07_configured_claude_discovers_system_models` (CUJ7), `test_case_09_fresh_claude_discovers_system_models` (integration) | Launch configured/fresh Claude with no discovery flag or source override | Claude caches `system.ai` models (including recognized Anthropic gateway aliases), includes ug's discovered family defaults, and shows a discovered picker entry; case 07 lives in `e2e_cuj/test_cuj7_model_discovery.py` |
 | `test_case_08_configured_codex_uses_default_models` (CUJ7), `test_case_10_fresh_codex_uses_default_models` (integration) | Launch configured/fresh Codex with no source override | ug discovers `system.ai` models but leaves model/reasoning preferences unset; app-server exposes native GPT entries without a generated scoped catalog; case 08 lives in `e2e_cuj/test_cuj7_model_discovery.py` |
 | `test_case_11_*` | Launch configured and fresh Claude with an explicit provider and no managed config | The provider catalog replaces built-in picker rows; the cache contains exactly the provider model, and the picker shows both its row and Default resolving to it |
@@ -457,8 +457,12 @@ which runs automatically only for in-repo PRs.
 
 ## Gaps and deferred scope
 
-Custom OAuth lock tests cover release after use, Windows contention retries, and
-permanent lock-error propagation. Native Windows browser consent and concurrent
+`test_custom_oauth.py` covers default scopes, validation, dedicated CLI profile setup,
+reuse, and forced refresh without a feature flag, including an inherited retired
+flag set to `0`. The SDK cache/consent tests and offline OAuth-storm reproduction
+were removed with the SDK backend. CLI token memoization and concurrency remain
+covered in `test_databricks.py`; cross-platform lock behavior remains covered in
+`test_file_lock_cross_os.py`. Native Windows browser consent and concurrent CLI
 OAuth helpers still need platform validation.
 
 Gateway proxy tests exercise a busy cached port falling back to a free port with
