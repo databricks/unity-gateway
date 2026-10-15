@@ -146,6 +146,7 @@ from ucode.smart_routing.session_env import (
     set_session_environment,
 )
 from ucode.state import (
+    MANAGED_OVERLAY_KEY,
     SELF_MANAGED_AGENTS_KEY,
     add_self_managed_agent,
     clear_state,
@@ -2964,6 +2965,30 @@ def _managed_smart_routing_enabled(managed: dict | None, tool: str) -> bool:
     return agent_config.get("smart_routing_enabled") is True
 
 
+def _skip_model_discovery(
+    managed: dict | None,
+    tool: str,
+    *,
+    provider: str | None,
+    managed_parent_schema: str | None,
+    family_defaults: dict[str, str] | None,
+) -> bool:
+    """Whether a launch can skip Databricks model discovery.
+
+    Discovery exists to find the workspace's models, so it is wasted work once something else has
+    named them: a Model Provider Service or managed Unity Catalog location (which list their own),
+    a managed config's model list, or another writer's OS-managed ``modelPicker``
+    (``family_defaults``). In the last case it is also harmful: discovered family defaults would
+    overwrite that writer's on every launch, and each rewrite of the managed file costs a sudo prompt.
+    """
+    return (
+        bool(provider)
+        or bool(managed_parent_schema)
+        or managed_supplies_models(managed, tool)
+        or family_defaults is not None
+    )
+
+
 def _launch_tool(
     tool_name: str,
     ctx: typer.Context,
@@ -3098,20 +3123,32 @@ def _launch_tool(
         smart_routing_enabled = smart_routing_v2.smart_routing_enabled(
             None, default=managed_smart_routing_enabled, agent=tool
         )
-        # Discovery exists to find models and isn't needed for managed config that already names them.
-        managed_models_known = managed_supplies_models(managed, tool)
         # Re-fetch model lists on every launch so newly-added Databricks
         # endpoints show up without a manual `ug configure` (and so that
         # tools like pi which read multiple model bundles never run on
         # stale state from before a tool added a new bundle). Under a provider
         # this heavy discovery is skipped (only a web-search model is fetched).
         configure_kwargs = {"custom_oauth": custom_oauth} if custom_oauth is not None else {}
+        family_defaults = (
+            claude_agent.get_family_defaults(
+                state,
+                managed_config=managed is not None,
+                provider=provider,
+                parent_schema=parent_schema,
+            )
+            if tool == "claude"
+            else None
+        )
         state = configure_shared_state(
             state["workspace"],
             profile=state.get("profile"),
             tools=[tool],
-            skip_model_discovery=(
-                bool(provider) or bool(managed_parent_schema) or managed_models_known
+            skip_model_discovery=_skip_model_discovery(
+                managed,
+                tool,
+                provider=provider,
+                managed_parent_schema=managed_parent_schema,
+                family_defaults=family_defaults,
             ),
             skip_preflight=skip_preflight,
             **configure_kwargs,
@@ -3138,6 +3175,14 @@ def _launch_tool(
             )
         elif not coding_agent_config_feature_disabled:
             print_note("No managed coding agent config found; using your own settings")
+        if family_defaults is not None:
+            # Launch on the picker owner's models; the overlay keeps the cached ones in state.json.
+            state.setdefault(MANAGED_OVERLAY_KEY, {}).setdefault(
+                "claude_models", state.get("claude_models")
+            )
+            state["claude_models"] = {
+                family: model.removesuffix("[1m]") for family, model in family_defaults.items()
+            }
         if provider and parent_schema is not None:
             raise RuntimeError("--provider and --model-location cannot be used together.")
         # Checked after the managed config settles `provider`: an admin-set provider must trip this

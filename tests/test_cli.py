@@ -23,6 +23,7 @@ from typer.testing import CliRunner
 
 import ucode.cli as cli_mod
 import ucode.databricks as db_mod
+import ucode.managed_files as managed_files
 from ucode.cli import app
 from ucode.databricks import GatewayProbe
 from ucode.managed_config import ManagedConfigResult, normalize_managed_config
@@ -6275,3 +6276,58 @@ class TestChildStdoutLaunch:
         captured = capfd.readouterr()
         assert captured.out == '{"result":"child output"}\n'
         assert "Gateway status" in captured.err
+
+
+class TestLaunchWithManagedFilePicker:
+    PICKER_MODELS = {"opus": "system.ai.claude-opus-5-5", "haiku": "system.ai.claude-haiku-4-5"}
+
+    @contextlib.contextmanager
+    def _managed_file_picker(self, monkeypatch):
+        settings = {
+            "modelPicker": {"options": [{"model": "system.ai.claude-opus-5-5"}]},
+            "env": {
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": "system.ai.claude-opus-5-5[1m]",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL": "system.ai.claude-haiku-4-5",
+            },
+        }
+        monkeypatch.delenv(managed_files.SKIP_OS_SETTINGS_ENV, raising=False)
+        with (
+            patch(
+                "ucode.agents.claude._managed_settings_path",
+                return_value=Path("/managed-settings.json"),
+            ),
+            patch("ucode.agents.claude.read_managed_file", return_value=json.dumps(settings)),
+        ):
+            yield
+
+    def test_launch_uses_the_picker_owners_models(self, monkeypatch):
+        monkeypatch.delenv("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY", raising=False)
+        discovered = {"opus": "system.ai.claude-opus-5-5", "fable": "system.ai.claude-fable-5-1"}
+        with self._managed_file_picker(monkeypatch), _launch_policy_patches(None) as calls:
+            calls["state"]["claude_models"] = dict(discovered)
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["shared"].call_args.kwargs["skip_model_discovery"] is True
+        launch_state = calls["configure"].call_args.args[1]
+        assert launch_state["claude_models"] == self.PICKER_MODELS
+        # The picker's models are launch-only; state.json keeps the discovered cache.
+        from ucode import state as state_mod
+
+        assert state_mod._without_managed_overlay(launch_state)["claude_models"] == discovered
+
+    @pytest.mark.parametrize(
+        "args",
+        [["--provider", "bedrock"], ["--model-location", "main.default"]],
+        ids=["provider", "model-location"],
+    )
+    def test_launch_source_ignores_the_picker(self, monkeypatch, args):
+        monkeypatch.delenv("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY", raising=False)
+        discovered = {"opus": "system.ai.claude-opus-5-5", "fable": "system.ai.claude-fable-5-1"}
+        with self._managed_file_picker(monkeypatch), _launch_policy_patches(None) as calls:
+            calls["state"]["claude_models"] = dict(discovered)
+            result = runner.invoke(app, ["claude", *args])
+
+        assert result.exit_code == 0, result.output
+        # The launch's own source supplies the models, so the picker neither seeds nor skips.
+        assert calls["configure"].call_args.args[1]["claude_models"] == discovered
