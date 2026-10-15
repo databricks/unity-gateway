@@ -202,6 +202,9 @@ def _provider_block(
         auth_argv = build_custom_auth_token_argv(workspace, custom_oauth)
     else:
         auth_argv = build_auth_token_argv(workspace, databricks_profile, use_pat=use_pat)
+        if not use_pat:
+            # Desktop helpers have no terminal for interactive sign-in.
+            auth_argv.append("--browser-login")
     base_url = build_tool_base_url("codex", workspace)
     http_headers = {
         "User-Agent": f"ucode/{ug_version()} codex/{agent_version('codex')}",
@@ -227,7 +230,7 @@ def _provider_block(
         "auth": {
             "command": auth_argv[0],
             "args": auth_argv[1:],
-            "timeout_ms": CUSTOM_OAUTH_TIMEOUT_MS if custom_oauth else 5000,
+            "timeout_ms": CUSTOM_OAUTH_TIMEOUT_MS if custom_oauth or not use_pat else 5000,
             "refresh_interval_ms": 900000,
         },
     }
@@ -665,7 +668,11 @@ def managed_mcp_uses_managed_file() -> bool:
     with the developer's own ``~/.codex/config.toml`` servers, so a managed entry never hides a
     personal one. It fits whenever the platform supports the sudo reconcile and the run is
     interactive; otherwise the caller falls back to the user-scope registration."""
-    return managed_files_supported() and managed_writes_allowed()
+    return (
+        codex_managed_config_path() is not None
+        and managed_files_supported()
+        and managed_writes_allowed()
+    )
 
 
 def managed_mcp_entry(argv: list[str]) -> dict:

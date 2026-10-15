@@ -16,6 +16,9 @@ both Claude and Codex. One parameterized test runs all six
 `SMART_ROUTER_CONFIG_VERSION` values, checking both agents' first-prompt routing, orchestrator
 context in inference input, and completed explicitly requested native subagents.
 This is not automatic orchestrator-delegation coverage. No workspace configuration is modified.
+CUJ4 matches both Codex 0.154.0's top-level tools and 0.162.1's Responses Lite
+`additional_tools` input items. Encrypted child messages match the routed task name
+to the recipient; plaintext prompts still match exactly. Both require tools.
 The shared preset CUJ runs both agents for every version and derives routing and
 orchestration assertions from each agent's resolved flags. Both must complete a native
 child task. `subagent_orch_v0_claude_only` routes Claude's child; Codex uses the managed
@@ -360,8 +363,8 @@ installed hook commands with a harness-shaped payload against the live router. T
 subagent-only TUI journeys additionally spawn three native children in one real session,
 invoke the installed Smart Router skill to turn routing off and back on, and require the
 subagent banner plus a correlated live decision only while routing is enabled. Plugin-refresh
-survival, native daemon/background dispatch, interactive explicit-model bypass, and dedicated
-smart-routing CI shards remain deferred. Plugin generation and launch arguments are covered
+survival and native daemon/background dispatch remain deferred. CUJ4 covers interactive
+explicit-model bypass. Plugin generation and launch arguments are covered
 by component tests in `../test_claude_smart_routing_v2.py`, not by a live registration journey.
 
 PATH conflicts for the Smart Router skill have subprocess/component coverage in
@@ -408,8 +411,8 @@ The portable `../test_claude_windows_smart_routing.py` checks the Windows
 subagent-only fallback without Unix imports. Native Windows TUI and hook execution
 remain outside this integration suite.
 
-The relayed CUJ launches Claude through a relayed (subscription-relay) MPS and
-completes a file task on two models: a bare Anthropic id the subscription serves
+The relayed CUJ launches Claude from fresh state through a relayed (subscription-relay)
+MPS, with no `ug configure` step, and completes a file task on two models: a bare Anthropic id the subscription serves
 directly (`route=relay`) and a Databricks-hosted `system.ai` id the loopback proxy
 re-routes to gateway auth (`route=databricks`) — one relayed session reaching both.
 It needs a subscription OAuth token (see below). Interactive model-picker selection
@@ -716,6 +719,25 @@ and installation subsets do not select managed tests and do not require them.
 The advisory Windows installation and headless lanes are not yet included in that aggregate check.
 The existing required `e2e` context also waits for the complete integration workflow, so integration
 cannot still be running when that gate passes. Full coverage on PRs needs no label or opt-in.
+
+### Opting into harness-latest
+
+The **harness-latest** workflow runs every six hours on `main` (00:00, 06:00,
+12:00, and 18:00 UTC), or manually through Actions. It runs marked tests against the
+latest Claude and Codex releases, recording exact versions in its artifacts. It covers
+CUJ4, routing hooks, skill toggles (including Claude's recipe-header assertions),
+and first-prompt banners. It runs separately from PR checks, so failures do not block merges.
+
+Opt in a test or class with `@pytest.mark.harness_latest`, or a whole module with:
+
+```python
+pytestmark = pytest.mark.harness_latest
+```
+
+Append the marker to an existing `pytestmark` list when present. CI discovers marked
+cases under `e2e_cuj/` and `integration/` without workflow edits. Keep existing agent
+and workspace markers: `managed_fixture` selects the managed integration runner.
+Tests use each runner's existing credentials and installed Claude/Codex CLIs.
 
 ### Managed-workspace journeys
 

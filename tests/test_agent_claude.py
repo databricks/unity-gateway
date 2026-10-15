@@ -1438,6 +1438,7 @@ class TestWriteToolConfigManagedSettings:
         managed_path = tmp_path / "managed-settings.json"
         backup_dir = tmp_path / "managed-backups"
         monkeypatch.setattr(managed_files, "managed_files_supported", lambda: True)
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
         monkeypatch.setattr(managed_files, "MANAGED_BACKUP_DIR", backup_dir)
         monkeypatch.setattr(
             managed_files, "MANAGED_BACKUP_MANIFEST_PATH", backup_dir / "manifest.json"
@@ -1498,6 +1499,7 @@ class TestWriteToolConfigManagedSettings:
         backup_dir = tmp_path / "managed-backups"
         sudo_writes: list[str] = []
         monkeypatch.setattr(managed_files, "managed_files_supported", lambda: True)
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
         monkeypatch.setattr(managed_files, "MANAGED_BACKUP_DIR", backup_dir)
         monkeypatch.setattr(
             managed_files, "MANAGED_BACKUP_MANIFEST_PATH", backup_dir / "manifest.json"
@@ -2357,6 +2359,43 @@ class TestWriteToolConfigManagedSettings:
             claude.write_tool_config(state, "databricks-claude-sonnet-4", relayed=True)
 
         assert managed_writes == []
+
+    def test_windows_non_admin_uses_local_settings_silently(self, monkeypatch):
+        # Same as a headless Linux/macOS run: no machine-wide file, no warning.
+        private_writes: list = []
+        managed_writes: list = []
+        warns: list = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: False)
+        monkeypatch.setattr(claude, "current_os", lambda: managed_files.OS.WINDOWS)
+        monkeypatch.setattr(claude, "print_warning", warns.append)
+
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+        )
+
+        assert managed_writes == []
+        assert warns == []
+
+    def test_windows_non_admin_with_conflicting_machine_settings_quits(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ProgramW6432", str(tmp_path / "Program Files"))
+        monkeypatch.setattr(claude, "current_os", lambda: managed_files.OS.WINDOWS)
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.WINDOWS)
+        path = managed_files.windows_claude_managed_settings_path()
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"apiKeyHelper": "it-helper"}), encoding="utf-8")
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: path)
+
+        with pytest.raises(RuntimeError, match="requires administrator rights.*ug configure"):
+            claude._reconcile_managed_settings(
+                {},
+                lambda base: {**base, "apiKeyHelper": "ug auth-token"},
+                [["apiKeyHelper"]],
+                False,
+                [],
+            )
+
+        assert json.loads(path.read_text(encoding="utf-8")) == {"apiKeyHelper": "it-helper"}
 
     def test_noninteractive_uses_local_settings_when_managed_file_is_compatible(self, monkeypatch):
         private_writes: list = []

@@ -139,7 +139,7 @@ class TestRenderOverlay:
 
     @pytest.mark.parametrize("render", [codex.render_overlay, codex.render_legacy_overlay])
     @pytest.mark.parametrize("custom", [False, True])
-    def test_auth_timeout_allows_custom_browser_login_only(self, render, custom):
+    def test_auth_timeout_allows_browser_login(self, render, custom):
         config = (
             {
                 "client_id": "custom-client",
@@ -151,7 +151,15 @@ class TestRenderOverlay:
         )
         overlay = render(WS, custom_oauth=config)
         auth = overlay["model_providers"][codex.CODEX_MODEL_PROVIDER_NAME]["auth"]
-        assert auth["timeout_ms"] == (180_000 if custom else 5000)
+        assert auth["timeout_ms"] == 180_000
+        assert ("--browser-login" in auth["args"]) is not custom
+
+    @pytest.mark.parametrize("render", [codex.render_overlay, codex.render_legacy_overlay])
+    def test_pat_auth_skips_browser_login(self, render):
+        overlay = render(WS, use_pat=True)
+        auth = overlay["model_providers"][codex.CODEX_MODEL_PROVIDER_NAME]["auth"]
+        assert auth["timeout_ms"] == 5000
+        assert "--browser-login" not in auth["args"]
 
     def test_provider_adds_routing_header(self):
         overlay = codex.render_overlay(WS, provider="main.aarushi.aarushi-openai")
@@ -1763,6 +1771,7 @@ class TestCodexManagedConfig:
         monkeypatch.setattr(codex, "managed_writes_allowed", lambda: not non_interactive)
         monkeypatch.setattr(codex, "codex_managed_config_path", lambda: managed_path)
         monkeypatch.setattr(managed_files, "managed_files_supported", lambda: True)
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
         monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: not non_interactive)
         monkeypatch.setattr(managed_files, "MANAGED_BACKUP_DIR", tmp_path / "managed-backups")
         monkeypatch.setattr(
@@ -2054,9 +2063,19 @@ class TestWriteConfigBackup:
 
 class TestCodexManagedMcpUsesManagedFile:
     def test_true_when_supported_and_interactive(self, monkeypatch):
+        monkeypatch.setattr(
+            codex, "codex_managed_config_path", lambda: Path("/etc/codex/managed_config.toml")
+        )
         monkeypatch.setattr(codex, "managed_files_supported", lambda: True)
         monkeypatch.setattr(codex, "managed_writes_allowed", lambda: True)
         assert codex.managed_mcp_uses_managed_file() is True
+
+    def test_false_without_a_codex_managed_path(self, monkeypatch):
+        # Windows supports Claude's managed file but Codex has none there.
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: None)
+        monkeypatch.setattr(codex, "managed_files_supported", lambda: True)
+        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: True)
+        assert codex.managed_mcp_uses_managed_file() is False
 
     def test_false_when_non_interactive(self, monkeypatch):
         monkeypatch.setattr(codex, "managed_files_supported", lambda: True)

@@ -19,6 +19,21 @@ TypeScript event-forwarding and launch-option tests in CI. The existing Claude
 skill-toggle integration journey checks the live recipe payload field across on/off/on.
 See [the mod guide](../docs/claude-mod.md).
 
+The **harness-latest** workflow runs every six hours on `main` and currently covers
+smart routing only.
+It resolves npm's `claude-code@latest`
+and `codex@latest` tags to exact versions and records them in its artifacts. Three
+isolated runners cover all of CUJ4, both agents' routing-hook cases, and the managed
+skill-toggle and first-prompt banner cases. The Claude toggle cases assert the actual
+recipe header values across on → off → on. It runs separately from PR checks, so
+failures do not block merges. Existing pinned-version lanes remain.
+
+Opt a test or class in with `@pytest.mark.harness_latest`, or an entire module
+with `pytestmark = pytest.mark.harness_latest`. The lane discovers marked cases
+under `e2e_cuj/` and `integration/`; no workflow edit is needed. Integration cases
+retain their agent and workspace markers, including `managed_fixture` when needed.
+See [the harness opt-in guide](integration/README.md#opting-into-harness-latest).
+
 CUJ 4's preset journeys check Claude's ON/OFF status band, routing scope, and
 updates after off/on toggles. Checks ignore terminal styling and trailing UI controls;
 offline cases reject stale states, wrong routing scope, and command confirmations.
@@ -70,6 +85,9 @@ checkpoint; additional text, whitespace, and Codex prompt changes remain rejecte
 Offline CUJ regressions cover Codex delegated-turn completion and exact task-request matching;
 notifications alone, Claude title requests, and parent continuations do not qualify.
 Unrelated and pre-checkpoint request bodies are excluded before JSON decoding.
+CUJ4 accepts both top-level tool definitions (Codex 0.154.0) and Responses Lite
+`additional_tools` input items (0.162.1). Encrypted child messages match the routed
+task name to the recipient; plaintext prompts still match exactly. Both require tools.
 The original smart-routing CUJ runs four fresh sessions: routed and explicit model for both
 Claude and Codex, with explicit-model bypass assertions enabled for both agents.
 One additional test has five `SMART_ROUTER_CONFIG_VERSION` cases.
@@ -94,6 +112,8 @@ literal argument preservation, and the shared `subprocess_cross_os.run` / `subpr
 entry points, including UTF-8 text decoding, explicit encoding/error overrides, and unchanged
 binary output. `test_launcher.py` covers terminal handoff and exit status.
 Ruff rejects direct subprocess launches outside `os_compatibility/subprocess_cross_os.py` and tests.
+`test_system_cross_os.py` covers the administrator check on Windows and elsewhere and the
+Program Files lookup.
 Claude's native resolver tests remain in
 `test_agent_claude.py`; installation failures are covered in `test_agents_init.py`.
 These are component checks, not live Windows coverage for every agent.
@@ -114,6 +134,10 @@ on success and failure, preserved version-output capture, and clean native hando
 These are component checks, not live installer, Isaac, or inference coverage.
 The live Claude/Codex headless prompt-argument and stdin journeys also require raw stdout to
 parse as JSON/JSONL without stripping UG messages; those assertions still require a live run.
+
+Codex browser-login component tests cover invalid refresh tokens, token-only stdout,
+network errors, and reuse of a concurrent sign-in within the timeout. Codex config
+tests cover the helper flag; real browser consent and desktop behavior are not covered.
 
 `test_mcp_web_search.py` and `test_agent_claude.py` cover custom OAuth search
 registration, stale registration repair, SDK cache reuse/refresh, CLI profile
@@ -486,7 +510,7 @@ These are unit/component checks; they do not establish live sudo password-prompt
 | Fresh provider/parent validation and mixed Bedrock filtering | Not covered after removing the duplicate model-discovery suites |
 | TUI initial prompt supplied on the launch command line | Not yet covered; headless prompt arguments are covered |
 | Follow-up turns and conversation resume | Not covered; reopen proves startup, not conversation resume |
-| Claude/Codex interactive smart routing | First-prompt routing is covered by the `managed_fixture` banner journeys. The live subagent-only journeys spawn native children and invoke the installed Smart Router skill to verify routing on -> off -> on within one Claude/Codex session. Plugin-refresh survival, native daemon/background dispatch, interactive explicit-model bypass, and dedicated routing CI shards remain deferred. |
+| Claude/Codex interactive smart routing | First-prompt routing is covered by the `managed_fixture` banner journeys and CUJ4. The live subagent-only journeys spawn native children and invoke the installed Smart Router skill to verify routing on -> off -> on within one Claude/Codex session. The scheduled harness-latest workflow repeats CUJ4, routing hooks, skill toggles, and banners with both latest agents. Plugin-refresh survival and native daemon/background dispatch remain deferred. |
 | Full allow/deny tool-permission matrix | Not covered; onboarding/trust uses actual TUI choices |
 | Desktop Codex app, Isaac itself, auto-upgrades | Not covered by command forwarding or pinned-version tests |
 | Native macOS/Windows live TUI, managed settings, resize/signals | Windows fresh-install, CLI, local helpers, and the Claude headless gateway journey are advisory; Codex Windows CI is blocked on npm proxy access. Live PTY/TUI, managed settings, and signal behavior still need separate platform implementation and coverage |
