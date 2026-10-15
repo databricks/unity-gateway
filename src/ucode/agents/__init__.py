@@ -427,6 +427,7 @@ def configure_tool(
     coding_agent_config_defaults: dict[str, str] | None = None,
     parent_schema: str | None = None,
     picker_catalog: AnthropicModelCatalog | None = None,
+    skip_managed_write: bool = False,
 ) -> dict:
     result: dict | tuple[dict, str]
     if tool == AGENT_CODEX:
@@ -449,6 +450,7 @@ def configure_tool(
             coding_agent_config_defaults=coding_agent_config_defaults,
             parent_schema=parent_schema,
             picker_catalog=picker_catalog,
+            skip_managed_write=skip_managed_write,
         )
     else:
         # Every tool in this branch needs a model — including gemini under a provider,
@@ -544,7 +546,12 @@ def _availability_failure_detail(tool: str, state: dict) -> str:
 
 
 def configure_single_tool(
-    tool: str, state: dict, *, parent_schema: str | None = None, provider: str | None = None
+    tool: str,
+    state: dict,
+    *,
+    parent_schema: str | None = None,
+    provider: str | None = None,
+    skip_managed_write: bool = False,
 ) -> dict:
     """Check availability, configure, and persist state for one tool only."""
     provider = None if parent_schema else provider or get_provider_service(state, tool)
@@ -559,7 +566,13 @@ def configure_single_tool(
                 f"{TOOL_SPECS[tool]['display']} is not available on this workspace.{detail}"
             )
     with managed_write_batch(_managed_settings_displays([tool])):
-        state = _configure_one(tool, state, provider, parent_schema=parent_schema)
+        state = _configure_one(
+            tool,
+            state,
+            provider,
+            parent_schema=parent_schema,
+            skip_managed_write=skip_managed_write,
+        )
     available_tools = list(set((state.get("available_tools") or []) + [tool]))
     state["available_tools"] = available_tools
     save_state(state)
@@ -567,11 +580,18 @@ def configure_single_tool(
 
 
 def _configure_one(
-    tool: str, state: dict, provider: str | None, *, parent_schema: str | None = None
+    tool: str,
+    state: dict,
+    provider: str | None,
+    *,
+    parent_schema: str | None = None,
+    skip_managed_write: bool = False,
 ) -> dict:
     """Write one tool's config, routing through ``provider`` when set."""
     if parent_schema:
-        return configure_tool(tool, state, parent_schema=parent_schema)
+        return configure_tool(
+            tool, state, parent_schema=parent_schema, skip_managed_write=skip_managed_write
+        )
     if provider:
         if tool == "gemini":
             # Gemini pins a concrete target in the URL, so configure must resolve one now —
@@ -585,12 +605,18 @@ def _configure_one(
         if error:
             raise RuntimeError(error)
         return configure_tool(
-            tool, state, None, provider=provider, provider_models=provider_models, relayed=relayed
+            tool,
+            state,
+            None,
+            provider=provider,
+            provider_models=provider_models,
+            relayed=relayed,
+            skip_managed_write=skip_managed_write,
         )
     if tool == "codex":
         return configure_tool("codex", state)
     state, model = resolve_launch_model(tool, state, None)
-    return configure_tool(tool, state, model)
+    return configure_tool(tool, state, model, skip_managed_write=skip_managed_write)
 
 
 def configure_selected_tools(

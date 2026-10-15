@@ -2630,7 +2630,7 @@ def _auto_configure_tool(
         if managed is not None:
             provider = None
 
-    state = configure_single_tool(tool, state, provider=provider)
+    state = configure_single_tool(tool, state, provider=provider, skip_managed_write=True)
 
     spec = TOOL_SPECS[tool]
     console.print(
@@ -3295,6 +3295,8 @@ def _launch_tool(
             custom_model=None,
             coding_agent_config_defaults=coding_agent_config_defaults,
             parent_schema=parent_schema,
+            # Only `ug configure` writes Claude's OS-managed settings.
+            skip_managed_write=True,
         )
         if picker_catalog and picker_catalog.model_ids:
             # Claude re-adds an out-of-catalog saved model to /model even when built-ins are
