@@ -27,6 +27,11 @@ isolated runners cover all of CUJ4, both agents' routing-hook cases, and the man
 skill-toggle and first-prompt banner cases. The Claude toggle cases assert the actual
 recipe header values across on → off → on. It runs separately from PR checks, so
 failures do not block merges. Existing pinned-version lanes remain.
+All three suites use the same resolved versions. After success or failure, one
+Slack message is sent through `SLACK_WEBHOOK_UG_CODING_AGENTS_POD`, including the
+versions and a workflow-run link on success or a failed-job link on failure. Component tests in
+`test_integration_contract.py` check the messages, setup failures, job timeouts,
+GitHub link fallback, and Slack delivery errors without sending live messages.
 
 Opt a test or class in with `@pytest.mark.harness_latest`, or an entire module
 with `pytestmark = pytest.mark.harness_latest`. The lane discovers marked cases
@@ -112,6 +117,8 @@ literal argument preservation, and the shared `subprocess_cross_os.run` / `subpr
 entry points, including UTF-8 text decoding, explicit encoding/error overrides, and unchanged
 binary output. `test_launcher.py` covers terminal handoff and exit status.
 Ruff rejects direct subprocess launches outside `os_compatibility/subprocess_cross_os.py` and tests.
+`test_system_cross_os.py` covers the administrator check on Windows and elsewhere and the
+Program Files lookup.
 Claude's native resolver tests remain in
 `test_agent_claude.py`; installation failures are covered in `test_agents_init.py`.
 These are component checks, not live Windows coverage for every agent.

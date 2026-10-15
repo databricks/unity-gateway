@@ -411,8 +411,8 @@ The portable `../test_claude_windows_smart_routing.py` checks the Windows
 subagent-only fallback without Unix imports. Native Windows TUI and hook execution
 remain outside this integration suite.
 
-The relayed CUJ launches Claude through a relayed (subscription-relay) MPS and
-completes a file task on two models: a bare Anthropic id the subscription serves
+The relayed CUJ launches Claude from fresh state through a relayed (subscription-relay)
+MPS, with no `ug configure` step, and completes a file task on two models: a bare Anthropic id the subscription serves
 directly (`route=relay`) and a Databricks-hosted `system.ai` id the loopback proxy
 re-routes to gateway auth (`route=databricks`) — one relayed session reaching both.
 It needs a subscription OAuth token (see below). Interactive model-picker selection
@@ -727,6 +727,13 @@ The **harness-latest** workflow runs every six hours on `main` (00:00, 06:00,
 latest Claude and Codex releases, recording exact versions in its artifacts. It covers
 CUJ4, routing hooks, skill toggles (including Claude's recipe-header assertions),
 and first-prompt banners. It runs separately from PR checks, so failures do not block merges.
+Versions are resolved once for all three suites. A final job sends one success or
+failure message using `SLACK_WEBHOOK_UG_CODING_AGENTS_POD`, with both versions and
+a workflow-run link on success or a failed-job link on failure (the workflow-run
+link if GitHub's jobs API is unavailable).
+Setup failures also alert; unresolved versions appear as `unknown`. Slack delivery
+errors fail the notification job. `test_integration_contract.py` covers this wiring
+and message generation with a substituted HTTP boundary, not live Slack delivery.
 
 Opt in a test or class with `@pytest.mark.harness_latest`, or a whole module with:
 

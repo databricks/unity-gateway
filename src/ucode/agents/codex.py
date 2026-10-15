@@ -667,7 +667,11 @@ def managed_mcp_uses_managed_file() -> bool:
     with the developer's own ``~/.codex/config.toml`` servers, so a managed entry never hides a
     personal one. It fits whenever the platform supports the sudo reconcile and the run is
     interactive; otherwise the caller falls back to the user-scope registration."""
-    return managed_files_supported() and managed_writes_allowed()
+    return (
+        codex_managed_config_path() is not None
+        and managed_files_supported()
+        and managed_writes_allowed()
+    )
 
 
 def managed_mcp_entry(argv: list[str]) -> dict:
