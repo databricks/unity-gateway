@@ -19,6 +19,12 @@ TypeScript event-forwarding and launch-option tests in CI. The existing Claude
 skill-toggle integration journey checks the live recipe payload field across on/off/on.
 See [the mod guide](../docs/claude-mod.md).
 
+The optional Isaac feedback form has component coverage for disabling before
+prompting, exact reason handoff, Skip, empty input, repeated toggles and failures.
+Missing APIs in Claude 2.1.290's test host are replaced at the engine boundary;
+the production handlers execute. CLI tests check the rollout marker and off-only
+invitation. These tests do not perform a live Isaac upload.
+
 The **harness-latest** workflow runs every six hours on `main` and currently covers
 smart routing only.
 It resolves npm's `claude-code@latest`

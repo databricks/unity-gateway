@@ -44,6 +44,20 @@ that file atomically. Session start restores only the launch baseline, so an ove
 before `/clear` still survives it. The plugin test host provides no process capability, so
 this path is covered by the live skill-toggle journey rather than `claude plugin test`.
 
+After a successful on-to-off change, Isaac sessions with
+`ISAAC_FEEDBACK_EVIDENCE_ENABLED=1` and an available `/isaac-feedback` command
+show an optional reason form once per session. Isaac sets this marker from its
+existing evidence rollout flag. Enter sends the reason through
+`/isaac-feedback --category smart-routing`; Skip or Escape sends nothing.
+The form makes no model requests. Only submitting invokes the feedback command.
+Command discovery, UI and submission failures leave routing off. The CLI/skill
+path, including Codex, prints an optional command invitation after disabling.
+
+The native component suite exercises the registered toggle and form handlers
+with engine boundaries replaced where Claude 2.1.290's test host lacks APIs.
+It checks the off-before-prompt ordering, submission, dismissal, repeated
+toggles and failures. These checks do not establish a live evidence upload.
+
 The existing Claude skill-toggle integration journey checks recorded inference
 payloads during its three calculation phases: launch recipe, `DISABLED` after off,
 and launch recipe after on. Each phase retains completed native parent/child

@@ -9,6 +9,7 @@ import {
   RECIPE_FIELD,
 } from './constants.ts';
 import { mergeExtraBody } from './extra-body.ts';
+import { FEEDBACK_PANE, registerFeedback } from './feedback.ts';
 
 type Environment = Record<string, string | undefined>;
 
@@ -50,7 +51,7 @@ async function setRouting(
   options: PluginOptions,
   enabled: boolean,
   syncSessionControls: boolean,
-): Promise<void> {
+): Promise<boolean> {
   const original = (key: string): string | undefined =>
     (options.unset as readonly string[]).includes(key) ? undefined : options[key] as string;
   const previous = await readEnvironment($);
@@ -78,10 +79,12 @@ async function setRouting(
     await writeEnvironment($, previous);
     throw error;
   }
+  return previous.ENABLE_SMART_ROUTING_V2 === '1' || previous.ENABLE_SMART_ROUTING_SUBAGENT_ONLY === '1';
 }
 
 
 export function register(on: On, options: PluginOptions): void {
+  const feedback = { offered: false, submitted: false, reason: '' };
   const launchedEnabled = options.ENABLE_SMART_ROUTING_V2 === '1' ||
     options.ENABLE_SMART_ROUTING_SUBAGENT_ONLY === '1';
 
@@ -99,14 +102,33 @@ export function register(on: On, options: PluginOptions): void {
     const action = e.args.trim();
     if (action !== 'on' && action !== 'off') return {text: 'Usage: /smart-router on|off'};
     if (!launchedEnabled) return {text: 'Smart Router was not enabled for this session.'};
+    let wasEnabled: boolean;
     try {
-      await setRouting($, options, action === 'on', true);
+      wasEnabled = await setRouting($, options, action === 'on', true);
       showStatusBand();
       $.ui.invalidate('ui.render');
-      return {text: `Smart Router is ${action}`};
     } catch {
       return {text: 'Could not update Smart Router. Check the recipe, CLAUDE_CODE_EXTRA_BODY, and environment permissions; retry or restart through UG.'};
     }
+    // Feedback is optional and must never roll back a successful toggle.
+    if (action === 'off' && wasEnabled && !feedback.offered) {
+      try {
+        if (await $.env.get('ISAAC_FEEDBACK_EVIDENCE_ENABLED') === '1' &&
+          (await $.command.list()).some((command) => command.name === 'isaac-feedback')) {
+          feedback.offered = true;
+          const pane = await $.ui.open({
+            id: FEEDBACK_PANE, title: 'Smart Router is off', focus: true,
+            closeOnEscape: true, rows: 6, columns: 56,
+          });
+          // Do not leave a delayed question waiting for an unrelated task.
+          if (!pane.isPlaced) await $.ui.close({ id: FEEDBACK_PANE });
+        }
+      } catch {
+        // Unavailable commands, permissions or UI must leave routing off.
+      }
+    }
+    return {text: `Smart Router is ${action}`};
   });
+  registerFeedback(on, feedback);
   registerStatusBand(on);
 }

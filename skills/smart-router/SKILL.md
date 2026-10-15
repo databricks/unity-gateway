@@ -3,7 +3,7 @@ name: smart-router
 description: Enable or disable Unity Gateway subagent model routing for the current smart-routed Claude or Codex session, along with Smart Router Orchestrator when opted in.
 allowed-tools: Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing)
 metadata:
-  version: "1.2.0"
+  version: "1.3.0"
 ---
 
 # Smart Router
@@ -31,3 +31,6 @@ native tools and normal harness model selection, without Smart Router Orchestrat
 Existing children can finish. When turned on, apply the `smart-router-orchestrator`
 skill to further work only if the session was launched with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`.
 Do not change the orchestration feature flag. Return the command's result.
+If the result includes the optional `/isaac-feedback` invitation, show it at most
+once in this session. Do not wait for feedback or submit it automatically.
+Declining feedback or a submission failure must leave routing off.

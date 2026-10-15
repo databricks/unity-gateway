@@ -18,6 +18,28 @@ from ucode.smart_routing import session_env, v2
 runner = CliRunner()
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("feedback_enabled", ["0", "1"])
+def test_toggle_offers_optional_feedback_only_after_disabling(
+    tmp_path, monkeypatch, enabled, feedback_enabled
+):
+    session_file = tmp_path / "env.json"
+    session_file.write_text("{}")
+    monkeypatch.setenv(session_env.SESSION_ENV_VAR, str(session_file))
+    monkeypatch.setenv("ISAAC_FEEDBACK_EVIDENCE_ENABLED", feedback_enabled)
+
+    action = "--enable-smart-routing" if enabled else "--disable-smart-routing"
+    result = runner.invoke(cli.app, ["codex", action])
+
+    assert result.exit_code == 0, result.output
+    assert ("/isaac-feedback --category smart-routing <reason>" in result.output) == (
+        not enabled and feedback_enabled == "1"
+    )
+    assert json.loads(session_file.read_text()) == (
+        {} if enabled else dict.fromkeys(v2.SMART_ROUTING_ENV_KEYS, "0")
+    )
+
+
 @pytest.fixture(autouse=True)
 def _checkout_skill_bundle(monkeypatch):
     # An editable Python install can still contain an older wheel's copied skill resources.
