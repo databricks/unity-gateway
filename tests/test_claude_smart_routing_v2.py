@@ -15,7 +15,7 @@ import pytest
 from ucode.agents import LaunchOptions, claude
 from ucode.constants import AGENT_CLAUDE
 from ucode.databricks import AnthropicModelCatalog
-from ucode.smart_routing import claude_hooks, routing, status_line, v2
+from ucode.smart_routing import claude_hooks, routing, v2
 
 if sys.platform != "win32":
     from ucode.smart_routing import claude_pty
@@ -433,7 +433,6 @@ class TestV2Launch:
     def test_subagent_only_launch_skips_first_prompt_routing(self, tmp_path, monkeypatch):
         user_settings = tmp_path / "settings.json"
         user_settings.write_text(json.dumps({"model": "opus"}))
-        monkeypatch.chdir(tmp_path)
         monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
         monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "")
@@ -510,10 +509,6 @@ class TestV2Launch:
             assert env[key] == os.environ[key]
         assert v2.ENABLE_SMART_ROUTING_ENV_VAR not in env
         assert claude_hooks.FIRST_PROMPT_SOCKET_ENV not in env
-        # With no status line of the user's to wrap, UG's line shows the Smart Router state alone.
-        assert settings["statusLine"] == status_line.launch_setting(
-            os.environ[v2.SESSION_PYTHON_ENV_VAR], None
-        )
         # Subagent routing is fully wired; only the first-prompt machinery is absent.
         assert "UserPromptSubmit" not in settings["hooks"]
         assert "route-subagent" in str(settings["hooks"]["PreToolUse"])

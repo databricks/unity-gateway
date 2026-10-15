@@ -1,5 +1,5 @@
 import type { EngineInterface, On, PluginOptions } from 'claude-code';
-import { showStatusBand, readRoutingState, registerStatusBand } from './smart-routing-status.ts';
+import { registerStatusBand, showStatusBand } from './smart-routing-status.ts';
 import {
   CLI_AGENT,
   CLI_MODULE,
@@ -97,12 +97,7 @@ export function register(on: On, options: PluginOptions): void {
   // The installed smart-router skill already supplies the slash command.
   on('command.run', {command: 'smart-router'}, async ($, e) => {
     const action = e.args.trim();
-    if (action === 'status') {
-      if (!launchedEnabled) return {text: 'Smart Router is off: it was not enabled for this session.'};
-      const { enabled } = await readRoutingState($);
-      return {text: `Smart Router is ${enabled ? 'on' : 'off'}`};
-    }
-    if (action !== 'on' && action !== 'off') return {text: 'Usage: /smart-router on|off|status'};
+    if (action !== 'on' && action !== 'off') return {text: 'Usage: /smart-router on|off'};
     if (!launchedEnabled) return {text: 'Smart Router was not enabled for this session.'};
     try {
       await setRouting($, options, action === 'on', true);

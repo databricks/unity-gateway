@@ -132,7 +132,6 @@ Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file 
 | Smart-routing hooks | Merge | Merge | `PreToolUse`, `SessionStart`, `SubagentStart`; only `ug`'s own marked handlers, other hooks left alone |
 | Admin `agent_native_settings` | Ignore | Create/replace | Managed file only; copied as-is. Keys `ug` owns are skipped, `permissions.deny` and hooks are merged, and `ug`'s MCP servers are added to an admin `allowedMcpServers`. Removed when the admin drops them, unless edited by hand |
 | Smart Router Orchestrator hooks | Merge | Merge | Launch-only `UserPromptSubmit` and compact `SessionStart` handlers for smart-routed sessions with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`; read the same session controls as routing |
-| `statusLine` | Create/replace | Create/replace | Launch settings of smart-routed sessions only; wraps the command status line the user's settings would otherwise show and appends the Smart Router ON/OFF state. Never written to the user's files |
 
 </details>
 

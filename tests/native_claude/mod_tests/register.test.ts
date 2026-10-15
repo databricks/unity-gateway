@@ -97,19 +97,15 @@ const ABOVE_PROMPT = { plugin: 'ug-smart-router', surface: 'terminal', component
 
 const hasBand = (tree: unknown): boolean => JSON.stringify(tree).includes('unity gateway smart router');
 
-// The engine's own prompt, turn, and drawing answers sit beneath the mod.
-function engine(on: On, env: Record<string, string | undefined>) {
+test('the band hides after the first turn and returns for the turn after a toggle', { options: ROUTED }, async ($, on) => {
+  const { env } = setup(on);
   env.UCODE_SMART_ROUTER_PYTHON = '/ug/python';
   env.UCODE_SESSION_ENV_FILE = '/session/env.json';
+  // The engine's own process, drawing, prompt, and turn answers sit beneath the mod.
   on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }));
   on('ui.render', ($, e) => $.ui.resolve(e).Text({ children: ['theirs'] }));
   on('prompt.submit', ($, e) => ({ text: e.text }));
   on('turn.complete', () => ({ text: '' }));
-}
-
-test('the band hides after the first turn and returns for the turn after a toggle', { options: ROUTED }, async ($, on) => {
-  const { env } = setup(on);
-  engine(on, env);
   const band = await $.ui.mount(ABOVE_PROMPT);
   expect(hasBand(await band.drawn())).toBe(true);
 
@@ -126,12 +122,4 @@ test('the band hides after the first turn and returns for the turn after a toggl
   await $.prompt.submit({ text: 'second' });
   await $.turn.complete({ answer: 'done' });
   expect(hasBand(await band.drawn())).toBe(false);
-});
-
-test('status reports the current routing state', { options: ROUTED }, async ($, on) => {
-  const { env } = setup(on);
-
-  expect((await $.command.run({ command: 'smart-router', args: 'status' })).text).toBe('Smart Router is on');
-  env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY = '0';
-  expect((await $.command.run({ command: 'smart-router', args: 'status' })).text).toBe('Smart Router is off');
 });

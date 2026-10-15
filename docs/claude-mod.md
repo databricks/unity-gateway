@@ -5,13 +5,8 @@ launch-scoped `ug-smart-router` plugin. Claude Code 2.1.290 or newer is required
 
 The existing `_write_routed_claude_plugin()` copies the packaged TypeScript entry point
 from `src/ucode/agents/claude_mods/` and writes `hooks/hooks.json` into that plugin.
-Every routed launch includes the status band above the prompt. The band shows at launch and
-after each `/smart-router on|off`, and hides once the next prompt's turn completes;
-`/smart-router status` reports the current state. The launch settings also set Claude's
-`statusLine` to `ucode.smart_routing.status_line`, which runs the status line the user's
-settings would otherwise show and appends an always-visible ON/OFF pill read from the same
-session controls as the routing hooks. It refreshes every few seconds, because Claude does
-not re-run a status line after a slash command. Both full and subagent-only smart
+Every routed launch includes the status band above the prompt. It shows at launch and after
+each `/smart-router on|off`, and hides once the next prompt's turn completes. Both full and subagent-only smart
 routing launches use this path, and the existing temporary-directory lifecycle
 cleans up the files when Claude exits.
 
