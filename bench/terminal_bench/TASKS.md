@@ -43,7 +43,7 @@ Verifiers and solutions read these variables.
 | `pdf-extract` | Claude, Codex | `total.txt` holds the total from `invoice.pdf`, whose text stream is compressed. |
 | `web-fetch` | Claude, Codex | `answer.txt` holds a value from a file in this repo, pinned to a fixed commit. |
 | `background-shell` | Claude, Codex | `result.txt` holds the value that a 150-second job prints when it finishes. Claude's default command timeout is 2 minutes. |
-| `resume-session` | Claude, Codex | Step 1 deletes `vault.txt` without saving its passphrase to a file. Step 2 resumes the session and writes the passphrase to `answer.txt`. |
+| `resume-session` | Claude, Codex | Step 1 deletes `note.txt` without saving its code word to a file. Step 2 resumes the session and writes the code word to `answer.txt`. |
 | `log-triage` | Claude, Codex | `report.json` has the correct counts for five independent service directories. |
 | `fix-failing-tests` | Claude, Codex | The unit tests and extra hidden checks pass, and `tests/` is unchanged. |
 | `scrub-git-secret` | Claude, Codex | Every copy of the token in history is replaced with `REDACTED`, and both branches keep their commit messages in order. |
