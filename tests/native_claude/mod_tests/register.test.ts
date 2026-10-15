@@ -97,7 +97,7 @@ const ABOVE_PROMPT = { plugin: 'ug-smart-router', surface: 'terminal', component
 
 const hasBand = (tree: unknown): boolean => JSON.stringify(tree).includes('unity gateway smart router');
 
-test('the band hides after a turn, leaving the state in the hint row, and returns after a toggle', { options: ROUTED }, async ($, on) => {
+test('the band hides after a turn and returns after a toggle while the hint row tracks the state', { options: ROUTED }, async ($, on) => {
   const { env } = setup(on);
   env.UCODE_SMART_ROUTER_PYTHON = '/ug/python';
   env.UCODE_SESSION_ENV_FILE = '/session/env.json';
@@ -118,7 +118,7 @@ test('the band hides after a turn, leaving the state in the hint row, and return
   };
   const band = await $.ui.mount(ABOVE_PROMPT);
   expect(hasBand(await band.drawn())).toBe(true);
-  expect(await hint()).toBe('');
+  expect(await hint()).toBe('smart router ON');
 
   // The band stays through the prompt it first appears with.
   await $.prompt.submit({ text: 'first' });
@@ -127,15 +127,15 @@ test('the band hides after a turn, leaving the state in the hint row, and return
   const hidden = await band.drawn();
   expect(hasBand(hidden)).toBe(false);
   expect(JSON.stringify(hidden)).toContain('theirs');
-  // The hint row takes over the state once the band hides.
+  // The hint row keeps the state once the band hides.
   expect(await hint()).toBe('smart router ON');
 
   expect((await $.command.run({ command: 'smart-router', args: 'off' })).text).toBe('Smart Router is off');
   expect(hasBand(await band.drawn())).toBe(true);
-  expect(await hint()).toBe('');
+  // The hint row flips with the toggle, not after the next turn.
+  expect(await hint()).toBe('smart router OFF');
   await $.prompt.submit({ text: 'second' });
   await $.turn.complete({ answer: 'done' });
   expect(hasBand(await band.drawn())).toBe(false);
-  env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY = '0';
   expect(await hint()).toBe('smart router OFF');
 });

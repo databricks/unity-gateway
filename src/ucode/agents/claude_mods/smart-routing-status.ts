@@ -4,8 +4,7 @@ import { SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY } from './constants.ts'
 const BANNER = 'unity gateway smart router'
 
 // The band shows at launch and after each toggle, and hides once the next prompt's turn
-// completes. A prompt submitted while it shows arms the hide for that prompt's turn. While it
-// is hidden, the prompt hint row says whether Smart Router is on.
+// completes. A prompt submitted while it shows arms the hide for that prompt's turn.
 const band = { isVisible: true, isHideArmed: false }
 
 export function showStatusBand($: any): void {
@@ -60,9 +59,9 @@ export const registerStatusBand = (on: On): void => {
     return next(e)
   })
 
-  // Once the band hides, the prompt hint row carries the state as a plain tail.
+  // The prompt hint row always carries the state as a plain tail, so it stays visible after
+  // the band hides and flips as soon as a toggle succeeds.
   on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
-    if (band.isVisible) return next(e)
     const { enabled } = await readRoutingState($)
     const state = `smart router ${enabled ? 'ON' : 'OFF'}`
     const tail = e.props.tail ? `${e.props.tail} · ${state}` : state
