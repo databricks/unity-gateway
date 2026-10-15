@@ -65,6 +65,11 @@ The Claude mod entry point has separate native component checks in
 `../native_claude/test_mod.py`. Claude 2.1.290 validates the module and runs its
 TypeScript event-forwarding and launch-option tests in a dedicated CI job. The
 existing Claude skill-toggle journey checks the live recipe payload field across on/off/on.
+The `managed-config-only` Claude case starts without routing flags or a preset, so
+the managed config is the only activation source. It checks the session-start mod,
+OFF/ON status updates, three completed native child tasks, routing decisions, and
+recipe payloads across on/off/on. Earlier cases all supplied flags or presets,
+which left this activation path uncovered.
 
 The existing unit tests keep their fixtures. Integration has an independent
 pytest configuration and uses `--confcutdir` so those fixtures cannot leak in.
@@ -493,10 +498,10 @@ cases instead complete real file tasks through `--workspace` and `--model-locati
 `ug_e2e.models.claude_haiku` and `ug_e2e.models.gpt_luna`. The two fresh `--provider`
 journeys check setup and launch with existing services, without inference.
 
-There are **85 live cases** (including 11 marked TUI journeys) and **7 installation
+There are **86 live cases** (including 11 marked TUI journeys) and **7 installation
 checks** with Claude and Codex; selecting OpenCode adds one live headless case and two `managed_fixture` cases. One
 **`workspace_switch` case** uses two real workspaces and checks skills MCP cleanup and a completed
-Claude task. A further **43 `managed_fixture` cases** (ten of them also `live`) run on the
+Claude task. A further **44 `managed_fixture` cases** (eleven of them also `live`) run on the
 managed workspace with a checked-in JSON CodingAgentConfig from `tests/fixtures/managed_config/`
 injected through `UCODE_MANAGED_CONFIG_STUB`; there are no cases that read a published config.
 Twelve explicit configured/fresh Claude and Codex discovery and source-override journeys use the
@@ -684,12 +689,12 @@ each test; only explicit-model scenarios choose and record a discovered
 Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
-two agent jobs). Full runs all 85 live cases, including those smoke cases, in two
+two agent jobs). Full runs all 86 live cases, including those smoke cases, in two
 disjoint agent lanes:
 
 | Agent lane | Marker | Cases |
 | --- | --- | --- |
-| Claude | `live and claude` | 39 |
+| Claude | `live and claude` | 40 |
 | Codex | `live and codex` | 46 |
 
 A non-blocking **OpenCode** job (`live and opencode`, one case) runs alongside them with
@@ -1025,7 +1030,7 @@ uv run --no-project --python 3.12 python scripts/run_integration.py \
 unset DATABRICKS_BEARER
 ```
 
-This runs all 85 live cases. For the seven installation checks, run the same
+This runs all 86 live cases. For the seven installation checks, run the same
 runner/version/index arguments with `--installation-only` and omit `-- -m live`;
 no bearer or workspace is needed. Results remain under `.integration-runs/`.
 Each invocation needs a new output directory; an existing one is rejected.

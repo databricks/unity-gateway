@@ -158,6 +158,12 @@ def _toggle_with_skill(
             f"the Smart Router {state} confirmation",
             timeout=120,
         )
+        tui.wait_for(
+            lambda screen: (
+                f"unity gateway smart router {state.upper()}" in " ".join(screen.split())
+            ),
+            f"the Smart Router {state} status band",
+        )
         return
 
     controls = list(Path(session.env["TMPDIR"]).glob("ug-session-env-*/env.json"))
@@ -354,13 +360,14 @@ def test_smart_routing_codex_route_subagent_hook(
 @pytest.mark.claude
 @pytest.mark.managed_fixture
 @pytest.mark.parametrize(
-    "orchestration_enabled, SMART_ROUTER_CONFIG_VERSION",
+    "orchestration_enabled, SMART_ROUTER_CONFIG_VERSION, managed_only",
     [
-        (False, None),
-        (True, None),
-        (False, "subagent_only_v0"),
-        (False, "subagent_only_v1"),
-        (True, "subagent_orch_v0"),
+        (False, None, False),
+        (True, None, False),
+        (False, "subagent_only_v0", False),
+        (False, "subagent_only_v1", False),
+        (True, "subagent_orch_v0", False),
+        (False, None, True),
     ],
     ids=[
         "routing-only",
@@ -368,13 +375,20 @@ def test_smart_routing_codex_route_subagent_hook(
         "subagent_only_v0",
         "subagent_only_v1",
         "subagent_orch_v0",
+        "managed-config-only",
     ],
 )
-def test_smart_router_skill_toggles_claude_subagent_routing(
-    live_session, workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
+def test_smart_router_skill_toggles_claude_routing(
+    live_session,
+    workspace,
+    tmp_path,
+    orchestration_enabled,
+    SMART_ROUTER_CONFIG_VERSION,
+    managed_only,
 ):
-    """Scenario: launch Claude with the legacy flags or a subagent selector, spawn a child, invoke
-    the installed Smart Router skill to turn routing off, spawn another child, turn routing
+    """Scenario: launch Claude with managed routing alone, legacy flags, or a subagent selector,
+    spawn a child, invoke the installed Smart Router skill to turn routing off, spawn another
+    child, turn routing
     back on through the skill, and spawn a third child in the same real TUI session.
 
     Expected: routing-only cases install Smart Router; enabling orchestration also installs
@@ -385,12 +399,24 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
     non-empty HTTP 200 responses (including verified native
     compatibility retries). Only the first and third show the subagent-routing banner
     and produce live gateway decisions correlated with those children. Claude's native
-    task view reports no running tasks before /exit. No first-prompt routing wrapper starts.
+    task view reports no running tasks before /exit. Managed-only routing also routes the
+    first prompt; other cases route only subagents. The recipe header remains absent and
+    the smart-router session-start mod reports no error.
     With orchestration enabled, both routed banners must include [orchestrator on].
     """
     session = live_session
     session.env["TMPDIR"] = str(tmp_path)
-    if SMART_ROUTER_CONFIG_VERSION is None:
+    if managed_only:
+        assert not any(
+            key in session.env
+            for key in (
+                "SMART_ROUTER_CONFIG_VERSION",
+                "ENABLE_SMART_ROUTING_V2",
+                "ENABLE_SMART_ROUTING_SUBAGENT_ONLY",
+                "ENABLE_SMART_ROUTER_ORCHESTRATOR",
+            )
+        ), "Managed-only routing must start without environment routing controls"
+    elif SMART_ROUTER_CONFIG_VERSION is None:
         session.env["ENABLE_SMART_ROUTING_V2"] = "1"
         session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
         if orchestration_enabled:
@@ -412,6 +438,7 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
             session, "claude", [str(session.binary), "claude"], "smart-router-skill-toggle"
         ) as tui:
             tui.boot()
+            assert "ug-smart-router: session.start hook skipped" not in "".join(tui.output)
             launch_recipe = None
             for expression, result, routed in [
                 ("1+1", "2", True),
@@ -454,7 +481,8 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
                         and request.path == "/ai-gateway/routing/v1/routes:select"
                         and task.marker in request.payload.get("task", {}).get("prompt", "")
                     ]
-                    assert len(routes) == 1, (task.marker, routes)
+                    expected_routes = 2 if managed_only and expression == "1+1" else 1
+                    assert len(routes) == expected_routes, (task.marker, routes)
                     recipe = routes[0].payload.get("route_selector", {}).get("router_name")
                     assert isinstance(recipe, str) and recipe.strip() and recipe != "DISABLED", (
                         task.marker,
@@ -465,6 +493,10 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
                         launch_recipe = recipe
                     else:
                         assert recipe == launch_recipe, (task.marker, recipe, launch_recipe)
+                    assert all(
+                        route.payload.get("route_selector", {}).get("router_name") == recipe
+                        for route in routes
+                    ), (task.marker, routes)
                 else:
                     recipe = "DISABLED"
                 for request in inferences:
@@ -482,8 +514,13 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
             tui.wait_for_background_tasks()
             tui.exit_normally()
             transcript = "".join(tui.output)
-    assert SMART_ROUTING_BANNER not in transcript, transcript
-    session.assert_not_routed()
+    assert "ug-smart-router: session.start hook skipped" not in transcript, transcript
+    if managed_only:
+        assert SMART_ROUTING_BANNER in transcript, transcript
+        assert "[DONE] first prompt confirmed submitted" in session.routing_log("claude")
+    else:
+        assert SMART_ROUTING_BANNER not in transcript, transcript
+        session.assert_not_routed()
     canary = session.home / ".ucode" / "claude-smart-routing-canary.json"
     assert canary.is_file(), f"routing hooks were not armed: {canary}"
 

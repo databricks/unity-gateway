@@ -30,6 +30,12 @@ A failed write attempts to restore prior values and reports failure; the native 
 The launch and explicit toggles replace any existing `smart_router_recipe_name` body field.
 The gateway must support body-recipe parsing.
 
+Older UG builds that write the recipe to `ANTHROPIC_CUSTOM_HEADERS` fail when
+Claude pins that variable through managed settings (Claude 2.1.296+). Both session
+start and `/smart-router on|off` use the body field as of
+[PR #1124](https://github.com/databricks/unity-gateway/pull/1124); upgrade UG if the
+mod error still names `ANTHROPIC_CUSTOM_HEADERS`.
+
 The baseline comes from native plugin options and survives `/clear`, `/compact`, and
 plugin reloads. Toggles affect future requests and newly spawned hooks; already running
 child processes retain their inherited environment. No toggle writes settings or snapshots.
