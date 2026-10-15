@@ -1012,6 +1012,7 @@ class TestSubcommandRouting:
 
         assert result.exit_code == 0, result.output
         assert mock_configure.call_args.kwargs["route_root_model"] is None
+        assert mock_configure.call_args.kwargs["skip_managed_write"] is True
         assert mock_launch.call_args.kwargs["options"].launch_smart_routing is True
 
     def test_claude_v2_first_prompt_hook_is_disabled_without_flag(self, monkeypatch):
@@ -1168,7 +1169,9 @@ class TestManagedConfigLaunchSourceGuard:
 
         assert result.exit_code == 1
         assert "`--provider` or `--model-location` is not allowed" in _strip_ansi(result.output)
-        mock_configure.assert_called_once_with("claude", MINIMAL_STATE, provider=None)
+        mock_configure.assert_called_once_with(
+            "claude", MINIMAL_STATE, provider=None, skip_managed_write=True
+        )
         calls["launch"].assert_not_called()
 
     def test_persisted_provider_is_not_mistaken_for_an_explicit_option(self):
@@ -3377,7 +3380,9 @@ class TestAutoConfigureOnFirstRun:
             result = runner.invoke(app, [tool])
 
         assert result.exit_code == 0, result.output
-        mock_configure.assert_called_once_with(tool, configured_state, provider=None)
+        mock_configure.assert_called_once_with(
+            tool, configured_state, provider=None, skip_managed_write=True
+        )
         mock_restore.assert_not_called()
         mock_launch.assert_called_once()
         assert mock_launch.call_args.args[:2] == (tool, configured_state)
@@ -3465,7 +3470,9 @@ class TestAutoConfigureOnFirstRun:
         ):
             cli_mod._auto_configure_tool("claude", provider="main.default.relay")
 
-        mock_configure.assert_called_once_with("claude", MINIMAL_STATE, provider=expected_provider)
+        mock_configure.assert_called_once_with(
+            "claude", MINIMAL_STATE, provider=expected_provider, skip_managed_write=True
+        )
 
     def test_skipped_when_already_configured(self):
         """Auto-configure is skipped when workspace and tool are already set up."""

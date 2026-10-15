@@ -60,10 +60,13 @@ command shape in some flows and did not guard managed-file writes consistently.
 | Non-interactive | Ucode-owned value conflicts | Repair through `sudo -n`; stop before launching if authorization or verification fails. |
 | Any | Invalid, unreadable, or symlinked | Stop without modifying the file because precedence cannot be established safely. |
 
-`ucode configure`, first-time `ucode claude` or `ucode codex`, and later launches all use the same
-agent-specific reconciliation path. A first-time launch from an interactive terminal can therefore
-request administrator permission. A first-time non-interactive launch uses local settings unless
-the agent must repair an existing conflicting managed file.
+`ucode configure`, first-time `ucode codex`, and later Codex launches all use the same
+agent-specific reconciliation path. A first-time Codex launch from an interactive terminal can
+therefore request administrator permission. A first-time non-interactive launch uses local settings
+unless Codex must repair an existing conflicting managed file. `ucode claude`, first-time setup
+included, never writes Claude's managed file. It stops and asks for `ug configure` when that file
+overrides the gateway URL, `apiKeyHelper`, or custom headers; other managed values, such as model
+defaults, stay in effect for the launch.
 
 For Claude, turning off UG tracing preserves the live OS-managed telemetry values unchanged,
 including values UG wrote on an earlier run. The same applies when the workspace has no managed

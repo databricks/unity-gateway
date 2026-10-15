@@ -1322,6 +1322,7 @@ def write_tool_config(
     coding_agent_config_defaults: dict[str, str] | None = None,
     parent_schema: str | None = None,
     picker_catalog: AnthropicModelCatalog | None = None,
+    skip_managed_write: bool = False,
 ) -> dict:
     external_search = external_provider_selected()
     # Back up only a file that predates ucode's management of the tool. A
@@ -1580,6 +1581,7 @@ def write_tool_config(
             CLAUDE_PERMISSIONS_DENY_PATH, passthrough, previous_leaves
         ),
         passthrough_leaves=passthrough.record(),
+        skip_managed_write=skip_managed_write,
     )
 
     custom_oauth = state.get("custom_oauth")
@@ -1809,6 +1811,7 @@ def _reconcile_managed_settings(
     picker_keys: list[str],
     withdrawn_denies: list | None = None,
     passthrough_leaves: list | None = None,
+    skip_managed_write: bool = False,
 ) -> None:
     """Reconcile Claude Code's OS-managed settings so a bare ``claude`` uses the gateway.
 
@@ -1819,6 +1822,8 @@ def _reconcile_managed_settings(
     `ug configure` updates gateway-owned fields in this file. It writes the picker
     (`availableModels`/`modelPicker`) for a static managed list and removes the picker keys it
     previously wrote when it no longer manages one, leaving an administrator's own picker untouched.
+    `ug claude` passes ``skip_managed_write``: it only checks the file and fails if the file
+    overrides its gateway, auth, or headers.
 
     Relayed launches are skipped: they depend on a per-session loopback refresh proxy that only runs
     during `ucode claude`, so a bare `claude` could not reach the gateway anyway.
@@ -1868,6 +1873,15 @@ def _reconcile_managed_settings(
     desired_settings = compose(existing)
     _preserve_permission_denies(managed_before, desired_settings, withdrawn=withdrawn_denies or [])
     conflicts = _managed_settings_conflicts(managed_before, desired_settings, owned_paths)
+    if skip_managed_write:
+        # Model keys may differ per launch and still work; these decide where requests go.
+        routing = {"apiKeyHelper", "env.ANTHROPIC_BASE_URL", "env.ANTHROPIC_CUSTOM_HEADERS"}
+        if overridden := [conflict for conflict in conflicts if conflict in routing]:
+            raise RuntimeError(
+                f"Claude Code managed settings at {path} override this launch's "
+                f"{', '.join(overridden)}. Run `ug configure` to update them."
+            )
+        return
     if not managed_writes_allowed() and not conflicts:
         mark_managed_file_verified(state, "claude", path, scope="local-compatible")
         return

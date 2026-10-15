@@ -1134,6 +1134,37 @@ class TestWriteToolConfigManagedSettings:
 
         assert managed_writes == []
 
+    def test_launch_leaves_managed_file_alone(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        # A model key that differs from this launch's doesn't block it.
+        existing = {
+            str(FAKE_MANAGED_PATH): {"env": {"ANTHROPIC_MODEL": "system.ai.claude-opus-4-8"}}
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        state = {"workspace": WS, "codex_models": []}
+        claude.write_tool_config(state, "databricks-claude-sonnet-4", skip_managed_write=True)
+
+        assert str(claude.CLAUDE_SETTINGS_PATH) in [p for p, _ in private_writes]
+        assert managed_writes == []
+
+    def test_launch_errors_when_managed_file_overrides_it(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        existing = {
+            str(FAKE_MANAGED_PATH): {
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://old-workspace.databricks.com/ai-gateway/anthropic"
+                }
+            }
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        state = {"workspace": WS, "codex_models": []}
+        with pytest.raises(RuntimeError, match=r"override this launch's env\.ANTHROPIC_BASE_URL"):
+            claude.write_tool_config(state, "databricks-claude-sonnet-4", skip_managed_write=True)
+
+        assert managed_writes == []
+
     def test_managed_file_preserves_other_keys(self, monkeypatch):
         private_writes: list = []
         managed_writes: list = []

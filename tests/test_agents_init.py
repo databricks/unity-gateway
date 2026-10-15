@@ -204,7 +204,9 @@ class TestConfigureWiresAiToolsInstall:
             agents_mod.configure_single_tool("claude", state, parent_schema="main.default") is state
         )
 
-        configure.assert_called_once_with("claude", state, parent_schema="main.default")
+        configure.assert_called_once_with(
+            "claude", state, parent_schema="main.default", skip_managed_write=False
+        )
 
     def test_explicit_relayed_provider_configures_relayed(self, monkeypatch):
         state = {"workspace": "https://x.databricks.com"}
@@ -221,7 +223,13 @@ class TestConfigureWiresAiToolsInstall:
         agents_mod.configure_single_tool("claude", state, provider="main.default.relay")
 
         configure.assert_called_once_with(
-            "claude", state, None, provider="main.default.relay", provider_models=None, relayed=True
+            "claude",
+            state,
+            None,
+            provider="main.default.relay",
+            provider_models=None,
+            relayed=True,
+            skip_managed_write=False,
         )
 
     def test_configure_selected_tools_triggers_install(self, monkeypatch):
@@ -1087,7 +1095,9 @@ class TestConfigureSelectedTools:
         assert set(result["available_tools"]) == {"codex", "claude"}
 
     def test_adds_new_tool_to_available_tools(self, monkeypatch):
-        monkeypatch.setattr("ucode.agents.configure_tool", lambda tool, state, model=None: state)
+        monkeypatch.setattr(
+            "ucode.agents.configure_tool", lambda tool, state, model=None, **_: state
+        )
         monkeypatch.setattr("ucode.agents.save_state", lambda s: None)
 
         state = {
