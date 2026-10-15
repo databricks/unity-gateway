@@ -47,11 +47,7 @@ from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
 from ucode.constants import AGENT_CLAUDE, AGENT_CODEX, SMART_ROUTING_ENV_KEYS
-from ucode.custom_oauth import (
-    CUSTOM_OAUTH_CLI_ENV_VAR,
-    custom_oauth_cli_enabled,
-    ensure_custom_oauth_cli_token,
-)
+from ucode.custom_oauth import ensure_custom_oauth_cli_token
 from ucode.databricks import (
     SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION,
     apply_pat_environment,
@@ -372,8 +368,6 @@ def _custom_oauth_config(
     if client_id is None:
         raise RuntimeError("--redirect-url and --scopes require --client-id.")
     if scopes is None:
-        if not custom_oauth_cli_enabled(client_id):
-            raise RuntimeError("--scopes is required with --client-id.")
         scopes = ",".join(custom_oauth.DEFAULT_CLI_SCOPES)
 
     return custom_oauth.create_custom_oauth_config(
@@ -555,7 +549,7 @@ def configure_shared_state(
         state.pop("custom_oauth", None)
     state["base_urls"] = build_shared_base_urls(workspace)
 
-    cli_custom_oauth = state.get("custom_oauth") if custom_oauth_cli_enabled(custom_oauth) else None
+    cli_custom_oauth = state.get("custom_oauth")
     if cli_custom_oauth:
         token = ensure_custom_oauth_cli_token(workspace, cli_custom_oauth)
 
@@ -2277,9 +2271,6 @@ def auth_token_cmd(
     if scopes is not None and client_id is None:
         print_err("--scopes requires --client-id.")
         raise typer.Exit(1)
-    if client_id is not None and scopes is None:
-        print_err("--scopes is required with --client-id.")
-        raise typer.Exit(1)
     state = load_state()
     explicit_host = bool(host and host.strip())
     workspace = host or state.get("workspace")
@@ -2303,14 +2294,15 @@ def auth_token_cmd(
             raise typer.Exit(1)
     try:
         if client_id is not None:
-            assert scopes is not None
             token = custom_oauth.get_custom_client_token(
                 workspace,
                 client_id=client_id,
                 redirect_url=(
                     redirect_url if redirect_url is not None else custom_oauth.DEFAULT_REDIRECT_URL
                 ),
-                scopes=scopes.split(","),
+                scopes=(
+                    scopes.split(",") if scopes is not None else custom_oauth.DEFAULT_CLI_SCOPES
+                ),
                 profile=profile,
                 force_refresh=force_refresh,
             )
@@ -2936,8 +2928,6 @@ def _launch_tool(
     try:
         tool = normalize_tool(tool_name)
         previous = smart_routing_v2.apply_config(agent=tool)
-        if not custom_oauth_cli_enabled(custom_oauth):
-            os.environ.pop(CUSTOM_OAUTH_CLI_ENV_VAR, None)
         # Before any status print: a stdio-protocol subcommand owns stdout, so
         # every ug line from here on must go to stderr instead.
         if _child_owns_stdout(tool, ctx.args):
@@ -2961,7 +2951,7 @@ def _launch_tool(
         # Workspaces configured with --use-pat export the profile's PAT as
         # DATABRICKS_BEARER up front so every auth check below (and the
         # launched agent itself) uses the static token instead of OAuth.
-        if not custom_oauth_cli_enabled(custom_oauth):
+        if custom_oauth is None:
             apply_pat_environment(existing)
         needs_auto_configure = not existing.get("workspace") or tool not in (
             existing.get("available_tools") or []
@@ -3862,7 +3852,9 @@ def configure(
     ] = False,
     client_id: Annotated[
         str | None,
-        typer.Option("--client-id", hidden=True, help="Custom OAuth client ID for apiKeyHelper."),
+        typer.Option(
+            "--client-id", help="Authenticate using a custom OAuth application client ID."
+        ),
     ] = None,
     redirect_url: Annotated[
         str | None,

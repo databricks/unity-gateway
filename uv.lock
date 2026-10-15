@@ -1118,7 +1118,6 @@ wheels = [
 name = "unity-gateway"
 source = { editable = "." }
 dependencies = [
-    { name = "databricks-sdk" },
     { name = "httpx" },
     { name = "mcp" },
     { name = "questionary" },
@@ -1129,6 +1128,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "databricks-sdk" },
     { name = "pexpect" },
     { name = "pyte" },
     { name = "pytest" },
@@ -1138,7 +1138,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "databricks-sdk", specifier = ">=0.135.0" },
     { name = "httpx", specifier = ">=0.27.1" },
     { name = "mcp", specifier = ">=1.28.0" },
     { name = "questionary", specifier = ">=2.0.0" },
@@ -1149,6 +1148,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "databricks-sdk", specifier = ">=0.135.0" },
     { name = "pexpect", specifier = ">=4.9.0" },
     { name = "pyte", specifier = ">=0.8.2" },
     { name = "pytest", specifier = ">=9.0.3" },

@@ -11,7 +11,7 @@ pytestmark = [pytest.mark.live, pytest.mark.tui, pytest.mark.codex]
 
 @pytest.mark.smoke
 def test_ug_codex_custom_oauth_cli_boots(live_session, workspace):
-    """Scenario: launch Codex with the CLI OAuth flag and databricks-cli client ID.
+    """Scenario: launch Codex with only the databricks-cli client ID (no OAuth feature flag).
 
     Expected: Databricks CLI 1.17.0 is installed; the real Codex TUI reaches a
     usable prompt, accepts keyboard input, and exits normally; its generated CLI
@@ -19,7 +19,6 @@ def test_ug_codex_custom_oauth_cli_boots(live_session, workspace):
     claim model inference.
     """
     session = live_session
-    session.env["ENABLE_CUSTOM_OAUTH_FROM_CLI"] = "1"
     version = session.run("version", "--output", "json", binary=session.which("databricks"))
     assert json.loads(version.stdout)["Version"] == "1.17.0"
     command = [

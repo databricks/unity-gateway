@@ -37,7 +37,6 @@ from ucode.constants import (
 from ucode.custom_oauth import (
     CustomOAuthConfig,
     build_custom_auth_shell_command,
-    custom_oauth_cli_enabled,
 )
 from ucode.databricks import (
     AnthropicModelCatalog,
@@ -2284,7 +2283,7 @@ def launch(
             routing_setup_failed = True
         else:
             return
-    if workspace and not custom_oauth_cli_enabled(state.get("custom_oauth")):
+    if workspace and not state.get("custom_oauth"):
         os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
     settings_override = None
     launch_args = list(tool_args)
