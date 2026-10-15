@@ -26,9 +26,21 @@ def _claude_background_task_menu(text):
     )
 
 
+def _claude_background_task_detail(text):
+    # With a single task, /tasks opens that task's detail panel instead of the list.
+    return re.search(
+        r"(?ms)^[ \t]*agent › .+?\n[ \t]*(\S.*?)[ \t]*\n.*"
+        r"^[ \t]*← to go back · Esc/Enter/Space to close.*\Z",
+        text,
+    )
+
+
 def _claude_background_tasks_complete(text):
     if re.search(r"(?m)^\s*No tasks currently running\s*$", text):
         return True
+    detail = _claude_background_task_detail(text)
+    if detail is not None:
+        return re.match(r"✔ Completed\b", detail[1]) is not None
     menu = _claude_background_task_menu(text)
     if menu is None:
         return False
@@ -440,6 +452,7 @@ class AgentTerminal(TerminalProcess):
             lambda text: (
                 "No tasks currently running" not in text
                 and _claude_background_task_menu(text) is None
+                and _claude_background_task_detail(text) is None
             ),
             "the prompt after closing the background-task view",
         )
