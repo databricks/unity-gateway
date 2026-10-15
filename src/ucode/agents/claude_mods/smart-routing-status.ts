@@ -64,7 +64,7 @@ export const registerStatusBand = (on: On): void => {
   on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
     if (band.isVisible) return next(e)
     const { enabled } = await readRoutingState($)
-    const state = `smart router ${enabled ? 'on' : 'off'}`
+    const state = `smart router ${enabled ? 'ON' : 'OFF'}`
     const tail = e.props.tail ? `${e.props.tail} · ${state}` : state
     return next({ ...e, props: { ...e.props, tail } })
   })

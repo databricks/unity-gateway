@@ -128,7 +128,7 @@ test('the band hides after a turn, leaving the state in the hint row, and return
   expect(hasBand(hidden)).toBe(false);
   expect(JSON.stringify(hidden)).toContain('theirs');
   // The hint row takes over the state once the band hides.
-  expect(await hint()).toBe('smart router on');
+  expect(await hint()).toBe('smart router ON');
 
   expect((await $.command.run({ command: 'smart-router', args: 'off' })).text).toBe('Smart Router is off');
   expect(hasBand(await band.drawn())).toBe(true);
@@ -137,5 +137,5 @@ test('the band hides after a turn, leaving the state in the hint row, and return
   await $.turn.complete({ answer: 'done' });
   expect(hasBand(await band.drawn())).toBe(false);
   env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY = '0';
-  expect(await hint()).toBe('smart router off');
+  expect(await hint()).toBe('smart router OFF');
 });
