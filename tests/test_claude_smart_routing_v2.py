@@ -6,7 +6,6 @@ import json
 import os
 import sys
 import threading
-import time
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -150,6 +149,7 @@ class TestFirstPromptHook:
         socket_path = tmp_path / "first.sock"
         blocked: list[tuple[str, str]] = []
         stop = threading.Event()
+        ready = threading.Event()
         claude_pty.serve_first_prompt_socket(
             socket_path,
             lambda _prompt: claude_pty.FirstPromptRoute(
@@ -157,11 +157,11 @@ class TestFirstPromptHook:
             ),
             lambda prompt, model: blocked.append((prompt, model)),
             stop,
+            # Wait on [READY], logged after listen(); the socket file exists from bind().
+            log=lambda message: ready.set() if message.startswith("[READY]") else None,
         )
         try:
-            deadline = time.monotonic() + 5
-            while not socket_path.exists() and time.monotonic() < deadline:
-                time.sleep(0.01)
+            assert ready.wait(5)
             first = claude_pty.request_first_prompt_route(
                 socket_path, {"session_id": "s1", "prompt": "fix the parser"}
             )

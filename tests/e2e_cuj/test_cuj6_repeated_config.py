@@ -18,13 +18,12 @@ import subprocess
 import sys
 import time
 import tomllib
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
-from tests.integration.utils.evidence import FileTask
+from tests.integration.utils.evidence import FileTask, fresh_id
 from tests.integration.utils.sql import query_count, resolve_trace_table, resolve_warehouse_id
 from tests.integration.utils.terminal import TerminalProcess
 from ucode.agents.claude import CLAUDE_OTEL_TRACE_ENV_KEYS
@@ -239,7 +238,7 @@ class Journey:
         self.workspaces = workspaces
         self.published = published
         self.recorders = recorders
-        self.run_id = f"cuj6-{uuid.uuid4().hex[:12]}"
+        self.run_id = f"cuj6-{fresh_id()}"
         a_bearer = bearer(workspaces["a"].client)
         # All phase workspaces share one metastore and trace table, so A queries them all.
         self.trace_url = workspaces["a"].url

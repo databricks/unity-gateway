@@ -451,7 +451,8 @@ The tests assert that a span with the marker arrived and identifies the requeste
 Scoped discovery additionally requires Model Services
 `main.ucode.ci_e2e_claude` and `main.ucode.ci_e2e_codex`. Override them with
 `--parent-schema`, `--claude-parent-model`, or `--codex-parent-model`. The tests
-consume but never create or modify them.
+consume but never create or modify them. Claude and Codex scoped pickers must
+match the parent schema's live gateway catalog, which must include the configured parent model.
 
 These unmanaged journeys require a workspace that publishes no CodingAgentConfig.
 Before any of them configures or launches an agent, a session-scoped, read-only
