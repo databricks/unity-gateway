@@ -85,14 +85,21 @@ export function register(on: On, options: PluginOptions): void {
   const launchedEnabled = options.ENABLE_SMART_ROUTING_V2 === '1' ||
     options.ENABLE_SMART_ROUTING_SUBAGENT_ONLY === '1';
 
-  on('session.start', async ($, e, next) => {
-    if (launchedEnabled) {
-      const current = await readEnvironment($);
-      await setRouting($, options, current.ENABLE_SMART_ROUTING_V2 === '1' ||
-        current.ENABLE_SMART_ROUTING_SUBAGENT_ONLY === '1', false);
-    }
-    return next(e);
-  });
+  const routingConfigured = [
+    'ENABLE_SMART_ROUTING_V2',
+    'ENABLE_SMART_ROUTING_SUBAGENT_ONLY',
+    'ENABLE_SMART_ROUTER_ORCHESTRATOR',
+  ].some(key => !(options.unset as readonly string[]).includes(key));
+  if (routingConfigured) {
+    on('session.start', async ($, e, next) => {
+      if (launchedEnabled) {
+        const current = await readEnvironment($);
+        await setRouting($, options, current.ENABLE_SMART_ROUTING_V2 === '1' ||
+          current.ENABLE_SMART_ROUTING_SUBAGENT_ONLY === '1', false);
+      }
+      return next(e);
+    });
+  }
 
   // The installed smart-router skill already supplies the slash command.
   on('command.run', {command: 'smart-router'}, async ($, e) => {

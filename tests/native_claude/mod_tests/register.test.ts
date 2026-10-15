@@ -2,6 +2,7 @@ import type { On } from 'claude-code';
 import { expect, test } from 'claude-code/testing';
 import { RECIPE_FIELD } from '../hooks/constants.ts';
 import { mergeExtraBody } from '../hooks/extra-body.ts';
+import { register } from '../hooks/register.ts';
 
 const RECIPE = 'task_v3';
 const CALLER_BODY = '{"caller_field":"keep"}';
@@ -13,6 +14,27 @@ const ROUTED = {
   recipe: RECIPE,
 };
 const start = { surface: 'terminal', isInteractive: true, cwd: '/work' } as const;
+
+test('session start is registered only when a routing flag was initially set', async () => {
+  const keys = [
+    'ENABLE_SMART_ROUTING_V2',
+    'ENABLE_SMART_ROUTING_SUBAGENT_ONLY',
+    'ENABLE_SMART_ROUTER_ORCHESTRATOR',
+  ];
+  const absent = Object.fromEntries(keys.map(key => [key, '']));
+  const events: string[] = [];
+  const on = ((event: string) => { events.push(event); }) as On;
+  register(on, { ...absent, unset: keys, recipe: RECIPE });
+  expect(events).not.toContain('session.start');
+
+  for (const key of keys) {
+    for (const value of ['', '0', '1']) {
+      events.length = 0;
+      register(on, { ...absent, [key]: value, unset: keys.filter(k => k !== key), recipe: RECIPE });
+      expect(events.filter(event => event === 'session.start')).toHaveLength(1);
+    }
+  }
+});
 
 // A pinned environment variable is the policy refusal the managed security default
 // raises; only the extra body may carry the recipe.

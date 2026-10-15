@@ -61,4 +61,7 @@ See [Claude Mods](https://code.claude.com/docs/en/plugins/mods/overview).
 UG passes the resolved routing flags and recipe in the existing launch settings under
 `pluginConfigs["ug-smart-router"].options`. Claude supplies these to `register(on, options)`.
 `unset` lists originally absent flags because native options cannot carry null values.
+The mod registers `session.start` only when at least one routing flag was initially
+set, including an explicit `0` or empty value. With all three flags absent, it
+registers no session-start handler.
 The source remains static; no additional launch snapshot file is created.

@@ -15,8 +15,11 @@ mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 Claude mod entry-point coverage lives in `test_claude_mod.py` (generated plugin contents),
 `test_claude_smart_routing_v2.py` (launch wiring), and the explicitly selected
 `native_claude/test_mod.py` suite. Claude 2.1.290 validates the module and runs its
-TypeScript event-forwarding and launch-option tests in CI. The existing Claude
-skill-toggle integration journey checks the live recipe payload field across on/off/on.
+TypeScript event-forwarding and launch-option tests in CI. The Claude
+mod tests also check that `session.start` is absent when all routing flags were
+initially unset, and present for each explicitly set flag (including `0` and empty).
+The existing Claude skill-toggle integration journey checks the live recipe payload
+field across on/off/on.
 See [the mod guide](../docs/claude-mod.md).
 
 The **harness-latest** workflow runs every six hours on `main` and currently covers

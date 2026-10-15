@@ -64,6 +64,9 @@ or construct ug state files. The normal test suite checks these boundaries.
 The Claude mod entry point has separate native component checks in
 `../native_claude/test_mod.py`. Claude 2.1.290 validates the module and runs its
 TypeScript event-forwarding and launch-option tests in a dedicated CI job. The
+mod tests also check session-start registration for initially absent routing flags
+and for each explicitly set flag, including `0` and empty values. These are
+component checks; they do not establish live gateway coverage. The
 existing Claude skill-toggle journey checks the live recipe payload field across on/off/on.
 
 The existing unit tests keep their fixtures. Integration has an independent
