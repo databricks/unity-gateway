@@ -43,9 +43,6 @@ def _claude_background_task_detail(text):
 def _claude_background_tasks_complete(text):
     if re.search(r"(?m)^\s*No tasks currently running\s*$", text):
         return True
-    detail = _claude_background_task_detail(text)
-    if detail is not None:
-        return re.match(r"✔ Completed\b", detail[1]) is not None
     menu = _claude_background_task_menu(text)
     if menu is None:
         return False
@@ -576,13 +573,10 @@ class AgentTerminal(TerminalProcess):
             nonlocal returning_to_list
             # With one active task, /tasks opens its detail panel instead of the list.
             # A completed detail panel does not establish that every task has stopped.
-            if not returning_to_list and re.search(
-                r"(?m)^[ \t]*← to go back · Esc/Enter/Space to close"
-                r"(?: · x to stop)? · f to foreground[ \t]*\s*\Z",
-                text,
-            ):
-                self.send("\x1b[D", "return from task details to the full background-task list")
-                returning_to_list = True
+            if _claude_background_task_detail(text) is not None:
+                if not returning_to_list:
+                    self.send("\x1b[D", "return from task details to the full background-task list")
+                    returning_to_list = True
                 return False
             # A directly opened detail panel can return to the input prompt.
             # Reopen the task view; the prompt alone says nothing about active work.

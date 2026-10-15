@@ -64,7 +64,8 @@ and completed-task text outside the native menu cannot satisfy the wait.
 When `/tasks` opens one agent's detail panel, the helper uses its Left-arrow navigation to
 return to the full list. If that closes the panel to the input prompt, it reopens `/tasks`.
 Offline PTY checks cover both navigation outcomes, repeated detail panels, and running and
-completed agents. All tasks must finish before exit, including when the selected agent is already done.
+completed agents. A completed detail panel cannot satisfy the wait while navigation is pending;
+all tasks must finish before exit, including when the selected agent is already done.
 The live Claude subagent skill-toggle journey uses this wait after its final calculation.
 CUJ4's Claude preset sessions wait for the parent's answer with the delegated file's value
 before opening the task view, since the parent can resume a child while forming its reply.

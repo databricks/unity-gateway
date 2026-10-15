@@ -104,7 +104,8 @@ If `/tasks` opens a single agent's detail panel, the helper presses its advertis
 key to return to the full list before checking completion. If that closes the panel to the
 input prompt, it reopens `/tasks` and still requires completion evidence from the full list.
 Offline PTY cases cover both navigation outcomes, repeated detail panels, delayed navigation,
-and other tasks that remain active even when the selected agent is already complete.
+and other tasks that remain active even when the selected agent is already complete. The helper
+must wait for navigation to finish; a still-visible completed detail panel is insufficient.
 It neither stops tasks nor confirms an exit dialog. Process exit retains its 30-second
 timeout. Offline PTY checks cover this ordering.
 CUJ4's Claude preset sessions first wait for the parent's answer with the delegated file's
