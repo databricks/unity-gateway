@@ -1,6 +1,7 @@
 """Claude model-discovery CUJs for repository scenarios 9, 11, and 13."""
 
 import json
+import os
 import re
 
 import pytest
@@ -8,9 +9,19 @@ from utils.model_discovery import (
     assert_claude_system_models_in_picker as _assert_system_models_in_picker,
 )
 from utils.model_discovery import claude_model_in_picker
+from utils.provider_catalog import fetch_anthropic_parent_catalog
 from utils.terminal import AgentTerminal
 
 pytestmark = [pytest.mark.claude, pytest.mark.usefixtures("unmanaged_workspace")]
+
+
+@pytest.fixture(scope="module")
+def _claude_parent_model_ids(unmanaged_workspace, parent_schema, claude_parent_model):
+    catalog = fetch_anthropic_parent_catalog(
+        unmanaged_workspace, os.environ["DATABRICKS_BEARER"], parent_schema
+    )
+    assert claude_parent_model in catalog.model_ids, catalog.model_ids
+    return list(catalog.model_ids)
 
 
 def _scoped_models_visible(session, expected_ids):
@@ -149,7 +160,7 @@ def test_case_11_fresh_claude_provider_discovers_models_by_default(
 @pytest.mark.live
 @pytest.mark.tui
 def test_case_13_configured_claude_model_location_overrides_saved_setup(
-    live_session, workspace, parent_schema, claude_parent_model
+    live_session, workspace, parent_schema, _claude_parent_model_ids
 ):
     """Scenario: configure Claude, then launch with --model-location.
 
@@ -172,18 +183,18 @@ def test_case_13_configured_claude_model_location_overrides_saved_setup(
     with AgentTerminal(session, "claude", command, "case-13-location-default") as tui:
         tui.boot()
         screen = tui.open_model_picker(
-            model_visible=_scoped_models_visible(session, [claude_parent_model])
+            model_visible=_scoped_models_visible(session, _claude_parent_model_ids)
         )
         tui.exit_normally()
 
-    _assert_scoped_models_in_picker(session, screen, [claude_parent_model])
-    _assert_replacement_picker(session, [claude_parent_model])
+    _assert_scoped_models_in_picker(session, screen, _claude_parent_model_ids)
+    _assert_replacement_picker(session, _claude_parent_model_ids)
 
 
 @pytest.mark.live
 @pytest.mark.tui
 def test_case_13_fresh_claude_model_location_discovers_parent_models(
-    live_session, workspace, parent_schema, claude_parent_model
+    live_session, workspace, parent_schema, _claude_parent_model_ids
 ):
     """Scenario: launch fresh Claude with --model-location.
 
@@ -202,9 +213,9 @@ def test_case_13_fresh_claude_model_location_discovers_parent_models(
     with AgentTerminal(session, "claude", command, "case-13-location-default") as tui:
         tui.boot()
         screen = tui.open_model_picker(
-            model_visible=_scoped_models_visible(session, [claude_parent_model])
+            model_visible=_scoped_models_visible(session, _claude_parent_model_ids)
         )
         tui.exit_normally()
 
-    _assert_scoped_models_in_picker(session, screen, [claude_parent_model])
-    _assert_replacement_picker(session, [claude_parent_model])
+    _assert_scoped_models_in_picker(session, screen, _claude_parent_model_ids)
+    _assert_replacement_picker(session, _claude_parent_model_ids)
