@@ -36,8 +36,14 @@ def _scoped_models_visible(session, expected_ids):
     """
 
     def visible(text):
-        return session.claude_gateway_cache_ready(expected_ids) and all(
-            claude_model_in_picker(text, model_id, None) for model_id in expected_ids
+        if not session.claude_gateway_cache_ready(expected_ids):
+            return False
+        # Aliased non-Claude models render their display name, not the wire id.
+        names = {
+            model.get("id"): model.get("display_name") for model in session.claude_gateway_models()
+        }
+        return all(
+            claude_model_in_picker(text, model_id, names.get(model_id)) for model_id in expected_ids
         )
 
     return visible
