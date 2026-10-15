@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   package-proxy:
-    name: Test npm proxy without gateway credentials
+    name: Test authenticated npm proxy without gateway credentials
     if: >-
       ${{
         github.event.pull_request.head.repo.full_name == github.repository &&
@@ -23,29 +23,32 @@ jobs:
     runs-on:
       group: databricks-protected-runner-group
       labels: linux-ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     timeout-minutes: 8
     env:
-      NPM_CONFIG_REGISTRY: https://npm-proxy.cloud.databricks.com/
+      NPM_CONFIG_REGISTRY: https://databricks.jfrog.io/artifactory/api/npm/db-npm/
+      NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/ug-review-package-config/.npmrc
+      XDG_CONFIG_HOME: ${{ runner.temp }}/ug-review-package-config
       NPM_CONFIG_FETCH_RETRIES: "0"
       NPM_CONFIG_FETCH_TIMEOUT: "15000"
     steps:
-      - name: Probe registry metadata without credentials
-        timeout-minutes: 1
+      - name: Authenticate to the existing npm proxy with GitHub OIDC
+        id: jfrog
+        uses: jfrog/setup-jfrog-cli@279b1f629f43dd5bc658d8361ac4802a7ef8d2d5
+        env:
+          JF_URL: https://databricks.jfrog.io
+        with:
+          oidc-provider-name: github-actions
+      - name: Configure npm and Bun for the existing npm proxy
+        env:
+          NPM_TOKEN: ${{ steps.jfrog.outputs.oidc-token }}
         run: |
-          for registry in \
-            https://npm-proxy.cloud.databricks.com \
-            https://databricks.jfrog.io/artifactory/api/npm/db-npm
-          do
-            printf '\nRegistry: %s\n' "$registry"
-            if curl --fail --silent --show-error --location \
-              --connect-timeout 5 --max-time 15 --output /dev/null \
-              --write-out 'HTTP %{http_code}; total %{time_total}s\n' \
-              "$registry/escape-html"; then
-              printf 'Metadata request succeeded\n'
-            else
-              printf 'curl exit status: %s\n' "$?"
-            fi
-          done
+          umask 077
+          mkdir -p "$XDG_CONFIG_HOME"
+          printf 'registry=%s\n//%s:_authToken=%s\n' \
+            "$NPM_CONFIG_REGISTRY" "${NPM_CONFIG_REGISTRY#https://}" "$NPM_TOKEN" > "$NPM_CONFIG_USERCONFIG"
       - name: Check out the stock action package manifest
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -75,6 +78,9 @@ jobs:
           cp action-packages/package.json action-packages/bun.lock action-packages/bunfig.toml "$workdir/"
           cd "$workdir"
           bun install --production --ignore-scripts
+      - name: Remove temporary package credentials
+        if: always()
+        run: rm -f "$NPM_CONFIG_USERCONFIG"
 
   review:
     name: Review with the UG rubric
