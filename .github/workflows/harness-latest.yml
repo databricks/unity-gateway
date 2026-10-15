@@ -151,7 +151,7 @@ jobs:
           # Slack member IDs for lilly-luo_data and rohit-a_data.
           owners = "<@U09DPGC3DFY> <@U09EFHFRT24>"
           if os.environ['HARNESS_RESULT'] == 'success':
-              message = f"✅ Latest harness test succeeded. {versions}. Link to run {run_url} {owners}"
+              message = f"✅ Latest harness test succeeded. {versions}. Link to run {run_url}"
           else:
               request = urllib.request.Request(
                   f"{os.environ['GITHUB_API_URL']}/repos/{repository}/actions/runs/{run_id}/jobs?filter=latest&per_page=100",
