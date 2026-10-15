@@ -142,8 +142,7 @@ class FileTask:
 
     def __init__(self, session):
         self.value = fresh_id()
-        # 8 chars so the name doesn't look like a 12-char MCP fixture run_id to Codex.
-        self.filename = "input-" + fresh_id()[:8] + ".txt"
+        self.filename = "input-" + fresh_id() + ".txt"
         (session.cwd / self.filename).write_text(self.value + "\n")
         self.prompt = f"Read {self.filename} using a tool. Reply with only its contents."
         self.delegate_prompt = (
