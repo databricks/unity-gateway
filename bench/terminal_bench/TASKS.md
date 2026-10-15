@@ -38,7 +38,7 @@ Verifiers and solutions read these variables.
 | `mcp-server` | Claude | `stock.json` matches the random values that the project's stdio MCP server logged for each lookup. |
 | `project-instructions` | Claude, Codex | The output is under `out/`, and each new Python file starts with the license header that `CLAUDE.md` and `AGENTS.md` require. |
 | `project-skill` | Claude | The release notes follow the project skill, and the skill's script logged a run. |
-| `subagent-model` | Claude | Each file has a correct audit, and the transcript shows a subagent on a haiku model. If a workspace policy disallows haiku, the transcript must show the policy notice and the subagent on the fallback model it names. |
+| `subagents` | Claude | Each file has a correct audit, and the transcript shows at least one subagent per file. |
 | `image-code` | Claude, Codex | `code.txt` holds the 8-digit code drawn in `code.png`. |
 | `pdf-extract` | Claude, Codex | `total.txt` holds the total from `invoice.pdf`, whose text stream is compressed. |
 | `web-fetch` | Claude, Codex | `answer.txt` holds a value from a file in this repo, pinned to a fixed commit. |

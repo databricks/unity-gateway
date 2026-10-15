@@ -1,6 +1,9 @@
 name: Terminal Bench
 
 on:
+  # TEMP: iterate on this branch; remove before merge.
+  push:
+    branches: [max-rozen-oss-db/tbench-per-task-attempts]
   schedule:
     - cron: '0 7 * * *'
   workflow_dispatch:
@@ -96,13 +99,13 @@ jobs:
           uvx --python 3.12 --from "harbor==$HARBOR_VERSION" harbor run -y \
             -p bench/terminal_bench/tasks "${includes[@]}" --resume-trajectory \
             -a "ug_agent:$AGENT_CLASS" --ak "version=$AGENT_VERSION" \
-            ${MODEL:+-m "$MODEL"} -n 3 -o "$RUNNER_TEMP/harbor-jobs/ug"
+            ${MODEL:+-m "$MODEL"} -n 3 -k 3 -o "$RUNNER_TEMP/harbor-jobs/ug"
       - name: Summarize
         if: ${{ !cancelled() }}
         run: |
           status=0
           python3 bench/terminal_bench/summarize_harbor.py "$RUNNER_TEMP/harbor-jobs/tb2" "TB2 · ${{ matrix.agent }}" || status=1
-          python3 bench/terminal_bench/summarize_harbor.py "$RUNNER_TEMP/harbor-jobs/ug" "ug tasks in Harbor · ${{ matrix.agent }}" || status=1
+          python3 bench/terminal_bench/summarize_harbor.py "$RUNNER_TEMP/harbor-jobs/ug" "ug tasks in Harbor · ${{ matrix.agent }}" --min-passes 2 || status=1
           exit $status
       - name: Scrub the bearer token from job output
         if: ${{ !cancelled() }}

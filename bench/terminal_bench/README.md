@@ -83,14 +83,16 @@ The workflow also takes `tb2_dataset`, `claude_version`, and `codex_version`. Gi
 
 Each job writes a table of task results to its run summary.
 
-A Harbor job fails only when a trial hits a harness error, such as a failed agent install or an API error. A task with reward 0 doesn't fail the job, because TB2 tasks are meant to be hard. A native job fails when fewer than 75% of its tasks pass. Agents miss a different task or two from run to run, so one miss doesn't fail the job. Change the bar with `run_native.py --min-pass-rate`.
+Each of ug's own tasks runs 3 times, in both lanes, and must pass at least 2 of them. A job fails when any task misses that bar. Agents miss a run now and then, so one miss doesn't fail the task. Change the bar with `run_native.py --attempts` and `--min-passes`, or Harbor's `-k` and `summarize_harbor.py --min-passes`.
+
+TB2 tasks run once and don't gate the job on their score, because they are meant to be hard. A TB2 trial fails the job only when it hits a harness error, such as a failed agent install or an API error.
 
 Each job uploads its files as an artifact named `terminal-bench-harbor-<agent>` or `terminal-bench-native-<agent>-<os>`. `scrub_secrets.py` replaces bearer tokens in those files before upload.
 
 To tell a ug problem from an agent mistake, read the verifier output first and the agent log second:
 
 - In a Harbor artifact, read `<job>/<trial>/verifier/test-stdout.txt`, then `<job>/<trial>/agent/ug-<agent>.txt`.
-- In a native artifact, read `logs/<task>/<step>.verifier.log`, then `logs/<task>/<step>.log`. A single-step task names its step `agent`.
+- In a native artifact, read `logs/<task>/<attempt>/<step>.verifier.log`, then `logs/<task>/<attempt>/<step>.log`. A single-step task names its step `agent`.
 
 ## Run tasks locally
 
