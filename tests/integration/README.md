@@ -101,8 +101,10 @@ checkmarked `done` rows and no running or scheduled section. The helper observes
 after Escape before typing `/exit`. Offline PTY checks reject active/scheduled tasks, partial
 lists, and completed-task text outside the native menu.
 If `/tasks` opens a single agent's detail panel, the helper presses its advertised Left-arrow
-key to return to the full list before checking completion. Offline PTY cases cover running
-and completed detail panels, delayed navigation, and other tasks that remain active.
+key to return to the full list before checking completion. If that closes the panel to the
+input prompt, it reopens `/tasks` and still requires completion evidence from the full list.
+Offline PTY cases cover both navigation outcomes, repeated detail panels, delayed navigation,
+and other tasks that remain active even when the selected agent is already complete.
 It neither stops tasks nor confirms an exit dialog. Process exit retains its 30-second
 timeout. Offline PTY checks cover this ordering.
 CUJ4's Claude preset sessions first wait for the parent's answer with the delegated file's

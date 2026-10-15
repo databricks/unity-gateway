@@ -570,19 +570,28 @@ class AgentTerminal(TerminalProcess):
         """Wait in Claude's native task view without stopping or detaching work."""
         assert self.agent == "claude", self.agent
         self.submit("/tasks")
-        returned_to_list = False
+        returning_to_list = False
 
         def completed(text):
-            nonlocal returned_to_list
+            nonlocal returning_to_list
             # With one active task, /tasks opens its detail panel instead of the list.
             # A completed detail panel does not establish that every task has stopped.
-            if not returned_to_list and re.search(
+            if not returning_to_list and re.search(
                 r"(?m)^[ \t]*← to go back · Esc/Enter/Space to close"
                 r"(?: · x to stop)? · f to foreground[ \t]*\s*\Z",
                 text,
             ):
                 self.send("\x1b[D", "return from task details to the full background-task list")
-                returned_to_list = True
+                returning_to_list = True
+                return False
+            # A directly opened detail panel can return to the input prompt.
+            # Reopen the task view; the prompt alone says nothing about active work.
+            if returning_to_list and re.search(
+                r"(?m)^[ \t]*─+[ \t]*\n[ \t]*❯[ \t]*\n[ \t]*─+[ \t]*$",
+                text,
+            ):
+                self.submit("/tasks")
+                returning_to_list = False
                 return False
             return _claude_background_tasks_complete(text)
 

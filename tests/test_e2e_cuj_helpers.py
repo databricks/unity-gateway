@@ -239,7 +239,9 @@ time.sleep(30)
         "transcript",
     ],
 )
-@pytest.mark.parametrize("entry", ["list", "running-detail", "completed-detail"])
+@pytest.mark.parametrize(
+    "entry", ["list", "running-detail", "completed-detail", "detail-to-prompt"]
+)
 def test_claude_waits_for_background_task_completion_before_exit(tmp_path, view, entry):
     """An offline terminal fixture requires /tasks, completion, Escape, then /exit."""
     views = {
@@ -289,7 +291,7 @@ def test_claude_waits_for_background_task_completion_before_exit(tmp_path, view,
         "agent › Read file contents\n"
         + ("✔ Completed · 9s · Haiku 4.5\n" if entry == "completed-detail" else "9s · Haiku 4.5\n")
         + "← to go back · Esc/Enter/Space to close"
-        + (" · x to stop" if entry == "running-detail" else "")
+        + (" · x to stop" if entry in ("running-detail", "detail-to-prompt") else "")
         + " · f to foreground"
     )
     complete = view in ("empty", "completed", "detail", "resumed")
@@ -308,11 +310,18 @@ print("Background tasks: scheduled task · Runs once in 1m", flush=True)
 time.sleep(0.8)
 previous = termios.tcgetattr(sys.stdin.fileno())
 tty.setraw(sys.stdin.fileno())
-if {entry != "list"!r}:
+for attempt in range({2 if entry == "detail-to-prompt" else int(entry != "list")}):
     print("\\x1b[2J\\x1b[H" + {detail!r}.replace("\\n", "\\r\\n"), flush=True)
     assert sys.stdin.read(3) == "\\x1b[D", "Must return to the full task list"
     time.sleep(0.5)
     assert not select.select([sys.stdin], [], [], 0)[0], "Repeated task-list navigation"
+    if {entry == "detail-to-prompt"!r} and attempt == 0:
+        termios.tcsetattr(sys.stdin.fileno(), termios.TCSANOW, previous)
+        print("\\x1b[2J\\x1b[HWaiting for 1 background agent to finish", flush=True)
+        print("─" * 40 + "\\n❯\\n" + "─" * 40, flush=True)
+        print("  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents", flush=True)
+        assert sys.stdin.readline().strip() == "/tasks", "Must reopen the task view"
+        tty.setraw(sys.stdin.fileno())
 print("\\x1b[2J\\x1b[H" + {views[view]!r}.replace("\\n", "\\r\\n"), flush=True)
 if {view == "resumed"!r}:
     time.sleep(0.8)
@@ -342,13 +351,14 @@ assert sys.stdin.readline().strip() == "/exit"
                 assert "Completed (2)" in close["screen_before"]
         else:
             with pytest.raises(AssertionError, match="task view reporting no running tasks"):
-                tui.wait_for_background_tasks(timeout=2)
+                tui.wait_for_background_tasks(timeout=5 if entry == "detail-to-prompt" else 2)
             assert not tui.ended
             assert not any("/exit" in action["keys"] for action in tui.actions)
+            assert views[view] in tui.visible
         back = [action for action in tui.actions if action.get("keys") == "\x1b[D"]
-        assert len(back) == int(entry != "list")
+        assert len(back) == (2 if entry == "detail-to-prompt" else int(entry != "list"))
         if back:
-            assert detail.splitlines()[-1] in back[0]["screen_before"]
+            assert all(detail.splitlines()[-1] in action["screen_before"] for action in back)
 
 
 def test_mcp_list_poll_retries_a_failed_probe_until_rows_match(monkeypatch):
