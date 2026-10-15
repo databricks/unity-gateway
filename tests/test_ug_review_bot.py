@@ -172,6 +172,13 @@ def test_workflow_routes_root_and_family_aliases_through_gateway_without_direct_
     assert "CLAUDE_CONFIG_DIR: ${{ runner.temp }}" in workflow
 
 
+def test_workflow_uses_runner_ca_bundle_without_disabling_tls_verification():
+    workflow = WORKFLOW_PATH.read_text()
+    assert "NODE_EXTRA_CA_CERTS: /etc/ssl/certs/ca-certificates.crt" in workflow
+    assert "NODE_TLS_REJECT_UNAUTHORIZED" not in workflow
+    assert "strict-ssl=false" not in workflow
+
+
 def test_workflow_applies_trusted_rubric_to_parent_and_subagents_and_enables_inline_tool():
     workflow = WORKFLOW_PATH.read_text()
     assert (

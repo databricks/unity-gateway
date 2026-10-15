@@ -13,6 +13,10 @@ The job retains the existing protected runner, workspace, service principal, and
 it only as a same-job step output. No Anthropic key or developer profile is needed.
 The native gateway route is `/ai-gateway/anthropic`.
 
+Bun and Node use the protected Ubuntu runner's trusted CA bundle through
+`NODE_EXTRA_CA_CERTS`, including during the stock action's dependency installation.
+TLS certificate verification stays enabled.
+
 | Claude alias | Gateway service |
 | --- | --- |
 | Haiku | `system.ai.claude-haiku-5-5` |
