@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from ucode.agents import claude_desktop as desktop
+from ucode.agents import claude_desktop_config as desktop_config
 
 
 def _uuid() -> str:
@@ -428,7 +429,7 @@ def test_migration_write_failures_restore_original_profile_metadata_and_manifest
     legacy_id = _seed_legacy_profile(directory, state_path)
     before = {path.name: path.read_bytes() for path in directory.iterdir()}
     state_before = state_path.read_bytes()
-    write = desktop._write_or_remove
+    write = desktop_config._write_or_remove
     failed = False
 
     def fail_once(path, payload):
@@ -449,7 +450,7 @@ def test_migration_write_failures_restore_original_profile_metadata_and_manifest
             raise OSError("simulated migration failure")
         write(path, payload)
 
-    monkeypatch.setattr(desktop, "_write_or_remove", fail_once)
+    monkeypatch.setattr(desktop_config, "_write_or_remove", fail_once)
     with pytest.raises(desktop.ClaudeDesktopError, match="rolled back"):
         _configure(directory, state_path)
 
@@ -687,7 +688,7 @@ def test_metadata_failure_rolls_back_profile_and_manifest(
     default_id = _seed_metadata(directory)
     state_path = tmp_path / "state.json"
     before_metadata = _read(directory / desktop.META_FILENAME)
-    original_atomic_write = desktop.atomic_write_json
+    original_atomic_write = desktop_config.atomic_write_json
     failed = False
 
     def fail_metadata_once(path: Path, payload: object) -> None:
@@ -697,7 +698,7 @@ def test_metadata_failure_rolls_back_profile_and_manifest(
             raise OSError("simulated metadata failure")
         original_atomic_write(path, payload)
 
-    monkeypatch.setattr(desktop, "atomic_write_json", fail_metadata_once)
+    monkeypatch.setattr(desktop_config, "atomic_write_json", fail_metadata_once)
     with pytest.raises(desktop.ClaudeDesktopError, match="rolled back"):
         _configure(directory, state_path)
 
@@ -896,7 +897,7 @@ def test_each_write_failure_preserves_existing_files(
         _write_json(configured.metadata_path, metadata)
     before = {path.name: path.read_bytes() for path in directory.iterdir()}
     state_before = state_path.read_bytes() if state_path.exists() else None
-    write = desktop.atomic_write_json
+    write = desktop_config.atomic_write_json
     failed = False
 
     def fail_once(path, payload):
@@ -913,7 +914,7 @@ def test_each_write_failure_preserves_existing_files(
             raise OSError("simulated write failure")
         write(path, payload)
 
-    monkeypatch.setattr(desktop, "atomic_write_json", fail_once)
+    monkeypatch.setattr(desktop_config, "atomic_write_json", fail_once)
     with pytest.raises(desktop.ClaudeDesktopError, match="rolled back"):
         _configure(directory, state_path, models=("new-model",))
     assert {path.name: path.read_bytes() for path in directory.iterdir()} == before

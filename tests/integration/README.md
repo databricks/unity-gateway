@@ -314,8 +314,9 @@ GUI or browser-login coverage; this integration suite does not launch Desktop.
 `../test_claude_desktop.py` separately checks profile rendering, workspace-derived
 UUIDs, owned-field refresh, deleted-profile recovery, legacy-ID migration, ownership
 conflicts, user-edit preservation on revert, and rollback across profile, metadata,
-and ownership files. It uses temporary files and injected write failures. Native
-Desktop activation, model selection, browser login, and inference remain outside
+and ownership files. It uses temporary files and injected write failures in the
+`claude_desktop_config` module, with ownership/revert policy in `claude_desktop_state`.
+Native Desktop activation, model selection, browser login, and inference remain outside
 this coverage; the adapter resolves native paths only on macOS.
 
 ## Test layout and format

@@ -142,7 +142,9 @@ they do not establish native Desktop GUI or browser-login coverage.
 files: workspace-derived UUIDs, repeat configure, owned-field refresh, deleted-profile
 recovery, legacy-ID migration, preservation of unrelated settings, and revert after
 user edits or workspace switches. Injected write failures verify exact-byte rollback
-at each file boundary. These are filesystem component checks, not native Desktop
+at each file boundary in `agents/claude_desktop_config.py`. Ownership and revert
+policy live in `agents/claude_desktop_state.py`; the public adapter stays in
+`agents/claude_desktop.py`. These are filesystem component checks, not native Desktop
 activation, model-selection, browser-login, or inference coverage. Native path
 resolution is macOS-only; Windows Desktop support remains unvalidated.
 

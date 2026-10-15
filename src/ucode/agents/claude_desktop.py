@@ -5,6 +5,9 @@ configuration. This module owns only the profile entry it creates, plus the ``ap
 selection while that selection still points at the Unity Gateway profile. Optional custom headers
 and the observed ``alwaysStartWithDefaultModel`` boolean are written only when supplied.
 
+Profile rendering and file writes live in ``claude_desktop_config``; ownership records and
+revert policy live in ``claude_desktop_state``.
+
 The native path is supported only on macOS.  ``directory=`` is an explicit filesystem injection
 for tests and does not imply support for another native platform.
 """
@@ -12,71 +15,55 @@ for tests and does not imply support for another native platform.
 from __future__ import annotations
 
 import copy
-import json
-import ntpath
-import os
 import sys
-import tempfile
 import uuid
-from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
-from urllib.parse import urlsplit, urlunsplit
 
-from ucode.config_io import APP_DIR, atomic_write_json
-from ucode.os_compatibility.file_lock_cross_os import (
-    acquire_exclusive_file_lock,
-    release_file_lock,
+from ucode.agents import claude_desktop_config as desktop_config
+from ucode.agents import claude_desktop_state as desktop_state
+from ucode.agents.claude_desktop_config import (
+    ALL_PROFILE_KEYS,
+    META_FILENAME,
+    OPTIONAL_PROFILE_KEYS,
+    OWNED_PROFILE_KEYS,
+    PROFILE_NAME,
+    ClaudeDesktopConflictError,
+    ClaudeDesktopError,
+    ClaudeDesktopUnavailableError,
+    ClaudeDesktopUnsupportedError,
+    render_profile,
 )
-
-META_FILENAME = "_meta.json"
-PROFILE_NAME = "Unity Gateway"
-MANIFEST_FILENAME = "claude-desktop.json"
-MANIFEST_VERSION = 1
-PROFILE_NAMESPACE = uuid.uuid5(
-    uuid.NAMESPACE_URL, "https://github.com/databricks/unity-gateway/claude-desktop"
+from ucode.agents.claude_desktop_state import (
+    MANIFEST_FILENAME,
+    MANIFEST_VERSION,
+    PROFILE_NAMESPACE,
 )
+from ucode.config_io import APP_DIR
 
-# Required profile fields Unity Gateway writes. Keeping the allow-list explicit preserves future
-# Claude Desktop fields and user-owned values through a round trip.
-OWNED_PROFILE_KEYS = (
-    "inferenceProvider",
-    "inferenceGatewayBaseUrl",
-    "inferenceGatewayAuthScheme",
-    "inferenceCredentialKind",
-    "inferenceCredentialHelper",
-    "inferenceCredentialHelperArgs",
-    "inferenceCredentialHelperTtlSec",
-    "inferenceCredentialHelperTimeoutSec",
-    "inferenceCredentialHelperSilentRefreshEnabled",
-    "modelDiscoveryEnabled",
-    "inferenceModels",
-)
-OPTIONAL_PROFILE_KEYS = (
-    "inferenceCustomHeaders",
-    "alwaysStartWithDefaultModel",
-)
-ALL_PROFILE_KEYS = OWNED_PROFILE_KEYS + OPTIONAL_PROFILE_KEYS
-
-_MISSING = object()
-
-
-class ClaudeDesktopError(RuntimeError):
-    """Base error for an unavailable or unsafe Claude Desktop update."""
-
-
-class ClaudeDesktopUnsupportedError(ClaudeDesktopError):
-    """The host has no validated native Claude Desktop profile path."""
-
-
-class ClaudeDesktopUnavailableError(ClaudeDesktopError):
-    """Claude Desktop has not initialized its profile directory or metadata."""
-
-
-class ClaudeDesktopConflictError(ClaudeDesktopError):
-    """A user or another writer changed data Unity Gateway owns."""
+__all__ = [
+    "ALL_PROFILE_KEYS",
+    "DEFAULT_MODEL_WARNING",
+    "MANIFEST_FILENAME",
+    "MANIFEST_VERSION",
+    "META_FILENAME",
+    "OPTIONAL_PROFILE_KEYS",
+    "OWNED_PROFILE_KEYS",
+    "PROFILE_NAME",
+    "PROFILE_NAMESPACE",
+    "ClaudeDesktopConflictError",
+    "ClaudeDesktopError",
+    "ClaudeDesktopUnavailableError",
+    "ClaudeDesktopUnsupportedError",
+    "ConfigureResult",
+    "RevertResult",
+    "claude_desktop_directory",
+    "claude_desktop_root_directory",
+    "configure_claude_desktop",
+    "render_profile",
+    "revert_claude_desktop",
+]
 
 
 @dataclass(frozen=True)
@@ -140,58 +127,6 @@ def claude_desktop_directory(
     return root / "configLibrary" if root is not None else None
 
 
-def render_profile(
-    *,
-    model_ids: Sequence[str],
-    base_url: str,
-    helper_command: str | Path,
-    helper_args: Sequence[str],
-    custom_headers: Mapping[str, str] | None = None,
-    always_start_with_default_model: bool | None = None,
-) -> dict[str, object]:
-    """Render the exact Unity Gateway-owned Claude Desktop profile fields.
-
-    ``model_ids`` must already be resolved full model IDs.  This adapter does not discover or
-    rewrite IDs and does not add a default-model field.  ``helper_command`` is kept as supplied so
-    an absolute executable path containing spaces remains a single native helper value.
-    """
-
-    if not isinstance(base_url, str) or not base_url:
-        raise ValueError("Claude Desktop gateway base URL must be a non-empty string.")
-
-    command = os.fspath(helper_command)
-    if not command or not (os.path.isabs(command) or ntpath.isabs(command)):
-        raise ValueError("Claude Desktop credential helper must be an absolute executable path.")
-
-    normalized_model_ids = _normalize_model_ids(model_ids)
-    normalized_args = _normalize_helper_args(helper_args)
-    normalized_headers = _normalize_custom_headers(custom_headers)
-    if always_start_with_default_model is not None and not isinstance(
-        always_start_with_default_model, bool
-    ):
-        raise ValueError(
-            "Claude Desktop alwaysStartWithDefaultModel must be a boolean when supplied."
-        )
-    profile: dict[str, object] = {
-        "inferenceProvider": "gateway",
-        "inferenceGatewayBaseUrl": base_url,
-        "inferenceGatewayAuthScheme": "bearer",
-        "inferenceCredentialKind": "helper-script",
-        "inferenceCredentialHelper": command,
-        "inferenceCredentialHelperArgs": normalized_args,
-        "inferenceCredentialHelperTtlSec": 900,
-        "inferenceCredentialHelperTimeoutSec": 300,
-        "inferenceCredentialHelperSilentRefreshEnabled": True,
-        "modelDiscoveryEnabled": False,
-        "inferenceModels": [{"name": model_id} for model_id in normalized_model_ids],
-    }
-    if normalized_headers is not None:
-        profile["inferenceCustomHeaders"] = normalized_headers
-    if always_start_with_default_model is not None:
-        profile["alwaysStartWithDefaultModel"] = always_start_with_default_model
-    return profile
-
-
 def configure_claude_desktop(
     workspace: str,
     *,
@@ -216,7 +151,7 @@ def configure_claude_desktop(
 
     if not isinstance(workspace, str) or not workspace:
         raise ValueError("Claude Desktop workspace must be a non-empty string.")
-    workspace = _normalize_workspace(workspace)
+    workspace = desktop_state.normalize_workspace(workspace)
     rendered = render_profile(
         model_ids=model_ids,
         base_url=base_url,
@@ -226,21 +161,27 @@ def configure_claude_desktop(
         always_start_with_default_model=always_start_with_default_model,
     )
     paths = _resolve_paths(directory=directory, state_path=state_path)
-    scope = _scope_key(paths.directory, workspace)
-    with _locked(paths.lock):
-        metadata_original = _read_optional_object(paths.metadata, "Claude Desktop metadata")
+    scope = desktop_state.scope_key(paths.directory, workspace)
+    with desktop_config.locked(paths.lock):
+        metadata_original = desktop_config.read_optional_object(
+            paths.metadata, "Claude Desktop metadata"
+        )
         if metadata_original is None:
-            metadata = _new_metadata()
-            _validate_metadata(metadata, paths.metadata)
+            metadata = desktop_config.new_metadata()
+            desktop_config.validate_metadata(metadata, paths.metadata)
         else:
             metadata = metadata_original
-            _validate_metadata(metadata, paths.metadata)
+            desktop_config.validate_metadata(metadata, paths.metadata)
         state_was_absent = not paths.state.exists()
-        manifest = _read_manifest(paths.state)
-        recorded_scope, record = _find_workspace_record(manifest, paths.directory, workspace)
+        manifest = desktop_state.read_manifest(paths.state)
+        recorded_scope, record = desktop_state.find_workspace_record(
+            manifest, paths.directory, workspace
+        )
         profile_id = str(uuid.uuid5(PROFILE_NAMESPACE, workspace))
-        profile_path = _profile_path(paths.directory, profile_id)
-        profile_original = _read_optional_object(profile_path, "Unity Gateway profile")
+        profile_path = desktop_config.profile_path(paths.directory, profile_id)
+        profile_original = desktop_config.read_optional_object(
+            profile_path, "Unity Gateway profile"
+        )
         manifest_after = copy.deepcopy(manifest)
         retired_profiles: dict[Path, dict[str, object] | None] = {}
         current_profile = profile_original
@@ -254,10 +195,14 @@ def configure_claude_desktop(
                     "refusing to overwrite it."
                 )
         if record is not None:
-            _check_metadata_ownership(metadata, record, paths.metadata, allow_missing=True)
+            desktop_state.check_metadata_ownership(
+                metadata, record, paths.metadata, allow_missing=True
+            )
             previous_id = record["profile_id"]
-            previous_path = _profile_path(paths.directory, previous_id)
-            current_profile = _read_optional_object(previous_path, "Unity Gateway profile")
+            previous_path = desktop_config.profile_path(paths.directory, previous_id)
+            current_profile = desktop_config.read_optional_object(
+                previous_path, "Unity Gateway profile"
+            )
             if previous_id != profile_id:
                 retired_profiles[previous_path] = current_profile
                 metadata = copy.deepcopy(metadata)
@@ -286,15 +231,14 @@ def configure_claude_desktop(
                 prior_applied_present = record["prior_applied_present"]
                 prior_applied = record["prior_applied"]
             if prior_applied is not None and not isinstance(prior_applied, str):
-                # `_validate_metadata` normally catches this. Keep this guard close to the
-                # snapshot because the value is persisted in the ownership record.
+                # Persist only valid appliedId values in the ownership record.
                 raise ClaudeDesktopConflictError(
                     f"Claude Desktop metadata has an invalid appliedId in {paths.metadata}."
                 )
             entry_after = {"id": profile_id, "name": PROFILE_NAME}
-            owned_keys = _owned_keys_for_rendered(rendered)
-            profile_after = _merge_owned_profile({}, rendered)
-            record = _new_record(
+            owned_keys = desktop_state.owned_keys_for_rendered(rendered)
+            profile_after = desktop_state.merge_owned_profile({}, rendered)
+            record = desktop_state.new_record(
                 directory=paths.directory,
                 workspace=workspace,
                 profile_key=profile_key,
@@ -307,16 +251,20 @@ def configure_claude_desktop(
                 prior_applied=prior_applied,
             )
             record["metadata_was_absent"] = metadata_original is None
-            metadata_after = _apply_metadata(metadata, profile_id, entry_after)
+            metadata_after = desktop_state.apply_metadata(metadata, profile_id, entry_after)
         else:
-            profile_after = _merge_owned_profile(
+            profile_after = desktop_state.merge_owned_profile(
                 current_profile, {**record["owned_after"], **rendered}
             )
-            metadata_after = _apply_metadata(metadata, profile_id, record["entry_after"])
+            metadata_after = desktop_state.apply_metadata(
+                metadata, profile_id, record["entry_after"]
+            )
             record = dict(record)
-            owned_keys = _owned_keys_for_rendered(rendered, previous=record["owned_keys"])
+            owned_keys = desktop_state.owned_keys_for_rendered(
+                rendered, previous=record["owned_keys"]
+            )
             record["owned_keys"] = owned_keys
-            record["owned_after"] = _owned_values(profile_after, owned_keys)
+            record["owned_after"] = desktop_state.owned_values(profile_after, owned_keys)
             # Preserve the original pre-UG snapshot. It is the baseline revert needs even when a
             # later configure refreshes model IDs or the gateway URL.
             record["profile_after"] = copy.deepcopy(profile_after)
@@ -339,7 +287,7 @@ def configure_claude_desktop(
                 warnings=(DEFAULT_MODEL_WARNING,),
             )
 
-        _transactional_write(
+        desktop_config.write_configuration(
             profile_path=profile_path,
             profile_before=profile_original,
             profile_after=profile_after,
@@ -375,16 +323,16 @@ def revert_claude_desktop(
 
     if not isinstance(workspace, str) or not workspace:
         raise ValueError("Claude Desktop workspace must be a non-empty string.")
-    workspace = _normalize_workspace(workspace)
+    workspace = desktop_state.normalize_workspace(workspace)
     paths = _resolve_paths(directory=directory, state_path=state_path)
-    with _locked(paths.lock):
-        manifest = _read_manifest(paths.state)
-        scope, record = _find_workspace_record(manifest, paths.directory, workspace)
+    with desktop_config.locked(paths.lock):
+        manifest = desktop_state.read_manifest(paths.state)
+        scope, record = desktop_state.find_workspace_record(manifest, paths.directory, workspace)
         if record is None:
             return RevertResult(profile_id=None, changed=False)
-        metadata = _read_required_object(paths.metadata, "Claude Desktop metadata")
-        _validate_metadata(metadata, paths.metadata)
-        _check_metadata_ownership(
+        metadata = desktop_config.read_required_object(paths.metadata, "Claude Desktop metadata")
+        desktop_config.validate_metadata(metadata, paths.metadata)
+        desktop_state.check_metadata_ownership(
             metadata,
             record,
             paths.metadata,
@@ -393,9 +341,11 @@ def revert_claude_desktop(
         )
 
         profile_id = record["profile_id"]
-        profile_path = _profile_path(paths.directory, profile_id)
-        profile_original = _read_optional_object(profile_path, "Unity Gateway profile")
-        profile_after, profile_changed, profile_drifted = _revert_profile(
+        profile_path = desktop_config.profile_path(paths.directory, profile_id)
+        profile_original = desktop_config.read_optional_object(
+            profile_path, "Unity Gateway profile"
+        )
+        profile_after, profile_changed, profile_drifted = desktop_state.revert_profile(
             profile_original,
             record,
             profile_path,
@@ -407,7 +357,7 @@ def revert_claude_desktop(
             profile_after = profile_original
             profile_changed = False
             profile_drifted = True
-        metadata_after, metadata_changed = _revert_metadata(
+        metadata_after, metadata_changed = desktop_state.revert_metadata(
             metadata, record, directory=paths.directory, keep_entry=profile_after is not None
         )
         if record.get("metadata_was_absent") and metadata_after == {"entries": []}:
@@ -424,7 +374,7 @@ def revert_claude_desktop(
                 drifted=profile_drifted,
             )
 
-        _transactional_write(
+        desktop_config.write_configuration(
             profile_path=profile_path,
             profile_before=profile_original,
             profile_after=profile_after,
@@ -446,52 +396,6 @@ DEFAULT_MODEL_WARNING = (
     "Claude Desktop's native model-selection semantics are only partly validated; no model ID "
     "default field is written, and alwaysStartWithDefaultModel is written only when explicitly supplied."
 )
-
-
-def _normalize_model_ids(model_ids: Sequence[str]) -> list[str]:
-    if isinstance(model_ids, (str, bytes)):
-        raise ValueError("Claude Desktop model IDs must be a sequence of full model ID strings.")
-    normalized: list[str] = []
-    for model_id in model_ids:
-        if not isinstance(model_id, str) or not model_id:
-            raise ValueError("Claude Desktop model IDs must be non-empty strings.")
-        if model_id not in normalized:
-            normalized.append(model_id)
-    return normalized
-
-
-def _normalize_helper_args(helper_args: Sequence[str]) -> list[str]:
-    if isinstance(helper_args, (str, bytes)):
-        raise ValueError("Claude Desktop credential helper args must be a sequence of strings.")
-    normalized = list(helper_args)
-    if any(not isinstance(value, str) for value in normalized):
-        raise ValueError("Claude Desktop credential helper args must contain only strings.")
-    return normalized
-
-
-def _normalize_custom_headers(
-    custom_headers: Mapping[str, str] | None,
-) -> dict[str, str] | None:
-    if custom_headers is None:
-        return None
-    if not isinstance(custom_headers, Mapping):
-        raise ValueError("Claude Desktop custom headers must be a mapping of strings.")
-    normalized: dict[str, str] = {}
-    for name, value in custom_headers.items():
-        if (
-            not isinstance(name, str)
-            or not name
-            or not isinstance(value, str)
-            or "\r" in name
-            or "\n" in name
-            or "\r" in value
-            or "\n" in value
-        ):
-            raise ValueError(
-                "Claude Desktop custom header names and values must be strings without CR/LF."
-            )
-        normalized[name] = value
-    return normalized
 
 
 def _resolve_paths(
@@ -585,496 +489,3 @@ def _claude_desktop_installed(*, home: Path | str | None = None) -> bool:
             home_path / "Applications" / "Claude.app",
         )
     )
-
-
-@contextmanager
-def _locked(lock_path: Path) -> Iterator[None]:
-    try:
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        with lock_path.open("a+b") as handle:
-            acquire_exclusive_file_lock(handle)
-            try:
-                yield
-            finally:
-                release_file_lock(handle)
-    except OSError as exc:
-        raise ClaudeDesktopError(
-            f"Could not lock Claude Desktop profile state at {lock_path}."
-        ) from exc
-
-
-def _read_required_object(path: Path, label: str) -> dict[str, object]:
-    value = _read_optional_object(path, label)
-    if value is None:
-        if path.name == META_FILENAME:
-            raise ClaudeDesktopUnavailableError(
-                f"Claude Desktop metadata is missing at {path}. Open Claude Desktop once, then "
-                "run configure again; Unity Gateway will not create app metadata."
-            )
-        raise ClaudeDesktopConflictError(
-            f"{label} is missing at {path}; refusing to recreate it unsafely."
-        )
-    return value
-
-
-def _read_optional_object(path: Path, label: str) -> dict[str, object] | None:
-    try:
-        if not path.exists():
-            return None
-        raw = path.read_text(encoding="utf-8")
-        value = json.loads(raw)
-    except FileNotFoundError:
-        return None
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ClaudeDesktopConflictError(
-            f"{label} at {path} is malformed; refusing to overwrite it."
-        ) from exc
-    if not isinstance(value, dict):
-        raise ClaudeDesktopConflictError(f"{label} at {path} must contain a JSON object.")
-    return value
-
-
-def _validate_metadata(metadata: Mapping[str, object], path: Path) -> None:
-    entries = metadata.get("entries")
-    if not isinstance(entries, list):
-        raise ClaudeDesktopConflictError(
-            f"Claude Desktop metadata at {path} has no valid entries list."
-        )
-    seen: set[str] = set()
-    for entry in entries:
-        if not isinstance(entry, dict):
-            raise ClaudeDesktopConflictError(
-                f"Claude Desktop metadata at {path} contains an invalid profile entry."
-            )
-        profile_id = entry.get("id")
-        if not isinstance(profile_id, str) or not _is_uuid(profile_id):
-            raise ClaudeDesktopConflictError(
-                f"Claude Desktop metadata at {path} contains an invalid profile ID."
-            )
-        if profile_id in seen:
-            raise ClaudeDesktopConflictError(
-                f"Claude Desktop metadata at {path} contains duplicate profile ID {profile_id}."
-            )
-        seen.add(profile_id)
-        if not isinstance(entry.get("name"), str):
-            raise ClaudeDesktopConflictError(
-                f"Claude Desktop metadata at {path} contains an invalid profile name."
-            )
-    applied_id = metadata.get("appliedId", _MISSING)
-    if applied_id is not _MISSING and (not isinstance(applied_id, str) or not _is_uuid(applied_id)):
-        raise ClaudeDesktopConflictError(
-            f"Claude Desktop metadata at {path} contains an invalid appliedId."
-        )
-
-
-def _validate_record(value: object, scope: str) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise ClaudeDesktopConflictError(
-            f"Unity Gateway ownership record for {scope} is malformed."
-        )
-    profile_id = value.get("profile_id")
-    if not isinstance(profile_id, str) or not _is_uuid(profile_id):
-        raise ClaudeDesktopConflictError(
-            f"Unity Gateway ownership record for {scope} has an invalid profile ID."
-        )
-    entry_after = value.get("entry_after")
-    if not isinstance(entry_after, dict) or entry_after != {
-        "id": profile_id,
-        "name": PROFILE_NAME,
-    }:
-        raise ClaudeDesktopConflictError(
-            f"Unity Gateway ownership record for {scope} has an invalid metadata entry."
-        )
-    profile_before = value.get("profile_before")
-    if profile_before is not None and not isinstance(profile_before, dict):
-        raise ClaudeDesktopConflictError(
-            f"Unity Gateway ownership record for {scope} has an invalid profile baseline."
-        )
-    owned_after = value.get("owned_after")
-    if not isinstance(owned_after, dict):
-        profile_after = value.get("profile_after")
-        if not isinstance(profile_after, dict):
-            raise ClaudeDesktopConflictError(
-                f"Unity Gateway ownership record for {scope} is missing owned values."
-            )
-        owned_after = _owned_values(profile_after)
-    owned_keys_value = value.get("owned_keys")
-    if owned_keys_value is None:
-        owned_keys = list(owned_after)
-    elif isinstance(owned_keys_value, list) and all(
-        isinstance(key, str) for key in owned_keys_value
-    ):
-        owned_keys = list(owned_keys_value)
-    else:
-        raise ClaudeDesktopConflictError(
-            f"Unity Gateway ownership record for {scope} has invalid owned keys."
-        )
-    if not set(OWNED_PROFILE_KEYS).issubset(owned_keys) or not set(owned_keys).issubset(
-        ALL_PROFILE_KEYS
-    ):
-        raise ClaudeDesktopConflictError(
-            f"Unity Gateway ownership record for {scope} has incomplete owned keys."
-        )
-    if set(owned_after) != set(owned_keys):
-        raise ClaudeDesktopConflictError(
-            f"Unity Gateway ownership record for {scope} has incomplete owned values."
-        )
-    prior_applied_present = value.get("prior_applied_present")
-    prior_applied = value.get("prior_applied")
-    if not isinstance(prior_applied_present, bool):
-        raise ClaudeDesktopConflictError(
-            f"Unity Gateway ownership record for {scope} is missing appliedId state."
-        )
-    if prior_applied_present and (
-        not isinstance(prior_applied, str) or not _is_uuid(prior_applied)
-    ):
-        raise ClaudeDesktopConflictError(
-            f"Unity Gateway ownership record for {scope} has an invalid appliedId baseline."
-        )
-    normalized = dict(value)
-    normalized["owned_after"] = owned_after
-    normalized["owned_keys"] = owned_keys
-    normalized["profile_before"] = profile_before
-    normalized["entry_after"] = dict(entry_after)
-    return normalized
-
-
-def _new_record(
-    *,
-    directory: Path,
-    workspace: str,
-    profile_key: str | None,
-    profile_id: str,
-    profile_before: dict[str, object] | None,
-    profile_after: dict[str, object],
-    entry_after: Mapping[str, object],
-    owned_keys: Sequence[str],
-    prior_applied_present: bool,
-    prior_applied: object,
-) -> dict[str, object]:
-    return {
-        "directory": str(directory),
-        "workspace": workspace,
-        "profile_key": profile_key or "default",
-        "profile_id": profile_id,
-        "profile_before": copy.deepcopy(profile_before),
-        "profile_after": copy.deepcopy(profile_after),
-        "owned_keys": list(owned_keys),
-        "owned_after": _owned_values(profile_after, owned_keys),
-        "entry_after": copy.deepcopy(entry_after),
-        "prior_applied_present": prior_applied_present,
-        "prior_applied": prior_applied,
-    }
-
-
-def _read_manifest(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {"version": MANIFEST_VERSION, "profiles": {}}
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ClaudeDesktopConflictError(
-            f"Unity Gateway Claude Desktop ownership state at {path} is malformed; refusing to overwrite it."
-        ) from exc
-    if not isinstance(value, dict) or value.get("version") != MANIFEST_VERSION:
-        raise ClaudeDesktopConflictError(
-            f"Unity Gateway Claude Desktop ownership state at {path} has an unsupported version."
-        )
-    profiles = value.get("profiles")
-    if not isinstance(profiles, dict):
-        raise ClaudeDesktopConflictError(
-            f"Unity Gateway Claude Desktop ownership state at {path} is malformed."
-        )
-    return value
-
-
-def _new_metadata() -> dict[str, object]:
-    return {"entries": []}
-
-
-def _scope_key(directory: Path, workspace: str) -> str:
-    return json.dumps(
-        [str(directory), workspace],
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-
-
-def _normalize_workspace(workspace: str) -> str:
-    value = workspace.strip()
-    parsed = urlsplit(value if "://" in value else f"https://{value}")
-    if (
-        parsed.scheme not in ("http", "https")
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.path.rstrip("/")
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise ValueError("Claude Desktop workspace must be an HTTP(S) workspace origin URL.")
-    authority = parsed.netloc.lower()
-    if (parsed.scheme == "https" and parsed.port == 443) or (
-        parsed.scheme == "http" and parsed.port == 80
-    ):
-        authority = authority.rsplit(":", 1)[0]
-    return urlunsplit((parsed.scheme, authority, "", "", ""))
-
-
-def _find_workspace_record(
-    manifest: Mapping[str, Any], directory: Path, workspace: str
-) -> tuple[str | None, dict[str, Any] | None]:
-    matches = []
-    for scope, value in manifest["profiles"].items():
-        if not isinstance(value, dict) or not isinstance(value.get("directory"), str):
-            raise ClaudeDesktopConflictError(
-                f"Unity Gateway ownership record for {scope} is malformed."
-            )
-        recorded_workspace = value.get("workspace")
-        if not isinstance(recorded_workspace, str):
-            raise ClaudeDesktopConflictError(
-                f"Unity Gateway ownership record for {scope} is malformed."
-            )
-        if (
-            value["directory"] != str(directory)
-            or _normalize_workspace(recorded_workspace) != workspace
-        ):
-            continue
-        matches.append((scope, _validate_record(value, scope)))
-    if len(matches) > 1:
-        raise ClaudeDesktopConflictError(
-            "Multiple UG-owned Claude Desktop profiles exist for this workspace. "
-            "Resolve their ownership records before configuring; no profiles were overwritten."
-        )
-    return matches[0] if matches else (None, None)
-
-
-def _is_uuid(value: str) -> bool:
-    try:
-        uuid.UUID(value)
-    except (ValueError, AttributeError):
-        return False
-    return True
-
-
-def _profile_path(directory: Path, profile_id: str) -> Path:
-    # IDs are validated before reaching this helper; this guard also protects future callers.
-    if not _is_uuid(profile_id):
-        raise ClaudeDesktopConflictError(f"Invalid Claude Desktop profile ID: {profile_id!r}.")
-    return directory / f"{profile_id}.json"
-
-
-def _merge_owned_profile(
-    profile: Mapping[str, object], rendered: Mapping[str, object]
-) -> dict[str, object]:
-    merged = copy.deepcopy(dict(profile))
-    for key in OWNED_PROFILE_KEYS:
-        merged[key] = copy.deepcopy(rendered[key])
-    for key in OPTIONAL_PROFILE_KEYS:
-        if key in rendered:
-            merged[key] = copy.deepcopy(rendered[key])
-    return merged
-
-
-def _owned_keys_for_rendered(
-    rendered: Mapping[str, object], *, previous: Sequence[str] | None = None
-) -> list[str]:
-    keys = list(previous) if previous is not None else list(OWNED_PROFILE_KEYS)
-    for key in OPTIONAL_PROFILE_KEYS:
-        if key in rendered and key not in keys:
-            keys.append(key)
-    return keys
-
-
-def _owned_values(
-    profile: Mapping[str, object], keys: Sequence[str] = OWNED_PROFILE_KEYS
-) -> dict[str, object]:
-    return {key: copy.deepcopy(profile[key]) for key in keys if key in profile}
-
-
-def _check_metadata_ownership(
-    metadata: Mapping[str, object],
-    record: Mapping[str, Any],
-    path: Path,
-    *,
-    allow_missing: bool = False,
-    allow_drift: bool = False,
-) -> None:
-    profile_id = record["profile_id"]
-    expected_entry = record["entry_after"]
-    entries = metadata.get("entries")
-    if not isinstance(entries, list):
-        raise ClaudeDesktopConflictError(
-            f"Claude Desktop metadata at {path} has no valid entries list."
-        )
-    matching = [
-        entry for entry in entries if isinstance(entry, dict) and entry.get("id") == profile_id
-    ]
-    if not matching:
-        if allow_missing:
-            return
-        raise ClaudeDesktopConflictError(
-            f"Claude Desktop Unity Gateway profile {profile_id} is missing from {path}; refusing to recreate it."
-        )
-    if len(matching) != 1 or matching[0] != expected_entry:
-        if allow_drift:
-            return
-        raise ClaudeDesktopConflictError(
-            f"Claude Desktop Unity Gateway metadata entry {profile_id} changed outside Unity Gateway."
-        )
-
-
-def _apply_metadata(
-    metadata: Mapping[str, object], profile_id: str, entry: Mapping[str, object]
-) -> dict[str, object]:
-    result = copy.deepcopy(dict(metadata))
-    entries = result.get("entries")
-    if not isinstance(entries, list):
-        raise ClaudeDesktopConflictError("Claude Desktop metadata has no valid entries list.")
-    if not any(isinstance(item, dict) and item.get("id") == profile_id for item in entries):
-        entries.append(copy.deepcopy(dict(entry)))
-    result["appliedId"] = profile_id
-    return result
-
-
-def _revert_profile(
-    profile: dict[str, object] | None,
-    record: Mapping[str, Any],
-    path: Path,
-) -> tuple[dict[str, object] | None, bool, bool]:
-    if profile is None:
-        return None, False, False
-    expected = record["owned_after"]
-    baseline = record["profile_before"]
-    if not isinstance(expected, dict) or (baseline is not None and not isinstance(baseline, dict)):
-        raise ClaudeDesktopConflictError(f"Unity Gateway ownership record for {path} is malformed.")
-    if baseline is None and (
-        set(profile) != set(expected)
-        or any(profile.get(key, _MISSING) != value for key, value in expected.items())
-    ):
-        return profile, False, True
-    reverted = copy.deepcopy(profile)
-    drifted = False
-    for key, expected_value in expected.items():
-        current_value = profile.get(key, _MISSING)
-        if current_value != expected_value:
-            drifted = True
-            continue
-        if baseline is not None and key in baseline:
-            reverted[key] = copy.deepcopy(baseline[key])
-        else:
-            reverted.pop(key, None)
-    if baseline is None and not reverted:
-        return None, True, drifted
-    return reverted, reverted != profile, drifted
-
-
-def _revert_metadata(
-    metadata: Mapping[str, object], record: Mapping[str, Any], *, directory: Path, keep_entry: bool
-) -> tuple[dict[str, object], bool]:
-    result = copy.deepcopy(dict(metadata))
-    profile_id = record["profile_id"]
-    expected_entry = record["entry_after"]
-    entries = result.get("entries")
-    if not isinstance(entries, list):
-        raise ClaudeDesktopConflictError("Claude Desktop metadata has no valid entries list.")
-    result["entries"] = (
-        entries
-        if keep_entry
-        else [
-            entry
-            for entry in entries
-            if not (
-                isinstance(entry, dict)
-                and entry.get("id") == profile_id
-                and entry == expected_entry
-            )
-        ]
-    )
-    if result.get("appliedId") == profile_id:
-        prior = record["prior_applied"]
-        prior_exists = (
-            isinstance(prior, str)
-            and any(item.get("id") == prior for item in result["entries"])
-            and _profile_path(directory, prior).is_file()
-        )
-        if record["prior_applied_present"] and prior_exists:
-            result["appliedId"] = record["prior_applied"]
-        elif not keep_entry:
-            result.pop("appliedId", None)
-    return result, result != metadata
-
-
-def _transactional_write(
-    *,
-    profile_path: Path,
-    profile_before: dict[str, object] | None,
-    profile_after: dict[str, object] | None,
-    metadata_path: Path,
-    metadata_before: dict[str, object] | None,
-    metadata_after: dict[str, object] | None,
-    state_path: Path,
-    state_before: dict[str, object] | None,
-    state_after: dict[str, object],
-    retired_profiles: Mapping[Path, dict[str, object] | None] | None = None,
-) -> None:
-    """Write profile, metadata, and ownership state with best-effort atomic rollback."""
-
-    changes = [
-        (profile_path, profile_before, profile_after),
-        *((path, before, None) for path, before in (retired_profiles or {}).items()),
-        (metadata_path, metadata_before, metadata_after),
-        (state_path, state_before, state_after),
-    ]
-    for path, before, _after in changes:
-        if _read_optional_object(path, "Claude Desktop configuration") != before:
-            raise ClaudeDesktopConflictError(
-                "Claude Desktop configuration changed during setup. Quit Claude Desktop and retry."
-            )
-    originals = {
-        path: path.read_bytes() if before is not None else None for path, before, _after in changes
-    }
-    written: list[Path] = []
-    try:
-        for path, before, after in changes:
-            if before != after:
-                written.append(path)
-                _write_or_remove(path, after)
-    except Exception as exc:  # noqa: BLE001 - rollback must preserve the original setup failure
-        rollback_errors: list[Exception] = []
-        for path in reversed(written):
-            try:
-                _restore_original(path, originals[path])
-            except Exception as rollback_exc:  # noqa: BLE001
-                rollback_errors.append(rollback_exc)
-        suffix = ""
-        if rollback_errors:
-            suffix = f" Rollback also failed: {rollback_errors[0]}"
-        raise ClaudeDesktopError(
-            f"Claude Desktop configuration failed and was rolled back: {exc}.{suffix}"
-        ) from exc
-
-
-def _write_or_remove(path: Path, payload: dict[str, object] | None) -> None:
-    if payload is None:
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            return
-        except OSError as exc:
-            raise ClaudeDesktopError(f"Could not remove Claude Desktop profile {path}.") from exc
-        return
-    atomic_write_json(path, payload)
-
-
-def _restore_original(path: Path, contents: bytes | None) -> None:
-    if contents is None:
-        _write_or_remove(path, None)
-        return
-    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(contents)
-        os.replace(temporary, path)
-    finally:
-        Path(temporary).unlink(missing_ok=True)
