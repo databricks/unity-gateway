@@ -536,11 +536,25 @@ def write_tool_config(
         if managed_catalog and (managed_writes_allowed() or managed_catalog.is_file())
         else None
     )
+    discovery = _catalog_source(provider, parent_schema)
+    discovered = None
+    if managed_path and discovery:
+        source, identifier, scope = discovery
+        discovered = _discover_catalog(
+            workspace, _launch_token(state, workspace), source, identifier
+        )
+        _discovered_catalogs[(workspace, scope)] = discovered
+    managed_doc_catalog = discovered if discovery else catalog
+    discovered_slugs = catalog_slugs(discovered) if discovered else []
 
     def compose_managed(base: dict) -> dict:
         prior_catalog = base.get("model_catalog_json")
         compose(base, include_catalog=False)
-        if catalog is not None and managed_catalog_path:
+        _set_provider_header(base, provider)
+        # Same pin as launch: an MPS's allowlist may not route Codex's bundled default.
+        if chosen_model is None and discovered_slugs:
+            base["model"] = discovered_slugs[0]
+        if managed_doc_catalog is not None and managed_catalog_path:
             base["model_catalog_json"] = managed_catalog_path
         elif prior_catalog is not None:
             # Revert only the catalog ug recorded writing, and only while it is untouched.
@@ -555,7 +569,7 @@ def write_tool_config(
         return base
 
     _reconcile_managed_config(
-        state, compose_managed, catalog=catalog if managed_catalog_path else None
+        state, compose_managed, catalog=managed_doc_catalog if managed_catalog_path else None
     )
     state = mark_tool_managed(state, "codex", MANAGED_KEYS)
     save_state(state)
@@ -1160,6 +1174,40 @@ def _launch_token(state: dict, workspace: str, *, force_refresh: bool = False) -
     return get_databricks_token(workspace, state.get("profile"), force_refresh=force_refresh)
 
 
+# Catalogs the config write discovered, so the launch that follows reuses them instead of
+# fetching again. Keyed by workspace and catalog scope.
+_discovered_catalogs: dict[tuple[str, str], dict | None] = {}
+
+
+def _catalog_source(
+    provider: str | None, parent_schema: str | None
+) -> tuple[CodexCatalogSource, str, str] | None:
+    """The discovery source, identifier, and catalog scope for a provider or UC launch."""
+    if provider:
+        return CodexCatalogSource.PROVIDER, provider, f"provider:{provider}"
+    if parent_schema:
+        return CodexCatalogSource.PARENT_SCHEMA, parent_schema, f"parent:{parent_schema}"
+    return None
+
+
+def _discover_catalog(
+    workspace: str, token: str, source: CodexCatalogSource, identifier: str
+) -> dict | None:
+    """Fetch and validate a source's catalog; None when the source publishes none."""
+    try:
+        catalog = _fetch_codex_model_catalog(workspace, token, source=source, identifier=identifier)
+        validate_codex_catalog(SPEC["binary"], catalog)
+    except CodexMpsModelCatalogUnavailable:
+        detach_app_model_catalog()
+        return None
+    except RuntimeError:
+        # A failed discovery/validation must not leave a previous workspace's
+        # catalog active in independently launched app servers.
+        _detach_app_catalog_after_failure()
+        raise
+    return catalog
+
+
 def _tool_args_select_model(tool_args: list[str]) -> bool:
     """Whether the passthrough args already pin a model via ``-m``/``--model``."""
     return any(arg in ("-m", "--model") or arg.startswith(("--model=", "-m=")) for arg in tool_args)
@@ -1176,7 +1224,8 @@ def _reject_managed_model_catalog() -> None:
         managed = _parse_managed_config(text)
     except RuntimeError as exc:
         raise RuntimeError(f"Cannot read Codex managed settings at {path}: {exc}") from exc
-    if "model_catalog_json" in managed:
+    catalog = managed.get("model_catalog_json")
+    if catalog is not None and str(catalog) != str(_managed_catalog_path(path)):
         raise RuntimeError(
             f"Codex managed settings at {path} define model_catalog_json, which overrides "
             "model discovery. Remove it or contact your administrator."
@@ -1322,33 +1371,16 @@ def launch(
     updating = tool_args[:1] == ["update"]
     if updating and _is_ucode_catalog_reference(profile_doc.get("model_catalog_json")):
         profile_doc.pop("model_catalog_json")
-    if workspace and token and (provider or parent_schema) and not updating:
-        try:
-            if provider is not None:
-                catalog_source = CodexCatalogSource.PROVIDER
-                catalog_identifier = provider
-                catalog_scope = f"provider:{provider}"
-            elif parent_schema is not None:
-                catalog_source = CodexCatalogSource.PARENT_SCHEMA
-                catalog_identifier = parent_schema
-                catalog_scope = f"parent:{parent_schema}"
-            else:
-                raise RuntimeError("Codex model discovery requires a provider or parent schema.")
-            catalog = _fetch_codex_model_catalog(
-                workspace,
-                token,
-                source=catalog_source,
-                identifier=catalog_identifier,
-            )
-            validate_codex_catalog(binary, catalog)
-        except CodexMpsModelCatalogUnavailable:
-            detach_app_model_catalog()
-        except RuntimeError:
-            # A failed discovery/validation must not leave a previous workspace's
-            # catalog active in independently launched app servers.
-            _detach_app_catalog_after_failure()
-            raise
-        else:
+    discovery = _catalog_source(provider, parent_schema)
+    if workspace and token and discovery and not updating:
+        catalog_source, catalog_identifier, catalog_scope = discovery
+        discovered_key = (workspace, catalog_scope)
+        catalog = (
+            _discovered_catalogs.pop(discovered_key)
+            if discovered_key in _discovered_catalogs
+            else _discover_catalog(workspace, token, catalog_source, catalog_identifier)
+        )
+        if catalog is not None:
             catalog_path = _model_catalog_path(workspace, catalog_scope)
             _write_model_catalog(catalog_path, catalog)
             sync_app_model_catalog(catalog)
