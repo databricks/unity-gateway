@@ -60,12 +60,11 @@ export const registerStatusBand = (on: On): void => {
     return next(e)
   })
 
-  // Once the band hides, the prompt hint row carries the state as its tail. The engine draws
-  // the tail dim and rejects escape sequences, so an emoji is what gives it color.
+  // Once the band hides, the prompt hint row carries the state as a plain tail.
   on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
     if (band.isVisible) return next(e)
     const { enabled } = await readRoutingState($)
-    const state = `smart router ${enabled ? '🟢 on' : '⚪ off'}`
+    const state = `smart router ${enabled ? 'on' : 'off'}`
     const tail = e.props.tail ? `${e.props.tail} · ${state}` : state
     return next({ ...e, props: { ...e.props, tail } })
   })
