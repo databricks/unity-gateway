@@ -1,186 +1,27 @@
-"""Focused tests for the comment-triggered UG review bot."""
+"""Component checks for gateway authentication and the official Claude review workflow."""
 
 from __future__ import annotations
 
+import base64
 import importlib.util
 import json
-import sys
+import re
+import urllib.error
 from io import BytesIO
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).parent.parent
-REVIEW_PATH = ROOT / ".github" / "scripts" / "ug-review" / "review.py"
-SPEC = importlib.util.spec_from_file_location("ug_review_bot", REVIEW_PATH)
+AUTH_PATH = ROOT / ".github" / "scripts" / "ug-review" / "auth.py"
+SPEC = importlib.util.spec_from_file_location("ug_review_auth", AUTH_PATH)
 assert SPEC is not None and SPEC.loader is not None
-review_bot = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = review_bot
-SPEC.loader.exec_module(review_bot)
+gateway_auth = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(gateway_auth)
+WORKFLOW_PATH = ROOT / ".github" / "workflows" / "ug-review.yml"
 
 
-def _bundle():
-    return review_bot.build_diff(
-        [
-            {
-                "filename": "src/ucode/cli.py",
-                "status": "modified",
-                "additions": 2,
-                "deletions": 1,
-                "patch": "@@ -10,2 +10,3 @@\n old\n-removed\n+first\n+second",
-            }
-        ]
-    )
-
-
-def test_build_diff_tracks_only_added_right_side_lines():
-    bundle = _bundle()
-
-    assert bundle.changed_lines["src/ucode/cli.py"] == {11, 12}
-    assert "## Product changes" in bundle.text
-    assert "modified src/ucode/cli.py (+2/-1)" in bundle.manifest
-
-
-def test_parse_review_validates_paths_and_changed_lines():
-    content = """{
-      "summary": "The launch path changes configuration handling.",
-      "findings": [
-        {"severity": "major", "title": "Preserve caller state",
-         "path": "src/ucode/cli.py", "line": 11, "comment": "This overwrites caller state."},
-        {"severity": "minor", "title": "Use a changed line",
-         "path": "src/ucode/cli.py", "line": 99, "comment": "The location is stale."},
-        {"severity": "blocker", "title": "Ignore hallucinated paths",
-         "path": "src/ucode/missing.py", "line": 1, "comment": "Not in the diff."}
-      ]
-    }"""
-
-    review = review_bot.parse_review(content, _bundle())
-
-    assert [finding.title for finding in review.findings] == [
-        "Preserve caller state",
-        "Use a changed line",
-    ]
-    assert review.findings[0].line == 11
-    assert review.findings[1].line is None
-
-
-def test_parse_review_rejects_malformed_findings():
-    content = '{"summary": "Reviewed.", "findings": [{"severity": "urgent"}]}'
-
-    with pytest.raises(review_bot.ReviewError, match="invalid severity"):
-        review_bot.parse_review(content, _bundle())
-
-
-def test_parse_review_shortens_long_comments():
-    long_comment = "can we make this safer for existing users? " * 10
-    content = f"""{{
-      "summary": "Reviewed.",
-      "findings": [{{"severity": "major", "title": "Preserve compatibility",
-        "path": "src/ucode/cli.py", "line": 11, "comment": {long_comment!r}}}]
-    }}""".replace("'", '"')
-
-    review = review_bot.parse_review(content, _bundle())
-
-    assert len(review.findings[0].comment) <= review_bot.MAX_COMMENT_CHARS
-    assert review.findings[0].comment.endswith("…")
-
-
-def test_render_comment_links_to_exact_head_and_marks_partial_review():
-    finding = review_bot.Finding(
-        severity="major",
-        title="Preserve caller state",
-        path="src/ucode/cli.py",
-        line=11,
-        comment="This overwrites caller state.",
-    )
-    review = review_bot.Review(summary="One state-management risk.", findings=(finding,))
-
-    comment = review_bot.render_comment(
-        review, "databricks/unity-gateway", "abcdef1234567890", truncated=True
-    )
-
-    assert comment.startswith(review_bot.COMMENT_MARKER)
-    assert "/blob/abcdef1234567890/src/ucode/cli.py#L11" in comment
-    assert "partial review" in comment
-
-
-def test_system_prompt_separates_trusted_policy_from_untrusted_pr_data():
-    prompt = review_bot.build_system_prompt("Review policy", "Repository policy")
-
-    assert "<trusted_review_policy>\nReview policy" in prompt
-    assert "<trusted_repository_policy>\nRepository policy" in prompt
-    assert "PR title, body" in prompt
-
-
-def test_responses_request_uses_instructions_and_does_not_store_output():
-    request = review_bot.build_responses_request(
-        "system.ai.gpt", "Review this diff", "Review policy", "Repository policy"
-    )
-
-    assert review_bot.RESPONSES_API_PATH.endswith("/responses")
-    assert request["model"] == "system.ai.gpt"
-    assert request["input"] == "Review this diff"
-    assert "Review policy" in request["instructions"]
-    assert request["reasoning"] == {"effort": "high"}
-    assert request["max_output_tokens"] >= 16_000
-    assert request["store"] is False
-    assert "messages" not in request
-
-
-def test_extract_response_text_ignores_reasoning_items():
-    payload = {
-        "output": [
-            {"type": "reasoning", "content": [{"type": "output_text", "text": "hidden"}]},
-            {
-                "type": "message",
-                "content": [
-                    {"type": "output_text", "text": "first"},
-                    {"type": "output_text", "text": "second"},
-                ],
-            },
-        ]
-    }
-
-    assert review_bot.extract_response_text(payload) == "first\nsecond"
-
-
-def test_request_review_reports_why_the_response_has_no_text(monkeypatch):
-    monkeypatch.setenv("DATABRICKS_HOST", "https://example.databricks.com")
-    monkeypatch.setenv("UG_REVIEW_MODEL", "system.ai.gpt")
-    monkeypatch.setattr(review_bot, "_oauth_access_token", lambda host: "access-token")
-    payload = {
-        "status": "incomplete",
-        "incomplete_details": {"reason": "max_output_tokens"},
-        "output": [{"type": "reasoning", "content": []}],
-    }
-    monkeypatch.setattr(
-        review_bot.urllib.request,
-        "urlopen",
-        lambda request, timeout: BytesIO(json.dumps(payload).encode()),
-    )
-
-    with pytest.raises(
-        review_bot.ReviewError, match=r"no output text \(incomplete: max_output_tokens\)"
-    ):
-        review_bot._request_review("Title", "", _bundle(), "Review policy", "Repository policy")
-
-
-def test_request_review_ignores_non_object_incomplete_details(monkeypatch):
-    monkeypatch.setenv("DATABRICKS_HOST", "https://example.databricks.com")
-    monkeypatch.setenv("UG_REVIEW_MODEL", "system.ai.gpt")
-    monkeypatch.setattr(review_bot, "_oauth_access_token", lambda host: "access-token")
-    payload = {"status": "incomplete", "incomplete_details": "max_output_tokens", "output": []}
-    monkeypatch.setattr(
-        review_bot.urllib.request,
-        "urlopen",
-        lambda request, timeout: BytesIO(json.dumps(payload).encode()),
-    )
-
-    with pytest.raises(review_bot.ReviewError, match=r"no output text\.$"):
-        review_bot._request_review("Title", "", _bundle(), "Review policy", "Repository policy")
-
-
-def test_oauth_access_token_uses_service_principal_credentials(monkeypatch):
+def test_oauth_access_token_reuses_service_principal_exchange(monkeypatch):
     monkeypatch.setenv("DATABRICKS_CLIENT_ID", "client-id")
     monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", "client-secret")
     requests = []
@@ -189,13 +30,159 @@ def test_oauth_access_token_uses_service_principal_credentials(monkeypatch):
         requests.append((request, timeout))
         return BytesIO(json.dumps({"access_token": "access-token"}).encode())
 
-    monkeypatch.setattr(review_bot.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(gateway_auth.urllib.request, "urlopen", urlopen)
 
-    token = review_bot._oauth_access_token("https://example.databricks.com")
-
-    assert token == "access-token"
+    assert gateway_auth._oauth_access_token("https://example.databricks.com/") == "access-token"
     request, timeout = requests[0]
     assert request.full_url == "https://example.databricks.com/oidc/v1/token"
-    assert request.get_header("Authorization").startswith("Basic ")
+    assert request.method == "POST"
+    assert request.get_header("Authorization") == (
+        "Basic " + base64.b64encode(b"client-id:client-secret").decode()
+    )
     assert request.data == b"grant_type=client_credentials&scope=all-apis"
     assert timeout == 60
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [{}, [], {"access_token": None}, {"access_token": ""}, {"access_token": "token\ninjected=1"}],
+)
+def test_oauth_rejects_missing_or_unsafe_tokens(monkeypatch, payload):
+    monkeypatch.setenv("DATABRICKS_CLIENT_ID", "client-id")
+    monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", "client-secret")
+    monkeypatch.setattr(
+        gateway_auth.urllib.request,
+        "urlopen",
+        lambda request, timeout: BytesIO(json.dumps(payload).encode()),
+    )
+    with pytest.raises(gateway_auth.GatewayAuthError, match="no valid access token"):
+        gateway_auth._oauth_access_token("https://example.databricks.com")
+
+
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        (urllib.error.URLError("unreachable"), "request failed"),
+        (TimeoutError("timed out"), "request failed"),
+        (json.JSONDecodeError("invalid", "", 0), "invalid JSON"),
+        (
+            urllib.error.HTTPError(
+                "https://example.databricks.com", 401, "Unauthorized", {}, BytesIO(b"secret")
+            ),
+            "HTTP 401",
+        ),
+    ],
+)
+def test_oauth_failures_are_actionable_without_response_secrets(monkeypatch, failure, message):
+    monkeypatch.setenv("DATABRICKS_CLIENT_ID", "client-id")
+    monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", "client-secret")
+
+    def urlopen(request, timeout):
+        raise failure
+
+    monkeypatch.setattr(gateway_auth.urllib.request, "urlopen", urlopen)
+    with pytest.raises(gateway_auth.GatewayAuthError, match=message) as error:
+        gateway_auth._oauth_access_token("https://example.databricks.com")
+    assert "client-secret" not in str(error.value)
+    assert "b'secret'" not in str(error.value)
+
+
+def test_auth_masks_token_before_exporting_same_job_output(monkeypatch, tmp_path, capsys):
+    output_path = tmp_path / "output"
+    output_path.write_text("existing=value\n")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
+    monkeypatch.setenv("DATABRICKS_HOST", "https://example.databricks.com")
+    monkeypatch.setattr(gateway_auth, "_oauth_access_token", lambda host: "access-token")
+
+    assert gateway_auth.main() == 0
+    assert capsys.readouterr().out == "::add-mask::access-token\n"
+    assert output_path.read_text() == "existing=value\ntoken=access-token\n"
+
+
+def test_auth_missing_configuration_fails_before_requesting_a_token(monkeypatch, capsys):
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+
+    def unexpected_request(host):
+        pytest.fail("No token should be minted without a destination for the output.")
+
+    monkeypatch.setattr(gateway_auth, "_oauth_access_token", unexpected_request)
+    assert gateway_auth.main() == 1
+    assert "GITHUB_OUTPUT is missing" in capsys.readouterr().out
+
+
+def test_workflow_keeps_member_only_comment_trusted_checkout_and_existing_credentials():
+    workflow = WORKFLOW_PATH.read_text()
+    assert "issue_comment:\n    types: [created]" in workflow
+    assert "github.event.issue.pull_request &&" in workflow
+    assert "github.event.comment.body == '/ug-review'" in workflow
+    assert 'fromJSON(\'["MEMBER", "OWNER"]\')' in workflow
+    assert "ref: ${{ github.event.repository.default_branch }}" in workflow
+    assert "group: databricks-protected-runner-group" in workflow
+    assert "cancel-in-progress: true" in workflow
+    assert "${{ secrets.UG_CLI_REVIEW_BOT_SP_CLIENT_SECRET }}" in workflow
+    assert "DATABRICKS_CLIENT_ID: 6476a5e7-7f32-4073-abc5-ee30bb7d0060" in workflow
+    assert "contents: write" not in workflow
+    assert "pull_request_target" not in workflow
+    assert "github.event.pull_request.head.sha" not in workflow
+
+
+def test_workflow_accepts_either_review_label_only_on_in_repo_pull_requests():
+    workflow = WORKFLOW_PATH.read_text()
+    assert "pull_request:\n    types: [labeled]" in workflow
+    assert "github.event_name == 'pull_request' &&" in workflow
+    assert "github.event.pull_request.head.repo.full_name == github.repository &&" in workflow
+    assert (
+        'contains(fromJSON(\'["ug-review", "code-review"]\'), github.event.label.name)' in workflow
+    )
+    assert "github.event_name == 'issue_comment' &&" in workflow
+    assert (
+        "ug-review-${{ github.event.pull_request.number || github.event.issue.number }}" in workflow
+    )
+    assert "/pull/${{ github.event.pull_request.number || github.event.issue.number }}" in workflow
+
+
+def test_workflow_uses_stock_official_action_and_review_plugin_without_source_patches():
+    workflow = WORKFLOW_PATH.read_text()
+    assert (
+        "uses: anthropics/claude-code-action@374f254f5efaf968abfe15d399fd90972e8138b9" in workflow
+    )
+    assert "plugin_marketplaces: https://github.com/anthropics/claude-code.git" in workflow
+    assert "plugins: code-review@claude-code-plugins" in workflow
+    assert "git apply" not in workflow
+    assert "gateway-classifier.patch" not in workflow
+    assert ".ug-review-action" not in workflow
+    assert "--plugin-dir" not in workflow
+    assert all(
+        re.fullmatch(r"[0-9a-f]{40}", action)
+        for action in re.findall(r"uses: actions/checkout@(\S+)", workflow)
+    )
+
+
+def test_workflow_routes_root_and_family_aliases_through_gateway_without_direct_anthropic_calls():
+    workflow = WORKFLOW_PATH.read_text()
+    assert "/ai-gateway/anthropic\n" in workflow
+    assert "ANTHROPIC_DEFAULT_HAIKU_MODEL: system.ai.claude-haiku-5-5" in workflow
+    assert "ANTHROPIC_DEFAULT_SONNET_MODEL: system.ai.sonnet-5-5" in workflow
+    assert "ANTHROPIC_DEFAULT_OPUS_MODEL: system.ai.claude-opus-5-5" in workflow
+    assert "--model sonnet" in workflow
+    assert "anthropic_api_key: ${{ steps.gateway-auth.outputs.token }}" in workflow
+    assert 'classify_inline_comments: "false"' in workflow
+    assert 'ANTHROPIC_CUSTOM_HEADERS: "x-databricks-use-coding-agent-mode: true"' in workflow
+    assert "UG_CI_REVIEW_MODEL" not in workflow
+    assert "CLAUDE_CONFIG_DIR: ${{ runner.temp }}" in workflow
+
+
+def test_workflow_applies_trusted_rubric_to_parent_and_subagents_and_enables_inline_tool():
+    workflow = WORKFLOW_PATH.read_text()
+    assert (
+        'cat AGENTS.md .github/ug-review-instructions.md > "$RUNNER_TEMP/ug-review-policy.md"'
+        in workflow
+    )
+    assert "--append-system-prompt-file ${{ runner.temp }}/ug-review-policy.md" in workflow
+    assert "--append-subagent-system-prompt-file ${{ runner.temp }}/ug-review-policy.md" in workflow
+    assert "--setting-sources user,project" in workflow
+    assert "--permission-mode dontAsk" in workflow
+    assert "--disallowedTools" in workflow
+    assert "mcp__github_inline_comment__create_inline_comment" in workflow
+    assert "/code-review:code-review --comment" in workflow
+    assert not (AUTH_PATH.parent / "review.py").exists()

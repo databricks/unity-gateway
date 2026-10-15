@@ -424,15 +424,24 @@ def test_user_journey_fork_report_uses_the_evaluated_commit():
     assert "/pulls/" not in report and ".head.sha" not in report
 
 
-def test_ug_review_runs_only_on_member_command_from_the_default_branch():
+def test_ug_review_accepts_member_comments_and_in_repo_labels_with_trusted_checkout():
     workflow = _workflow("ug-review.yml")
 
-    assert re.search(r"(?m)^on:\n  issue_comment:\n    types: \[created\]\n", workflow)
+    assert re.search(r"(?m)^  issue_comment:\n    types: \[created\]\n", workflow)
+    assert re.search(r"(?m)^on:\n  pull_request:\n    types: \[labeled\]\n", workflow)
+    assert (
+        'contains(fromJSON(\'["ug-review", "code-review"]\'), github.event.label.name)' in workflow
+    )
+    assert "github.event.pull_request.head.repo.full_name == github.repository" in workflow
     assert "pull_request_target" not in workflow
     assert "github.event.comment.body == '/ug-review'" in workflow
     assert MEMBER_ONLY in workflow
     assert "ref: ${{ github.event.repository.default_branch }}" in workflow
-    assert "PR_NUMBER: ${{ github.event.issue.number }}" in workflow
+    assert (
+        'prompt: "/code-review:code-review --comment '
+        "https://github.com/${{ github.repository }}/pull/"
+        '${{ github.event.pull_request.number || github.event.issue.number }}"' in workflow
+    )
     assert "concurrency:" not in workflow.split("\njobs:\n", 1)[0]
 
 
