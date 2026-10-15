@@ -29,6 +29,15 @@ The workflow uses the unmodified official action at a pinned commit and installs
 the official code-review plugin from Anthropic's marketplace. Dependabot's existing
 GitHub Actions updates can bump the action pin. There is no fork or source patch.
 The only custom Python code is the existing service-principal token exchange.
+The pin is official release `v1.0.247`, whose Agent SDK `0.3.295` is available
+on the internal npm mirror. Newer action versions require SDK releases that
+were not yet mirrored during the October 15, 2026 smoke test.
+
+The stock action still uses Bun internally. Its npm dependencies use the existing
+`db-npm` proxy at Databricks' JFrog, authenticated through the same GitHub OIDC
+setup used by the repository's terminal-bench workflow. No registry secret is
+stored in GitHub. npm and Bun share an isolated, owner-only `.npmrc` under
+`runner.temp`; it is removed even when review fails. TLS verification stays enabled.
 
 The plugin retains its multi-agent review and finding validation. The separate
 optional `classify_inline_comments` filter is disabled because it hardcodes a
@@ -49,8 +58,11 @@ A disposable pre-merge smoke test on October 15, 2026 verified both label
 triggers and gateway OAuth authentication. The stock action then failed while
 installing Bun dependencies on the protected runner. Public npm HTTPS downloads
 also failed in curl and npm; using the system CA bundle did not resolve the
-failure. Gateway inference and inline posting remain unverified. No alternate
-registry or TLS-verification bypass is configured.
+failure. The internal `npm-proxy.cloud.databricks.com` route also timed out.
+The existing JFrog npm proxy completed TLS and required authentication, so the
+workflow now configures that proxy using GitHub OIDC. An authenticated npm SDK
+download and the unmodified Bun dependency installation both passed on the
+protected runner. Gateway inference and inline posting remain unverified.
 
 After this workflow and its auth helper are merged to the default branch, test
 against an open PR by adding either review label or posting `/ug-review`. Watch

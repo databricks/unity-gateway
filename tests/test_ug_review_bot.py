@@ -144,7 +144,7 @@ def test_workflow_accepts_either_review_label_only_on_in_repo_pull_requests():
 def test_workflow_uses_stock_official_action_and_review_plugin_without_source_patches():
     workflow = WORKFLOW_PATH.read_text()
     assert (
-        "uses: anthropics/claude-code-action@374f254f5efaf968abfe15d399fd90972e8138b9" in workflow
+        "uses: anthropics/claude-code-action@2dca132ff0e0c4094ce6048b422c6915a071210b" in workflow
     )
     assert "plugin_marketplaces: https://github.com/anthropics/claude-code.git" in workflow
     assert "plugins: code-review@claude-code-plugins" in workflow
@@ -170,6 +170,30 @@ def test_workflow_routes_root_and_family_aliases_through_gateway_without_direct_
     assert 'ANTHROPIC_CUSTOM_HEADERS: "x-databricks-use-coding-agent-mode: true"' in workflow
     assert "UG_CI_REVIEW_MODEL" not in workflow
     assert "CLAUDE_CONFIG_DIR: ${{ runner.temp }}" in workflow
+
+
+def test_workflow_uses_existing_authenticated_npm_proxy_without_patching_stock_installer():
+    workflow = WORKFLOW_PATH.read_text()
+    assert "id-token: write" in workflow
+    assert "jfrog/setup-jfrog-cli@279b1f629f43dd5bc658d8361ac4802a7ef8d2d5" in workflow
+    assert "oidc-provider-name: github-actions" in workflow
+    assert (
+        "NPM_CONFIG_REGISTRY: https://databricks.jfrog.io/artifactory/api/npm/db-npm/" in workflow
+    )
+    assert "NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/ug-review-package-config/.npmrc" in workflow
+    assert "XDG_CONFIG_HOME: ${{ runner.temp }}/ug-review-package-config" in workflow
+    assert "NPM_TOKEN: ${{ steps.jfrog.outputs.oidc-token }}" in workflow
+    assert "umask 077" in workflow
+    assert "//%s:_authToken=%s" in workflow
+    assert (
+        'if: always()\n        run: rm -f "$RUNNER_TEMP/ug-review-package-config/.npmrc"'
+        in workflow
+    )
+    job_environment = workflow.split("    env:\n", 1)[1].split("    steps:\n", 1)[0]
+    assert "${{ runner." not in job_environment
+    assert "path_to_bun_executable" not in workflow
+    assert "NODE_TLS_REJECT_UNAUTHORIZED" not in workflow
+    assert "strict-ssl=false" not in workflow
 
 
 def test_workflow_applies_trusted_rubric_to_parent_and_subagents_and_enables_inline_tool():

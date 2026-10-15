@@ -505,8 +505,9 @@ Sonnet, and Opus aliases. Adding either `ug-review` or `code-review` also reques
 review on in-repository PRs; fork PRs still require the member comment because
 their PR-triggered runs cannot access the gateway secret. Label removal and
 ordinary pushes do not rerun reviews. The stock plugin validates findings; the optional direct-Anthropic
-comment classifier is disabled. `test_ug_review_bot.py` covers authentication
-and the workflow contract, not live inference or GitHub posting. The old custom
+comment classifier is disabled. `test_ug_review_bot.py` covers gateway authentication,
+OIDC-authenticated npm-proxy configuration and cleanup, and the workflow contract,
+not live inference or GitHub posting. The old custom
 Responses/diff/parser/summary-rendering tests are obsolete because that implementation
 is removed. `/user-journey-check` runs the user-journey gate,
 which runs automatically only for in-repo PRs.
