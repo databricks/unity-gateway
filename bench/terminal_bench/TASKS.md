@@ -39,7 +39,7 @@ Verifiers and solutions read these variables.
 | `project-instructions` | Claude, Codex | The output is under `out/`, and each new Python file starts with the license header that `CLAUDE.md` and `AGENTS.md` require. |
 | `project-skill` | Claude | The release notes follow the project skill, and the skill's script logged a run. |
 | `subagents` | Claude | Each file has a correct audit, and the transcript shows at least one subagent per file. |
-| `image-code` | Claude, Codex | `code.txt` holds the 8-digit code drawn in `code.png`. |
+| `image-code` | Claude, Codex | `code.txt` holds the 8-digit code drawn in `code.png`, with at least 6 digits right. |
 | `pdf-extract` | Claude, Codex | `total.txt` holds the total from `invoice.pdf`, whose text stream is compressed. |
 | `web-fetch` | Claude, Codex | `answer.txt` holds a value from a file in this repo, pinned to a fixed commit. |
 | `background-shell` | Claude, Codex | `result.txt` holds the value that a 150-second job prints when it finishes. Claude's default command timeout is 2 minutes. |
