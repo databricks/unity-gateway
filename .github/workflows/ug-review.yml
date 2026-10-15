@@ -95,6 +95,7 @@ jobs:
         uses: anthropics/claude-code-action@2dca132ff0e0c4094ce6048b422c6915a071210b
         env:
           CLAUDE_CONFIG_DIR: ${{ runner.temp }}/ug-review-claude-${{ github.run_id }}-${{ github.run_attempt }}
+          BUN_CONFIG_TOKEN: ${{ steps.jfrog.outputs.oidc-token }}
         with:
           github_token: ${{ github.token }}
           anthropic_api_key: ${{ steps.gateway-auth.outputs.token }}

@@ -873,7 +873,8 @@ plugin and inline comments through the Databricks gateway with per-family model
 aliases and no action source patches. Adding `ug-review` or `code-review` also
 requests review on in-repository PRs; fork PRs use the member comment to access
 secrets safely. `../test_ug_review_bot.py` covers gateway authentication,
-OIDC-authenticated npm-proxy configuration and cleanup, and the workflow contract
+OIDC-authenticated npm-proxy configuration, action-step Bun authentication and
+credential cleanup, and the workflow contract
 as component tests. This integration suite does not establish
 live review-model access, plugin finding validation, or inline GitHub posting.
 

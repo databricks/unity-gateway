@@ -183,6 +183,10 @@ def test_workflow_uses_existing_authenticated_npm_proxy_without_patching_stock_i
     assert "NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/ug-review-package-config/.npmrc" in workflow
     assert "XDG_CONFIG_HOME: ${{ runner.temp }}/ug-review-package-config" in workflow
     assert "NPM_TOKEN: ${{ steps.jfrog.outputs.oidc-token }}" in workflow
+    review_environment = workflow.split(
+        "      - name: Review the pull request with Claude and inline comments\n", 1
+    )[1].split("        with:\n", 1)[0]
+    assert "BUN_CONFIG_TOKEN: ${{ steps.jfrog.outputs.oidc-token }}" in review_environment
     assert "umask 077" in workflow
     assert "//%s:_authToken=%s" in workflow
     assert (

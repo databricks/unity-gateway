@@ -38,6 +38,8 @@ The stock action still uses Bun internally. Its npm dependencies use the existin
 setup used by the repository's terminal-bench workflow. No registry secret is
 stored in GitHub. npm and Bun share an isolated, owner-only `.npmrc` under
 `runner.temp`; it is removed even when review fails. TLS verification stays enabled.
+The action step also receives Bun's supported `BUN_CONFIG_TOKEN` variable, so the
+action's own registry-only `.npmrc` cannot discard the proxy authentication.
 
 The plugin retains its multi-agent review and finding validation. The separate
 optional `classify_inline_comments` filter is disabled because it hardcodes a
