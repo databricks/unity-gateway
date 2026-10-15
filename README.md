@@ -274,17 +274,18 @@ The generated shell hooks expect Git Bash; PowerShell-only setups are not covere
 ### Smart Router Orchestrator
 
 Use `SMART_ROUTER_CONFIG_VERSION` at launch to select a smart-routing configuration.
-Each version defines separate Claude Code and Codex flag mappings; the existing versions
+Each version defines separate Claude Code and Codex flag mappings; the legacy versions
 use identical mappings for both agents. The Claude-only version disables routing for Codex:
 
-| Version | Routed agents | Subagent routing | First-prompt routing | Orchestrator |
-| --- | --- | --- | --- | --- |
-| `first_prompt_and_subagent_no_orch_v0` | Claude, Codex | On | On | Off |
-| `subagent_only_v0` | Claude, Codex | On | Off | Off |
-| `subagent_only_v1` | Claude, Codex | On | Off | Off |
-| `subagent_orch_v0` | Claude, Codex | On | Off | On |
-| `subagent_orch_v1` | Claude, Codex | On | Off | On |
-| `subagent_orch_v0_claude_only` | Claude | On | Off | On |
+| Version | Routed agents | Subagent routing | First-prompt routing | Orchestrator | Codex V10 |
+| --- | --- | --- | --- | --- | --- |
+| `first_prompt_and_subagent_no_orch_v0` | Claude, Codex | On | On | Off | Off |
+| `subagent_only_v0` | Claude, Codex | On | Off | Off | Off |
+| `subagent_only_v1` | Claude, Codex | On | Off | Off | Off |
+| `subagent_orch_v0` | Claude, Codex | On | Off | On | Off |
+| `subagent_orch_v1` | Claude, Codex | On | Off | On | Off |
+| `subagent_orch_v2` | Claude, Codex | On | Off | On | Codex only |
+| `subagent_orch_v0_claude_only` | Claude | On | Off | On | Off |
 
 `first_prompt_and_subagent_no_orch_v0` is the customer configuration for first-prompt
 and subagent routing without orchestration: `ENABLE_SMART_ROUTING_V2=1`,
@@ -297,26 +298,45 @@ so first-prompt routing remains off; orchestration is also off.
 `subagent_orch_v1` enables all three legacy flags. Like `subagent_only_v1`, it routes
 subagents rather than the first prompt, and it additionally enables orchestration.
 
-`subagent_orch_v0_claude_only` keeps Claude's `subagent_orch_v0` flags (`0`, `1`, `1`)
-and sets all three flags to `"0"` for Codex. Codex uses its ordinary launch and
-managed default model, without routing or orchestration. Explicit launch/session
-on/off controls retain their existing precedence over presets.
+`subagent_orch_v2` keeps those routing flags for both agents. It sets the UG-owned
+`ENABLE_CODEX_ORCHESTRATOR_V10=1` only for Codex; Claude keeps the V1 mapping and gets
+`ENABLE_CODEX_ORCHESTRATOR_V10=0`. These names are Unity Gateway controls, not native
+Codex settings. The V10 flag alone does not enable routing: its runtime requires an
+eligible `ug codex` session with routing and orchestration active, and Smart Router
+off/on controls continue to gate it. This scoped path requires Codex 0.160.0 or newer;
+UG's global agent minimum is unchanged.
+
+The active Codex V10 path supplies the complete bundled skill, carries the trusted
+child contract into delegated work, waits for completed child evidence on eligible
+controller tasks instead of requesting provider-generated replacement work, and uses
+the shared default prompt-cache key. Its provider relay is loopback-only and configured
+at launch. Handoff-only tools, report publication, compaction tool restoration, and the
+benchmark `/workspace` alias are not part of this port. Offline component coverage is
+available; no live equivalence, quality, or savings claim is established.
+
+`subagent_orch_v0_claude_only` keeps Claude's `subagent_orch_v0` routing and
+orchestration values (`0`, `1`, `1`) and sets the V10 flag to `"0"`. It sets all four
+registered flags to `"0"` for Codex, which uses its ordinary launch and managed default
+model without routing or orchestration. Explicit launch/session on/off controls retain
+their existing precedence over presets.
 
 `SMART_ROUTER_NAME` still selects the router independently of the preset.
 
-Smart-routed Claude and Codex sessions install `smart-router`. The `subagent_orch_v0`
-and `subagent_orch_v1` versions also install and activate the bundled `smart-router-orchestrator` skill.
+Smart-routed Claude and Codex sessions install `smart-router`. The `subagent_orch_v0`,
+`subagent_orch_v1`, and `subagent_orch_v2` versions also install and activate the bundled
+`smart-router-orchestrator` skill.
 For example:
 
 ```bash
-SMART_ROUTER_CONFIG_VERSION=subagent_orch_v0 ug claude
+SMART_ROUTER_CONFIG_VERSION=subagent_orch_v2 ug codex
 ```
 
 The version takes precedence over conflicting legacy flags. Once the agent is selected,
 UG expands its mapping into
-`ENABLE_SMART_ROUTING_V2`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY`, and
-`ENABLE_SMART_ROUTER_ORCHESTRATOR` for the launched session. When the version is
-unset or empty, these legacy flags retain their existing behavior, including
+`ENABLE_SMART_ROUTING_V2`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY`,
+`ENABLE_SMART_ROUTER_ORCHESTRATOR`, and `ENABLE_CODEX_ORCHESTRATOR_V10` for the launched
+session. When the version is
+unset or empty, the routing environment flags retain their existing behavior, including
 first-prompt routing through `ENABLE_SMART_ROUTING_V2=1`. Unknown versions are ignored:
 no preset is applied, the inherited environment is unchanged, and commands continue normally.
 Explicit launch/session on/off controls apply after expansion. Orchestration remains off by default.

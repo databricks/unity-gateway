@@ -79,6 +79,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.delenv("ENABLE_SMART_ROUTING_V2", raising=False)
     monkeypatch.delenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", raising=False)
     monkeypatch.delenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", raising=False)
+    monkeypatch.delenv("ENABLE_CODEX_ORCHESTRATOR_V10", raising=False)
     monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
     monkeypatch.delenv("SMART_ROUTER_NAME", raising=False)
     # On Windows, resolve_command swaps a bare program name for whatever `shutil.which`

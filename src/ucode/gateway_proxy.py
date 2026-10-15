@@ -1,4 +1,4 @@
-"""Loopback refresh proxy for Claude gateway requests.
+"""Loopback refresh proxies for Claude and opt-in Codex gateway requests.
 
 A relayed Model Provider Service authenticates the caller's own Anthropic
 subscription OAuth (which Claude Code owns in the `Authorization` header) and
@@ -6,6 +6,8 @@ carries a Databricks credential in the `X-Databricks-AI-Gateway-Token` swap
 header. Native gateway discovery instead carries the Databricks credential in
 `Authorization`. The proxy refreshes the applicable header and streams responses
 back verbatim.
+
+The launch-owned Codex relay also applies the enabled V10 Responses policies.
 
 With relayed OSS-routing on, the proxy picks per request by the requested model:
 Databricks-hosted ids (system.ai / OSS) take the gateway-auth path while relayed
@@ -31,9 +33,12 @@ import time
 import uuid
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import httpx
+
+if TYPE_CHECKING:
+    from ucode.smart_routing.codex_runtime import CodexRuntime, PreparedRequest
 
 # Header we overwrite with the freshly-minted Databricks credential. Any
 # client-supplied value is replaced, so a stale settings.json value can't leak.
@@ -257,11 +262,23 @@ class _ProxyHandler(BaseHTTPRequestHandler):
     def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
         return self.token_header, frozenset(), "forward"
 
+    def _prepare_request(self, body: bytes | None) -> tuple[bytes | None, bool]:
+        return body, False
+
     def _handle(self) -> None:
         diagnostic_id = uuid.uuid4().hex[:12]
         started = time.monotonic()
         length = int(self.headers.get("Content-Length", 0) or 0)
         body = self.rfile.read(length) if length else None
+        try:
+            body, handled = self._prepare_request(body)
+        except ValueError as exc:
+            self._safe_send_error(400, str(exc))
+            return
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        if handled:
+            return
         url = self.path.lstrip("/")
         token_header, extra_strip, route_label = self._forward_target(body)
         log_proxy_diagnostic(
@@ -428,6 +445,87 @@ class _RelayProxyHandler(_ProxyHandler):
         return self.token_header, frozenset(), "relay"
 
 
+class _CodexProxyHandler(_ProxyHandler):
+    runtime: CodexRuntime
+    prepared: PreparedRequest | None = None
+
+    def _prepare_request(self, body: bytes | None) -> tuple[bytes | None, bool]:
+        self.prepared = None
+        if self.command != "POST" or self.path.split("?", 1)[0] not in {
+            "/responses",
+            "/responses/compact",
+        }:
+            return body, False
+        self.prepared = self.runtime.prepare_request(body or b"", dict(self.headers.items()))
+        local = self.prepared.synthetic_response
+        if local is None:
+            return self.prepared.body, False
+        content_type = self.prepared.synthetic_content_type
+        if not isinstance(content_type, str):
+            raise ValueError("Codex synthetic response requires a content type")
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(local)))
+        self.end_headers()
+        self.wfile.write(local)
+        self.wfile.flush()
+        return self.prepared.body, True
+
+    def _relay_response(
+        self,
+        resp: httpx.Response,
+        *,
+        diagnostic_id: str | None = None,
+        started: float | None = None,
+    ) -> None:
+        prepared = self.prepared
+        if prepared is None or not prepared.adapt_response or not resp.is_success:
+            super()._relay_response(resp, diagnostic_id=diagnostic_id, started=started)
+            return
+        content_type = resp.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if content_type != "text/event-stream":
+            try:
+                received = bytearray()
+                for chunk in resp.iter_bytes(chunk_size=64 * 1024):
+                    if len(received) + len(chunk) > self.runtime.max_response_bytes:
+                        raise ValueError("Codex JSON response exceeds the bounded limit")
+                    received.extend(chunk)
+                body = self.runtime.transform_json_response(bytes(received), prepared)
+            except ValueError:
+                self._safe_send_error(502, "Codex runtime received an invalid Responses result")
+                return
+            self.send_response(resp.status_code)
+            self._response_headers(resp)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            self.wfile.flush()
+            return
+        transformer = self.runtime.response_transformer(prepared)
+        self.send_response(resp.status_code)
+        self._response_headers(resp)
+        self.end_headers()
+        try:
+            # iter_bytes decodes Content-Encoding; transformed lengths and encodings are dropped.
+            for chunk in resp.iter_bytes():
+                for frame in transformer.feed(chunk):
+                    self.wfile.write(frame)
+                    self.wfile.flush()
+            for frame in transformer.finish():
+                self.wfile.write(frame)
+            self.wfile.flush()
+        except (ValueError, httpx.HTTPError):
+            self.wfile.write(
+                b'event: error\ndata: {"type":"error","code":"codex_runtime_protocol_error","message":"Codex runtime could not adapt the Responses stream"}\n\n'
+            )
+            self.wfile.flush()
+
+    def _response_headers(self, resp: httpx.Response) -> None:
+        for key, value in resp.headers.items():
+            if key.lower() not in HOP_BY_HOP_HEADERS | {"content-encoding"}:
+                self.send_header(key, value)
+
+
 class _LoopbackHTTPServer(ThreadingHTTPServer):
     # Windows permits sharing an active listener when SO_REUSEADDR is enabled.
     allow_reuse_address = ThreadingHTTPServer.allow_reuse_address and os.name != "nt"
@@ -524,4 +622,25 @@ def start_otel_proxy(
         handler_type=_ProxyHandler,
         force_refresh_near_expiry=True,
         fallback_on_bind_error=False,
+    )
+
+
+def start_codex_proxy(
+    upstream_url: str,
+    token_provider: Callable[[bool], str],
+    runtime: CodexRuntime,
+) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
+    """Start a launch-owned V10 Responses relay without changing saved provider settings."""
+    handler = cast(
+        type[_ProxyHandler],
+        type("BoundCodexRuntimeHandler", (_CodexProxyHandler,), {"runtime": runtime}),
+    )
+    return _start_proxy(
+        upstream_url,
+        token_provider,
+        0,
+        upstream_path="",
+        token_header=AUTHORIZATION_HEADER,
+        handler_type=handler,
+        force_refresh_near_expiry=True,
     )
