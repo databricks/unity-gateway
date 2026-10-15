@@ -543,6 +543,50 @@ class TestConfigureOneGeminiProvider:
             agents_mod._configure_one("gemini", self._STATE, "c.s.g")
 
 
+class TestPersistedModelLocation:
+    _STATE = {"workspace": "https://ws.databricks.com", "profile": None}
+
+    def _capture(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            agents_mod,
+            "configure_tool",
+            lambda tool, state, model=None, **kw: calls.append((tool, kw)) or state,
+        )
+        monkeypatch.setattr(agents_mod, "save_state", lambda state: None)
+        monkeypatch.setattr(agents_mod, "managed_write_batch", lambda *_a: nullcontext())
+        return calls
+
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    def test_configure_selected_tools_uses_saved_location(self, monkeypatch, tool):
+        calls = self._capture(monkeypatch)
+        state = {**self._STATE, "model_locations": {tool: "main.models"}}
+
+        agents_mod.configure_selected_tools(state, [tool], install_ai_tools=False)
+
+        assert calls == [(tool, {"parent_schema": "main.models"})]
+
+    def test_saved_provider_wins_over_location(self, monkeypatch):
+        calls = self._capture(monkeypatch)
+        monkeypatch.setattr(
+            agents_mod, "resolve_provider_models", lambda *_a: ({"opus": "x"}, None, False)
+        )
+        state = {
+            **self._STATE,
+            "provider_services": {"claude": "main.default.mps"},
+            "model_locations": {"claude": "main.models"},
+        }
+
+        agents_mod.configure_selected_tools(state, ["claude"], install_ai_tools=False)
+
+        assert calls[0][1]["provider"] == "main.default.mps"
+        assert "parent_schema" not in calls[0][1]
+
+    def test_gemini_ignores_saved_location(self):
+        state = {**self._STATE, "model_locations": {"gemini": "main.models"}}
+        assert agents_mod._persisted_model_location("gemini", state, None) is None
+
+
 class TestResolveGeminiProviderModel:
     _STATE = {"workspace": "https://ws.databricks.com", "profile": None}
 
