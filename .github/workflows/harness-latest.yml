@@ -145,16 +145,17 @@ jobs:
               f"Versions used: Claude Code {os.environ['CLAUDE_VERSION'] or 'unknown'}, "
               f"Codex: {os.environ['CODEX_VERSION'] or 'unknown'}"
           )
+          repository = os.environ['GITHUB_REPOSITORY']
+          run_id = os.environ['GITHUB_RUN_ID']
+          run_url = f"{os.environ['GITHUB_SERVER_URL']}/{repository}/actions/runs/{run_id}"
           if os.environ['HARNESS_RESULT'] == 'success':
-              message = f"Latest harness test succeeded! {versions}"
+              message = f"Latest harness test succeeded! {versions}. Link to run: {run_url}"
           else:
-              repository = os.environ['GITHUB_REPOSITORY']
-              run_id = os.environ['GITHUB_RUN_ID']
               request = urllib.request.Request(
                   f"{os.environ['GITHUB_API_URL']}/repos/{repository}/actions/runs/{run_id}/jobs?filter=latest&per_page=100",
                   headers={"Authorization": f"Bearer {os.environ['GH_TOKEN']}"},
               )
-              failed_url = f"{os.environ['GITHUB_SERVER_URL']}/{repository}/actions/runs/{run_id}"
+              failed_url = run_url
               try:
                   with urllib.request.urlopen(request, timeout=30) as response:
                       jobs = json.load(response)['jobs']

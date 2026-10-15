@@ -29,7 +29,7 @@ recipe header values across on → off → on. It runs separately from PR checks
 failures do not block merges. Existing pinned-version lanes remain.
 All three suites use the same resolved versions. After success or failure, one
 Slack message is sent through `SLACK_WEBHOOK_UG_CODING_AGENTS_POD`, including the
-versions and a failed-job link on failure. Component tests in
+versions and a workflow-run link on success or a failed-job link on failure. Component tests in
 `test_integration_contract.py` check the messages, setup failures, job timeouts,
 GitHub link fallback, and Slack delivery errors without sending live messages.
 
