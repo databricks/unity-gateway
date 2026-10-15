@@ -262,6 +262,10 @@ directory holds the settings, socket, and plugin and is removed when the launch
 finishes or fails. Existing hook configuration and disable/revert behavior are
 unchanged. Native daemon/background propagation of the plugin remains unverified.
 
+The routing notice names the generated agent selected for launch and its model.
+Claude Code's own task header can still show the agent type the parent originally
+requested. That name may contain a different model; it is not the routing result.
+
 On Windows, Claude smart routing uses subagent hooks only. If first-prompt routing
 is enabled, ug warns and falls back to subagent routing because the first-prompt
 wrapper requires a Unix terminal.

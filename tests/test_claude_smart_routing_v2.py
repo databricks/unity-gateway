@@ -700,7 +700,7 @@ class TestSubagentRouting:
         expected_message = (
             "\n┌───────────────────────────────────────────────────────────────────────────┐\n"
             "│ Using Unity Gateway Smart Router - Subagent                               │\n"
-            "│ Subagent : Explore                                                        │\n"
+            "│ Subagent : ug-smart-router:ucode-route-claude-opus-4-8-3ec612f4           │\n"
             "│ Selected Model : system.ai.claude-opus-4-8                                │\n"
             "└───────────────────────────────────────────────────────────────────────────┘"
         )
@@ -708,6 +708,49 @@ class TestSubagentRouting:
         assert output["hookSpecificOutput"]["permissionDecisionReason"] == expected_message
         decision_record = json.loads(decisions_path.read_text())
         assert decision_record["requested_model"] == "system.ai.claude-opus-4-8"
+
+    @pytest.mark.parametrize("orchestrator_enabled", ["0", "1"])
+    def test_routed_agent_notice_matches_executed_agent(
+        self, tmp_path, monkeypatch, orchestrator_enabled
+    ):
+        session_file = tmp_path / "env.json"
+        session_file.write_text("{}")
+        monkeypatch.setenv("UCODE_SESSION_ENV_FILE", str(session_file))
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "1")
+        monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", orchestrator_enabled)
+        monkeypatch.delenv("ISAAC_LAUNCH_MODE", raising=False)
+        selected_model = "system.ai.claude-haiku-5-5"
+        requested_agent = v2._routed_claude_agent_name("system.ai.glm-5-3-flash")
+        routed_agent = v2._routed_claude_agent_name(selected_model)
+        # Control only the remote router response; exercise the hook and notice together.
+        monkeypatch.setattr(
+            v2,
+            "_request_claude_routing_decision",
+            lambda *_args: (
+                routing.RoutingDecision(model=selected_model, raw_model="claude-haiku-5-5"),
+                None,
+            ),
+        )
+        output = v2.route_claude_pre_tool_use(
+            {
+                "tool_name": "Agent",
+                "tool_input": {
+                    "description": "Create a proof file",
+                    "subagent_type": requested_agent,
+                    "prompt": "Write a small proof file.",
+                },
+            },
+            workspace="https://example.com",
+            token="token",
+            available_models=[selected_model, "system.ai.glm-5-3-flash"],
+        )
+
+        hook = output["hookSpecificOutput"]
+        assert hook["updatedInput"]["subagent_type"] == routed_agent
+        for notice in (output["systemMessage"], hook["permissionDecisionReason"]):
+            assert f"Subagent:{routed_agent}" in "".join(notice.split())
+            assert requested_agent not in notice
+            assert ("[orchestrator on]" in notice) == (orchestrator_enabled == "1")
 
     def test_writes_routed_agents_as_launch_scoped_plugin(self, tmp_path):
         plugin_dir = tmp_path / "routing-plugin"
