@@ -1371,6 +1371,17 @@ class TestWriteToolConfigManagedSettings:
         assert "x-databricks-traffic-id: abc" in lines
         assert "User-Agent: probe" in lines
 
+    def test_ug_headers_fail_when_managed_file_sets_custom_headers(self, monkeypatch):
+        # Claude would use the managed value and silently drop the `ug --header` lines.
+        existing = {str(FAKE_MANAGED_PATH): {"env": {"ANTHROPIC_CUSTOM_HEADERS": "X-IT: 1"}}}
+        self._patch(monkeypatch, [], [], existing)
+        monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: abc")
+
+        with pytest.raises(RuntimeError, match="can't reach Claude Code"):
+            claude.write_tool_config(
+                {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+            )
+
     def test_unmanaged_preserves_foreign_header_and_replaces_ucode_headers_in_place(
         self, monkeypatch
     ):
