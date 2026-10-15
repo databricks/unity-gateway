@@ -991,10 +991,11 @@ class TestV2HeadlessClaude:
         assert "--model" not in launched["argv"]
 
 
-def test_routing_hook_command_uses_windows_quoting_on_windows(monkeypatch):
+def test_routing_hook_command_keeps_posix_quoting_on_windows(monkeypatch):
+    """Claude Code runs hooks through Git Bash on Windows, which strips unquoted backslashes."""
     from ucode.os_compatibility import subprocess_cross_os
     from ucode.smart_routing import claude_hooks
 
     monkeypatch.setattr(subprocess_cross_os.platform, "system", lambda: "Windows")
-    hook = claude_hooks._routing_command_hook([r"C:\Program Files\ug.EXE", "route-subagent"])
-    assert hook["command"] == r'"C:\Program Files\ug.EXE" route-subagent'
+    hook = claude_hooks._routing_command_hook([r"C:\Users\me\.local\bin\ug.EXE", "route-subagent"])
+    assert hook["command"] == r"'C:\Users\me\.local\bin\ug.EXE' route-subagent"
