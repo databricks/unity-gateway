@@ -126,6 +126,12 @@ These are component checks, not live Windows coverage for every agent.
 Agent configuration tests also verify `ug` auth/MCP helper commands, including
 quoted executable paths and replacement of legacy `ucode` routing/web-search helpers.
 
+| Unit/component coverage | Expected evidence |
+| --- | --- |
+| `test_agent_claude.py`, `test_claude_search_discovery.py`, `test_mcp_web_search.py` web-search environment overrides | `UG_WEBSEARCH_MODEL` wins over the legacy variable and configured/discovered models; legacy fallback still works; the MCP entry canonicalizes external-access settings to `true`/`false`; equivalent values do not re-register through `write_tool_config`; invalid booleans preserve config files, state, and working registrations and fail before authentication; request JSON contains the selected model and optional boolean `external_web_access` |
+
+These checks mock dependencies and do not establish live web-search behavior.
+
 `TestChildStdoutLaunch` in `test_cli.py` checks Claude `-p`/`--print` and Codex `exec`
 (plain and `--json`) and `app-server` status/error output on stderr, argument forwarding with
 and without ug's `--`, and an unchanged stdout descriptor. Detection checks exact tokens before

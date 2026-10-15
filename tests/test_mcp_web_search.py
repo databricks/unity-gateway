@@ -16,6 +16,16 @@ from ucode.agents import claude
 WS = "https://example.databricks.com"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_web_search_env(monkeypatch):
+    for name in (
+        "UG_WEBSEARCH_MODEL",
+        "UCODE_WEB_SEARCH_MODEL",
+        "UG_WEBSEARCH_EXTERNAL_WEB_ACCESS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 def _drive(requests: list[dict]) -> list[dict]:
     """Run `serve()` over a synthetic stdin and return parsed responses."""
     stdin = io.StringIO("\n".join(json.dumps(r) for r in requests) + "\n")
@@ -203,12 +213,49 @@ class TestCallResponsesApi:
     def test_missing_model_env(self, monkeypatch):
         monkeypatch.setenv("DATABRICKS_HOST", WS)
         monkeypatch.delenv("UCODE_WEB_SEARCH_MODEL", raising=False)
-        with pytest.raises(RuntimeError, match="UCODE_WEB_SEARCH_MODEL"):
+        with pytest.raises(RuntimeError, match="UG_WEBSEARCH_MODEL.*UCODE_WEB_SEARCH_MODEL"):
             mcp_web_search._call_responses_api("query")
 
-    def test_posts_to_responses_endpoint(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("model_env", "expected_model"),
+        [
+            ({"UG_WEBSEARCH_MODEL": "new-model"}, "new-model"),
+            ({"UCODE_WEB_SEARCH_MODEL": "legacy-model"}, "legacy-model"),
+            (
+                {"UG_WEBSEARCH_MODEL": " new-model ", "UCODE_WEB_SEARCH_MODEL": "legacy-model"},
+                "new-model",
+            ),
+            (
+                {"UG_WEBSEARCH_MODEL": " ", "UCODE_WEB_SEARCH_MODEL": " legacy-model "},
+                "legacy-model",
+            ),
+        ],
+    )
+    @pytest.mark.parametrize(
+        ("external_web_access", "expected_external_web_access"),
+        [
+            (None, None),
+            (" ", None),
+            ("false", False),
+            (" FaLsE ", False),
+            ("0", False),
+            ("true", True),
+            ("1", True),
+        ],
+    )
+    def test_posts_to_responses_endpoint(
+        self,
+        monkeypatch,
+        model_env,
+        expected_model,
+        external_web_access,
+        expected_external_web_access,
+    ):
         monkeypatch.setenv("DATABRICKS_HOST", WS)
-        monkeypatch.setenv("UCODE_WEB_SEARCH_MODEL", "databricks-gpt-5")
+        for name, value in model_env.items():
+            monkeypatch.setenv(name, value)
+        if external_web_access is not None:
+            monkeypatch.setenv("UG_WEBSEARCH_EXTERNAL_WEB_ACCESS", external_web_access)
         monkeypatch.setattr(mcp_web_search, "get_databricks_token", lambda ws, profile=None: "tok")
 
         captured: dict[str, Any] = {}
@@ -224,6 +271,7 @@ class TestCallResponsesApi:
                 return json.dumps({"output": []}).encode("utf-8")
 
         def fake_urlopen(req, timeout):
+            assert timeout == 180
             captured["url"] = req.full_url
             captured["method"] = req.get_method()
             captured["headers"] = dict(req.header_items())
@@ -235,14 +283,31 @@ class TestCallResponsesApi:
 
         assert captured["url"] == f"{WS}/ai-gateway/codex/v1/responses"
         assert captured["method"] == "POST"
-        assert captured["body"]["model"] == "databricks-gpt-5"
-        assert captured["body"]["tools"] == [{"type": "web_search"}]
+        assert captured["body"]["model"] == expected_model
+        expected_tool: dict[str, Any] = {"type": "web_search"}
+        if expected_external_web_access is not None:
+            expected_tool["external_web_access"] = expected_external_web_access
+        assert captured["body"]["tools"] == [expected_tool]
         assert captured["body"]["input"] == [{"role": "user", "content": "hello"}]
+        assert captured["body"]["store"] is False
         # urllib lowercases header names in header_items
         auth_header = next(
             v for k, v in captured["headers"].items() if k.lower() == "authorization"
         )
         assert auth_header == "Bearer tok"
+
+    def test_invalid_external_web_access_fails_before_auth(self, monkeypatch):
+        monkeypatch.setenv("DATABRICKS_HOST", WS)
+        monkeypatch.setenv("UG_WEBSEARCH_MODEL", "new-model")
+        monkeypatch.setenv("UG_WEBSEARCH_EXTERNAL_WEB_ACCESS", "invalid")
+        monkeypatch.setattr(
+            mcp_web_search,
+            "get_databricks_token",
+            lambda *args: pytest.fail("Invalid settings must not acquire a token."),
+        )
+
+        with pytest.raises(RuntimeError, match="UG_WEBSEARCH_EXTERNAL_WEB_ACCESS must be"):
+            mcp_web_search._call_responses_api("query")
 
 
 class TestConfiguredSearchAuthentication:

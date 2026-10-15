@@ -114,17 +114,39 @@ def _extract_response_text(payload: dict[str, Any]) -> str:
     return "\n".join(parts).strip()
 
 
+def web_search_model_from_env() -> str | None:
+    return (
+        os.environ.get("UG_WEBSEARCH_MODEL", "").strip()
+        or os.environ.get("UCODE_WEB_SEARCH_MODEL", "").strip()
+        or None
+    )
+
+
+def web_search_external_web_access_from_env() -> bool | None:
+    value = os.environ.get("UG_WEBSEARCH_EXTERNAL_WEB_ACCESS", "").strip().lower()
+    if not value:
+        return None
+    if value not in {"true", "false", "1", "0"}:
+        raise RuntimeError("UG_WEBSEARCH_EXTERNAL_WEB_ACCESS must be true, false, 1, or 0.")
+    return value in {"true", "1"}
+
+
 def _call_responses_api(query: str) -> dict[str, Any]:
     """POST to the Databricks Codex (Responses API) gateway and return the
     parsed JSON payload. Raises RuntimeError on any failure with a message
     suitable for surfacing as a tool error."""
     workspace = os.environ.get("DATABRICKS_HOST", "").strip()
-    model = os.environ.get("UCODE_WEB_SEARCH_MODEL", "").strip()
+    model = web_search_model_from_env()
     profile = os.environ.get("DATABRICKS_CONFIG_PROFILE", "").strip() or None
     if not workspace:
         raise RuntimeError("DATABRICKS_HOST env var is not set.")
     if not model:
-        raise RuntimeError("UCODE_WEB_SEARCH_MODEL env var is not set.")
+        raise RuntimeError("Set UG_WEBSEARCH_MODEL (or the legacy UCODE_WEB_SEARCH_MODEL) env var.")
+
+    web_search_tool: dict[str, Any] = {"type": "web_search"}
+    external_web_access = web_search_external_web_access_from_env()
+    if external_web_access is not None:
+        web_search_tool["external_web_access"] = external_web_access
 
     try:
         token = get_databricks_token(workspace, profile)
@@ -135,7 +157,7 @@ def _call_responses_api(query: str) -> dict[str, Any]:
         {
             "model": model,
             "input": [{"role": "user", "content": query}],
-            "tools": [{"type": "web_search"}],
+            "tools": [web_search_tool],
             "store": False,
         }
     ).encode("utf-8")

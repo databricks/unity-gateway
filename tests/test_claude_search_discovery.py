@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import subprocess
 from types import SimpleNamespace
@@ -30,6 +31,8 @@ def search_setup(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
     monkeypatch.setenv(PROVIDER_ENV, "ucode")
     monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "0")
+    monkeypatch.delenv("UG_WEBSEARCH_EXTERNAL_WEB_ACCESS", raising=False)
+    monkeypatch.setattr(claude, "ug_binary", lambda: str(tmp_path / "ug"))
     monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", config_dir / "ucode-settings.json")
     monkeypatch.setattr(claude, "CLAUDE_BACKUP_PATH", tmp_path / "backup.json")
     monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
@@ -51,9 +54,12 @@ def search_setup(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(claude, "refresh_managed_config", lambda *_: SimpleNamespace(manifest=None))
 
+    commands = []
+
     def run_claude(command, **kwargs):
         if command == ["claude", "--version"]:
             return subprocess.CompletedProcess(command, 0, "2.1.286 (Claude Code)\n", "")
+        commands.append(command)
         config = json.loads(config_path.read_text())
         if command[:3] == ["claude", "mcp", "remove"]:
             config["mcpServers"].pop(command[3], None)
@@ -65,7 +71,7 @@ def search_setup(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(subprocess_cross_os, "run", run_claude)
-    return SimpleNamespace(config_path=config_path, isaac_entry=isaac_entry)
+    return SimpleNamespace(config_path=config_path, isaac_entry=isaac_entry, commands=commands)
 
 
 @pytest.mark.parametrize("discovery", ["model_services", "legacy"])
@@ -95,6 +101,7 @@ def test_claude_only_setup_registers_search_without_prior_codex_setup(
     assert entry["env"] == {
         "DATABRICKS_HOST": WORKSPACE,
         "DATABRICKS_CONFIG_PROFILE": "test-profile",
+        "UG_WEBSEARCH_MODEL": SEARCH_MODEL,
         "UCODE_WEB_SEARCH_MODEL": SEARCH_MODEL,
     }
     saved = state_module.load_state()
@@ -132,3 +139,67 @@ def test_claude_only_setup_preserves_explicit_search_model(search_setup):
     servers = json.loads(search_setup.config_path.read_text())["mcpServers"]
     assert servers["web_search"]["env"]["UCODE_WEB_SEARCH_MODEL"] == "custom-search-model"
     assert servers["web-search"] == search_setup.isaac_entry
+
+
+@pytest.mark.parametrize(
+    ("initial", "equivalent", "expected"),
+    [
+        (" FaLsE ", "0", "false"),
+        ("0", "false", "false"),
+        (" TRUE ", "1", "true"),
+        ("1", "true", "true"),
+    ],
+)
+def test_equivalent_external_access_values_do_not_reregister(
+    search_setup, monkeypatch, initial, equivalent, expected
+):
+    state = cli.configure_shared_state(WORKSPACE, profile="test-profile", tools=["claude"])
+    monkeypatch.setenv("UG_WEBSEARCH_EXTERNAL_WEB_ACCESS", initial)
+
+    claude.write_tool_config(state, CLAUDE_MODEL)
+
+    entry = json.loads(search_setup.config_path.read_text())["mcpServers"]["web_search"]
+    assert entry["env"]["UG_WEBSEARCH_EXTERNAL_WEB_ACCESS"] == expected
+    commands = list(search_setup.commands)
+    assert sum(command[:3] == ["claude", "mcp", "add-json"] for command in commands) == 1
+
+    monkeypatch.setenv("UG_WEBSEARCH_EXTERNAL_WEB_ACCESS", equivalent)
+    claude.write_tool_config(state_module.load_state(), CLAUDE_MODEL)
+
+    assert search_setup.commands == commands
+    assert json.loads(search_setup.config_path.read_text())["mcpServers"]["web_search"] == entry
+    assert state_module.load_state()[claude.WEB_SEARCH_MCP_STATE_KEY] == entry
+
+
+@pytest.mark.parametrize("operation", ["configure", "register"])
+@pytest.mark.parametrize("value", ["flase", "yes", "2"])
+def test_invalid_external_access_preserves_working_registration(
+    search_setup, monkeypatch, operation, value
+):
+    state = cli.configure_shared_state(WORKSPACE, profile="test-profile", tools=["claude"])
+    monkeypatch.setenv("UG_WEBSEARCH_EXTERNAL_WEB_ACCESS", "false")
+    claude.write_tool_config(state, CLAUDE_MODEL)
+    previous_state = copy.deepcopy(state)
+    paths = (
+        search_setup.config_path,
+        claude.CLAUDE_SETTINGS_PATH,
+        state_module.STATE_PATH,
+    )
+    previous_files = {path: path.read_bytes() for path in paths}
+    commands = list(search_setup.commands)
+    monkeypatch.setenv("UG_WEBSEARCH_EXTERNAL_WEB_ACCESS", value)
+
+    with pytest.raises(RuntimeError, match="UG_WEBSEARCH_EXTERNAL_WEB_ACCESS must be"):
+        if operation == "configure":
+            claude.write_tool_config(state, CLAUDE_MODEL)
+        else:
+            claude._register_web_search_mcp(
+                WORKSPACE,
+                SEARCH_MODEL,
+                "test-profile",
+                previous_entry=state[claude.WEB_SEARCH_MCP_STATE_KEY],
+            )
+
+    assert search_setup.commands == commands
+    assert state == previous_state
+    assert {path: path.read_bytes() for path in paths} == previous_files

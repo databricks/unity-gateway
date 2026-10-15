@@ -43,6 +43,16 @@ def _avoid_real_managed_settings(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_web_search_env(monkeypatch):
+    for name in (
+        "UG_WEBSEARCH_MODEL",
+        "UCODE_WEB_SEARCH_MODEL",
+        "UG_WEBSEARCH_EXTERNAL_WEB_ACCESS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _default_managed_config_present(monkeypatch):
     """`write_tool_config` now decides overwrite-vs-preserve itself by calling
     `refresh_managed_config`. Default every test to "managed present" (current-HEAD wholesale
@@ -800,19 +810,99 @@ class TestWebSearchMcpEntry:
         assert entry["type"] == "stdio"
         assert entry["args"] == ["mcp", "web-search", "--managed-by-ucode"]
         assert entry["env"]["DATABRICKS_HOST"] == WS
+        assert entry["env"]["UG_WEBSEARCH_MODEL"] == "databricks-gpt-5"
         assert entry["env"]["UCODE_WEB_SEARCH_MODEL"] == "databricks-gpt-5"
+        assert "UG_WEBSEARCH_EXTERNAL_WEB_ACCESS" not in entry["env"]
         assert entry["command"] == "/tools/ug"
+        assert claude._generated_search_entry(entry) is True
 
     def test_entry_uses_selected_profile(self):
         entry = claude._web_search_mcp_entry(WS, "search-model", "custom-profile")
         assert entry["env"] == {
             "DATABRICKS_HOST": WS,
+            "UG_WEBSEARCH_MODEL": "search-model",
             "UCODE_WEB_SEARCH_MODEL": "search-model",
             "DATABRICKS_CONFIG_PROFILE": "custom-profile",
         }
 
+    @pytest.mark.parametrize("binary_name", ["ug", "ug.exe"])
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ("false", "false"),
+            (" FaLsE ", "false"),
+            ("0", "false"),
+            ("true", "true"),
+            (" TRUE ", "true"),
+            ("1", "true"),
+        ],
+    )
+    def test_forwards_external_web_access(
+        self, monkeypatch, tmp_path, binary_name, value, expected
+    ):
+        command = str(tmp_path / binary_name)
+        monkeypatch.setattr(claude, "ug_binary", lambda: command)
+        monkeypatch.setenv("UG_WEBSEARCH_EXTERNAL_WEB_ACCESS", value)
+
+        entry = claude._web_search_mcp_entry(WS, "search-model", "profile")
+
+        assert entry["env"]["UG_WEBSEARCH_EXTERNAL_WEB_ACCESS"] == expected
+        assert entry["env"]["DATABRICKS_CONFIG_PROFILE"] == "profile"
+        assert entry["command"] == command
+        assert claude._generated_search_entry(entry) is True
+
+    def test_unsetting_external_web_access_removes_override(self, monkeypatch):
+        monkeypatch.setenv("UG_WEBSEARCH_EXTERNAL_WEB_ACCESS", "false")
+        previous_entry = claude._web_search_mcp_entry(WS, "search-model")
+        monkeypatch.delenv("UG_WEBSEARCH_EXTERNAL_WEB_ACCESS")
+
+        entry = claude._web_search_mcp_entry(WS, "search-model")
+
+        assert entry != previous_entry
+        assert "UG_WEBSEARCH_EXTERNAL_WEB_ACCESS" not in entry["env"]
+
 
 class TestResolveWebSearchModel:
+    @pytest.mark.parametrize(
+        ("model_env", "expected_model"),
+        [
+            ({"UG_WEBSEARCH_MODEL": "new-model"}, "new-model"),
+            ({"UCODE_WEB_SEARCH_MODEL": "legacy-model"}, "legacy-model"),
+            (
+                {"UG_WEBSEARCH_MODEL": " new-model ", "UCODE_WEB_SEARCH_MODEL": "legacy-model"},
+                "new-model",
+            ),
+            (
+                {"UG_WEBSEARCH_MODEL": " ", "UCODE_WEB_SEARCH_MODEL": " legacy-model "},
+                "legacy-model",
+            ),
+        ],
+    )
+    def test_env_override_wins_and_reaches_mcp_entry(self, monkeypatch, model_env, expected_model):
+        for name, value in model_env.items():
+            monkeypatch.setenv(name, value)
+        state = {"web_search_model": "state-model", "codex_models": ["discovered-model"]}
+
+        model = claude._resolve_web_search_model(state)
+        entry = claude._web_search_mcp_entry(WS, model)
+
+        assert model == expected_model
+        assert entry["env"]["UG_WEBSEARCH_MODEL"] == expected_model
+        assert entry["env"]["UCODE_WEB_SEARCH_MODEL"] == expected_model
+
+    def test_env_override_works_without_discovered_models(self, monkeypatch):
+        monkeypatch.setenv("UG_WEBSEARCH_MODEL", "new-model")
+
+        assert claude._resolve_web_search_model({}) == "new-model"
+
+    def test_blank_env_overrides_use_state(self, monkeypatch):
+        monkeypatch.setenv("UG_WEBSEARCH_MODEL", " ")
+        monkeypatch.setenv("UCODE_WEB_SEARCH_MODEL", " ")
+
+        assert (
+            claude._resolve_web_search_model({"web_search_model": "state-model"}) == "state-model"
+        )
+
     def test_uses_explicit_override(self):
         assert claude._resolve_web_search_model({"web_search_model": "explicit"}) == "explicit"
 
