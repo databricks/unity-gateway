@@ -479,6 +479,19 @@ def write_tool_config(
     except RuntimeError:
         _detach_app_catalog_after_failure()
         raise
+    managed_path = codex_managed_config_path()
+    discovery = _catalog_source(provider, parent_schema)
+    discovered = None
+    if managed_path and discovery:
+        source, identifier, scope = discovery
+        discovered = _discover_catalog(
+            workspace, _launch_token(state, workspace), source, identifier
+        )
+        _discovered_catalogs[(workspace, scope)] = discovered
+        if discovered is not None:
+            _reject_managed_model_catalog()
+    managed_doc_catalog = discovered if discovery else catalog
+    discovered_slugs = catalog_slugs(discovered) if discovered else []
 
     _remove_legacy_ucode_profile()
     # Back up only a file that predates ucode's management of the tool. A
@@ -529,39 +542,38 @@ def write_tool_config(
         enabled=False,
     )
     write_toml_file(CODEX_CONFIG_PATH, doc)
-    managed_path = codex_managed_config_path()
+    pinned_model = discovered_slugs[0] if discovered_slugs and not doc.get("model") else None
     managed_catalog = _managed_catalog_path(managed_path) if managed_path else None
     managed_catalog_path = (
         str(managed_catalog)
         if managed_catalog and (managed_writes_allowed() or managed_catalog.is_file())
         else None
     )
-    discovery = _catalog_source(provider, parent_schema)
-    discovered = None
-    if managed_path and discovery:
-        source, identifier, scope = discovery
-        discovered = _discover_catalog(
-            workspace, _launch_token(state, workspace), source, identifier
-        )
-        _discovered_catalogs[(workspace, scope)] = discovered
-    managed_doc_catalog = discovered if discovery else catalog
-    discovered_slugs = catalog_slugs(discovered) if discovered else []
 
     def compose_managed(base: dict) -> dict:
         prior_catalog = base.get("model_catalog_json")
         compose(base, include_catalog=False)
         _set_provider_header(base, provider)
-        # Same pin as launch: an MPS's allowlist may not route Codex's bundled default.
-        if chosen_model is None and discovered_slugs:
-            base["model"] = discovered_slugs[0]
+        snapshots = managed_file_snapshots("codex", _parse_managed_config)
+        ug_picker = snapshots.ug_picker or {}
+        baseline = snapshots.original_before_ug or {}
+        if pinned_model is not None:
+            base["model"] = pinned_model
+        elif (
+            chosen_model is None
+            and "model" in ug_picker
+            and base.get("model") == ug_picker["model"]
+        ):
+            # Smart routing keeps the startup model, so revert the pin an earlier launch left.
+            if "model" in baseline:
+                base["model"] = baseline["model"]
+            else:
+                base.pop("model")
         if managed_doc_catalog is not None and managed_catalog_path:
             base["model_catalog_json"] = managed_catalog_path
         elif prior_catalog is not None:
-            # Revert only the catalog ug recorded writing, and only while it is untouched.
-            snapshots = managed_file_snapshots("codex", _parse_managed_config)
-            ug_catalog = (snapshots.ug_picker or {}).get("model_catalog_json")
+            ug_catalog = ug_picker.get("model_catalog_json")
             if ug_catalog is not None and str(prior_catalog) == str(ug_catalog):
-                baseline = snapshots.original_before_ug or {}
                 if "model_catalog_json" in baseline:
                     base["model_catalog_json"] = baseline["model_catalog_json"]
                 else:
@@ -569,7 +581,10 @@ def write_tool_config(
         return base
 
     _reconcile_managed_config(
-        state, compose_managed, catalog=managed_doc_catalog if managed_catalog_path else None
+        state,
+        compose_managed,
+        catalog=managed_doc_catalog if managed_catalog_path else None,
+        pinned_model=pinned_model,
     )
     state = mark_tool_managed(state, "codex", MANAGED_KEYS)
     save_state(state)
@@ -639,7 +654,10 @@ def revert_managed_config() -> str:
         parser=_parse_managed_config,
         dumper=tomlkit.dumps,
     )
-    _revert_managed_catalog()
+    try:
+        _revert_managed_catalog()
+    except RuntimeError as exc:
+        print_warning_err(str(exc))
     return result
 
 
@@ -663,7 +681,6 @@ def _write_managed_catalog(path: Path, text: str) -> str:
 
 
 def _restore_managed_catalog(path: Path, text: str | None) -> None:
-    """Undo a catalog write whose managed config write failed, so the two stay consistent."""
     try:
         if text is None:
             _revert_managed_catalog()
@@ -683,7 +700,6 @@ def _revert_managed_catalog() -> str:
 
 
 def _stale_managed_catalog(path: Path, managed: dict, catalog: dict | None) -> bool:
-    """The managed config enforces ug's catalog file, but that file holds a different list."""
     managed_catalog = _managed_catalog_path(path)
     return (
         catalog is not None
@@ -693,7 +709,11 @@ def _stale_managed_catalog(path: Path, managed: dict, catalog: dict | None) -> b
 
 
 def _reconcile_managed_config(
-    state: dict, compose: Callable[[dict], dict], *, catalog: dict | None = None
+    state: dict,
+    compose: Callable[[dict], dict],
+    *,
+    catalog: dict | None = None,
+    pinned_model: str | None = None,
 ) -> None:
     """Reconcile Codex's highest-precedence config while preserving unrelated policy."""
     if managed_settings_skipped():
@@ -776,18 +796,24 @@ def _reconcile_managed_config(
         )
         mark_managed_file_verified(state, "codex", path, scope="local-compatible")
         return
-    if catalog is None and not is_dry_run():
+    if (
+        catalog is None
+        and not is_dry_run()
+        and str(desired_doc.get("model_catalog_json")) != str(managed_catalog)
+    ):
         try:
             _revert_managed_catalog()
         except RuntimeError as exc:
             print_warning_err(str(exc))
     mark_managed_file_verified(state, "codex", path)
-    record_ug_picker(
-        "codex",
+    picker = (
         {"model_catalog_json": str(desired_doc["model_catalog_json"])}
         if catalog is not None
-        else {},
+        else {}
     )
+    if pinned_model is not None:
+        picker["model"] = pinned_model
+    record_ug_picker("codex", picker)
 
 
 MANAGED_MCP_CONFIG_KEY = "mcp_servers"
@@ -1174,15 +1200,12 @@ def _launch_token(state: dict, workspace: str, *, force_refresh: bool = False) -
     return get_databricks_token(workspace, state.get("profile"), force_refresh=force_refresh)
 
 
-# Catalogs the config write discovered, so the launch that follows reuses them instead of
-# fetching again. Keyed by workspace and catalog scope.
 _discovered_catalogs: dict[tuple[str, str], dict | None] = {}
 
 
 def _catalog_source(
     provider: str | None, parent_schema: str | None
 ) -> tuple[CodexCatalogSource, str, str] | None:
-    """The discovery source, identifier, and catalog scope for a provider or UC launch."""
     if provider:
         return CodexCatalogSource.PROVIDER, provider, f"provider:{provider}"
     if parent_schema:
@@ -1193,7 +1216,6 @@ def _catalog_source(
 def _discover_catalog(
     workspace: str, token: str, source: CodexCatalogSource, identifier: str
 ) -> dict | None:
-    """Fetch and validate a source's catalog; None when the source publishes none."""
     try:
         catalog = _fetch_codex_model_catalog(workspace, token, source=source, identifier=identifier)
         validate_codex_catalog(SPEC["binary"], catalog)
