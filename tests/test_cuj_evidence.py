@@ -22,6 +22,7 @@ from tests.e2e_cuj.helpers.tui_request_recorder import RecordedRequest, Recorded
 from tests.e2e_cuj.test_cuj4_smart_routing import (
     _smart_router_band_hidden,
     _smart_router_band_shown,
+    _smart_router_hint_shown,
     _task_inference_request,
 )
 from tests.integration.utils.evidence import FileTask, read_jsonl
@@ -502,3 +503,22 @@ def test_cuj_claude_headless_model_requires_expected_model_output_tokens(failure
     else:
         with pytest.raises(AssertionError):
             assert_claude_headless_model(result, model)
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_cuj4_hint_row_requires_the_current_state(enabled):
+    state, other = ("ON", "OFF") if enabled else ("OFF", "ON")
+    row = f"  ⏵⏵ auto mode on (shift+tab to cycle) · PR #1138 · ← for agents · smart router {state}"
+    tui = SimpleNamespace(screen=SimpleNamespace(display=[row]))
+    assert _smart_router_hint_shown(tui, enabled=enabled)
+    assert not _smart_router_hint_shown(tui, enabled=not enabled)
+    # A row holding only the state, as when no other hint shows, still counts.
+    tui.screen.display = [f"  smart router {state}  "]
+    assert _smart_router_hint_shown(tui, enabled=enabled)
+    # The band and the toggle reply name the state but are not the hint row.
+    tui.screen.display = [
+        f"unity gateway smart router  {state}  — routing subagents    [-]",
+        f"  ug-smart-router: Smart Router is {state.lower()}",
+        f"  ⏵⏵ auto mode on (shift+tab to cycle) · smart router {other}",
+    ]
+    assert not _smart_router_hint_shown(tui, enabled=enabled)

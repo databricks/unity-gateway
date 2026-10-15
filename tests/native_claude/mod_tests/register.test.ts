@@ -106,21 +106,26 @@ function engine(on: On, env: Record<string, string | undefined>) {
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Text({ children: ['theirs'] }));
   on('prompt.submit', ($, e) => ({ text: e.text }));
   on('turn.complete', () => ({ text: '' }));
-}
-
-test('the band hides after a turn and returns after a toggle while the hint row tracks the state', { options: ROUTED }, async ($, on) => {
-  const { env } = setup(on);
-  engine(on, env);
+  // The engine draws the prompt hint row from the tail the mod passes down.
   const tails: unknown[] = [];
   on('ui.render', { component: 'PromptHint' }, ($, e) => {
     tails.push(e.props.tail);
     return $.ui.resolve(e).Text({ children: ['hint'] });
   });
-  const hint = async () => {
-    tails.length = 0;
-    await $.ui.mount({ ...ABOVE_PROMPT, component: 'PromptHint', props: { tail: '' } });
-    return tails.at(-1);
-  };
+  return { tails };
+}
+
+// The tail the mod hands the engine for the prompt hint row under the input.
+async function hintTail($: any, tails: unknown[]): Promise<unknown> {
+  tails.length = 0;
+  await $.ui.mount({ ...ABOVE_PROMPT, component: 'PromptHint', props: { tail: '' } });
+  return tails.at(-1);
+}
+
+test('the band hides after a turn and returns after a toggle while the hint row tracks the state', { options: ROUTED }, async ($, on) => {
+  const { env } = setup(on);
+  const { tails } = engine(on, env);
+  const hint = () => hintTail($, tails);
   const band = await $.ui.mount(ABOVE_PROMPT);
   expect(hasBand(await band.drawn())).toBe(true);
   expect(await hint()).toBe('smart router ON');
@@ -145,9 +150,35 @@ test('the band hides after a turn and returns after a toggle while the hint row 
   expect(await hint()).toBe('smart router OFF');
 });
 
+test('the hint row reads ON or OFF from each toggle through the second turn', { options: ROUTED }, async ($, on) => {
+  const { env } = setup(on);
+  const { tails } = engine(on, env);
+  const hint = () => hintTail($, tails);
+  expect(await hint()).toBe('smart router ON');
+
+  for (const [action, state] of [['off', 'OFF'], ['on', 'ON'], ['off', 'OFF'], ['on', 'ON']] as const) {
+    await $.command.run({ command: 'smart-router', args: action });
+    const expected = `smart router ${state}`;
+    expect(await hint()).toBe(expected);
+    for (const text of ['first', 'second']) {
+      await $.prompt.submit({ text: `${text} after ${action}` });
+      expect(await hint()).toBe(expected);
+      await $.turn.complete({ answer: 'done' });
+      expect(await hint()).toBe(expected);
+    }
+  }
+});
+
+test('the hint row keeps a tail another hook already set', { options: ROUTED }, async ($, on) => {
+  const { env } = setup(on);
+  const { tails } = engine(on, env);
+  await $.ui.mount({ ...ABOVE_PROMPT, component: 'PromptHint', props: { tail: 'theirs' } });
+  expect(tails.at(-1)).toBe('theirs · smart router ON');
+});
+
 test('the band is gone by the second turn after either toggle', { options: ROUTED }, async ($, on) => {
   const { env } = setup(on);
-  engine(on, env);
+  const { tails } = engine(on, env);
   const band = await $.ui.mount(ABOVE_PROMPT);
   const turn = async (text: string) => {
     await $.prompt.submit({ text });
