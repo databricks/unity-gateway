@@ -149,7 +149,7 @@ jobs:
           run_id = os.environ['GITHUB_RUN_ID']
           run_url = f"{os.environ['GITHUB_SERVER_URL']}/{repository}/actions/runs/{run_id}"
           if os.environ['HARNESS_RESULT'] == 'success':
-              message = f"Latest harness test succeeded! {versions}. Link to run: {run_url}"
+              message = f"✅ Latest harness test succeeded. {versions}. Link to run {run_url}"
           else:
               request = urllib.request.Request(
                   f"{os.environ['GITHUB_API_URL']}/repos/{repository}/actions/runs/{run_id}/jobs?filter=latest&per_page=100",
@@ -166,7 +166,7 @@ jobs:
                   )
               except urllib.error.URLError:
                   print("Unable to resolve failed job URL; linking to the workflow run.")
-              message = f"ALERT! Latest harness test failed. {versions}. Link to failed job: {failed_url}"
+              message = f"❌ ALERT! Latest harness test failed. {versions}. Link to failed job: {failed_url}"
           print(message)
           request = urllib.request.Request(
               os.environ['SLACK_WEBHOOK'],

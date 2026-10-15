@@ -192,10 +192,10 @@ def test_latest_harness_slack_notification(
     versions = f"Versions used: Claude Code {claude_version or 'unknown'}, Codex: 0.154.0"
     run_url = f"{env['GITHUB_SERVER_URL']}/{env['GITHUB_REPOSITORY']}/actions/runs/123"
     if result == "success":
-        expected = f"Latest harness test succeeded! {versions}. Link to run: {run_url}"
+        expected = f"✅ Latest harness test succeeded. {versions}. Link to run {run_url}"
     else:
         link = job_url if not api_error else run_url
-        expected = f"ALERT! Latest harness test failed. {versions}. Link to failed job: {link}"
+        expected = f"❌ ALERT! Latest harness test failed. {versions}. Link to failed job: {link}"
     assert posted == [{"text": expected}]
     assert expected in capsys.readouterr().out
 
