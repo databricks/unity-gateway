@@ -101,6 +101,8 @@ browser recovery, bounded login/lock waits, cancellation, and lock contention.
 Recovery regressions check token recheck before browser login, lock release after
 success/failure, one shared deadline, and network/CLI failures at each recovery stage.
 Invalid token output must not appear in helper errors or stdout/stderr.
+Shared CLI discovery selects the newest absolute binary for cached tokens and every
+recovery subprocess; a missing CLI fails before token fetch or browser login.
 Missing-option checks exercise plain and ANSI-colored stderr and require parser exit
 code 2 with empty stdout. These component tests replace external authentication;
 they do not establish native Desktop GUI or browser-login coverage.

@@ -302,6 +302,8 @@ ANSI-colored parser errors, browser gating, cancellation, and bounded lock/login
 waits. Recovery checks also cover token recheck before browser login, lock release,
 the shared deadline, and network/CLI failures at each recovery stage. Invalid token
 output stays out of helper errors and streams.
+Shared CLI discovery checks pin the newest absolute binary through recovery and
+reject a missing CLI before token fetch or browser login.
 They replace external authentication and do not establish native Desktop
 GUI or browser-login coverage; this integration suite does not launch Desktop.
 

@@ -9,6 +9,7 @@ from unittest.mock import Mock
 
 import pytest
 
+import ucode.databricks as databricks
 import ucode.desktop_auth as desktop_auth
 
 HOST = "https://workspace.example.com"
@@ -155,15 +156,45 @@ def test_network_failure_does_not_trigger_login_or_browser(cli, monkeypatch):
     run.assert_called_once()
 
 
-def test_absent_cli_fails_before_starting_a_process(monkeypatch):
-    monkeypatch.setattr(desktop_auth, "databricks_cli_path", lambda: "databricks")
-    monkeypatch.setattr(desktop_auth.shutil, "which", lambda _: None)
+@pytest.mark.parametrize("interactive", [False, True])
+def test_absent_cli_fails_before_starting_a_process(monkeypatch, interactive):
+    monkeypatch.setattr(databricks, "_iter_databricks_executables", lambda: [])
+    if interactive:
+        monkeypatch.setenv(desktop_auth.CLAUDE_HELPER_CONTEXT_ENV, "interactive")
     run = Mock(side_effect=AssertionError("CLI must not run when it is absent"))
     monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", run)
 
     with pytest.raises(desktop_auth.ClaudeDesktopAuthError, match="Databricks CLI"):
         desktop_auth.get_claude_desktop_token(HOST, PROFILE)
     run.assert_not_called()
+
+
+@pytest.mark.parametrize("expired", [False, True])
+def test_shared_cli_discovery_pins_newest_binary_through_recovery(monkeypatch, tmp_path, expired):
+    older_cli = str(tmp_path / "old cli" / "databricks")
+    newer_cli = str(tmp_path / "new cli" / "databricks")
+    versions = {older_cli: (1, 0, 0), newer_cli: (1, 20, 0)}
+    monkeypatch.setattr(databricks, "_iter_databricks_executables", lambda: list(versions))
+    monkeypatch.setattr(databricks, "_read_databricks_cli_version", versions.__getitem__)
+    monkeypatch.setenv(desktop_auth.CLAUDE_HELPER_CONTEXT_ENV, "interactive")
+    monkeypatch.setattr(desktop_auth, "_AUTH_LOCK_PATH", tmp_path / "auth.lock")
+    responses = [_result(token="fresh-token")]
+    if expired:
+        responses = [
+            _result(1, stderr="expired"),
+            _result(1, stderr="expired"),
+            _result(),
+            *responses,
+        ]
+    run = Mock(side_effect=responses)
+    monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", run)
+
+    assert desktop_auth.get_claude_desktop_token(HOST, PROFILE) == "fresh-token"
+
+    assert [call.args[0][0] for call in run.call_args_list] == [newer_cli] * len(responses)
+    assert [call.args[0][2] for call in run.call_args_list] == (
+        ["token", "token", "login", "token"] if expired else ["token"]
+    )
 
 
 def test_cancelled_interactive_login_is_actionable(cli, monkeypatch, tmp_path, capsys):

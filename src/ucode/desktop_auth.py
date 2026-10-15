@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -104,20 +103,6 @@ def _subprocess_error(exc: OSError | subprocess.TimeoutExpired) -> ClaudeDesktop
     if isinstance(exc, subprocess.TimeoutExpired) or _is_network_detail(exc):
         return ClaudeDesktopAuthError(kind="network")
     return ClaudeDesktopAuthError(kind="cli")
-
-
-def _resolve_cli_path() -> str:
-    """Return the absolute CLI path used by every helper subprocess."""
-    candidate = databricks_cli_path()
-    if os.path.isabs(candidate):
-        return candidate
-    resolved = shutil.which(candidate)
-    if resolved:
-        return os.path.abspath(resolved)
-    raise ClaudeDesktopAuthError(
-        "Databricks CLI was not found. Install it, then start a new Cowork task and try again.",
-        kind="cli",
-    )
 
 
 def _profile_args(profile: str | None) -> list[str]:
@@ -273,7 +258,12 @@ def get_claude_desktop_token(
             raise ClaudeDesktopAuthError("The configured Databricks profile is invalid.")
         profile = profile.strip()
 
-    cli_path = _resolve_cli_path()
+    cli_path = databricks_cli_path()
+    if not os.path.isabs(cli_path):
+        raise ClaudeDesktopAuthError(
+            "Databricks CLI was not found. Install it, then start a new Cowork task and try again.",
+            kind="cli",
+        )
     deadline = time.monotonic() + _HELPER_BUDGET_SECONDS
     try:
         return _fetch_token(
