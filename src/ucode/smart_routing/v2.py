@@ -394,8 +394,8 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
         )
     orchestrator.add_claude_agents(plugin_dir)
     mods = Path(__file__).parents[1] / "agents" / "claude_mods"
-    # constants.ts is imported by the entry point, so it ships beside it rather than as a module.
-    for name in ("register.ts", "constants.ts"):
+    # These are imported by the entry point, so they ship beside it rather than as modules.
+    for name in ("register.ts", "constants.ts", "extra-body.ts", "smart-routing-status.ts"):
         write_text_file(plugin_dir / "hooks" / name, (mods / name).read_text(encoding="utf-8"))
     write_json_file(plugin_dir / "hooks" / "hooks.json", {"modules": ["./register.ts"]})
 
@@ -491,18 +491,18 @@ def route_claude_pre_tool_use(
             route.decision,
             route.routed_model,
         )
-    agent_name = claude_routing.SUBAGENT_NOTICE_CONFIG.name(route.tool_input) or "subagent"
+    updated_input = {
+        **{key: value for key, value in route.tool_input.items() if key != "model"},
+        "subagent_type": _routed_claude_agent_name(route.routed_model),
+    }
+    agent_name = updated_input.get("subagent_type", "")
     if orchestrator.enabled(agent=AGENT_CLAUDE):
         agent_name += " [orchestrator on]"
     routing_message = claude_routing.SUBAGENT_NOTICE_CONFIG.message(
         route.decision,
         route.routed_model,
-        {**route.tool_input, "subagent_type": agent_name},
+        {**updated_input, "subagent_type": agent_name},
     )
-    updated_input = {
-        **{key: value for key, value in route.tool_input.items() if key != "model"},
-        "subagent_type": _routed_claude_agent_name(route.routed_model),
-    }
     hook_output = {
         "hookEventName": "PreToolUse",
         "permissionDecision": "allow",

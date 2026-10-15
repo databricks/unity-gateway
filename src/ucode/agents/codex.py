@@ -65,12 +65,14 @@ from ucode.launcher import exec_or_spawn
 from ucode.managed_files import (
     OS,
     ManagedFileWriteUnavailable,
+    check_skipped_managed_overrides,
     current_os,
     managed_file_conflicts,
     managed_file_is_verified,
     managed_file_scope,
     managed_file_status,
     managed_files_supported,
+    managed_settings_skipped,
     managed_writes_allowed,
     mark_managed_file_verified,
     read_managed_file,
@@ -209,6 +211,9 @@ def _provider_block(
         auth_argv = build_custom_auth_token_argv(workspace, custom_oauth)
     else:
         auth_argv = build_auth_token_argv(workspace, databricks_profile, use_pat=use_pat)
+        if not use_pat:
+            # Desktop helpers have no terminal for interactive sign-in.
+            auth_argv.append("--browser-login")
     base_url = build_tool_base_url("codex", workspace)
     http_headers = {
         "User-Agent": f"ucode/{ug_version()} codex/{agent_version('codex')}",
@@ -233,7 +238,7 @@ def _provider_block(
         "auth": {
             "command": auth_argv[0],
             "args": auth_argv[1:],
-            "timeout_ms": CUSTOM_OAUTH_TIMEOUT_MS if custom_oauth else 5000,
+            "timeout_ms": CUSTOM_OAUTH_TIMEOUT_MS if custom_oauth or not use_pat else 5000,
             "refresh_interval_ms": 900000,
         },
     }
@@ -745,6 +750,15 @@ def _sync_desktop_tracing(workspace: str | None) -> bool:
 
 def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> None:
     """Reconcile Codex's highest-precedence config while preserving unrelated policy."""
+    if managed_settings_skipped():
+        check_skipped_managed_overrides(
+            codex_managed_config_path(),
+            parser=_parse_managed_config,
+            compose=compose,
+            owned_paths=MANAGED_KEYS,
+            display="Codex",
+        )
+        return
     path = codex_managed_config_path()
     if path is None:
         print_warning_err(
@@ -807,7 +821,11 @@ def managed_mcp_uses_managed_file() -> bool:
     with the developer's own ``~/.codex/config.toml`` servers, so a managed entry never hides a
     personal one. It fits whenever the platform supports the sudo reconcile and the run is
     interactive; otherwise the caller falls back to the user-scope registration."""
-    return managed_files_supported() and managed_writes_allowed()
+    return (
+        codex_managed_config_path() is not None
+        and managed_files_supported()
+        and managed_writes_allowed()
+    )
 
 
 def managed_mcp_entry(argv: list[str]) -> dict:

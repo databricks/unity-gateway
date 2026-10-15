@@ -38,6 +38,7 @@ from ucode.constants import (
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
 )
 from ucode.os_compatibility import subprocess_cross_os
+from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock
 from ucode.telemetry import ug_version
 from ucode.ui import (
     err_console,
@@ -79,6 +80,7 @@ _TOKEN_CREDENTIAL_FAILURE_MARKERS = (
     "refresh token has expired",
     "no cached token",
     "no cached credentials",
+    "not configured for this host",
 )
 # `get_databricks_token` is called from many places during one launch, and each
 # miss costs a CLI subprocess (plus a doomed re-auth when the profile is stale).
@@ -88,6 +90,9 @@ _TOKEN_CREDENTIAL_FAILURE_MARKERS = (
 _TOKEN_MEMO_EXPIRY_MARGIN_S = 300
 _TOKEN_MEMO_DEFAULT_TTL_S = 60
 _TOKEN_MEMO_FAILURE_TTL_S = 60
+# End browser login before Codex's 180 s helper timeout.
+_BROWSER_LOGIN_TIMEOUT_SECONDS = 150
+_BROWSER_LOGIN_LOCK_PATH = APP_DIR / "auth-login.lock"
 _HTTP_GET_RETRYABLE_STATUS_CODES = frozenset({429})
 _HTTP_GET_RETRY_BASE_SECONDS = 1.0
 _HTTP_GET_RETRY_MAX_SECONDS = 5.0
@@ -1568,11 +1573,52 @@ def _auth_login_supports_no_browser(cli: str) -> bool:
         return supported
 
 
+def _browser_login(
+    workspace: str,
+    profile: str | None,
+    env: dict[str, str],
+    fetch: Callable[[], tuple[str, float | None]],
+) -> tuple[str, float | None]:
+    """Serialize browser sign-in across helpers sharing the CLI's callback port."""
+    started = time.monotonic()
+    _BROWSER_LOGIN_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with _BROWSER_LOGIN_LOCK_PATH.open("a+b") as lock_file:
+        acquire_exclusive_file_lock(lock_file)
+        # Another helper may have signed in while we waited.
+        token, lifetime_s = fetch()
+        if token:
+            return token, lifetime_s
+        remaining = _BROWSER_LOGIN_TIMEOUT_SECONDS - (time.monotonic() - started)
+        if remaining <= 0:
+            return "", None
+        try:
+            # Keep login output off the helper's token-only stdout.
+            subprocess_cross_os.run(
+                [
+                    databricks_cli_path(),
+                    "auth",
+                    "login",
+                    "--host",
+                    workspace,
+                    *_profile_args(profile),
+                ],
+                timeout=remaining,
+                stdin=subprocess.DEVNULL,
+                stdout=sys.stderr,
+                stderr=sys.stderr,
+                env=env,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            _debug("auth login", f"exception: {type(exc).__name__}: {exc}")
+        return fetch()
+
+
 def _get_databricks_token_for_profile(
     workspace: str,
     profile: str | None,
     *,
     force_refresh: bool,
+    browser_login: bool,
 ) -> str:
     memo_key = _token_memo_key(workspace, profile)
     if not force_refresh:
@@ -1585,7 +1631,8 @@ def _get_databricks_token_for_profile(
             )
             if memoized.token:
                 return memoized.token
-            raise RuntimeError(memoized.error)
+            if not browser_login:
+                raise RuntimeError(memoized.error)
 
     # The second memo check is required after waiting for another caller's
     # fetch. The lock is per workspace/profile, so unrelated profiles proceed.
@@ -1600,12 +1647,14 @@ def _get_databricks_token_for_profile(
                 )
                 if memoized.token:
                     return memoized.token
-                raise RuntimeError(memoized.error)
+                if not browser_login:
+                    raise RuntimeError(memoized.error)
         token_epoch = _token_cache_epoch()
         return _fetch_databricks_token_for_profile(
             workspace,
             profile,
             force_refresh=force_refresh,
+            browser_login=browser_login,
             token_epoch=token_epoch,
         )
 
@@ -1615,6 +1664,7 @@ def _fetch_databricks_token_for_profile(
     profile: str | None,
     *,
     force_refresh: bool,
+    browser_login: bool,
     token_epoch: int,
 ) -> str:
     memo_key = _token_memo_key(workspace, profile)
@@ -1694,7 +1744,10 @@ def _fetch_databricks_token_for_profile(
         return "", None
 
     token, lifetime_s = _fetch_with_lock_retry()
-    if not token and _auth_login_supports_no_browser(cli):
+    if not token and browser_login and not transient_failure:
+        # A desktop app's helper has no terminal to finish a non-browser login.
+        token, lifetime_s = _browser_login(workspace, profile, env, _fetch_with_lock_retry)
+    elif not token and _auth_login_supports_no_browser(cli):
         # Session may have expired — attempt non-interactive re-auth and retry once.
         _debug("auth token", "empty on first fetch; attempting auth login --no-browser")
         try:
@@ -1756,6 +1809,7 @@ def get_databricks_token(
     profile: str | None = None,
     *,
     force_refresh: bool = False,
+    browser_login: bool = False,
 ) -> str:
     # ``DATABRICKS_BEARER`` is the CI escape hatch: when set, skip the
     # `databricks auth token` subprocess entirely and return the pre-fetched
@@ -1780,7 +1834,12 @@ def get_databricks_token(
     # See has_valid_databricks_auth: resolve the profile from the host when
     # the caller didn't supply one, so duplicate-host cfgs don't break us.
     profile = profile or find_profile_name_for_host(workspace)
-    return _get_databricks_token_for_profile(workspace, profile, force_refresh=force_refresh)
+    return _get_databricks_token_for_profile(
+        workspace,
+        profile,
+        force_refresh=force_refresh,
+        browser_login=browser_login,
+    )
 
 
 def _extract_apps_payload(payload: object) -> list[dict]:

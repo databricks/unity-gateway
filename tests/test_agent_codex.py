@@ -140,7 +140,7 @@ class TestRenderOverlay:
 
     @pytest.mark.parametrize("render", [codex.render_overlay, codex.render_legacy_overlay])
     @pytest.mark.parametrize("custom", [False, True])
-    def test_auth_timeout_allows_custom_browser_login_only(self, render, custom):
+    def test_auth_timeout_allows_browser_login(self, render, custom):
         config = (
             {
                 "client_id": "custom-client",
@@ -152,7 +152,15 @@ class TestRenderOverlay:
         )
         overlay = render(WS, custom_oauth=config)
         auth = overlay["model_providers"][codex.CODEX_MODEL_PROVIDER_NAME]["auth"]
-        assert auth["timeout_ms"] == (180_000 if custom else 5000)
+        assert auth["timeout_ms"] == 180_000
+        assert ("--browser-login" in auth["args"]) is not custom
+
+    @pytest.mark.parametrize("render", [codex.render_overlay, codex.render_legacy_overlay])
+    def test_pat_auth_skips_browser_login(self, render):
+        overlay = render(WS, use_pat=True)
+        auth = overlay["model_providers"][codex.CODEX_MODEL_PROVIDER_NAME]["auth"]
+        assert auth["timeout_ms"] == 5000
+        assert "--browser-login" not in auth["args"]
 
     def test_provider_adds_routing_header(self):
         overlay = codex.render_overlay(WS, provider="main.aarushi.aarushi-openai")
@@ -1661,6 +1669,55 @@ class TestCodexManagedConfig:
         assert "Databricks" in doc["model_providers"]
         assert read_toml_safe(config_path)["model_provider"] == "Databricks"
 
+    def test_skip_env_bypasses_managed_config(self, tmp_path, monkeypatch):
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        # A privileged write must never be attempted when the developer opted out.
+        monkeypatch.setattr(
+            codex, "reconcile_managed_file", lambda *a, **kw: pytest.fail("must not write managed")
+        )
+
+        codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+
+        # The per-user config is still written; the OS-managed file is left untouched.
+        assert read_toml_safe(config_path)["model_provider"] == "Databricks"
+        assert not managed_path.exists()
+
+    def test_skip_env_errors_on_stale_managed_override(self, tmp_path, monkeypatch):
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+        # A managed file left from an earlier workspace still points at that workspace's gateway.
+        managed_path.parent.mkdir(parents=True, exist_ok=True)
+        managed_path.write_text(
+            'model_provider = "Databricks"\n'
+            "[model_providers.Databricks]\n"
+            'base_url = "https://old-workspace.databricks.com/ai-gateway/openai/v1"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        monkeypatch.setattr(
+            codex, "reconcile_managed_file", lambda *a, **kw: pytest.fail("must not write managed")
+        )
+
+        # A stale override silently defeats the reconfigure, so launching must fail loudly.
+        with pytest.raises(RuntimeError) as excinfo:
+            codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+
+        # The stale managed file is left in place and the user is told how to clear it.
+        assert managed_path.exists()
+        message = str(excinfo.value)
+        assert managed_files.SKIP_OS_SETTINGS_ENV in message
+        assert "stale" in message
+        assert "ug revert" in message
+
+    def test_skip_env_no_error_without_stale_override(self, tmp_path, monkeypatch):
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+
+        codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+
+        assert read_toml_safe(config_path)["model_provider"] == "Databricks"
+        assert not managed_path.exists()
+
     @pytest.mark.parametrize("previous_provider", ["ucode-databricks", "databricks"])
     def test_reconfigure_selects_databricks_in_existing_profile_and_managed_config(
         self, tmp_path, monkeypatch, previous_provider
@@ -1707,6 +1764,7 @@ class TestCodexManagedConfig:
         monkeypatch.setattr(codex, "managed_writes_allowed", lambda: not non_interactive)
         monkeypatch.setattr(codex, "codex_managed_config_path", lambda: managed_path)
         monkeypatch.setattr(managed_files, "managed_files_supported", lambda: True)
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
         monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: not non_interactive)
         monkeypatch.setattr(managed_files, "MANAGED_BACKUP_DIR", tmp_path / "managed-backups")
         monkeypatch.setattr(
@@ -2060,9 +2118,19 @@ class TestWriteConfigBackup:
 
 class TestCodexManagedMcpUsesManagedFile:
     def test_true_when_supported_and_interactive(self, monkeypatch):
+        monkeypatch.setattr(
+            codex, "codex_managed_config_path", lambda: Path("/etc/codex/managed_config.toml")
+        )
         monkeypatch.setattr(codex, "managed_files_supported", lambda: True)
         monkeypatch.setattr(codex, "managed_writes_allowed", lambda: True)
         assert codex.managed_mcp_uses_managed_file() is True
+
+    def test_false_without_a_codex_managed_path(self, monkeypatch):
+        # Windows supports Claude's managed file but Codex has none there.
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: None)
+        monkeypatch.setattr(codex, "managed_files_supported", lambda: True)
+        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: True)
+        assert codex.managed_mcp_uses_managed_file() is False
 
     def test_false_when_non_interactive(self, monkeypatch):
         monkeypatch.setattr(codex, "managed_files_supported", lambda: True)

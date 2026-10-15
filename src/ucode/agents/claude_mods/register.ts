@@ -1,12 +1,14 @@
 import type { EngineInterface, On, PluginOptions } from 'claude-code';
+import { registerStatusBand } from './smart-routing-status.ts';
 import {
   CLI_AGENT,
   CLI_MODULE,
   DISABLE_ROUTING_FLAG,
   DISABLED_RECIPE,
   ENABLE_ROUTING_FLAG,
-  RECIPE_HEADER,
+  RECIPE_FIELD,
 } from './constants.ts';
+import { mergeExtraBody } from './extra-body.ts';
 
 type Environment = Record<string, string | undefined>;
 
@@ -15,7 +17,7 @@ async function readEnvironment($: EngineInterface): Promise<Environment> {
     ENABLE_SMART_ROUTING_V2: await $.env.get('ENABLE_SMART_ROUTING_V2'),
     ENABLE_SMART_ROUTING_SUBAGENT_ONLY: await $.env.get('ENABLE_SMART_ROUTING_SUBAGENT_ONLY'),
     ENABLE_SMART_ROUTER_ORCHESTRATOR: await $.env.get('ENABLE_SMART_ROUTER_ORCHESTRATOR'),
-    ANTHROPIC_CUSTOM_HEADERS: await $.env.get('ANTHROPIC_CUSTOM_HEADERS'),
+    CLAUDE_CODE_EXTRA_BODY: await $.env.get('CLAUDE_CODE_EXTRA_BODY'),
   };
 }
 
@@ -24,7 +26,7 @@ async function writeEnvironment($: EngineInterface, env: Environment): Promise<v
   await $.env.set('ENABLE_SMART_ROUTING_V2', env.ENABLE_SMART_ROUTING_V2);
   await $.env.set('ENABLE_SMART_ROUTING_SUBAGENT_ONLY', env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY);
   await $.env.set('ENABLE_SMART_ROUTER_ORCHESTRATOR', env.ENABLE_SMART_ROUTER_ORCHESTRATOR);
-  await $.env.set('ANTHROPIC_CUSTOM_HEADERS', env.ANTHROPIC_CUSTOM_HEADERS);
+  await $.env.set('CLAUDE_CODE_EXTRA_BODY', env.CLAUDE_CODE_EXTRA_BODY);
 }
 
 // The session-control file stays Python's to write: the CLI validates it and replaces it
@@ -56,14 +58,13 @@ async function setRouting(
   if (typeof recipe !== 'string' || /[\r\n]/.test(recipe)) {
     throw new Error('Smart Router recipe must be a single-line string.');
   }
-  const headers = (previous.ANTHROPIC_CUSTOM_HEADERS || '').split('\n').filter(
-    line => line.trim() &&
-      line.split(':')[0].trim().toLowerCase() !== RECIPE_HEADER.toLowerCase());
   const environment = {
     ENABLE_SMART_ROUTING_V2: enabled ? original('ENABLE_SMART_ROUTING_V2') : '0',
     ENABLE_SMART_ROUTING_SUBAGENT_ONLY: enabled ? original('ENABLE_SMART_ROUTING_SUBAGENT_ONLY') : '0',
     ENABLE_SMART_ROUTER_ORCHESTRATOR: enabled ? original('ENABLE_SMART_ROUTER_ORCHESTRATOR') : '0',
-    ANTHROPIC_CUSTOM_HEADERS: [...headers, `${RECIPE_HEADER}: ${recipe}`].join('\n'),
+    CLAUDE_CODE_EXTRA_BODY: mergeExtraBody(previous.CLAUDE_CODE_EXTRA_BODY, {
+      [RECIPE_FIELD]: recipe,
+    }),
   };
   try {
     await writeEnvironment($, environment);
@@ -100,12 +101,10 @@ export function register(on: On, options: PluginOptions): void {
     if (!launchedEnabled) return {text: 'Smart Router was not enabled for this session.'};
     try {
       await setRouting($, options, action === 'on', true);
-      const guidance = options.ENABLE_SMART_ROUTER_ORCHESTRATOR !== '1' ? '' : action === 'off'
-        ? ' Earlier Smart Router Orchestrator instructions are superseded. Stop automatic delegation; honor explicit subagent requests using native model selection. Existing children can finish.'
-        : ' Apply the smart-router-orchestrator skill to further work.';
-      return {text: `Smart Router is ${action} for this session.${guidance}`};
+      return {text: `Smart Router is ${action}`};
     } catch {
-      return {text: 'Could not update Smart Router. Check the recipe, ANTHROPIC_CUSTOM_HEADERS, and environment permissions; retry or restart through UG.'};
+      return {text: 'Could not update Smart Router. Check the recipe, CLAUDE_CODE_EXTRA_BODY, and environment permissions; retry or restart through UG.'};
     }
   });
+  registerStatusBand(on);
 }

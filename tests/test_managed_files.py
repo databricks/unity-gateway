@@ -19,6 +19,9 @@ import ucode.config_io as config_io
 from ucode import managed_files
 
 _REAL_SUDO_REPLACE = managed_files._sudo_replace
+# Captured before the autouse ``_supported`` fixture pins the module attribute to True.
+_REAL_MANAGED_FILES_SUPPORTED = managed_files.managed_files_supported
+_REAL_WINDOWS_REPLACE = managed_files._windows_replace
 
 
 @pytest.fixture(autouse=True)
@@ -33,6 +36,10 @@ def _supported(monkeypatch):
     # Pin platform support on so tests are deterministic on any host.
     monkeypatch.setattr(managed_files, "managed_files_supported", lambda: True)
     monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: True)
+    # These tests cover the sudo writer; on a Windows host the elevated-write path would run
+    # instead. Not pinned elsewhere: the real worker shell picks cp flags from the host OS.
+    if managed_files.current_os() is managed_files.OS.WINDOWS:
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
 
 
 @pytest.fixture
@@ -676,6 +683,167 @@ chown() {
         assert staging_path.parent == parent
         assert staging_path.name.startswith(".managed_config.toml.ucode.")
         assert not list(parent.glob(".managed_config.toml.ucode.*"))
+
+
+class TestManagedSettingsSkipped:
+    """``UG_SKIP_OS_SETTINGS`` opts out of every OS-managed-file operation."""
+
+    def test_absent_env_does_not_skip(self, monkeypatch):
+        monkeypatch.delenv(managed_files.SKIP_OS_SETTINGS_ENV, raising=False)
+        assert managed_files.managed_settings_skipped() is False
+
+    @pytest.mark.parametrize("value", ["1", "true", "TRUE", "Yes", "on", " on "])
+    def test_truthy_values_skip(self, monkeypatch, value):
+        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, value)
+        assert managed_files.managed_settings_skipped() is True
+        # Skipping also reports the platform as unsupported so managed MCP falls back to user scope
+        # (the real gate; the autouse fixture otherwise pins support on).
+        assert _REAL_MANAGED_FILES_SUPPORTED() is False
+
+    @pytest.mark.parametrize("value", ["0", "false", "off", "no", ""])
+    def test_falsey_values_do_not_skip(self, monkeypatch, value):
+        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, value)
+        assert managed_files.managed_settings_skipped() is False
+
+    def test_skip_prevents_privileged_write(self, monkeypatch):
+        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        # Use the real gate so skipping short-circuits before sudo (fixture otherwise pins it on).
+        monkeypatch.setattr(managed_files, "managed_files_supported", _REAL_MANAGED_FILES_SUPPORTED)
+        monkeypatch.setattr(
+            managed_files, "_sudo_replace", lambda *args: pytest.fail("must not write")
+        )
+        result = managed_files.reconcile_managed_file(
+            Path("/tmp/ucode-test/managed.json"),
+            '{"ucode": true}\n',
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[["ucode"]],
+            parser=json.loads,
+        )
+        assert result == "unsupported"
+
+    def test_raise_on_skipped_managed_overrides_reports_stale_leaves(self):
+        with pytest.raises(RuntimeError) as excinfo:
+            managed_files.raise_on_skipped_managed_overrides(
+                Path("/etc/claude-code/managed-settings.json"),
+                ["env.ANTHROPIC_BASE_URL"],
+                display="Claude Code",
+            )
+        message = str(excinfo.value)
+        assert managed_files.SKIP_OS_SETTINGS_ENV in message
+        assert "stale" in message
+        assert "ug revert" in message
+
+    def test_raise_on_skipped_managed_overrides_silent_without_conflicts(self):
+        # No conflicts means nothing stale overrides the user config, so this must not raise.
+        managed_files.raise_on_skipped_managed_overrides(
+            Path("/etc/claude-code/managed-settings.json"),
+            [],
+            display="Claude Code",
+        )
+
+
+class TestWindowsManagedWrites:
+    """Windows has no sudo: an elevated process writes Program Files directly, others can't."""
+
+    @pytest.fixture
+    def windows(self, tmp_path, backup_dir, monkeypatch):
+        monkeypatch.setenv("ProgramW6432", str(tmp_path / "Program Files"))
+        monkeypatch.setenv("ProgramFiles", str(tmp_path / "Program Files (x86)"))
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.WINDOWS)
+        monkeypatch.setattr(managed_files, "_windows_replace", _REAL_WINDOWS_REPLACE)
+        monkeypatch.setattr(
+            managed_files.subprocess_cross_os,
+            "run",
+            lambda *a, **k: pytest.fail("Windows writes must not shell out to sudo"),
+        )
+        return managed_files.windows_claude_managed_settings_path()
+
+    def _reconcile(self, path, text):
+        return managed_files.reconcile_managed_file(
+            path,
+            text,
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[["apiKeyHelper"]],
+            parser=json.loads,
+        )
+
+    def test_path_is_under_64_bit_program_files(self, windows, tmp_path):
+        assert windows == tmp_path / "Program Files" / "ClaudeCode" / "managed-settings.json"
+
+    def test_reads_file_written_with_a_bom(self, windows):
+        # Windows PowerShell 5.1's `Set-Content -Encoding UTF8` prefixes a BOM.
+        windows.parent.mkdir(parents=True)
+        windows.write_bytes(b'\xef\xbb\xbf{"apiKeyHelper": "it"}\n')
+
+        assert json.loads(managed_files.read_managed_file(windows)) == {"apiKeyHelper": "it"}
+
+    @pytest.mark.parametrize("admin", [True, False])
+    def test_writes_follow_elevation_not_the_terminal(self, windows, monkeypatch, admin):
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: admin)
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: not admin)
+
+        assert managed_files.managed_writes_allowed() is admin
+        assert managed_files.managed_writes_allowed(repair_existing=True) is admin
+        assert managed_files._sudo_may_prompt() is False
+
+    def test_elevated_headless_run_creates_file(self, windows, monkeypatch):
+        # Device provisioning runs `ug configure` elevated and without a terminal.
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: False)
+
+        assert self._reconcile(windows, '{"apiKeyHelper": "ug"}\n') == "created"
+
+        assert windows.read_text(encoding="utf-8") == '{"apiKeyHelper": "ug"}\n'
+        assert [entry.name for entry in windows.parent.iterdir()] == [windows.name]
+
+    def test_non_admin_update_quits_with_admin_hint(self, windows, monkeypatch):
+        windows.parent.mkdir(parents=True)
+        windows.write_text('{"apiKeyHelper": "old"}\n', encoding="utf-8")
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: False)
+
+        with pytest.raises(RuntimeError, match="requires administrator rights.*ug configure"):
+            self._reconcile(windows, '{"apiKeyHelper": "ug"}\n')
+
+        assert windows.read_text(encoding="utf-8") == '{"apiKeyHelper": "old"}\n'
+
+    def test_elevated_revert_removes_created_file(self, windows, monkeypatch):
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
+        self._reconcile(windows, '{"apiKeyHelper": "ug"}\n')
+
+        result = managed_files.revert_managed_file(
+            "claude", display="Claude Code", parser=json.loads, dumper=json.dumps
+        )
+
+        assert result == "removed"
+        assert not windows.exists()
+
+    def test_non_admin_revert_quits_with_admin_hint(self, windows, monkeypatch):
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
+        self._reconcile(windows, '{"apiKeyHelper": "ug"}\n')
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: False)
+
+        with pytest.raises(RuntimeError, match="requires administrator rights.*ug revert"):
+            managed_files.revert_managed_file(
+                "claude", display="Claude Code", parser=json.loads, dumper=json.dumps
+            )
+
+        assert windows.exists()
+
+    def test_refuses_unexpected_target(self, windows, tmp_path, monkeypatch):
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
+
+        with pytest.raises(RuntimeError, match="unexpected managed-settings target"):
+            managed_files._windows_replace(tmp_path / "elsewhere.json", "{}")
+
+    def test_agent_paths(self, windows, monkeypatch):
+        monkeypatch.setattr(claude_agent, "current_os", lambda: managed_files.OS.WINDOWS)
+        monkeypatch.setattr(codex_config, "current_os", lambda: managed_files.OS.WINDOWS)
+
+        assert claude_agent._managed_settings_path() == windows
+        # Codex has no admin-only config layer on Windows.
+        assert codex_config.codex_managed_config_path() is None
 
 
 class TestManagedFileLifecycle:

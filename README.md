@@ -59,6 +59,10 @@ On first launch of a model-backed agent, `ug` prompts for a Databricks
 workspace, authenticates, and writes local agent config. Later launches reuse
 the saved workspace and credentials.
 
+When Claude Code or Codex is older than the minimum version `ug` supports, `ug`
+asks before upgrading it in place. Set `UG_AUTO_UPGRADE_AGENT=1` to upgrade
+without asking, for example from a launcher that manages the agent install.
+
 Use `ug opencode --model system.ai.glm-5-3` (or `-m`) to select a configured
 model for one launch. OpenCode's `provider/model` form is also accepted.
 Unknown Databricks models produce an error; this option does not add models
@@ -258,6 +262,10 @@ directory holds the settings, socket, and plugin and is removed when the launch
 finishes or fails. Existing hook configuration and disable/revert behavior are
 unchanged. Native daemon/background propagation of the plugin remains unverified.
 
+The routing notice names the generated agent selected for launch and its model.
+Claude Code's own task header can still show the agent type the parent originally
+requested. That name may contain a different model; it is not the routing result.
+
 On Windows, Claude smart routing uses subagent hooks only. If first-prompt routing
 is enabled, ug warns and falls back to subagent routing because the first-prompt
 wrapper requires a Unix terminal.
@@ -356,7 +364,7 @@ preferences are ignored and their files are left untouched. See the bundled
 | Tool | Managed files |
 |------|---------------|
 | Codex | `~/.codex/ucode.config.toml`, shared catalog reference in `~/.codex/config.toml`, `~/.ucode/codex-model-catalog.json`, `/etc/codex/managed_config.toml` (Linux and macOS) |
-| Claude Code | `~/.claude/ucode-settings.json`, `~/.claude.json`, `/etc/claude-code/managed-settings.json` (Linux), `/Library/Application Support/ClaudeCode/managed-settings.json` (macOS) |
+| Claude Code | `~/.claude/ucode-settings.json`, `~/.claude.json`, `/etc/claude-code/managed-settings.json` (Linux), `/Library/Application Support/ClaudeCode/managed-settings.json` (macOS), `C:\Program Files\ClaudeCode\managed-settings.json` (Windows, written only from an elevated terminal) |
 | Gemini CLI | `~/.gemini/ucode.env`, `~/.ucode/.gemini-home/.gemini/settings.json` |
 | OpenCode | `~/.ucode/opencode-xdg/opencode/opencode.json`, `~/.ucode/opencode-xdg/opencode/plugin/ucode-auth.js` |
 | GitHub Copilot CLI | `~/.copilot/ucode.env`, `~/.copilot/ucode-mcp-config.json` |
