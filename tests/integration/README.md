@@ -727,6 +727,12 @@ The **harness-latest** workflow runs every six hours on `main` (00:00, 06:00,
 latest Claude and Codex releases, recording exact versions in its artifacts. It covers
 CUJ4, routing hooks, skill toggles (including Claude's recipe-header assertions),
 and first-prompt banners. It runs separately from PR checks, so failures do not block merges.
+Versions are resolved once for all three suites. A final job sends one success or
+failure message using `SLACK_WEBHOOK_UG_CODING_AGENTS_POD`, with both versions and
+a failed-job link on failure (the workflow-run link if GitHub's jobs API is unavailable).
+Setup failures also alert; unresolved versions appear as `unknown`. Slack delivery
+errors fail the notification job. `test_integration_contract.py` covers this wiring
+and message generation with a substituted HTTP boundary, not live Slack delivery.
 
 Opt in a test or class with `@pytest.mark.harness_latest`, or a whole module with:
 
