@@ -101,7 +101,8 @@ export function register(on: On, options: PluginOptions): void {
     if (!launchedEnabled) return {text: 'Smart Router was not enabled for this session.'};
     try {
       await setRouting($, options, action === 'on', true);
-      showStatusBand($);
+      showStatusBand();
+      $.ui.invalidate('ui.render');
       return {text: `Smart Router is ${action}`};
     } catch {
       return {text: 'Could not update Smart Router. Check the recipe, CLAUDE_CODE_EXTRA_BODY, and environment permissions; retry or restart through UG.'};

@@ -7,10 +7,11 @@ const BANNER = 'unity gateway smart router'
 // completes. A prompt submitted while it shows arms the hide for that prompt's turn.
 const band = { isVisible: true, isHideArmed: false }
 
-export function showStatusBand($: any): void {
+// Claude 2.1.290 refuses $ passed into a function imported from another file, so the caller
+// redraws with its own $.ui.invalidate after a toggle.
+export function showStatusBand(): void {
   band.isVisible = true
   band.isHideArmed = false
-  $.ui.invalidate('ui.render')
 }
 
 type RoutingState = { enabled: boolean; firstPrompt: boolean }
