@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import pytest
-
-from ucode.agents.request_tags import request_tags_header_value, ug_headers
+from ucode.agents.request_tags import request_tags_header_value
 
 
 class TestRequestTagsHeaderValue:
@@ -47,15 +45,3 @@ class TestRequestTagsHeaderValue:
         value = '"A string!"'
         assert request_tags_header_value({"AI_GATEWAY_REQUEST_TAGS": value}) is None
         assert "AI_GATEWAY_REQUEST_TAGS" in capsys.readouterr().err
-
-
-def test_ug_headers_parse_one_per_line(monkeypatch):
-    monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: testenv://liteswap/a\n\nX-B:  2 ")
-    assert ug_headers() == {"x-databricks-traffic-id": "testenv://liteswap/a", "X-B": "2"}
-
-
-@pytest.mark.parametrize("value", ["not a header", "x-databricks-traffic-id:  "])
-def test_ug_headers_reject_malformed_line(monkeypatch, value):
-    monkeypatch.setenv("UG_HEADERS", value)
-    with pytest.raises(RuntimeError, match="UG_HEADERS"):
-        ug_headers()

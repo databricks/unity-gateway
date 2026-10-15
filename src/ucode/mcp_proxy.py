@@ -43,13 +43,13 @@ from anyio import to_thread
 from mcp.client.streamable_http import streamable_http_client
 from mcp.server.stdio import stdio_server
 
-from ucode.agents.request_tags import ug_headers
 from ucode.databricks import (
     ensure_pat_bearer,
     get_databricks_token,
     mcp_service_needs_connection_login,
 )
 from ucode.mcp_connection_login import connection_from_url, run_connection_login
+from ucode.ug_headers import ug_headers
 
 # Exit code used when the proxy cannot continue. MCP clients surface a non-zero
 # exit far more usefully than a timeout, so bail out instead of hanging.

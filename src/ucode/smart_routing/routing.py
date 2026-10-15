@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ucode.ug_headers import ug_headers
+
 ROUTER_NAME = "task_v3"
 ROUTER_NAME_ENV_VAR = "SMART_ROUTER_NAME"
 ROUTING_PATH = "/ai-gateway/routing/v1/routes:select"
@@ -221,8 +223,6 @@ def select_route(
     None when the arm is unservable. Returns ``(decision, error)``; a failed
     call yields ``(None, reason)`` so callers can fail open.
     """
-    from ucode.agents.request_tags import ug_headers  # the agent modules import this one
-
     body = {
         "route_options": [{"model": model, "harness": harness} for model, harness in route_options],
         "task": {"prompt": task},

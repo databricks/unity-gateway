@@ -45,7 +45,6 @@ from ucode.agents import (
 from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
-from ucode.agents.request_tags import ug_headers
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
 from ucode.constants import AGENT_CLAUDE, AGENT_CODEX, SMART_ROUTING_ENV_KEYS, UG_HEADERS_ENV_VAR
 from ucode.custom_oauth import (
@@ -161,6 +160,7 @@ from ucode.state import (
     workspace_self_managed_agents,
 )
 from ucode.string_utils import is_valid_catalog_schema
+from ucode.ug_headers import ug_headers
 from ucode.ui import (
     console,
     heading,

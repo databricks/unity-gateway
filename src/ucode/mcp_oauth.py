@@ -22,6 +22,7 @@ import urllib.request
 from urllib.parse import urlencode
 
 from ucode.config_io import APP_DIR, read_json_safe, write_json_file
+from ucode.ug_headers import ug_headers
 
 # Published public OAuth client Claude Code authenticates with. Any loopback
 # callback port works — `/oidc` strips the port when matching loopback redirects
@@ -66,8 +67,6 @@ def _probe_oauth_client(workspace: str, client_id: str) -> bool | None:
     incident/rate-limit would flip every workspace to the direct-HTTP path. This is
     the only user-level check available — the authorize endpoint redirects to SSO
     before validating the client, and the published-app API needs account-admin."""
-    from ucode.agents.request_tags import ug_headers  # the agent modules import this one
-
     body = urlencode(
         {
             "grant_type": "authorization_code",

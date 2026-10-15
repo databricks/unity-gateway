@@ -83,11 +83,12 @@ from ucode.smart_routing.codex_routing import codex_model_id
 from ucode.smart_routing.routing import configured_router_name
 from ucode.state import get_provider_service, is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
+from ucode.ug_headers import ug_headers
 from ucode.ui import print_warning_err
 
 from .args import LaunchOptions
 from .codex_catalog import prepare_codex_catalog, validate_codex_catalog
-from .request_tags import request_tags_header_value, ug_headers
+from .request_tags import request_tags_header_value
 
 CODEX_CONFIG_DIR = Path.home() / ".codex"
 CODEX_PROFILE_NAME = "ucode"

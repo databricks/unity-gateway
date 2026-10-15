@@ -105,10 +105,11 @@ from ucode.state import (
     save_state,
 )
 from ucode.telemetry import agent_version, ug_version
+from ucode.ug_headers import ug_headers
 from ucode.ui import print_note, print_success, print_warning
 
 from .args import LaunchOptions, has_explicit_model_arg
-from .request_tags import request_tags_header_value, ug_headers
+from .request_tags import request_tags_header_value
 
 GATEWAY_MODEL_DISCOVERY_ENV_VAR = "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"
 # If set, Claude Code launches in headless mode instead of the interactive login flow.
