@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import urllib.error
 
-from ucode.smart_routing import claude_routing
+from ucode import config_io
+from ucode.smart_routing import claude_routing, routing
 
 WS = "https://example.databricks.com"
 
@@ -68,6 +69,30 @@ def test_routes_with_default_claude_menu(monkeypatch):
         "task": {"prompt": "Refactor the parser"},
         "route_selector": {"router_name": claude_routing.ROUTER_NAME},
     }
+
+
+def test_routing_request_is_logged(monkeypatch):
+    sent = {}
+
+    def fake_urlopen(request, timeout):
+        sent["url"] = request.full_url
+        sent["body"] = json.loads(request.data)
+        return _Response({"route_selection": []})
+
+    monkeypatch.setattr(claude_routing.urllib.request, "urlopen", fake_urlopen)
+
+    claude_routing.request_routing_decision(
+        WS,
+        "dapi-secret",
+        "Refactor the parser",
+        ["system.ai.claude-opus-4-8", "system.ai.claude-sonnet-5"],
+    )
+
+    log_path = config_io.APP_DIR / routing.ROUTING_REQUEST_LOG_NAME
+    [record] = [json.loads(line) for line in log_path.read_text().splitlines()]
+    assert record["url"] == sent["url"]
+    assert record["body"] == sent["body"]
+    assert "dapi-secret" not in log_path.read_text()
 
 
 def test_missing_arm_short_circuits_without_calling_router(monkeypatch):
