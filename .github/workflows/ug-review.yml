@@ -26,7 +26,26 @@ jobs:
     timeout-minutes: 8
     env:
       NPM_CONFIG_REGISTRY: https://npm-proxy.cloud.databricks.com/
+      NPM_CONFIG_FETCH_RETRIES: "0"
+      NPM_CONFIG_FETCH_TIMEOUT: "15000"
     steps:
+      - name: Probe registry metadata without credentials
+        timeout-minutes: 1
+        run: |
+          for registry in \
+            https://npm-proxy.cloud.databricks.com \
+            https://databricks.jfrog.io/artifactory/api/npm/db-npm
+          do
+            printf '\nRegistry: %s\n' "$registry"
+            if curl --fail --silent --show-error --location \
+              --connect-timeout 5 --max-time 15 --output /dev/null \
+              --write-out 'HTTP %{http_code}; total %{time_total}s\n' \
+              "$registry/escape-html"; then
+              printf 'Metadata request succeeded\n'
+            else
+              printf 'curl exit status: %s\n' "$?"
+            fi
+          done
       - name: Check out the stock action package manifest
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -48,7 +67,7 @@ jobs:
         working-directory: action-packages
         run: |
           npm config get registry
-          npm install --omit=dev --ignore-scripts --no-audit --no-fund
+          npm install --omit=dev --ignore-scripts --no-audit --no-fund --loglevel=http
       - name: Check whether the unmodified stock installer can use the same proxy
         timeout-minutes: 3
         run: |
