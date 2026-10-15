@@ -272,12 +272,6 @@ class TestRenderOverlay:
             "Databricks-Ai-Gateway-Request-Tags" not in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
         )
 
-    def test_ug_headers_added(self, monkeypatch):
-        monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: testenv://liteswap/abc")
-        overlay, _ = claude.render_overlay(WS, "s4")
-        headers = overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
-        assert "x-databricks-traffic-id: testenv://liteswap/abc" in headers
-
     def test_does_not_disable_experimental_betas(self):
         # Would suppress the beta header 1h prompt caching needs.
         overlay, _ = claude.render_overlay(WS, "s4")
@@ -1359,6 +1353,23 @@ class TestWriteToolConfigManagedSettings:
 
         lines = json.loads(managed_writes[0][1])["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
         assert not any(line.startswith("x-team:") for line in lines)
+
+    def test_ug_headers_stay_out_of_managed_file(self, monkeypatch):
+        # The machine-wide file is written as without `ug --header`, even when one overrides a
+        # header of ug's own.
+        private_writes: list = []
+        managed_writes: list = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+        state = {"workspace": WS, "codex_models": []}
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: abc\nUser-Agent: probe")
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        assert managed_writes[1][1] == managed_writes[0][1]
+        lines = private_writes[-1][1]["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
+        assert "x-databricks-traffic-id: abc" in lines
+        assert "User-Agent: probe" in lines
 
     def test_unmanaged_preserves_foreign_header_and_replaces_ucode_headers_in_place(
         self, monkeypatch

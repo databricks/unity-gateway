@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import functools
 import hashlib
 import os
 import re
@@ -198,6 +199,7 @@ def _provider_block(
     parent_schema: str | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
     managed_http_headers: dict[str, str] | None = None,
+    include_ug_headers: bool = True,
 ) -> dict:
     if custom_oauth:
         auth_argv = build_custom_auth_token_argv(workspace, custom_oauth)
@@ -219,7 +221,8 @@ def _provider_block(
     request_tags = request_tags_header_value()
     if request_tags:
         http_headers[AI_GATEWAY_REQUEST_TAGS_HEADER] = request_tags
-    _apply_managed_headers(http_headers, ug_headers())
+    if include_ug_headers:
+        _apply_managed_headers(http_headers, ug_headers())
     _apply_managed_headers(http_headers, managed_http_headers)
     return {
         "name": "Databricks AI Gateway",
@@ -246,6 +249,7 @@ def render_overlay(
     parent_schema: str | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
     managed_http_headers: dict[str, str] | None = None,
+    include_ug_headers: bool = True,
 ) -> dict:
     overlay: dict = {"model_provider": CODEX_MODEL_PROVIDER_NAME}
     if model:
@@ -259,6 +263,7 @@ def render_overlay(
             parent_schema=parent_schema,
             custom_oauth=custom_oauth,
             managed_http_headers=managed_http_headers,
+            include_ug_headers=include_ug_headers,
         ),
     }
     return overlay
@@ -482,7 +487,8 @@ def write_tool_config(
     # revert would restore that snapshot instead of deleting the file.
     if not is_tool_managed(state, "codex"):
         backup_existing_file(CODEX_CONFIG_PATH, CODEX_BACKUP_PATH)
-    overlay = render_overlay(
+    render = functools.partial(
+        render_overlay,
         workspace,
         chosen_model,
         databricks_profile,
@@ -492,8 +498,9 @@ def write_tool_config(
         custom_oauth=state.get("custom_oauth"),
         managed_http_headers=state.get("codex_http_headers"),
     )
+    overlay = render()
 
-    def compose(base: dict, *, include_catalog: bool = True) -> dict:
+    def compose(base: dict, overlay: dict, *, include_catalog: bool = True) -> dict:
         prune_key_paths(base, _PROVIDER_HTTP_HEADERS_KEY_PATHS)
         deep_merge_dict(base, copy.deepcopy(overlay))
         # deep_merge can't drop keys, so clear model preferences from an earlier run.
@@ -518,14 +525,18 @@ def write_tool_config(
             CODEX_MODEL_CATALOG_PATH.unlink()
 
     doc = read_toml_safe(CODEX_CONFIG_PATH)
-    compose(doc)
+    compose(doc, overlay)
     sync_smart_routing_hooks(
         doc,
         state,
         enabled=False,
     )
     write_toml_file(CODEX_CONFIG_PATH, doc)
-    _reconcile_managed_config(state, lambda base: compose(base, include_catalog=False))
+    # `ug --header` stays out of the OS-managed config; Codex takes that file's value for a header
+    # both set.
+    _reconcile_managed_config(
+        state, lambda base: compose(base, render(include_ug_headers=False), include_catalog=False)
+    )
     state = mark_tool_managed(state, "codex", MANAGED_KEYS)
     save_state(state)
     return state
