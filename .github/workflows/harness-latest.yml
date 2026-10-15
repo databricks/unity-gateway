@@ -18,9 +18,29 @@ env:
   PACKAGE_INDEX: https://pypi.org/simple
 
 jobs:
+  resolve-versions:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      claude: ${{ steps.versions.outputs.claude }}
+      codex: ${{ steps.versions.outputs.codex }}
+    steps:
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: 22.19.0
+      - name: Resolve the latest agent versions
+        id: versions
+        shell: bash
+        run: |
+          latest_claude=$(npm view @anthropic-ai/claude-code@latest version)
+          echo "claude=$latest_claude" >> "$GITHUB_OUTPUT"
+          latest_codex=$(npm view @openai/codex@latest version)
+          echo "codex=$latest_codex" >> "$GITHUB_OUTPUT"
+
   # The latest-agent harness currently covers smart routing only.
   harness-latest:
     name: harness-latest · ${{ matrix.suite }}
+    needs: resolve-versions
     runs-on: ubuntu-22.04
     timeout-minutes: 70
     strategy:
@@ -28,6 +48,8 @@ jobs:
       matrix:
         suite: [cujs, live, managed]
     env:
+      CLAUDE_VERSION: ${{ needs.resolve-versions.outputs.claude }}
+      CODEX_VERSION: ${{ needs.resolve-versions.outputs.codex }}
       UV_INDEX_URL: https://pypi.org/simple
       UG_CUJ1_WORKSPACE: ${{ secrets.UG_CUJ1_WORKSPACE }}
       UG_CUJ_SP_CLIENT_ID: ${{ secrets.UG_CUJ_SP_CLIENT_ID }}
@@ -52,14 +74,10 @@ jobs:
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
         with:
           version: 1.17.0
-      - name: Resolve and record the latest agent versions
+      - name: Record the latest agent versions
         shell: bash
         run: |
-          latest_claude=$(npm view @anthropic-ai/claude-code@latest version)
-          latest_codex=$(npm view @openai/codex@latest version)
-          echo "CLAUDE_VERSION=$latest_claude" >> "$GITHUB_ENV"
-          echo "CODEX_VERSION=$latest_codex" >> "$GITHUB_ENV"
-          printf 'claude=%s\ncodex=%s\n' "$latest_claude" "$latest_codex" \
+          printf 'claude=%s\ncodex=%s\n' "$CLAUDE_VERSION" "$CODEX_VERSION" \
             | tee "$RUNNER_TEMP/harness-latest-versions.txt"
       - name: Install ug and latest agent CLIs for opted-in CUJs
         if: ${{ matrix.suite == 'cujs' }}
@@ -99,3 +117,63 @@ jobs:
             ${{ runner.temp }}/ug-integration/*.log
             ${{ runner.temp }}/ug-integration/artifacts/
             ${{ runner.temp }}/ug-integration/wheels/
+
+  notify:
+    needs: [resolve-versions, harness-latest]
+    if: ${{ always() && (needs.harness-latest.result == 'success' || needs.harness-latest.result == 'failure' || needs.resolve-versions.result == 'failure') }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    steps:
+      - name: Notify Slack of the latest harness result
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_UG_CODING_AGENTS_POD }}
+          GH_TOKEN: ${{ github.token }}
+          HARNESS_RESULT: ${{ needs.harness-latest.result }}
+          CLAUDE_VERSION: ${{ needs.resolve-versions.outputs.claude }}
+          CODEX_VERSION: ${{ needs.resolve-versions.outputs.codex }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          versions = (
+              f"Versions used: Claude Code {os.environ['CLAUDE_VERSION'] or 'unknown'}, "
+              f"Codex: {os.environ['CODEX_VERSION'] or 'unknown'}"
+          )
+          repository = os.environ['GITHUB_REPOSITORY']
+          run_id = os.environ['GITHUB_RUN_ID']
+          run_url = f"{os.environ['GITHUB_SERVER_URL']}/{repository}/actions/runs/{run_id}"
+          if os.environ['HARNESS_RESULT'] == 'success':
+              message = f"✅ Latest harness test succeeded. {versions}. Link to run {run_url}"
+          else:
+              request = urllib.request.Request(
+                  f"{os.environ['GITHUB_API_URL']}/repos/{repository}/actions/runs/{run_id}/jobs?filter=latest&per_page=100",
+                  headers={"Authorization": f"Bearer {os.environ['GH_TOKEN']}"},
+              )
+              failed_url = run_url
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      jobs = json.load(response)['jobs']
+                  failed_url = next(
+                      (job['html_url'] for job in jobs
+                       if job['conclusion'] not in (None, 'success', 'skipped', 'cancelled')),
+                      failed_url,
+                  )
+              except urllib.error.URLError:
+                  print("Unable to resolve failed job URL; linking to the workflow run.")
+              message = f"❌ ALERT! Latest harness test failed. {versions}. Link to failed job: {failed_url}"
+          print(message)
+          request = urllib.request.Request(
+              os.environ['SLACK_WEBHOOK'],
+              data=json.dumps({"text": message}).encode(),
+              headers={"Content-Type": "application/json"},
+              method="POST",
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              response.read()
+          PY
