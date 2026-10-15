@@ -19,10 +19,6 @@ module. Claude's
 capability scanner requires a literal name at each `$.env.get`/`$.env.set` call site so it
 can list what the module reads and writes, and `plugin validate` rejects a variable in that
 position: "$.env.get takes a literal name as its first argument". Keep those names inline.
-Claude 2.1.290's validator also refuses `$` passed into a function imported from another
-module ("$ is followed only into a function declared in this same file, never across an
-import"), and then loads none of the mod. Newer versions accept it, so validate with the
-CI version: helpers shared across modules take no `$`, and the caller makes the `$` call.
 
 The mod merges the launch recipe into `CLAUDE_CODE_EXTRA_BODY` as
 `smart_router_recipe_name` and intercepts the existing skill's `/smart-router on|off` command locally, without inference or command
