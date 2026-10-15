@@ -395,6 +395,10 @@ their original legacy-env or managed-default cases remain. Explicit-model select
 forwarding, app-server initialization, and catalog fallback retain their original legacy flags
 and on/off coverage; preset-specific behavior there is not covered.
 
+The Claude route-subagent hook journey checks that both hook notices name the agent
+in `updatedInput`, rather than the originally requested type. Native task-header
+rendering is outside that hook-contract check.
+
 The unit/component `../test_smart_routing_config.py` includes a 162-case Cartesian oracle over all
 three legacy routing flags (`None`, `0`, `1`) and six selector forms (`None` plus the five
 supported presets, including the customer first-prompt-and-subagent mode). It independently

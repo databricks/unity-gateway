@@ -227,8 +227,8 @@ def test_smart_routing_claude_route_subagent_hook(
 
     Expected: the hook allows the call against the real workspace router, drops the
     requested model in favor of a ``ucode-route-`` agent definition while preserving the
-    task text, and audits one decision naming an offered model for the session. Only the
-    hook contract is asserted; no agent decides to spawn.
+    task text, displays the routed agent's name, and audits one decision naming an offered
+    model for the session. Only the hook contract is asserted; no agent decides to spawn.
     """
     session = live_session
     if SMART_ROUTER_CONFIG_VERSION is None:
@@ -264,6 +264,10 @@ def test_smart_routing_claude_route_subagent_hook(
     assert updated["subagent_type"].startswith("ug-smart-router:ucode-route-"), updated
     assert updated["prompt"] == payload["tool_input"]["prompt"], updated
     assert updated["description"] == payload["tool_input"]["description"], updated
+    for notice in (output["systemMessage"], hook["permissionDecisionReason"]):
+        text = "".join(notice.replace("│", "").split())
+        assert f"Subagent:{updated['subagent_type']}" in text, output
+        assert "general-purpose" not in notice, output
 
     decisions_path = session.home / ".ucode" / "claude-smart-routing-decisions.jsonl"
     assert decisions_path.is_file(), f"hook wrote no routing decision record: {decisions_path}"
