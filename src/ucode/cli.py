@@ -2348,6 +2348,29 @@ def auth_token_cmd(
     sys.stdout.write(token + "\n")
 
 
+@app.command("otel-proxy", hidden=True)
+def otel_proxy_cmd(
+    host: Annotated[str, typer.Option("--host")],
+    port: Annotated[int, typer.Option("--port", min=1, max=65535)],
+) -> None:
+    """Run the same OTLP proxy as a Codex CLI session, for desktop."""
+    from ucode import gateway_proxy
+
+    try:
+        state = load_full_state().get("workspaces", {}).get(host)
+        if not state:
+            raise RuntimeError(f"No saved configuration for {host}. Run `ug configure` first.")
+        apply_pat_environment(state)
+        server, _cache, _client = gateway_proxy.start_otel_proxy(
+            host, codex_agent._otel_token_provider(state, host), port=port
+        )
+        # systemd stops this with SIGTERM, which exits without cleanup, and nothing needs it.
+        server.serve_forever()
+    except (OSError, RuntimeError) as exc:
+        print_err(str(exc))
+        raise typer.Exit(1) from None
+
+
 @app.command("otel-headers", hidden=True)
 def otel_headers_cmd(
     host: Annotated[

@@ -372,6 +372,15 @@ preferences are ignored and their files are left untouched. See the bundled
 | Cursor Agent | `~/.cursor/mcp.json` |
 | Unity Gateway | `~/.ucode/managed-state.json`, `~/.ucode/managed-backups/` |
 
+### Codex desktop tracing on Linux
+
+With workspace tracing enabled, run `ug configure --agents codex` on the
+app-server's Linux host, then restart the app-server once. This points Codex's
+trace exporter in `~/.codex/config.toml` at the existing CLI OTEL proxy, run as a
+systemd user service that starts at login; `ug codex` sessions keep their own proxy.
+An exporter you already set is left alone. Disabling tracing or `ug revert` removes both.
+Diagnostics: `journalctl --user -u ug-codex-otel.service`.
+
 ## Development
 
 ```bash
