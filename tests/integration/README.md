@@ -311,6 +311,13 @@ reject a missing CLI before token fetch or browser login.
 They replace external authentication and do not establish native Desktop
 GUI or browser-login coverage; this integration suite does not launch Desktop.
 
+`../test_claude_desktop.py` separately checks profile rendering, workspace-derived
+UUIDs, owned-field refresh, deleted-profile recovery, legacy-ID migration, ownership
+conflicts, user-edit preservation on revert, and rollback across profile, metadata,
+and ownership files. It uses temporary files and injected write failures. Native
+Desktop activation, model selection, browser login, and inference remain outside
+this coverage; the adapter resolves native paths only on macOS.
+
 ## Test layout and format
 
 All user journeys are top-level tests. There is no separate regressions category:

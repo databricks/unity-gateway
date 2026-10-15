@@ -138,6 +138,14 @@ Missing-option checks exercise plain and ANSI-colored stderr and require parser 
 code 2 with empty stdout. These component tests replace external authentication;
 they do not establish native Desktop GUI or browser-login coverage.
 
+`test_claude_desktop.py` exercises real temporary profile, metadata, and ownership
+files: workspace-derived UUIDs, repeat configure, owned-field refresh, deleted-profile
+recovery, legacy-ID migration, preservation of unrelated settings, and revert after
+user edits or workspace switches. Injected write failures verify exact-byte rollback
+at each file boundary. These are filesystem component checks, not native Desktop
+activation, model-selection, browser-login, or inference coverage. Native path
+resolution is macOS-only; Windows Desktop support remains unvalidated.
+
 `TestChildStdoutLaunch` in `test_cli.py` checks Claude `-p`/`--print` and Codex `exec`
 (plain and `--json`) and `app-server` status/error output on stderr, argument forwarding with
 and without ug's `--`, and an unchanged stdout descriptor. Detection checks exact tokens before
