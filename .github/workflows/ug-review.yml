@@ -29,8 +29,6 @@ jobs:
     timeout-minutes: 8
     env:
       NPM_CONFIG_REGISTRY: https://databricks.jfrog.io/artifactory/api/npm/db-npm/
-      NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/ug-review-package-config/.npmrc
-      XDG_CONFIG_HOME: ${{ runner.temp }}/ug-review-package-config
       NPM_CONFIG_FETCH_RETRIES: "0"
       NPM_CONFIG_FETCH_TIMEOUT: "15000"
     steps:
@@ -44,11 +42,16 @@ jobs:
       - name: Configure npm and Bun for the existing npm proxy
         env:
           NPM_TOKEN: ${{ steps.jfrog.outputs.oidc-token }}
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/ug-review-package-config/.npmrc
+          XDG_CONFIG_HOME: ${{ runner.temp }}/ug-review-package-config
         run: |
+          test -n "$NPM_TOKEN"
           umask 077
           mkdir -p "$XDG_CONFIG_HOME"
           printf 'registry=%s\n//%s:_authToken=%s\n' \
             "$NPM_CONFIG_REGISTRY" "${NPM_CONFIG_REGISTRY#https://}" "$NPM_TOKEN" > "$NPM_CONFIG_USERCONFIG"
+          printf 'NPM_CONFIG_USERCONFIG=%s\nXDG_CONFIG_HOME=%s\n' \
+            "$NPM_CONFIG_USERCONFIG" "$XDG_CONFIG_HOME" >> "$GITHUB_ENV"
       - name: Check out the stock action package manifest
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -80,7 +83,7 @@ jobs:
           bun install --production --ignore-scripts
       - name: Remove temporary package credentials
         if: always()
-        run: rm -f "$NPM_CONFIG_USERCONFIG"
+        run: rm -f "$RUNNER_TEMP/ug-review-package-config/.npmrc"
 
   review:
     name: Review with the UG rubric
