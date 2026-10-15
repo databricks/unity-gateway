@@ -4140,6 +4140,17 @@ class TestConfigureAgentsSelection:
 
         assert cli_mod.get_model_location(result, "claude") == "main.models"
 
+    def test_picker_cancelled_location_prompt_exits_without_saving(self, monkeypatch):
+        state, saved, _asked = self._picker(
+            monkeypatch, "claude", services=(["a.b.mps"], None), answers=["location"]
+        )
+        monkeypatch.setattr(cli_mod, "prompt_for_text", lambda *a, **k: None)
+
+        with pytest.raises(KeyboardInterrupt):
+            cli_mod._maybe_select_provider_service("claude", state)
+
+        assert saved == []
+
     def test_picker_databricks_and_mps_clear_saved_location(self, monkeypatch):
         state, _saved, _asked = self._picker(
             monkeypatch, "claude", services=(["a.b.mps"], None), answers=["databricks"]

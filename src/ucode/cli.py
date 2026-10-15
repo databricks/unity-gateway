@@ -912,7 +912,9 @@ def _prompt_for_model_location() -> str:
         location = prompt_for_text(
             "Model location (<catalog>.<schema>, e.g. main.default)", required=True
         )
-        if location and is_valid_catalog_schema(location):
+        if location is None:
+            raise KeyboardInterrupt
+        if is_valid_catalog_schema(location):
             return location
         print_err("Model location must be `<catalog>.<schema>`.")
 
