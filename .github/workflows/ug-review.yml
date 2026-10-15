@@ -90,6 +90,7 @@ jobs:
         with:
           github_token: ${{ github.token }}
           anthropic_api_key: ${{ steps.gateway-auth.outputs.token }}
+          show_full_output: "true"
           classify_inline_comments: "false"
           plugin_marketplaces: https://github.com/anthropics/claude-code.git
           plugins: code-review@claude-code-plugins
