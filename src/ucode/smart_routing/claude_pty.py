@@ -231,15 +231,12 @@ def serve_first_prompt_socket(
     def serve() -> None:
         claimed = False
         try:
-            # Bind under a temp name so `path` only appears once it accepts connections.
-            pending = path.with_name(path.name + ".pending")
-            pending.unlink(missing_ok=True)
+            path.unlink(missing_ok=True)
             server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            server.bind(str(pending))
-            os.chmod(pending, 0o600)
+            server.bind(str(path))
+            os.chmod(path, 0o600)
             server.listen(4)
             server.settimeout(0.5)
-            os.replace(pending, path)
         except OSError as exc:
             log(f"[ERR] first-prompt socket bind failed: {exc!r}")
             return
