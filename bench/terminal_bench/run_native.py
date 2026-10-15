@@ -113,11 +113,11 @@ def verify(step_dir: Path, workdir: Path, env: dict, timeout: float) -> tuple[bo
     return verifier.returncode == 0, verifier.stdout + verifier.stderr
 
 
-def run_task(args: argparse.Namespace, task_dir: Path, out: Path) -> dict:
+def run_task(args: argparse.Namespace, task_dir: Path, out: Path, attempt: int) -> dict:
     config = tomllib.loads((task_dir / "task.toml").read_text())
     verifier_timeout = config.get("verifier", {}).get("timeout_sec", 120)
-    workdir = out / "work" / task_dir.name
-    logs = out / "logs" / task_dir.name
+    workdir = out / "work" / task_dir.name / str(attempt)
+    logs = out / "logs" / task_dir.name / str(attempt)
     logs.mkdir(parents=True, exist_ok=True)
     prepare(task_dir, workdir)
 
@@ -129,7 +129,13 @@ def run_task(args: argparse.Namespace, task_dir: Path, out: Path) -> dict:
     # Tasks say "run it with Python", so put this interpreter first on PATH.
     env["PATH"] = os.pathsep.join([str(Path(sys.executable).parent), env.get("PATH", "")])
     started = time.monotonic()
-    result = {"task": task_dir.name, "passed": True, "agent_exit": None, "timed_out": False}
+    result = {
+        "task": task_dir.name,
+        "attempt": attempt,
+        "passed": True,
+        "agent_exit": None,
+        "timed_out": False,
+    }
     for index, (name, step_dir, agent_timeout) in enumerate(task_steps(task_dir, config)):
         if args.agent != "oracle":
             env = bench_auth.agent_env(env)
@@ -157,19 +163,36 @@ def run_task(args: argparse.Namespace, task_dir: Path, out: Path) -> dict:
     return result
 
 
+def failing_tasks(results: list[dict], min_passes: int) -> list[str]:
+    passes: dict[str, int] = {}
+    for r in results:
+        passes[r["task"]] = passes.get(r["task"], 0) + r["passed"]
+    return [task for task, n in passes.items() if n < min_passes]
+
+
 def write_summary(args: argparse.Namespace, results: list[dict], out: Path) -> None:
     (out / "results.json").write_text(json.dumps(results, indent=2))
-    passed = sum(r["passed"] for r in results)
-    lines = [
-        f"### Native tasks · {args.agent} · {sys.platform}: {passed}/{len(results)} passed"
-        f" (needs {args.min_pass_rate:.0%})",
-        "",
-        "| Task | Result | Agent exit | Time (s) |",
-        "|------|--------|-----------|----------|",
-    ]
+    by_task: dict[str, list[dict]] = {}
     for r in results:
-        status = "pass" if r["passed"] else ("timeout" if r["timed_out"] else "fail")
-        lines.append(f"| {r['task']} | {status} | {r['agent_exit']} | {r['duration_sec']} |")
+        by_task.setdefault(r["task"], []).append(r)
+    failing = failing_tasks(results, args.min_passes)
+    lines = [
+        f"### Native tasks · {args.agent} · {sys.platform}: "
+        f"{len(by_task) - len(failing)}/{len(by_task)} tasks passed"
+        f" (each needs {args.min_passes}/{args.attempts} passing attempts)",
+        "",
+        "| Task | Passed | Results | Agent exits | Time (s) |",
+        "|------|--------|---------|-------------|----------|",
+    ]
+    for task, runs in by_task.items():
+        statuses = [
+            "pass" if r["passed"] else ("timeout" if r["timed_out"] else "fail") for r in runs
+        ]
+        lines.append(
+            f"| {task} | {sum(r['passed'] for r in runs)}/{len(runs)} | {', '.join(statuses)} "
+            f"| {', '.join(str(r['agent_exit']) for r in runs)} "
+            f"| {', '.join(str(r['duration_sec']) for r in runs)} |"
+        )
     summary = "\n".join(lines) + "\n"
     print(summary)
     if step_summary := os.environ.get("GITHUB_STEP_SUMMARY"):
@@ -184,11 +207,12 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--ug", default=shutil.which("ug"), help="Absolute path to ug.")
     parser.add_argument("--model")
+    parser.add_argument("--attempts", type=int, default=3, help="Runs of each task.")
     parser.add_argument(
-        "--min-pass-rate",
-        type=float,
-        default=0.75,
-        help="Fraction of tasks that must pass for exit code 0. Agents miss some tasks run to run.",
+        "--min-passes",
+        type=int,
+        default=2,
+        help="Passing attempts each task needs for exit code 0. Agents miss some runs.",
     )
     args = parser.parse_args()
 
@@ -220,10 +244,13 @@ def main() -> int:
             stdin=subprocess.DEVNULL,
         )
 
-    results = [run_task(args, TASKS_DIR / name, out) for name in names]
+    results = [
+        run_task(args, TASKS_DIR / name, out, attempt)
+        for name in names
+        for attempt in range(1, args.attempts + 1)
+    ]
     write_summary(args, results, out)
-    passed = sum(r["passed"] for r in results)
-    return 0 if results and passed / len(results) >= args.min_pass_rate else 1
+    return 0 if results and not failing_tasks(results, args.min_passes) else 1
 
 
 if __name__ == "__main__":
