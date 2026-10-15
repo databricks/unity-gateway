@@ -3417,7 +3417,7 @@ def default(
             "--header",
             hidden=True,
             help="Extra `Name: value` header for ug's, Claude's, and Codex's Databricks requests "
-            "(repeatable), e.g. `x-databricks-traffic-id: testenv://liteswap/<id>`.",
+            "(repeatable).",
         ),
     ] = None,
 ) -> None:
