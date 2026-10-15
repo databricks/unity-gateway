@@ -53,7 +53,6 @@ from ucode.launcher import exec_or_spawn
 from ucode.managed_config import refresh_managed_config
 from ucode.managed_files import (
     OS,
-    SKIP_OS_SETTINGS_ENV,
     ManagedFileSnapshots,
     ManagedFileWriteUnavailable,
     SettingsPassthrough,
@@ -1628,10 +1627,8 @@ def write_tool_config(
         and f"env.{ANTHROPIC_CUSTOM_HEADERS_ENV_KEY}" in _managed_relayed_conflicts(managed_path)
     ):
         raise RuntimeError(
-            f"`ug --header` can't reach Claude Code: its managed settings at {managed_path} set "
-            f"{ANTHROPIC_CUSTOM_HEADERS_ENV_KEY}, which Claude uses instead of ug's headers. Run "
-            f"`ug revert`, then launch with {SKIP_OS_SETTINGS_ENV}=1 so ug doesn't write it back. "
-            "If it's still set, ask your administrator to remove it."
+            "ug --header can't apply to Claude Code because ANTHROPIC_CUSTOM_HEADERS is set by "
+            "the managed settings, which overrides it."
         )
 
     custom_oauth = state.get("custom_oauth")
