@@ -82,8 +82,9 @@ def _real_command_resolution(_isolate_ucode_state, monkeypatch):
 
 # Every agent launch and direct gateway request fails fast, then retries with exponential
 # backoff, so one stalled or rate-limited model request costs a short attempt, not the test.
-# Windows gets longer attempts: a healthy OpenCode launch there averages 22-36s on CI.
-E2E_LINUX_ATTEMPT_TIMEOUT_SECONDS = 15
+# Attempts must clear a healthy launch: one agent start plus one model reply. Windows runners
+# start Node agents much more slowly, so they get longer attempts.
+E2E_LINUX_ATTEMPT_TIMEOUT_SECONDS = 30
 E2E_WINDOWS_ATTEMPT_TIMEOUT_SECONDS = 60
 
 
@@ -153,6 +154,41 @@ def _timeout_output(output: str | bytes | None) -> str:
     if isinstance(output, bytes):
         return output.decode("utf-8", errors="replace")
     return output or ""
+
+
+# On its first load of a config dir, OpenCode npm-installs ug's auth plugin there (about 63MB;
+# 9-12s on Linux and far longer on Windows). Do it once per config dir, outside the timed
+# attempts, with `opencode models`, which lists models without a model request.
+OPENCODE_WARM_UP_TIMEOUT_SECONDS = 300
+_warmed_opencode_configs: set[str] = set()
+
+
+def _warm_opencode(env: dict) -> None:
+    config_home = env.get("XDG_CONFIG_HOME", "")
+    if config_home in _warmed_opencode_configs:
+        return
+    from ucode.agents import opencode
+
+    started = time.monotonic()
+    try:
+        result = subprocess_cross_os.run(
+            [opencode.validate_cmd("opencode")[0], "models"],
+            capture_output=True,
+            text=True,
+            timeout=OPENCODE_WARM_UP_TIMEOUT_SECONDS,
+            env=env,
+            stdin=subprocess.DEVNULL,
+        )
+        outcome = f"rc={result.returncode}"
+    except subprocess.TimeoutExpired:
+        # The timed launch that follows reports the real failure.
+        outcome = "timed out"
+    _warmed_opencode_configs.add(config_home)
+    print(
+        f"[e2e] opencode warm-up {outcome} in {time.monotonic() - started:.1f}s",
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def _codex_home_outside_tmp() -> Path:
@@ -494,6 +530,9 @@ class TestConfigureSubset:
 E2E_MODEL_SKIP_HARNESSES: dict[str, frozenset[str]] = {
     # Codex nano is unreliably slow and exceeds the E2E timeout.
     "gpt-5-4-nano": frozenset({"codex"}),
+    # Pro takes about 13s to answer even the launch smoke, so a Pi launch exceeds the attempt
+    # timeout on every retry.
+    "gpt-5-5-pro": frozenset({"pi"}),
     # The CI OpenAI project cannot serve this snapshot in its geography.
     "gpt-5-3-codex": frozenset({"codex", "pi"}),
     # Bedrock Grok rejects request/tool shapes from these harnesses.
@@ -990,7 +1029,9 @@ class TestOpencodeLaunch:
             print(f"[opencode-per-model] -> {provider}/{model}", flush=True)
             t0 = time.monotonic()
             try:
-                result = _run_agent(cmd, env=opencode.build_runtime_env(e2e_token))
+                env = opencode.build_runtime_env(e2e_token)
+                _warm_opencode(env)
+                result = _run_agent(cmd, env=env)
             except subprocess.TimeoutExpired as exc:
                 elapsed = time.monotonic() - t0
                 partial_stdout = _timeout_output(exc.stdout)
@@ -1058,10 +1099,9 @@ class TestOpencodeLaunch:
         }
         opencode.write_tool_config(state, model, token=e2e_token)
 
-        result = _run_agent(
-            opencode.validate_cmd("opencode"),
-            env=opencode.build_runtime_env(e2e_token),
-        )
+        env = opencode.build_runtime_env(e2e_token)
+        _warm_opencode(env)
+        result = _run_agent(opencode.validate_cmd("opencode"), env=env)
         combined = (result.stdout + result.stderr).strip()
         assert result.returncode == 0 and combined, (
             f"DeepSeek model={model} rc={result.returncode} "
@@ -1097,6 +1137,8 @@ class TestOpencodeLaunch:
             token=rejected_token,
         )
 
+        # Warm with the good token so the timed launch is the first to meet the rejected one.
+        _warm_opencode(opencode.build_runtime_env(e2e_token))
         env = opencode.build_runtime_env(rejected_token)
         # CI authenticates this way; the helper subprocess inherits it and
         # returns the known-good token after OpenCode's first request gets 401.

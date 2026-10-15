@@ -40,7 +40,7 @@ def _script(monkeypatch, target, attr, outcomes):
     return calls
 
 
-@pytest.mark.parametrize(("platform", "expected"), [("linux", 15), ("darwin", 15), ("win32", 60)])
+@pytest.mark.parametrize(("platform", "expected"), [("linux", 30), ("darwin", 30), ("win32", 60)])
 def test_attempt_timeout_defaults_by_os(platform, expected):
     assert e2e._attempt_timeout_seconds({}, platform) == expected
     assert e2e.E2E_RETRIES == 3
@@ -50,7 +50,7 @@ def test_attempt_timeout_override_wins_on_every_os():
     for platform in ("linux", "win32"):
         assert e2e._attempt_timeout_seconds({"UCODE_E2E_AGENT_TIMEOUT": "90"}, platform) == 90
         assert e2e._attempt_timeout_seconds({"UCODE_E2E_AGENT_TIMEOUT": " "}, platform) == (
-            60 if platform == "win32" else 15
+            60 if platform == "win32" else 30
         )
 
 
@@ -151,3 +151,36 @@ def test_gemini_smoke_fails_a_client_error_at_once(monkeypatch, sleeps):
     with pytest.raises(AssertionError, match="HTTP 401"):
         e2e._run_gemini_gateway_smoke("ws", "model", "token")
     assert sleeps == []
+
+
+def test_pi_skips_gpt_5_5_pro_only():
+    assert e2e._model_is_skipped("system.ai.gpt-5-5-pro", "pi")
+    assert not e2e._model_is_skipped("system.ai.gpt-5-5-pro", "codex")
+    assert not e2e._model_is_skipped("system.ai.gpt-5-5", "pi")
+
+
+def test_opencode_warms_each_config_dir_once(monkeypatch, sleeps):
+    monkeypatch.setattr(e2e, "_warmed_opencode_configs", set())
+    calls = _script(
+        monkeypatch, e2e.subprocess_cross_os, "run", [_completed(), _completed(), _completed()]
+    )
+
+    for config in ("/a", "/a", "/b"):
+        e2e._warm_opencode({"XDG_CONFIG_HOME": config})
+
+    assert len(calls) == 2
+    assert all(call["timeout"] == e2e.OPENCODE_WARM_UP_TIMEOUT_SECONDS for call in calls)
+
+
+def test_opencode_warm_up_timeout_leaves_the_launch_to_fail(monkeypatch, sleeps):
+    monkeypatch.setattr(e2e, "_warmed_opencode_configs", set())
+    _script(
+        monkeypatch,
+        e2e.subprocess_cross_os,
+        "run",
+        [subprocess.TimeoutExpired(["opencode", "models"], 300)],
+    )
+
+    e2e._warm_opencode({"XDG_CONFIG_HOME": "/a"})
+
+    assert e2e._warmed_opencode_configs == {"/a"}
