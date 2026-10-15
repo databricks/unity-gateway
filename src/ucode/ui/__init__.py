@@ -331,7 +331,7 @@ def format_token_count(token_count: int) -> str:
 
 
 def format_usd(amount: Decimal) -> str:
-    return f"${amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):,}"
+    return f"${(amount * 100).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):,}"
 
 
 def format_cost_usd(amount: Decimal) -> str:
