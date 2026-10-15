@@ -45,7 +45,6 @@ jobs:
       ANTHROPIC_DEFAULT_OPUS_MODEL: system.ai.claude-opus-5-5
       ANTHROPIC_CUSTOM_HEADERS: "x-databricks-use-coding-agent-mode: true"
       CLAUDE_CODE_USE_GATEWAY: "1"
-      NODE_EXTRA_CA_CERTS: /etc/ssl/certs/ca-certificates.crt
     steps:
       - name: Check out the trusted reviewer from the default branch
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2

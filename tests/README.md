@@ -506,8 +506,7 @@ review on in-repository PRs; fork PRs still require the member comment because
 their PR-triggered runs cannot access the gateway secret. Label removal and
 ordinary pushes do not rerun reviews. The stock plugin validates findings; the optional direct-Anthropic
 comment classifier is disabled. `test_ug_review_bot.py` covers authentication
-and the workflow contract, including the runner CA-bundle setting without disabling
-TLS verification, not live inference or GitHub posting. The old custom
+and the workflow contract, not live inference or GitHub posting. The old custom
 Responses/diff/parser/summary-rendering tests are obsolete because that implementation
 is removed. `/user-journey-check` runs the user-journey gate,
 which runs automatically only for in-repo PRs.

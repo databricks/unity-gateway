@@ -13,10 +13,6 @@ The job retains the existing protected runner, workspace, service principal, and
 it only as a same-job step output. No Anthropic key or developer profile is needed.
 The native gateway route is `/ai-gateway/anthropic`.
 
-Bun and Node use the protected Ubuntu runner's trusted CA bundle through
-`NODE_EXTRA_CA_CERTS`, including during the stock action's dependency installation.
-TLS certificate verification stays enabled.
-
 | Claude alias | Gateway service |
 | --- | --- |
 | Haiku | `system.ai.claude-haiku-5-5` |
@@ -48,6 +44,13 @@ reads and comments, not editing files or running PR commands.
 contract. The obsolete custom Responses request, diff budgeting, JSON parsing, and
 summary rendering are removed rather than maintained alongside the official action.
 These component checks do not establish gateway inference or live inline posting.
+
+A disposable pre-merge smoke test on October 15, 2026 verified both label
+triggers and gateway OAuth authentication. The stock action then failed while
+installing Bun dependencies on the protected runner. Public npm HTTPS downloads
+also failed in curl and npm; using the system CA bundle did not resolve the
+failure. Gateway inference and inline posting remain unverified. No alternate
+registry or TLS-verification bypass is configured.
 
 After this workflow and its auth helper are merged to the default branch, test
 against an open PR by adding either review label or posting `/ug-review`. Watch
