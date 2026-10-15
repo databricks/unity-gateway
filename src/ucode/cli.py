@@ -145,6 +145,7 @@ from ucode.smart_routing.session_env import (
     session_env_path,
     set_session_environment,
 )
+from ucode.startup_telemetry import observe_agent_launch, record_dispatch
 from ucode.state import (
     SELF_MANAGED_AGENTS_KEY,
     add_self_managed_agent,
@@ -2919,6 +2920,7 @@ def _managed_smart_routing_enabled(managed: dict | None, tool: str) -> bool:
     return agent_config.get("smart_routing_enabled") is True
 
 
+@observe_agent_launch
 def _launch_tool(
     tool_name: str,
     ctx: typer.Context,
@@ -3320,6 +3322,7 @@ def _launch_tool(
             else None,
             agent=tool,
         ):
+            record_dispatch()
             launch_agent(tool, state, ctx.args, options=launch_options)
     except RuntimeError as exc:
         print_err(str(exc))

@@ -1,5 +1,9 @@
 # Integration tests
 
+Parent-launcher metrics currently have component coverage in
+`../test_startup_telemetry.py`; this integration suite does not claim a live
+Isaac-to-UG-to-agent startup or first-token measurement.
+
 The separate [dedicated-workspace CUJ](../e2e_cuj/AGENTS.md) lives in `tests/e2e_cuj/`
 and runs directly with pytest. It does not use this suite's runner or config fixtures.
 It reuses the session, terminal, file-task, and transcript helpers in `utils/`.

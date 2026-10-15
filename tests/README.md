@@ -1,5 +1,10 @@
 # Test suites and user journeys
 
+`test_startup_telemetry.py` exercises parent-launcher timing over real loopback
+datagrams, startup-error propagation, cancellation, malformed contexts, and
+preserving trace settings when the receiver is unavailable. These are component
+checks; they do not establish rendered TUI readiness or live inference latency.
+
 Integration runs a freshly installed ug wheel/release, exact real Claude/Codex
 (and optionally OpenCode) versions, and the existing real e2e workspace. It has no application imports,
 mocks, monkeypatching, fake binaries/services, or fabricated ug state.
