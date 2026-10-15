@@ -215,7 +215,18 @@ time.sleep(30)
 @requires_pty
 @pytest.mark.parametrize(
     "view",
-    ["empty", "completed", "resumed", "running", "mixed", "scheduled", "partial", "transcript"],
+    [
+        "empty",
+        "completed",
+        "detail",
+        "resumed",
+        "running",
+        "detail_running",
+        "mixed",
+        "scheduled",
+        "partial",
+        "transcript",
+    ],
 )
 def test_claude_waits_for_background_task_completion_before_exit(tmp_path, view):
     """An offline terminal fixture requires /tasks, completion, Escape, then /exit."""
@@ -226,6 +237,19 @@ def test_claude_waits_for_background_task_completion_before_exit(tmp_path, view)
             "❯ ✔ ug_subagent_two   done · Haiku 4.5\n"
             "  ✔ ug_subagent_one   done · Sonnet 5\n\n"
             "↑/↓ to select · Enter to view · Esc to close"
+        ),
+        "detail": (
+            "Background task update waiting while this panel is open\n"
+            "agent › Read file contents\n"
+            "✔ Completed · 13s · 12.8k tokens · 3 tools · Haiku 4.5\n\n"
+            "Prompt\nPlease share the contents of the file you read.\n\n"
+            "← to go back · Esc/Enter/Space to close · f to foreground"
+        ),
+        "detail_running": (
+            "agent › Read file contents\n"
+            "Running · 4s · 2 tools · Haiku 4.5\n\n"
+            "Prompt\nPlease share the contents of the file you read.\n\n"
+            "← to go back · Esc/Enter/Space to close · f to foreground"
         ),
         "running": (
             "Background\n\n  Running (1)\n❯ ug_subagent_one   running · Sonnet 5\n\n"
@@ -248,7 +272,7 @@ def test_claude_waits_for_background_task_completion_before_exit(tmp_path, view)
         "transcript": ("Background\n\n  Completed (1)\n✔ ug_subagent_one   done · Sonnet 5\n\n❯"),
     }
     views["resumed"] = views["mixed"]
-    complete = view in ("empty", "completed", "resumed")
+    complete = view in ("empty", "completed", "detail", "resumed")
     script = tmp_path / "ug"
     script.write_text(
         f"""#!{sys.executable}
