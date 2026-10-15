@@ -133,14 +133,13 @@ def test_interactive_browser_login_routes_both_streams_to_stderr(cli, monkeypatc
         return _result()
 
     monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", run)
-    attempt = desktop_auth._run_login(
+    desktop_auth._run_login(
         CLI,
         HOST,
         PROFILE,
         timeout=desktop_auth.CLAUDE_DESKTOP_AUTH_TIMEOUT_SECONDS,
     )
 
-    assert not attempt.failure
     assert seen["stdin"] is subprocess.DEVNULL
     assert seen["stdout"] is sys.stderr
     assert seen["stderr"] is sys.stderr
@@ -206,3 +205,179 @@ def test_force_refresh_is_forwarded_to_token_command(cli, monkeypatch):
     monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", run)
     assert desktop_auth.get_claude_desktop_token(HOST, PROFILE, force_refresh=True) == "fresh-token"
     assert seen["argv"][-1] == "--force-refresh"
+
+
+def test_token_rechecked_under_lock_avoids_second_browser(cli, monkeypatch, tmp_path):
+    monkeypatch.setenv(desktop_auth.CLAUDE_HELPER_CONTEXT_ENV, "interactive")
+    lock_path = tmp_path / "auth.lock"
+    monkeypatch.setattr(desktop_auth, "_AUTH_LOCK_PATH", lock_path)
+    commands = []
+
+    def run(argv, **kwargs):
+        commands.append(argv[2])
+        if len(commands) == 1:
+            return _result(1, stderr="expired")
+        with lock_path.open("a+b") as other_lock:
+            with pytest.raises(TimeoutError):
+                desktop_auth.acquire_exclusive_file_lock(other_lock, timeout=0)
+        return _result(token="other-helper-token")
+
+    monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", run)
+
+    assert desktop_auth.get_claude_desktop_token(HOST, PROFILE) == "other-helper-token"
+    assert commands == ["token", "token"]
+    with lock_path.open("a+b") as lock_file:
+        desktop_auth.acquire_exclusive_file_lock(lock_file, timeout=0)
+        desktop_auth.release_file_lock(lock_file)
+
+
+@pytest.mark.parametrize("stage", ["initial", "recheck", "login", "final"])
+@pytest.mark.parametrize(
+    ("failure", "kind", "message"),
+    [
+        (_result(1, stderr="Could not resolve host"), "network", "Check your network"),
+        (subprocess.TimeoutExpired("databricks", 15), "network", "Check your network"),
+        (PermissionError("access denied"), "cli", "Install or repair"),
+    ],
+    ids=["network", "timeout", "cli"],
+)
+def test_recovery_failure_stops_and_releases_lock(
+    cli, monkeypatch, tmp_path, stage, failure, kind, message
+):
+    monkeypatch.setenv(desktop_auth.CLAUDE_HELPER_CONTEXT_ENV, "interactive")
+    lock_path = tmp_path / "auth.lock"
+    monkeypatch.setattr(desktop_auth, "_AUTH_LOCK_PATH", lock_path)
+    # Substitute only the external CLI; exercise real recovery and file locking.
+    stages = ["initial", "recheck", "login", "final"]
+    responses = [_result(1, stderr="expired"), _result(1, stderr="expired"), _result()]
+    index = stages.index(stage)
+    run = Mock(side_effect=[*responses[:index], failure])
+    monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", run)
+
+    # Login output is streamed, so a nonzero exit has no captured network detail.
+    if stage == "login" and isinstance(failure, subprocess.CompletedProcess):
+        kind, message = "auth", "sign-in did not complete"
+    with pytest.raises(desktop_auth.ClaudeDesktopAuthError, match=message) as raised:
+        desktop_auth.get_claude_desktop_token(HOST, PROFILE)
+
+    assert raised.value.kind == kind
+    assert run.call_count == index + 1
+    with lock_path.open("a+b") as lock_file:
+        desktop_auth.acquire_exclusive_file_lock(lock_file, timeout=0)
+        desktop_auth.release_file_lock(lock_file)
+
+
+def test_waiting_for_login_lock_stops_at_deadline(cli, monkeypatch, tmp_path):
+    monkeypatch.setenv(desktop_auth.CLAUDE_HELPER_CONTEXT_ENV, "interactive")
+    lock_path = tmp_path / "auth.lock"
+    monkeypatch.setattr(desktop_auth, "_AUTH_LOCK_PATH", lock_path)
+    now = 0.0
+    monkeypatch.setattr(desktop_auth.time, "monotonic", lambda: now)
+
+    def advance_to_deadline(_seconds):
+        nonlocal now
+        now = 270.0
+
+    monkeypatch.setattr(desktop_auth.time, "sleep", advance_to_deadline)
+    run = Mock(return_value=_result(1, stderr="expired"))
+    monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", run)
+
+    with lock_path.open("a+b") as held_lock:
+        desktop_auth.acquire_exclusive_file_lock(held_lock)
+        try:
+            with pytest.raises(
+                desktop_auth.ClaudeDesktopAuthError, match="another Databricks sign-in"
+            ) as raised:
+                desktop_auth.get_claude_desktop_token(HOST, PROFILE)
+            assert raised.value.kind == "network"
+            run.assert_called_once()
+            with lock_path.open("a+b") as other_lock:
+                with pytest.raises(TimeoutError):
+                    desktop_auth.acquire_exclusive_file_lock(other_lock, timeout=0)
+        finally:
+            desktop_auth.release_file_lock(held_lock)
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        "not-json-secret",
+        "[]",
+        "{}",
+        '{"access_token":123}',
+        '{"access_token":""}',
+        '{"access_token":"secret with spaces"}',
+        '{"access_token":"secret\\u0000"}',
+    ],
+)
+def test_invalid_token_output_stays_out_of_errors(cli, monkeypatch, capsys, stdout):
+    run = Mock(return_value=subprocess.CompletedProcess([], 0, stdout=stdout, stderr=""))
+    monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", run)
+
+    with pytest.raises(desktop_auth.ClaudeDesktopAuthError) as raised:
+        desktop_auth.get_claude_desktop_token(HOST, PROFILE)
+
+    assert str(raised.value) == (
+        "Databricks authentication expired. Start a new Cowork task to sign in, then retry."
+    )
+    assert raised.value.kind == "auth"
+    assert capsys.readouterr() == ("", "")
+    run.assert_called_once()
+
+
+def test_browser_and_token_fetch_share_remaining_budget(cli, monkeypatch, tmp_path):
+    monkeypatch.setenv(desktop_auth.CLAUDE_HELPER_CONTEXT_ENV, "interactive")
+    monkeypatch.setattr(desktop_auth, "_AUTH_LOCK_PATH", tmp_path / "auth.lock")
+    now = 0.0
+    monkeypatch.setattr(desktop_auth.time, "monotonic", lambda: now)
+    timeouts = []
+    elapsed = iter([10.0, 20.0, 260.0, 260.0])
+    responses = iter(
+        [
+            _result(1, stderr="expired"),
+            _result(1, stderr="expired"),
+            _result(),
+            _result(token="new-token"),
+        ]
+    )
+
+    def run(argv, **kwargs):
+        nonlocal now
+        if argv[2] == "token":
+            assert argv[-1] == "--force-refresh"
+        timeouts.append(kwargs["timeout"])
+        now = next(elapsed)
+        return next(responses)
+
+    monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", run)
+
+    assert desktop_auth.get_claude_desktop_token(HOST, PROFILE, force_refresh=True) == "new-token"
+    assert timeouts == [15.0, 15.0, 250.0, 10.0]
+
+
+def test_budget_exhausted_after_login_stops_before_final_fetch(cli, monkeypatch, tmp_path):
+    monkeypatch.setenv(desktop_auth.CLAUDE_HELPER_CONTEXT_ENV, "interactive")
+    lock_path = tmp_path / "auth.lock"
+    monkeypatch.setattr(desktop_auth, "_AUTH_LOCK_PATH", lock_path)
+    now = 0.0
+    monkeypatch.setattr(desktop_auth.time, "monotonic", lambda: now)
+    calls = []
+
+    def run(argv, **kwargs):
+        nonlocal now
+        calls.append(argv[2])
+        if argv[2] == "login":
+            now = 270.0
+            return _result()
+        return _result(1, stderr="expired")
+
+    monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", run)
+
+    with pytest.raises(desktop_auth.ClaudeDesktopAuthError, match="sign-in timed out") as raised:
+        desktop_auth.get_claude_desktop_token(HOST, PROFILE)
+
+    assert raised.value.kind == "network"
+    assert calls == ["token", "token", "login"]
+    with lock_path.open("a+b") as lock_file:
+        desktop_auth.acquire_exclusive_file_lock(lock_file, timeout=0)
+        desktop_auth.release_file_lock(lock_file)

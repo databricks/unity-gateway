@@ -299,7 +299,10 @@ Desktop credential-helper coverage remains in `../test_desktop_auth.py`,
 `../test_desktop_auth_cli.py`, and `../test_file_lock_cross_os.py`. These component
 checks cover token-only stdout, explicit workspace/profile arguments in plain and
 ANSI-colored parser errors, browser gating, cancellation, and bounded lock/login
-waits. They replace external authentication and do not establish native Desktop
+waits. Recovery checks also cover token recheck before browser login, lock release,
+the shared deadline, and network/CLI failures at each recovery stage. Invalid token
+output stays out of helper errors and streams.
+They replace external authentication and do not establish native Desktop
 GUI or browser-login coverage; this integration suite does not launch Desktop.
 
 ## Test layout and format

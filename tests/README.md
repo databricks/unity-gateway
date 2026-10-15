@@ -98,6 +98,9 @@ quoted executable paths and replacement of legacy `ucode` routing/web-search hel
 `test_desktop_auth.py`, `test_desktop_auth_cli.py`, and `test_file_lock_cross_os.py`
 cover Desktop token-only stdout, explicit workspace/profile arguments, interactive-only
 browser recovery, bounded login/lock waits, cancellation, and lock contention.
+Recovery regressions check token recheck before browser login, lock release after
+success/failure, one shared deadline, and network/CLI failures at each recovery stage.
+Invalid token output must not appear in helper errors or stdout/stderr.
 Missing-option checks exercise plain and ANSI-colored stderr and require parser exit
 code 2 with empty stdout. These component tests replace external authentication;
 they do not establish native Desktop GUI or browser-login coverage.
