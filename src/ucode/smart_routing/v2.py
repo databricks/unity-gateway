@@ -56,7 +56,7 @@ from ucode.skills import (
     install_skill,
     uninstall_agent_skill,
 )
-from ucode.smart_routing import claude_routing, orchestrator, routing
+from ucode.smart_routing import claude_routing, orchestrator, routing, status_line
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
     sync_first_prompt_hook,
@@ -687,6 +687,19 @@ def launch_claude(
             session_path = _prepare_smart_router_session("claude")
             env[SESSION_ENV_VAR] = str(session_path)
             env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
+            # The launch settings outrank the user's files, so wrap whichever status line they set.
+            project = Path.cwd() / ".claude"
+            settings["statusLine"] = status_line.launch_setting(
+                env[SESSION_PYTHON_ENV_VAR],
+                status_line.effective_status_line(
+                    settings,
+                    [
+                        project / "settings.local.json",
+                        project / "settings.json",
+                        user_settings_path,
+                    ],
+                ),
+            )
             settings.setdefault("pluginConfigs", {}).setdefault(CLAUDE_ROUTING_PLUGIN_NAME, {})[
                 "options"
             ] = _claude_mod_launch_options({**resolve_environment(agent=AGENT_CLAUDE), **env})

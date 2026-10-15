@@ -13,7 +13,8 @@ mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 | Installation | `integration/test_installation.py` | Fresh installed package, CLI, and local helpers without credentials on Linux and advisory native Windows |
 
 Claude mod entry-point coverage lives in `test_claude_mod.py` (generated plugin contents),
-`test_claude_smart_routing_v2.py` (launch wiring), and the explicitly selected
+`test_claude_smart_routing_v2.py` (launch wiring), `test_smart_routing_status_line.py`
+(the launch status line's wrapping and ON/OFF state), and the explicitly selected
 `native_claude/test_mod.py` suite. Claude 2.1.290 validates the module and runs its
 TypeScript event-forwarding and launch-option tests in CI. The existing Claude
 skill-toggle integration journey checks the live recipe payload field across on/off/on.
