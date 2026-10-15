@@ -83,9 +83,9 @@ The workflow also takes `tb2_dataset`, `claude_version`, and `codex_version`. Gi
 
 Each job writes a table of task results to its run summary.
 
-Each of ug's own tasks runs 3 times, in both lanes, and must pass at least 2 of them. A job fails when any task misses that bar. Agents miss a run now and then, so one miss doesn't fail the task. Change the bar with `run_native.py --attempts` and `--min-passes`, or Harbor's `-k` and `summarize_harbor.py --min-passes`.
+Every task runs 3 times and must pass at least 2 of them. That covers ug's own tasks in both lanes and the TB2 tasks in the Harbor lane. A job fails when any task misses that bar. Agents miss a run now and then, so one miss doesn't fail the task. Change the bar with `run_native.py --attempts` and `--min-passes`, or Harbor's `-k` and `summarize_harbor.py --min-passes`.
 
-TB2 tasks run once and don't gate the job on their score, because they are meant to be hard. A TB2 trial fails the job only when it hits a harness error, such as a failed agent install or an API error.
+The default TB2 subset holds only tasks that both agents pass reliably, so a miss points at ug rather than task difficulty. `kv-store-grpc` and `chess-best-move` were dropped because agents solve them too rarely. A trial that hits a harness error, such as a failed agent install or an API error, counts as a failed attempt.
 
 Each job uploads its files as an artifact named `terminal-bench-harbor-<agent>` or `terminal-bench-native-<agent>-<os>`. `scrub_secrets.py` replaces bearer tokens in those files before upload.
 
