@@ -7,7 +7,8 @@ The existing `_write_routed_claude_plugin()` copies the packaged TypeScript entr
 from `src/ucode/agents/claude_mods/` and writes `hooks/hooks.json` into that plugin.
 Every routed launch includes the status band above the prompt. It shows at launch and after
 each `/smart-router on|off`, and hides once the next prompt's turn completes. While it is hidden, the prompt hint row
-(the line under the input with the permission mode) ends with `smart router on|off`. Both full and subagent-only smart
+(the line under the input with the permission mode) ends with `smart router 🟢 on` or `smart router ⚪ off`. The engine draws that tail dim and
+rejects escape sequences in it, so the emoji is what gives it color. Both full and subagent-only smart
 routing launches use this path, and the existing temporary-directory lifecycle
 cleans up the files when Claude exits.
 
