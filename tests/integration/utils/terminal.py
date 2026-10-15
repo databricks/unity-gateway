@@ -89,7 +89,9 @@ class TerminalProcess:
         # its process group even if the ug leader exited before its children.
         with contextlib.suppress(ProcessLookupError):
             os.killpg(self.child.pid, signal.SIGTERM)
-        self.child.close(force=True)
+        # close() gives up if the child outlives its kill delay; the SIGKILL below still kills it.
+        with contextlib.suppress(pexpect.ExceptionPexpect):
+            self.child.close(force=True)
         with contextlib.suppress(ProcessLookupError):
             os.killpg(self.child.pid, signal.SIGKILL)
         routing_log = (
