@@ -372,14 +372,21 @@ preferences are ignored and their files are left untouched. See the bundled
 | Cursor Agent | `~/.cursor/mcp.json` |
 | Unity Gateway | `~/.ucode/managed-state.json`, `~/.ucode/managed-backups/` |
 
-### Codex desktop tracing on Linux
+### Codex desktop tracing
 
-With workspace tracing enabled, run `ug configure --agents codex` on the
-app-server's Linux host, then restart the app-server once. This points Codex's
-trace exporter in `~/.codex/config.toml` at the existing CLI OTEL proxy, run as a
-systemd user service that starts at login; `ug codex` sessions keep their own proxy.
+With workspace tracing enabled, run `ug configure --agents codex` where Codex
+desktop's app server runs: your Mac or Windows PC, the Linux host the app
+connects to, or WSL if the Windows app's agent runs there. Then restart the app
+server once (on a Mac or PC, restart the Codex app). This points Codex's trace
+exporter in `~/.codex/config.toml` at the existing CLI OTEL proxy, run as a
+per-user service that starts at login; `ug codex` sessions keep their own proxy.
 An exporter you already set is left alone. Disabling tracing or `ug revert` removes both.
-Diagnostics: `journalctl --user -u ug-codex-otel.service`.
+
+| OS | Service | Diagnostics |
+|----|---------|-------------|
+| Linux | systemd user service `ug-codex-otel.service` | `journalctl --user -u ug-codex-otel.service` |
+| macOS | LaunchAgent `com.databricks.ug-codex-otel` | `launchctl print gui/$(id -u)/com.databricks.ug-codex-otel` |
+| Windows | Scheduled task `com.databricks.ug-codex-otel` | `schtasks /Query /TN com.databricks.ug-codex-otel /V /FO LIST` |
 
 ## Development
 

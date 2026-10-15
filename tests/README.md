@@ -518,10 +518,11 @@ and real-shell copy/rename failure handling in temporary directories.
 `test_cli.py` covers the workspace configure session boundary.
 These are unit/component checks; they do not establish live sudo password-prompt behavior.
 
-Codex desktop OTEL component tests cover the startup unit, reuse of CLI proxy/auth,
+Codex desktop OTEL component tests cover the systemd unit, the macOS LaunchAgent, and the
+Windows scheduled task (`launchctl` and `schtasks` are simulated), reuse of CLI proxy/auth,
 fixed-port collisions, setup failures that only warn, unchanged launches that keep the
 service running, and leaving another exporter alone. They do not establish a live
-desktop GUI or systemd login/reboot pass.
+desktop GUI, a real `launchctl` or `schtasks` run, or a login/reboot pass.
 
 | Scenario | Status / requirement |
 | --- | --- |
