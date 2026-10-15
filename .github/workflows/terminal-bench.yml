@@ -1,9 +1,6 @@
 name: Terminal Bench
 
 on:
-  # TEMP: iterate on this branch; remove before merge.
-  push:
-    branches: [max-rozen-oss-db/tbench-per-task-attempts]
   schedule:
     - cron: '0 7 * * *'
   workflow_dispatch:
