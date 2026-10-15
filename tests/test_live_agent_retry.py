@@ -40,9 +40,18 @@ def _script(monkeypatch, target, attr, outcomes):
     return calls
 
 
-def test_attempts_default_to_a_fifteen_second_timeout():
-    assert TIMEOUT == 15
+@pytest.mark.parametrize(("platform", "expected"), [("linux", 15), ("darwin", 15), ("win32", 60)])
+def test_attempt_timeout_defaults_by_os(platform, expected):
+    assert e2e._attempt_timeout_seconds({}, platform) == expected
     assert e2e.E2E_RETRIES == 3
+
+
+def test_attempt_timeout_override_wins_on_every_os():
+    for platform in ("linux", "win32"):
+        assert e2e._attempt_timeout_seconds({"UCODE_E2E_AGENT_TIMEOUT": "90"}, platform) == 90
+        assert e2e._attempt_timeout_seconds({"UCODE_E2E_AGENT_TIMEOUT": " "}, platform) == (
+            60 if platform == "win32" else 15
+        )
 
 
 def test_agent_success_returns_without_retrying(monkeypatch, sleeps):

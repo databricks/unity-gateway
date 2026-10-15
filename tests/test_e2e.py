@@ -82,7 +82,21 @@ def _real_command_resolution(_isolate_ucode_state, monkeypatch):
 
 # Every agent launch and direct gateway request fails fast, then retries with exponential
 # backoff, so one stalled or rate-limited model request costs a short attempt, not the test.
-E2E_ATTEMPT_TIMEOUT_SECONDS = int(os.environ.get("UCODE_E2E_AGENT_TIMEOUT", "15"))
+# Windows gets longer attempts: a healthy OpenCode launch there averages 22-36s on CI.
+E2E_LINUX_ATTEMPT_TIMEOUT_SECONDS = 15
+E2E_WINDOWS_ATTEMPT_TIMEOUT_SECONDS = 60
+
+
+def _attempt_timeout_seconds(environ=os.environ, platform: str = sys.platform) -> int:
+    """UCODE_E2E_AGENT_TIMEOUT if set, else the per-OS default."""
+    if override := environ.get("UCODE_E2E_AGENT_TIMEOUT", "").strip():
+        return int(override)
+    if platform == "win32":
+        return E2E_WINDOWS_ATTEMPT_TIMEOUT_SECONDS
+    return E2E_LINUX_ATTEMPT_TIMEOUT_SECONDS
+
+
+E2E_ATTEMPT_TIMEOUT_SECONDS = _attempt_timeout_seconds()
 E2E_RETRIES = 3
 E2E_RETRY_BASE_DELAY_SECONDS = 2
 # Only statuses a retry can fix; a 4xx such as an allowlist 403 is the answer under test.
