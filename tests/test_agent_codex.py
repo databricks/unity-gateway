@@ -229,7 +229,7 @@ class TestRenderOverlayUserAgent:
     def test_managed_keys_include_http_headers(self):
         # Revert must clean up the new key.
         assert ["model_providers", "Databricks", "http_headers"] in codex.MANAGED_KEYS
-        assert ["model_catalog_json"] not in codex.MANAGED_KEYS
+        assert ["model_catalog_json"] in codex.MANAGED_KEYS
 
 
 class TestCodexWriteConfig:
@@ -1165,6 +1165,29 @@ class TestCodexLaunch:
         assert "leaving it unchanged" in " ".join(output.err.split())
         assert "daemon restart" not in output.err
 
+    def test_provider_reuses_catalog_discovered_by_config_write(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        catalog = {"models": [{"slug": "gpt-primary"}]}
+        monkeypatch.setattr(
+            codex, "_model_catalog_path", lambda workspace, scope: tmp_path / "models.json"
+        )
+        monkeypatch.setattr(
+            codex,
+            "_fetch_codex_model_catalog",
+            lambda *a, **k: pytest.fail("the config write already discovered this catalog"),
+        )
+        codex._discovered_catalogs[(WS, "provider:main.default.openai")] = catalog
+
+        codex.launch(
+            {"workspace": WS, "_codex_launch_provider": "main.default.openai"},
+            [],
+            options=LaunchOptions(),
+        )
+
+        assert json.loads((tmp_path / "models.json").read_text()) == catalog
+        assert 'model="gpt-primary"' in launches[0]
+        assert not codex._discovered_catalogs
+
     def test_provider_pins_first_catalog_model(self, tmp_path, monkeypatch):
         launches = self._patch(tmp_path, monkeypatch)
         catalog = {"models": [{"slug": "gpt-primary"}, {"slug": "gpt-secondary"}]}
@@ -1655,7 +1678,26 @@ class TestCodexManagedConfig:
             return "written"
 
         monkeypatch.setattr(codex, "reconcile_managed_file", fake_write_managed)
+        self._stub_discovery(monkeypatch)
         return config_path, managed_path
+
+    @staticmethod
+    def _stub_discovery(monkeypatch, catalog=None):
+        monkeypatch.setattr(
+            codex, "get_databricks_token", lambda workspace, profile=None, force_refresh=False: "t"
+        )
+        monkeypatch.setattr(codex, "validate_codex_catalog", lambda binary, catalog: None)
+        monkeypatch.setattr(codex, "detach_app_model_catalog", lambda: False)
+        fetches = []
+
+        def fetch(workspace, token, **kwargs):
+            fetches.append(kwargs)
+            if catalog is None:
+                raise codex.CodexMpsModelCatalogUnavailable("off")
+            return catalog
+
+        monkeypatch.setattr(codex, "_fetch_codex_model_catalog", fetch)
+        return fetches
 
     def test_writes_managed_config_by_default(self, tmp_path, monkeypatch):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)
@@ -1716,6 +1758,338 @@ class TestCodexManagedConfig:
 
         assert read_toml_safe(config_path)["model_provider"] == "Databricks"
         assert not managed_path.exists()
+
+    def test_skip_env_errors_on_stale_managed_catalog(self, tmp_path, monkeypatch):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "catalog.json")
+        monkeypatch.setattr(
+            codex, "prepare_codex_catalog", lambda binary, names: {"models": [{"slug": "gpt-5"}]}
+        )
+        state = {"workspace": WS, "codex_static_models": ["gpt-5"]}
+        codex.write_tool_config(state)
+        monkeypatch.setattr(
+            codex, "prepare_codex_catalog", lambda binary, names: {"models": [{"slug": "gpt-6"}]}
+        )
+        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        monkeypatch.setattr(
+            codex, "reconcile_managed_file", lambda *a, **kw: pytest.fail("must not write managed")
+        )
+
+        with pytest.raises(RuntimeError, match="stale"):
+            codex.write_tool_config(state)
+
+    def test_writes_static_catalog_to_managed_config(self, tmp_path, monkeypatch):
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "catalog.json")
+        monkeypatch.setattr(
+            codex, "prepare_codex_catalog", lambda binary, names: {"models": [{"slug": "gpt-5"}]}
+        )
+        recorded: list[dict] = []
+        monkeypatch.setattr(codex, "record_ug_picker", lambda tool, values: recorded.append(values))
+        state = {"workspace": WS, "codex_static_models": ["gpt-5"]}
+        codex.write_tool_config(state)
+
+        managed_catalog = managed_path.with_name(codex.MANAGED_CATALOG_FILENAME)
+        assert read_toml_safe(managed_path)["model_catalog_json"] == str(managed_catalog)
+        assert recorded == [{"model_catalog_json": str(managed_catalog)}]
+        assert json.loads(managed_catalog.read_text()) == {"models": [{"slug": "gpt-5"}]}
+        assert read_toml_safe(config_path)["model_catalog_json"] == str(tmp_path / "catalog.json")
+
+    def test_headless_repair_skips_uncreated_managed_catalog(self, tmp_path, monkeypatch):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: False)
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "catalog.json")
+        monkeypatch.setattr(
+            codex, "prepare_codex_catalog", lambda binary, names: {"models": [{"slug": "gpt-5"}]}
+        )
+        managed_path.parent.mkdir(parents=True, exist_ok=True)
+        managed_path.write_text('model_provider = "Other"\n', encoding="utf-8")
+        codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
+
+        doc = read_toml_safe(managed_path)
+        assert doc["model_provider"] == "Databricks"
+        assert "model_catalog_json" not in doc
+        assert not managed_path.with_name(codex.MANAGED_CATALOG_FILENAME).exists()
+
+    def test_headless_rerun_keeps_existing_managed_catalog(self, tmp_path, monkeypatch):
+        managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "catalog.json")
+        monkeypatch.setattr(
+            codex, "prepare_codex_catalog", lambda binary, names: {"models": [{"slug": "gpt-5"}]}
+        )
+        writes: list[Path] = []
+
+        def _write(target, text):
+            writes.append(Path(target))
+            Path(target).parent.mkdir(parents=True, exist_ok=True)
+            Path(target).write_text(text, encoding="utf-8")
+
+        monkeypatch.setattr(managed_files, "_sudo_replace", _write)
+        state = {"workspace": WS, "codex_static_models": ["gpt-5"]}
+        codex.write_tool_config(state)
+        managed_catalog = managed_path.with_name(codex.MANAGED_CATALOG_FILENAME)
+        catalog_text = managed_catalog.read_text()
+        baseline = len(writes)
+
+        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: False)
+        codex.write_tool_config(state)
+
+        assert read_toml_safe(managed_path)["model_catalog_json"] == str(managed_catalog)
+        assert managed_catalog.read_text() == catalog_text
+        assert len(writes) == baseline
+
+    def test_provider_configure_removes_ug_owned_managed_catalog(self, tmp_path, monkeypatch):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "catalog.json")
+        managed_catalog = managed_path.with_name(codex.MANAGED_CATALOG_FILENAME)
+        managed_path.parent.mkdir(parents=True, exist_ok=True)
+        managed_path.write_text(
+            f"model_catalog_json = {json.dumps(str(managed_catalog))}\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(
+            codex,
+            "managed_file_snapshots",
+            lambda tool, parser: managed_files.ManagedFileSnapshots(
+                None, None, ug_picker={"model_catalog_json": str(managed_catalog)}
+            ),
+        )
+        reverted: list[str] = []
+        monkeypatch.setattr(
+            codex, "revert_managed_file", lambda tool, **kwargs: reverted.append(tool) or "removed"
+        )
+        codex.write_tool_config(
+            {"workspace": WS, "codex_static_models": ["gpt-5"]}, provider="my-service"
+        )
+
+        assert "model_catalog_json" not in read_toml_safe(managed_path)
+        assert reverted == [codex.MANAGED_CATALOG_TOOL]
+
+    def test_provider_configure_restores_admin_catalog_ug_replaced(self, tmp_path, monkeypatch):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "catalog.json")
+        managed_catalog = managed_path.with_name(codex.MANAGED_CATALOG_FILENAME)
+        managed_path.parent.mkdir(parents=True, exist_ok=True)
+        managed_path.write_text(
+            f"model_catalog_json = {json.dumps(str(managed_catalog))}\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(
+            codex,
+            "managed_file_snapshots",
+            lambda tool, parser: managed_files.ManagedFileSnapshots(
+                {"model_catalog_json": "/admin/models.json"},
+                None,
+                ug_picker={"model_catalog_json": str(managed_catalog)},
+            ),
+        )
+        monkeypatch.setattr(codex, "revert_managed_file", lambda tool, **kwargs: "removed")
+        codex.write_tool_config(
+            {"workspace": WS, "codex_static_models": ["gpt-5"]}, provider="my-service"
+        )
+
+        assert read_toml_safe(managed_path)["model_catalog_json"] == "/admin/models.json"
+
+    def test_headless_provider_launch_removes_ug_reference_to_missing_catalog(
+        self, tmp_path, monkeypatch
+    ):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: False)
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "catalog.json")
+        managed_catalog = managed_path.with_name(codex.MANAGED_CATALOG_FILENAME)
+        managed_path.parent.mkdir(parents=True, exist_ok=True)
+        managed_path.write_text(
+            f"model_catalog_json = {json.dumps(str(managed_catalog))}\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(
+            codex,
+            "managed_file_snapshots",
+            lambda tool, parser: managed_files.ManagedFileSnapshots(
+                None, None, ug_picker={"model_catalog_json": str(managed_catalog)}
+            ),
+        )
+        monkeypatch.setattr(codex, "revert_managed_file", lambda tool, **kwargs: "unchanged")
+        codex.write_tool_config(
+            {"workspace": WS, "codex_static_models": ["gpt-5"]}, provider="my-service"
+        )
+
+        assert "model_catalog_json" not in read_toml_safe(managed_path)
+
+    def test_changed_static_catalog_is_a_conflict(self, tmp_path, monkeypatch):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "catalog.json")
+        monkeypatch.setattr(
+            codex, "prepare_codex_catalog", lambda binary, names: {"models": [{"slug": "gpt-5"}]}
+        )
+        state = {"workspace": WS, "codex_static_models": ["gpt-5"]}
+        codex.write_tool_config(state)
+        monkeypatch.setattr(
+            codex, "prepare_codex_catalog", lambda binary, names: {"models": [{"slug": "gpt-6"}]}
+        )
+
+        def unavailable(path, text, **kwargs):
+            raise managed_files.ManagedFileWriteUnavailable("sudo denied")
+
+        monkeypatch.setattr(codex, "reconcile_managed_file", unavailable)
+        with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="sudo denied"):
+            codex.write_tool_config(state)
+
+    def test_failed_config_write_restores_previous_catalog(self, tmp_path, monkeypatch):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "catalog.json")
+        monkeypatch.setattr(
+            codex, "prepare_codex_catalog", lambda binary, names: {"models": [{"slug": "gpt-5"}]}
+        )
+        state = {"workspace": WS, "codex_static_models": ["gpt-5"]}
+        codex.write_tool_config(state)
+        managed_catalog = managed_path.with_name(codex.MANAGED_CATALOG_FILENAME)
+        previous = managed_catalog.read_text()
+        monkeypatch.setattr(
+            codex, "prepare_codex_catalog", lambda binary, names: {"models": [{"slug": "gpt-6"}]}
+        )
+        write_catalog = codex.reconcile_managed_file
+
+        def fail_config(path, text, **kwargs):
+            if Path(path) == managed_path:
+                raise managed_files.ManagedFileWriteUnavailable("sudo denied")
+            return write_catalog(path, text, **kwargs)
+
+        monkeypatch.setattr(codex, "reconcile_managed_file", fail_config)
+        with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="sudo denied"):
+            codex.write_tool_config(state)
+
+        assert managed_catalog.read_text() == previous
+
+    def test_failed_first_config_write_removes_new_catalog(self, tmp_path, monkeypatch):
+        managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "catalog.json")
+        monkeypatch.setattr(
+            codex, "prepare_codex_catalog", lambda binary, names: {"models": [{"slug": "gpt-5"}]}
+        )
+
+        def _write(target, text):
+            Path(target).parent.mkdir(parents=True, exist_ok=True)
+            Path(target).write_text(text, encoding="utf-8")
+
+        monkeypatch.setattr(managed_files, "_sudo_replace", _write)
+        monkeypatch.setattr(managed_files, "_sudo_remove", lambda target: Path(target).unlink())
+        write = codex.reconcile_managed_file
+
+        def fail_config(path, text, **kwargs):
+            if Path(path) == managed_path:
+                raise managed_files.ManagedFileWriteUnavailable("sudo denied")
+            return write(path, text, **kwargs)
+
+        monkeypatch.setattr(codex, "reconcile_managed_file", fail_config)
+        codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
+
+        assert not managed_path.exists()
+        assert not managed_path.with_name(codex.MANAGED_CATALOG_FILENAME).exists()
+
+    def test_static_provider_revert_round_trip_with_real_snapshots(self, tmp_path, monkeypatch):
+        managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "catalog.json")
+        monkeypatch.setattr(
+            codex, "prepare_codex_catalog", lambda binary, names: {"models": [{"slug": "gpt-5"}]}
+        )
+
+        def _write(target, text):
+            Path(target).parent.mkdir(parents=True, exist_ok=True)
+            Path(target).write_text(text, encoding="utf-8")
+
+        monkeypatch.setattr(managed_files, "_sudo_replace", _write)
+        monkeypatch.setattr(managed_files, "_sudo_remove", lambda target: Path(target).unlink())
+        original = 'approval_policy = "on-request"\nmodel_catalog_json = "/admin/models.json"\n'
+        managed_path.parent.mkdir(parents=True, exist_ok=True)
+        managed_path.write_text(original, encoding="utf-8")
+        managed_catalog = managed_path.with_name(codex.MANAGED_CATALOG_FILENAME)
+        state = {"workspace": WS, "codex_static_models": ["gpt-5"]}
+
+        codex.write_tool_config(state)
+        assert read_toml_safe(managed_path)["model_catalog_json"] == str(managed_catalog)
+        assert json.loads(managed_catalog.read_text()) == {"models": [{"slug": "gpt-5"}]}
+
+        codex.write_tool_config(state, provider="my-service")
+        assert read_toml_safe(managed_path)["model_catalog_json"] == "/admin/models.json"
+        assert not managed_catalog.exists()
+
+        codex.write_tool_config(state)
+        codex.revert_managed_config()
+        assert managed_path.read_text(encoding="utf-8") == original
+        assert not managed_catalog.exists()
+
+    def test_provider_configure_preserves_admin_managed_catalog(self, tmp_path, monkeypatch):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "catalog.json")
+        managed_path.parent.mkdir(parents=True, exist_ok=True)
+        managed_path.write_text('model_catalog_json = "/admin/models.json"\n', encoding="utf-8")
+        codex.write_tool_config(
+            {"workspace": WS, "codex_static_models": ["gpt-5"]}, provider="my-service"
+        )
+
+        assert read_toml_safe(managed_path)["model_catalog_json"] == "/admin/models.json"
+
+    def test_provider_configure_preserves_admin_reference_to_ug_catalog_path(
+        self, tmp_path, monkeypatch
+    ):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "catalog.json")
+        managed_catalog = managed_path.with_name(codex.MANAGED_CATALOG_FILENAME)
+        managed_path.parent.mkdir(parents=True, exist_ok=True)
+        managed_path.write_text(
+            f"model_catalog_json = {json.dumps(str(managed_catalog))}\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(
+            codex,
+            "managed_file_snapshots",
+            lambda tool, parser: managed_files.ManagedFileSnapshots(None, None),
+        )
+        codex.write_tool_config(
+            {"workspace": WS, "codex_static_models": ["gpt-5"]}, provider="my-service"
+        )
+
+        assert read_toml_safe(managed_path)["model_catalog_json"] == str(managed_catalog)
+
+    def test_kept_catalog_reference_keeps_its_file(self, tmp_path, monkeypatch):
+        managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "catalog.json")
+        monkeypatch.setattr(
+            codex, "prepare_codex_catalog", lambda binary, names: {"models": [{"slug": "gpt-5"}]}
+        )
+
+        def _write(target, text):
+            Path(target).parent.mkdir(parents=True, exist_ok=True)
+            Path(target).write_text(text, encoding="utf-8")
+
+        monkeypatch.setattr(managed_files, "_sudo_replace", _write)
+        monkeypatch.setattr(managed_files, "_sudo_remove", lambda target: Path(target).unlink())
+        state = {"workspace": WS, "codex_static_models": ["gpt-5"]}
+        codex.write_tool_config(state)
+        managed_files.record_ug_picker("codex", {})
+
+        codex.write_tool_config(state, provider="my-service")
+
+        managed_catalog = managed_path.with_name(codex.MANAGED_CATALOG_FILENAME)
+        assert read_toml_safe(managed_path)["model_catalog_json"] == str(managed_catalog)
+        assert managed_catalog.exists()
+
+    def test_revert_also_restores_managed_catalog(self, monkeypatch):
+        reverted: list[str] = []
+        monkeypatch.setattr(
+            codex, "revert_managed_file", lambda tool, **kwargs: reverted.append(tool) or "restored"
+        )
+
+        assert codex.revert_managed_config() == "restored"
+        assert reverted == ["codex", codex.MANAGED_CATALOG_TOOL]
+
+    def test_revert_continues_when_catalog_revert_fails(self, monkeypatch, capsys):
+        def revert(tool, **kwargs):
+            if tool == codex.MANAGED_CATALOG_TOOL:
+                raise RuntimeError("catalog revert failed")
+            return "restored"
+
+        monkeypatch.setattr(codex, "revert_managed_file", revert)
+
+        assert codex.revert_managed_config() == "restored"
+        assert "catalog revert failed" in capsys.readouterr().err
 
     @pytest.mark.parametrize("previous_provider", ["ucode-databricks", "databricks"])
     def test_reconfigure_selects_databricks_in_existing_profile_and_managed_config(
@@ -1784,6 +2158,7 @@ class TestCodexManagedConfig:
             Path(target).write_text(text, encoding="utf-8")
 
         monkeypatch.setattr(managed_files, "_sudo_replace", _write)
+        self._stub_discovery(monkeypatch)
         return managed_path, sudo_writes
 
     def test_reapply_unchanged_config_invokes_no_sudo(self, tmp_path, monkeypatch):
@@ -1799,6 +2174,28 @@ class TestCodexManagedConfig:
         codex.write_tool_config(state)
         assert len(sudo_writes) == baseline  # semantic no-op: no additional privileged writes
         assert managed_path.read_bytes() == first_bytes
+
+    def test_static_catalog_write_reports_codex_once(self, tmp_path, monkeypatch):
+        managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "catalog.json")
+        monkeypatch.setattr(
+            codex, "prepare_codex_catalog", lambda binary, names: {"models": [{"slug": "gpt-5"}]}
+        )
+
+        def _write(target, text):
+            Path(target).parent.mkdir(parents=True, exist_ok=True)
+            Path(target).write_text(text, encoding="utf-8")
+
+        monkeypatch.setattr(managed_files, "_sudo_replace", _write)
+        notes: list[str] = []
+        successes: list[str] = []
+        monkeypatch.setattr(managed_files, "print_note", notes.append)
+        monkeypatch.setattr(managed_files, "print_success", successes.append)
+        codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
+
+        assert managed_path.with_name(codex.MANAGED_CATALOG_FILENAME).exists()
+        assert notes == ["Enter password to configure settings for Codex."]
+        assert successes == ["Settings configured for Codex"]
 
     def test_admin_unrelated_edit_invokes_no_sudo(self, tmp_path, monkeypatch):
         # An admin's unrelated top-level key is preserved and does not force a ug rewrite.
@@ -1874,7 +2271,7 @@ class TestCodexManagedConfig:
         assert headers["x-team"] == "eng-ml"
         assert headers["User-Agent"].endswith(" codex/0.135.0")
 
-    def test_provider_settings_stay_launch_scoped(self, tmp_path, monkeypatch):
+    def test_provider_header_goes_to_managed_config_only(self, tmp_path, monkeypatch):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)
         managed_path.parent.mkdir(parents=True, exist_ok=True)
         managed_path.write_text(
@@ -1893,8 +2290,164 @@ class TestCodexManagedConfig:
         managed = read_toml_safe(managed_path)
         managed_headers = managed["model_providers"]["Databricks"]["http_headers"]
         assert codex.MODEL_PROVIDER_SERVICE_HEADER not in local_headers
-        assert codex.MODEL_PROVIDER_SERVICE_HEADER not in managed_headers
+        assert managed_headers[codex.MODEL_PROVIDER_SERVICE_HEADER] == "main.default.openai"
         assert managed["model_catalog_json"] == "/tmp/stale.json"
+
+    @pytest.mark.parametrize(
+        ("source", "header", "scope"),
+        [
+            ({"provider": "main.default.openai"}, "MODEL_PROVIDER_SERVICE_HEADER", "provider:"),
+            ({"parent_schema": "main.default"}, "MODEL_SERVICE_PARENT_SCHEMA_HEADER", "parent:"),
+        ],
+    )
+    def test_discovered_catalog_and_model_go_to_managed_config(
+        self, tmp_path, monkeypatch, source, header, scope
+    ):
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+        catalog = {"models": [{"slug": "gpt-primary"}, {"slug": "gpt-secondary"}]}
+        self._stub_discovery(monkeypatch, catalog)
+
+        codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]}, **source)
+
+        managed = read_toml_safe(managed_path)
+        managed_catalog = managed_path.with_name(codex.MANAGED_CATALOG_FILENAME)
+        assert managed["model_catalog_json"] == str(managed_catalog)
+        assert json.loads(managed_catalog.read_text()) == catalog
+        assert managed["model"] == "gpt-primary"
+        headers = managed["model_providers"]["Databricks"]["http_headers"]
+        assert headers[getattr(codex, header)] == next(iter(source.values()))
+        local = read_toml_safe(config_path)
+        assert "model_catalog_json" not in local
+        assert "model" not in local
+        assert codex._discovered_catalogs == {(WS, scope + next(iter(source.values()))): catalog}
+
+    def test_discovered_pin_keeps_managed_default_model(self, tmp_path, monkeypatch):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        self._stub_discovery(monkeypatch, {"models": [{"slug": "gpt-primary"}]})
+
+        codex.write_tool_config(
+            {"workspace": WS, "codex_default_model": "gpt-admin"}, provider="main.default.openai"
+        )
+
+        assert read_toml_safe(managed_path)["model"] == "gpt-admin"
+
+    def test_discovered_pin_keeps_smart_routing_startup_model(self, tmp_path, monkeypatch):
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+        self._stub_discovery(monkeypatch, {"models": [{"slug": "gpt-primary"}]})
+        monkeypatch.setenv(codex.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text('model = "gpt-mine"\n', encoding="utf-8")
+
+        codex.write_tool_config({"workspace": WS}, provider="main.default.openai")
+
+        assert read_toml_safe(config_path)["model"] == "gpt-mine"
+        assert "model" not in read_toml_safe(managed_path)
+
+    def test_discovered_catalog_rejects_admin_managed_catalog(self, tmp_path, monkeypatch):
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+        self._stub_discovery(monkeypatch, {"models": [{"slug": "gpt-primary"}]})
+        managed_path.parent.mkdir(parents=True, exist_ok=True)
+        original = 'model_catalog_json = "/admin/models.json"\n'
+        managed_path.write_text(original, encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match="overrides model discovery"):
+            codex.write_tool_config({"workspace": WS}, provider="main.default.openai")
+
+        assert managed_path.read_text(encoding="utf-8") == original
+        assert not config_path.exists()
+
+    def test_default_launch_clears_provider_settings_from_managed_config(
+        self, tmp_path, monkeypatch
+    ):
+        managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
+        self._stub_discovery(monkeypatch, {"models": [{"slug": "gpt-primary"}]})
+
+        def _write(target, text):
+            Path(target).parent.mkdir(parents=True, exist_ok=True)
+            Path(target).write_text(text, encoding="utf-8")
+
+        monkeypatch.setattr(managed_files, "_sudo_replace", _write)
+        monkeypatch.setattr(managed_files, "_sudo_remove", lambda target: Path(target).unlink())
+        state = {"workspace": WS, "codex_models": ["gpt-5"]}
+        codex.write_tool_config(state, provider="main.default.openai")
+
+        codex.write_tool_config(state)
+
+        managed = read_toml_safe(managed_path)
+        assert "model_catalog_json" not in managed
+        assert "model" not in managed
+        headers = managed["model_providers"]["Databricks"]["http_headers"]
+        assert codex.MODEL_PROVIDER_SERVICE_HEADER not in headers
+        assert not managed_path.with_name(codex.MANAGED_CATALOG_FILENAME).exists()
+
+    def test_smart_routing_default_launch_clears_discovered_pin(self, tmp_path, monkeypatch):
+        managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
+        self._stub_discovery(monkeypatch, {"models": [{"slug": "gpt-primary"}]})
+        monkeypatch.setenv(codex.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+
+        def _write(target, text):
+            Path(target).parent.mkdir(parents=True, exist_ok=True)
+            Path(target).write_text(text, encoding="utf-8")
+
+        monkeypatch.setattr(managed_files, "_sudo_replace", _write)
+        monkeypatch.setattr(managed_files, "_sudo_remove", lambda target: Path(target).unlink())
+        state = {"workspace": WS, "codex_models": ["gpt-5"]}
+        codex.write_tool_config(state, provider="main.default.openai")
+        assert read_toml_safe(managed_path)["model"] == "gpt-primary"
+
+        codex.write_tool_config(state)
+
+        assert "model" not in read_toml_safe(managed_path)
+
+    def test_smart_routing_default_launch_restores_model_the_pin_replaced(
+        self, tmp_path, monkeypatch
+    ):
+        managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
+        self._stub_discovery(monkeypatch, {"models": [{"slug": "gpt-primary"}]})
+        monkeypatch.setenv(codex.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+
+        def _write(target, text):
+            Path(target).parent.mkdir(parents=True, exist_ok=True)
+            Path(target).write_text(text, encoding="utf-8")
+
+        monkeypatch.setattr(managed_files, "_sudo_replace", _write)
+        monkeypatch.setattr(managed_files, "_sudo_remove", lambda target: Path(target).unlink())
+        managed_path.parent.mkdir(parents=True, exist_ok=True)
+        managed_path.write_text('model = "gpt-admin"\n', encoding="utf-8")
+        state = {"workspace": WS, "codex_models": ["gpt-5"]}
+        codex.write_tool_config(state, provider="main.default.openai")
+        assert read_toml_safe(managed_path)["model"] == "gpt-primary"
+
+        codex.write_tool_config(state)
+
+        assert read_toml_safe(managed_path)["model"] == "gpt-admin"
+
+    def test_discovery_failure_modifies_no_config(self, tmp_path, monkeypatch):
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+
+        def fail(workspace, token, **kwargs):
+            raise RuntimeError("discovery failed")
+
+        monkeypatch.setattr(codex, "_fetch_codex_model_catalog", fail)
+        with pytest.raises(RuntimeError, match="discovery failed"):
+            codex.write_tool_config({"workspace": WS}, provider="main.default.openai")
+
+        assert not config_path.exists()
+        assert not managed_path.exists()
+
+    def test_reject_allows_ug_managed_catalog_reference(self, tmp_path, monkeypatch):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        managed_catalog = managed_path.with_name(codex.MANAGED_CATALOG_FILENAME)
+        managed_path.parent.mkdir(parents=True, exist_ok=True)
+        managed_path.write_text(
+            f"model_catalog_json = {json.dumps(str(managed_catalog))}\n", encoding="utf-8"
+        )
+
+        codex._reject_managed_model_catalog()
+
+        managed_path.write_text('model_catalog_json = "/admin/models.json"\n', encoding="utf-8")
+        with pytest.raises(RuntimeError, match="overrides model discovery"):
+            codex._reject_managed_model_catalog()
 
     def test_noninteractive_uses_local_config_when_managed_config_is_compatible(
         self, tmp_path, monkeypatch

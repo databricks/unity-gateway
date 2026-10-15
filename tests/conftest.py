@@ -52,6 +52,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
         managed_files_mod, "MANAGED_BACKUP_MANIFEST_PATH", backup_dir / "manifest.json"
     )
     monkeypatch.setattr(codex_mod, "codex_managed_config_path", lambda: None)
+    monkeypatch.setattr(codex_mod, "_discovered_catalogs", {})
     monkeypatch.setattr(
         codex_mod, "CODEX_MODEL_CATALOG_PATH", state_dir / "codex-model-catalog.json"
     )
