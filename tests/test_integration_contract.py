@@ -1,12 +1,15 @@
 """Keep the black-box suite independent of application internals and test doubles."""
 
 import ast
+import io
 import json
 import os
 import re
 import subprocess
 import sys
 import textwrap
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -108,6 +111,96 @@ def test_latest_harness_is_scheduled_and_opt_in():
     assert '-m "$TEST_MARKER"' in workflow
     assert "-k " not in workflow
     assert "continue-on-error:" not in workflow
+
+
+@pytest.mark.parametrize(
+    ("result", "claude_version", "job_conclusion", "api_error", "slack_error"),
+    [
+        ("success", "2.1.290", "success", False, False),
+        ("failure", "2.1.290", "failure", False, False),
+        ("failure", "2.1.290", "timed_out", False, False),
+        ("skipped", "", "failure", False, False),
+        ("failure", "2.1.290", "failure", True, False),
+        ("success", "2.1.290", "success", False, True),
+    ],
+)
+def test_latest_harness_slack_notification(
+    monkeypatch, capsys, result, claude_version, job_conclusion, api_error, slack_error
+):
+    workflow = _workflow("harness-latest.yml")
+    resolver, harness = workflow.split("\n  harness-latest:\n", 1)
+    harness, notify = harness.split("\n  notify:\n", 1)
+    assert "outputs:" in resolver
+    assert "needs: resolve-versions" in harness
+    for agent in ("claude", "codex"):
+        assert f"needs.resolve-versions.outputs.{agent}" in harness
+    assert "needs: [resolve-versions, harness-latest]" in notify
+    assert "always()" in notify
+    assert "needs.harness-latest.result == 'success'" in notify
+    assert "needs.harness-latest.result == 'failure'" in notify
+    assert "needs.resolve-versions.result == 'failure'" in notify
+    assert "actions: read" in notify
+    assert "secrets.SLACK_WEBHOOK_UG_CODING_AGENTS_POD" in notify
+
+    env = {
+        "HARNESS_RESULT": result,
+        "CLAUDE_VERSION": claude_version,
+        "CODEX_VERSION": "0.154.0",
+        "GITHUB_REPOSITORY": "databricks/unity-gateway",
+        "GITHUB_RUN_ID": "123",
+        "GITHUB_API_URL": "https://api.github.com",
+        "GITHUB_SERVER_URL": "https://github.com",
+        "GH_TOKEN": "test-token",
+        "SLACK_WEBHOOK": "https://example.invalid/slack",
+    }
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    job_url = "https://github.com/databricks/unity-gateway/actions/runs/123/job/456"
+    posted = []
+
+    def urlopen(request, timeout):
+        assert timeout == 30
+        if request.full_url == env["SLACK_WEBHOOK"]:
+            assert request.method == "POST"
+            assert request.get_header("Content-type") == "application/json"
+            if slack_error:
+                raise urllib.error.URLError("Slack unavailable")
+            posted.append(json.loads(request.data))
+            return io.BytesIO(b"ok")
+        assert request.full_url == (
+            "https://api.github.com/repos/databricks/unity-gateway/actions/runs/123/jobs"
+            "?filter=latest&per_page=100"
+        )
+        assert request.get_header("Authorization") == "Bearer test-token"
+        if api_error:
+            raise urllib.error.URLError("GitHub unavailable")
+        jobs = [
+            {"conclusion": "success", "html_url": "other-job"},
+            {"conclusion": job_conclusion, "html_url": job_url},
+        ]
+        return io.BytesIO(json.dumps({"jobs": jobs}).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    script = textwrap.dedent(notify.split("          python3 - <<'PY'\n", 1)[1])
+    script = script.rsplit("\nPY", 1)[0]
+    if slack_error:
+        with pytest.raises(urllib.error.URLError, match="Slack unavailable"):
+            exec(compile(script, "harness-latest-notify", "exec"), {})
+        assert not posted
+        return
+    exec(compile(script, "harness-latest-notify", "exec"), {})
+    versions = f"Versions used: Claude Code {claude_version or 'unknown'}, Codex: 0.154.0"
+    run_url = f"{env['GITHUB_SERVER_URL']}/{env['GITHUB_REPOSITORY']}/actions/runs/123"
+    if result == "success":
+        expected = f"✅ Latest harness test succeeded. {versions}. Link to run {run_url}"
+    else:
+        link = job_url if not api_error else run_url
+        expected = (
+            f"❌ ALERT! Latest harness test failed. {versions}. Link to failed job: {link} "
+            "<@U09DPGC3DFY> <@U09EFHFRT24>"
+        )
+    assert posted == [{"text": expected}]
+    assert expected in capsys.readouterr().out
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="dedicated-cuj-plan runs on Linux")
@@ -574,3 +667,15 @@ def test_integration_tests_describe_the_scenario_and_expected_result():
             if any(arg.arg == "configured" for arg in node.args.args):
                 violations.append(f"{path.name}:{node.lineno}: setup must be visible in the test")
     assert not violations, "\n".join(violations)
+
+
+def test_live_suites_use_fresh_id_for_random_ids():
+    root = Path(__file__).parent
+    helper = root / "integration/utils/evidence.py"
+    offenders = [
+        str(path.relative_to(root))
+        for suite in ("integration", "e2e_cuj")
+        for path in (root / suite).rglob("*.py")
+        if path != helper and "uuid4(" in path.read_text(encoding="utf-8")
+    ]
+    assert not offenders, f"Use fresh_id() from integration/utils/evidence.py: {offenders}"

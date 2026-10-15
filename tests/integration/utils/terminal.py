@@ -15,11 +15,10 @@ import signal
 import subprocess
 import threading
 import time
-import uuid
 
 import pyte
 
-from .evidence import agent_sessions, assert_no_terminal_api_error
+from .evidence import agent_sessions, assert_no_terminal_api_error, fresh_id
 
 SELECTED = "[›❯>]"
 
@@ -94,7 +93,9 @@ class PosixPty:
         # its process group even if the ug leader exited before its children.
         with contextlib.suppress(ProcessLookupError):
             os.killpg(self.child.pid, signal.SIGTERM)
-        self.child.close(force=True)
+        # close() gives up if the child outlives its kill delay; the SIGKILL below still kills it.
+        with contextlib.suppress(self._pexpect.ExceptionPexpect):
+            self.child.close(force=True)
         with contextlib.suppress(ProcessLookupError):
             os.killpg(self.child.pid, signal.SIGKILL)
 
@@ -449,7 +450,7 @@ class AgentTerminal(TerminalProcess):
         )
 
     def check_input_and_exit(self):
-        marker = "ug-boot-" + uuid.uuid4().hex[:12]
+        marker = "ug-boot-" + fresh_id()
         self.send(marker, "type into the prompt without submitting a model request")
         self.wait_for(lambda text: marker in text, "typed text in the prompt")
         self.send("\x15", "Ctrl-U clears the prompt")

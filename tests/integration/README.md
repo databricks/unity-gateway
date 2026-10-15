@@ -395,6 +395,10 @@ their original legacy-env or managed-default cases remain. Explicit-model select
 forwarding, app-server initialization, and catalog fallback retain their original legacy flags
 and on/off coverage; preset-specific behavior there is not covered.
 
+The Claude route-subagent hook journey checks that both hook notices name the agent
+in `updatedInput`, rather than the originally requested type. Native task-header
+rendering is outside that hook-contract check.
+
 The unit/component `../test_smart_routing_config.py` includes a 162-case Cartesian oracle over all
 three legacy routing flags (`None`, `0`, `1`) and six selector forms (`None` plus the five
 supported presets, including the customer first-prompt-and-subagent mode). It independently
@@ -411,8 +415,8 @@ The portable `../test_claude_windows_smart_routing.py` checks the Windows
 subagent-only fallback without Unix imports. Native Windows TUI and hook execution
 remain outside this integration suite.
 
-The relayed CUJ launches Claude through a relayed (subscription-relay) MPS and
-completes a file task on two models: a bare Anthropic id the subscription serves
+The relayed CUJ launches Claude from fresh state through a relayed (subscription-relay)
+MPS, with no `ug configure` step, and completes a file task on two models: a bare Anthropic id the subscription serves
 directly (`route=relay`) and a Databricks-hosted `system.ai` id the loopback proxy
 re-routes to gateway auth (`route=databricks`) — one relayed session reaching both.
 It needs a subscription OAuth token (see below). Interactive model-picker selection
@@ -447,7 +451,8 @@ The tests assert that a span with the marker arrived and identifies the requeste
 Scoped discovery additionally requires Model Services
 `main.ucode.ci_e2e_claude` and `main.ucode.ci_e2e_codex`. Override them with
 `--parent-schema`, `--claude-parent-model`, or `--codex-parent-model`. The tests
-consume but never create or modify them.
+consume but never create or modify them. Claude and Codex scoped pickers must
+match the parent schema's live gateway catalog, which must include the configured parent model.
 
 These unmanaged journeys require a workspace that publishes no CodingAgentConfig.
 Before any of them configures or launches an agent, a session-scoped, read-only
@@ -727,6 +732,13 @@ The **harness-latest** workflow runs every six hours on `main` (00:00, 06:00,
 latest Claude and Codex releases, recording exact versions in its artifacts. It covers
 CUJ4, routing hooks, skill toggles (including Claude's recipe-header assertions),
 and first-prompt banners. It runs separately from PR checks, so failures do not block merges.
+Versions are resolved once for all three suites. A final job sends one success or
+failure message using `SLACK_WEBHOOK_UG_CODING_AGENTS_POD`, with both versions and
+a workflow-run link on success or a failed-job link on failure (the workflow-run
+link if GitHub's jobs API is unavailable).
+Setup failures also alert; unresolved versions appear as `unknown`. Slack delivery
+errors fail the notification job. `test_integration_contract.py` covers this wiring
+and message generation with a substituted HTTP boundary, not live Slack delivery.
 
 Opt in a test or class with `@pytest.mark.harness_latest`, or a whole module with:
 
