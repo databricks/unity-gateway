@@ -53,6 +53,12 @@ def _smart_router_band_shown(tui, *, enabled, first_prompt):
     return any(re.match(pattern, line) for line in tui.screen.display)
 
 
+def _smart_router_band_hidden(tui):
+    """The band above the prompt shows only for the turn after launch or a toggle."""
+    pattern = r"\s*unity gateway smart router\s+(ON|OFF)\b"
+    return not any(re.match(pattern, line) for line in tui.screen.display)
+
+
 @dataclass(frozen=True)
 class SessionCase:
     agent: str
@@ -288,7 +294,8 @@ class TestCujSmartRouting(BaseCujTest):
         Expected: each agent's resolved flags determine first-prompt routing,
         orchestration, and child routing. One native child completes the delegated
         task even when routing is disabled. Claude's status band shows ON and the
-        preset's routing scope, then OFF and ON after toggles.
+        preset's routing scope, then OFF and ON after toggles; each time it hides once
+        that turn completes, so it is gone by the second turn.
         """
         session, workspace, recorder = cuj
         previous = session.env.get("SMART_ROUTER_CONFIG_VERSION")
@@ -327,6 +334,11 @@ class TestCujSmartRouting(BaseCujTest):
                         )
                     tui.submit(task.prompt)
                     tui.task(evidence, task)
+                    if agent == CLAUDE:
+                        tui.wait_for(
+                            lambda _: _smart_router_band_hidden(tui),
+                            "the Smart Router band hidden after the launch turn",
+                        )
                     requests = recorder.requests_after(checkpoint)
                     routes = [request for request in requests if request.path == ROUTING_PATH]
                     assert len(routes) == int(first_prompt_routed), (agent, routes)
@@ -450,6 +462,15 @@ class TestCujSmartRouting(BaseCujTest):
                                     )
                                 ),
                                 f"the {'ON' if enabled else 'OFF'} Smart Router band",
+                            )
+                            # The band covers the toggle's first turn and is gone by the second.
+                            follow_up = _file_task(session, agent)
+                            tui.submit(follow_up.prompt)
+                            tui.task(evidence, follow_up)
+                            tui.wait_for(
+                                lambda _: _smart_router_band_hidden(tui),
+                                f"the {'ON' if enabled else 'OFF'} Smart Router band hidden "
+                                "by the second turn",
                             )
                     tui.exit_normally()
         finally:

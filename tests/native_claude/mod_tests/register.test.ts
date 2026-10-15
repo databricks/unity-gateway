@@ -97,15 +97,20 @@ const ABOVE_PROMPT = { plugin: 'ug-smart-router', surface: 'terminal', component
 
 const hasBand = (tree: unknown): boolean => JSON.stringify(tree).includes('unity gateway smart router');
 
-test('the band hides after a turn and returns after a toggle while the hint row tracks the state', { options: ROUTED }, async ($, on) => {
-  const { env } = setup(on);
+// The engine's own process, drawing, prompt, and turn answers sit beneath the mod, and
+// session controls are available so toggles succeed.
+function engine(on: On, env: Record<string, string | undefined>) {
   env.UCODE_SMART_ROUTER_PYTHON = '/ug/python';
   env.UCODE_SESSION_ENV_FILE = '/session/env.json';
-  // The engine's own process, drawing, prompt, and turn answers sit beneath the mod.
   on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }));
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Text({ children: ['theirs'] }));
   on('prompt.submit', ($, e) => ({ text: e.text }));
   on('turn.complete', () => ({ text: '' }));
+}
+
+test('the band hides after a turn and returns after a toggle while the hint row tracks the state', { options: ROUTED }, async ($, on) => {
+  const { env } = setup(on);
+  engine(on, env);
   const tails: unknown[] = [];
   on('ui.render', { component: 'PromptHint' }, ($, e) => {
     tails.push(e.props.tail);
@@ -138,4 +143,35 @@ test('the band hides after a turn and returns after a toggle while the hint row 
   await $.turn.complete({ answer: 'done' });
   expect(hasBand(await band.drawn())).toBe(false);
   expect(await hint()).toBe('smart router OFF');
+});
+
+test('the band is gone by the second turn after either toggle', { options: ROUTED }, async ($, on) => {
+  const { env } = setup(on);
+  engine(on, env);
+  const band = await $.ui.mount(ABOVE_PROMPT);
+  const turn = async (text: string) => {
+    await $.prompt.submit({ text });
+    await $.turn.complete({ answer: 'done' });
+  };
+  await turn('launch turn');
+  expect(hasBand(await band.drawn())).toBe(false);
+
+  for (const [action, pill] of [['off', ' OFF '], ['on', ' ON ']] as const) {
+    expect((await $.command.run({ command: 'smart-router', args: action })).text).toBe(`Smart Router is ${action}`);
+    const shown = await band.drawn();
+    expect(hasBand(shown)).toBe(true);
+    expect(JSON.stringify(shown)).toContain(pill);
+
+    // First turn after the toggle: the band shows while it runs, then hides.
+    await $.prompt.submit({ text: `first after ${action}` });
+    expect(hasBand(await band.drawn())).toBe(true);
+    await $.turn.complete({ answer: 'done' });
+    expect(hasBand(await band.drawn())).toBe(false);
+
+    // Second turn: the band stays gone throughout.
+    await $.prompt.submit({ text: `second after ${action}` });
+    expect(hasBand(await band.drawn())).toBe(false);
+    await $.turn.complete({ answer: 'done' });
+    expect(hasBand(await band.drawn())).toBe(false);
+  }
 });

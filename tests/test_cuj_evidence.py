@@ -19,7 +19,11 @@ from tests.e2e_cuj.helpers.evidence import (
     get_cuj_helper,
 )
 from tests.e2e_cuj.helpers.tui_request_recorder import RecordedRequest, RecordedResponse
-from tests.e2e_cuj.test_cuj4_smart_routing import _smart_router_band_shown, _task_inference_request
+from tests.e2e_cuj.test_cuj4_smart_routing import (
+    _smart_router_band_hidden,
+    _smart_router_band_shown,
+    _task_inference_request,
+)
 from tests.integration.utils.evidence import FileTask, read_jsonl
 from tests.integration.utils.provider_catalog import MODEL_SERVICE_PARENT_SCHEMA_HEADER
 
@@ -41,6 +45,22 @@ def test_cuj4_status_band_requires_current_state_and_scope(enabled, first_prompt
         assert not _smart_router_band_shown(tui, enabled=enabled, first_prompt=not first_prompt)
     tui.screen.display = [f"Smart Router is {state.lower()} for this session."]
     assert not _smart_router_band_shown(tui, enabled=enabled, first_prompt=first_prompt)
+
+
+@pytest.mark.parametrize("state", ["ON", "OFF"])
+def test_cuj4_band_hidden_ignores_the_hint_row_and_toggle_reply(state):
+    tui = SimpleNamespace(
+        screen=SimpleNamespace(
+            display=[f"unity gateway smart router  {state}  — routing subagents"]
+        )
+    )
+    assert not _smart_router_band_hidden(tui)
+    # The hint row and the toggle's reply name the state but are not the band.
+    tui.screen.display = [
+        f"  ug-smart-router: Smart Router is {state.lower()}",
+        f"  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents · smart router {state}",
+    ]
+    assert _smart_router_band_hidden(tui)
 
 
 def records(agent, task, model):
