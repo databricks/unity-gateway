@@ -144,11 +144,15 @@ class FileTask:
         self.value = fresh_id()
         self.filename = "input-" + fresh_id() + ".txt"
         (session.cwd / self.filename).write_text(self.value + "\n")
-        self.prompt = f"Read {self.filename} using a tool. Reply with only its contents."
+        # Say "local file" so agents with MCP fixture tools (read_fixture) don't pick those.
+        self.prompt = (
+            f"Read the local file {self.filename} in the current directory using a tool. "
+            "Reply with only its contents."
+        )
         self.delegate_prompt = (
-            f"Delegate this task to one subagent: read {self.filename} using a tool and return "
-            "its contents. Do not read the file yourself. Wait for the subagent and reply "
-            "with only the value it returned."
+            f"Delegate this task to one subagent: read the local file {self.filename} in the "
+            "current directory using a tool and return its contents. Do not read the file "
+            "yourself. Wait for the subagent and reply with only the value it returned."
         )
 
     def completed(self, session, agent: str, *, child: bool = False) -> bool:
