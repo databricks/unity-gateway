@@ -4315,7 +4315,9 @@ class TestConfigureAgentsSelection:
             cli_mod.configure_workspace_command(tool="claude", workspaces=[("https://w.com", None)])
             == 0
         )
-        configure.assert_called_once_with("claude", state, parent_schema="main.models")
+        configure.assert_called_once_with(
+            "claude", state, parent_schema="main.models", provider=None
+        )
 
     def test_managed_codex_parent_is_passed_to_generic_configure(self, monkeypatch):
         state = {
@@ -4373,7 +4375,9 @@ class TestConfigureAgentsSelection:
         assert result.exit_code == 0, result.output
         assert "(Provider: Databricks)" in _strip_ansi(result.output)
         refresh.assert_called_once_with(state, force_refresh=True)
-        configure.assert_called_once_with("codex", state, parent_schema="main.models")
+        configure.assert_called_once_with(
+            "codex", state, parent_schema="main.models", provider=None
+        )
         install_ai_tools.assert_called_once_with(["codex"], state, force_refresh=False)
 
     def test_managed_config_fails_when_no_enabled_agent_is_available(self, monkeypatch):
@@ -6382,3 +6386,193 @@ class TestChildStdoutLaunch:
         captured = capfd.readouterr()
         assert captured.out == '{"result":"child output"}\n'
         assert "Gateway status" in captured.err
+
+
+class TestHeadlessConfigureModelSource:
+    """ug configure --model-location / --provider headless flags."""
+
+    def _base_patches(self, monkeypatch, tool: str):
+        state = {**MINIMAL_STATE, "available_tools": [tool]}
+        monkeypatch.setattr(cli_mod, "install_databricks_cli", lambda: None)
+        monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
+        monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda *a, **k: (None, False))
+        monkeypatch.setattr(cli_mod, "install_databricks_ai_tools_for_agents", lambda *a, **k: None)
+        saved: list[dict] = []
+        monkeypatch.setattr(cli_mod, "save_state", lambda s: saved.append(dict(s)))
+        configure = MagicMock(return_value=state)
+        monkeypatch.setattr(cli_mod, "configure_single_tool", configure)
+        return state, saved, configure
+
+    def test_model_location_persisted_and_forwarded_single_agent(self, monkeypatch):
+        state, saved, configure = self._base_patches(monkeypatch, "claude")
+
+        result = runner.invoke(
+            app,
+            [
+                "configure",
+                "--agent",
+                "claude",
+                "--workspace",
+                "https://w.com",
+                "--model-location",
+                "main.models",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert saved, "set_model_location should have saved state"
+        assert cli_mod.get_model_location(saved[-1], "claude") == "main.models"
+        assert cli_mod.get_provider_service(saved[-1], "claude") is None
+        configure.assert_called_once_with(
+            "claude", state, parent_schema="main.models", provider=None
+        )
+
+    def test_provider_persisted_and_forwarded_single_agent(self, monkeypatch):
+        state, saved, configure = self._base_patches(monkeypatch, "claude")
+
+        result = runner.invoke(
+            app,
+            [
+                "configure",
+                "--agent",
+                "claude",
+                "--workspace",
+                "https://w.com",
+                "--provider",
+                "main.default.anthropic",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert saved
+        assert cli_mod.get_provider_service(saved[-1], "claude") == "main.default.anthropic"
+        assert cli_mod.get_model_location(saved[-1], "claude") is None
+        configure.assert_called_once_with(
+            "claude", state, parent_schema=None, provider="main.default.anthropic"
+        )
+
+    def test_model_location_and_provider_together_rejected(self):
+        result = runner.invoke(
+            app,
+            [
+                "configure",
+                "--agent",
+                "claude",
+                "--workspace",
+                "https://w.com",
+                "--model-location",
+                "main.models",
+                "--provider",
+                "main.default.anthropic",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "--model-location and --provider cannot be combined" in _strip_ansi(result.output)
+
+    def test_model_location_without_agent_rejected(self):
+        result = runner.invoke(
+            app,
+            ["configure", "--workspace", "https://w.com", "--model-location", "main.models"],
+        )
+        assert result.exit_code != 0
+        assert "--model-location requires --agent or --agents" in _strip_ansi(result.output)
+
+    def test_provider_without_agent_rejected(self):
+        result = runner.invoke(
+            app,
+            ["configure", "--workspace", "https://w.com", "--provider", "main.default.anthropic"],
+        )
+        assert result.exit_code != 0
+        assert "--provider requires --agent or --agents" in _strip_ansi(result.output)
+
+    def test_invalid_model_location_format_rejected(self):
+        result = runner.invoke(
+            app,
+            [
+                "configure",
+                "--agent",
+                "claude",
+                "--workspace",
+                "https://w.com",
+                "--model-location",
+                "not-a-schema",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "--model-location must be <catalog>.<schema>" in _strip_ansi(result.output)
+
+    def test_managed_config_ignores_flag_model_location(self, monkeypatch):
+        """A managed config that names its own source wins; the flag is not persisted."""
+        managed = {
+            "enabled_agents": {
+                "claude": {"model_config": {"unity_catalog_location": "admin.schema"}}
+            }
+        }
+        state = {**MINIMAL_STATE}
+        monkeypatch.setattr(cli_mod, "install_databricks_cli", lambda: None)
+        monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
+        monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda *a, **k: (managed, False))
+        monkeypatch.setattr(cli_mod, "install_databricks_ai_tools_for_agents", lambda *a, **k: None)
+        saved: list[dict] = []
+        monkeypatch.setattr(cli_mod, "save_state", lambda s: saved.append(dict(s)))
+        configure = MagicMock(return_value=state)
+        monkeypatch.setattr(cli_mod, "configure_single_tool", configure)
+
+        result = runner.invoke(
+            app,
+            [
+                "configure",
+                "--agent",
+                "claude",
+                "--workspace",
+                "https://w.com",
+                "--model-location",
+                "main.models",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        # Flag must not have been persisted — managed config owns the source.
+        assert not any(cli_mod.get_model_location(s, "claude") == "main.models" for s in saved)
+        # The managed config's location is used instead.
+        configure.assert_called_once_with(
+            "claude", state, parent_schema="admin.schema", provider=None
+        )
+
+    def test_agents_flag_model_location_persisted_for_applicable_tools(self, monkeypatch):
+        state = {**MINIMAL_STATE, "available_tools": []}
+        monkeypatch.setattr(cli_mod, "install_databricks_cli", lambda: None)
+        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda *a, **k: (None, False))
+        monkeypatch.setattr(
+            cli_mod, "check_gateway_endpoint", lambda s, t: t in ("claude", "codex")
+        )
+        monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
+        saved: list[dict] = []
+        monkeypatch.setattr(cli_mod, "save_state", lambda s: saved.append(dict(s)))
+        monkeypatch.setattr(
+            cli_mod,
+            "configure_selected_tools",
+            lambda s, tools, **kwargs: {**s, "available_tools": tools},
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "configure",
+                "--agents",
+                "claude,codex",
+                "--workspace",
+                "https://w.com",
+                "--model-location",
+                "main.models",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert saved
+        last = saved[-1]
+        assert cli_mod.get_model_location(last, "claude") == "main.models"
+        assert cli_mod.get_model_location(last, "codex") == "main.models"
