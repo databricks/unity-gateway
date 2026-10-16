@@ -60,6 +60,8 @@ class _Session:
         available_models: list[str] | None = None,
         route_decision: RouteDecisionFn | None = None,
         switch_message_fn: SwitchMessageFn | None = None,
+        on_model_override: Callable[[str], None] | None = None,
+        use_server_sandbox_default: bool = False,
     ) -> None:
         self.target = target_model
         self.available_models = list(available_models or [])
@@ -67,6 +69,10 @@ class _Session:
         self.switch_message = switch_message
         self.route_decision = route_decision
         self.switch_message_fn = switch_message_fn
+        self.on_model_override = on_model_override
+        self.model_override_requests: dict[str | int, str] = {}
+        self.use_server_sandbox_default = use_server_sandbox_default
+        self.sandbox_default_requests: set[str | int] = set()
         self.thread_id: str | None = None
         self.settings: dict | None = None
         self.first_turn_seen = False
@@ -84,6 +90,32 @@ class _Session:
         if not isinstance(msg, dict):
             return TuiFrameResult(raw, needs_settings_update=False)
         params = msg.get("params")
+        request_id = msg.get("id")
+        if (
+            self.use_server_sandbox_default
+            and msg.get("method") in {"thread/start", "thread/resume", "thread/fork"}
+            and isinstance(request_id, (str, int))
+            and isinstance(params, dict)
+        ):
+            self.sandbox_default_requests.add(request_id)
+            if (
+                msg.get("method") == "thread/start"
+                and params.get("sandbox") == "read-only"
+                and params.get("permissions") is None
+            ):
+                # Remote TUI config predates folder-trust onboarding. Let Codex
+                # resolve its current policy instead of applying that stale default.
+                params.pop("sandbox")
+                return TuiFrameResult(json.dumps(msg), needs_settings_update=False)
+        if (
+            self.on_model_override is not None
+            and isinstance(request_id, (str, int))
+            and msg.get("method") in {TURN_START, SETTINGS_UPDATE, "thread/resume"}
+            and isinstance(params, dict)
+            and isinstance(params.get("threadId"), str)
+            and any(params.get(key) is not None for key in ("model", "effort", "collaborationMode"))
+        ):
+            self.model_override_requests[request_id] = params["threadId"]
         if msg.get("method") == TURN_START and isinstance(params, dict):
             if isinstance(params.get("threadId"), str):
                 self.thread_id = params["threadId"]
@@ -125,6 +157,16 @@ class _Session:
             return []
         if not isinstance(msg, dict):
             return []
+        request_id = msg.get("id")
+        if isinstance(request_id, (str, int)) and ("result" in msg or "error" in msg):
+            if request_id in self.sandbox_default_requests:
+                self.sandbox_default_requests.remove(request_id)
+                if "error" not in msg and isinstance(msg.get("result"), dict):
+                    self.use_server_sandbox_default = False
+            target = self.model_override_requests.pop(request_id, None)
+            if target is not None and "error" not in msg and isinstance(msg.get("result"), dict):
+                assert self.on_model_override is not None
+                self.on_model_override(target)
         params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
         result = msg.get("result") if isinstance(msg.get("result"), dict) else {}
         for src in (params, result):
@@ -211,6 +253,8 @@ async def _handle_tui(
     workspace: str | None = None,
     token_provider: TokenProvider | None = None,
     switch_message_fn: SwitchMessageFn | None = None,
+    on_model_override: Callable[[str], None] | None = None,
+    use_server_sandbox_default: bool = False,
 ) -> None:
     path = getattr(getattr(tui, "request", None), "path", "/") or "/"
     uri = upstream_uri.rstrip("/") + path
@@ -238,6 +282,8 @@ async def _handle_tui(
         available_models,
         route_decision,
         switch_message_fn,
+        on_model_override,
+        use_server_sandbox_default,
     )
     async with connect(uri, max_size=None) as upstream:
 
@@ -300,6 +346,8 @@ async def _serve(
     workspace: str | None = None,
     token_provider: TokenProvider | None = None,
     switch_message_fn: SwitchMessageFn | None = None,
+    on_model_override: Callable[[str], None] | None = None,
+    use_server_sandbox_default: bool = False,
 ):
     async def handler(tui):
         try:
@@ -313,6 +361,8 @@ async def _serve(
                 workspace,
                 token_provider,
                 switch_message_fn,
+                on_model_override,
+                use_server_sandbox_default,
             )
         except Exception as exc:  # noqa: BLE001
             log(f"[ERR] session: {exc!r}")
@@ -332,6 +382,8 @@ def start_interposer_thread(
     workspace: str | None = None,
     token_provider: TokenProvider | None = None,
     switch_message_fn: SwitchMessageFn | None = None,
+    on_model_override: Callable[[str], None] | None = None,
+    use_server_sandbox_default: bool = False,
     switch_message: str | None = None,
     log_path: Path | None = None,
     ready_timeout: float = 10.0,
@@ -365,6 +417,8 @@ def start_interposer_thread(
                     workspace,
                     token_provider,
                     switch_message_fn,
+                    on_model_override,
+                    use_server_sandbox_default,
                 )
             )
             holder["port"] = holder["server"].sockets[0].getsockname()[1]

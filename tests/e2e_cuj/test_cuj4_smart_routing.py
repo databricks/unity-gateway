@@ -471,6 +471,11 @@ class TestCujSmartRouting(BaseCujTest):
                             for request in requests
                         ), agent
                     if agent == CLAUDE:
+                        # The parent can resume a completed child while forming its answer.
+                        tui.wait_until(
+                            lambda task=child_task, agent=agent: task.completed(session, agent),
+                            "the parent answer with the delegated file's value",
+                        )
                         tui.wait_for_background_tasks()
                         for enabled in (False, True):
                             tui.submit(f"/smart-router {'on' if enabled else 'off'}")

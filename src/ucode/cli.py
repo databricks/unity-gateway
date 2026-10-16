@@ -2501,7 +2501,7 @@ def codex_router_hook_cmd(
     import json
     import sys
 
-    if not smart_routing_v2.smart_routing_enabled(
+    if event not in {"guard-resume", "bind-route"} and not smart_routing_v2.smart_routing_enabled(
         effective_environment(agent=AGENT_CODEX), default=False, agent=AGENT_CODEX
     ):
         return
@@ -2517,6 +2517,39 @@ def codex_router_hook_cmd(
     except ValueError:
         return
     if not isinstance(payload, dict):
+        return
+    from ucode.smart_routing import codex_resume
+
+    if event in {"guard-resume", "bind-route"}:
+        try:
+            app_server_url = codex_resume.app_server_url()
+            if not host or not app_server_url:
+                raise RuntimeError("Resume protection needs an active Codex app-server")
+            routes = codex_resume.for_workspace(host)
+            with codex_resume.AppServer(app_server_url) as client:
+                if event == "bind-route":
+                    routes.bind_spawn(payload, client)
+                else:
+                    codex_resume.guard_tool(payload, routes, client)
+        except codex_resume.GUARD_ERRORS as exc:
+            print(
+                f"Could not preserve Codex child settings ({type(exc).__name__}).", file=sys.stderr
+            )
+            if event == "guard-resume":
+                sys.stdout.write(
+                    json.dumps(
+                        {
+                            "hookSpecificOutput": {
+                                "hookEventName": "PreToolUse",
+                                "permissionDecision": "deny",
+                                "permissionDecisionReason": "Unity Gateway could not restore the child's saved "
+                                "model settings. Retry the resume or follow-up after checking the app-server.",
+                            }
+                        }
+                    )
+                )
+            else:
+                raise typer.Exit(1) from exc
         return
     if event == "session-start":
         record_session_start(payload)
@@ -2566,6 +2599,21 @@ def codex_router_hook_cmd(
         audit_decision=True,
     )
     if output is not None:
+        try:
+            if codex_resume.app_server_url():
+                codex_resume.for_workspace(host).remember_spawn(
+                    payload, output["hookSpecificOutput"]["updatedInput"]["model"]
+                )
+        except codex_resume.GUARD_ERRORS as exc:
+            print(f"Could not save Codex child settings ({type(exc).__name__}).", file=sys.stderr)
+            output = {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": "Unity Gateway could not save the routed child's "
+                    "model settings. Check access to Unity Gateway's local state before retrying.",
+                }
+            }
         sys.stdout.write(json.dumps(output))
 
 
