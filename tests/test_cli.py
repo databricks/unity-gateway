@@ -801,22 +801,11 @@ class TestSubcommandRouting:
         assert "_claude_launch_default_model" not in launch_state
         calls["resolve_model"].assert_called_once()
 
-    @pytest.mark.parametrize(
-        "failure",
-        [
-            db_mod.AnthropicModelCatalog(
-                model_ids=[], model_id_to_display_name={}, error_msg="HTTP 503"
-            ),
-            RuntimeError("token unavailable"),
-        ],
-        ids=["error", "exception"],
-    )
-    def test_unmanaged_claude_launch_falls_back_to_native_discovery(self, failure):
+    def test_unmanaged_claude_launch_falls_back_to_native_discovery(self):
         with _launch_policy_patches(None) as calls:
-            if isinstance(failure, Exception):
-                calls["list_catalog"].side_effect = failure
-            else:
-                calls["list_catalog"].return_value = failure
+            calls["list_catalog"].return_value = db_mod.AnthropicModelCatalog(
+                model_ids=[], model_id_to_display_name={}, error_msg="HTTP 503"
+            )
             result = runner.invoke(app, ["claude"])
 
         assert result.exit_code == 0, result.output

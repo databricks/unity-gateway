@@ -69,13 +69,16 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     # Windows CI runners are elevated; never let an unmocked test write C:\Program Files.
     monkeypatch.setattr(managed_files_mod.system_cross_os, "is_admin", lambda: False)
     monkeypatch.setattr(managed_files_mod, "_windows_replace", reject_privileged_write)
-
-    def reject_real_token(*_args, **_kwargs):
-        raise RuntimeError("test reached the real Databricks token helper; patch it")
-
-    # A plain Claude launch lists the gateway catalog; an unpatched token fetch would shell out to
-    # the real `databricks auth token`. The launch treats this failure as "no catalog".
-    monkeypatch.setattr(cli_mod, "get_databricks_token", reject_real_token)
+    # A plain Claude launch lists the gateway catalog; keep it off the real `databricks auth token`
+    # and the network. An empty catalog leaves Claude Code's own discovery in place.
+    monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *_args, **_kwargs: "token")
+    monkeypatch.setattr(
+        cli_mod,
+        "list_anthropic_model_catalog",
+        lambda *_args, **_kwargs: databricks_mod.AnthropicModelCatalog(
+            model_ids=[], model_id_to_display_name={}
+        ),
+    )
     monkeypatch.delenv("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", raising=False)
     monkeypatch.delenv("UCODE_SESSION_ENV_FILE", raising=False)

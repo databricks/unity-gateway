@@ -3335,14 +3335,11 @@ def _launch_tool(
             tool == "claude" and managed is None and not provider and not parent_schema
         )
         if gateway_catalog:
-            try:
-                discovered = list_anthropic_model_catalog(
-                    state["workspace"],
-                    get_databricks_token(state["workspace"], state.get("profile")),
-                )
-            except Exception:  # noqa: BLE001 - Claude Code's own discovery remains the fallback
-                discovered = None
-            gateway_catalog = bool(discovered and discovered.model_ids)
+            discovered = list_anthropic_model_catalog(
+                state["workspace"],
+                get_databricks_token(state["workspace"], state.get("profile")),
+            )
+            gateway_catalog = bool(discovered.model_ids)
             if gateway_catalog:
                 picker_catalog = claude_agent.default_model_picker_catalog(
                     state.get("claude_models") or {},
