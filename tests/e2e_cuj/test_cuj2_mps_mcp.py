@@ -5,13 +5,13 @@ from __future__ import annotations
 import json
 import shutil
 import tomllib
-import uuid
 
 from databricks.sdk.service.catalog import ListModelProviderServicesRequestView
 
 from tests.integration.utils.evidence import (
     agent_sessions,
     assistant_answers,
+    fresh_id,
     is_child_session,
 )
 
@@ -266,7 +266,7 @@ class TestCuj2CodexInference(_Cuj2Base):
         _assert_generated_mcp_listings(session)
 
         recorder.prepare_launch()
-        marker = f"CUJ2-CODEX-{uuid.uuid4().hex}"
+        marker = f"CUJ2-CODEX-{fresh_id()}"
         checkpoint = recorder.checkpoint()
         with Terminal(session, "cuj2-codex", [CODEX]) as tui:
             tui.boot()
@@ -316,7 +316,7 @@ class TestCuj2ClaudeInference(_Cuj2Base):
         _assert_generated_mcp_listings(session)
 
         recorder.prepare_launch()
-        marker = f"CUJ2-CLAUDE-{uuid.uuid4().hex}"
+        marker = f"CUJ2-CLAUDE-{fresh_id()}"
         checkpoint = recorder.checkpoint()
         with Terminal(session, "cuj2-claude", [CLAUDE]) as tui:
             tui.boot()

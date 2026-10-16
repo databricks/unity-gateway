@@ -494,18 +494,18 @@ def route_claude_pre_tool_use(
             route.decision,
             route.routed_model,
         )
-    agent_name = claude_routing.SUBAGENT_NOTICE_CONFIG.name(route.tool_input) or "subagent"
+    updated_input = {
+        **{key: value for key, value in route.tool_input.items() if key != "model"},
+        "subagent_type": _routed_claude_agent_name(route.routed_model),
+    }
+    agent_name = updated_input.get("subagent_type", "")
     if orchestrator.enabled(agent=AGENT_CLAUDE):
         agent_name += " [orchestrator on]"
     routing_message = claude_routing.SUBAGENT_NOTICE_CONFIG.message(
         route.decision,
         route.routed_model,
-        {**route.tool_input, "subagent_type": agent_name},
+        {**updated_input, "subagent_type": agent_name},
     )
-    updated_input = {
-        **{key: value for key, value in route.tool_input.items() if key != "model"},
-        "subagent_type": _routed_claude_agent_name(route.routed_model),
-    }
     hook_output = {
         "hookEventName": "PreToolUse",
         "permissionDecision": "allow",

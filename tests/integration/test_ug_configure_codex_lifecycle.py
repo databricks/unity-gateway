@@ -1,5 +1,6 @@
 """CUJs for changing and undoing codex's ug setup."""
 
+import os
 import tomllib
 
 import pytest
@@ -22,6 +23,9 @@ def test_ug_configure_codex_repeat_and_revert(live_session, workspace):
     # Ordinary pre-existing user settings, not manufactured gateway state.
     user_path = session.home / ".codex/config.toml"
     original = "# user comment\n[notice]\nhide_rate_limit_model_nudge = true\n"
+    if os.name == "nt":
+        # A Windows user has picked a sandbox; `codex exec` rejects shell commands without one.
+        original += '[windows]\nsandbox = "unelevated"\n'
     user_path.parent.mkdir(parents=True)
     user_path.write_text(original)
 

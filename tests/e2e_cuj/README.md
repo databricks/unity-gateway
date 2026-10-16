@@ -88,6 +88,8 @@ not that an assistant echoed it or a skill merely existed on disk.
 Task inference must contain the exact task/routed prompt and tools, excluding Claude title
 requests and parent continuations from child-inference checks. Only Claude child requests
 after the routing checkpoint may append one transport newline to that exact prompt.
+Codex 0.162.1 encrypts child instructions, so those requests instead match the routed
+task name to the child message's recipient. The child's hidden-value and model checks remain.
 Parent and child requests use the same verified thinking-display recovery as CUJ3:
 only known display/safeguards rejections followed by native removal of the rejected field
 and a final non-empty 200 are accepted. Model, prompt, budget, and effort must remain unchanged.

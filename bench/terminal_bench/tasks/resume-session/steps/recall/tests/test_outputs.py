@@ -1,4 +1,4 @@
-"""Verify the resumed session recalled the passphrase."""
+"""Verify the resumed session recalled the code word."""
 
 import os
 from pathlib import Path

@@ -76,6 +76,7 @@ from ucode.managed_files import (
     record_ug_picker,
     revert_managed_file,
     warn_skipped_settings_passthrough,
+    windows_claude_managed_settings_path,
     withdrawn_list_items,
 )
 from ucode.mcp_oauth import (
@@ -281,8 +282,10 @@ def _managed_settings_path() -> Path | None:
     Returns None on unsupported platforms."""
     if current_os() is OS.LINUX:
         return Path("/etc/claude-code/managed-settings.json")
-    if current_os() is OS.MACOS:
+    elif current_os() is OS.MACOS:
         return Path("/Library/Application Support/ClaudeCode/managed-settings.json")
+    elif current_os() is OS.WINDOWS:
+        return windows_claude_managed_settings_path()
     return None
 
 
@@ -1854,7 +1857,7 @@ def _reconcile_managed_settings(
                 "Claude subscription relay cannot start because enterprise managed settings "
                 f"define {', '.join(conflicts)} at {path}. Ask your administrator to remove "
                 "those entries or use standard Databricks authentication. If ucode previously "
-                "created them, run `ucode revert` from an interactive terminal first."
+                "created them, run `ucode revert` first."
             )
         mark_managed_file_verified(state, "claude", path, scope="relay-compatible")
         return

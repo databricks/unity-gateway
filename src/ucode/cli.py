@@ -7,7 +7,7 @@ import os
 import shutil
 import subprocess
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
 from enum import StrEnum
 from importlib import metadata
 from typing import Annotated, Any
@@ -149,6 +149,7 @@ from ucode.state import (
     SELF_MANAGED_AGENTS_KEY,
     add_self_managed_agent,
     clear_state,
+    get_model_location,
     get_provider_service,
     is_self_managed,
     load_full_state,
@@ -156,6 +157,7 @@ from ucode.state import (
     remove_self_managed_agent,
     save_state,
     set_current_workspace,
+    set_model_location,
     set_provider_service,
     workspace_self_managed_agents,
 )
@@ -171,6 +173,7 @@ from ucode.ui import (
     print_success,
     print_warning,
     prompt_for_selection,
+    prompt_for_text,
     prompt_for_tools,
     prompt_for_workspace,
     prompt_yes_no,
@@ -827,16 +830,19 @@ def _provider_summary(tool: str, state: dict) -> str:
     Model Provider Service is configured, otherwise the external provider type
     backing this tool (claude routes to Anthropic, codex to OpenAI)."""
     if not get_provider_service(state, tool):
-        return "Databricks"
+        location = get_model_location(state, tool)
+        return f"Databricks, {location}" if location else "Databricks"
     return {"claude": "Anthropic", "codex": "OpenAI"}.get(tool, "Model Provider Service")
 
 
 def _maybe_select_provider_service(tool: str, state: dict) -> dict:
-    """Interactively let the user route claude/codex through a Model Provider
-    Service instead of Databricks models, and persist (or clear) the choice.
+    """Interactively let the user pick where claude/codex get their models — Databricks hosted
+    (``system.ai``), a Model Provider Service, or a custom Unity Catalog model location — and
+    persist (or clear) the choice.
 
-    No-op for tools other than claude/codex/gemini. Falls back to Databricks when no
-    matching provider services are found or the listing fails.
+    No-op for tools other than claude/codex/gemini (gemini has no custom location). Falls back
+    to Databricks when no matching provider services are found or the listing fails and no
+    custom location is offered.
     """
     if tool not in ("claude", "codex", "gemini"):
         return state
@@ -844,6 +850,7 @@ def _maybe_select_provider_service(tool: str, state: dict) -> dict:
 
     def _use_databricks() -> dict:
         new_state = set_provider_service(state, tool, None)
+        set_model_location(new_state, tool, None)
         save_state(new_state)
         return new_state
 
@@ -853,39 +860,63 @@ def _maybe_select_provider_service(tool: str, state: dict) -> dict:
     token = get_databricks_token(state["workspace"], state.get("profile"))
     with spinner("Checking for model provider services..."):
         names, reason = list_tool_provider_services(tool, state["workspace"], token)
+    offers_location = tool in ("claude", "codex")
     if reason is not None:
         # Most workspaces don't have the feature enabled — that's the common case,
-        # so fall back to Databricks silently. Only surface unexpected failures.
+        # so skip the provider choice silently. Only surface unexpected failures.
         if not is_model_provider_feature_unavailable(reason):
             print_warning(f"Could not list model provider services: {reason}")
-            print_note("Falling back to Databricks models.")
-        return _use_databricks()
-    if not names:
+            if not offers_location:
+                print_note("Falling back to Databricks models.")
+        names = []
+    elif not names and not offers_location:
         # Feature is on but no service matches this tool's provider type.
         print_note(f"Using Databricks models for {display}.")
+    if not names and not offers_location:
         return _use_databricks()
 
-    choice = prompt_for_selection(
-        f"How should {display} get its models?",
-        [
-            ("databricks", "Databricks Hosted"),
-            ("mps", "External Models"),
-        ],
-    )
+    options = [("databricks", "Databricks Hosted")]
+    if names:
+        options.append(("mps", "External Models"))
+    if offers_location:
+        options.append(("location", "Custom Model Location"))
+    choice = prompt_for_selection(f"How should {display} get its models?", options)
     if choice is None:
         raise KeyboardInterrupt
     if choice == "databricks":
         return _use_databricks()
+
+    if choice == "location":
+        location = _prompt_for_model_location()
+        state = set_provider_service(state, tool, None)
+        state = set_model_location(state, tool, location)
+        save_state(state)
+        print_success(f"{display} will discover models in {location}")
+        return state
 
     selected = prompt_for_selection(
         "Select a model provider service:", [(name, name) for name in names]
     )
     if selected is None:
         raise KeyboardInterrupt
+    state = set_model_location(state, tool, None)
     state = set_provider_service(state, tool, selected)
     save_state(state)
     print_success(f"{display} will route through {selected}")
     return state
+
+
+def _prompt_for_model_location() -> str:
+    """Ask for a ``<catalog>.<schema>`` until a valid one is entered."""
+    while True:
+        location = prompt_for_text(
+            "Model location (<catalog>.<schema>, e.g. main.default)", required=True
+        )
+        if location is None:
+            raise KeyboardInterrupt
+        if is_valid_catalog_schema(location):
+            return location
+        print_err("Model location must be `<catalog>.<schema>`.")
 
 
 def configure_workspace_command(
@@ -1289,7 +1320,12 @@ def status() -> int:
             ),
             (
                 "Model provider",
-                provider_service or "Databricks AI Gateway",
+                provider_service
+                or (
+                    f"Databricks AI Gateway ({location})"
+                    if (location := get_model_location(effective_state, tool))
+                    else "Databricks AI Gateway"
+                ),
             ),
         ]
         models = (
@@ -2220,6 +2256,28 @@ def mcp_proxy_cmd(
     serve(url, workspace, profile, use_pat=use_pat or bool(state.get("use_pat")))
 
 
+@app.command("claude-desktop-auth", hidden=True)
+def claude_desktop_auth_cmd(
+    host: Annotated[str, typer.Option("--host", help="Configured workspace URL.")],
+    profile: Annotated[str, typer.Option("--profile", help="Configured Databricks CLI profile.")],
+) -> None:
+    """Print a Desktop credential, allowing browser login only for interactive requests."""
+    import sys
+
+    from ucode.desktop_auth import get_claude_desktop_token
+
+    try:
+        with redirect_stdout(sys.stderr):
+            token = get_claude_desktop_token(host, profile)
+    except (RuntimeError, ValueError) as exc:
+        print_err(str(exc))
+        raise typer.Exit(1) from None
+    except KeyboardInterrupt:
+        print_err("Databricks sign-in cancelled. Start a new Cowork task to try again.")
+        raise typer.Exit(130) from None
+    sys.stdout.write(token + "\n")
+
+
 @app.command("auth-token", hidden=True)
 def auth_token_cmd(
     host: Annotated[
@@ -2235,6 +2293,7 @@ def auth_token_cmd(
         bool,
         typer.Option("--force-refresh", help="Force the Databricks CLI to mint a new token."),
     ] = False,
+    browser_login: Annotated[bool, typer.Option("--browser-login", hidden=True)] = False,
     client_id: Annotated[
         str | None,
         typer.Option(
@@ -2314,13 +2373,38 @@ def auth_token_cmd(
                 force_refresh=force_refresh,
             )
         else:
-            token = get_databricks_token(workspace, profile, force_refresh=force_refresh)
+            token = get_databricks_token(
+                workspace, profile, force_refresh=force_refresh, browser_login=browser_login
+            )
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
     # Write the bare token (with trailing newline) to stdout — nothing else may
     # land on stdout or the consuming agent will treat it as part of the token.
     sys.stdout.write(token + "\n")
+
+
+@app.command("otel-proxy", hidden=True)
+def otel_proxy_cmd(
+    host: Annotated[str, typer.Option("--host")],
+    port: Annotated[int, typer.Option("--port", min=1, max=65535)],
+) -> None:
+    """Run the same OTLP proxy as a Codex CLI session, for desktop."""
+    from ucode import gateway_proxy
+
+    try:
+        state = load_full_state().get("workspaces", {}).get(host)
+        if not state:
+            raise RuntimeError(f"No saved configuration for {host}. Run `ug configure` first.")
+        apply_pat_environment(state)
+        server, _cache, _client = gateway_proxy.start_otel_proxy(
+            host, codex_agent._otel_token_provider(state, host), port=port
+        )
+        # systemd stops this with SIGTERM, which exits without cleanup, and nothing needs it.
+        server.serve_forever()
+    except (OSError, RuntimeError) as exc:
+        print_err(str(exc))
+        raise typer.Exit(1) from None
 
 
 @app.command("otel-headers", hidden=True)
@@ -2995,7 +3079,20 @@ def _launch_tool(
         explicit_provider = provider
         # An explicit --provider overrides the persisted choice; otherwise fall
         # back to whatever `ug configure` saved for this tool.
-        provider = provider or get_provider_service(state, tool)
+        # A persisted model location is the same source as an explicit --model-location, so it
+        # follows the same rules below; an explicit --provider (or --model-location) displaces it.
+        explicit_parent_schema = parent_schema
+        persisted_provider = get_provider_service(state, tool)
+        if (
+            parent_schema is None
+            and explicit_provider is None
+            and not persisted_provider
+            and tool in {"claude", "codex"}
+        ):
+            parent_schema = get_model_location(state, tool)
+        # An explicit --model-location displaces a persisted provider, as --provider displaces a
+        # persisted location.
+        provider = provider or (None if parent_schema is not None else persisted_provider)
         state = _migrate_legacy_smart_routing(state)
         # Fetched before `configure_shared_state` because it decides whether this agent may launch
         # at all and whether the model discovery below can be skipped.
@@ -3017,8 +3114,12 @@ def _launch_tool(
         _reject_managed_launch_source_options(
             managed,
             provider=explicit_provider,
-            parent_schema=parent_schema,
+            parent_schema=explicit_parent_schema,
         )
+        if managed is not None:
+            # The managed config alone chooses the source; a developer's saved location never
+            # applies (and was never typed on this command line).
+            parent_schema = None
         if explicit_provider is not None and parent_schema is not None:
             raise RuntimeError("--provider and --model-location cannot be used together.")
         if parent_schema is not None and not is_valid_catalog_schema(parent_schema):

@@ -92,3 +92,117 @@ test('merging keeps other request metadata and rejects a non-object body', async
     expect(() => mergeExtraBody(raw, {})).toThrow();
   }
 });
+
+const ABOVE_PROMPT = { plugin: 'ug-smart-router', surface: 'terminal', component: 'AbovePrompt', props: {} } as const;
+
+const hasBand = (tree: unknown): boolean => JSON.stringify(tree).includes('unity gateway smart router');
+
+// The engine's own process, drawing, prompt, and turn answers sit beneath the mod, and
+// session controls are available so toggles succeed.
+function engine(on: On, env: Record<string, string | undefined>) {
+  env.UCODE_SMART_ROUTER_PYTHON = '/ug/python';
+  env.UCODE_SESSION_ENV_FILE = '/session/env.json';
+  on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }));
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Text({ children: ['theirs'] }));
+  on('prompt.submit', ($, e) => ({ text: e.text }));
+  on('turn.complete', () => ({ text: '' }));
+  // The engine draws the prompt hint row from the tail the mod passes down.
+  const tails: unknown[] = [];
+  on('ui.render', { component: 'PromptHint' }, ($, e) => {
+    tails.push(e.props.tail);
+    return $.ui.resolve(e).Text({ children: ['hint'] });
+  });
+  return { tails };
+}
+
+// The tail the mod hands the engine for the prompt hint row under the input.
+async function hintTail($: any, tails: unknown[]): Promise<unknown> {
+  tails.length = 0;
+  await $.ui.mount({ ...ABOVE_PROMPT, component: 'PromptHint', props: { tail: '' } });
+  return tails.at(-1);
+}
+
+test('the band hides after a turn and returns after a toggle while the hint row tracks the state', { options: ROUTED }, async ($, on) => {
+  const { env } = setup(on);
+  const { tails } = engine(on, env);
+  const hint = () => hintTail($, tails);
+  const band = await $.ui.mount(ABOVE_PROMPT);
+  expect(hasBand(await band.drawn())).toBe(true);
+  expect(await hint()).toBe('smart router ON');
+
+  // The band stays through the prompt it first appears with.
+  await $.prompt.submit({ text: 'first' });
+  expect(hasBand(await band.drawn())).toBe(true);
+  await $.turn.complete({ answer: 'done' });
+  const hidden = await band.drawn();
+  expect(hasBand(hidden)).toBe(false);
+  expect(JSON.stringify(hidden)).toContain('theirs');
+  // The hint row keeps the state once the band hides.
+  expect(await hint()).toBe('smart router ON');
+
+  expect((await $.command.run({ command: 'smart-router', args: 'off' })).text).toBe('Smart Router is off');
+  expect(hasBand(await band.drawn())).toBe(true);
+  // The hint row flips with the toggle, not after the next turn.
+  expect(await hint()).toBe('smart router OFF');
+  await $.prompt.submit({ text: 'second' });
+  await $.turn.complete({ answer: 'done' });
+  expect(hasBand(await band.drawn())).toBe(false);
+  expect(await hint()).toBe('smart router OFF');
+});
+
+test('the hint row reads ON or OFF from each toggle through the second turn', { options: ROUTED }, async ($, on) => {
+  const { env } = setup(on);
+  const { tails } = engine(on, env);
+  const hint = () => hintTail($, tails);
+  expect(await hint()).toBe('smart router ON');
+
+  for (const [action, state] of [['off', 'OFF'], ['on', 'ON'], ['off', 'OFF'], ['on', 'ON']] as const) {
+    await $.command.run({ command: 'smart-router', args: action });
+    const expected = `smart router ${state}`;
+    expect(await hint()).toBe(expected);
+    for (const text of ['first', 'second']) {
+      await $.prompt.submit({ text: `${text} after ${action}` });
+      expect(await hint()).toBe(expected);
+      await $.turn.complete({ answer: 'done' });
+      expect(await hint()).toBe(expected);
+    }
+  }
+});
+
+test('the hint row keeps a tail another hook already set', { options: ROUTED }, async ($, on) => {
+  const { env } = setup(on);
+  const { tails } = engine(on, env);
+  await $.ui.mount({ ...ABOVE_PROMPT, component: 'PromptHint', props: { tail: 'theirs' } });
+  expect(tails.at(-1)).toBe('theirs · smart router ON');
+});
+
+test('the band is gone by the second turn after either toggle', { options: ROUTED }, async ($, on) => {
+  const { env } = setup(on);
+  const { tails } = engine(on, env);
+  const band = await $.ui.mount(ABOVE_PROMPT);
+  const turn = async (text: string) => {
+    await $.prompt.submit({ text });
+    await $.turn.complete({ answer: 'done' });
+  };
+  await turn('launch turn');
+  expect(hasBand(await band.drawn())).toBe(false);
+
+  for (const [action, pill] of [['off', ' OFF '], ['on', ' ON ']] as const) {
+    expect((await $.command.run({ command: 'smart-router', args: action })).text).toBe(`Smart Router is ${action}`);
+    const shown = await band.drawn();
+    expect(hasBand(shown)).toBe(true);
+    expect(JSON.stringify(shown)).toContain(pill);
+
+    // First turn after the toggle: the band shows while it runs, then hides.
+    await $.prompt.submit({ text: `first after ${action}` });
+    expect(hasBand(await band.drawn())).toBe(true);
+    await $.turn.complete({ answer: 'done' });
+    expect(hasBand(await band.drawn())).toBe(false);
+
+    // Second turn: the band stays gone throughout.
+    await $.prompt.submit({ text: `second after ${action}` });
+    expect(hasBand(await band.drawn())).toBe(false);
+    await $.turn.complete({ answer: 'done' });
+    expect(hasBand(await band.drawn())).toBe(false);
+  }
+});

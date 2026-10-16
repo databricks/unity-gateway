@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import os
-import platform
-import shlex
-import subprocess
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -28,6 +25,7 @@ from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
     release_file_lock,
 )
+from ucode.os_compatibility.subprocess_cross_os import shell_command
 from ucode.ui import err_console, normalize_workspace_url, print_warning_err
 
 DEFAULT_REDIRECT_URL = f"http://{LOCALHOST}:8020"
@@ -114,10 +112,7 @@ def build_custom_auth_token_argv(workspace: str, config: CustomOAuthConfig) -> l
 
 
 def build_custom_auth_shell_command(workspace: str, config: CustomOAuthConfig) -> str:
-    argv = build_custom_auth_token_argv(workspace, config)
-    if platform.system() == "Windows":
-        return subprocess.list2cmdline(argv)
-    return shlex.join(argv)
+    return shell_command(build_custom_auth_token_argv(workspace, config))
 
 
 @contextmanager

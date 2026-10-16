@@ -112,14 +112,20 @@ def test_clean_teardown_records_no_leak(tmp_path, monkeypatch):
     )
 
 
-requires_pty = pytest.mark.skipif(sys.platform == "win32", reason="Terminal needs a POSIX PTY")
+# These fakes are shebang scripts that drive the tty with termios, which Windows lacks.
+requires_pty = pytest.mark.skipif(sys.platform == "win32", reason="fake ug needs POSIX termios")
 
 
 def _fake_ug(tmp_path, body):
     """A real executable standing in for `ug`, so the real PTY driver runs offline."""
-    script = tmp_path / "ug"
-    script.write_text("#!/bin/sh\n" + body)
-    script.chmod(0o755)
+    (tmp_path / "fake_ug.py").write_text(body)
+    if sys.platform == "win32":
+        script = tmp_path / "ug.cmd"
+        script.write_text(f'@"{sys.executable}" "%~dp0fake_ug.py" %*\r\n')
+    else:
+        script = tmp_path / "ug"
+        script.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$(dirname "$0")/fake_ug.py" "$@"\n')
+        script.chmod(0o755)
     return UserSession(tmp_path, script, tmp_path / "artifacts", "token")
 
 
@@ -133,28 +139,33 @@ def test_terminal_rejects_a_missing_unsupported_or_mismatched_agent(tmp_path, ar
         Terminal(session, "rejected", args, agent=agent)
 
 
-@requires_pty
 def test_wait_until_rejects_a_permission_prompt(tmp_path):
-    session = _fake_ug(tmp_path, "echo 'Do you want to proceed?'\nsleep 30\n")
+    session = _fake_ug(
+        tmp_path, "import time\nprint('Do you want to proceed?', flush=True)\ntime.sleep(30)\n"
+    )
     with Terminal(session, "rejects", [], agent=CLAUDE) as tui:
         with pytest.raises(AssertionError, match="Unexpected permission request"):
             tui.wait_until(lambda: False, "never", timeout=10)
 
 
-@requires_pty
 def test_wait_until_completes_when_done(tmp_path):
     done = tmp_path / "done"
-    session = _fake_ug(tmp_path, f"echo working\ntouch '{done}'\nsleep 30\n")
+    session = _fake_ug(
+        tmp_path,
+        "import pathlib, time\nprint('working', flush=True)\n"
+        f"pathlib.Path({str(done)!r}).touch()\ntime.sleep(30)\n",
+    )
     with Terminal(session, "completes", [], agent=CODEX) as tui:
         tui.wait_until(done.exists, "the done marker", timeout=10)
         assert "working" in tui.visible
 
 
-@requires_pty
 def test_wait_until_lets_on_screen_answer_an_expected_dialog(tmp_path):
     done = tmp_path / "done"
     session = _fake_ug(
-        tmp_path, f"echo 'Allow this call?'\nread answer\necho allowed\ntouch '{done}'\nsleep 30\n"
+        tmp_path,
+        "import pathlib, time\nprint('Allow this call?', flush=True)\ninput()\n"
+        f"print('allowed', flush=True)\npathlib.Path({str(done)!r}).touch()\ntime.sleep(30)\n",
     )
     answered = []
 
@@ -215,7 +226,18 @@ time.sleep(30)
 @requires_pty
 @pytest.mark.parametrize(
     "view",
-    ["empty", "completed", "resumed", "running", "mixed", "scheduled", "partial", "transcript"],
+    [
+        "empty",
+        "completed",
+        "detail",
+        "resumed",
+        "running",
+        "detail_running",
+        "mixed",
+        "scheduled",
+        "partial",
+        "transcript",
+    ],
 )
 def test_claude_waits_for_background_task_completion_before_exit(tmp_path, view):
     """An offline terminal fixture requires /tasks, completion, Escape, then /exit."""
@@ -226,6 +248,19 @@ def test_claude_waits_for_background_task_completion_before_exit(tmp_path, view)
             "❯ ✔ ug_subagent_two   done · Haiku 4.5\n"
             "  ✔ ug_subagent_one   done · Sonnet 5\n\n"
             "↑/↓ to select · Enter to view · Esc to close"
+        ),
+        "detail": (
+            "Background task update waiting while this panel is open\n"
+            "agent › Read file contents\n"
+            "✔ Completed · 13s · 12.8k tokens · 3 tools · Haiku 4.5\n\n"
+            "Prompt\nPlease share the contents of the file you read.\n\n"
+            "← to go back · Esc/Enter/Space to close · f to foreground"
+        ),
+        "detail_running": (
+            "agent › Read file contents\n"
+            "Running · 4s · 2 tools · Haiku 4.5\n\n"
+            "Prompt\nPlease share the contents of the file you read.\n\n"
+            "← to go back · Esc/Enter/Space to close · f to foreground"
         ),
         "running": (
             "Background\n\n  Running (1)\n❯ ug_subagent_one   running · Sonnet 5\n\n"
@@ -248,7 +283,7 @@ def test_claude_waits_for_background_task_completion_before_exit(tmp_path, view)
         "transcript": ("Background\n\n  Completed (1)\n✔ ug_subagent_one   done · Sonnet 5\n\n❯"),
     }
     views["resumed"] = views["mixed"]
-    complete = view in ("empty", "completed", "resumed")
+    complete = view in ("empty", "completed", "detail", "resumed")
     script = tmp_path / "ug"
     script.write_text(
         f"""#!{sys.executable}

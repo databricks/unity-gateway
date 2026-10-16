@@ -25,6 +25,8 @@ from utils.managed import use_managed_config_fixture
 from utils.request_recorder import TuiRequestRecorder, served_inference_request
 from utils.terminal import AgentTerminal
 
+pytestmark = pytest.mark.harness_latest
+
 SMART_ROUTING_BANNER = "Using Unity Gateway Smart Router."
 SMART_ROUTING_SUBAGENT_NOTICE = "Using Unity Gateway Smart Router - Subagent"
 CLAUDE_MODELS = [
@@ -183,10 +185,17 @@ def _toggle_with_skill(
     before_answers, before_confirmations = completion_counts()
     tui.submit(invocation)
 
-    def toggled(_screen):
+    def toggled(screen):
+        if tui.approve_windows_command(screen):
+            return False
+        try:
+            controls_now = json.loads(controls[0].read_text())
+        except PermissionError:
+            # Windows denies reads while ug replaces the controls file; try again next frame.
+            return False
         answers, confirmations = completion_counts()
         return (
-            json.loads(controls[0].read_text()) == expected
+            controls_now == expected
             and confirmations > before_confirmations
             and answers > before_answers
         )
@@ -225,8 +234,8 @@ def test_smart_routing_claude_route_subagent_hook(
 
     Expected: the hook allows the call against the real workspace router, drops the
     requested model in favor of a ``ucode-route-`` agent definition while preserving the
-    task text, and audits one decision naming an offered model for the session. Only the
-    hook contract is asserted; no agent decides to spawn.
+    task text, displays the routed agent's name, and audits one decision naming an offered
+    model for the session. Only the hook contract is asserted; no agent decides to spawn.
     """
     session = live_session
     if SMART_ROUTER_CONFIG_VERSION is None:
@@ -262,6 +271,10 @@ def test_smart_routing_claude_route_subagent_hook(
     assert updated["subagent_type"].startswith("ug-smart-router:ucode-route-"), updated
     assert updated["prompt"] == payload["tool_input"]["prompt"], updated
     assert updated["description"] == payload["tool_input"]["description"], updated
+    for notice in (output["systemMessage"], hook["permissionDecisionReason"]):
+        text = "".join(notice.replace("│", "").split())
+        assert f"Subagent:{updated['subagent_type']}" in text, output
+        assert "general-purpose" not in notice, output
 
     decisions_path = session.home / ".ucode" / "claude-smart-routing-decisions.jsonl"
     assert decisions_path.is_file(), f"hook wrote no routing decision record: {decisions_path}"

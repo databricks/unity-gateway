@@ -42,6 +42,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     state_dir.mkdir()
     monkeypatch.setattr(state_mod, "STATE_PATH", state_dir / "state.json")
     monkeypatch.setattr(config_io_mod, "APP_DIR", state_dir)
+    monkeypatch.setattr(codex_mod, "_otel_service_path", lambda: state_dir / "otel.service")
     # MANAGED_CONFIG_PATH is bound from APP_DIR at import, so patching APP_DIR alone doesn't move it;
     # rebind it or save_managed_state writes to the developer's real ~/.ucode/managed-config.json.
     monkeypatch.setattr(
@@ -65,6 +66,9 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(managed_files_mod, "_sudo_replace", reject_privileged_write)
+    # Windows CI runners are elevated; never let an unmocked test write C:\Program Files.
+    monkeypatch.setattr(managed_files_mod.system_cross_os, "is_admin", lambda: False)
+    monkeypatch.setattr(managed_files_mod, "_windows_replace", reject_privileged_write)
 
     def reject_real_token(*_args, **_kwargs):
         raise RuntimeError("test reached the real Databricks token helper; patch it")
