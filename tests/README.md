@@ -172,6 +172,7 @@ the `_comment` notice field, GUI/helper/browser behavior, and inference remain u
 these component checks do not establish native Windows or Linux support.
 
 `test_desktop_setup.py` exercises configure, refresh, deleted-profile recovery,
+successful setup without the default-model warning, recoverable setup failures that still warn,
 dry-run, and revert with native path resolution under temporary homes on simulated macOS,
 Windows, and Linux, without replacing the path resolver. The helper
 executable uses an absolute host-native path containing spaces. Missing Windows/Linux

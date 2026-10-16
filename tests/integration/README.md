@@ -345,6 +345,7 @@ non-Desktop callers retain their prior behavior. These are component checks, not
 native browser-consent coverage.
 
 `../test_desktop_setup.py` separately exercises configure/refresh/recovery,
+successful setup without the default-model warning, recoverable setup failures that still warn,
 dry-run, and revert using native path resolution under temporary homes on simulated macOS,
 Windows, and Linux, without replacing the path resolver, including
 host-native absolute helper paths with spaces and missing-app checks before

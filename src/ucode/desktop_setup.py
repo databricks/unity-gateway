@@ -72,7 +72,7 @@ def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
             del headers[existing]
         headers[name] = value
 
-    result = configure_claude_desktop(
+    configure_claude_desktop(
         model_ids=model_ids,
         base_url=build_tool_base_url("claude", workspace.rstrip("/")),
         helper_command=os.path.abspath(sys.executable),
@@ -88,8 +88,6 @@ def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
         custom_headers=headers,
         profile_key=profile,
     )
-    for warning in result.warnings:
-        print_warning(warning)
     print_success("Claude Desktop gateway profile configured. Quit and reopen Claude Desktop.")
 
 
@@ -103,6 +101,4 @@ def revert_desktop() -> str:
     except Exception as exc:  # noqa: BLE001 -- Preserve other revert operations on failure
         print_warning(f"Could not revert Claude Desktop: {exc}. Desktop setup was retained.")
         return "failed"
-    for warning in result.warnings:
-        print_warning(warning)
     return "removed" if result.changed else "unchanged"

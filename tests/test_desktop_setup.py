@@ -55,7 +55,7 @@ def configured_profile(directory):
     return json.loads((directory / f"{metadata['appliedId']}.json").read_text())
 
 
-def test_configure_uses_full_gateway_catalog_and_absolute_helper(desktop, tmp_path):
+def test_configure_uses_full_gateway_catalog_and_absolute_helper(desktop, tmp_path, capsys):
     desktop_setup.configure_desktop_after_claude(
         {"workspace": "https://workspace.example/", "profile": "chosen-profile"}
     )
@@ -80,6 +80,9 @@ def test_configure_uses_full_gateway_catalog_and_absolute_helper(desktop, tmp_pa
         "chosen-profile",
     ]
     assert "component-token" not in json.dumps(profile)
+    output = capsys.readouterr().out
+    assert "gateway profile configured" in output
+    assert "default-model" not in output
 
 
 def test_reconfigure_refreshes_existing_profile_without_deletion(desktop, capsys, tmp_path):
