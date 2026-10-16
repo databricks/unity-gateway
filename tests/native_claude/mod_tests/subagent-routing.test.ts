@@ -41,7 +41,6 @@ test('routing preserves distinct results for identical tasks and forwards each c
   const a = await $.ui.mount(row('call-a'));
   expect(await a.find({ type: 'Text', text: 'original Agent row' })).toBeDefined();
   expect(await a.find({ type: 'Text', text: 'claude-sonnet-5' })).toBeDefined();
-  expect(await a.find({ type: 'Text', text: '⚡ ' })).toBeDefined();
   expect(await a.find({ type: 'Text', text: '      Reason: Selected for call-a' })).toBeDefined();
   expect(await a.find({ type: 'Text', text: 'claude-opus-4-8' })).toBeUndefined();
   // UG's routed agent name only repeats the model, and the requested type is never shown.
@@ -82,7 +81,6 @@ for (const [name, result, warningCount] of [
     const ui = await $.ui.mount(row('call-a'));
     expect(await ui.find({ type: 'Text', text: 'original Agent row' })).toBeDefined();
     expect(await ui.find({ type: 'Text', text: /Reason:/ })).toBeUndefined();
-    expect(await ui.find({ type: 'Text', text: /⚡/ })).toBeUndefined();
     await ui.unmount();
   });
 }

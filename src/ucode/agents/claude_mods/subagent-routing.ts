@@ -59,8 +59,6 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       flexDirection: 'row',
       children: [
         Text({ dimColor: true, children: ['  ↳ '] }),
-        // The lightning bolt marks the line as Smart Router's, not Claude's own output.
-        Text({ children: ['⚡ '] }),
         ...(record.name ? [Text({ color: 'primary', bold: true, children: [`${record.name}  `] })] : []),
         Text({ color: 'primary', children: [shortModel(record.model)] }),
         ...(record.orchestrator ? [Text({ dimColor: true, children: [' [orchestrator on]'] })] : []),
