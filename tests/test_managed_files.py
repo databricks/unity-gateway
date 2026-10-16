@@ -752,6 +752,7 @@ class TestWindowsManagedWrites:
         monkeypatch.setenv("ProgramW6432", str(tmp_path / "Program Files"))
         monkeypatch.setenv("ProgramFiles", str(tmp_path / "Program Files (x86)"))
         monkeypatch.setenv("ProgramData", str(tmp_path / "ProgramData"))
+        (tmp_path / "ProgramData").mkdir()
         monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.WINDOWS)
         monkeypatch.setattr(managed_files, "_windows_replace", _REAL_WINDOWS_REPLACE)
         monkeypatch.setattr(
@@ -761,6 +762,12 @@ class TestWindowsManagedWrites:
         )
         monkeypatch.setattr(
             managed_files.system_cross_os, "windows_owned_by_admin", lambda entry: True
+        )
+        self.made_admin_owned = []
+        monkeypatch.setattr(
+            managed_files.system_cross_os,
+            "windows_make_administrators_owner",
+            self.made_admin_owned.append,
         )
         return managed_files.windows_claude_managed_settings_path()
 
@@ -869,6 +876,17 @@ class TestWindowsManagedWrites:
         assert path == tmp_path / "ProgramData" / "OpenAI" / "Codex" / "requirements.toml"
         assert self._reconcile_codex(path, 'model_provider = "Databricks"\n') == "created"
         assert path.read_text(encoding="utf-8") == 'model_provider = "Databricks"\n'
+        # An elevated account can own what it creates; Codex expects the Administrators group.
+        assert self.made_admin_owned == [path.parent.parent, path.parent, path]
+
+    def test_owns_only_the_codex_folders_it_creates(self, windows, monkeypatch):
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
+        path = managed_files.windows_codex_requirements_path()
+        path.parent.parent.mkdir()
+
+        self._reconcile_codex(path, 'model_provider = "Databricks"\n')
+
+        assert self.made_admin_owned == [path.parent, path]
 
     @pytest.mark.parametrize("levels_up", [0, 1, 2])
     def test_refuses_codex_entry_a_standard_user_owns(self, windows, monkeypatch, levels_up):
@@ -927,7 +945,6 @@ class TestWindowsManagedWrites:
         path = managed_files.windows_codex_requirements_path()
         elsewhere = tmp_path / "user-folder"
         elsewhere.mkdir()
-        path.parent.parent.parent.mkdir(parents=True)
         try:
             path.parent.parent.symlink_to(elsewhere, target_is_directory=True)
         except OSError:

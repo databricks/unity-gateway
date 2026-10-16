@@ -8,6 +8,7 @@ from pathlib import Path
 
 __all__ = [
     "is_admin",
+    "windows_make_administrators_owner",
     "windows_owned_by_admin",
     "windows_program_data_dir",
     "windows_program_files_dir",
@@ -47,35 +48,54 @@ def windows_program_data_dir() -> Path:
     return Path(os.environ.get("ProgramData") or r"C:\ProgramData")
 
 
-def windows_owned_by_admin(path: Path) -> bool:
-    """Whether Windows reports ``path``'s owner as Administrators, SYSTEM, or TrustedInstaller."""
+_SE_FILE_OBJECT = 1
+_OWNER_SECURITY_INFORMATION = 1
+_ADMINISTRATORS_SID = "S-1-5-32-544"
+
+
+def _windows_security_api():
     if sys.platform != "win32":
-        raise NotImplementedError("file ownership is only checked on Windows")
+        raise NotImplementedError("file ownership is only managed on Windows")
     import ctypes
     from ctypes import wintypes
 
     advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    get_info = advapi32.GetNamedSecurityInfoW
-    get_info.argtypes = [
+    advapi32.GetNamedSecurityInfoW.argtypes = [
         wintypes.LPCWSTR,
         ctypes.c_int,
         wintypes.DWORD,
         *([ctypes.POINTER(ctypes.c_void_p)] * 5),
     ]
-    get_info.restype = wintypes.DWORD
-    sid_to_text = advapi32.ConvertSidToStringSidW
-    sid_to_text.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR)]
-    sid_to_text.restype = wintypes.BOOL
+    advapi32.GetNamedSecurityInfoW.restype = wintypes.DWORD
+    advapi32.SetNamedSecurityInfoW.argtypes = [
+        wintypes.LPWSTR,
+        ctypes.c_int,
+        wintypes.DWORD,
+        *([ctypes.c_void_p] * 4),
+    ]
+    advapi32.SetNamedSecurityInfoW.restype = wintypes.DWORD
+    advapi32.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR)]
+    advapi32.ConvertSidToStringSidW.restype = wintypes.BOOL
+    advapi32.ConvertStringSidToSidW.argtypes = [
+        wintypes.LPCWSTR,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi32.ConvertStringSidToSidW.restype = wintypes.BOOL
     kernel32.LocalFree.argtypes = [ctypes.c_void_p]
     kernel32.LocalFree.restype = ctypes.c_void_p
+    return ctypes, wintypes, advapi32, kernel32
 
-    se_file_object, owner_security_information = 1, 1
+
+def windows_owned_by_admin(path: Path) -> bool:
+    """Whether Windows reports ``path``'s owner as Administrators, SYSTEM, or TrustedInstaller,
+    the owners Codex itself expects for its ProgramData settings."""
+    ctypes, wintypes, advapi32, kernel32 = _windows_security_api()
     owner, descriptor = ctypes.c_void_p(), ctypes.c_void_p()
-    error = get_info(
+    error = advapi32.GetNamedSecurityInfoW(
         str(path),
-        se_file_object,
-        owner_security_information,
+        _SE_FILE_OBJECT,
+        _OWNER_SECURITY_INFORMATION,
         ctypes.byref(owner),
         None,
         None,
@@ -86,7 +106,7 @@ def windows_owned_by_admin(path: Path) -> bool:
         raise ctypes.WinError(error)
     try:
         text = wintypes.LPWSTR()
-        if not sid_to_text(owner, ctypes.byref(text)):
+        if not advapi32.ConvertSidToStringSidW(owner, ctypes.byref(text)):
             raise ctypes.WinError(ctypes.get_last_error())
         try:
             return text.value in _WINDOWS_ADMIN_OWNER_SIDS
@@ -94,3 +114,24 @@ def windows_owned_by_admin(path: Path) -> bool:
             kernel32.LocalFree(ctypes.cast(text, ctypes.c_void_p))
     finally:
         kernel32.LocalFree(descriptor)
+
+
+def windows_make_administrators_owner(path: Path) -> None:
+    """Hand ``path`` to the Administrators group unless an admin-only principal already owns it.
+
+    An elevated process may create entries owned by its own account rather than the group (for
+    example with UAC off, as on CI runners)."""
+    if windows_owned_by_admin(path):
+        return
+    ctypes, _wintypes, advapi32, kernel32 = _windows_security_api()
+    sid = ctypes.c_void_p()
+    if not advapi32.ConvertStringSidToSidW(_ADMINISTRATORS_SID, ctypes.byref(sid)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        error = advapi32.SetNamedSecurityInfoW(
+            str(path), _SE_FILE_OBJECT, _OWNER_SECURITY_INFORMATION, sid, None, None, None
+        )
+        if error:
+            raise ctypes.WinError(error)
+    finally:
+        kernel32.LocalFree(sid)
