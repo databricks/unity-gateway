@@ -12,13 +12,6 @@ export function showStatusBand(): void {
   band.isHideArmed = false
 }
 
-export function hideStatusBandAfterTurn(): boolean {
-  if (!band.isHideArmed) return false
-  band.isVisible = false
-  band.isHideArmed = false
-  return true
-}
-
 type RoutingState = { enabled: boolean; firstPrompt: boolean }
 
 // Claude's capability scanner requires literal names in $.env.get calls.
@@ -53,6 +46,15 @@ async function readRoutingState($: any): Promise<RoutingState> {
 export const registerStatusBand = (on: On): void => {
   on('prompt.submit', ($, e, next) => {
     if (band.isVisible) band.isHideArmed = true
+    return next(e)
+  })
+
+  on('turn.complete', ($, e, next) => {
+    if (band.isHideArmed) {
+      band.isVisible = false
+      band.isHideArmed = false
+      $.ui.invalidate('ui.render')
+    }
     return next(e)
   })
 

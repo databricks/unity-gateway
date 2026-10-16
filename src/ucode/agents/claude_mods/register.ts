@@ -1,5 +1,5 @@
 import type { EngineInterface, On, PluginOptions } from 'claude-code';
-import { hideStatusBandAfterTurn, registerStatusBand, showStatusBand } from './smart-routing-status.ts';
+import { registerStatusBand, showStatusBand } from './smart-routing-status.ts';
 import { registerSubagentRouting } from './subagent-routing.ts';
 import {
   CLI_AGENT,
@@ -100,14 +100,6 @@ export function register(on: On, options: PluginOptions): void {
     return next(e);
   });
 
-  // Claude permits only one unfiltered handler per event.
-  on('turn.complete', async ($, e, next) => {
-    if (hideStatusBandAfterTurn()) $.ui.invalidate('ui.render');
-    const result = await next(e);
-    if ((await ready($)) && dirty) void flush($);
-    return result;
-  });
-
   // The installed smart-router skill already supplies the slash command.
   on('command.run', {command: 'smart-router'}, async ($, e) => {
     const action = e.args.trim();
@@ -126,9 +118,9 @@ export function register(on: On, options: PluginOptions): void {
   registerSubagentRouting(on, options);
 }
 
-// Smart-routing savings estimate, drawn above the prompt under the status band, with
-// the orchestrator skill version labeled as the Unity Gateway Smart Router's. Per
-// turn request (main agent and subagents) it sums token usage by
+// Smart-routing savings estimate, drawn above the prompt (under the status band while
+// it shows), with the orchestrator skill version labeled as the Unity Gateway Smart
+// Router's. Per turn request (main agent and subagents) it sums token usage by
 // (agent, baseline, served, before_user_switch), where served is
 // the model the request named (the model service billed; the id the API reports
 // back is a gateway deployment's, which drifts) and baseline is what the request
@@ -394,6 +386,14 @@ function registerSavings(on: On, options: PluginOptions): void {
         dirty = true;
       }
     } catch {}
+    return result;
+  });
+
+  // Price at the end of each turn, off the turn's critical path. The status band holds the
+  // event's one unmatched hook, so this one matches every turn instead.
+  on('turn.complete', { isAborted: [false, true] }, async ($, e, next) => {
+    const result = await next(e);
+    if ((await ready($)) && dirty) void flush($);
     return result;
   });
 
