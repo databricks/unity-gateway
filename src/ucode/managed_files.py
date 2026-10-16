@@ -96,7 +96,8 @@ def managed_settings_skipped() -> bool:
     """Whether the developer opted out of OS-managed settings via ``UG_SKIP_OS_SETTINGS``.
 
     Set the variable to ``1``/``true``/``yes``/``on`` to make ucode neither read nor update the
-    root-owned managed files (Claude Code ``managed-settings.json``, Codex ``managed_config.toml``).
+    root-owned managed files (Claude Code ``managed-settings.json``, Codex ``managed_config.toml``
+    or, on Windows, ``requirements.toml``).
     ucode then relies solely on its per-user settings, which is enough for a single-user setup that
     always launches through ``ug`` and never needs a bare ``claude``/``codex`` to reach the gateway.
     Skips the privileged ``sudo`` step entirely, so an interactive run is never prompted for a
@@ -121,6 +122,11 @@ def managed_files_supported() -> bool:
 def windows_claude_managed_settings_path() -> Path:
     """The only machine-wide settings file Claude Code reads on Windows."""
     return system_cross_os.windows_program_files_dir() / "ClaudeCode" / "managed-settings.json"
+
+
+def windows_codex_requirements_path() -> Path:
+    """Codex's admin-enforced settings on Windows, which outrank the user's config and ``-c``."""
+    return system_cross_os.windows_program_data_dir() / "OpenAI" / "Codex" / "requirements.toml"
 
 
 def read_managed_file(path: Path) -> str | None:
@@ -1313,10 +1319,15 @@ def _privileged_remove(path: Path) -> None:
 
 
 def _validate_windows_target(path: Path) -> None:
-    if path != windows_claude_managed_settings_path():
+    if path not in (windows_claude_managed_settings_path(), windows_codex_requirements_path()):
         raise RuntimeError(f"Refusing unexpected managed-settings target: {path}")
     if path.is_symlink():
         raise RuntimeError(f"Refusing to replace symlinked managed settings: {path}")
+    if path == windows_codex_requirements_path():
+        # Standard users can create folders under ProgramData; a linked one would redirect us.
+        for folder in (path.parent, path.parent.parent):
+            if folder.is_symlink() or folder.is_junction():
+                raise RuntimeError(f"Refusing to write managed settings through link {folder}")
 
 
 def _windows_replace(path: Path, desired_text: str) -> None:
@@ -1328,6 +1339,7 @@ def _windows_replace(path: Path, desired_text: str) -> None:
     if not system_cross_os.is_admin():
         raise PermissionError("administrator rights are required")
     path.parent.mkdir(parents=True, exist_ok=True)
+    _validate_windows_target(path)  # a missing folder may have been created as a link meanwhile
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as tmp:

@@ -52,3 +52,16 @@ def test_windows_program_files_dir_prefers_the_64_bit_folder(
             monkeypatch.setenv(name, value)
 
     assert system_cross_os.windows_program_files_dir() == expected
+
+
+@pytest.mark.parametrize(
+    ("program_data", "expected"),
+    [(r"D:\Data", Path(r"D:\Data")), (None, Path(r"C:\ProgramData"))],
+)
+def test_windows_program_data_dir(monkeypatch, program_data, expected):
+    if program_data is None:
+        monkeypatch.delenv("ProgramData", raising=False)
+    else:
+        monkeypatch.setenv("ProgramData", program_data)
+
+    assert system_cross_os.windows_program_data_dir() == expected

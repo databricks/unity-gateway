@@ -22,7 +22,7 @@ for a password. If that repair is denied, the agent does not launch.
 | Agent | Local ucode configuration | OS-managed configuration |
 | --- | --- | --- |
 | Claude Code | `~/.claude/ucode-settings.json` | Linux: `/etc/claude-code/managed-settings.json`; macOS: `/Library/Application Support/ClaudeCode/managed-settings.json`; Windows: `C:\Program Files\ClaudeCode\managed-settings.json` |
-| Codex | `~/.codex/ucode.config.toml` | Linux and macOS: `/etc/codex/managed_config.toml`; none on Windows |
+| Codex | `~/.codex/ucode.config.toml` | Linux and macOS: `/etc/codex/managed_config.toml`; Windows: `C:\ProgramData\OpenAI\Codex\requirements.toml` |
 
 The local file is always written. The OS-managed file is additionally reconciled during interactive
 configuration, except for Claude subscription relay.
@@ -43,6 +43,18 @@ write `C:\Program Files\ClaudeCode\managed-settings.json` directly, which lets d
 run `ug configure` headlessly. Standard users can't write under Program Files. For them, as for a
 headless Linux/macOS run, an absent or compatible file stays local-only without a message, and a
 conflicting file stops the command with a request to rerun it elevated.
+
+Codex has no admin-only config layer on Windows, so the same elevated runs write
+`C:\ProgramData\OpenAI\Codex\requirements.toml`, which Codex 0.156.0 and later enforce over the
+user's config and `-c`. It takes only requirement keys: UG writes `model_provider` and the
+`Databricks` provider entry, but not `model` or `mcp_servers` (managed MCP servers stay in user
+scope there). A required provider entry replaces the configured one instead of merging, so the
+launch-scoped routing headers reach Codex through `env_http_headers` and the
+`UG_CODEX_MODEL_PROVIDER_SERVICE`, `UG_CODEX_MODEL_SERVICE_PARENT_SCHEMA`, and
+`UG_CODEX_SMART_ROUTER_RECIPE` variables that `ug codex` sets at launch. Standard users can create
+folders under ProgramData, so UG refuses to write through a linked `OpenAI` or `Codex` folder. A
+standard user who creates those folders before an administrator runs UG keeps control of them; UG
+doesn't check or change their ownership, and Codex itself doesn't either.
 
 This is a new shared ucode distinction. The previous implementation inferred interactivity from
 command shape in some flows and did not guard managed-file writes consistently.
