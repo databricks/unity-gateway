@@ -129,7 +129,7 @@ def test_terminal_bench_runs_twice_daily_and_notifies_slack():
     assert "cron: '0 7,19 * * *'" in workflow
     notify = workflow.split("\n  notify:\n", 1)[1]
     assert "needs: [harbor, native]" in notify
-    assert "github.event_name == 'schedule' && !cancelled()" in notify
+    assert "if: ${{ !cancelled() }}" in notify
     assert "NOTIFY_NAME: Terminal Bench" in notify
     assert (
         "NOTIFY_RESULT: ${{ contains(needs.*.result, 'failure') && 'failure' || 'success' }}"

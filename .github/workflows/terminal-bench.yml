@@ -206,7 +206,7 @@ jobs:
 
   notify:
     needs: [harbor, native]
-    if: ${{ github.event_name == 'schedule' && !cancelled() }}
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     permissions:
