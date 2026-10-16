@@ -3331,16 +3331,12 @@ def _launch_tool(
             route_root_model = None
         # Claude Code's own discovery rows lack the `[1m]` hint: they run at 200K and don't match
         # a `[1m]` launch model, so plain launches list the gateway's models themselves.
-        gateway_catalog = (
-            tool == "claude" and managed is None and not provider and not parent_schema
-        )
-        if gateway_catalog:
+        if tool == "claude" and managed is None and not provider and not parent_schema:
             discovered = list_anthropic_model_catalog(
                 state["workspace"],
                 get_databricks_token(state["workspace"], state.get("profile")),
             )
-            gateway_catalog = bool(discovered.model_ids)
-            if gateway_catalog:
+            if discovered.model_ids:
                 picker_catalog = claude_agent.default_model_picker_catalog(
                     state.get("claude_models") or {},
                     launch_model=model or forwarded_model,
@@ -3367,7 +3363,11 @@ def _launch_tool(
             parent_schema=parent_schema,
         )
         # A plain launch keeps Claude Code's own starting model, as its own picker did.
-        if picker_catalog and picker_catalog.model_ids and not gateway_catalog:
+        if (
+            picker_catalog
+            and picker_catalog.model_ids
+            and (managed is not None or provider or parent_schema)
+        ):
             # Claude re-adds an out-of-catalog saved model to /model even when built-ins are
             # replaced. Keep the catalog launch-scoped and leave the user's settings alone.
             state["_claude_launch_picker_models"] = picker_catalog.model_ids
