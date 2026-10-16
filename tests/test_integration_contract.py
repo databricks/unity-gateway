@@ -438,9 +438,8 @@ def test_ug_review_accepts_member_comments_and_in_repo_labels_with_trusted_check
     assert MEMBER_ONLY in workflow
     assert "ref: ${{ github.event.repository.default_branch }}" in workflow
     assert (
-        'prompt: "/code-review:code-review --comment '
-        "https://github.com/${{ github.repository }}/pull/"
-        '${{ github.event.pull_request.number || github.event.issue.number }}"' in workflow
+        "PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}"
+        in workflow
     )
     assert "concurrency:" not in workflow.split("\njobs:\n", 1)[0]
 

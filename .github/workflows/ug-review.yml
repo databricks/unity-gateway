@@ -1,5 +1,8 @@
 name: UG Review Smoke (temporary)
 
+# Add `ug-review` or `code-review` to an in-repo PR, or have an org member comment
+# `/ug-review` on any PR. Fork PR events do not receive the gateway secret.
+# Open Code Review reads PR blobs through Git; it never executes PR code.
 on:
   pull_request:
     types: [labeled]
@@ -17,6 +20,7 @@ jobs:
         github.actor == 'rohita5l' &&
         contains(fromJSON('["ug-review", "code-review"]'), github.event.label.name)
       }}
+    # Job-level so ordinary PR comments, which skip this job, never cancel a review.
     concurrency:
       group: ug-review-${{ github.event.pull_request.number || github.event.issue.number }}
       cancel-in-progress: true
@@ -28,21 +32,16 @@ jobs:
     runs-on:
       group: databricks-protected-runner-group
       labels: linux-ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       DATABRICKS_HOST: https://ai-oss-ecosystem-integration-testing.cloud.databricks.com
-      ANTHROPIC_BASE_URL: https://ai-oss-ecosystem-integration-testing.cloud.databricks.com/ai-gateway/anthropic
-      ANTHROPIC_DEFAULT_HAIKU_MODEL: system.ai.claude-haiku-5-5
-      ANTHROPIC_DEFAULT_SONNET_MODEL: system.ai.sonnet-5-5
-      ANTHROPIC_DEFAULT_OPUS_MODEL: system.ai.claude-opus-5-5
-      ANTHROPIC_CUSTOM_HEADERS: "x-databricks-use-coding-agent-mode: true"
-      CLAUDE_CODE_USE_GATEWAY: "1"
       NPM_CONFIG_REGISTRY: https://databricks.jfrog.io/artifactory/api/npm/db-npm/
+      OCR_NO_UPDATE: "1"
     steps:
       - name: Check out the explicitly reviewed smoke-test commit
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
-          ref: 4ea23f4f1a742dcb64f403f35452d57becbc075a
+          ref: f5be0907f996c2d3a8016cedd2f2bf8bd6e4650b
           sparse-checkout: |
             .github/scripts/ug-review
             .github/ug-review-instructions.md
@@ -50,8 +49,16 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
+      # The review action re-checks out the workspace, so keep the policy as a step output.
       - name: Prepare the trusted review policy
-        run: cat AGENTS.md .github/ug-review-instructions.md > "$RUNNER_TEMP/ug-review-policy.md"
+        id: policy
+        run: |
+          delimiter="ug-review-policy-$(openssl rand -hex 16)"
+          {
+            echo "background<<$delimiter"
+            cat AGENTS.md .github/ug-review-instructions.md
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Authenticate to the existing npm proxy with GitHub OIDC
         id: jfrog
@@ -61,19 +68,17 @@ jobs:
         with:
           oidc-provider-name: github-actions
 
-      - name: Configure npm and Bun for the existing npm proxy
+      - name: Configure npm for the existing npm proxy
         env:
           NPM_TOKEN: ${{ steps.jfrog.outputs.oidc-token }}
           NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/ug-review-package-config/.npmrc
-          XDG_CONFIG_HOME: ${{ runner.temp }}/ug-review-package-config
         run: |
           test -n "$NPM_TOKEN"
           umask 077
-          mkdir -p "$XDG_CONFIG_HOME"
+          mkdir -p "$(dirname "$NPM_CONFIG_USERCONFIG")"
           printf 'registry=%s\n//%s:_authToken=%s\n' \
             "$NPM_CONFIG_REGISTRY" "${NPM_CONFIG_REGISTRY#https://}" "$NPM_TOKEN" > "$NPM_CONFIG_USERCONFIG"
-          printf 'NPM_CONFIG_USERCONFIG=%s\nXDG_CONFIG_HOME=%s\n' \
-            "$NPM_CONFIG_USERCONFIG" "$XDG_CONFIG_HOME" >> "$GITHUB_ENV"
+          printf 'NPM_CONFIG_USERCONFIG=%s\n' "$NPM_CONFIG_USERCONFIG" >> "$GITHUB_ENV"
 
       - name: Authenticate to the existing Databricks gateway
         id: gateway-auth
@@ -82,27 +87,118 @@ jobs:
           DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_CLI_REVIEW_BOT_SP_CLIENT_SECRET }}
         run: python3 .github/scripts/ug-review/auth.py
 
-      - name: Review the pull request with Claude and inline comments
-        uses: anthropics/claude-code-action@2dca132ff0e0c4094ce6048b422c6915a071210b
+      - name: Resolve the pull request
+        id: pr
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
         env:
-          CLAUDE_CONFIG_DIR: ${{ runner.temp }}/ug-review-claude-${{ github.run_id }}-${{ github.run_attempt }}
-          BUN_CONFIG_TOKEN: ${{ steps.jfrog.outputs.oidc-token }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
         with:
-          github_token: ${{ github.token }}
-          anthropic_api_key: ${{ steps.gateway-auth.outputs.token }}
-          show_full_output: "true"
-          classify_inline_comments: "false"
-          plugin_marketplaces: https://github.com/anthropics/claude-code.git
-          plugins: code-review@claude-code-plugins
-          prompt: "/code-review:code-review --comment https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number || github.event.issue.number }}"
-          claude_args: >-
-            --model sonnet
-            --append-system-prompt-file ${{ runner.temp }}/ug-review-policy.md
-            --append-subagent-system-prompt-file ${{ runner.temp }}/ug-review-policy.md
-            --setting-sources user,project
-            --permission-mode dontAsk
-            --allowedTools "Agent,Skill,Read,Glob,Grep,TodoWrite,mcp__github_inline_comment__create_inline_comment"
-            --disallowedTools "Edit,Write,NotebookEdit,WebFetch,WebSearch"
+          script: |
+            const { data: pr } = await github.rest.pulls.get({
+              ...context.repo, pull_number: Number(process.env.PR_NUMBER),
+            });
+            if (pr.state !== 'open') {
+              core.notice('Skipping a closed PR.');
+              return;
+            }
+            core.setOutput('number', String(pr.number));
+            core.setOutput('base', pr.base.ref);
+            core.setOutput('head', pr.head.sha);
+
+      # Comment runs check out the default branch; label runs check out the in-repo merge ref.
+      # The action reads the diff through Git and never installs or executes PR code.
+      - name: Review and publish findings
+        if: steps.pr.outputs.head != ''
+        id: ocr
+        uses: alibaba/open-code-review@cf64e7080f600d507888a26785ad6a8b7a13ab6a
+        with:
+          pr_number: ${{ steps.pr.outputs.number }}
+          base_ref: ${{ steps.pr.outputs.base }}
+          head_sha: ${{ steps.pr.outputs.head }}
+          llm_url: ${{ env.DATABRICKS_HOST }}/ai-gateway/anthropic
+          llm_auth_token: ${{ steps.gateway-auth.outputs.token }}
+          llm_auth_header: Authorization
+          llm_use_anthropic: "true"
+          llm_extra_headers: x-databricks-use-coding-agent-mode=true
+          # The gateway model requires adaptive thinking; the action defaults to disabled.
+          llm_extra_body: '{"thinking":{"type":"adaptive"},"output_config":{"effort":"medium"}}'
+          llm_model: system.ai.claude-opus-5-5
+          ocr_version: "1.12.0"
+          rule: .github/open-code-review/rules.json
+          background: ${{ steps.policy.outputs.background }}
+          effort: medium
+          review_concurrency: "2"
+          review_task_timeout: "15"
+          max_tokens_budget: "600000"
+          sticky_summary: "false"
+          incremental: "true"
+          route_severity_below: low
+          upload_artifacts: "false"
+          stream_progress: "true"
+
+      - name: Clarify low-severity summary findings
+        if: ${{ !cancelled() && steps.ocr.outputs.summary_comment_url != '' }}
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        env:
+          SUMMARY_URL: ${{ steps.ocr.outputs.summary_comment_url }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          REVIEW_RUN: ${{ github.run_id }}-${{ github.run_attempt }}
+        with:
+          script: |
+            const match = new URL(process.env.SUMMARY_URL).hash.match(/^#issuecomment-(\d+)$/);
+            if (!match) throw new Error('OCR returned an invalid summary comment URL');
+            const args = { ...context.repo, comment_id: Number(match[1]) };
+            const { data: comment } = await github.rest.issues.getComment(args);
+            const body = (comment.body || '').replace(
+              /^⚠️ GitHub could not post this as an inline comment: Routed to summary \(severity low(?: · category [^)\r\n]+)?\)$/gm,
+              'ℹ️ Shown here because this finding is low severity.',
+            );
+            if (body === (comment.body || '')) return;
+            const marker = `<!-- ocr-summary-run:${process.env.REVIEW_RUN} -->`;
+            if (comment.user?.login !== 'github-actions[bot]' || comment.user.type !== 'Bot' ||
+                !comment.issue_url.endsWith(`/issues/${process.env.PR_NUMBER}`) ||
+                !(comment.body || '').split('\n').includes(marker)) {
+              throw new Error('Refusing to edit a summary not owned by this OCR run');
+            }
+            await github.rest.issues.updateComment({ ...args, body });
+
+      - name: Report review completeness
+        if: ${{ !cancelled() && steps.ocr.outcome != '' && steps.ocr.outcome != 'skipped' }}
+        env:
+          REVIEW_HEAD: ${{ steps.pr.outputs.head }}
+        run: |
+          python3 <<'PY'
+          import json, os, pathlib
+
+          result = pathlib.Path('/tmp/ocr-result.json')
+          if not result.is_file():
+              raise SystemExit('OCR did not produce a result; inspect the workflow logs.')
+          data = json.loads(result.read_text())
+          summary = data.get('summary') or {}
+          log = pathlib.Path('/tmp/ocr-stderr.log')
+          log_text = log.read_text() if log.exists() else ''
+          filter_failed = any(message in log_text for message in
+                              ('Review filter: failed', 'Review filter failed'))
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output:
+              output.write('## Open Code Review\n\n')
+              output.write(f"Status: {data.get('status', 'unknown')}\n\n")
+              output.write(f"Files reviewed: {summary.get('files_reviewed', 0)}; "
+                           f"findings: {summary.get('comments', 0)}; "
+                           f"tokens: {summary.get('total_tokens', 0):,}; "
+                           f"elapsed: {summary.get('elapsed', 'unknown')}.\n\n")
+              if filter_failed:
+                  output.write('**Finding-filter failure:** OCR retained findings without completing '
+                               'its fact-checking pass. Validate them manually.\n')
+          if filter_failed:
+              print('::warning::OCR finding filter failed; reported findings need manual validation.')
+          if data.get('status') not in ('complete', 'skipped'):
+              raise SystemExit('::error::OCR review is incomplete; inspect the workflow logs.')
+          if data.get('status') == 'complete':
+              head = data.get('manifest', {}).get('input', {}).get('resolved_head')
+              if not head or head != os.environ['REVIEW_HEAD']:
+                  raise SystemExit('::error::OCR result does not match the requested commit.')
+          PY
 
       - name: Remove temporary package credentials
         if: always()

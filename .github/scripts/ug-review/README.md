@@ -1,60 +1,58 @@
 # UG review
 
 Add either `ug-review` or `code-review` to an in-repository PR, or have an
-organization member or owner post exactly `/ug-review` on any PR, to run the
-official Claude Code action and its code-review plugin. Label triggers do not run
-on fork PRs, whose `pull_request` events cannot access the gateway secret; use the
-member comment instead. Findings become inline review comments; a clean review
-gets one short PR conversation comment.
+organization member or owner post exactly `/ug-review` on any PR, to run
+[Open Code Review](https://github.com/alibaba/open-code-review) with the UG rubric.
+Label triggers do not run on fork PRs, whose `pull_request` events cannot access
+the gateway secret; use the member comment instead. Medium- and higher-severity
+findings become inline review comments; low-severity findings go to the summary
+comment.
 
 The job retains the existing protected runner, workspace, service principal, and
 `UG_CLI_REVIEW_BOT_SP_CLIENT_SECRET`. `auth.py` uses the same OAuth
 `client_credentials` exchange with `scope=all-apis`, masks the result, and exposes
 it only as a same-job step output. No Anthropic key or developer profile is needed.
-The native gateway route is `/ai-gateway/anthropic`.
+OCR sends it as a bearer token to the native gateway route `/ai-gateway/anthropic`
+with the `system.ai.claude-opus-5-5` service and adaptive thinking. The service
+principal needs access to that service. The old `UG_CI_REVIEW_MODEL` variable is
+no longer used.
 
-| Claude alias | Gateway service |
-| --- | --- |
-| Haiku | `system.ai.claude-haiku-5-5` |
-| Sonnet and root reviewer | `system.ai.sonnet-5-5` |
-| Opus | `system.ai.claude-opus-5-5` |
+## Action and CLI
 
-The service principal needs access to all three services. These are explicit
-service IDs, not a claim that every workspace has them. The old
-`UG_CI_REVIEW_MODEL` variable is no longer used.
+The workflow is adapted from Omnigent's `open-code-review.yml`. It uses the
+unmodified action at a pinned commit and the pinned `1.12.0` CLI. The action
+installs the CLI with `npm install -g`; npm uses the existing `db-npm` proxy at
+Databricks' JFrog, authenticated through the same GitHub OIDC setup used by the
+repository's terminal-bench workflow. No registry secret is stored in GitHub. The
+owner-only `.npmrc` lives under `runner.temp` and is removed even when review fails.
+TLS verification stays enabled.
 
-## Stock action and plugin
+`.github/open-code-review/rules.json` adds workflow and Python test files, which
+OCR excludes by default, to the reviewed set. The trusted repository `AGENTS.md`
+and UG rubric are passed as the review background. Raw OCR artifacts are not
+uploaded; a final step reports coverage in the job summary and fails the job when
+the review is incomplete or does not match the requested head commit.
 
-The workflow uses the unmodified official action at a pinned commit and installs
-the official code-review plugin from Anthropic's marketplace. Dependabot's existing
-GitHub Actions updates can bump the action pin. There is no fork or source patch.
-The only custom Python code is the existing service-principal token exchange.
+## Trust boundary
 
-The plugin retains its multi-agent review and finding validation. The separate
-optional `classify_inline_comments` filter is disabled because it hardcodes a
-direct Anthropic API call instead of honoring the gateway configuration.
-
-The trusted repository policy and UG rubric are appended to both the parent and
-subagent system prompts. PR code is not checked out. Tool permissions allow review
-reads and comments, not editing files or running PR commands.
+The job fetches `auth.py`, `AGENTS.md`, and the rubric from the default branch
+before the action re-checks out the workspace. Comment events run the
+default-branch workflow, and the action checks out the default branch. Label
+events use the PR's workflow definition, and the action checks out the PR merge
+ref; they are restricted to in-repository branches. OCR reads the diff through Git
+and never installs dependencies or executes PR code.
 
 ## Verification
 
 `uv run pytest tests/test_ug_review_bot.py` covers the token exchange and workflow
-contract. The obsolete custom Responses request, diff budgeting, JSON parsing, and
-summary rendering are removed rather than maintained alongside the official action.
-These component checks do not establish gateway inference or live inline posting.
+contract. These component checks do not establish gateway inference, CLI
+installation through the proxy, or live comment posting.
 
 After this workflow and its auth helper are merged to the default branch, test
 against an open PR by adding either review label or posting `/ug-review`. Watch
-the **UG Review** run for successful gateway authentication and plugin execution,
+the **UG Review** run for successful gateway authentication and a complete review,
 then verify that an actionable finding appears inline on the changed lines.
 Use a small deliberate logic bug on a disposable PR to test positive findings,
 and remove it afterward. Remove and re-add a label, or post a new comment, to rerun.
 Existing labels, label removal, label edits, and ordinary pushes do not request
 another review.
-
-Before merge, the focused component tests and workflow audit can run locally, but
-they are not an end-to-end test. Comment triggers use the default-branch workflow;
-label-triggered runs also fetch the policy and auth helper from the default branch,
-so they cannot test a new helper that has not been merged yet.
