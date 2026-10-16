@@ -2712,7 +2712,7 @@ def _toggle_current_smart_routing_session(enabled: bool | None) -> bool:
         print_err(str(exc))
         raise typer.Exit(1) from None
     print_success(f"Smart Router is {'on' if enabled else 'off'} for this session")
-    if not enabled and os.environ.get("ISAAC_FEEDBACK_EVIDENCE_ENABLED") == "1":
+    if not enabled and os.environ.get("ISAAC_SMART_ROUTER_FEEDBACK") == "1":
         print_note("Optional: share why with /isaac-feedback --category smart-routing <reason>.")
     return True
 

@@ -22,8 +22,9 @@ See [the mod guide](../docs/claude-mod.md).
 The optional Isaac feedback form has component coverage for disabling before
 prompting, exact reason handoff, Skip, empty input, repeated toggles and failures.
 Missing APIs in Claude 2.1.290's test host are replaced at the engine boundary;
-the production handlers execute. CLI tests check the rollout marker and off-only
-invitation. These tests do not perform a live Isaac upload.
+the production handlers execute. CLI tests check `ISAAC_SMART_ROUTER_FEEDBACK`
+and the off-only invitation, including preserving feedback availability after
+disabling routing. These tests do not perform a live Isaac upload.
 
 The **harness-latest** workflow runs every six hours on `main` and currently covers
 smart routing only.

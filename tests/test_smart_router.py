@@ -26,7 +26,7 @@ def test_toggle_offers_optional_feedback_only_after_disabling(
     session_file = tmp_path / "env.json"
     session_file.write_text("{}")
     monkeypatch.setenv(session_env.SESSION_ENV_VAR, str(session_file))
-    monkeypatch.setenv("ISAAC_FEEDBACK_EVIDENCE_ENABLED", feedback_enabled)
+    monkeypatch.setenv("ISAAC_SMART_ROUTER_FEEDBACK", feedback_enabled)
 
     action = "--enable-smart-routing" if enabled else "--disable-smart-routing"
     result = runner.invoke(cli.app, ["codex", action])
@@ -38,6 +38,7 @@ def test_toggle_offers_optional_feedback_only_after_disabling(
     assert json.loads(session_file.read_text()) == (
         {} if enabled else dict.fromkeys(v2.SMART_ROUTING_ENV_KEYS, "0")
     )
+    assert os.environ["ISAAC_SMART_ROUTER_FEEDBACK"] == feedback_enabled
 
 
 @pytest.fixture(autouse=True)

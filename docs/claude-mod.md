@@ -45,9 +45,11 @@ before `/clear` still survives it. The plugin test host provides no process capa
 this path is covered by the live skill-toggle journey rather than `claude plugin test`.
 
 After a successful on-to-off change, Isaac sessions with
-`ISAAC_FEEDBACK_EVIDENCE_ENABLED=1` and an available `/isaac-feedback` command
-show an optional reason form once per session. Isaac sets this marker from its
-existing evidence rollout flag. Enter sends the reason through
+`ISAAC_SMART_ROUTER_FEEDBACK=1` and an available `/isaac-feedback` command
+show an optional reason form once per session. Isaac sets this flag from its
+rollout setting or the user's explicit `1`/`0` override. It controls Isaac feedback
+availability, so UG's routing presets and on/off toggles leave it unchanged.
+Enter sends the reason through
 `/isaac-feedback --category smart-routing`; Skip or Escape sends nothing.
 The form makes no model requests. Only submitting invokes the feedback command.
 Command discovery, UI and submission failures leave routing off. The CLI/skill

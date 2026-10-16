@@ -113,7 +113,7 @@ export function register(on: On, options: PluginOptions): void {
     // Feedback is optional and must never roll back a successful toggle.
     if (action === 'off' && wasEnabled && !feedback.offered) {
       try {
-        if (await $.env.get('ISAAC_FEEDBACK_EVIDENCE_ENABLED') === '1' &&
+        if (await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK') === '1' &&
           (await $.command.list()).some((command) => command.name === 'isaac-feedback')) {
           feedback.offered = true;
           const pane = await $.ui.open({

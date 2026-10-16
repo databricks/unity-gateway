@@ -26,7 +26,7 @@ function fixture({ evidence = true, available = true, fail = '' } = {}) {
     CLAUDE_CODE_EXTRA_BODY: '{"caller":"keep"}',
     UCODE_SMART_ROUTER_PYTHON: '/launch/python',
     UCODE_SESSION_ENV_FILE: '/session/env.json',
-    ISAAC_FEEDBACK_EVIDENCE_ENABLED: evidence ? '1' : '0',
+    ISAAC_SMART_ROUTER_FEEDBACK: evidence ? '1' : '0',
   };
   let controls = 'on';
   const opened: any[] = [];
@@ -82,6 +82,7 @@ test('off precedes the optional prompt; only submitting sends the exact reason',
   expect(f.opened[0].closeOnEscape).toBe(true);
   expect(f.sent).toHaveLength(0);
   expect(f.env.ENABLE_SMART_ROUTER_ORCHESTRATOR).toBe('0');
+  expect(f.env.ISAAC_SMART_ROUTER_FEEDBACK).toBe('1');
   expect(JSON.parse(f.env.CLAUDE_CODE_EXTRA_BODY!)).toEqual({ caller: 'keep', smart_router_recipe_name: 'DISABLED' });
 
   const input = f.pane().children.find((child: any) => child.key === 'reason');
