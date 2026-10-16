@@ -716,7 +716,7 @@ def revert_managed_file(
             if current_os() is not OS.WINDOWS:
                 raise RuntimeError(
                     f"Cannot restore {display} managed settings non-interactively. Run "
-                    "`ucode revert` from an interactive terminal."
+                    "`ug revert` from an interactive terminal."
                 )
             raise RuntimeError(_windows_admin_required_message(display, path, "ug revert"))
         try:
@@ -727,7 +727,7 @@ def revert_managed_file(
         except (PermissionError, subprocess.CalledProcessError) as exc:
             raise RuntimeError(
                 f"Could not restore {display} managed settings at {path}. The backup was retained "
-                f"under {MANAGED_BACKUP_DIR}. Resolve the permission issue and run `ucode revert` "
+                f"under {MANAGED_BACKUP_DIR}. Resolve the permission issue and run `ug revert` "
                 "again."
             ) from exc
         if read_managed_file(path) != desired_text:
@@ -817,7 +817,7 @@ def _ensure_backup(tool: str, path: Path, current_text: str | None) -> bool:
         if existing.get("path") != str(path):
             raise RuntimeError(
                 f"The saved {tool} managed-settings backup targets {existing.get('path')}, not "
-                f"{path}. Run `ucode revert` before configuring this path."
+                f"{path}. Run `ug revert` before configuring this path."
             )
         if existing.get("original_existed"):
             _original_text(existing)

@@ -3,6 +3,15 @@ import { SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY } from './constants.ts'
 
 const BANNER = 'unity gateway smart router'
 
+// The band shows at launch and after each toggle, and hides once the next prompt's turn
+// completes. A prompt submitted while it shows arms the hide for that prompt's turn.
+const band = { isVisible: true, isHideArmed: false }
+
+export function showStatusBand(): void {
+  band.isVisible = true
+  band.isHideArmed = false
+}
+
 type RoutingState = { enabled: boolean; firstPrompt: boolean }
 
 // Claude's capability scanner requires literal names in $.env.get calls.
@@ -35,8 +44,32 @@ async function readRoutingState($: any): Promise<RoutingState> {
 }
 
 export const registerStatusBand = (on: On): void => {
+  on('prompt.submit', ($, e, next) => {
+    if (band.isVisible) band.isHideArmed = true
+    return next(e)
+  })
+
+  on('turn.complete', ($, e, next) => {
+    if (band.isHideArmed) {
+      band.isVisible = false
+      band.isHideArmed = false
+      $.ui.invalidate('ui.render')
+    }
+    return next(e)
+  })
+
+  // The prompt hint row always carries the state as a plain tail, so it stays visible after
+  // the band hides and flips as soon as a toggle succeeds.
+  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
+    const { enabled } = await readRoutingState($)
+    const state = `smart router ${enabled ? 'ON' : 'OFF'}`
+    const tail = e.props.tail ? `${e.props.tail} · ${state}` : state
+    return next({ ...e, props: { ...e.props, tail } })
+  })
+
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const theirs = await next(e)
+    if (!band.isVisible) return theirs
     const { Box, Text } = $.ui.resolve(e)
     const { enabled, firstPrompt } = await readRoutingState($)
 

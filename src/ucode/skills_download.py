@@ -431,7 +431,7 @@ def reconcile_managed_skills(managed: dict) -> tuple[list[str], list[str]]:
     state = load_state()
     workspace = state.get("workspace")
     if not workspace:
-        raise RuntimeError("Workspace is not configured. Run `ucode configure` first.")
+        raise RuntimeError("Workspace is not configured. Run `ug configure` first.")
     # An empty selector only removes prior managed skills, a local no-auth op, so skip the token.
     token = get_databricks_token(workspace, state.get("profile")) if selector else ""
     roots = skill_dir_roots(None)
