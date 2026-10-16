@@ -1787,6 +1787,11 @@ class TestConfigureMcpFromLocation:
             "configure_client_mcp_server",
             lambda client, name, url, *a, **kw: configured.append((client, name, url)) or [],
         )
+        monkeypatch.setattr(
+            mcp,
+            "remove_client_mcp_server",
+            lambda client, name, *a, **kw: [],
+        )
         monkeypatch.setattr(mcp, "save_state", lambda state: saved_states.append(state.copy()))
 
         assert mcp.configure_mcp_command(location="system.ai") == 0
