@@ -1006,6 +1006,34 @@ class TestCodexLaunch:
         monkeypatch.setattr(codex, "validate_codex_catalog", lambda binary, catalog: None)
         return launches
 
+    @pytest.mark.parametrize(
+        ("launch_state", "provider_env", "parent_env"),
+        [
+            ({"_codex_launch_provider": "main.default.openai"}, "main.default.openai", None),
+            ({"_codex_launch_parent_schema": "main.default"}, None, "main.default"),
+            ({}, None, None),
+        ],
+    )
+    def test_exports_launch_routing_headers(
+        self, tmp_path, monkeypatch, launch_state, provider_env, parent_env
+    ):
+        # Windows requirements.toml drops `-c` provider headers; its env_http_headers read these.
+        self._patch(tmp_path, monkeypatch)
+        monkeypatch.setenv("UG_CODEX_MODEL_PROVIDER_SERVICE", "stale")
+        monkeypatch.setenv("UG_CODEX_MODEL_SERVICE_PARENT_SCHEMA", "stale")
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "app-catalog.json")
+        monkeypatch.setattr(
+            codex, "_model_catalog_path", lambda workspace, scope: tmp_path / "m.json"
+        )
+        monkeypatch.setattr(
+            codex, "_fetch_codex_model_catalog", lambda *a, **k: {"models": [{"slug": "gpt-mps"}]}
+        )
+
+        codex.launch({"workspace": WS, **launch_state}, [], options=LaunchOptions())
+
+        assert os.environ.get("UG_CODEX_MODEL_PROVIDER_SERVICE") == provider_env
+        assert os.environ.get("UG_CODEX_MODEL_SERVICE_PARENT_SCHEMA") == parent_env
+
     def test_sets_oauth_token(self, tmp_path, monkeypatch):
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         launches = self._patch(tmp_path, monkeypatch)
@@ -1669,6 +1697,27 @@ class TestCodexManagedConfig:
         assert "Databricks" in doc["model_providers"]
         assert read_toml_safe(config_path)["model_provider"] == "Databricks"
 
+    def test_windows_writes_requirements_shaped_config(self, tmp_path, monkeypatch):
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "codex_managed_file_is_requirements", lambda: True)
+
+        codex.write_tool_config(
+            {"workspace": WS, "codex_models": ["gpt-5"], "codex_default_model": "gpt-5"}
+        )
+
+        doc = read_toml_safe(managed_path)
+        assert doc["model_provider"] == "Databricks"
+        # requirements.toml ignores `model` and replaces the provider entry wholesale, so
+        # launch-scoped routing headers must come from the environment instead of `-c`.
+        assert "model" not in doc
+        assert doc["model_providers"]["Databricks"]["env_http_headers"] == {
+            codex.MODEL_PROVIDER_SERVICE_HEADER: "UG_CODEX_MODEL_PROVIDER_SERVICE",
+            codex.MODEL_SERVICE_PARENT_SCHEMA_HEADER: "UG_CODEX_MODEL_SERVICE_PARENT_SCHEMA",
+        }
+        profile = read_toml_safe(config_path)
+        assert profile["model"] == "gpt-5"
+        assert "env_http_headers" not in profile["model_providers"]["Databricks"]
+
     def test_skip_env_bypasses_managed_config(self, tmp_path, monkeypatch):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)
         monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
@@ -2126,7 +2175,6 @@ class TestCodexManagedMcpUsesManagedFile:
         assert codex.managed_mcp_uses_managed_file() is True
 
     def test_false_without_a_codex_managed_path(self, monkeypatch):
-        # Windows supports Claude's managed file but Codex has none there.
         monkeypatch.setattr(codex, "codex_managed_config_path", lambda: None)
         monkeypatch.setattr(codex, "managed_files_supported", lambda: True)
         monkeypatch.setattr(codex, "managed_writes_allowed", lambda: True)
@@ -2136,6 +2184,17 @@ class TestCodexManagedMcpUsesManagedFile:
         monkeypatch.setattr(codex, "managed_files_supported", lambda: True)
         monkeypatch.setattr(codex, "managed_writes_allowed", lambda: False)
         assert codex.managed_mcp_uses_managed_file() is False
+
+    def test_false_for_windows_requirements(self, monkeypatch, tmp_path):
+        # requirements.toml's [mcp_servers] is an allowlist, not server definitions.
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: tmp_path / "req.toml")
+        monkeypatch.setattr(codex, "codex_managed_file_is_requirements", lambda: True)
+        monkeypatch.setattr(codex, "managed_files_supported", lambda: True)
+        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: True)
+
+        assert codex.managed_mcp_uses_managed_file() is False
+        assert codex.reconcile_managed_mcp({}, {}) is False
+        assert codex.read_managed_mcp_urls() == {}
 
 
 class TestCodexReconcileManagedMcp:

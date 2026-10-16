@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -750,6 +751,7 @@ class TestWindowsManagedWrites:
     def windows(self, tmp_path, backup_dir, monkeypatch):
         monkeypatch.setenv("ProgramW6432", str(tmp_path / "Program Files"))
         monkeypatch.setenv("ProgramFiles", str(tmp_path / "Program Files (x86)"))
+        monkeypatch.setenv("ProgramData", str(tmp_path / "ProgramData"))
         monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.WINDOWS)
         monkeypatch.setattr(managed_files, "_windows_replace", _REAL_WINDOWS_REPLACE)
         monkeypatch.setattr(
@@ -767,6 +769,16 @@ class TestWindowsManagedWrites:
             display="Claude Code",
             owned_paths=[["apiKeyHelper"]],
             parser=json.loads,
+        )
+
+    def _reconcile_codex(self, path, text):
+        return managed_files.reconcile_managed_file(
+            path,
+            text,
+            tool="codex",
+            display="Codex",
+            owned_paths=[["model_provider"]],
+            parser=tomllib.loads,
         )
 
     def test_path_is_under_64_bit_program_files(self, windows, tmp_path):
@@ -842,8 +854,54 @@ class TestWindowsManagedWrites:
         monkeypatch.setattr(codex_config, "current_os", lambda: managed_files.OS.WINDOWS)
 
         assert claude_agent._managed_settings_path() == windows
-        # Codex has no admin-only config layer on Windows.
-        assert codex_config.codex_managed_config_path() is None
+        assert codex_config.codex_managed_config_path() == (
+            managed_files.windows_codex_requirements_path()
+        )
+        assert codex_config.codex_managed_file_is_requirements() is True
+
+    def test_elevated_run_writes_codex_requirements(self, windows, tmp_path, monkeypatch):
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
+        path = managed_files.windows_codex_requirements_path()
+
+        assert path == tmp_path / "ProgramData" / "OpenAI" / "Codex" / "requirements.toml"
+        assert self._reconcile_codex(path, 'model_provider = "Databricks"\n') == "created"
+        assert path.read_text(encoding="utf-8") == 'model_provider = "Databricks"\n'
+
+    def test_refuses_codex_folder_a_standard_user_created(self, windows, monkeypatch):
+        # Its owner keeps full control, so they could swap the file after we write it.
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
+        path = managed_files.windows_codex_requirements_path()
+        path.parent.mkdir(parents=True)
+        user_created = path.parent.parent
+        monkeypatch.setattr(
+            managed_files.system_cross_os,
+            "windows_owned_by_admin",
+            lambda entry: entry != user_created,
+        )
+
+        with pytest.raises(RuntimeError, match="created by a standard user"):
+            self._reconcile_codex(path, 'model_provider = "Databricks"\n')
+
+        assert not path.exists()
+
+    def test_refuses_linked_codex_folder(self, windows, tmp_path, monkeypatch):
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
+        monkeypatch.setattr(
+            managed_files.system_cross_os, "windows_owned_by_admin", lambda entry: True
+        )
+        path = managed_files.windows_codex_requirements_path()
+        elsewhere = tmp_path / "user-folder"
+        elsewhere.mkdir()
+        path.parent.parent.parent.mkdir(parents=True)
+        try:
+            path.parent.parent.symlink_to(elsewhere, target_is_directory=True)
+        except OSError:
+            pytest.skip("creating a directory link needs extra privileges here")
+
+        with pytest.raises(RuntimeError, match="through link"):
+            self._reconcile_codex(path, 'model_provider = "Databricks"\n')
+
+        assert not any(elsewhere.iterdir())
 
 
 class TestManagedFileLifecycle:
