@@ -521,7 +521,10 @@ configuration, each journey injects only a tracing-enabled CodingAgentConfig inp
 `claude_tracing.json` / `codex_tracing.json` fixtures) through the suite's managed-config stub; the agents, inference, OTLP export, and table
 verification remain real. Each adds the prompt's UUID as a trace-safe
 `ug_integration_marker` attribute, resolves the destination table from the workspace tracing
-configuration, waits 30 seconds, and queries that table through an existing SQL warehouse.
+configuration, waits 30 seconds, and queries that table through an existing SQL warehouse
+(a running one if any, else a serverless one). A query may wait up to 10 minutes for the
+warehouse to start or queue it before its 180-second execution limit applies, and a timeout
+reports which of the two it hit.
 The tests assert that a span with the marker arrived and identifies the requested model.
 
 Scoped discovery additionally requires Model Services
@@ -1153,3 +1156,9 @@ recipe change does not require editing the test.
 Local Claude mod confirmation replaces the old saved-control-file/assistant-turn wait;
 Codex retains its CLI control-file checks. No extra TUI sessions or tasks are added.
 Clear/reload, compaction, and denied-write rollback are not independently checked.
+
+Savings gating and `subagent_orch_savings_v0` have component coverage in
+`test_smart_routing_config.py`, `test_claude_mod.py`, and `test_claude_smart_routing_v2.py`.
+Native component tests check opt-in usage-file creation and opt-out preservation.
+Live savings accumulation, display, and session off/on are not covered by the
+integration suite.

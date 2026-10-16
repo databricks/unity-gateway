@@ -76,3 +76,39 @@ UG passes the resolved routing flags and recipe in the existing launch settings 
 `pluginConfigs["ug-smart-router"].options`. Claude supplies these to `register(on, options)`.
 `unset` lists originally absent flags because native options cannot carry null values.
 The source remains static; no additional launch snapshot file is created.
+
+## Savings estimate
+
+`hooks/register.ts` draws a row under the status band, styled like it: the estimated
+savings from smart routing, with the amount in a pill (green for a saving, yellow when
+routing cost more), and, when the launch activates Smart Router Orchestrator, the skill's
+`metadata.version` from `SKILL.claude.md`, labeled `Unity Gateway Smart Router v<version>`.
+The row goes after the other `AbovePrompt` handlers' output, so it stays under the band
+whichever order Claude runs them in. For each turn request, main agent and
+subagents, the mod sums token usage by the model that served it and its baseline. Main
+is its own baseline, and a subagent's baseline is the main model in effect when it ran.
+Under first-prompt routing, requests before the user changes the main model are priced
+against the model the session started on.
+
+After each turn the mod writes those sums to `savings_usage`, a file in the launch's
+temporary directory. It then runs the `savings_pricer` argv
+(`python -P -m ucode.smart_routing.savings`), which prices the sums from the
+workspace's cached endpoint rates and prints the estimate's parts (direction, amount,
+percent) as one JSON line. Each savings-enabled routed launch
+refreshes that cache on a background thread. An estimate is hidden, not undercounted,
+when any served or baseline model has no rate. The orchestrator version is passed
+as `orchestrator_version`.
+
+Savings hooks live in `hooks/register.ts` alongside the routing controls: Claude
+allows one hook module per plugin and its capability scanner follows engine API
+calls only within that module. The shared `session.start` handler captures the
+start model before first-prompt routing. Savings handlers are registered only
+when the launch options explicitly enable the feature.
+
+The entire savings mod requires `ENABLE_SMART_ROUTING_SAVINGS=1`. Otherwise no usage
+is tracked or written, no endpoint rates are fetched, no pricer runs, and no savings or
+orchestrator-version row is shown; the three options stay at their declared defaults.
+All existing versioned configurations set the flag to `"0"`. Select
+`SMART_ROUTER_CONFIG_VERSION=subagent_orch_savings_v0` to enable it with subagent
+routing and orchestration. Session routing off/on also disables/restores savings
+from the launch baseline.
