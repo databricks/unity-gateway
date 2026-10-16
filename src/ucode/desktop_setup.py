@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 
 from ucode.agents.desktop.claude import (
@@ -15,6 +16,8 @@ from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER, MODEL_SERVICE_PARENT_
 from ucode.databricks import build_tool_base_url, get_databricks_token, list_anthropic_model_catalog
 from ucode.state import get_provider_service
 from ucode.ui import print_note, print_success, print_warning
+
+_CLAUDE_MODEL_PATTERN = re.compile(r"\bclaude-", re.IGNORECASE)
 
 
 def configure_desktop_after_claude(state: dict, *, parent_schema: str | None = None) -> None:
@@ -60,6 +63,13 @@ def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
         if not catalog.model_ids:
             raise RuntimeError(catalog.error_msg or "Gateway model discovery returned no models.")
         model_ids = catalog.model_ids
+
+    model_ids = [model_id for model_id in model_ids if _CLAUDE_MODEL_PATTERN.search(model_id)]
+    if not model_ids:
+        raise RuntimeError(
+            "No Claude-family models found for Desktop. "
+            "Add a Claude model to your model source and run ug configure again."
+        )
 
     headers = {"x-databricks-use-coding-agent-mode": "true"}
     if provider:

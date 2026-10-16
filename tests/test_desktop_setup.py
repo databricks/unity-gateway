@@ -43,7 +43,12 @@ def desktop(request, monkeypatch, tmp_path):
         desktop_setup,
         "list_anthropic_model_catalog",
         lambda *args, **kwargs: AnthropicModelCatalog(
-            model_ids=["system.ai.claude-haiku-4-5", "system.ai.oss-model"],
+            model_ids=[
+                "system.ai.claude-haiku-4-5",
+                "system.ai.oss-model",
+                "anthropic-aigw-2b40afe0-system.ai.gpt-5-6-luna",
+                "anthropic-aigw-12e8d1ee-system.ai.gpt-5-6-sol",
+            ],
             model_id_to_display_name={},
         ),
     )
@@ -55,7 +60,7 @@ def configured_profile(directory):
     return json.loads((directory / f"{metadata['appliedId']}.json").read_text())
 
 
-def test_configure_uses_full_gateway_catalog_and_absolute_helper(desktop, tmp_path, capsys):
+def test_configure_uses_claude_catalog_and_absolute_helper(desktop, tmp_path, capsys):
     desktop_setup.configure_desktop_after_claude(
         {"workspace": "https://workspace.example/", "profile": "chosen-profile"}
     )
@@ -66,7 +71,6 @@ def test_configure_uses_full_gateway_catalog_and_absolute_helper(desktop, tmp_pa
     profile = configured_profile(desktop)
     assert profile["inferenceModels"] == [
         {"name": "system.ai.claude-haiku-4-5"},
-        {"name": "system.ai.oss-model"},
     ]
     assert profile["inferenceGatewayBaseUrl"] == "https://workspace.example/ai-gateway/anthropic"
     assert profile["inferenceCredentialHelper"] == str(tmp_path / "venv with spaces" / "python")
@@ -83,6 +87,81 @@ def test_configure_uses_full_gateway_catalog_and_absolute_helper(desktop, tmp_pa
     output = capsys.readouterr().out
     assert "gateway profile configured" in output
     assert "default-model" not in output
+
+
+@pytest.mark.parametrize("source", ["discovery", "static"])
+def test_configure_filters_claude_names_without_changing_source(desktop, monkeypatch, source):
+    claude_models = [
+        "system.ai.claude-opus-5",
+        "main.models.claude-sonnet-5-desktop",
+        "databricks-claude-haiku-4-5",
+        "anthropic/claude-fable-5",
+        "claude-mythos-5",
+        "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+        "claude-sonnet-4-5@20250929",
+        "CLAUDE-OPUS-5",
+        "system.ai.claude-opus-5",
+    ]
+    model_ids = [
+        "anthropic-aigw-2b40afe0-system.ai.gpt-5-6-luna",
+        *claude_models[:3],
+        "anthropic-aigw-12e8d1ee-system.ai.gpt-5-6-sol",
+        "system.ai.glm-5-3",
+        "main.models.notclaude-opus-5",
+        "main.models.claudecode",
+        *claude_models[3:],
+    ]
+    original_ids = list(model_ids)
+    state = {"workspace": "https://workspace.example", "profile": "chosen-profile"}
+    if source == "static":
+        state["claude_static_models"] = model_ids
+    else:
+        monkeypatch.setattr(
+            desktop_setup,
+            "list_anthropic_model_catalog",
+            lambda *args, **kwargs: AnthropicModelCatalog(model_ids, {}),
+        )
+
+    desktop_setup.configure_desktop_after_claude(state)
+
+    assert configured_profile(desktop)["inferenceModels"] == [
+        {"name": model_id} for model_id in claude_models
+    ]
+    assert model_ids == original_ids
+
+
+@pytest.mark.parametrize("source", ["discovery", "static"])
+@pytest.mark.parametrize("existing", [False, True])
+def test_no_claude_models_warns_without_changing_files(
+    desktop, monkeypatch, capsys, source, existing
+):
+    state = {"workspace": "https://workspace.example", "profile": "chosen-profile"}
+    if existing:
+        desktop_setup.configure_desktop_after_claude(state)
+    before = {path.name: path.read_bytes() for path in desktop.iterdir()}
+    selection_path = claude_desktop.APP_DIR / claude_desktop.STATE_FILENAME
+    selection_before = selection_path.read_bytes() if selection_path.exists() else None
+    model_ids = [
+        "anthropic-aigw-2b40afe0-system.ai.gpt-5-6-luna",
+        "system.ai.glm-5-3",
+    ]
+    if source == "static":
+        state["claude_static_models"] = model_ids
+    else:
+        monkeypatch.setattr(
+            desktop_setup,
+            "list_anthropic_model_catalog",
+            lambda *args, **kwargs: AnthropicModelCatalog(model_ids, {}),
+        )
+    capsys.readouterr()
+
+    desktop_setup.configure_desktop_after_claude(state)
+
+    assert {path.name: path.read_bytes() for path in desktop.iterdir()} == before
+    assert (selection_path.read_bytes() if selection_path.exists() else None) == selection_before
+    output = capsys.readouterr().out
+    assert "No Claude-family models found" in output
+    assert "gateway profile configured" not in output
 
 
 def test_reconfigure_refreshes_existing_profile_without_deletion(desktop, capsys, tmp_path):
@@ -105,7 +184,7 @@ def test_reconfigure_refreshes_existing_profile_without_deletion(desktop, capsys
         {
             **state,
             "profile": "updated-profile",
-            "claude_static_models": ["main.models.new"],
+            "claude_static_models": ["main.models.claude-sonnet-5-desktop"],
             "claude_http_headers": {"X-Admin": "updated"},
         }
     )
@@ -113,7 +192,7 @@ def test_reconfigure_refreshes_existing_profile_without_deletion(desktop, capsys
     refreshed = configured_profile(desktop)
     original_metadata["entries"][0]["name"] = "Unity Gateway - updated-profile"
     assert json.loads(metadata_path.read_text()) == original_metadata
-    assert refreshed["inferenceModels"] == [{"name": "main.models.new"}]
+    assert refreshed["inferenceModels"] == [{"name": "main.models.claude-sonnet-5-desktop"}]
     assert refreshed["inferenceGatewayBaseUrl"] == "https://workspace.example/ai-gateway/anthropic"
     assert refreshed["inferenceCredentialHelper"] == str(tmp_path / "venv with spaces" / "python")
     assert refreshed["inferenceCredentialHelperArgs"][-2:] == ["--profile", "updated-profile"]
@@ -170,14 +249,13 @@ def test_managed_static_catalog_does_not_fetch_discovery(desktop, monkeypatch):
         {
             "workspace": "https://workspace.example",
             "profile": "chosen-profile",
-            "claude_static_models": ["main.models.cheap", "main.models.oss"],
+            "claude_static_models": ["main.models.claude-haiku-4-5", "main.models.gpt-5-6-sol"],
             "claude_http_headers": {"X-Admin": "configured"},
         }
     )
     profile = configured_profile(desktop)
     assert profile["inferenceModels"] == [
-        {"name": "main.models.cheap"},
-        {"name": "main.models.oss"},
+        {"name": "main.models.claude-haiku-4-5"},
     ]
     assert profile["inferenceCustomHeaders"]["X-Admin"] == "configured"
 
@@ -188,7 +266,10 @@ def test_discovery_and_native_headers_use_same_source(desktop, monkeypatch, pare
 
     def catalog(workspace, token, **kwargs):
         calls.append((workspace, token, kwargs))
-        return AnthropicModelCatalog(model_ids=["provider-model"], model_id_to_display_name={})
+        return AnthropicModelCatalog(
+            model_ids=["us.anthropic.claude-sonnet-4-5-v1:0", "provider-model"],
+            model_id_to_display_name={},
+        )
 
     monkeypatch.setattr(desktop_setup, "list_anthropic_model_catalog", catalog)
     desktop_setup.configure_desktop_after_claude(
@@ -214,7 +295,9 @@ def test_discovery_and_native_headers_use_same_source(desktop, monkeypatch, pare
         assert MODEL_PROVIDER_SERVICE_HEADER not in headers
     else:
         assert headers[MODEL_PROVIDER_SERVICE_HEADER] == expected_provider
-    assert configured_profile(desktop)["inferenceModels"] == [{"name": "provider-model"}]
+    assert configured_profile(desktop)["inferenceModels"] == [
+        {"name": "us.anthropic.claude-sonnet-4-5-v1:0"}
+    ]
 
 
 @pytest.mark.parametrize(
@@ -348,7 +431,6 @@ def test_reconfigure_recreates_deleted_profile_with_fixed_id(desktop, capsys):
     assert json.loads(metadata_path.read_text()) == original_metadata
     assert configured_profile(desktop)["inferenceModels"] == [
         {"name": "system.ai.claude-haiku-4-5"},
-        {"name": "system.ai.oss-model"},
     ]
     assert {path.name for path in desktop.glob("*.json")} == {
         "_meta.json",

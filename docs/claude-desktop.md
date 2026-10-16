@@ -17,11 +17,19 @@ open Desktop once before configuring so it initializes its application-data dire
 
 ## Models and authentication
 
-An admin's static model list is copied as-is. Otherwise UG obtains the complete
+UG uses an admin's static model list when supplied. Otherwise it obtains the
 Anthropic-compatible gateway catalog, scoped to the same provider service or
-Unity Catalog location when applicable. Model IDs are not filtered to Claude
-families: backend-translated OSS models remain in the list. The catalog refreshes
-when `ug configure` runs again, not when the app opens or on a timer.
+Unity Catalog location when applicable. For Desktop only, either source is filtered
+with case-insensitive `\bclaude-`: IDs such as `system.ai.claude-sonnet-5`,
+`databricks-claude-opus-5`, and `us.anthropic.claude-3-7-sonnet-20250219-v1:0`
+are retained; GPT/OSS IDs and their `anthropic-aigw-*` aliases are excluded unless
+their names also match. Retained IDs and their order are unchanged. This is a name
+filter, not verification of the underlying model-service destinations.
+
+The filtered list is written into the profile with Desktop's model discovery
+disabled. It refreshes when `ug configure` runs again, not when the app opens or
+on a timer. If no Claude-named models remain, setup warns without changing Desktop
+files. Shared discovery and Claude Code's model list are unchanged.
 
 The profile uses a credential helper bound to the Python installation running UG.
 It stores only the workspace/profile name and command arguments, never a bearer
@@ -97,8 +105,9 @@ orchestration; they do not prove GUI inference on every app version.
   does not guess a field or claim that list order selects the default.
 - Inspected Desktop code rejects model IDs containing other vendors' model names,
   including `glm` and `kimi`, before inference. Gateway protocol compatibility does
-  not remove this client restriction. UG preserves the catalog without renaming
-  models to bypass it.
+  not remove this client restriction. UG filters Desktop's catalog to Claude-named
+  models without renaming them; that name filter does not reproduce every native
+  validation rule.
 - Anthropic subscription relay, custom OAuth/PAT profiles, Desktop Smart Routing,
   connector/plugin compatibility, and native OTEL are not implemented here.
 - Observed inference applies to Cowork. Ordinary Chat is not claimed to use the

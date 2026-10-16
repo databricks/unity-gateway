@@ -146,6 +146,8 @@ in `~/.ucode/claude-desktop.json`; profile contents are not restored on revert.
 Old random-ID and workspace-derived profiles are left untouched.
 Desktop setup is configure-only and best-effort. Writes retain atomic replacement,
 failure rollback, and the Desktop-only five-second lock timeout.
+Desktop filters both static and discovered model IDs with case-insensitive `\bclaude-`;
+shared discovery and Claude Code lists are unchanged. If no IDs match, setup warns without writes.
 See `docs/claude-desktop.md` for native validation limits and revert behavior.
 
 <details>

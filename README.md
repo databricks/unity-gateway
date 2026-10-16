@@ -117,9 +117,10 @@ Cursor models still run through your Cursor account.
 `UG_WORKSPACE` can provide the default workspace. An explicit `--workspace` or
 `--profile` takes precedence.
 
-On macOS, successful Claude Code configuration also creates and selects a
-dedicated Claude Desktop gateway profile. Desktop setup errors warn without
-failing Claude Code configuration. See [Claude Desktop setup](docs/claude-desktop.md)
+On macOS, Windows, and Linux, successful Claude Code configuration also creates and
+selects a dedicated Claude Desktop gateway profile. Its model list includes only
+Claude-named IDs; Claude Code's catalog is unchanged. Desktop setup errors warn
+without failing Claude Code configuration. See [Claude Desktop setup](docs/claude-desktop.md)
 for authentication, profile preservation, and native validation limits.
 
 ## MCP Servers
