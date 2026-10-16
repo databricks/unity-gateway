@@ -57,35 +57,44 @@ The profile sets:
 {
   "otlpEndpoint": "https://<workspace>/ai-gateway/otel",
   "otlpProtocol": "http/protobuf",
-  "otlpAuthMode": "inference-credential",
+  "otlpHeadersHelper": "<absolute-path-to-UG-headers-helper>",
   "otlpTracesEnabled": true
 }
 ```
 
-Desktop appends `/v1/traces` to the collector base URL. It reuses the inference
-bearer token from the existing credential helper, so no token is written to the
-profile and no proxy, background service, or additional helper is needed. The
-configuration is shared across macOS, Windows, and Linux. Codex's Linux-only OTEL
-service is unchanged.
+Desktop appends `/v1/traces` to the collector base URL. UG creates
+`~/.ucode/claude-desktop-otel-headers.sh` on macOS/Linux or
+`%USERPROFILE%\.ucode\claude-desktop-otel-headers.cmd` on Windows. This small wrapper
+runs the configuring Python installation's `ug otel-headers` implementation with
+the explicit workspace and CLI profile. It prints only a JSON `Authorization`
+header, using the existing cached-token/silent-refresh mechanism. Neither the
+profile nor wrapper stores a token. No proxy or background service is needed;
+Codex's Linux-only OTEL service is unchanged.
 
 Requirements: Desktop must support `otlpTracesEnabled` (added in 1.22209.0) and
-`otlpAuthMode` (added in 1.30096.1), Claude tracing must be enabled in the managed
+`otlpHeadersHelper` (added in 1.30096.1), Claude tracing must be enabled in the managed
 configuration, and the workspace must accept OTLP trace ingestion with the user's
-credentials. Disable Claude tracing and rerun configure to remove the OTLP keys;
-`ug revert` deletes them with the UG profile. Other profiles remain untouched.
+credentials. Disable Claude tracing and rerun configure to remove the OTLP keys
+and helper; `ug revert` also deletes the helper and UG profile. Writes and rollback
+cover the wrapper alongside the profile and selection files. Other profiles remain
+untouched.
 
 Restart Desktop and start a new Cowork task or Code session after configuring.
-Cowork receives the current token at task start; a Code session keeps its starting
-token. Long Code sessions can outlive that token and need a fresh session. Before
-inference sign-in, exports may be unauthenticated. UG does not enable raw-content
-capture. Desktop can also attempt logs and metrics exports to the collector base;
+Code and Cowork sessions receive the headers helper and rerun it as tokens rotate,
+rather than retaining an inference token copied at session start. Desktop caches
+helper output for a few minutes, so rotation is not immediate. The telemetry helper
+does not open browser login; if silent refresh fails, reauthenticate through Desktop's
+inference sign-in or the Databricks CLI. Claude documents that helper failures can
+send telemetry without authentication; check Desktop's logs. UG does not enable
+raw-content capture. Desktop can also attempt logs and metrics exports to the collector base;
 the gateway currently accepts only `/v1/traces`, not `/v1/logs` or `/v1/metrics`.
 
 Component tests verify the generated configuration and lifecycle, not native export
 or ingestion. To validate natively, configure a tracing-enabled workspace, restart
 Desktop, complete a small Cowork task, then confirm that its session spans reached
 the workspace's configured trace table. Check Desktop logs for authentication or
-trace-export errors, and repeat with a fresh task after token refresh. Do not share
+trace-export errors, and verify further spans from the same open Code session after
+token refresh and the helper cache interval. Do not share
 unredacted credentials or diagnostic bundles.
 
 ## Existing profiles and rollback

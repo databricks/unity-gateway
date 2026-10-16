@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+import shlex
+import subprocess
+import sys
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +15,7 @@ import pytest
 
 from ucode.agents.desktop import claude as desktop
 from ucode.agents.desktop import claude_config as desktop_config
+from ucode.os_compatibility import subprocess_cross_os
 
 
 def _uuid() -> str:
@@ -108,22 +113,137 @@ def test_render_profile_accepts_custom_headers(tmp_path: Path) -> None:
     assert profile["inferenceModels"] == [{"name": "system.ai.claude-opus-5-5"}]
 
 
-def test_render_profile_uses_native_otel_auth_without_storing_credentials(tmp_path):
+def test_render_profile_uses_refreshing_otel_helper_without_storing_credentials(tmp_path):
     profile = desktop.render_profile(
         model_ids=("system.ai.claude-sonnet-5",),
         base_url="https://workspace.example/ai-gateway/anthropic",
         helper_command=tmp_path / "ug",
         helper_args=("auth-helper",),
         otel_endpoint="https://workspace.example/ai-gateway/otel",
+        otel_headers_helper=tmp_path / "otel-headers.sh",
     )
 
     assert {key: value for key, value in profile.items() if key.startswith("otlp")} == {
         "otlpEndpoint": "https://workspace.example/ai-gateway/otel",
         "otlpProtocol": "http/protobuf",
-        "otlpAuthMode": "inference-credential",
+        "otlpHeadersHelper": str(tmp_path / "otel-headers.sh"),
         "otlpTracesEnabled": True,
     }
     assert "Authorization" not in json.dumps(profile)
+
+
+def test_native_otel_helper_returns_current_headers_on_each_invocation(tmp_path):
+    helper = tmp_path / (
+        "headers with spaces.cmd" if sys.platform == "win32" else "headers with spaces.sh"
+    )
+    helper.write_bytes(
+        desktop_config.render_otel_helper(
+            [
+                sys.executable,
+                "-m",
+                "ucode.cli",
+                "otel-headers",
+                "--host",
+                "https://workspace.example",
+                "--profile",
+                "selected & profile",
+            ],
+            windows=sys.platform == "win32",
+        ).encode("utf-8")
+    )
+    helper.chmod(0o700)
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path),
+        "USERPROFILE": str(tmp_path),
+        "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
+    }
+    command = (
+        [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/c", str(helper)]
+        if sys.platform == "win32"
+        else [str(helper)]
+    )
+    for token in ("first-component-token", "rotated-component-token"):
+        result = subprocess_cross_os.run(
+            command,
+            env={**env, "DATABRICKS_BEARER": token},
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == {"Authorization": f"Bearer {token}"}
+    assert "component-token" not in helper.read_text()
+
+
+def test_posix_otel_helper_preserves_literal_shell_arguments(tmp_path):
+    arguments = ["spaces & $HOME; 'quoted'", "line\nbreak", "100% !value!"]
+    command = [str(tmp_path / "python with spaces"), "otel-headers", *arguments]
+    helper = desktop_config.render_otel_helper(command, windows=False)
+    assert helper.startswith("#!/bin/sh\nexec ")
+    assert shlex.split(helper.removeprefix("#!/bin/sh\nexec ")) == command
+
+
+def test_native_otel_helper_preserves_arguments_and_child_failure(tmp_path):
+    windows = sys.platform == "win32"
+    helper = tmp_path / ("headers with spaces.cmd" if windows else "headers with spaces.sh")
+    arguments = ["spaces in profile", "a&b|c<d>e^f(ghi)", "%UG_WRAPPER_TEST%", "bang!", "'quoted'"]
+    helper.write_bytes(
+        desktop_config.render_otel_helper(
+            [sys.executable, "-c", "import json,sys;print(json.dumps(sys.argv[1:]))", *arguments],
+            windows=windows,
+        ).encode("utf-8")
+    )
+    helper.chmod(0o700)
+    command = (
+        [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/c", str(helper)]
+        if windows
+        else [str(helper)]
+    )
+    result = subprocess_cross_os.run(
+        command,
+        env={**os.environ, "UG_WRAPPER_TEST": "must not expand"},
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == arguments
+
+    helper.write_bytes(
+        desktop_config.render_otel_helper(
+            [sys.executable, "-c", "import sys;sys.stderr.write('Refresh failed');sys.exit(7)"],
+            windows=windows,
+        ).encode("utf-8")
+    )
+    result = subprocess_cross_os.run(
+        command,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        timeout=10,
+    )
+    assert result.returncode == 7
+    assert result.stdout == ""
+    assert result.stderr == "Refresh failed"
+
+
+def test_windows_otel_helper_quotes_all_args_and_disables_expansion():
+    assert desktop_config.render_otel_helper(
+        [r"C:\Program Files\Python!\python.exe", "--profile", "a&b|c<d>e^f(ghi)%NAME%!"],
+        windows=True,
+    ) == (
+        "@echo off\r\nsetlocal DisableDelayedExpansion\r\n"
+        '"C:\\Program Files\\Python!\\python.exe" "--profile" "a&b|c<d>e^f(ghi)%%NAME%%!"\r\n'
+    )
+
+
+@pytest.mark.parametrize("argument", ['bad" & exit', "bad\rline", "bad\nline", "bad\0value"])
+def test_windows_otel_helper_rejects_unsafe_batch_arguments(argument):
+    with pytest.raises(desktop.ClaudeDesktopError, match="invalid characters"):
+        desktop_config.render_otel_helper(["python.exe", argument], windows=True)
 
 
 def test_render_profile_uses_catalog_labels_without_changing_routing_ids(tmp_path):

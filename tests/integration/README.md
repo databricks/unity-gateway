@@ -376,9 +376,11 @@ These checks use temporary files on simulated platforms, not the native model pi
 Desktop OTEL coverage remains in `../test_claude_desktop.py` and
 `../test_desktop_setup.py`: native settings follow Claude's tracing flag for both
 model sources on simulated macOS, Windows, and Linux. Component checks cover the
-collector base URL, protobuf protocol, inference-credential authentication without
-persisted tokens, repeat configure, workspace changes, disable/re-enable, write-failure
-rollback, and revert preserving unrelated telemetry. This suite does not launch
+collector base URL, protobuf protocol, refreshing `.sh`/`.cmd` helpers without
+persisted tokens, quoting, repeated native helper execution with rotated bearer
+overrides, JSON-only stdout/failures, repeat configure, workspace changes,
+disable/re-enable, helper-byte/permission rollback, and revert preserving unrelated
+telemetry. This suite does not launch
 Desktop or establish native export, open-session token refresh, or trace ingestion.
 See `../../docs/claude-desktop.md` for native validation steps and auth limits.
 

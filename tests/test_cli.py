@@ -2114,6 +2114,61 @@ class TestAuthTokenCommand:
 
 
 class TestOtelHeadersCommand:
+    def test_explicit_profile_refreshes_headers_and_keeps_diagnostics_off_stdout(self):
+        def token(workspace, profile, *, force_refresh):
+            assert (workspace, profile, force_refresh) == (
+                "https://desktop.example",
+                "desktop-profile",
+                False,
+            )
+            print("Authentication diagnostic")
+            return next(tokens)
+
+        tokens = iter(["first-token", "refreshed-token"])
+        with (
+            patch(
+                "ucode.cli.load_state",
+                return_value={"workspace": "https://other.example", "profile": "other"},
+            ),
+            patch("ucode.cli.get_databricks_token", side_effect=token),
+        ):
+            for expected in ("first-token", "refreshed-token"):
+                result = runner.invoke(
+                    app,
+                    [
+                        "otel-headers",
+                        "--host",
+                        "https://desktop.example",
+                        "--profile",
+                        "desktop-profile",
+                    ],
+                )
+                assert result.exit_code == 0
+                assert json.loads(result.stdout) == {"Authorization": f"Bearer {expected}"}
+                assert "Authentication diagnostic" in result.stderr
+
+    def test_failed_refresh_emits_no_header_or_token(self):
+        with (
+            patch("ucode.cli.load_state", return_value={}),
+            patch(
+                "ucode.cli.get_databricks_token",
+                side_effect=RuntimeError("Reauthenticate with Databricks CLI"),
+            ),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "otel-headers",
+                    "--host",
+                    "https://desktop.example",
+                    "--profile",
+                    "desktop-profile",
+                ],
+            )
+        assert result.exit_code == 1
+        assert result.stdout == ""
+        assert "Reauthenticate with Databricks CLI" in result.stderr
+
     def test_prints_only_the_authorization_header_json(self):
         with (
             patch("ucode.cli.load_state", return_value={"workspace": "https://ws"}),

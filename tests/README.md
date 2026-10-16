@@ -201,9 +201,11 @@ These checks use temporary files on simulated platforms, not the native model pi
 
 Desktop OTEL component tests cover native trace settings gated by `claude_otel_tracing`
 for static and discovered models on simulated macOS, Windows, and Linux. They verify
-the collector base URL, protobuf protocol, inference-credential authentication without
-persisted tokens, repeat configure, workspace changes, disable/re-enable, rollback at
-each write boundary, and revert while preserving another profile's telemetry.
+the collector base URL, protobuf protocol, refreshing `.sh`/`.cmd` headers helpers
+without persisted tokens, literal argument quoting, repeated native helper execution
+with rotated bearer overrides, and JSON-only stdout/failure output. Lifecycle checks
+cover repeat configure, workspace changes, disable/re-enable, rollback of helper bytes
+and permissions at each write boundary, and revert preserving unrelated telemetry.
 These checks do not prove native export, token refresh in open sessions, or ingestion.
 
 `TestChildStdoutLaunch` in `test_cli.py` checks Claude `-p`/`--print` and Codex `exec`
