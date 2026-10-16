@@ -69,6 +69,8 @@ def test_routes_with_models_from_stored_state(monkeypatch):
         model="system.ai.gpt-5-6-sol",
         raw_model="gpt-5-6-sol",
         rationale="Needs the strongest coding model.",
+        route_options=(("gpt-5-6-luna", "codex"), ("gpt-5-6-sol", "codex")),
+        router_name=codex_routing.routing.ROUTER_NAME,
     )
     assert captured["url"] == f"{WS}/ai-gateway/routing/v1/routes:select"
     assert captured["headers"]["Authorization"] == "Bearer token"

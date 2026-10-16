@@ -92,6 +92,8 @@ class RoutingDecision:
     model: str
     raw_model: str
     rationale: str = ""
+    route_options: tuple[tuple[str, str | None], ...] = ()
+    router_name: str = ""
 
     def display_message(
         self,
@@ -221,8 +223,11 @@ def select_route(
     None when the arm is unservable. Returns ``(decision, error)``; a failed
     call yields ``(None, reason)`` so callers can fail open.
     """
+    offered_routes = tuple(route_options)
     body = {
-        "route_options": [{"model": model, "harness": harness} for model, harness in route_options],
+        "route_options": [
+            {"model": model, "harness": harness} for model, harness in offered_routes
+        ],
         "task": {"prompt": task},
         "route_selector": {"router_name": router_name},
     }
@@ -263,6 +268,8 @@ def select_route(
             model=model,
             raw_model=raw_model,
             rationale=rationale if isinstance(rationale, str) else "",
+            route_options=offered_routes,
+            router_name=router_name,
         ),
         None,
     )
@@ -410,6 +417,10 @@ def write_decision_record(
             "task_name": task_name,
             "router_model": decision.raw_model,
             "requested_model": requested_model,
+            "route_options": [
+                {"model": model, "harness": harness} for model, harness in decision.route_options
+            ],
+            "router_name": decision.router_name,
             # Persisted for diagnosis: an empty value means the gateway returned
             # no rationale (vs. a placement bug in how we surface it).
             "rationale": decision.rationale,
