@@ -755,6 +755,45 @@ def _configure_shared_workspace_states(
     return states
 
 
+_MODEL_LOCATION_TOOLS = ("claude", "codex")
+_PROVIDER_TOOLS = ("claude", "codex", "gemini")
+
+
+def _apply_headless_model_source(
+    state: dict,
+    tools: list[str],
+    managed: dict | None,
+    *,
+    model_location: str | None,
+    provider: str | None,
+) -> dict:
+    """Persist ``ug configure --model-location`` / ``--provider`` for ``tools``.
+
+    The headless equivalent of the interactive model-source picker: each tool's choice replaces
+    the other source, as the picker does. Rejected when a managed config is in effect, which
+    controls the model source itself, and for agents that can't use the requested source.
+    """
+    if model_location is None and provider is None:
+        return state
+    flag = "--model-location" if model_location is not None else "--provider"
+    if managed is not None:
+        raise RuntimeError(
+            f"`{flag}` is not allowed when a managed config exists for the workspace; "
+            "the managed config controls the model source."
+        )
+    supported = _MODEL_LOCATION_TOOLS if model_location is not None else _PROVIDER_TOOLS
+    unsupported = [tool for tool in tools if tool not in supported]
+    if unsupported:
+        names = ", ".join(TOOL_SPECS[tool]["display"] for tool in unsupported)
+        allowed = ", ".join(TOOL_SPECS[tool]["display"] for tool in supported)
+        raise RuntimeError(f"`{flag}` isn't supported for {names}. Supported: {allowed}.")
+    for tool in tools:
+        state = set_provider_service(state, tool, provider)
+        state = set_model_location(state, tool, model_location)
+    save_state(state)
+    return state
+
+
 def _setup_single_agent(
     workspace_entries: list[tuple[str, str | None]],
     tool: str,
@@ -775,8 +814,8 @@ def _setup_single_agent(
 
     ``model_location`` (``<catalog>.<schema>``) and ``provider`` (``<catalog>.<schema>.<name>``)
     are the headless equivalents of the interactive model-source picker. When set, the choice is
-    persisted to state and used in place of the managed config's location or provider. A managed
-    config that names its own source still wins.
+    persisted to state for later launches; a managed config rejects them (see
+    :func:`_apply_headless_model_source`).
     """
     states = _configure_shared_workspace_states(
         workspace_entries,
@@ -799,20 +838,11 @@ def _setup_single_agent(
                 parent_schema = managed_unity_catalog_location(managed, tool)
     elif apply_managed:
         managed, _ = refresh_managed_config(state, force_refresh=False)
-    # An explicit flag overrides the managed config's derived location only when the
-    # managed config itself supplies no source — same rule as the interactive picker.
-    if managed is None and tool in ("claude", "codex"):
-        if model_location is not None:
-            state = set_model_location(state, tool, model_location)
-            state = set_provider_service(state, tool, None)
-            save_state(state)
-            parent_schema = model_location
-        elif provider is not None:
-            state = set_provider_service(state, tool, provider)
-            state = set_model_location(state, tool, None)
-            save_state(state)
+    state = _apply_headless_model_source(
+        state, [tool], managed, model_location=model_location, provider=provider
+    )
     state = configure_single_tool(
-        tool, state, parent_schema=parent_schema, provider=provider if managed is None else None
+        tool, state, parent_schema=parent_schema or model_location, provider=provider
     )
     if apply_managed and not managed_enabled_tools(managed or {}):
         state = _record_unmanaged_configured_agents(state, [tool])
@@ -1025,6 +1055,9 @@ def _configure_workspace_command(
     managed, _ = refresh_managed_config(state, force_refresh=True)
     managed_tools = managed_enabled_tools(managed) if managed is not None else []
     if managed is not None and managed_tools:
+        _apply_headless_model_source(
+            state, [], managed, model_location=model_location, provider=provider
+        )
         configured_tools: list[str] = []
         for tool_name in managed_tools:
             resolved = resolve_state(managed, state, tool_name)
@@ -1111,19 +1144,10 @@ def _configure_workspace_command(
     if offer_provider:
         for tool_name in picked:
             state = _maybe_select_provider_service(tool_name, state)
-    elif model_location is not None or provider is not None:
-        # Headless source flags: persist the choice for each applicable agent, mirroring
-        # what the interactive picker does, but without prompting.
-        for tool_name in picked:
-            if tool_name not in ("claude", "codex"):
-                continue
-            if model_location is not None:
-                state = set_model_location(state, tool_name, model_location)
-                state = set_provider_service(state, tool_name, None)
-            elif provider is not None:
-                state = set_provider_service(state, tool_name, provider)
-                state = set_model_location(state, tool_name, None)
-        save_state(state)
+    else:
+        state = _apply_headless_model_source(
+            state, picked, None, model_location=model_location, provider=provider
+        )
 
     if offer_optional_setup:
         state = configure_selected_tools(state, picked, install_ai_tools=False)
