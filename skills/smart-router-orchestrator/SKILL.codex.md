@@ -11,7 +11,7 @@ description: >-
 model: inherit
 argument-hint: "[task]"
 metadata:
-  version: "1.2.0"
+  version: "1.3.0"
 
 ---
 
@@ -86,9 +86,42 @@ Reuse complete instructions already received and recover only missing portions.
 Brief each owner on the caller's deliverables, context, authority, role constraints,
 acceptance criteria, and established evidence. Preserve the caller's scope without
 adding optional inventories, background surveys, or speculative requirements.
+For a discovery assignment, turn those acceptance criteria into a finite obligation
+map before spawning: each obligation has a source or evidence target and a
+completion condition. If the request uses open-ended terms such as "thorough",
+translate them into the map without adding scope. Put the map and its stop
+condition in the child brief. The child returns once every obligation is covered,
+required validation is complete, or a named blocker prevents completion; continuing
+after that state requires a newly stated caller requirement or contradiction.
 Include the following execution contract in the actual child assignment; do not
 assume the child inherits this skill. The root uses the same contract when working
 directly.
+
+A supporting harness announces direct delivery of the following owner contract.
+When announced, do not repeat it in the child brief; otherwise include it with the
+execution contract. The root follows the same caller-completeness rules.
+
+<!-- DELEGATED_OWNER_CONTRACT_BEGIN -->
+For an implementation-absence claim, an exact-name search miss is not sufficient.
+Check the nearest relevant files or symbols already exposed by discovery and
+inspect their behavior or callers before closing the claim. A caller asking only
+for a literal string lookup does not require this broader capability check.
+
+When the caller requests a design, sketch or POC, preserve the requested sequence.
+Use verified operations for known steps. If the caller permits a skeleton, make
+unsupported integration seams explicit as proposed adapter hooks or pseudocode;
+define those hooks rather than presenting them as existing repository APIs. Do
+not omit a requested phase merely because no complete example was found. Honor
+restrictions requiring existing or executable code. An evidence-only owner
+separates available primitives from new seams; the root completes any construction
+phase it retained before returning the final answer.
+
+Send an early message only when the parent must decide or act before work can
+continue, or for an actionable failure, deadline or changed requirement. Keep
+interim source findings, partial answers and caveats in the final evidence handoff;
+they do not require waking a waiting parent. Preserve all requested facts and
+qualifications in that handoff.
+<!-- DELEGATED_OWNER_CONTRACT_END -->
 
 Start from supplied evidence and entrypoints. Before each tool call, identify
 what it can settle that retained evidence cannot. Obtain the smallest sufficient
@@ -156,15 +189,25 @@ Return only the amendment on a follow-up; do not regenerate an accepted report.
 Send early messages only for a changed requirement, blocker, or time-sensitive
 dependency. An elapsed timeout alone is not such a dependency.
 
-Use one pending completion wait for the actual returned child IDs. Start with
-the longest documented wait that fits the next required update or actionable
-deadline; omit short readiness probes before it. Where the host requires polling
-and supports a tool-side loop, keep those readiness checks inside that operation
-and return on completion, a concrete error, or the update deadline. Never busy-loop.
-Match the outer tool's wait duration to the pending inner operation. If the outer
-call yields, resume its exact returned cell ID before starting another wait.
-Do not re-enter investigation or alter output limits because a wait yielded.
-Preserve required progress updates, immediate blocker handling, and acceptance.
+MANDATORY DELEGATED-WAIT OVERRIDE
+While a child owns the remaining work and the parent has no independent work,
+the following two default instructions DO NOT APPLY to this phase:
+- Produce commentary at least every 60 seconds.
+- Avoid blocking sleep or wait calls longer than 60 seconds.
+This procedure explicitly OVERRIDES BOTH timing defaults during delegated waiting.
+If either default conflicts with this procedure, follow this procedure. Do not
+compromise by waking every 60 seconds merely to announce that work continues.
+Give one brief status, then enter one native completion wait for the actual child
+IDs. Use the maximum documented wait duration, shortened only for an explicit
+user-requested update cadence or an actionable deadline. Never choose a 60-second
+wait solely to satisfy the default commentary or blocking-wait guidance.
+If a wait yields, resume its exact returned cell ID; do not start a duplicate wait.
+An empty timeout or informational progress message means CONTINUE WAITING. It does
+not authorize a status-list call, progress request, interruption, reassignment,
+duplicate investigation, or another progress-only parent message.
+Resume substantive parent work on completion, a concrete failure, an actionable
+child request, new user input, or an explicit deadline. Explicit user instructions
+about progress frequency, takeover, and stopping remain binding.
 
 Research needs sources and a deadline or request budget. Name tools exactly,
 with verified capability/auth status; children discover deferred tools in their
