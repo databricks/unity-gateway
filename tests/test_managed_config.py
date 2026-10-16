@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -53,6 +54,7 @@ RAW_MANIFEST = {
                 "smart_routing": {"enabled": True},
                 "tracing": {"enabled": True},
                 "http_headers": {"x-databricks-workspace": "eng-ml-inference"},
+                "agent_native_settings": {"allowManagedMcpServersOnly": True, "env": {"FOO": "1"}},
             },
         },
         {
@@ -103,6 +105,24 @@ class TestNormalize:
     def test_http_headers_map_to_http_headers(self):
         claude = normalize_managed_config(RAW_MANIFEST)["enabled_agents"]["claude"]
         assert claude["http_headers"] == {"x-databricks-workspace": "eng-ml-inference"}
+
+    def test_settings_are_carried_verbatim(self):
+        agents = normalize_managed_config(RAW_MANIFEST)["enabled_agents"]
+        assert agents["claude"]["agent_native_settings"] == {
+            "allowManagedMcpServersOnly": True,
+            "env": {"FOO": "1"},
+        }
+        assert "agent_native_settings" not in agents["codex"]
+
+    def test_non_object_settings_are_dropped(self):
+        raw = {
+            "enabled_agents": [
+                {"agent": "CODING_AGENT_CODEX", "config": {"agent_native_settings": "x"}}
+            ]
+        }
+        assert (
+            "agent_native_settings" not in normalize_managed_config(raw)["enabled_agents"]["codex"]
+        )
 
     def test_smart_routing_maps_to_agent_switch(self):
         claude = normalize_managed_config(RAW_MANIFEST)["enabled_agents"]["claude"]
@@ -372,6 +392,7 @@ class TestPersistence:
             RAW_MANIFEST
         )
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no POSIX file modes")
     def test_saved_file_is_0600(self, _managed_path):
         save_managed_state("https://ws.example.com", {"default_agent": "claude"})
         mode = stat.S_IMODE(os.stat(_managed_path).st_mode)
@@ -477,8 +498,25 @@ class TestFetchClient:
         assert configs == []
         assert reason == "HTTP 403 Forbidden"
 
-    def test_sends_ucode_user_agent_header(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("claude_ua", "codex_ua", "expected"),
+        [
+            (None, None, "ucode/9.9.9"),
+            ("ucode/1.0 claude/2.1.289", None, "ucode/9.9.9 claude/2.1.289"),
+            (
+                "ucode/1.0 claude/2.1.289",
+                "ucode/1.0 codex/0.154.0",
+                "ucode/9.9.9 claude/2.1.289 codex/0.154.0",
+            ),
+            ("admin-agent/1.0", "ucode/1.0 claude/2.1.289", "ucode/9.9.9"),
+        ],
+    )
+    def test_sends_ucode_user_agent_header(self, monkeypatch, claude_ua, codex_ua, expected):
+        from ucode.agents import claude, codex
+
         monkeypatch.setattr(db_mod, "ug_version", lambda: "9.9.9")
+        monkeypatch.setattr(claude, "managed_user_agent", lambda: claude_ua)
+        monkeypatch.setattr(codex, "managed_user_agent", lambda: codex_ua)
         captured = {}
 
         class _FakeResponse:
@@ -499,7 +537,7 @@ class TestFetchClient:
 
         monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
         db_mod.fetch_managed_coding_agent_configs("https://ws", "tok")
-        assert captured["request"].get_header("User-agent") == "ucode/9.9.9"
+        assert captured["request"].get_header("User-agent") == expected
 
 
 WORKSPACE = "https://ws.example.com"

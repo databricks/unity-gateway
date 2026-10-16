@@ -172,6 +172,7 @@ class TestExportCommandFile:
 
     def test_expands_user_home_in_output_path(self, capsys, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
         with _with_config(FULL_RAW_CONFIG):
             export_mod.export_command(file_path="~/config.json")
         capsys.readouterr()

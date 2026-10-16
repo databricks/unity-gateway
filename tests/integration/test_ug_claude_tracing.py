@@ -2,22 +2,17 @@
 
 import os
 import time
-import uuid
 
 import pytest
 from utils.constants import CLAUDE_TEST_MODEL
-from utils.evidence import FileTask
-from utils.managed import (
-    build_claude_agent_config,
-    build_coding_agent_config,
-    set_managed_config_stub,
-)
+from utils.evidence import FileTask, fresh_id
+from utils.managed import use_managed_config_fixture
 from utils.sql import query_count, resolve_trace_table, resolve_warehouse_id
 
 pytestmark = [pytest.mark.live, pytest.mark.claude]
 
 
-def test_ug_claude_exports_trace_to_configured_table(live_session, workspace, tmp_path):
+def test_ug_claude_exports_trace_to_configured_table(live_session, workspace):
     """Scenario: resolve the trace table, configure Claude, and run a uniquely marked task.
 
     Expected: the real agent task completes and, after the ingestion window, the
@@ -28,13 +23,9 @@ def test_ug_claude_exports_trace_to_configured_table(live_session, workspace, tm
     table = resolve_trace_table(workspace, bearer)
     warehouse_id = os.environ.get("UG_INTEGRATION_WAREHOUSE_ID", "").strip()
     warehouse_id = warehouse_id or resolve_warehouse_id(workspace, bearer)
-    marker = f"ug-claude-trace-{uuid.uuid4().hex}"
+    marker = f"ug-claude-trace-{fresh_id()}"
     task = FileTask(session)
-    config = build_coding_agent_config(
-        "CODING_AGENT_CLAUDE_CODE",
-        build_claude_agent_config([CLAUDE_TEST_MODEL], otel_tracing_enabled=True),
-    )
-    set_managed_config_stub(session, tmp_path, config)
+    use_managed_config_fixture(session, "claude_tracing")
     session.run(
         "configure",
         "--workspace",

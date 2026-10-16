@@ -1,17 +1,18 @@
 """CUJs: configure against a managed workspace, where an admin publishes the setup.
 
-These run against the managed e2e workspace (`E2E_ADMIN_WORKSPACE`), which publishes a
-CodingAgentConfig. They exercise the managed config fetch end to end:
-`ug configure` applies the admin config to every enabled agent without the personal agent
-selector, and each agent's generated config exposes exactly the admin's static
-`model_services` (Claude's `availableModels`/`modelPicker`, Codex's model catalog). The
-expected model ids mirror the published config; update them here if the admin list changes.
+These run against the managed e2e workspace (`E2E_ADMIN_WORKSPACE`) with the checked-in
+`managed_workspace_default.json` CodingAgentConfig injected via UCODE_MANAGED_CONFIG_STUB, so they
+do not depend on what the workspace happens to publish. `ug configure` applies the config to every
+enabled agent without the personal agent selector, and each agent's generated config exposes
+exactly the config's static `model_services` (Claude's `availableModels`/`modelPicker`, Codex's
+model catalog). The expected model ids mirror that fixture; update both together.
 """
 
 import json
 import tomllib
 
 import pytest
+from utils.managed import use_managed_config_fixture
 from utils.terminal import AgentTerminal
 
 MANAGED_CLAUDE_MODELS = [
@@ -22,10 +23,10 @@ MANAGED_CLAUDE_MODELS = [
 MANAGED_CODEX_MODEL = "system.ai.gpt-5-6-sol"
 
 
-@pytest.mark.managed
+@pytest.mark.managed_fixture
 @pytest.mark.claude
 def test_ug_configure_managed_claude(live_session, workspace):
-    """Scenario: run `ug configure` on a workspace that publishes a managed config.
+    """Scenario: run `ug configure` under an injected managed config.
 
     Expected: ug applies the admin config to every enabled agent without showing the
     personal agent selector, Claude's generated settings expose exactly the admin's static
@@ -33,6 +34,7 @@ def test_ug_configure_managed_claude(live_session, workspace):
     prompt rather than the account-login flow.
     """
     session = live_session
+    use_managed_config_fixture(session, "managed_workspace_default")
     result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
     assert "Select coding agents to configure:" not in result.stdout, result.stdout
 
@@ -48,10 +50,10 @@ def test_ug_configure_managed_claude(live_session, workspace):
         tui.check_input_and_exit()
 
 
-@pytest.mark.managed
+@pytest.mark.managed_fixture
 @pytest.mark.codex
 def test_ug_configure_managed_codex(live_session, workspace):
-    """Scenario: run `ug configure` on a workspace that publishes a managed config.
+    """Scenario: run `ug configure` under an injected managed config.
 
     Expected: ug applies the admin config to every enabled agent without showing the
     personal agent selector, Codex's generated model catalog lists exactly the admin's static
@@ -61,6 +63,7 @@ def test_ug_configure_managed_codex(live_session, workspace):
     a prompt, accepts input, and exits normally. GUI rendering and inference are not covered.
     """
     session = live_session
+    use_managed_config_fixture(session, "managed_workspace_default")
     result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
     assert "Select coding agents to configure:" not in result.stdout, result.stdout
     assert "codex app-server daemon restart" in " ".join(result.stderr.split()), result.stderr
@@ -80,7 +83,7 @@ def test_ug_configure_managed_codex(live_session, workspace):
     bare_models = session.codex_model_ids(
         ["app-server", "--listen", "stdio://"],
         name="bare-managed-codex-models",
-        binary="codex",
+        binary=session.which("codex"),
     )
     assert bare_models == [MANAGED_CODEX_MODEL], bare_models
 
@@ -89,7 +92,7 @@ def test_ug_configure_managed_codex(live_session, workspace):
         tui.check_input_and_exit()
 
 
-@pytest.mark.managed
+@pytest.mark.managed_fixture
 @pytest.mark.claude
 def test_ug_configure_managed_is_idempotent(live_session, workspace):
     """Scenario: run the managed `ug configure` twice in the same session.
@@ -98,6 +101,7 @@ def test_ug_configure_managed_is_idempotent(live_session, workspace):
     agents identically, so a repeat configure neither duplicates, drops, nor rewrites any entry.
     """
     session = live_session
+    use_managed_config_fixture(session, "managed_workspace_default")
     runs = []
     for _ in range(2):
         result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
@@ -112,18 +116,19 @@ def test_ug_configure_managed_is_idempotent(live_session, workspace):
     assert runs == [expected, expected], runs
 
 
-@pytest.mark.managed
+@pytest.mark.managed_fixture
 @pytest.mark.claude
 def test_ug_managed_config_launch_reuses_cache_within_ttl(live_session, workspace):
     """Scenario: after a managed `ug configure`, launch Claude within the cache TTL, then again
     after the cached read is backdated past it.
 
     Expected: configure stamps managed-config.json with a `published` outcome and a `retrieved_at`;
-    a launch within the TTL is served from that cache and leaves the stamp untouched (no
-    control-plane re-read), and once the stamp is backdated past the TTL the next launch reads fresh
-    and advances it.
+    a launch within the TTL is served from that cache and leaves the stamp untouched (no re-read of
+    the config source), and once the stamp is backdated past the TTL the next launch reads fresh
+    and advances it. The stub takes the same cache path as a live read.
     """
     session = live_session
+    use_managed_config_fixture(session, "managed_workspace_default")
     cache = session.home / ".ucode" / "managed-config.json"
 
     session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)

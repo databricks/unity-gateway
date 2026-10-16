@@ -1,8 +1,9 @@
 """Safely manage root-owned, highest-precedence agent settings files.
 
 Interactive updates preserve unrelated policy, retain a private baseline for ``ucode revert``, and
-verify the privileged atomic replacement. Non-interactive runs only check whether existing managed
-values are compatible with ucode's local settings.
+verify the privileged atomic replacement. Existing-file repairs may run without a terminal;
+the shared writer uses sudo's non-prompting mode without consuming the caller's standard input.
+Windows has no sudo: only an elevated process writes there, with or without a terminal.
 """
 
 from __future__ import annotations
@@ -13,10 +14,11 @@ import hashlib
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, suppress
 from copy import deepcopy
 from dataclasses import dataclass
@@ -26,11 +28,14 @@ from pathlib import Path
 from typing import Any, cast
 
 from ucode.config_io import APP_DIR, is_dry_run
-from ucode.os_compatibility import subprocess_cross_os
+from ucode.os_compatibility import subprocess_cross_os, system_cross_os
 from ucode.ui import console, print_note, print_success, print_warning
 
 # Absolute path so a stripped PATH (desktop/GUI launchers) still finds it.
 _SUDO = "/usr/bin/sudo"
+# Opt out of all OS-managed settings work (read, conflict check, and the privileged sudo write).
+SKIP_OS_SETTINGS_ENV = "UG_SKIP_OS_SETTINGS"
+_TRUE_VALUES = {"1", "true", "yes", "on"}
 MANAGED_BACKUP_DIR = APP_DIR / "managed-backups"
 MANAGED_BACKUP_MANIFEST_PATH = MANAGED_BACKUP_DIR / "manifest.json"
 MANAGED_FINGERPRINT_VERSION = 1
@@ -56,6 +61,8 @@ class OS(Enum):
     WINDOWS = "windows"
     OTHER = "other"
 
+
+MANAGED_FILES_SUPPORTED_OSES = (OS.LINUX, OS.MACOS, OS.WINDOWS)
 
 _SUDO_REPLACE_TARGETS = {
     OS.LINUX: frozenset(
@@ -85,19 +92,42 @@ def current_os() -> OS:
     return OS.OTHER
 
 
-def managed_files_supported() -> bool:
-    """True on the platforms whose managed-settings write path is implemented (Linux, macOS).
+def managed_settings_skipped() -> bool:
+    """Whether the developer opted out of OS-managed settings via ``UG_SKIP_OS_SETTINGS``.
 
-    The write path needs `sudo` (`sudo cp`, `chattr`/`chflags`), which is Unix-only — so Windows and
-    any other platform are unsupported.
+    Set the variable to ``1``/``true``/``yes``/``on`` to make ucode neither read nor update the
+    root-owned managed files (Claude Code ``managed-settings.json``, Codex ``managed_config.toml``).
+    ucode then relies solely on its per-user settings, which is enough for a single-user setup that
+    always launches through ``ug`` and never needs a bare ``claude``/``codex`` to reach the gateway.
+    Skips the privileged ``sudo`` step entirely, so an interactive run is never prompted for a
+    password and never hits the "OS-managed settings could not be updated" failure on hosts where
+    that write is blocked.
     """
-    return current_os() in (OS.LINUX, OS.MACOS)
+    return os.environ.get(SKIP_OS_SETTINGS_ENV, "").strip().lower() in _TRUE_VALUES
+
+
+def managed_files_supported() -> bool:
+    """True on the platforms whose managed-settings write path is implemented.
+
+    Linux and macOS write through `sudo`; Windows writes directly from an elevated process.
+    ``UG_SKIP_OS_SETTINGS`` also opts out entirely, which routes managed MCP servers to the user
+    scope instead of the OS-managed file.
+    """
+    if managed_settings_skipped():
+        return False
+    return current_os() in MANAGED_FILES_SUPPORTED_OSES
+
+
+def windows_claude_managed_settings_path() -> Path:
+    """The only machine-wide settings file Claude Code reads on Windows."""
+    return system_cross_os.windows_program_files_dir() / "ClaudeCode" / "managed-settings.json"
 
 
 def read_managed_file(path: Path) -> str | None:
     """Read a managed file strictly, returning ``None`` only when it is absent."""
     try:
-        return path.read_text(encoding="utf-8")
+        # utf-8-sig: Windows PowerShell 5.1 writes a BOM that JSON and TOML parsers reject.
+        return path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         return None
     except OSError as exc:
@@ -167,9 +197,27 @@ def managed_file_scope(state: dict, tool: str) -> str:
     return scope if isinstance(scope, str) else "managed"
 
 
-def managed_writes_allowed() -> bool:
-    """Managed writes are interactive setup work; scripts and CI use local settings."""
-    return sys.stdin.isatty()
+def _sudo_may_prompt() -> bool:
+    """A terminal is attached, so sudo can prompt and the persistent worker is usable."""
+    return current_os() is not OS.WINDOWS and sys.stdin.isatty()
+
+
+def managed_writes_allowed(*, repair_existing: bool = False) -> bool:
+    """Writes need either an interactive terminal or an existing file to repair in place.
+
+    Windows has nothing to prompt with, so only an elevated (or SYSTEM) process may write there,
+    which lets device provisioning run ``ug configure`` without a terminal."""
+    if current_os() is not OS.WINDOWS:
+        return _sudo_may_prompt() or repair_existing
+    return system_cross_os.is_admin()
+
+
+def _windows_admin_required_message(display: str, path: Path, command: str) -> str:
+    return (
+        f"Updating {display} machine-wide settings at {path} requires administrator rights. "
+        f"Run `{command}` from an elevated terminal (Run as administrator), or ask your "
+        "administrator to run it."
+    )
 
 
 @contextmanager
@@ -250,8 +298,10 @@ class ManagedFileSnapshots:
 
     original_before_ug: dict | None
     last_applied_by_ug: dict | None
-    # Key paths ucode has written to this file, keyed by the file rather than the workspace.
-    owned_paths: list | None = None
+    # Picker values ug itself last wrote to this file; only these may later be reverted.
+    ug_picker: dict | None = None
+    # ``[path, value]`` leaves ug last delivered here from the admin's agent_native_settings.
+    settings_passthrough: list | None = None
 
 
 def managed_file_snapshots(tool: str, parser: ManagedParser) -> ManagedFileSnapshots:
@@ -277,14 +327,58 @@ def managed_file_snapshots(tool: str, parser: ManagedParser) -> ManagedFileSnaps
         entry = _manifest_files(_load_manifest()).get(tool)
         if not isinstance(entry, dict):
             return ManagedFileSnapshots(None, None)
-        owned_paths = entry.get("owned_paths")
+        ug_picker = entry.get("ug_picker")
+        passthrough = entry.get("settings_passthrough")
         return ManagedFileSnapshots(
             _parse(_snapshot_text(entry, "backup_file")),
             _parse(_snapshot_text(entry, "last_applied_file")),
-            owned_paths if isinstance(owned_paths, list) else None,
+            ug_picker if isinstance(ug_picker, dict) else None,
+            passthrough if isinstance(passthrough, list) else None,
         )
     except RuntimeError:
         return ManagedFileSnapshots(None, None)
+
+
+def record_ug_picker(tool: str, picker: dict) -> None:
+    """Record the picker values ug just confirmed in ``tool``'s managed file; empty clears it.
+
+    Kept in the file-keyed manifest because the managed file is machine-wide, not per workspace. An
+    unreadable manifest or a file ug never wrote leaves no record, so nothing is later reverted."""
+    if is_dry_run():
+        return
+    try:
+        manifest = _load_manifest()
+    except RuntimeError:
+        return
+    entry = _manifest_files(manifest).get(tool)
+    if not isinstance(entry, dict) or entry.get("ug_picker", {}) == picker:
+        return
+    if picker:
+        entry["ug_picker"] = picker
+    else:
+        entry.pop("ug_picker", None)
+    _write_manifest(manifest)
+
+
+def record_settings_passthrough(tool: str, leaves: list) -> None:
+    """Record the agent_native_settings leaves ug just confirmed in ``tool``'s managed file.
+
+    File-keyed like :func:`record_ug_picker`: the managed file is machine-wide, so a launch for any
+    workspace must see what ug last delivered there to withdraw what that workspace doesn't set."""
+    if is_dry_run():
+        return
+    try:
+        manifest = _load_manifest()
+    except RuntimeError:
+        return
+    entry = _manifest_files(manifest).get(tool)
+    if not isinstance(entry, dict) or entry.get("settings_passthrough", []) == leaves:
+        return
+    if leaves:
+        entry["settings_passthrough"] = leaves
+    else:
+        entry.pop("settings_passthrough", None)
+    _write_manifest(manifest)
 
 
 def managed_file_conflicts(
@@ -292,6 +386,8 @@ def managed_file_conflicts(
 ) -> list[str]:
     """Return managed leaves that would override ucode's local settings."""
     conflicts: list[str] = []
+    existing = cast(dict, mask_user_agent_versions(existing))
+    desired = cast(dict, mask_user_agent_versions(desired))
     for path in owned_paths:
         existing_value = _path_value(existing, path)
         if existing_value is _MISSING:
@@ -299,6 +395,55 @@ def managed_file_conflicts(
         if existing_value != _path_value(desired, path):
             conflicts.append(".".join(path))
     return conflicts
+
+
+def raise_on_skipped_managed_overrides(
+    path: Path,
+    conflicts: list[str],
+    *,
+    display: str,
+) -> None:
+    """Fail when an opt-out left a stale OS-managed file overriding the new user config."""
+    if not conflicts:
+        return
+    raise RuntimeError(
+        f"the OS-managed {display} settings at {path} are stale and conflict with your per-user settings."
+        f" {SKIP_OS_SETTINGS_ENV} is set, so the OS-managed settings were not modified. Run `ug revert` "
+        f"from an interactive terminal or remove {path}"
+    )
+
+
+def check_skipped_managed_overrides(
+    path: Path | None,
+    *,
+    parser: ManagedParser,
+    compose: Callable[[dict], dict],
+    owned_paths: list[list[str]],
+    display: str,
+) -> None:
+    """When opting out, fail if a stale OS-managed file still overrides the new user config.
+
+    `UG_SKIP_OS_SETTINGS` leaves the root-owned managed file untouched. A file from an earlier
+    workspace keeps its highest-precedence gateway values, so refuse to proceed when the conflicting
+    keys would let a bare agent silently reach the old workspace. Reads only (no sudo); best-effort,
+    so an unsupported platform, symlink, or unparseable file is left to the normal reconcile path.
+    """
+    if path is None or path.is_symlink():
+        return
+    current_text = read_managed_file(path)
+    if current_text is None:
+        return
+    try:
+        existing = parser(current_text)
+    except RuntimeError:
+        return
+    # `compose` mutates its argument in place, so snapshot the on-disk state before composing.
+    managed_before = deepcopy(existing)
+    raise_on_skipped_managed_overrides(
+        path,
+        managed_file_conflicts(managed_before, compose(existing), owned_paths),
+        display=display,
+    )
 
 
 def _unwrap(value: object) -> object:
@@ -310,6 +455,52 @@ def _unwrap(value: object) -> object:
         except Exception:  # noqa: BLE001
             return value
     return value
+
+
+# Header-safe version text only, so a token copied out of a managed file can't break a header.
+_VERSION = r"[0-9A-Za-z.+_-]+"
+
+
+def ug_agent_token(user_agent: str, agent: str) -> str | None:
+    """The ``<agent>/<v>`` token of ug's exact ``ucode/<v> <agent>/<v>`` User-Agent, else None."""
+    match = re.fullmatch(rf"ucode/{_VERSION} ({re.escape(agent)}/{_VERSION})", user_agent)
+    return match.group(1) if match else None
+
+
+_UG_USER_AGENT = re.compile(rf"ucode/{_VERSION} ([a-z][a-z0-9-]*)/{_VERSION}")
+
+
+def mask_user_agent_versions(value: object, key: object = None) -> object:
+    """Copy of a parsed managed document with the versions in ug's ``ucode/<v> <agent>/<v>``
+    User-Agent masked. They change on every ug or agent upgrade, which alone must not rewrite (and
+    prompt for sudo to replace) the root-owned file. Only User-Agent headers are masked: a
+    ``User-Agent`` key, or a ``User-Agent:`` line in a header string; every other value compares
+    exactly."""
+    value = _unwrap(value)
+    if isinstance(value, Mapping):
+        return {name: mask_user_agent_versions(item, name) for name, item in value.items()}
+    if isinstance(value, list):
+        return [mask_user_agent_versions(item) for item in value]
+    if not isinstance(value, str):
+        return value
+    if _is_user_agent(key):
+        return _mask_ug_user_agent(value)
+    lines = []
+    for line in value.split("\n"):
+        name, separator, header_value = line.partition(":")
+        if separator and _is_user_agent(name.strip()):
+            line = f"{name}{separator} {_mask_ug_user_agent(header_value.strip())}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _is_user_agent(name: object) -> bool:
+    return isinstance(name, str) and name.casefold() == "user-agent"
+
+
+def _mask_ug_user_agent(user_agent: str) -> str:
+    match = _UG_USER_AGENT.fullmatch(user_agent.strip())
+    return f"ucode/* {match.group(1)}/*" if match else user_agent
 
 
 def is_semantically_equal(current: object, desired: object) -> bool:
@@ -390,42 +581,48 @@ def reconcile_managed_file(
     """Back up, atomically write, and verify one OS-managed settings file.
 
     The first pre-ucode contents are retained until ``ucode revert``. Subsequent writes update only
-    the last-applied snapshot used for drift-safe three-way restoration.
+    the last-applied snapshot used for drift-safe three-way restoration. A difference only in ug's
+    User-Agent versions counts as unchanged (see ``mask_user_agent_versions``).
     """
     if not managed_files_supported():
         print_warning(
             f"{display}: OS-managed settings aren't supported on this platform; skipped {path}."
         )
         return "unsupported"
-    if not managed_writes_allowed() and not is_dry_run():
-        raise RuntimeError(
-            f"Refusing to update {display} managed settings at {path} non-interactively. "
-            "Run the command from an interactive terminal."
-        )
     if path.is_symlink():
         raise RuntimeError(
             f"Refusing to update {display} managed settings through symlink {path}. "
             "Replace it with a regular file or contact your administrator."
         )
     current_text = read_managed_file(path)
+    if not managed_writes_allowed(repair_existing=current_text is not None) and not is_dry_run():
+        if current_os() is not OS.WINDOWS:
+            raise RuntimeError(
+                f"Refusing to update {display} managed settings at {path} non-interactively. "
+                "Run the command from an interactive terminal."
+            )
+        raise RuntimeError(_windows_admin_required_message(display, path, "ug configure"))
     if current_text == desired_text:
         return "unchanged"
     if current_text is not None:
         try:
             semantically_unchanged = is_semantically_equal(
-                parser(current_text), parser(desired_text)
+                mask_user_agent_versions(parser(current_text)),
+                mask_user_agent_versions(parser(desired_text)),
             )
         except RuntimeError:
             semantically_unchanged = False
         if semantically_unchanged:
             return "unchanged"
     if is_dry_run():
-        console.print(f"\n[bold]\\[dry run] {path} (via sudo)[/bold]\n{desired_text}")
+        via = "as administrator" if current_os() is OS.WINDOWS else "via sudo"
+        console.print(f"\n[bold]\\[dry run] {path} ({via})[/bold]\n{desired_text}")
         return "written"
 
     created = current_text is None
     _ensure_backup(tool, path, current_text)
-    _print_managed_write_permission(display)
+    if _sudo_may_prompt():
+        _print_managed_write_permission(display)
     if read_managed_file(path) != current_text:
         raise RuntimeError(
             f"{display} managed settings changed while ucode was preparing the update. "
@@ -433,12 +630,17 @@ def reconcile_managed_file(
         )
     for attempt in range(2):
         try:
-            _sudo_replace(path, desired_text)
+            _privileged_replace(path, desired_text)
         except PermissionError as exc:
+            if current_os() is not OS.WINDOWS:
+                raise ManagedFileWriteUnavailable(
+                    f"{display} cannot start because ucode could not update {path}: {exc}. "
+                    "Run the ucode command from an interactive terminal and approve the "
+                    "administrator prompt, or contact your administrator."
+                ) from exc
             raise ManagedFileWriteUnavailable(
-                f"{display} cannot start because ucode could not update {path}: {exc}. "
-                "Run the ucode command from an interactive terminal and approve the administrator "
-                "prompt, or contact your administrator."
+                f"{display} cannot start because ucode could not update {path}: {exc}. Check "
+                "that it isn't read-only or open in another program, or contact your administrator."
             ) from exc
         except subprocess.CalledProcessError as exc:
             raise ManagedFileWriteUnavailable(_sudo_failure_message(path, display, exc)) from exc
@@ -511,19 +713,21 @@ def revert_managed_file(
 
     if desired_text != current_text:
         if not managed_writes_allowed():
-            raise RuntimeError(
-                f"Cannot restore {display} managed settings non-interactively. Run `ucode revert` "
-                "from an interactive terminal."
-            )
+            if current_os() is not OS.WINDOWS:
+                raise RuntimeError(
+                    f"Cannot restore {display} managed settings non-interactively. Run "
+                    "`ug revert` from an interactive terminal."
+                )
+            raise RuntimeError(_windows_admin_required_message(display, path, "ug revert"))
         try:
             if desired_text is None:
-                _sudo_remove(path)
+                _privileged_remove(path)
             else:
-                _sudo_replace(path, desired_text)
+                _privileged_replace(path, desired_text)
         except (PermissionError, subprocess.CalledProcessError) as exc:
             raise RuntimeError(
                 f"Could not restore {display} managed settings at {path}. The backup was retained "
-                f"under {MANAGED_BACKUP_DIR}. Resolve the permission issue and run `ucode revert` "
+                f"under {MANAGED_BACKUP_DIR}. Resolve the permission issue and run `ug revert` "
                 "again."
             ) from exc
         if read_managed_file(path) != desired_text:
@@ -613,7 +817,7 @@ def _ensure_backup(tool: str, path: Path, current_text: str | None) -> bool:
         if existing.get("path") != str(path):
             raise RuntimeError(
                 f"The saved {tool} managed-settings backup targets {existing.get('path')}, not "
-                f"{path}. Run `ucode revert` before configuring this path."
+                f"{path}. Run `ug revert` before configuring this path."
             )
         if existing.get("original_existed"):
             _original_text(existing)
@@ -770,6 +974,175 @@ def _three_way_revert(current: dict, original: dict, last: dict, paths: list) ->
     return reverted
 
 
+@dataclass
+class SettingsPassthrough:
+    """An admin's harness-native settings, split into the leaves to deliver and those skipped."""
+
+    # (leaf path, value) pairs to write into the managed file; ucode owns these paths for revert.
+    leaves: list[tuple[list[str], object]]
+    # Dotted leaf paths skipped because ucode writes them itself or the file format can't hold them.
+    ignored: list[str]
+
+    @property
+    def paths(self) -> list[list[str]]:
+        return [path for path, _ in self.leaves]
+
+    def items_at(self, path: list[str]) -> list:
+        """The admin's list at ``path``, or an empty list when it doesn't set one there."""
+        return next(
+            (value for leaf, value in self.leaves if leaf == path and isinstance(value, list)), []
+        )
+
+    def record(self) -> list:
+        """The ``[path, value]`` pairs to persist, so the next apply knows what ucode delivered."""
+        return [[path, value] for path, value in self.leaves]
+
+
+def _leaf_paths(value: dict, prefix: list[str]) -> Iterator[tuple[list[str], object]]:
+    for key, child in value.items():
+        if not isinstance(key, str):
+            continue
+        if isinstance(child, dict) and child:
+            yield from _leaf_paths(child, [*prefix, key])
+        else:
+            yield [*prefix, key], child
+
+
+def _overlaps(path: list[str], other: list[str]) -> bool:
+    """True when one path is a prefix of the other, so writing one would clobber the other."""
+    shorter = min(len(path), len(other))
+    return path[:shorter] == other[:shorter]
+
+
+def plan_settings_passthrough(
+    settings: dict | None,
+    *,
+    reserved_paths: list[list[str]],
+) -> SettingsPassthrough:
+    """Split an admin's harness-native ``settings`` into leaves to deliver and leaves to skip.
+
+    The managed config carries these verbatim rather than as ucode fields, so a new harness setting
+    needs no ucode change. A leaf overlapping ``reserved_paths`` is skipped: ucode's own gateway
+    wiring must keep working.
+    """
+    leaves: list[tuple[list[str], object]] = []
+    ignored: list[str] = []
+    for path, value in _leaf_paths(settings or {}, []):
+        if any(_overlaps(path, reserved) for reserved in reserved_paths):
+            ignored.append(".".join(path))
+        else:
+            leaves.append((path, value))
+    return SettingsPassthrough(leaves, ignored)
+
+
+def warn_skipped_settings_passthrough(
+    state: dict,
+    state_key: str,
+    passthrough: SettingsPassthrough,
+    display: str,
+    warn: Callable[[str], None],
+) -> None:
+    """Warn about skipped settings once, recording them in ``state[state_key]`` so a relaunch with
+    the same config stays quiet, while an admin edit that changes the skipped set warns again."""
+    if passthrough.ignored and passthrough.ignored != state.get(state_key):
+        warn(
+            f"Skipped managed {display} settings that ug configures itself or the file can't "
+            f"hold: {', '.join(passthrough.ignored)}."
+        )
+    if passthrough.ignored:
+        state[state_key] = passthrough.ignored
+    else:
+        state.pop(state_key, None)
+
+
+def apply_settings_passthrough(
+    doc: dict,
+    passthrough: SettingsPassthrough,
+    *,
+    previous_leaves: list,
+    snapshots: ManagedFileSnapshots,
+    is_shared_list: Callable[[list[str]], bool] = lambda path: False,
+) -> dict:
+    """Write ``passthrough``'s leaves into ``doc`` and withdraw ones the admin has since dropped.
+
+    Each leaf is written as-is (lists replace), except a list the file shares with other authors
+    (``is_shared_list``, e.g. Claude's ``permissions.deny`` or a hook event): there the admin's items
+    are merged in, and only items ucode itself delivered last time are withdrawn, so IT-authored
+    entries survive.
+
+    ``previous_leaves`` is the ``[path, value]`` list :meth:`SettingsPassthrough.record` saved last
+    time. A previously delivered scalar path the admin has dropped is withdrawn by the same three-way
+    rule ``ucode revert`` uses: only when the live value is still what ucode last wrote, restoring the
+    pre-ucode value if there was one, so a value someone edited by hand stays.
+    """
+    previous = _recorded_leaves(previous_leaves)
+    applied = passthrough.paths
+    shared_paths = [
+        path for path, value in passthrough.leaves if _is_shared(path, value, is_shared_list)
+    ]
+    shared_paths += [
+        path
+        for path, value in previous
+        if path not in shared_paths and _is_shared(path, value, is_shared_list)
+    ]
+    for path, value in passthrough.leaves:
+        if path not in shared_paths:
+            _set_path_value(doc, path, value)
+    for path in shared_paths:
+        _merge_shared_list(
+            doc,
+            path,
+            passthrough.items_at(path),
+            withdrawn=withdrawn_list_items(path, passthrough, previous_leaves),
+        )
+
+    stale = [path for path, _ in previous if path not in applied and path not in shared_paths]
+    if stale and snapshots.last_applied_by_ug is not None:
+        doc = _three_way_revert(
+            doc, snapshots.original_before_ug or {}, snapshots.last_applied_by_ug, stale
+        )
+    return doc
+
+
+def withdrawn_list_items(
+    path: list[str], passthrough: SettingsPassthrough, previous_leaves: list
+) -> list:
+    """Items ucode delivered into the shared list at ``path`` last time that the admin has dropped."""
+    current = passthrough.items_at(path)
+    return [
+        item
+        for previous_path, value in _recorded_leaves(previous_leaves)
+        if previous_path == path and isinstance(value, list)
+        for item in value
+        if item not in current
+    ]
+
+
+def _is_shared(path: list[str], value: object, is_shared_list: Callable[[list[str]], bool]) -> bool:
+    return isinstance(value, list) and is_shared_list(path)
+
+
+def _recorded_leaves(raw: object) -> list[tuple[list[str], object]]:
+    if not isinstance(raw, list):
+        return []
+    leaves: list[tuple[list[str], object]] = []
+    for entry in raw:
+        if isinstance(entry, list) and len(entry) == 2 and (path := _owned_path(entry[0])):
+            leaves.append((path, entry[1]))
+    return leaves
+
+
+def _merge_shared_list(doc: dict, path: list[str], admin_items: list, *, withdrawn: list) -> None:
+    existing = _path_value(doc, path)
+    current = existing if isinstance(existing, list) else []
+    merged = [item for item in current if item not in withdrawn]
+    merged.extend(item for item in admin_items if item not in merged)
+    if merged:
+        _set_path_value(doc, path, merged)
+    elif existing is not _MISSING:
+        _delete_path_value(doc, path)
+
+
 # Read once into memory and passed to `sh -c`: root never executes a file from the (user-writable)
 # install directory, so the script can't be swapped between validation and use.
 _SUDO_REPLACE_SCRIPT = (
@@ -924,6 +1297,48 @@ def _session_worker() -> _SudoReplaceWorker:
     return worker
 
 
+def _privileged_replace(path: Path, desired_text: str) -> None:
+    if current_os() is not OS.WINDOWS:
+        _sudo_replace(path, desired_text)
+        return
+    _windows_replace(path, desired_text)
+
+
+def _privileged_remove(path: Path) -> None:
+    if current_os() is not OS.WINDOWS:
+        _sudo_remove(path)
+        return
+    _validate_windows_target(path)
+    path.unlink(missing_ok=True)
+
+
+def _validate_windows_target(path: Path) -> None:
+    if path != windows_claude_managed_settings_path():
+        raise RuntimeError(f"Refusing unexpected managed-settings target: {path}")
+    if path.is_symlink():
+        raise RuntimeError(f"Refusing to replace symlinked managed settings: {path}")
+
+
+def _windows_replace(path: Path, desired_text: str) -> None:
+    """Atomically replace ``path`` from this elevated process.
+
+    The temp file is created beside the target so the rename stays on one volume and the new file
+    inherits the folder's ACL, which under Program Files lets standard users read but not write."""
+    _validate_windows_target(path)
+    if not system_cross_os.is_admin():
+        raise PermissionError("administrator rights are required")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as tmp:
+            tmp.write(desired_text)
+        os.replace(tmp_name, path)
+    except BaseException:
+        with suppress(FileNotFoundError):
+            os.unlink(tmp_name)
+        raise
+
+
 def _sudo_remove(path: Path) -> None:
     original_flags = _clear_immutable(path)
     try:
@@ -937,16 +1352,17 @@ def _sudo_remove(path: Path) -> None:
 
 def _sudo_replace(path: Path, desired_text: str) -> None:
     """Atomically replace ``path`` while preserving metadata and file flags."""
-    if not managed_writes_allowed():
-        raise RuntimeError("Refusing to invoke sudo for managed settings non-interactively.")
     _validate_sudo_replace_target(path)
+    if not managed_writes_allowed(repair_existing=path.is_file()):
+        raise RuntimeError("Refusing to create managed settings non-interactively.")
+    non_interactive = not _sudo_may_prompt()
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=path.suffix or ".tmp", delete=False, encoding="utf-8"
     ) as tmp:
         tmp.write(desired_text)
         tmp_path = tmp.name
     try:
-        if _managed_write_session_depth:
+        if _managed_write_session_depth and not non_interactive:
             _session_worker().replace(path, tmp_path)
         else:
             subprocess_cross_os.run(
@@ -955,6 +1371,7 @@ def _sudo_replace(path: Path, desired_text: str) -> None:
                     tmp_path,
                     str(path),
                 ),
+                stdin=subprocess.DEVNULL if non_interactive else None,
                 capture_output=True,
                 text=True,
                 check=True,
@@ -1033,7 +1450,5 @@ def _sudo_failure_message(path: Path, display: str, exc: subprocess.CalledProces
 
 
 def _sudo_command(*args: str) -> list[str]:
-    """Build a sudo command only for an explicitly interactive managed-file operation."""
-    if not managed_writes_allowed():
-        raise RuntimeError("Refusing to invoke sudo for managed settings non-interactively.")
-    return [_SUDO, *args]
+    """Never prompt for privileged commands when no terminal is available."""
+    return [_SUDO, *([] if _sudo_may_prompt() else ["-n"]), *args]

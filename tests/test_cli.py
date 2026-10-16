@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 import tomllib
 from importlib import metadata
@@ -22,9 +23,11 @@ from typer.testing import CliRunner
 
 import ucode.cli as cli_mod
 import ucode.databricks as db_mod
+import ucode.managed_files as managed_files
 from ucode.cli import app
 from ucode.databricks import GatewayProbe
-from ucode.managed_config import normalize_managed_config
+from ucode.managed_config import ManagedConfigResult, normalize_managed_config
+from ucode.state import save_state as real_save_state
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -64,6 +67,19 @@ def no_state_writes():
         yield
 
 
+@pytest.fixture(autouse=True)
+def no_gateway_catalog_fetch(monkeypatch):
+    """Keep plain Claude launches off real auth and the network; an empty catalog falls back."""
+    monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *_args, **_kwargs: "token")
+    monkeypatch.setattr(
+        cli_mod,
+        "list_anthropic_model_catalog",
+        lambda *_args, **_kwargs: db_mod.AnthropicModelCatalog(
+            model_ids=[], model_id_to_display_name={}
+        ),
+    )
+
+
 MINIMAL_STATE = {
     "workspace": "https://example.databricks.com",
     "base_urls": {
@@ -96,7 +112,9 @@ class TestHelp:
 
     def test_help_groups_commands_by_workflow(self):
         result = runner.invoke(app, ["--help"])
-        output = _strip_ansi(result.output)
+        # Rich substitutes rounded box corners for square ones on legacy Windows
+        # consoles; normalize so the panel lookups below are platform-agnostic.
+        output = _strip_ansi(result.output).replace("┌", "╭")
 
         assert result.exit_code == 0
         panels = {
@@ -117,7 +135,7 @@ class TestHelp:
             "Manage": output[panels["Manage"] : panels["Usage"]],
             "Usage": output[panels["Usage"] : global_options],
         }
-        for command in ("claude", "codex", "copilot", "cursor", "gemini", "opencode", "pi"):
+        for command in ("claude", "codex", "copilot", "cursor", "gemini", "opencode", "kilo", "pi"):
             assert command in sections["Launch"]
         assert "configure" in sections["Setup"]
         for command in ("mcp", "skills"):
@@ -192,8 +210,8 @@ class TestProjectScripts:
             "project"
         ]["scripts"]
 
-        assert scripts["ug"] == "ucode.cli:main"
-        assert scripts["ucode"] == "ucode.cli:main"
+        assert scripts["ug"] == "ucode.entrypoint:main"
+        assert scripts["ucode"] == "ucode.entrypoint:main"
 
 
 class TestUpgrade:
@@ -264,13 +282,13 @@ class TestUpgrade:
             call(["uv", "tool", "uninstall", "ucode"], check=True),
             call(["uv", "tool", "install", "--force", git_url], check=True),
             call(
-                ["/tools/ug", "--version"],
+                ["/tools/ug", "--help"],
                 check=False,
                 capture_output=True,
                 text=True,
             ),
             call(
-                ["/tools/ucode", "--version"],
+                ["/tools/ucode", "--help"],
                 check=False,
                 capture_output=True,
                 text=True,
@@ -492,6 +510,21 @@ def _launch_policy_patches(
             "launch": launch,
             "state": launch_state,
         }
+
+
+def test_bare_launch_preserves_preset_until_agent_selection(monkeypatch):
+    monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "subagent_orch_v0")
+    monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "0")
+
+    def select_and_launch_agent(*args, **kwargs):
+        assert os.environ["SMART_ROUTER_CONFIG_VERSION"] == "subagent_orch_v0"
+        assert os.environ["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] == "0"
+
+    with patch("ucode.cli._launch_managed_default", side_effect=select_and_launch_agent) as launch:
+        result = runner.invoke(app, [])
+
+    assert result.exit_code == 0, result.output
+    launch.assert_called_once()
 
 
 class TestSubcommandRouting:
@@ -754,9 +787,8 @@ class TestSubcommandRouting:
         assert "Model: system.ai.gpt-5-6-luna" not in output
         assert mock_launch.call_args.args[2] == forwarded_args
 
-    @pytest.mark.parametrize("persisted_provider", [None, "main.default.anthropic"])
-    def test_unmanaged_claude_launch_keeps_native_defaults(self, persisted_provider):
-        with _launch_policy_patches(None, persisted_provider=persisted_provider) as calls:
+    def test_unmanaged_claude_launch_with_saved_provider_keeps_native_defaults(self):
+        with _launch_policy_patches(None, persisted_provider="main.default.anthropic") as calls:
             result = runner.invoke(app, ["claude"])
 
         assert result.exit_code == 0, result.output
@@ -765,10 +797,35 @@ class TestSubcommandRouting:
         assert calls["configure"].call_args.kwargs["picker_catalog"] is None
         assert "_claude_launch_picker_models" not in calls["launch"].call_args.args[1]
         assert "_claude_launch_default_model" not in calls["launch"].call_args.args[1]
-        if persisted_provider:
-            calls["resolve_model"].assert_not_called()
-        else:
-            calls["resolve_model"].assert_called_once()
+        calls["resolve_model"].assert_not_called()
+        calls["launch"].assert_called_once()
+
+    def test_unmanaged_claude_launch_lists_gateway_catalog(self):
+        with _launch_policy_patches(None) as calls:
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
+        calls["list_catalog"].assert_called_once_with("https://example.databricks.com", "token")
+        picker = calls["configure"].call_args.kwargs["picker_catalog"]
+        # The saved family default leads; discovered models follow.
+        assert picker.model_ids == ["databricks-claude-sonnet-4", "main.default.claude-sonnet-5"]
+        launch_state = calls["launch"].call_args.args[1]
+        assert "_claude_launch_picker_models" not in launch_state
+        assert "_claude_launch_default_model" not in launch_state
+        calls["resolve_model"].assert_called_once()
+
+    def test_unmanaged_claude_launch_falls_back_to_native_discovery(self):
+        with _launch_policy_patches(None) as calls:
+            calls["list_catalog"].return_value = db_mod.AnthropicModelCatalog(
+                model_ids=[], model_id_to_display_name={}, error_msg="HTTP 503"
+            )
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
+        assert calls["configure"].call_args.kwargs["picker_catalog"] is None
+        assert "_claude_launch_picker_models" not in calls["launch"].call_args.args[1]
         calls["launch"].assert_called_once()
 
     def test_claude_model_location_replaces_builtin_models(self):
@@ -813,6 +870,8 @@ class TestSubcommandRouting:
         assert calls["launch"].call_args.kwargs["options"].user_pinned_model == (
             "main.default.claude-opus-5"
         )
+        assert "_claude_launch_default_model" not in calls["launch"].call_args.args[1]
+        assert "_claude_launch_custom_model" not in calls["launch"].call_args.args[1]
         assert calls["launch"].call_args.args[2] == []
 
     @pytest.mark.parametrize(
@@ -884,6 +943,51 @@ class TestSubcommandRouting:
         assert calls["configure"].call_args.kwargs["relayed"] is True
         assert "_claude_launch_default_model" not in calls["launch"].call_args.args[1]
 
+    def test_claude_launch_uses_saved_model_location(self):
+        with _launch_policy_patches(None) as calls:
+            calls["state"]["model_locations"] = {"claude": "main.saved"}
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        calls["list_catalog"].assert_called_once_with(
+            calls["state"]["workspace"], "token", parent_schema="main.saved"
+        )
+        assert calls["configure"].call_args.kwargs["parent_schema"] == "main.saved"
+
+    def test_explicit_model_location_overrides_saved_location(self):
+        with _launch_policy_patches(None) as calls:
+            calls["state"]["model_locations"] = {"claude": "main.saved"}
+            result = runner.invoke(app, ["claude", "--model-location", "main.flag"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["configure"].call_args.kwargs["parent_schema"] == "main.flag"
+
+    def test_explicit_provider_overrides_saved_location(self):
+        with _launch_policy_patches(None) as calls:
+            calls["state"]["model_locations"] = {"claude": "main.saved"}
+            result = runner.invoke(app, ["claude", "--provider", "main.default.anthropic"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["configure"].call_args.kwargs["parent_schema"] is None
+        assert calls["configure"].call_args.kwargs["provider"] == "main.default.anthropic"
+
+    def test_explicit_model_location_overrides_saved_provider(self):
+        with _launch_policy_patches(None, persisted_provider="main.default.anthropic") as calls:
+            result = runner.invoke(app, ["claude", "--model-location", "main.flag"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["configure"].call_args.kwargs["parent_schema"] == "main.flag"
+        assert calls["configure"].call_args.kwargs["provider"] is None
+
+    def test_saved_model_location_is_ignored_under_managed_config(self):
+        managed = {"enabled_agents": {"claude": {"model_config": {}}}}
+        with _launch_policy_patches(managed) as calls:
+            calls["state"]["model_locations"] = {"claude": "main.saved"}
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["configure"].call_args.kwargs["parent_schema"] is None
+
     def test_codex_model_location_is_forwarded(self):
         with patch("ucode.cli._launch_tool") as mock_launch:
             result = runner.invoke(app, ["codex", "--model-location", "main.default"])
@@ -941,7 +1045,7 @@ class TestSubcommandRouting:
             patch(
                 "ucode.cli._launch_tool",
                 side_effect=lambda *_args, **_kwargs: routing_during_launch.append(
-                    cli_mod.smart_routing_v2.smart_routing_enabled()
+                    cli_mod.smart_routing_v2.smart_routing_enabled(None, default=False, agent=tool)
                 ),
             ) as mock_launch,
         ):
@@ -995,7 +1099,10 @@ class TestSubcommandRouting:
 
     def test_claude_v2_first_prompt_hook_is_disabled_without_flag(self, monkeypatch):
         monkeypatch.delenv("ENABLE_SMART_ROUTING_V2", raising=False)
-        with patch("ucode.smart_routing.claude_pty.request_first_prompt_route") as mock_request:
+        # A stub module keeps this check importable where the POSIX-only PTY module is not.
+        claude_pty_stub = MagicMock()
+        mock_request = claude_pty_stub.request_first_prompt_route
+        with patch.dict(sys.modules, {"ucode.smart_routing.claude_pty": claude_pty_stub}):
             result = runner.invoke(
                 app,
                 ["claude-router-hook", "route-first-prompt", "--socket", "/tmp/v2.sock"],
@@ -1128,6 +1235,23 @@ class TestManagedConfigLaunchSourceGuard:
 
         assert result.exit_code == 1
         assert "`--provider` or `--model-location` is not allowed" in _strip_ansi(result.output)
+        calls["launch"].assert_not_called()
+
+    def test_fresh_state_still_rejects_provider_under_managed_config(self):
+        with (
+            _launch_policy_patches({}) as calls,
+            patch("ucode.cli.load_state", return_value={}),
+            patch(
+                "ucode.cli._prompt_for_configuration",
+                return_value=(MINIMAL_STATE["workspace"], None),
+            ),
+            patch("ucode.cli.configure_single_tool", return_value=MINIMAL_STATE) as mock_configure,
+        ):
+            result = runner.invoke(app, ["claude", "--provider", "main.default.provider"])
+
+        assert result.exit_code == 1
+        assert "`--provider` or `--model-location` is not allowed" in _strip_ansi(result.output)
+        mock_configure.assert_called_once_with("claude", MINIMAL_STATE, provider=None)
         calls["launch"].assert_not_called()
 
     def test_persisted_provider_is_not_mistaken_for_an_explicit_option(self):
@@ -1289,23 +1413,18 @@ class TestManagedClaudeModelDiscovery:
         assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
 
     @pytest.mark.parametrize(
-        ("source", "model_args", "default_model"),
+        "model_args",
         [
-            ({}, [], None),
-            ({}, ["--model", "system.ai.claude-sonnet-5"], None),
-            ({"unity_catalog_location": "system.ai"}, [], "system.ai.claude-sonnet-5"),
+            [],
+            ["--model", "system.ai.claude-sonnet-5"],
         ],
-        ids=["family-default", "explicit-model", "managed-location"],
+        ids=["family-default", "explicit-model"],
     )
-    def test_managed_partial_defaults_replace_unmapped_families(
-        self, source, model_args, default_model
-    ):
+    def test_managed_partial_defaults_without_source_replace_unmapped_families(self, model_args):
         managed = {
             "enabled_agents": {
                 "claude": {
                     "model_config": {
-                        **source,
-                        "default_model": default_model,
                         "default_models_by_model_family": {
                             "default_sonnet_model": "system.ai.claude-sonnet-5"
                         },
@@ -1321,12 +1440,44 @@ class TestManagedClaudeModelDiscovery:
         assert result.exit_code == 0, result.output
         calls["list_catalog"].assert_not_called()
         picker = calls["configure"].call_args.kwargs["picker_catalog"]
-        assert picker.model_ids == [
-            explicit_model or default_model or "system.ai.claude-sonnet-5[1m]"
-        ]
-        assert calls["configure"].call_args.kwargs["route_root_model"] == default_model
+        assert picker.model_ids == [explicit_model or "system.ai.claude-sonnet-5[1m]"]
+        assert calls["configure"].call_args.kwargs["route_root_model"] is None
         assert calls["launch"].call_args.args[1]["_claude_launch_picker_models"] == picker.model_ids
         assert calls["launch"].call_args.kwargs["options"].user_pinned_model == explicit_model
+
+    @pytest.mark.parametrize(
+        ("with_overall_default", "with_family_default"),
+        [(True, False), (False, True), (True, True)],
+        ids=["overall-default", "family-default", "overall-and-family-default"],
+    )
+    def test_managed_uc_defaults_preserve_discovered_catalog(
+        self, with_overall_default, with_family_default
+    ):
+        sonnet = "ug_e2e.models.claude_sonnet"
+        haiku = "ug_e2e.models.claude_haiku"
+        discovered = db_mod.AnthropicModelCatalog(
+            model_ids=[haiku, sonnet], model_id_to_display_name={}
+        )
+        model_config = {"unity_catalog_location": "ug_e2e.models"}
+        if with_overall_default:
+            model_config["default_model"] = sonnet
+        if with_family_default:
+            model_config["default_models_by_model_family"] = {"default_sonnet_model": sonnet}
+        managed = {"enabled_agents": {"claude": {"model_config": model_config}}}
+
+        with _launch_policy_patches(managed, picker_catalog=discovered) as calls:
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        calls["list_catalog"].assert_called_once_with(
+            MINIMAL_STATE["workspace"], "token", parent_schema="ug_e2e.models"
+        )
+        configured = calls["configure"].call_args.kwargs
+        assert configured["route_root_model"] == (sonnet if with_overall_default else None)
+        assert configured["coding_agent_config_defaults"] == (
+            {"sonnet": sonnet} if with_family_default else {}
+        )
+        assert set(configured["picker_catalog"].model_ids) == {sonnet, haiku}
 
     def test_relayed_managed_defaults_keep_native_picker(self, monkeypatch):
         calls = self._invoke(monkeypatch, self.MPS_CONFIG, relayed=True)
@@ -1477,12 +1628,78 @@ class TestClaudeModelFlag:
         ):
             result = runner.invoke(app, ["claude", "--model", "cat.schema.claude-opus-5"])
         assert result.exit_code == 0, result.output
-        # The model is passed through invocation-scoped LaunchOptions, not persisted in settings.
         assert mock_configure.call_args.kwargs["custom_model"] is None
         assert mock_configure.call_args.kwargs["route_root_model"] is None
+        assert "_claude_launch_custom_model" not in mock_launch.call_args.args[1]
         assert (
             mock_launch.call_args.kwargs["options"].user_pinned_model == "cat.schema.claude-opus-5"
         )
+
+    def test_explicit_model_clears_managed_default_route_root(self):
+        managed = {
+            "enabled_agents": {
+                "claude": {"model_config": {"default_model": "system.ai.claude-sonnet-5"}}
+            }
+        }
+        with _launch_policy_patches(managed) as calls:
+            result = runner.invoke(app, ["claude", "--model", "system.ai.claude-opus-4-8"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["configure"].call_args.kwargs["route_root_model"] is None
+        assert (
+            calls["launch"].call_args.kwargs["options"].user_pinned_model
+            == "system.ai.claude-opus-4-8"
+        )
+
+    @pytest.mark.parametrize(
+        ("model", "expected_model"),
+        [
+            ("system.ai.claude-sonnet-4-5", "system.ai.claude-sonnet-4-5"),
+            ("system.ai.gpt-5-6-luna", "system.ai.gpt-5-6-luna[1m]"),
+        ],
+    )
+    @pytest.mark.parametrize("equals_form", [False, True], ids=["separate", "equals"])
+    def test_unmanaged_claude_model_reaches_native_launcher(
+        self, monkeypatch, tmp_path, model, expected_model, equals_form
+    ):
+        """No workspace policy/catalog: explicit IDs reach native --model, not opus aliases."""
+        from ucode.agents import claude
+
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
+        monkeypatch.setenv("ANTHROPIC_MODEL", "stale-model")
+        settings_path = tmp_path / "ucode-settings.json"
+        original_settings = {
+            "env": {
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": "system.ai.claude-opus-4-8[1m]",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL": "system.ai.claude-sonnet-5[1m]",
+            }
+        }
+        settings_path.write_text(json.dumps(original_settings))
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", settings_path)
+        monkeypatch.setattr(claude, "_resolve_launch_binary", lambda binary: binary)
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_: "token")
+        native_calls: list[list[str]] = []
+        monkeypatch.setattr(claude, "exec_or_spawn", native_calls.append)
+
+        with _launch_policy_patches(None) as calls:
+            calls["launch"].side_effect = lambda tool, state, args, *, options: claude.launch(
+                state, args, options=options
+            )
+            model_args = [f"--model={model}"] if equals_form else ["--model", model]
+            result = runner.invoke(app, ["claude", *model_args])
+
+        assert result.exit_code == 0, result.output
+        assert calls["launch"].call_args.kwargs["options"].launch_smart_routing is False
+        assert "_claude_launch_picker_models" not in calls["launch"].call_args.args[1]
+        assert "claude_static_models" not in calls["launch"].call_args.args[1]
+        assert calls["configure"].call_args.kwargs["custom_model"] is None
+        assert len(native_calls) == 1
+        assert native_calls[0][3:] == ["--model", expected_model]
+        settings = json.loads(native_calls[0][2])
+        assert settings["env"]["ANTHROPIC_MODEL"] == expected_model
+        for key, value in original_settings["env"].items():
+            assert settings["env"][key] == value
+        assert json.loads(settings_path.read_text()) == original_settings
 
     def test_v2_model_sets_transient_launch_override(self, monkeypatch):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
@@ -1779,17 +1996,26 @@ class TestAuthTokenCommand:
         else:
             os.environ["DATABRICKS_BEARER"] = original
 
-    def test_prints_only_the_token_to_stdout(self):
+    @pytest.mark.parametrize("selector", [None, "unsupported_v99"])
+    @pytest.mark.parametrize("browser_login", [False, True])
+    def test_prints_only_the_token_to_stdout(self, monkeypatch, selector, browser_login):
+        if selector is not None:
+            monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", selector)
+        previous = dict(os.environ)
         with (
             patch("ucode.cli.load_state", return_value={"workspace": "https://ws"}),
             patch("ucode.cli.get_databricks_token", return_value="tok-123") as fetch,
         ):
-            result = runner.invoke(app, ["auth-token"])
+            args = ["auth-token", "--browser-login"] if browser_login else ["auth-token"]
+            result = runner.invoke(app, args)
         assert result.exit_code == 0
         # Nothing but the bare token (plus trailing newline) may reach stdout,
         # or the consuming agent will treat the noise as part of the token.
         assert result.stdout == "tok-123\n"
-        fetch.assert_called_once_with("https://ws", None, force_refresh=False)
+        fetch.assert_called_once_with(
+            "https://ws", None, force_refresh=False, browser_login=browser_login
+        )
+        assert dict(os.environ) == previous
 
     def test_host_and_profile_override_state(self):
         with (
@@ -1800,7 +2026,9 @@ class TestAuthTokenCommand:
                 app, ["auth-token", "--host", "https://override", "--profile", "prod"]
             )
         assert result.exit_code == 0
-        fetch.assert_called_once_with("https://override", "prod", force_refresh=False)
+        fetch.assert_called_once_with(
+            "https://override", "prod", force_refresh=False, browser_login=False
+        )
 
     def test_force_refresh_is_forwarded(self):
         with (
@@ -1809,7 +2037,7 @@ class TestAuthTokenCommand:
         ):
             result = runner.invoke(app, ["auth-token", "--force-refresh"])
         assert result.exit_code == 0
-        fetch.assert_called_once_with("https://ws", None, force_refresh=True)
+        fetch.assert_called_once_with("https://ws", None, force_refresh=True, browser_login=False)
 
     def test_errors_without_workspace(self):
         with patch("ucode.cli.load_state", return_value={}):
@@ -1934,8 +2162,9 @@ class TestStatus:
         assert "Manage:" not in result.output
         assert "Config file" not in result.output
         assert "System settings" not in result.output
+        # Rounded corners render as square on legacy Windows consoles; accept either.
         panel_tops = [
-            line for line in _strip_ansi(result.output).splitlines() if line.startswith("╭")
+            line for line in _strip_ansi(result.output).splitlines() if line.startswith(("╭", "┌"))
         ]
         assert len({len(line) for line in panel_tops}) == 1
 
@@ -2426,7 +2655,9 @@ class TestConfigureAgentsForMcp:
         with (
             patch("ucode.cli.load_state", return_value={"workspace": "https://ws"}),
             patch("ucode.cli.available_mcp_clients", return_value=["claude", "codex"]),
-            patch("ucode.cli.configured_mcp_clients", return_value=["claude"]),
+            patch(
+                "ucode.cli.configured_mcp_clients", side_effect=[["claude"], ["claude", "codex"]]
+            ),
             patch("ucode.cli.configure_workspace_command") as mock_cfg,
         ):
             scope = cli_mod._configure_agents_for_mcp(["claude", "codex"])
@@ -2445,6 +2676,293 @@ class TestConfigureAgentsForMcp:
 
         assert scope == {"claude", "codex"}
         mock_cfg.assert_not_called()
+
+    def test_workspace_entries_select_workspace_and_forward_to_bootstrap(self):
+        entries = [("https://ws", None)]
+        with (
+            patch("ucode.cli.set_current_workspace") as mock_switch,
+            patch("ucode.cli.load_full_state", return_value={"workspaces": {}}),
+            patch("ucode.cli.load_state", return_value={}),
+            patch("ucode.cli.available_mcp_clients", return_value=["claude"]),
+            patch("ucode.cli.configured_mcp_clients", return_value=["claude"]),
+            patch("ucode.cli.configure_workspace_command") as mock_cfg,
+        ):
+            cli_mod._configure_agents_for_mcp(["claude"], entries)
+
+        mock_switch.assert_called_once_with("https://ws")
+        mock_cfg.assert_called_once_with(selected_tools=["claude"], workspaces=entries)
+
+    def test_known_workspace_with_ready_agents_switches_without_bootstrap(self):
+        entries = [("https://ws", None)]
+        with (
+            patch("ucode.cli.set_current_workspace") as mock_switch,
+            patch("ucode.cli.load_full_state", return_value={"workspaces": {"https://ws": {}}}),
+            patch("ucode.cli.load_state", return_value={"workspace": "https://ws"}),
+            patch("ucode.cli.available_mcp_clients", return_value=["claude", "cursor"]),
+            patch("ucode.cli.configured_mcp_clients", return_value=["claude", "cursor"]),
+            patch("ucode.cli.configure_workspace_command") as mock_cfg,
+            patch("ucode.cli._configure_shared_workspace_states") as mock_states,
+        ):
+            scope = cli_mod._configure_agents_for_mcp(["claude", "cursor"], entries)
+
+        assert scope == {"claude", "cursor"}
+        mock_switch.assert_called_once_with("https://ws")
+        mock_cfg.assert_not_called()
+        mock_states.assert_not_called()
+
+    def test_cursor_on_unseen_workspace_sets_it_up_without_prompting(self):
+        entries = [("https://ws", None)]
+        with (
+            patch("ucode.cli.set_current_workspace"),
+            patch("ucode.cli.load_full_state", return_value={"workspaces": {}}),
+            patch("ucode.cli.load_state", return_value={}),
+            patch("ucode.cli.available_mcp_clients", return_value=["cursor"]),
+            patch("ucode.cli.configured_mcp_clients", return_value=["cursor"]),
+            patch("ucode.cli._prompt_for_configuration") as mock_prompt,
+            patch("ucode.cli._configure_shared_workspace_states") as mock_states,
+        ):
+            scope = cli_mod._configure_agents_for_mcp(["cursor"], entries)
+
+        assert scope == {"cursor"}
+        mock_prompt.assert_not_called()
+        mock_states.assert_called_once_with(entries, tools=[], force_login=True)
+
+    def test_missing_mcp_only_cli_errors_instead_of_prompting(self):
+        with (
+            patch("ucode.cli.load_state", return_value={}),
+            patch("ucode.cli.available_mcp_clients", return_value=[]),
+            patch("ucode.cli._prompt_for_configuration") as mock_prompt,
+            pytest.raises(RuntimeError, match="cursor-agent"),
+        ):
+            cli_mod._configure_agents_for_mcp(["cursor"])
+
+        mock_prompt.assert_not_called()
+
+    def test_agent_still_unready_after_setup_errors(self):
+        with (
+            patch("ucode.cli.load_state", return_value={}),
+            patch("ucode.cli.available_mcp_clients", return_value=[]),
+            patch("ucode.cli.configured_mcp_clients", return_value=[]),
+            patch("ucode.cli.configure_workspace_command"),
+            pytest.raises(RuntimeError, match="Not installed or not set up: Codex"),
+        ):
+            cli_mod._configure_agents_for_mcp(["codex"])
+
+
+class TestMcpAddWorkspace:
+    def test_workspace_flag_forwarded_to_agent_setup(self):
+        with (
+            patch("ucode.cli._configure_agents_for_mcp", return_value={"cursor"}) as configure,
+            patch("ucode.cli.add_mcp_command") as mock_add,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "mcp",
+                    "add",
+                    "--agents",
+                    "cursor",
+                    "--names",
+                    "a.b.c",
+                    "--workspace",
+                    "https://ws",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        configure.assert_called_once_with(["cursor"], [("https://ws", None)])
+        mock_add.assert_called_once_with(location=None, services={"a.b.c"}, agents={"cursor"})
+
+    def test_ug_workspace_env_used_when_no_flag(self, monkeypatch):
+        monkeypatch.setenv("UG_WORKSPACE", "https://ws")
+        with (
+            patch("ucode.cli._configure_agents_for_mcp", return_value={"cursor"}) as configure,
+            patch("ucode.cli.add_mcp_command"),
+        ):
+            result = runner.invoke(app, ["mcp", "add", "--agents", "cursor", "--names", "a.b.c"])
+
+        assert result.exit_code == 0, result.output
+        configure.assert_called_once_with(["cursor"], [("https://ws", None)])
+
+    def test_workspace_without_agents_exit_1(self):
+        with patch("ucode.cli.add_mcp_command") as mock_add:
+            result = runner.invoke(
+                app, ["mcp", "add", "--names", "a.b.c", "--workspace", "https://ws"]
+            )
+
+        assert result.exit_code == 1
+        assert "only apply with --agents" in _strip_ansi(result.output)
+        mock_add.assert_not_called()
+
+    def test_workspace_and_profile_together_exit_1(self):
+        with patch("ucode.cli.add_mcp_command") as mock_add:
+            result = runner.invoke(
+                app,
+                ["mcp", "add", "--agents", "cursor", "--workspace", "https://ws", "--profile", "P"],
+            )
+
+        assert result.exit_code == 1
+        assert "not both" in _strip_ansi(result.output)
+        mock_add.assert_not_called()
+
+
+class TestMcpAddWorkspaceState:
+    """`ug mcp add --agents` against real (temporary) state, so persisted side effects show."""
+
+    WS_A = "https://ws-a.cloud.databricks.com"
+    WS_B = "https://ws-b.cloud.databricks.com"
+
+    @pytest.fixture(autouse=True)
+    def _real_state_writes(self):
+        # Undo `no_state_writes`; conftest already points the state file at tmp_path.
+        with (
+            patch("ucode.state.save_state", real_save_state),
+            patch("ucode.cli.save_state", real_save_state),
+        ):
+            yield
+
+    @staticmethod
+    def _save_workspace(workspace: str, **extra) -> None:
+        real_save_state({"workspace": workspace, "available_tools": ["codex"], **extra})
+
+    def test_profile_used_for_auth_when_workspace_already_ready(self):
+        from ucode.mcp import setup_mcp_clients
+        from ucode.state import load_state
+
+        self._save_workspace(self.WS_A, profile="OLD")
+        profiles = [{"name": "OLD", "host": self.WS_A}, {"name": "NEW", "host": self.WS_A}]
+
+        def register(**kwargs):
+            setup_mcp_clients(load_state(), "MCP servers", agents=kwargs["agents"])
+
+        with (
+            patch("ucode.cli.list_profile_entries", return_value=profiles),
+            patch("ucode.cli.available_mcp_clients", return_value=["codex"]),
+            patch("ucode.mcp.available_mcp_clients", return_value=["codex"]),
+            patch("ucode.mcp.purge_cross_workspace_mcp_residue"),
+            patch("ucode.mcp.ensure_databricks_auth") as mock_auth,
+            patch("ucode.cli.configure_workspace_command") as mock_cfg,
+            patch("ucode.cli.add_mcp_command", side_effect=register),
+        ):
+            result = runner.invoke(
+                app, ["mcp", "add", "--agents", "codex", "--names", "a.b.c", "--profile", "NEW"]
+            )
+
+        assert result.exit_code == 0, result.output
+        mock_cfg.assert_not_called()
+        mock_auth.assert_called_once_with(self.WS_A, "NEW")
+        assert load_state()["profile"] == "NEW"
+
+    def test_new_profile_drops_saved_pat_mode(self):
+        from ucode.state import load_state
+
+        self._save_workspace(self.WS_A, profile="OLD", use_pat=True)
+        profiles = [{"name": "OLD", "host": self.WS_A}, {"name": "NEW", "host": self.WS_A}]
+        with patch("ucode.cli.list_profile_entries", return_value=profiles):
+            cli_mod._configure_agents_for_mcp([], [(self.WS_A, "NEW")])
+
+        state = load_state()
+        assert state["profile"] == "NEW"
+        assert "use_pat" not in state
+
+    def test_failed_setup_with_no_previous_workspace_clears_current(self):
+        from ucode.state import load_full_state
+
+        with (
+            patch("ucode.cli.available_mcp_clients", return_value=["codex"]),
+            patch("ucode.cli.configure_workspace_command", side_effect=RuntimeError("boom")),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            cli_mod._configure_agents_for_mcp(["codex"], [(self.WS_B, None)])
+
+        assert load_full_state()["current_workspace"] is None
+
+    @pytest.mark.parametrize(
+        ("error", "exit_code"), [(RuntimeError("boom"), 1), (KeyboardInterrupt(), 130)]
+    )
+    def test_failed_setup_restores_previous_workspace(self, error, exit_code):
+        from ucode.state import load_full_state
+
+        self._save_workspace(self.WS_A)
+        with (
+            patch("ucode.cli.available_mcp_clients", return_value=["codex"]),
+            patch("ucode.cli.configure_workspace_command", side_effect=error),
+            patch("ucode.cli.add_mcp_command") as mock_add,
+        ):
+            result = runner.invoke(
+                app,
+                ["mcp", "add", "--agents", "codex", "--names", "a.b.c", "--workspace", self.WS_B],
+            )
+
+        assert result.exit_code == exit_code, result.output
+        mock_add.assert_not_called()
+        full = load_full_state()
+        assert full["current_workspace"] == self.WS_A
+        assert self.WS_B not in full["workspaces"]
+
+
+class TestMcpAddRootWorkspace:
+    """`ug --workspace <url> mcp add ...` is forwarded rather than silently ignored."""
+
+    def test_root_workspace_forwarded_to_agent_setup(self):
+        with (
+            patch("ucode.cli._configure_agents_for_mcp", return_value={"codex"}) as configure,
+            patch("ucode.cli.add_mcp_command"),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "--workspace",
+                    "https://ws",
+                    "mcp",
+                    "add",
+                    "--agents",
+                    "codex",
+                    "--names",
+                    "a.b.c",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        configure.assert_called_once_with(["codex"], [("https://ws", None)])
+
+    def test_same_workspace_in_both_positions_is_accepted(self):
+        with (
+            patch("ucode.cli._configure_agents_for_mcp", return_value={"codex"}) as configure,
+            patch("ucode.cli.add_mcp_command"),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "--workspace",
+                    "https://ws",
+                    "mcp",
+                    "add",
+                    "--agents",
+                    "codex",
+                    "--workspace",
+                    "https://ws/",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        configure.assert_called_once_with(["codex"], [("https://ws", None)])
+
+    @pytest.mark.parametrize(
+        ("extra", "message"),
+        [
+            (["--agents", "codex", "--workspace", "https://other"], "two different --workspace"),
+            (["--agents", "codex", "--profile", "P"], "not both"),
+            (["--names", "a.b.c"], "only apply with --agents"),
+        ],
+    )
+    def test_root_workspace_conflicts_exit_1(self, extra, message):
+        with patch("ucode.cli.add_mcp_command") as mock_add:
+            result = runner.invoke(app, ["--workspace", "https://ws", "mcp", "add", *extra])
+
+        assert result.exit_code == 1
+        assert message in _strip_ansi(result.output)
+        mock_add.assert_not_called()
 
 
 class TestSkillsRemoveCommand:
@@ -2747,6 +3265,17 @@ class TestStatusSkillsSection:
 
 
 class TestRevert:
+    def test_invalid_routing_config_does_not_block_revert(self, monkeypatch):
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "unsupported_v99")
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
+        previous = dict(os.environ)
+        with patch("ucode.cli.revert", return_value=0) as revert:
+            result = runner.invoke(app, ["revert"])
+
+        assert result.exit_code == 0, result.output
+        revert.assert_called_once_with()
+        assert dict(os.environ) == previous
+
     def test_reverts_mcp_configs_before_clearing_state(self):
         state = {
             **MINIMAL_STATE,
@@ -2772,6 +3301,49 @@ class TestRevert:
         assert reverted_mcp == [state]
         assert cleared == [True]
         assert "Claude Code MCP config: restored" in result.output
+
+
+@pytest.mark.parametrize("args", [[], ["claude"], ["codex"]])
+def test_unknown_routing_config_does_not_block_launch(monkeypatch, args):
+    monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "unsupported_v99")
+    previous = dict(os.environ)
+    with (
+        patch("ucode.cli._launch_tool") as launch,
+        patch("ucode.cli._launch_managed_default") as launch_default,
+        patch("ucode.cli.configure_shared_state") as configure,
+    ):
+        result = runner.invoke(app, args)
+
+    assert result.exit_code == 0, result.output
+    if args:
+        launch.assert_called_once()
+        launch_default.assert_not_called()
+    else:
+        launch.assert_not_called()
+        launch_default.assert_called_once()
+    configure.assert_not_called()
+    assert dict(os.environ) == previous
+
+
+class TestOtelProxyCommand:
+    def test_reuses_cli_proxy_and_auth_for_the_configured_workspace(self):
+        workspace = "https://configured.example"
+        real_save_state({"workspace": workspace, "profile": "saved-profile"})
+        real_save_state({"workspace": "https://other.example", "profile": "other-profile"})
+        server, cache, client = MagicMock(), MagicMock(), MagicMock()
+        with (
+            patch(
+                "ucode.gateway_proxy.start_otel_proxy", return_value=(server, cache, client)
+            ) as start,
+            patch("ucode.agents.codex.get_databricks_token", return_value="fresh-token") as token,
+        ):
+            result = runner.invoke(app, ["otel-proxy", "--host", workspace, "--port", "43199"])
+            assert start.call_args.args[1](True) == "fresh-token"
+        assert result.exit_code == 0, result.output
+        assert start.call_args.args[0] == workspace
+        assert start.call_args.kwargs == {"port": 43199}
+        token.assert_called_once_with(workspace, "saved-profile", force_refresh=True)
+        server.serve_forever.assert_called_once()
 
 
 class TestDoctorCommand:
@@ -2893,7 +3465,7 @@ class TestAutoConfigureOnFirstRun:
             result = runner.invoke(app, [tool])
 
         assert result.exit_code == 0, result.output
-        mock_configure.assert_called_once_with(tool, configured_state)
+        mock_configure.assert_called_once_with(tool, configured_state, provider=None)
         mock_restore.assert_not_called()
         mock_launch.assert_called_once()
         assert mock_launch.call_args.args[:2] == (tool, configured_state)
@@ -2922,7 +3494,7 @@ class TestAutoConfigureOnFirstRun:
             result = runner.invoke(app, ["claude"])
         assert result.exit_code == 0, result.output
         mock_bootstrap.assert_called_once_with("claude", skip_cli_version_check=False)
-        mock_auto.assert_called_once_with("claude")
+        mock_auto.assert_called_once_with("claude", provider=None)
 
     def test_triggers_when_tool_not_in_available_tools(self):
         """Auto-configure runs when workspace exists but the tool wasn't configured."""
@@ -2947,7 +3519,41 @@ class TestAutoConfigureOnFirstRun:
             result = runner.invoke(app, ["claude"])
         assert result.exit_code == 0, result.output
         mock_bootstrap.assert_called_once_with("claude", skip_cli_version_check=False)
-        mock_auto.assert_called_once_with("claude")
+        mock_auto.assert_called_once_with("claude", provider=None)
+
+    def test_first_run_configures_through_launch_provider(self):
+        """A default-gateway first-run setup would write the managed auth keys that a relayed
+        provider's launch then refuses to start over."""
+        with (
+            _launch_policy_patches(None) as calls,
+            patch("ucode.cli.load_state", return_value={}),
+            patch("ucode.cli._auto_configure_tool") as mock_auto,
+        ):
+            calls["resolve_provider"].return_value = (None, None, True)
+            result = runner.invoke(app, ["claude", "--provider", "main.default.relay"])
+
+        assert result.exit_code == 0, result.output
+        mock_auto.assert_called_once_with("claude", provider="main.default.relay")
+        assert calls["configure"].call_args.kwargs["relayed"] is True
+
+    @pytest.mark.parametrize(
+        ("manifest", "expected_provider"),
+        [(None, "main.default.relay"), ({"claude": {}}, None)],
+    )
+    def test_auto_configure_forwards_provider_unless_managed(self, manifest, expected_provider):
+        # A managed config must still reject --provider with its own error later in the launch.
+        with (
+            patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
+            patch("ucode.cli.configure_shared_state", return_value=MINIMAL_STATE),
+            patch(
+                "ucode.cli._fetch_managed_config",
+                return_value=ManagedConfigResult(manifest, False),
+            ),
+            patch("ucode.cli.configure_single_tool", return_value=MINIMAL_STATE) as mock_configure,
+        ):
+            cli_mod._auto_configure_tool("claude", provider="main.default.relay")
+
+        mock_configure.assert_called_once_with("claude", MINIMAL_STATE, provider=expected_provider)
 
     def test_skipped_when_already_configured(self):
         """Auto-configure is skipped when workspace and tool are already set up."""
@@ -3332,7 +3938,9 @@ class TestConfigureAgentFlag:
             result = runner.invoke(app, ["configure", "--agents", "claude,bogus"])
         assert result.exit_code != 0
         assert "Unsupported tool 'bogus'" in result.output
-        assert "codex, claude, gemini, opencode, copilot, pi" in " ".join(result.output.split())
+        assert "codex, claude, gemini, opencode, kilo, copilot, pi" in " ".join(
+            result.output.split()
+        )
         mock_cfg.assert_not_called()
 
     def test_agents_flag_rejects_empty_list(self):
@@ -3539,6 +4147,100 @@ class TestConfigureAgentsSelection:
         assert install_calls == ["claude", "codex"]
         assert configured == [["claude", "codex"]]
 
+    def _picker(self, monkeypatch, tool, *, services, answers, text=("main.models",)):
+        state = {**MINIMAL_STATE, "provider_services": {tool: "old.mps.name"}}
+        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *a: "token")
+        monkeypatch.setattr(cli_mod, "list_tool_provider_services", lambda *a: services)
+        saved: list[dict] = []
+        monkeypatch.setattr(cli_mod, "save_state", lambda s: saved.append(dict(s)))
+        asked: list[list[str]] = []
+        replies = iter(answers)
+
+        def _select(prompt, options):
+            asked.append([value for value, _ in options])
+            return next(replies)
+
+        monkeypatch.setattr(cli_mod, "prompt_for_selection", _select)
+        texts = iter(text)
+        monkeypatch.setattr(cli_mod, "prompt_for_text", lambda *a, **k: next(texts))
+        return state, saved, asked
+
+    def test_picker_saves_custom_model_location_and_clears_provider(self, monkeypatch):
+        state, saved, asked = self._picker(
+            monkeypatch, "claude", services=(["a.b.mps"], None), answers=["location"]
+        )
+
+        result = cli_mod._maybe_select_provider_service("claude", state)
+
+        assert asked == [["databricks", "mps", "location"]]
+        assert cli_mod.get_model_location(result, "claude") == "main.models"
+        assert cli_mod.get_provider_service(result, "claude") is None
+        assert saved
+
+    def test_picker_offers_location_when_provider_feature_unavailable(self, monkeypatch):
+        state, _saved, asked = self._picker(
+            monkeypatch,
+            "codex",
+            services=([], "model provider services are not enabled"),
+            answers=["location"],
+        )
+        monkeypatch.setattr(cli_mod, "is_model_provider_feature_unavailable", lambda r: True)
+
+        result = cli_mod._maybe_select_provider_service("codex", state)
+
+        assert asked == [["databricks", "location"]]
+        assert cli_mod.get_model_location(result, "codex") == "main.models"
+
+    def test_picker_reprompts_until_location_is_valid(self, monkeypatch):
+        state, _saved, _asked = self._picker(
+            monkeypatch,
+            "claude",
+            services=(["a.b.mps"], None),
+            answers=["location"],
+            text=("not-a-schema", "a.b.c", "main.models"),
+        )
+
+        result = cli_mod._maybe_select_provider_service("claude", state)
+
+        assert cli_mod.get_model_location(result, "claude") == "main.models"
+
+    def test_picker_cancelled_location_prompt_exits_without_saving(self, monkeypatch):
+        state, saved, _asked = self._picker(
+            monkeypatch, "claude", services=(["a.b.mps"], None), answers=["location"]
+        )
+        monkeypatch.setattr(cli_mod, "prompt_for_text", lambda *a, **k: None)
+
+        with pytest.raises(KeyboardInterrupt):
+            cli_mod._maybe_select_provider_service("claude", state)
+
+        assert saved == []
+
+    def test_picker_databricks_and_mps_clear_saved_location(self, monkeypatch):
+        state, _saved, _asked = self._picker(
+            monkeypatch, "claude", services=(["a.b.mps"], None), answers=["databricks"]
+        )
+        state["model_locations"] = {"claude": "main.old"}
+        result = cli_mod._maybe_select_provider_service("claude", state)
+        assert cli_mod.get_model_location(result, "claude") is None
+        assert cli_mod.get_provider_service(result, "claude") is None
+
+        state, _saved, _asked = self._picker(
+            monkeypatch, "claude", services=(["a.b.mps"], None), answers=["mps", "a.b.mps"]
+        )
+        state["model_locations"] = {"claude": "main.old"}
+        result = cli_mod._maybe_select_provider_service("claude", state)
+        assert cli_mod.get_model_location(result, "claude") is None
+        assert cli_mod.get_provider_service(result, "claude") == "a.b.mps"
+
+    def test_picker_gemini_has_no_custom_location(self, monkeypatch):
+        state, _saved, asked = self._picker(
+            monkeypatch, "gemini", services=(["a.b.g"], None), answers=["databricks"]
+        )
+
+        cli_mod._maybe_select_provider_service("gemini", state)
+
+        assert asked == [["databricks", "mps"]]
+
     def test_provider_picker_gated_by_interactive_path(self, monkeypatch):
         import ucode.cli as cli_mod
 
@@ -3729,6 +4431,8 @@ class TestConfigureAgentsSelection:
         managed = {
             "enabled_agents": {"codex": {"model_config": {"unity_catalog_location": "main.models"}}}
         }
+        monkeypatch.setattr(cli_mod, "install_databricks_cli", MagicMock())
+        monkeypatch.setattr(cli_mod, "install_tool_binary", MagicMock())
         monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
         refresh = MagicMock(return_value=(managed, False))
         monkeypatch.setattr(cli_mod, "refresh_managed_config", refresh)
@@ -5512,26 +6216,299 @@ class TestForcedLoginWithExternalBearer:
         assert self._run(monkeypatch) == ["https://ws.cloud.databricks.com"]
 
 
-class TestStdioProtocolLaunch:
-    """`codex app-server` owns stdout, so ug's status output moves to stderr."""
+class TestChildStdoutLaunch:
+    """Claude print mode and Codex exec/app-server reserve stdout for the child."""
+
+    @pytest.fixture(autouse=True)
+    def preserve_runner_stdout(self, monkeypatch):
+        """Keep CliRunner's temporary stdout alive when ug rebinds sys.stdout."""
+        original_isolation = runner.isolation
+
+        @contextlib.contextmanager
+        def isolation(*args, **kwargs):
+            with original_isolation(*args, **kwargs) as streams:
+                with contextlib.redirect_stdout(sys.stdout):
+                    yield streams
+
+        monkeypatch.setattr(runner, "isolation", isolation)
+
+    @pytest.mark.parametrize("separator", [[], ["--"]], ids=["direct", "separator"])
+    @pytest.mark.parametrize(
+        ("tool", "tool_args", "display"),
+        [
+            ("claude", ["-p", "say hello", "--output-format", "json"], "Claude Code"),
+            (
+                "claude",
+                ["--output-format", "stream-json", "--verbose", "--print", "say hello"],
+                "Claude Code",
+            ),
+            ("codex", ["app-server", "--listen", "stdio://"], "Codex"),
+            ("codex", ["exec", "say hello"], "Codex"),
+            ("codex", ["exec", "--json", "say hello"], "Codex"),
+            ("codex", ["e", "say hello"], "Codex"),
+            ("codex", ["e", "--json", "say hello"], "Codex"),
+            ("codex", ["--model", "exec"], "Codex"),
+            ("codex", ["--cd", "app-server"], "Codex"),
+            ("codex", ["--profile", "e"], "Codex"),
+            ("codex", ["--no-alt-screen", "explain", "exec"], "Codex"),
+            ("codex", ["--image", "one.png", "two.png", "exec", "hello"], "Codex"),
+            (
+                "codex",
+                ["-c", 'model_reasoning_effort="low"', "exec", "--json", "hello"],
+                "Codex",
+            ),
+            ("codex", ["--config", 'model="example"', "e", "hello"], "Codex"),
+            ("codex", ['--config=model="example"', "exec", "hello"], "Codex"),
+            ("codex", ['-cmodel="example"', "exec", "--json", "hello"], "Codex"),
+            ("codex", ["-m", "example", "exec", "--json", "hello"], "Codex"),
+            ("codex", ["--model", "exec", "e", "--json", "hello"], "Codex"),
+            ("codex", ["--model=example", "exec", "hello"], "Codex"),
+            ("codex", ["-C", "dir with spaces", "exec", "--json", "hello"], "Codex"),
+            ("codex", ["--cd", "exec", "e", "hello"], "Codex"),
+            ("codex", ["--cd=example", "app-server", "--listen", "stdio://"], "Codex"),
+            (
+                "codex",
+                ["--strict-config", "--no-alt-screen", "--search", "exec", "--json", "hello"],
+                "Codex",
+            ),
+            (
+                "codex",
+                ["-c", 'model="example"', "--config", "features.web_search=true", "exec", "hello"],
+                "Codex",
+            ),
+        ],
+    )
+    def test_status_goes_to_stderr_and_arguments_are_preserved(
+        self, capfd, separator, tool, tool_args, display
+    ):
+        child_output = b'{"result":"child output"}\n'
+        if tool == "codex" and tool_args[0] in {"exec", "e"} and "--json" not in tool_args:
+            child_output = b"child output\n"
+
+        def bootstrap_status(*_args, **_kwargs):
+            print("Checking agent dependencies")
+            cli_mod.print_warning("Agent setup warning")
+
+        with (
+            _launch_policy_patches(None) as calls,
+            patch("ucode.cli.ensure_bootstrap_dependencies", side_effect=bootstrap_status),
+        ):
+            calls["launch"].side_effect = lambda *_args, **_kwargs: os.write(1, child_output)
+            result = runner.invoke(app, [tool, *separator, *tool_args])
+
+        captured = capfd.readouterr()
+        assert captured.out == child_output.decode()
+        assert captured.err == ""
+        assert result.exit_code == 0, result.output
+        assert result.stdout == ""
+        stderr = _strip_ansi(result.stderr)
+        assert "Checking agent dependencies" in stderr
+        assert "Agent setup warning" in stderr
+        assert "No managed coding agent config found" in stderr
+        assert f"Starting {display}" in stderr
+        calls["launch"].assert_called_once()
+        assert calls["launch"].call_args.args[0] == tool
+        assert calls["launch"].call_args.args[2] == tool_args
+
+    @pytest.mark.parametrize("separator", [[], ["--"]], ids=["direct", "separator"])
+    @pytest.mark.parametrize(
+        ("tool", "tool_args"),
+        [
+            ("claude", ["-p", "hello"]),
+            ("claude", ["--print", "hello"]),
+            ("codex", ["app-server"]),
+            ("codex", ["exec", "hello"]),
+            ("codex", ["exec", "--json", "hello"]),
+            ("codex", ["e", "hello"]),
+            ("codex", ["e", "--json", "hello"]),
+            ("codex", ["-c", 'model_reasoning_effort="low"', "exec", "--json", "hello"]),
+            ("codex", ["--no-alt-screen", "--model", "example", "e", "hello"]),
+            ("codex", ["--cd", "example", "app-server"]),
+        ],
+    )
+    def test_early_launch_failure_keeps_stdout_clean(self, separator, tool, tool_args):
+        def fail_bootstrap(*_args, **_kwargs):
+            print("Checking agent dependencies")
+            raise RuntimeError("Agent setup failed")
+
+        with (
+            _launch_policy_patches(None) as calls,
+            patch("ucode.cli.ensure_bootstrap_dependencies", side_effect=fail_bootstrap),
+        ):
+            result = runner.invoke(app, [tool, *separator, *tool_args])
+
+        assert result.exit_code == 1
+        assert result.stdout == ""
+        stderr = _strip_ansi(result.stderr)
+        assert "Checking agent dependencies" in stderr
+        assert "Agent setup failed" in stderr
+        calls["launch"].assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("tool", "tool_args", "display"),
+        [
+            ("claude", [], "Claude Code"),
+            ("claude", ["explain --print and -p"], "Claude Code"),
+            ("claude", ["--", "-p"], "Claude Code"),
+            ("codex", [], "Codex"),
+            ("codex", ["explain exec and e"], "Codex"),
+            ("codex", ["--", "exec"], "Codex"),
+            ("codex", ["--model=exec"], "Codex"),
+            ("codex", ["-Cexec"], "Codex"),
+            ("codex", ["-c", 'model="exec"'], "Codex"),
+            ("codex", ["--model", "example", "--", "exec"], "Codex"),
+            ("codex", ['--config=model="example"', "--", "e"], "Codex"),
+            ("codex", ["--no-alt-screen", "--", "app-server"], "Codex"),
+        ],
+    )
+    def test_other_launches_keep_status_on_stdout(self, tool, tool_args, display):
+        with _launch_policy_patches(None) as calls:
+            result = runner.invoke(app, [tool, "--", *tool_args])
+
+        assert result.exit_code == 0, result.output
+        assert f"Starting {display}" in _strip_ansi(result.stdout)
+        assert result.stderr == ""
+        calls["launch"].assert_called_once()
+        assert calls["launch"].call_args.args[2] == tool_args
 
     def test_app_server_subcommand_owns_stdout(self):
         assert cli_mod._child_owns_stdout("codex", ["app-server", "--listen", "stdio://"]) is True
 
     def test_other_codex_launches_keep_stdout(self):
         assert cli_mod._child_owns_stdout("codex", []) is False
-        assert cli_mod._child_owns_stdout("codex", ["exec", "--json", "hi"]) is False
+        assert cli_mod._child_owns_stdout("codex", ["--", "exec"]) is False
+        assert cli_mod._child_owns_stdout("codex", ["--model=exec"]) is False
 
-    def test_other_agents_never_own_stdout(self):
+    def test_other_agent_commands_keep_stdout(self):
         assert cli_mod._child_owns_stdout("claude", ["app-server"]) is False
         assert cli_mod._child_owns_stdout("gemini", []) is False
 
-    def test_redirect_rebinds_stdout_without_touching_the_descriptor(self):
-        import sys
+    @pytest.mark.parametrize(
+        "option",
+        [
+            "--strict-config",
+            "--oss",
+            "--approve-for-me",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--dangerously-bypass-hook-trust",
+            "--worktree",
+            "--search",
+            "--no-alt-screen",
+            "--no-daemon",
+        ],
+    )
+    def test_codex_boolean_options_before_exec(self, option):
+        assert cli_mod._child_owns_stdout("codex", [option, "exec", "hello"])
 
+    @pytest.mark.parametrize(
+        "option",
+        [
+            "-c",
+            "--config",
+            "-m",
+            "--model",
+            "-C",
+            "--cd",
+            "-p",
+            "--profile",
+            "-s",
+            "--sandbox",
+            "-a",
+            "--ask-for-approval",
+            "--enable",
+            "--disable",
+            "--remote",
+            "--remote-auth-token-env",
+            "--local-provider",
+            "--add-dir",
+        ],
+    )
+    def test_codex_token_membership_also_matches_option_values(self, option):
+        assert cli_mod._child_owns_stdout("codex", [option, "exec"])
+        assert cli_mod._child_owns_stdout("codex", [f"{option}=exec"]) is False
+        assert cli_mod._child_owns_stdout("codex", [option, "exec", "e", "hello"])
+        assert cli_mod._child_owns_stdout("codex", [option, "exec", "--", "app-server"])
+        assert cli_mod._child_owns_stdout("codex", [option, "example", "--", "exec"]) is False
+
+    @pytest.mark.parametrize(
+        ("tool_args", "expected"),
+        [
+            (["--unknown", "exec"], True),
+            (["--image", "one.png", "two.png", "e"], True),
+            (["--model"], False),
+            (["--model", "--", "exec"], False),
+            (["--help", "exec"], True),
+            (["--version", "exec"], True),
+        ],
+    )
+    def test_codex_token_membership_does_not_parse_options(self, tool_args, expected):
+        assert cli_mod._child_owns_stdout("codex", tool_args) is expected
+
+    def test_redirect_rebinds_stdout_without_touching_the_descriptor(self, capfd):
         real_stdout = sys.stdout
         try:
             cli_mod.redirect_output_to_stderr()
             assert sys.stdout is sys.stderr
+            cli_mod.print_note("Gateway status")
+            os.write(1, b'{"result":"child output"}\n')
         finally:
             sys.stdout = real_stdout
+
+        captured = capfd.readouterr()
+        assert captured.out == '{"result":"child output"}\n'
+        assert "Gateway status" in captured.err
+
+
+class TestLaunchWithManagedFilePicker:
+    PICKER_MODELS = {"opus": "system.ai.claude-opus-5-5", "haiku": "system.ai.claude-haiku-4-5"}
+
+    @contextlib.contextmanager
+    def _managed_file_picker(self, monkeypatch):
+        settings = {
+            "modelPicker": {"options": [{"model": "system.ai.claude-opus-5-5"}]},
+            "env": {
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": "system.ai.claude-opus-5-5[1m]",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL": "system.ai.claude-haiku-4-5",
+            },
+        }
+        monkeypatch.delenv(managed_files.SKIP_OS_SETTINGS_ENV, raising=False)
+        with (
+            patch(
+                "ucode.agents.claude._managed_settings_path",
+                return_value=Path("/managed-settings.json"),
+            ),
+            patch("ucode.agents.claude.read_managed_file", return_value=json.dumps(settings)),
+        ):
+            yield
+
+    def test_launch_uses_the_picker_owners_models(self, monkeypatch):
+        monkeypatch.delenv("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY", raising=False)
+        discovered = {"opus": "system.ai.claude-opus-5-5", "fable": "system.ai.claude-fable-5-1"}
+        with self._managed_file_picker(monkeypatch), _launch_policy_patches(None) as calls:
+            calls["state"]["claude_models"] = dict(discovered)
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["shared"].call_args.kwargs["skip_model_discovery"] is True
+        launch_state = calls["configure"].call_args.args[1]
+        assert launch_state["claude_models"] == self.PICKER_MODELS
+        # The picker's models are launch-only; state.json keeps the discovered cache.
+        from ucode import state as state_mod
+
+        assert state_mod._without_managed_overlay(launch_state)["claude_models"] == discovered
+
+    @pytest.mark.parametrize(
+        "args",
+        [["--provider", "bedrock"], ["--model-location", "main.default"]],
+        ids=["provider", "model-location"],
+    )
+    def test_launch_source_ignores_the_picker(self, monkeypatch, args):
+        monkeypatch.delenv("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY", raising=False)
+        discovered = {"opus": "system.ai.claude-opus-5-5", "fable": "system.ai.claude-fable-5-1"}
+        with self._managed_file_picker(monkeypatch), _launch_policy_patches(None) as calls:
+            calls["state"]["claude_models"] = dict(discovered)
+            result = runner.invoke(app, ["claude", *args])
+
+        assert result.exit_code == 0, result.output
+        # The launch's own source supplies the models, so the picker neither seeds nor skips.
+        assert calls["configure"].call_args.args[1]["claude_models"] == discovered

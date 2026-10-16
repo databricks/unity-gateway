@@ -37,9 +37,9 @@ def _databricks_hosted_model(workspace: str, token: str) -> str:
 def test_ug_claude_relayed_serves_subscription_and_databricks_models(
     live_session, workspace, claude_relayed_provider, claude_oauth_token
 ):
-    """Scenario: launch Claude relayed through a subscription-relay MPS and submit a headless
-    prompt on two models — a bare Anthropic id the subscription serves, then a Databricks-hosted
-    `system.ai` id.
+    """Scenario: from fresh state, launch Claude relayed through a subscription-relay MPS and submit
+    a headless prompt on two models — a bare Anthropic id the subscription serves, then a
+    Databricks-hosted `system.ai` id.
 
     Expected: the relayed launch runs headless (the OAuth token stands in for the browser login).
     The bare model completes the file task over the relay path (route=relay); the Databricks-hosted
@@ -52,27 +52,16 @@ def test_ug_claude_relayed_serves_subscription_and_databricks_models(
         "model.json", {"model": databricks_model, "source": "gateway /v1/models discovery"}
     )
 
-    # Establish the workspace with the real CLI; each launch below overrides the provider.
-    session.run(
-        "configure",
-        "--agents",
-        "claude",
-        "--workspaces",
-        workspace,
-        "--skip-validate",
-        "--skip-upgrade",
-        "--disable-databricks-ai-tools",
-    )
-
     # Headless relayed launches: the OAuth token stands in for the browser subscription login, and
     # the diagnostics flag makes the proxy log its per-request route decision to stderr.
     session.env["CLAUDE_CODE_OAUTH_TOKEN"] = claude_oauth_token
     session.env["UCODE_RELAYED_PROXY_DIAGNOSTICS"] = "1"
 
-    def relayed_file_task(model):
+    def relayed_file_task(model, *launch_options):
         task = FileTask(session)
         result = session.run(
             "claude",
+            *launch_options,
             "--provider",
             claude_relayed_provider,
             "--model",
@@ -90,7 +79,13 @@ def test_ug_claude_relayed_serves_subscription_and_databricks_models(
         return result
 
     # Relay path: a bare Anthropic id, served directly by the subscription.
-    relay = relayed_file_task("haiku")
+    # The family alias "haiku" can resolve to a configured gateway model. Use
+    # the exact subscription model ID to exercise the bare-model relay route.
+    #
+    # This first launch also sets up the workspace, through the relayed provider. `ug configure`
+    # would instead write gateway auth to the machine-wide file on an elevated Windows host, which
+    # a relayed launch refuses to start over.
+    relay = relayed_file_task("claude-haiku-4-5-20251001", "--workspace", workspace)
     assert '"route":"relay"' in relay.stderr, (
         f"Relayed launch did not use the subscription relay path for a bare model:\n{relay.stderr}"
     )

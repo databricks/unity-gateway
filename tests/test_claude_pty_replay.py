@@ -7,6 +7,8 @@ These tests cover:
 - Switch-timeout path submits the prompt (Bug C fix).
 - Persist-timeout path does not SIGTERM and submits (Bug C fix).
 - waiting_to_switch timeout submits without /model (Bug D fix).
+- Every write into the input box first clears the blocked prompt that Claude Code
+  keeps there, so /model runs as a command and the replay is not mangled (Bug E fix).
 """
 
 from __future__ import annotations
@@ -17,7 +19,12 @@ import threading
 import time
 from pathlib import Path
 
-from ucode.smart_routing import claude_pty
+import pytest
+
+if sys.platform != "win32":
+    from ucode.smart_routing import claude_pty
+
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="Claude PTY routing is POSIX-only")
 
 # ---------------------------------------------------------------------------
 # Helpers shared across tests
@@ -415,6 +422,120 @@ capture_path.write_text(json.dumps({
 
 
 # ---------------------------------------------------------------------------
+# Test E: the blocked prompt left in Claude Code's input box is cleared (Bug E)
+# ---------------------------------------------------------------------------
+
+# A fake TUI with Claude Code 2.1.296's input-box behaviour: a hook-blocked prompt
+# stays in the box, Ctrl-U deletes back to the start of the current line (or the
+# line break before it), and CR submits the box contents. ESC does not clear the
+# box, and ESC while a submitted prompt's UserPromptSubmit hook runs puts that
+# prompt back in the box.
+_INPUT_BOX_TUI = """\
+blocked_prompt = "fix the parser\\nthen run the tests"
+resp = send_hook(socket_path, blocked_prompt)
+assert resp["action"] == "block"
+print("blocked", flush=True)
+tty.setraw(0)
+
+box = blocked_prompt
+submitted = []
+pasting = False
+pending = b""
+in_hook = None
+while len(submitted) < EXPECTED_SUBMITS:
+    pending += os.read(0, 1)
+    if pending in (b"\\x1b", b"\\x1b[", b"\\x1b[2", b"\\x1b[20", b"\\x1b[200", b"\\x1b[201"):
+        continue
+    if pending == b"\\x1b[200~":
+        pasting, pending = True, b""
+        continue
+    if pending == b"\\x1b[201~":
+        pasting, pending = False, b""
+        continue
+    if pending.startswith(b"\\x1b"):
+        pending = b""
+        if in_hook is not None:  # ESC during the hook restores the typed prompt
+            box, in_hook = in_hook, None
+        continue
+    char, pending = pending.decode(), b""
+    if char == "\\r" and not pasting:
+        submitted.append(box)
+        if box.startswith("/model ") and CONFIRM_SWITCH:
+            os.write(1, b"Set model to sonnet\\n")
+        in_hook = None if box.startswith("/") else box
+        box = ""
+    elif char == "\\x15":
+        if box.endswith("\\n"):
+            box = box[:-1]
+        else:
+            box = box[: box.rfind("\\n") + 1]
+    else:
+        box += char
+
+capture_path.write_text(json.dumps({"submitted": submitted}))
+"""
+
+
+def _run_input_box_tui(tmp_path: Path, *, confirm_switch: bool, expected_submits: int) -> list:
+    socket_path = tmp_path / "first.sock"
+    capture = tmp_path / "capture.json"
+    fake_claude = tmp_path / "fc.py"
+    _write_fake_claude(
+        fake_claude,
+        f"CONFIRM_SWITCH = {confirm_switch}\nEXPECTED_SUBMITS = {expected_submits}\n"
+        + _INPUT_BOX_TUI,
+    )
+    result = claude_pty.run_claude_pty(
+        [sys.executable, str(fake_claude), str(socket_path), str(capture)],
+        route_prompt=_route_sonnet,
+        socket_path=socket_path,
+    )
+    assert result == 0
+    return json.loads(capture.read_text())["submitted"]
+
+
+class TestClearInputKeys:
+    def test_covers_each_line_and_line_break(self):
+        # Claude Code 2.1.296 needs 2 * lines - 1 presses for a multi-line prompt.
+        assert len(claude_pty.clear_input_keys("one\ntwo\nthree", 140)) >= 5
+
+    def test_covers_soft_wrapped_lines(self):
+        # A 343-character prompt in 140 columns needed 4 presses on Claude Code 2.1.296.
+        prompt = "ROUTEME " + " ".join(f"word{i:03d}" for i in range(42))
+        assert len(prompt) == 343
+        assert len(claude_pty.clear_input_keys(prompt, 140)) >= 4
+
+
+class TestBlockedPromptLeftInInputBox:
+    def test_model_switch_runs_as_a_command_and_replay_is_exact(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(claude_pty, "READY_QUIET_S", 0.05)
+        monkeypatch.setattr(claude_pty, "PASTE_SUBMIT_DELAY_S", 0.05)
+
+        submitted = _run_input_box_tui(tmp_path, confirm_switch=True, expected_submits=2)
+
+        assert submitted == ["/model sonnet", "fix the parser\nthen run the tests"]
+
+    def test_switch_timeout_replay_is_not_mangled(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(claude_pty, "READY_QUIET_S", 0.05)
+        monkeypatch.setattr(claude_pty, "SWITCH_TIMEOUT_S", 0.25)
+        monkeypatch.setattr(claude_pty, "ESC_GAP_S", 0.05)
+        monkeypatch.setattr(claude_pty, "PASTE_SUBMIT_DELAY_S", 0.05)
+
+        submitted = _run_input_box_tui(tmp_path, confirm_switch=False, expected_submits=2)
+
+        assert submitted[-1] == "fix the parser\nthen run the tests"
+
+    def test_ready_timeout_replay_is_not_duplicated(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(claude_pty, "READY_QUIET_S", 100.0)
+        monkeypatch.setattr(claude_pty, "READY_TIMEOUT_S", 0.3)
+        monkeypatch.setattr(claude_pty, "PASTE_SUBMIT_DELAY_S", 0.05)
+
+        submitted = _run_input_box_tui(tmp_path, confirm_switch=False, expected_submits=1)
+
+        assert submitted == ["fix the parser\nthen run the tests"]
+
+
+# ---------------------------------------------------------------------------
 # Test F: serve_first_prompt_socket calls on_submitted_prompt after claim
 # ---------------------------------------------------------------------------
 
@@ -424,6 +545,7 @@ class TestOnSubmittedPromptCallback:
         socket_path = tmp_path / "first.sock"
         submitted: list[str] = []
         stop = threading.Event()
+        ready = threading.Event()
 
         claude_pty.serve_first_prompt_socket(
             socket_path,
@@ -433,11 +555,11 @@ class TestOnSubmittedPromptCallback:
             lambda _prompt, _model: None,
             stop,
             on_submitted_prompt=lambda prompt: submitted.append(prompt),
+            # Wait on [READY], logged after listen(); the socket file exists from bind().
+            log=lambda message: ready.set() if message.startswith("[READY]") else None,
         )
         try:
-            deadline = time.monotonic() + 5
-            while not socket_path.exists() and time.monotonic() < deadline:
-                time.sleep(0.01)
+            assert ready.wait(5)
 
             # First request: blocked (claimed).
             r1 = claude_pty.request_first_prompt_route(
@@ -462,6 +584,7 @@ class TestOnSubmittedPromptCallback:
         socket_path = tmp_path / "first.sock"
         submitted: list[str] = []
         stop = threading.Event()
+        ready = threading.Event()
 
         claude_pty.serve_first_prompt_socket(
             socket_path,
@@ -471,11 +594,10 @@ class TestOnSubmittedPromptCallback:
             lambda _prompt, _model: None,
             stop,
             on_submitted_prompt=lambda prompt: submitted.append(prompt),
+            log=lambda message: ready.set() if message.startswith("[READY]") else None,
         )
         try:
-            deadline = time.monotonic() + 5
-            while not socket_path.exists() and time.monotonic() < deadline:
-                time.sleep(0.01)
+            assert ready.wait(5)
 
             claude_pty.request_first_prompt_route(
                 socket_path, {"prompt": "fix the parser", "session_id": "s1"}

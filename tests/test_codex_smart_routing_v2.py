@@ -263,19 +263,16 @@ class TestLaunchCodex:
         assert "--profile myprof" in hook_override
         assert "--model system.ai.gpt-5-6-sol" in hook_override
         assert "--model system.ai.glm-5-2" in hook_override
-        assert processes[0].argv[10:12] == [
-            "--config",
-            (
-                "shell_environment_policy.set.UCODE_SESSION_ENV_FILE="
-                f'"{os.environ["UCODE_SESSION_ENV_FILE"]}"'
-            ),
-        ]
-        assert processes[0].argv[12:14] == [
-            "--config",
+        config_values = processes[0].argv[3:-2:2]
+        assert (
+            "shell_environment_policy.set.UCODE_SESSION_ENV_FILE="
+            + json.dumps(os.environ["UCODE_SESSION_ENV_FILE"])
+        ) in config_values
+        assert (
             "shell_environment_policy.set.UCODE_SMART_ROUTER_PYTHON="
-            + json.dumps(os.environ["UCODE_SMART_ROUTER_PYTHON"]),
-        ]
-        assert processes[0].argv[14:] == [
+            + json.dumps(os.environ["UCODE_SMART_ROUTER_PYTHON"])
+        ) in config_values
+        assert processes[0].argv[-2:] == [
             "--listen",
             "ws://127.0.0.1:41001",
         ]
@@ -410,7 +407,7 @@ class TestLaunchCodex:
         assert "--model system.ai.gpt-5-6-sol" in hook_override
         assert (
             "shell_environment_policy.set.UCODE_SESSION_ENV_FILE="
-            f'"{os.environ["UCODE_SESSION_ENV_FILE"]}"'
+            + json.dumps(os.environ["UCODE_SESSION_ENV_FILE"])
         ) in argv
         assert (
             "shell_environment_policy.set.UCODE_SMART_ROUTER_PYTHON="
@@ -420,7 +417,7 @@ class TestLaunchCodex:
         assert os.environ[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
         assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "token"
 
-    def test_v2_pre_tool_hook_preserves_user_hooks(self, tmp_path, monkeypatch):
+    def test_v2_pre_tool_hook_leaves_saved_hooks_to_codex(self, tmp_path, monkeypatch):
         codex_home = tmp_path / ".codex"
         codex_home.mkdir()
         (codex_home / "config.toml").write_text(
@@ -433,16 +430,18 @@ class TestLaunchCodex:
         )
         monkeypatch.setenv("CODEX_HOME", str(codex_home))
 
-        configured = v2._v2_pre_tool_use_hooks(
+        before = (codex_home / "config.toml").read_bytes()
+        configured = v2._v2_hooks(
             {"workspace": WS, "profile": "myprof"},
             ["system.ai.gpt-5-6-sol"],
-        )
+        )["PreToolUse"]
 
-        assert configured[0]["hooks"][0]["command"] == "user-policy"
-        assert configured[1]["matcher"] == "Agent|.*spawn_agent$"
-        assert "--model system.ai.gpt-5-6-sol" in configured[1]["hooks"][0]["command"]
+        assert len(configured) == 1
+        assert configured[0]["matcher"] == "Agent|.*spawn_agent$"
+        assert "--model system.ai.gpt-5-6-sol" in configured[0]["hooks"][0]["command"]
+        assert (codex_home / "config.toml").read_bytes() == before
 
-    def test_v2_pre_tool_hook_replaces_existing_ucode_hook(self, tmp_path, monkeypatch):
+    def test_v2_pre_tool_hook_uses_current_model(self, tmp_path, monkeypatch):
         monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/bin/ug")
         codex_home = tmp_path / ".codex"
         codex_home.mkdir()
@@ -456,10 +455,10 @@ class TestLaunchCodex:
         )
         monkeypatch.setenv("CODEX_HOME", str(codex_home))
 
-        configured = v2._v2_pre_tool_use_hooks(
+        configured = v2._v2_hooks(
             {"workspace": WS, "profile": "myprof"},
             ["system.ai.gpt-5-6-sol"],
-        )
+        )["PreToolUse"]
 
         routing_commands = [
             hook["command"]
@@ -656,7 +655,7 @@ class TestCustomCatalogModels:
 
         assert interposer_kwargs["available_models"] == ["gpt-6-astra", "gpt-6-b"]
         catalog_override = next(arg for arg in launched[0] if arg.startswith("model_catalog_json="))
-        assert catalog_override == f'model_catalog_json="{tmp_path / "cli.json"}"'
+        assert catalog_override == "model_catalog_json=" + json.dumps(str(tmp_path / "cli.json"))
         hook_override = next(arg for arg in launched[0] if arg.startswith("hooks.PreToolUse="))
         assert "--model gpt-6-astra" in hook_override
         assert "--model gpt-6-b" in hook_override
