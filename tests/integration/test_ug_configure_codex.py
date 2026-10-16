@@ -97,3 +97,67 @@ def test_ug_configure_codex_openai_mps(
         tui.exit_normally()
     task.assert_completed(session, "codex")
     session.assert_not_routed()
+
+
+def _run_codex_openai_dialect_mps_cuj(session, workspace, provider, model, label):
+    """Configure Codex through an OpenAI-dialect MPS, then complete a task on one of its models.
+
+    Azure OpenAI and Microsoft Foundry both speak the OpenAI dialect the gateway fronts for Codex,
+    so the CUJ is identical apart from which MPS the picker selects. Codex always sends
+    `reasoning.effort`, so a completed task also proves two things a plain routing check would miss:
+    the provider-type allowlist accepts the MPS's type for Codex, and the backing deployment is
+    reasoning-capable (a non-reasoning model 400s the request's `reasoning.effort`).
+    """
+    task = FileTask(session)
+
+    command = [
+        str(session.binary),
+        "configure",
+        "--workspace",
+        workspace,
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+    ]
+    with ConfigureTerminal(session, "codex", command, f"configure-{label}-provider") as configure:
+        configure.select_agent("Codex")
+        configure.choose("How should Codex get its models?", "External Models")
+        configure.choose("Select a model provider service:", provider)
+        configure.finish(timeout=240)
+    assert session.workspace_state()["provider_services"]["codex"] == provider
+    assert provider in session.run("status").stdout
+
+    command = [str(session.binary), "codex", "--", "--model", model]
+    with AgentTerminal(session, "codex", command, f"{label}-provider-session") as tui:
+        tui.boot()
+        tui.submit(task.prompt)
+        tui.wait_for_task(task, timeout=300)
+        tui.exit_normally()
+    task.assert_completed(session, "codex")
+    session.assert_not_routed()
+
+
+def test_ug_configure_codex_azure_openai_mps(
+    live_session, workspace, codex_azure_provider, codex_azure_provider_model
+):
+    """Scenario: select an Azure OpenAI (`azure_openai`) MPS in ug configure's picker for Codex.
+
+    Expected: ug saves the provider and a real Codex session completes a file task on one of its
+    reasoning-capable models (see _run_codex_openai_dialect_mps_cuj).
+    """
+    _run_codex_openai_dialect_mps_cuj(
+        live_session, workspace, codex_azure_provider, codex_azure_provider_model, "azure"
+    )
+
+
+def test_ug_configure_codex_foundry_mps(
+    live_session, workspace, codex_foundry_provider, codex_foundry_provider_model
+):
+    """Scenario: select a Microsoft Foundry (`microsoft_foundry`) MPS in ug configure's picker.
+
+    Expected: ug saves the provider and a real Codex session completes a file task, exercising the
+    `microsoft_foundry` allowlist entry for Codex. Foundry speaks the same OpenAI dialect as Azure
+    OpenAI, so this reuses the Azure CUJ (see _run_codex_openai_dialect_mps_cuj).
+    """
+    _run_codex_openai_dialect_mps_cuj(
+        live_session, workspace, codex_foundry_provider, codex_foundry_provider_model, "foundry"
+    )
