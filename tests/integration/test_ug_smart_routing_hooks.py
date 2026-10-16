@@ -63,19 +63,35 @@ def _routing_decisions(session, agent: str) -> list[dict]:
     return read_jsonl(session.home / ".ucode" / f"{agent}-smart-routing-decisions.jsonl")
 
 
+def _claude_routing_row_for_task(lines: list[str], marker: str) -> bool:
+    """Whether the mod's routing row follows the prompt that carries this task's marker.
+
+    The parent chooses the Agent row's description, so the marker may appear only in the
+    prompt. Each calculation is its own prompt, so the row is attributed by screen order:
+    a selected-model line after the tagged prompt and before the next one.
+    """
+    prompts = [index for index, line in enumerate(lines) if line.lstrip().startswith("❯")]
+    for position, start in enumerate(prompts):
+        end = start + 1
+        while end < len(lines) and lines[end].strip():
+            end += 1
+        # The prompt wraps across indented lines; compare without rendered whitespace.
+        if marker not in "".join("".join(lines[start:end]).split()):
+            continue
+        following = prompts[position + 1] if position + 1 < len(prompts) else len(lines)
+        if any("↳ Selected Model:" in line for line in lines[end:following]):
+            return True
+    return False
+
+
 def _routing_display_for_task(
     screen: str, marker: str, *, agent: str, orchestrator_on: bool
 ) -> bool:
     """Whether the rendered router panel belongs to this uniquely tagged task."""
     lines = screen.splitlines()
+    if agent == "claude":
+        return _claude_routing_row_for_task(lines, marker)
     for index, line in enumerate(lines):
-        if agent == "claude":
-            # The mod's routing line follows the tagged Agent row.
-            if "↳" in line and marker in "".join(
-                "\n".join(lines[max(0, index - 2) : index]).split()
-            ):
-                return True
-            continue
         if SMART_ROUTING_SUBAGENT_NOTICE not in line:
             continue
         panel = []
