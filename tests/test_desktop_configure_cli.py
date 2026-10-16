@@ -33,7 +33,7 @@ def configuration(monkeypatch):
 @pytest.mark.parametrize("flow", ["single", "managed", "selected"])
 def test_successful_claude_setup_configures_desktop_once(configuration, monkeypatch, flow):
     configure = Mock()
-    monkeypatch.setattr(desktop_setup, "configure_desktop_after_claude", configure)
+    monkeypatch.setattr(desktop_setup, "configure_claude_desktop", configure)
     args = {"selected_tools": ["claude"]}
     if flow == "single":
         args = {"tool": "claude"}
@@ -72,7 +72,7 @@ def test_successful_claude_setup_configures_desktop_once(configuration, monkeypa
 def test_failed_claude_is_not_setup_from_prior_available_tools(configuration, monkeypatch):
     configuration["last_configured_tools"] = ["codex"]
     configure = Mock()
-    monkeypatch.setattr(desktop_setup, "configure_desktop_after_claude", configure)
+    monkeypatch.setattr(desktop_setup, "configure_claude_desktop", configure)
     assert (
         cli._configure_workspace_command(
             selected_tools=["claude", "codex"],
@@ -85,7 +85,7 @@ def test_failed_claude_is_not_setup_from_prior_available_tools(configuration, mo
 
 def test_codex_only_does_not_configure_desktop(configuration, monkeypatch):
     configure = Mock()
-    monkeypatch.setattr(desktop_setup, "configure_desktop_after_claude", configure)
+    monkeypatch.setattr(desktop_setup, "configure_claude_desktop", configure)
     assert (
         cli._configure_workspace_command(
             tool="codex", workspaces=[("https://workspace.example", "chosen-profile")]
@@ -97,7 +97,7 @@ def test_codex_only_does_not_configure_desktop(configuration, monkeypatch):
 
 def test_self_managed_agent_add_does_not_configure_desktop(configuration, monkeypatch):
     configure = Mock()
-    monkeypatch.setattr(desktop_setup, "configure_desktop_after_claude", configure)
+    monkeypatch.setattr(desktop_setup, "configure_claude_desktop", configure)
     cli._setup_single_agent(
         [("https://workspace.example", "chosen-profile")], "claude", apply_managed=False
     )
@@ -106,7 +106,7 @@ def test_self_managed_agent_add_does_not_configure_desktop(configuration, monkey
 
 def test_single_managed_setup_passes_catalog_scope_to_desktop(configuration, monkeypatch):
     configure = Mock()
-    monkeypatch.setattr(desktop_setup, "configure_desktop_after_claude", configure)
+    monkeypatch.setattr(desktop_setup, "configure_claude_desktop", configure)
     monkeypatch.setattr(
         cli,
         "refresh_managed_config",

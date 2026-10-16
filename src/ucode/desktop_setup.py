@@ -8,8 +8,10 @@ import sys
 
 from ucode.agents.desktop.claude import (
     claude_desktop_directory,
-    configure_claude_desktop,
     revert_claude_desktop,
+)
+from ucode.agents.desktop.claude import (
+    configure_claude_desktop as write_claude_desktop_profile,
 )
 from ucode.config_io import is_dry_run
 from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER, MODEL_SERVICE_PARENT_SCHEMA_HEADER
@@ -20,7 +22,7 @@ from ucode.ui import print_note, print_success, print_warning
 _CLAUDE_MODEL_PATTERN = re.compile(r"\bclaude-", re.IGNORECASE)
 
 
-def configure_desktop_after_claude(state: dict, *, parent_schema: str | None = None) -> None:
+def configure_claude_desktop(state: dict, *, parent_schema: str | None = None) -> None:
     if sys.platform not in ("darwin", "win32", "linux"):
         return
     if is_dry_run():
@@ -82,7 +84,7 @@ def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
             del headers[existing]
         headers[name] = value
 
-    configure_claude_desktop(
+    write_claude_desktop_profile(
         model_ids=model_ids,
         base_url=build_tool_base_url("claude", workspace.rstrip("/")),
         helper_command=os.path.abspath(sys.executable),

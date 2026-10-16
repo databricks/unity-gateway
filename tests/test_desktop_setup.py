@@ -61,7 +61,7 @@ def configured_profile(directory):
 
 
 def test_configure_uses_claude_catalog_and_absolute_helper(desktop, tmp_path, capsys):
-    desktop_setup.configure_desktop_after_claude(
+    desktop_setup.configure_claude_desktop(
         {"workspace": "https://workspace.example/", "profile": "chosen-profile"}
     )
     metadata = json.loads((desktop / "_meta.json").read_text())
@@ -122,7 +122,7 @@ def test_configure_filters_claude_names_without_changing_source(desktop, monkeyp
             lambda *args, **kwargs: AnthropicModelCatalog(model_ids, {}),
         )
 
-    desktop_setup.configure_desktop_after_claude(state)
+    desktop_setup.configure_claude_desktop(state)
 
     assert configured_profile(desktop)["inferenceModels"] == [
         {"name": model_id} for model_id in claude_models
@@ -137,7 +137,7 @@ def test_no_claude_models_warns_without_changing_files(
 ):
     state = {"workspace": "https://workspace.example", "profile": "chosen-profile"}
     if existing:
-        desktop_setup.configure_desktop_after_claude(state)
+        desktop_setup.configure_claude_desktop(state)
     before = {path.name: path.read_bytes() for path in desktop.iterdir()}
     selection_path = claude_desktop.APP_DIR / claude_desktop.STATE_FILENAME
     selection_before = selection_path.read_bytes() if selection_path.exists() else None
@@ -155,7 +155,7 @@ def test_no_claude_models_warns_without_changing_files(
         )
     capsys.readouterr()
 
-    desktop_setup.configure_desktop_after_claude(state)
+    desktop_setup.configure_claude_desktop(state)
 
     assert {path.name: path.read_bytes() for path in desktop.iterdir()} == before
     assert (selection_path.read_bytes() if selection_path.exists() else None) == selection_before
@@ -166,7 +166,7 @@ def test_no_claude_models_warns_without_changing_files(
 
 def test_reconfigure_refreshes_existing_profile_without_deletion(desktop, capsys, tmp_path):
     state = {"workspace": "https://workspace.example", "profile": "chosen-profile"}
-    desktop_setup.configure_desktop_after_claude(state)
+    desktop_setup.configure_claude_desktop(state)
     metadata_path = desktop / "_meta.json"
     original_metadata = json.loads(metadata_path.read_text())
     profile_id = original_metadata["appliedId"]
@@ -180,7 +180,7 @@ def test_reconfigure_refreshes_existing_profile_without_deletion(desktop, capsys
     profile_path.write_text(json.dumps(profile))
     capsys.readouterr()
 
-    desktop_setup.configure_desktop_after_claude(
+    desktop_setup.configure_claude_desktop(
         {
             **state,
             "profile": "updated-profile",
@@ -223,7 +223,7 @@ def test_configure_overwrites_reserved_uuid_without_ownership_record(desktop, ca
     (desktop / "_meta.json").write_text(json.dumps(original_metadata))
     state = {"workspace": "https://workspace.example", "profile": "chosen-profile"}
 
-    desktop_setup.configure_desktop_after_claude(state)
+    desktop_setup.configure_claude_desktop(state)
 
     metadata = json.loads((desktop / "_meta.json").read_text())
     assert metadata["entries"] == [{"id": profile_id, "name": "Unity Gateway - chosen-profile"}]
@@ -245,7 +245,7 @@ def test_managed_static_catalog_does_not_fetch_discovery(desktop, monkeypatch):
         pytest.fail("A managed static catalog must not trigger discovery")
 
     monkeypatch.setattr(desktop_setup, "list_anthropic_model_catalog", forbidden)
-    desktop_setup.configure_desktop_after_claude(
+    desktop_setup.configure_claude_desktop(
         {
             "workspace": "https://workspace.example",
             "profile": "chosen-profile",
@@ -272,7 +272,7 @@ def test_discovery_and_native_headers_use_same_source(desktop, monkeypatch, pare
         )
 
     monkeypatch.setattr(desktop_setup, "list_anthropic_model_catalog", catalog)
-    desktop_setup.configure_desktop_after_claude(
+    desktop_setup.configure_claude_desktop(
         {
             "workspace": "https://workspace.example",
             "profile": "chosen-profile",
@@ -312,7 +312,7 @@ def test_discovery_and_native_headers_use_same_source(desktop, monkeypatch, pare
 def test_unsupported_auth_warns_without_modifying_profiles(desktop, capsys, key, value):
     before = (desktop / "_meta.json").read_bytes()
     state = {"workspace": "https://workspace.example", "profile": "chosen-profile", key: value}
-    desktop_setup.configure_desktop_after_claude(state)
+    desktop_setup.configure_claude_desktop(state)
     assert (desktop / "_meta.json").read_bytes() == before
     assert list(desktop.glob("*.json")) == [desktop / "_meta.json"]
     assert "Could not configure Claude Desktop" in capsys.readouterr().out
@@ -320,7 +320,7 @@ def test_unsupported_auth_warns_without_modifying_profiles(desktop, capsys, key,
 
 def test_discovery_failure_is_warning_and_preserves_profile(desktop, monkeypatch, capsys):
     state = {"workspace": "https://workspace.example", "profile": "chosen-profile"}
-    desktop_setup.configure_desktop_after_claude(state)
+    desktop_setup.configure_claude_desktop(state)
     before = {p.name: p.read_bytes() for p in desktop.glob("*.json")}
     monkeypatch.setattr(
         desktop_setup,
@@ -329,7 +329,7 @@ def test_discovery_failure_is_warning_and_preserves_profile(desktop, monkeypatch
             model_ids=[], model_id_to_display_name={}, error_msg="Discovery unavailable"
         ),
     )
-    desktop_setup.configure_desktop_after_claude(state)
+    desktop_setup.configure_claude_desktop(state)
     assert before == {p.name: p.read_bytes() for p in desktop.glob("*.json")}
     assert "Discovery unavailable" in capsys.readouterr().out
 
@@ -337,7 +337,7 @@ def test_discovery_failure_is_warning_and_preserves_profile(desktop, monkeypatch
 @pytest.mark.parametrize("operation", ["configure", "revert"])
 def test_profile_lock_timeout_warns_and_preserves_state(desktop, monkeypatch, capsys, operation):
     state = {"workspace": "https://workspace.example", "profile": "chosen-profile"}
-    desktop_setup.configure_desktop_after_claude(state)
+    desktop_setup.configure_claude_desktop(state)
     before = {path.name: path.read_bytes() for path in desktop.glob("*.json")}
     manifest_path = claude_desktop.APP_DIR / claude_desktop.STATE_FILENAME
     manifest_before = manifest_path.read_bytes()
@@ -349,7 +349,7 @@ def test_profile_lock_timeout_warns_and_preserves_state(desktop, monkeypatch, ca
 
     monkeypatch.setattr(desktop_config, "acquire_exclusive_file_lock", time_out)
     if operation == "configure":
-        desktop_setup.configure_desktop_after_claude(state)
+        desktop_setup.configure_claude_desktop(state)
     else:
         assert desktop_setup.revert_desktop() == "failed"
 
@@ -364,7 +364,7 @@ def test_profile_lock_timeout_warns_and_preserves_state(desktop, monkeypatch, ca
 def test_dry_run_does_not_discover_or_create_profiles(desktop, monkeypatch):
     monkeypatch.setattr(desktop_setup, "is_dry_run", lambda: True)
     before = {p.name: p.read_bytes() for p in desktop.glob("*.json")}
-    desktop_setup.configure_desktop_after_claude(
+    desktop_setup.configure_claude_desktop(
         {"workspace": "https://workspace.example", "profile": "chosen"}
     )
     assert before == {p.name: p.read_bytes() for p in desktop.glob("*.json")}
@@ -372,7 +372,7 @@ def test_dry_run_does_not_discover_or_create_profiles(desktop, monkeypatch):
 
 def test_unsupported_platform_does_not_configure_desktop(monkeypatch, capsys):
     monkeypatch.setattr(desktop_setup, "sys", SimpleNamespace(platform="freebsd"))
-    desktop_setup.configure_desktop_after_claude({})
+    desktop_setup.configure_claude_desktop({})
     assert capsys.readouterr().out == ""
     assert desktop_setup.revert_desktop() == "unchanged"
 
@@ -393,14 +393,14 @@ def test_missing_app_warns_before_model_discovery(platform, monkeypatch, tmp_pat
         pytest.fail("Missing Desktop must be detected before external authentication")
 
     monkeypatch.setattr(desktop_setup, "get_databricks_token", reject_token_fetch)
-    desktop_setup.configure_desktop_after_claude({})
+    desktop_setup.configure_claude_desktop({})
     assert "Open Claude Desktop once" in capsys.readouterr().out
     assert not directory.parent.exists()
 
 
 def test_revert_removes_profile_and_selection_state(desktop):
     state = {"workspace": "https://workspace.example", "profile": "chosen-profile"}
-    desktop_setup.configure_desktop_after_claude(state)
+    desktop_setup.configure_claude_desktop(state)
     assert desktop_setup.revert_desktop() == "removed"
     assert json.loads((desktop / "_meta.json").read_text()) == {"entries": []}
     assert list(desktop.glob("*.json")) == [desktop / "_meta.json"]
@@ -417,7 +417,7 @@ def test_revert_without_desktop_ownership_leaves_existing_settings_untouched(des
 
 def test_reconfigure_recreates_deleted_profile_with_fixed_id(desktop, capsys):
     state = {"workspace": "https://workspace.example", "profile": "chosen-profile"}
-    desktop_setup.configure_desktop_after_claude(state)
+    desktop_setup.configure_claude_desktop(state)
     metadata_path = desktop / "_meta.json"
     original_metadata = json.loads(metadata_path.read_text())
     profile_id = original_metadata["appliedId"]
@@ -426,7 +426,7 @@ def test_reconfigure_recreates_deleted_profile_with_fixed_id(desktop, capsys):
     metadata_path.write_text(json.dumps({"entries": []}))
     capsys.readouterr()
 
-    desktop_setup.configure_desktop_after_claude(state)
+    desktop_setup.configure_claude_desktop(state)
 
     assert json.loads(metadata_path.read_text()) == original_metadata
     assert configured_profile(desktop)["inferenceModels"] == [
@@ -442,10 +442,10 @@ def test_reconfigure_recreates_deleted_profile_with_fixed_id(desktop, capsys):
 
 
 def test_switching_workspace_replaces_one_reserved_profile(desktop):
-    desktop_setup.configure_desktop_after_claude(
+    desktop_setup.configure_claude_desktop(
         {"workspace": "https://first.example", "profile": "first"}
     )
-    desktop_setup.configure_desktop_after_claude(
+    desktop_setup.configure_claude_desktop(
         {"workspace": "https://second.example", "profile": "second"}
     )
     assert json.loads((desktop / "_meta.json").read_text()) == {

@@ -797,9 +797,9 @@ def _setup_single_agent(
     if apply_managed and not managed_enabled_tools(managed or {}):
         state = _record_unmanaged_configured_agents(state, [tool])
     if apply_managed and tool == "claude":
-        from ucode.desktop_setup import configure_desktop_after_claude
+        from ucode.desktop_setup import configure_claude_desktop
 
-        configure_desktop_after_claude(state, parent_schema=parent_schema)
+        configure_claude_desktop(state, parent_schema=parent_schema)
     install_databricks_ai_tools_for_agents(
         [tool], state, force_refresh=tool not in ("claude", "codex")
     )
@@ -1036,9 +1036,9 @@ def _configure_workspace_command(
                 if last is None or tool_name in last:
                     configured_tools.append(tool_name)
                     if tool_name == "claude":
-                        from ucode.desktop_setup import configure_desktop_after_claude
+                        from ucode.desktop_setup import configure_claude_desktop
 
-                        configure_desktop_after_claude(configured, parent_schema=parent_schema)
+                        configure_claude_desktop(configured, parent_schema=parent_schema)
         if not configured_tools:
             raise RuntimeError(
                 "None of the coding agents enabled by your workspace configuration "
@@ -1114,9 +1114,9 @@ def _configure_workspace_command(
         state, [tool_name for tool_name in picked if tool_name in configured_set]
     )
     if "claude" in configured_set and "claude" in picked:
-        from ucode.desktop_setup import configure_desktop_after_claude
+        from ucode.desktop_setup import configure_claude_desktop
 
-        configure_desktop_after_claude(state)
+        configure_claude_desktop(state)
     summary_lines = [f"[bold]Workspace:[/bold] [cyan]{state['workspace']}[/cyan]"]
     for tool_name in picked:
         spec = TOOL_SPECS[tool_name]
