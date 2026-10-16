@@ -148,6 +148,9 @@ Desktop setup is configure-only and best-effort. Writes retain atomic replacemen
 failure rollback, and the Desktop-only five-second lock timeout.
 Desktop filters both static and discovered model IDs with case-insensitive `\bclaude-`;
 shared discovery and Claude Code lists are unchanged. If no IDs match, setup warns without writes.
+When `claude_otel_tracing` is enabled, Desktop's reserved profile also owns
+`otlpEndpoint`, `otlpProtocol`, `otlpAuthMode`, and `otlpTracesEnabled`. Native export
+uses the inference credential; disabled tracing omits these fields on replacement.
 See `docs/claude-desktop.md` for native validation limits and revert behavior.
 
 <details>

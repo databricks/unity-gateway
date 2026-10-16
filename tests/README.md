@@ -199,6 +199,13 @@ lists. Scoped discovery uses the same response for IDs and labels without extra 
 Repeat configure refreshes or removes labels. Source lists/maps remain unchanged.
 These checks use temporary files on simulated platforms, not the native model picker.
 
+Desktop OTEL component tests cover native trace settings gated by `claude_otel_tracing`
+for static and discovered models on simulated macOS, Windows, and Linux. They verify
+the collector base URL, protobuf protocol, inference-credential authentication without
+persisted tokens, repeat configure, workspace changes, disable/re-enable, rollback at
+each write boundary, and revert while preserving another profile's telemetry.
+These checks do not prove native export, token refresh in open sessions, or ingestion.
+
 `TestChildStdoutLaunch` in `test_cli.py` checks Claude `-p`/`--print` and Codex `exec`
 (plain and `--json`) and `app-server` status/error output on stderr, argument forwarding with
 and without ug's `--`, and an unchanged stdout descriptor. Detection checks exact tokens before

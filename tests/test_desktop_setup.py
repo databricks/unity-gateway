@@ -91,6 +91,110 @@ def test_configure_uses_claude_catalog_and_absolute_helper(desktop, tmp_path, ca
 
 
 @pytest.mark.parametrize("source", ["discovery", "static"])
+@pytest.mark.parametrize("tracing", [None, False, True])
+def test_configure_otel_follows_claude_tracing_setting(desktop, source, tracing):
+    state = {
+        "workspace": "https://workspace.example/",
+        "profile": "chosen-profile",
+        "codex_otel_tracing": True,
+    }
+    if source == "static":
+        state["claude_static_models"] = ["system.ai.claude-sonnet-5"]
+    if tracing is not None:
+        state["claude_otel_tracing"] = tracing
+    original_state = dict(state)
+
+    desktop_setup.configure_claude_desktop(state)
+
+    profile = configured_profile(desktop)
+    assert {key: value for key, value in profile.items() if key.startswith("otlp")} == (
+        {
+            "otlpEndpoint": "https://workspace.example/ai-gateway/otel",
+            "otlpProtocol": "http/protobuf",
+            "otlpAuthMode": "inference-credential",
+            "otlpTracesEnabled": True,
+        }
+        if tracing
+        else {}
+    )
+    assert "component-token" not in json.dumps(profile)
+    assert state == original_state
+
+
+def test_otel_reconfigure_switch_disable_and_revert_preserve_other_profiles(desktop):
+    previous_id = "74074d15-5e9e-4465-a670-2d5bb1b83d00"
+    previous = {"otlpEndpoint": "https://other-collector.example", "otlpTracesEnabled": True}
+    previous_path = desktop / f"{previous_id}.json"
+    previous_path.write_text(json.dumps(previous))
+    metadata_path = desktop / "_meta.json"
+    metadata = {
+        "entries": [{"id": previous_id, "name": "Other profile"}],
+        "appliedId": previous_id,
+        "unrelated": "keep",
+    }
+    metadata_path.write_text(json.dumps(metadata))
+    state = {
+        "workspace": "https://workspace.example",
+        "profile": "chosen-profile",
+        "claude_otel_tracing": True,
+    }
+    desktop_setup.configure_claude_desktop(state)
+    before = {path.name: path.read_bytes() for path in desktop.glob("*.json")}
+    desktop_setup.configure_claude_desktop(state)
+    assert {path.name: path.read_bytes() for path in desktop.glob("*.json")} == before
+
+    desktop_setup.configure_claude_desktop({**state, "workspace": "https://next.example/"})
+    profile = configured_profile(desktop)
+    assert profile["otlpEndpoint"] == "https://next.example/ai-gateway/otel"
+    assert profile["inferenceGatewayBaseUrl"] == "https://next.example/ai-gateway/anthropic"
+
+    desktop_setup.configure_claude_desktop({**state, "claude_otel_tracing": False})
+    assert not any(key.startswith("otlp") for key in configured_profile(desktop))
+    desktop_setup.configure_claude_desktop(state)
+    assert configured_profile(desktop)["otlpTracesEnabled"] is True
+    assert desktop_setup.revert_desktop() == "removed"
+    assert not (desktop / f"{claude_desktop.PROFILE_ID}.json").exists()
+    assert json.loads(previous_path.read_text()) == previous
+    assert json.loads(metadata_path.read_text()) == metadata
+
+
+@pytest.mark.parametrize("failed_file", ["profile", "metadata", "state"])
+def test_otel_write_failure_rolls_back_existing_profile(desktop, monkeypatch, failed_file, capsys):
+    state = {"workspace": "https://workspace.example", "profile": "chosen-profile"}
+    desktop_setup.configure_claude_desktop(state)
+    metadata_path = desktop / "_meta.json"
+    metadata = json.loads(metadata_path.read_text())
+    previous_id = "74074d15-5e9e-4465-a670-2d5bb1b83d00"
+    (desktop / f"{previous_id}.json").write_text("{}")
+    metadata["entries"].append({"id": previous_id, "name": "Other profile"})
+    metadata["appliedId"] = previous_id
+    metadata_path.write_text(json.dumps(metadata))
+    selection_path = claude_desktop.APP_DIR / claude_desktop.STATE_FILENAME
+    targets = {
+        "profile": desktop / f"{claude_desktop.PROFILE_ID}.json",
+        "metadata": metadata_path,
+        "state": selection_path,
+    }
+    before = {path: path.read_bytes() for path in targets.values()}
+    write = desktop_config._write_or_remove
+    failed = False
+
+    def fail_once(path, payload):
+        nonlocal failed
+        if path == targets[failed_file] and not failed:
+            failed = True
+            raise OSError("simulated write failure")
+        write(path, payload)
+
+    monkeypatch.setattr(desktop_config, "_write_or_remove", fail_once)
+    desktop_setup.configure_claude_desktop({**state, "claude_otel_tracing": True})
+
+    assert failed
+    assert {path: path.read_bytes() for path in targets.values()} == before
+    assert "rolled back" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("source", ["discovery", "static"])
 def test_configure_filters_claude_names_without_changing_source(desktop, monkeypatch, source):
     claude_models = [
         "system.ai.claude-opus-5",
