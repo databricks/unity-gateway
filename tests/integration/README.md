@@ -479,6 +479,8 @@ both Claude and Codex. Two parameterized tests run all six
 context in inference input, and a completed explicitly requested native subagent, and a
 Claude-only one checking the status band and hint row at launch and across off/on toggles.
 This is not automatic orchestrator-delegation coverage. No workspace configuration is modified.
+The new `subagent_orch_v2` Codex runtime path is not in this live CUJ; its preset and registry
+checks are offline-only, and it has no live run.
 CUJ4 matches both Codex 0.154.0's top-level tools and 0.162.1's Responses Lite
 `additional_tools` input items. Encrypted child messages match the routed task name
 to the recipient. Codex 0.165.0 plaintext child messages match the exact `NEW_TASK`
@@ -495,7 +497,7 @@ header and omit the payload field; disabled Codex presets omit routing metadata 
 
 Agent-specific smart-routing preset component checks cover shared base presets, explicit agent mappings,
 complete per-agent validation, session precedence, and preserving the preset selector
-until managed-default agent selection.
+until managed-default agent selection. They also cover the runtime opt-in's Codex-only value.
 These checks do not establish live agent coverage.
 
 The shared request recorder and native compatibility-retry checks live in
@@ -1429,9 +1431,9 @@ selected model and rationale and matches the decision log. The native mod applie
 that model at spawn without rewriting the reviewed tool input. Native task-header
 rendering is outside that CLI-contract check.
 
-The unit/component `../test_smart_routing_config.py` includes a 162-case Cartesian oracle over all
-three legacy routing flags (`None`, `0`, `1`) and six selector forms (`None` plus the five
-supported presets, including the internal first-prompt-and-subagent mode). It independently
+The unit/component `../test_smart_routing_config.py` includes a 648-case Cartesian oracle over the
+three legacy routing flags and the runtime flag (`None`, `0`, `1`) and eight selector forms
+(`None` and all seven presets, including the customer first-prompt-and-subagent mode). It independently
 hardcodes preset values and asserts exact
 `resolve_environment` and `apply_config` settings, true-unset omission, unrelated-key and
 input preservation, valid-selector consumption, and environment restoration.
