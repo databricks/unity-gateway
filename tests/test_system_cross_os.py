@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -52,3 +54,27 @@ def test_windows_program_files_dir_prefers_the_64_bit_folder(
             monkeypatch.setenv(name, value)
 
     assert system_cross_os.windows_program_files_dir() == expected
+
+
+@pytest.mark.parametrize(
+    ("program_data", "expected"),
+    [(r"D:\Data", Path(r"D:\Data")), (None, Path(r"C:\ProgramData"))],
+)
+def test_windows_program_data_dir(monkeypatch, program_data, expected):
+    if program_data is None:
+        monkeypatch.delenv("ProgramData", raising=False)
+    else:
+        monkeypatch.setenv("ProgramData", program_data)
+
+    assert system_cross_os.windows_program_data_dir() == expected
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="asks Windows for the owner")
+def test_windows_owned_by_admin_recognizes_the_windows_folder():
+    assert system_cross_os.windows_owned_by_admin(Path(os.environ["SystemRoot"])) is True
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="covered by the real Windows check")
+def test_windows_owned_by_admin_is_windows_only(tmp_path):
+    with pytest.raises(NotImplementedError):
+        system_cross_os.windows_owned_by_admin(tmp_path)

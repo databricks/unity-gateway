@@ -22,6 +22,7 @@ from ucode.codex_config import (
     codex_config_args,
     codex_config_precedence_paths,
     codex_managed_config_path,
+    codex_managed_file_is_requirements,
     custom_catalog_models,
 )
 from ucode.config_io import (
@@ -110,6 +111,12 @@ LEGACY_CODEX_MODEL_PROVIDER_NAME = "ucode-databricks"
 _PROVIDER_HTTP_HEADERS_KEY_PATHS = [
     ["model_providers", CODEX_MODEL_PROVIDER_NAME, "http_headers"],
 ]
+# Windows requirements.toml replaces the whole provider entry, so launch-scoped routing headers set
+# with `-c` would be dropped; Codex reads them from these variables instead.
+_LAUNCH_ROUTING_HEADER_ENV_VARS = {
+    MODEL_PROVIDER_SERVICE_HEADER: "UG_CODEX_MODEL_PROVIDER_SERVICE",
+    MODEL_SERVICE_PARENT_SCHEMA_HEADER: "UG_CODEX_MODEL_SERVICE_PARENT_SCHEMA",
+}
 MINIMUM_CODEX_VERSION = (0, 145, 0)
 MINIMUM_CODEX_VERSION_TEXT = "0.145.0"
 # Codex 0.134.0 introduced per-profile config files; older releases use the legacy layout.
@@ -750,6 +757,8 @@ def _sync_desktop_tracing(workspace: str | None) -> bool:
 
 def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> None:
     """Reconcile Codex's highest-precedence config while preserving unrelated policy."""
+    if codex_managed_file_is_requirements():
+        compose = _as_requirements(compose)
     if managed_settings_skipped():
         check_skipped_managed_overrides(
             codex_managed_config_path(),
@@ -806,6 +815,20 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
     mark_managed_file_verified(state, "codex", path)
 
 
+def _as_requirements(compose: Callable[[dict], dict]) -> Callable[[dict], dict]:
+    """Shape ug's managed config for ``requirements.toml``, which ignores ``model``."""
+
+    def compose_requirements(base: dict) -> dict:
+        doc = compose(base)
+        doc.pop("model", None)
+        doc["model_providers"][CODEX_MODEL_PROVIDER_NAME]["env_http_headers"] = dict(
+            _LAUNCH_ROUTING_HEADER_ENV_VARS
+        )
+        return doc
+
+    return compose_requirements
+
+
 MANAGED_MCP_CONFIG_KEY = "mcp_servers"
 _CODEX_MCP_AUTH_ENV_VARS = [
     "DATABRICKS_BEARER",
@@ -823,6 +846,7 @@ def managed_mcp_uses_managed_file() -> bool:
     interactive; otherwise the caller falls back to the user-scope registration."""
     return (
         codex_managed_config_path() is not None
+        and not codex_managed_file_is_requirements()
         and managed_files_supported()
         and managed_writes_allowed()
     )
@@ -917,7 +941,7 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
     platform or a non-interactive run), so the caller routes those servers to the user-scope
     registration instead."""
     path = codex_managed_config_path()
-    if path is None or not managed_writes_allowed():
+    if path is None or codex_managed_file_is_requirements() or not managed_writes_allowed():
         return False
     if path.is_symlink():
         raise RuntimeError(
@@ -969,7 +993,7 @@ def read_managed_mcp_urls() -> dict[str, str]:
     Read-only, for ``ug mcp list`` to tag managed servers now that the managed file is their source
     of truth rather than ug state. The gateway URL is the ``--url`` argument of the proxy command."""
     path = codex_managed_config_path()
-    if path is None:
+    if path is None or codex_managed_file_is_requirements():
         return {}
     try:
         text = read_managed_file(path)
@@ -1046,6 +1070,18 @@ def _set_provider_header(config: dict, provider: str | None) -> None:
 
 def _set_parent_schema_header(config: dict, parent_schema: str | None) -> None:
     _set_routing_header(config, MODEL_SERVICE_PARENT_SCHEMA_HEADER, parent_schema)
+
+
+def _set_launch_routing_env(provider: str | None, parent_schema: str | None) -> None:
+    for header, value in (
+        (MODEL_PROVIDER_SERVICE_HEADER, provider),
+        (MODEL_SERVICE_PARENT_SCHEMA_HEADER, parent_schema),
+    ):
+        name = _LAUNCH_ROUTING_HEADER_ENV_VARS[header]
+        if value:
+            os.environ[name] = value
+        else:
+            os.environ.pop(name, None)
 
 
 def _set_routing_header(config: dict, header: str, value: str | None) -> None:
@@ -1353,6 +1389,7 @@ def launch(
         )
     _set_provider_header(profile_doc, provider)
     _set_parent_schema_header(profile_doc, parent_schema if not provider else None)
+    _set_launch_routing_env(provider, parent_schema if not provider else None)
     updating = tool_args[:1] == ["update"]
     if updating and _is_ucode_catalog_reference(profile_doc.get("model_catalog_json")):
         profile_doc.pop("model_catalog_json")
