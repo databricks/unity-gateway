@@ -147,7 +147,6 @@ def test_configure_registers_reserved_profile_and_notice(tmp_path, directory):
     }
     assert "Do not edit manually" in _read(result.profile_path)["_comment"]
     assert result.changed
-    assert result.warnings == (desktop.DEFAULT_MODEL_WARNING,)
 
 
 @pytest.mark.parametrize("contents", [b"{broken", b"[]", b"null", b"\\xff", b'{"unknown": true}'])

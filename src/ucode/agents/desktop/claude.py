@@ -24,7 +24,6 @@ from ucode.agents.desktop.claude_state import STATE_FILENAME
 from ucode.config_io import APP_DIR
 
 __all__ = [
-    "DEFAULT_MODEL_WARNING",
     "STATE_FILENAME",
     "META_FILENAME",
     "PROFILE_NAME",
@@ -51,7 +50,6 @@ class ConfigureResult:
     profile_path: Path
     metadata_path: Path
     changed: bool
-    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -60,7 +58,6 @@ class RevertResult:
 
     profile_id: str | None
     changed: bool
-    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -151,7 +148,6 @@ def configure_claude_desktop(
             profile_path=profile_path,
             metadata_path=paths.metadata,
             changed=changed,
-            warnings=(DEFAULT_MODEL_WARNING,),
         )
 
 
@@ -188,9 +184,6 @@ def revert_claude_desktop(*, state_path: Path | str | None = None) -> RevertResu
             ]
         )
         return RevertResult(profile_id=PROFILE_ID if changed else None, changed=changed)
-
-
-DEFAULT_MODEL_WARNING = "Claude Desktop default-model selection is not configured by Unity Gateway."
 
 
 def _resolve_paths(*, state_path: Path | str | None) -> _Paths:

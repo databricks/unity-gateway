@@ -21,6 +21,8 @@ META_FILENAME = "_meta.json"
 PROFILE_NAME = "Unity Gateway"
 PROFILE_LOCK_TIMEOUT_SECONDS = 5
 
+# UG supports one workspace at a time; reserve one stable UUID so switching workspaces
+# replaces the same UG-owned profile and revert can delete it without ownership records.
 PROFILE_ID = "5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6"
 
 _MISSING = object()

@@ -330,6 +330,8 @@ Rendering tests cover the valid JSON generated-file notice, complete model IDs,
 order/duplicates, literal helper arguments, and copied headers. Omitted optional fields
 are removed on replacement. Shared managed-header parsing retains its pre-Desktop behavior;
 the extra header-validation tests were removed with that out-of-scope parser change.
+The default-model warning assertion was removed because that limitation is documented
+instead of returned as a runtime warning.
 Obsolete baseline restoration, edit preservation, ownership/migration, and workspace
 canonicalization tests are replaced by reserved-file replacement/deletion coverage.
 Existing CLI URL normalization is unchanged. Native Desktop activation, acceptance of
