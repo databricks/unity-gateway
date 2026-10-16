@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from urllib import error as urllib_error
 from urllib import request as urllib_request
@@ -79,18 +80,73 @@ def _real_command_resolution(_isolate_ucode_state, monkeypatch):
     monkeypatch.setattr(subprocess_cross_os, "shutil", shutil)
 
 
-def _run_agent(
-    cmd: list[str], env: dict | None = None, timeout: int = 60
-) -> subprocess.CompletedProcess:
-    # The cross-OS helper resolves npm `.cmd` shims, which CreateProcess can't run by bare name.
-    return subprocess_cross_os.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        env=env,
-        stdin=subprocess.DEVNULL,
+# Every agent launch and direct gateway request fails fast, then retries with exponential
+# backoff, so one stalled or rate-limited model request costs a short attempt, not the test.
+# Attempts must clear a healthy launch: one agent start plus one model reply. Windows runners
+# start Node agents much more slowly, so they get longer attempts.
+E2E_LINUX_ATTEMPT_TIMEOUT_SECONDS = 30
+E2E_WINDOWS_ATTEMPT_TIMEOUT_SECONDS = 60
+
+
+def _attempt_timeout_seconds(environ=os.environ, platform: str = sys.platform) -> int:
+    """UCODE_E2E_AGENT_TIMEOUT if set, else the per-OS default."""
+    if override := environ.get("UCODE_E2E_AGENT_TIMEOUT", "").strip():
+        return int(override)
+    if platform == "win32":
+        return E2E_WINDOWS_ATTEMPT_TIMEOUT_SECONDS
+    return E2E_LINUX_ATTEMPT_TIMEOUT_SECONDS
+
+
+E2E_ATTEMPT_TIMEOUT_SECONDS = _attempt_timeout_seconds()
+E2E_RETRIES = 3
+E2E_RETRY_BASE_DELAY_SECONDS = 2
+# Only statuses a retry can fix; a 4xx such as an allowlist 403 is the answer under test.
+_RETRYABLE_HTTP_STATUSES = frozenset({429, 500, 502, 503, 504})
+
+
+def _wait_before_retry(attempt: int, what: str, reason: str) -> None:
+    """Sleep 2s, 4s, then 8s after the first, second, and third failed attempt."""
+    delay = E2E_RETRY_BASE_DELAY_SECONDS * 2**attempt
+    print(
+        f"[e2e] {what} attempt {attempt + 1}/{E2E_RETRIES + 1} {reason}; retrying in {delay}s",
+        file=sys.stderr,
+        flush=True,
     )
+    time.sleep(delay)
+
+
+def _run_agent(
+    cmd: list[str], env: dict | None = None, timeout: int = E2E_ATTEMPT_TIMEOUT_SECONDS
+) -> subprocess.CompletedProcess:
+    """Run an agent, retrying a timeout, a failed exit, or empty output up to E2E_RETRIES times.
+
+    Every caller expects a successful run with output, so a persistent failure still surfaces:
+    the last attempt's result is returned, or its TimeoutExpired raised.
+    """
+    for attempt in range(E2E_RETRIES + 1):
+        try:
+            # The cross-OS helper resolves npm `.cmd` shims, which CreateProcess can't run by
+            # bare name.
+            result = subprocess_cross_os.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=env,
+                stdin=subprocess.DEVNULL,
+            )
+        except subprocess.TimeoutExpired:
+            if attempt == E2E_RETRIES:
+                raise
+            reason = f"timed out after {timeout}s"
+        else:
+            if result.returncode == 0 and (result.stdout + result.stderr).strip():
+                return result
+            if attempt == E2E_RETRIES:
+                return result
+            reason = f"rc={result.returncode}" if result.returncode else "no output"
+        _wait_before_retry(attempt, Path(cmd[0]).name, reason)
+    raise AssertionError("unreachable")
 
 
 def _timeout_output(output: str | bytes | None) -> str:
@@ -98,6 +154,41 @@ def _timeout_output(output: str | bytes | None) -> str:
     if isinstance(output, bytes):
         return output.decode("utf-8", errors="replace")
     return output or ""
+
+
+# On its first load of a config dir, OpenCode npm-installs ug's auth plugin there (about 63MB;
+# 9-12s on Linux and far longer on Windows). Do it once per config dir, outside the timed
+# attempts, with `opencode models`, which lists models without a model request.
+OPENCODE_WARM_UP_TIMEOUT_SECONDS = 300
+_warmed_opencode_configs: set[str] = set()
+
+
+def _warm_opencode(env: dict) -> None:
+    config_home = env.get("XDG_CONFIG_HOME", "")
+    if config_home in _warmed_opencode_configs:
+        return
+    from ucode.agents import opencode
+
+    started = time.monotonic()
+    try:
+        result = subprocess_cross_os.run(
+            [opencode.validate_cmd("opencode")[0], "models"],
+            capture_output=True,
+            text=True,
+            timeout=OPENCODE_WARM_UP_TIMEOUT_SECONDS,
+            env=env,
+            stdin=subprocess.DEVNULL,
+        )
+        outcome = f"rc={result.returncode}"
+    except subprocess.TimeoutExpired:
+        # The timed launch that follows reports the real failure.
+        outcome = "timed out"
+    _warmed_opencode_configs.add(config_home)
+    print(
+        f"[e2e] opencode warm-up {outcome} in {time.monotonic() - started:.1f}s",
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def _codex_home_outside_tmp() -> Path:
@@ -133,12 +224,23 @@ def _run_gemini_gateway_smoke(workspace: str, model: str, token: str) -> str:
         },
         method="POST",
     )
-    try:
-        with urllib_request.urlopen(req, timeout=30) as response:
-            body = response.read().decode("utf-8")
-    except urllib_error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
-        raise AssertionError(f"Gemini gateway smoke failed: HTTP {exc.code}: {body[:500]}") from exc
+    for attempt in range(E2E_RETRIES + 1):
+        try:
+            with urllib_request.urlopen(req, timeout=E2E_ATTEMPT_TIMEOUT_SECONDS) as response:
+                body = response.read().decode("utf-8")
+            break
+        except urllib_error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+            if exc.code not in _RETRYABLE_HTTP_STATUSES or attempt == E2E_RETRIES:
+                raise AssertionError(
+                    f"Gemini gateway smoke failed: HTTP {exc.code}: {body[:500]}"
+                ) from exc
+            reason = f"HTTP {exc.code}"
+        except (urllib_error.URLError, TimeoutError) as exc:
+            if attempt == E2E_RETRIES:
+                raise
+            reason = type(exc).__name__
+        _wait_before_retry(attempt, "Gemini gateway request", reason)
 
     data = json.loads(body)
     return data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
@@ -428,6 +530,9 @@ class TestConfigureSubset:
 E2E_MODEL_SKIP_HARNESSES: dict[str, frozenset[str]] = {
     # Codex nano is unreliably slow and exceeds the E2E timeout.
     "gpt-5-4-nano": frozenset({"codex"}),
+    # Pro takes about 13s to answer even the launch smoke, so a Pi launch exceeds the attempt
+    # timeout on every retry.
+    "gpt-5-5-pro": frozenset({"pi"}),
     # The CI OpenAI project cannot serve this snapshot in its geography.
     "gpt-5-3-codex": frozenset({"codex", "pi"}),
     # Bedrock Grok rejects request/tool shapes from these harnesses.
@@ -492,7 +597,6 @@ class TestCodexLaunch:
         monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", backup_path)
 
         failures = []
-        timeout_seconds = int(os.environ.get("UCODE_E2E_AGENT_TIMEOUT", "60"))
         for model in models:
             state = {**e2e_state, "workspace": e2e_workspace}
             with pytest.MonkeyPatch().context() as mp:
@@ -507,10 +611,12 @@ class TestCodexLaunch:
                 result = _run_agent(
                     cmd,
                     env={**os.environ, "CODEX_HOME": str(config_dir)},
-                    timeout=timeout_seconds,
                 )
             except subprocess.TimeoutExpired:
-                failures.append(f"model={model} timed out after {timeout_seconds}s")
+                failures.append(
+                    f"model={model} timed out after {E2E_RETRIES + 1} attempts of "
+                    f"{E2E_ATTEMPT_TIMEOUT_SECONDS}s"
+                )
                 continue
 
             if (
@@ -570,7 +676,7 @@ class TestClaudeLaunch:
                 "ANTHROPIC_API_KEY": e2e_token,
             }
             cmd = claude.validate_cmd("claude")
-            result = _run_agent(cmd, env=env, timeout=90)
+            result = _run_agent(cmd, env=env)
             combined = (result.stdout + result.stderr).strip()
             if result.returncode != 0 or not combined:
                 failures.append(
@@ -651,13 +757,10 @@ class TestModelProviderLaunch:
             "ANTHROPIC_BASE_URL": build_tool_base_url("claude", workspace),
             "ANTHROPIC_API_KEY": token,
         }
-        # Retry the flaky client-side model pre-flight before giving up; only a persistent failure
+        # _run_agent retries the flaky client-side model pre-flight; only a persistent failure
         # falls through to _skip_if_provider_unusable.
-        for _attempt in range(3):
-            result = _run_agent(claude.validate_cmd("claude"), env=env, timeout=90)
-            combined = (result.stdout + result.stderr).strip()
-            if _CLAUDE_PREFLIGHT_FLAKE not in combined:
-                break
+        result = _run_agent(claude.validate_cmd("claude"), env=env)
+        combined = (result.stdout + result.stderr).strip()
         self._skip_if_provider_unusable(combined, CI_ANTHROPIC_MPS)
         assert result.returncode == 0 and combined, (
             f"model={route_root_model} rc={result.returncode} "
@@ -711,16 +814,28 @@ class TestAnthropicNonRelayMps:
             "stream": False,
             "messages": [{"role": "user", "content": "say hi in 5 words or less"}],
         }
-        return httpx.post(
-            f"{build_tool_base_url('claude', workspace)}/v1/messages",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Databricks-Model-Provider-Service": CI_ANTHROPIC_MPS,
-                "x-databricks-use-coding-agent-mode": "true",
-            },
-            json=body,
-            timeout=60,
-        )
+        for attempt in range(E2E_RETRIES + 1):
+            try:
+                resp = httpx.post(
+                    f"{build_tool_base_url('claude', workspace)}/v1/messages",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Databricks-Model-Provider-Service": CI_ANTHROPIC_MPS,
+                        "x-databricks-use-coding-agent-mode": "true",
+                    },
+                    json=body,
+                    timeout=E2E_ATTEMPT_TIMEOUT_SECONDS,
+                )
+            except httpx.TransportError as exc:
+                if attempt == E2E_RETRIES:
+                    raise
+                reason = type(exc).__name__
+            else:
+                if resp.status_code not in _RETRYABLE_HTTP_STATUSES or attempt == E2E_RETRIES:
+                    return resp
+                reason = f"HTTP {resp.status_code}"
+            _wait_before_retry(attempt, "Claude messages request", reason)
+        raise AssertionError("unreachable")
 
     @staticmethod
     def _skip_if_unusable(resp: httpx.Response) -> None:
@@ -798,7 +913,6 @@ class TestGeminiLaunch:
         # discovery code paths.
         monkeypatch.chdir(tmp_path)
 
-        timeout_seconds = int(os.environ.get("UCODE_E2E_AGENT_TIMEOUT", "60"))
         failures = []
         for model in gemini_models:
             with pytest.MonkeyPatch().context() as mp:
@@ -814,9 +928,12 @@ class TestGeminiLaunch:
             # without bringing a validation probe back into `ucode configure`.
             env = gemini.build_runtime_env(e2e_workspace, model, e2e_token)
             try:
-                result = _run_agent(gemini.validate_cmd("gemini"), env=env, timeout=timeout_seconds)
+                result = _run_agent(gemini.validate_cmd("gemini"), env=env)
             except subprocess.TimeoutExpired:
-                failures.append(f"model={model} timed out after {timeout_seconds}s")
+                failures.append(
+                    f"model={model} timed out after {E2E_RETRIES + 1} attempts of "
+                    f"{E2E_ATTEMPT_TIMEOUT_SECONDS}s"
+                )
                 continue
             if result.returncode != 0 or not result.stdout.strip():
                 failures.append(
@@ -912,7 +1029,9 @@ class TestOpencodeLaunch:
             print(f"[opencode-per-model] -> {provider}/{model}", flush=True)
             t0 = time.monotonic()
             try:
-                result = _run_agent(cmd, env=opencode.build_runtime_env(e2e_token), timeout=180)
+                env = opencode.build_runtime_env(e2e_token)
+                _warm_opencode(env)
+                result = _run_agent(cmd, env=env)
             except subprocess.TimeoutExpired as exc:
                 elapsed = time.monotonic() - t0
                 partial_stdout = _timeout_output(exc.stdout)
@@ -980,11 +1099,9 @@ class TestOpencodeLaunch:
         }
         opencode.write_tool_config(state, model, token=e2e_token)
 
-        result = _run_agent(
-            opencode.validate_cmd("opencode"),
-            env=opencode.build_runtime_env(e2e_token),
-            timeout=180,
-        )
+        env = opencode.build_runtime_env(e2e_token)
+        _warm_opencode(env)
+        result = _run_agent(opencode.validate_cmd("opencode"), env=env)
         combined = (result.stdout + result.stderr).strip()
         assert result.returncode == 0 and combined, (
             f"DeepSeek model={model} rc={result.returncode} "
@@ -1020,6 +1137,8 @@ class TestOpencodeLaunch:
             token=rejected_token,
         )
 
+        # Warm with the good token so the timed launch is the first to meet the rejected one.
+        _warm_opencode(opencode.build_runtime_env(e2e_token))
         env = opencode.build_runtime_env(rejected_token)
         # CI authenticates this way; the helper subprocess inherits it and
         # returns the known-good token after OpenCode's first request gets 401.
@@ -1027,7 +1146,6 @@ class TestOpencodeLaunch:
         result = _run_agent(
             opencode.validate_cmd("opencode"),
             env=env,
-            timeout=180,
         )
         combined = (result.stdout + result.stderr).strip()
         assert result.returncode == 0 and combined, (
@@ -1111,7 +1229,7 @@ class TestCopilotLaunch:
 
             env = copilot.build_runtime_env(e2e_workspace, model, e2e_token)
             cmd = copilot.validate_cmd("copilot")
-            result = _run_agent(cmd, env=env, timeout=120)
+            result = _run_agent(cmd, env=env)
             combined = (result.stdout + result.stderr).strip()
             if result.returncode != 0 or not combined:
                 failures.append(
@@ -1196,7 +1314,7 @@ class TestPiLaunch:
 
             env = pi.build_runtime_env(e2e_token)
             cmd = pi.validate_cmd("pi")
-            result = _run_agent(cmd, env=env, timeout=120)
+            result = _run_agent(cmd, env=env)
             combined = (result.stdout + result.stderr).strip()
             if result.returncode != 0 or not combined:
                 failures.append(
