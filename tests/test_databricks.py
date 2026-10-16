@@ -5104,22 +5104,18 @@ class TestResolveCurrentBudgetSpend:
 
 
 class TestListCurrentUserBudgetSpendStatuses:
-    @staticmethod
-    def _stub_account_auth(monkeypatch):
-        monkeypatch.setattr(
-            db_mod,
-            "_get_databricks_account_token",
-            lambda account_host, account_id: ("account-token", None),
-        )
+    @pytest.fixture(autouse=True)
+    def reject_auth_subprocesses(self, monkeypatch):
+        def unexpected_run(*args, **kwargs):
+            pytest.fail("Spend lookup must use existing workspace credentials without CLI auth")
 
-    def test_discovers_account_and_parses_personal_and_shared_limits(self, monkeypatch):
-        self._stub_account_auth(monkeypatch)
+        monkeypatch.setattr(db_mod, "run", unexpected_run)
+
+    def test_uses_workspace_credentials_and_parses_personal_and_shared_limits(self, monkeypatch):
         calls = []
 
         def fake_get(url, token, timeout=10):
             calls.append((url, token))
-            if url.endswith("/.well-known/databricks-config"):
-                return {"account_id": "account-1", "workspace_id": "123"}, None
             return {
                 "budget_spend_statuses": [
                     {
@@ -5163,26 +5159,22 @@ class TestListCurrentUserBudgetSpendStatuses:
                 percent_consumed=Decimal("82.25"),
             ),
         ]
-        assert calls[0] == (
-            "https://example.databricks.com/.well-known/databricks-config",
-            "workspace-token",
-        )
-        request_url, request_token = calls[1]
-        assert request_url.startswith(
-            "https://accounts.cloud.databricks.com/api/2.1/accounts/"
-            "account-1/budget-spend-statuses?"
-        )
+        assert len(calls) == 1
+        request_url, request_token = calls[0]
+        assert request_url.startswith(f"{WS}/api/ai-gateway/v2/budget-spend-statuses?")
         params = parse_qs(request_url.split("?", 1)[1])
-        assert params == {"page_size": ["100"], "filter": ["workspace_id = 123"]}
-        assert request_token == "account-token"
+        assert params == {"page_size": ["100"]}
+        assert request_token == "workspace-token"
 
-    def test_pages_until_the_server_omits_the_next_token(self, monkeypatch):
-        self._stub_account_auth(monkeypatch)
+    @pytest.mark.parametrize("last_token", [None, ""])
+    def test_pages_through_empty_pages_until_the_token_is_absent_or_empty(
+        self, monkeypatch, last_token
+    ):
         pages = iter(
             [
                 {
                     "budget_spend_statuses": [],
-                    "next_page_token": "page-2",
+                    "next_page_token": "page-2+/=",
                 },
                 {
                     "budget_spend_statuses": [
@@ -5197,15 +5189,15 @@ class TestListCurrentUserBudgetSpendStatuses:
                                 }
                             ],
                         }
-                    ]
+                    ],
+                    "next_page_token": last_token,
                 },
             ]
         )
         urls = []
 
         def fake_get(url, token, timeout=10):
-            if url.endswith("/.well-known/databricks-config"):
-                return {"account_id": "account-1", "workspace_id": "123"}, None
+            assert token == "workspace-token"
             urls.append(url)
             return next(pages), None
 
@@ -5215,14 +5207,14 @@ class TestListCurrentUserBudgetSpendStatuses:
 
         assert reason is None
         assert [status.budget_id for status in statuses] == ["budget-2"]
-        assert "page_token=page-2" in urls[1]
+        assert len(urls) == 2
+        assert parse_qs(urls[1].split("?", 1)[1]) == {
+            "page_size": ["100"],
+            "page_token": ["page-2+/="],
+        }
 
     def test_rejects_a_repeated_page_token(self, monkeypatch):
-        self._stub_account_auth(monkeypatch)
-
         def fake_get(url, token, timeout=10):
-            if url.endswith("/.well-known/databricks-config"):
-                return {"account_id": "account-1", "workspace_id": "123"}, None
             return {"budget_spend_statuses": [], "next_page_token": "same"}, None
 
         monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
@@ -5233,11 +5225,7 @@ class TestListCurrentUserBudgetSpendStatuses:
         assert reason == "budget spend status listing repeated a page token"
 
     def test_accepts_an_omitted_empty_status_collection(self, monkeypatch):
-        self._stub_account_auth(monkeypatch)
-
         def fake_get(url, token, timeout=10):
-            if url.endswith("/.well-known/databricks-config"):
-                return {"account_id": "account-1", "workspace_id": "123"}, None
             return {}, None
 
         monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
@@ -5246,6 +5234,41 @@ class TestListCurrentUserBudgetSpendStatuses:
 
         assert statuses == []
         assert reason is None
+
+    @pytest.mark.parametrize(
+        ("scope_type", "amounts", "spend", "threshold"),
+        [
+            ("ALERT_CONFIGURATION_SCOPE_TYPE_SHARED", {}, None, None),
+            ("ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER", {"threshold": "50"}, None, Decimal("50")),
+            (
+                "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER",
+                {"spend": "1", "threshold": "0"},
+                Decimal("1"),
+                Decimal("0"),
+            ),
+        ],
+    )
+    def test_accepts_an_omitted_percentage(
+        self, monkeypatch, scope_type, amounts, spend, threshold
+    ):
+        payload = {
+            "budget_spend_statuses": [
+                {
+                    "budget_id": "budget-1",
+                    "alert_spend_statuses": [
+                        {"scope_type": scope_type, "time_period": "MONTH", **amounts}
+                    ],
+                }
+            ]
+        }
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args, **kwargs: (payload, None))
+
+        statuses, reason = list_current_user_budget_spend_statuses(WS, "workspace-token")
+
+        assert reason is None
+        assert statuses == [
+            BudgetLimitStatus("budget-1", scope_type, "MONTH", None, spend, threshold)
+        ]
 
     @pytest.mark.parametrize(
         "alert_status",
@@ -5269,17 +5292,18 @@ class TestListCurrentUserBudgetSpendStatuses:
             {
                 "scope_type": "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER",
                 "time_period": "DAY",
+                "percent_consumed": None,
+            },
+            {
+                "scope_type": "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER",
+                "time_period": "DAY",
                 "percent_consumed": "1",
                 "spend": "invalid",
             },
         ],
     )
     def test_rejects_malformed_alert_statuses(self, monkeypatch, alert_status):
-        self._stub_account_auth(monkeypatch)
-
         def fake_get(url, token, timeout=10):
-            if url.endswith("/.well-known/databricks-config"):
-                return {"account_id": "account-1", "workspace_id": "123"}, None
             return {
                 "budget_spend_statuses": [
                     {"budget_id": "budget-1", "alert_spend_statuses": [alert_status]}
@@ -5293,42 +5317,123 @@ class TestListCurrentUserBudgetSpendStatuses:
         assert statuses == []
         assert reason == "budget spend status listing returned a malformed alert status"
 
-    def test_account_token_uses_account_host_without_workspace_credentials(self, monkeypatch):
-        monkeypatch.setenv("DATABRICKS_HOST", WS)
-        monkeypatch.setenv("DATABRICKS_TOKEN", "workspace-token")
-        monkeypatch.setenv("DATABRICKS_BEARER", "workspace-bearer")
-        monkeypatch.setenv("DATABRICKS_ACCOUNT_ID", "wrong-account")
-        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "/usr/local/bin/databricks")
-        captured = {}
+    @pytest.mark.parametrize("workspace", [WS, f"{WS}/", f"{WS}/?o=123"])
+    def test_uses_workspace_origin_and_preserves_configured_auth(self, monkeypatch, workspace):
+        monkeypatch.setenv("DATABRICKS_HOST", "https://another-workspace")
+        monkeypatch.setenv("DATABRICKS_CONFIG_PROFILE", "workspace-profile")
+        monkeypatch.setenv("DATABRICKS_TOKEN", "existing-pat")
+        calls = []
 
-        def fake_run(args, **kwargs):
-            captured["args"] = args
-            captured["env"] = kwargs["env"]
-            return subprocess.CompletedProcess(args, 0, '{"access_token":"account-token"}', "")
+        def fake_get(url, token, timeout=10):
+            calls.append((url, token, timeout))
+            return {}, None
 
-        monkeypatch.setattr(db_mod, "run", fake_run)
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
 
-        token, reason = db_mod._get_databricks_account_token(
-            "https://accounts.cloud.databricks.com", "account-1"
+        statuses, reason = list_current_user_budget_spend_statuses(
+            workspace, "workspace-token", timeout=7
         )
 
-        assert token == "account-token"
+        assert statuses == []
         assert reason is None
-        assert captured["args"] == [
-            "/usr/local/bin/databricks",
-            "auth",
-            "token",
-            "--host",
-            "https://accounts.cloud.databricks.com",
-            "--account-id",
-            "account-1",
-            "--output",
-            "json",
+        assert calls == [
+            (f"{WS}/api/ai-gateway/v2/budget-spend-statuses?page_size=100", "workspace-token", 7)
         ]
-        assert "DATABRICKS_HOST" not in captured["env"]
-        assert "DATABRICKS_TOKEN" not in captured["env"]
-        assert "DATABRICKS_BEARER" not in captured["env"]
-        assert "DATABRICKS_ACCOUNT_ID" not in captured["env"]
+        assert os.environ["DATABRICKS_HOST"] == "https://another-workspace"
+        assert os.environ["DATABRICKS_CONFIG_PROFILE"] == "workspace-profile"
+        assert os.environ["DATABRICKS_TOKEN"] == "existing-pat"
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            "HTTP 401 Unauthorized",
+            "HTTP 403 Forbidden: permission denied",
+            "HTTP 404 Not Found",
+            "HTTP 404 Not Found: FEATURE_DISABLED: AI Gateway budget spend statuses are not enabled.",
+            "HTTP 500 Internal Server Error",
+            "network error: timed out",
+        ],
+    )
+    def test_propagates_api_failures_without_account_fallback(self, monkeypatch, failure):
+        calls = []
+
+        def fake_get(url, token, timeout=10):
+            calls.append((url, token))
+            return None, failure
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        statuses, reason = list_current_user_budget_spend_statuses(WS, "workspace-token")
+
+        assert statuses == []
+        assert reason == failure
+        assert calls == [
+            (f"{WS}/api/ai-gateway/v2/budget-spend-statuses?page_size=100", "workspace-token")
+        ]
+
+    @pytest.mark.parametrize("page_token", [42, [], {}])
+    def test_rejects_invalid_page_tokens(self, monkeypatch, page_token):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda *args, **kwargs: ({"next_page_token": page_token}, None),
+        )
+
+        statuses, reason = list_current_user_budget_spend_statuses(WS, "workspace-token")
+
+        assert statuses == []
+        assert reason == "budget spend status listing returned an invalid page token"
+
+    @pytest.mark.parametrize(
+        ("payload", "failure"),
+        [
+            (None, "an unexpected response shape"),
+            ([], "an unexpected response shape"),
+            ({"budget_spend_statuses": {}}, "no status collection"),
+            ({"budget_spend_statuses": [None]}, "a malformed budget status"),
+            ({"budget_spend_statuses": [{"budget_id": "budget-1"}]}, "a malformed budget status"),
+        ],
+    )
+    def test_rejects_malformed_responses(self, monkeypatch, payload, failure):
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args, **kwargs: (payload, None))
+
+        statuses, reason = list_current_user_budget_spend_statuses(WS, "workspace-token")
+
+        assert statuses == []
+        assert reason == f"budget spend status listing returned {failure}"
+
+    @pytest.mark.parametrize("failure", [None, "HTTP 503 Service Unavailable"])
+    def test_preserves_statuses_only_after_all_pages_succeed(self, monkeypatch, failure):
+        pages = iter(
+            [
+                (
+                    {
+                        "budget_spend_statuses": [
+                            {
+                                "budget_id": "budget-1",
+                                "alert_spend_statuses": [
+                                    {
+                                        "scope_type": "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER",
+                                        "time_period": "DAY",
+                                        "percent_consumed": "0",
+                                    }
+                                ],
+                            }
+                        ],
+                        "next_page_token": "page-2",
+                    },
+                    None,
+                ),
+                ({}, failure),
+            ]
+        )
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args, **kwargs: next(pages))
+
+        statuses, reason = list_current_user_budget_spend_statuses(WS, "workspace-token")
+
+        assert reason == failure
+        assert [status.budget_id for status in statuses] == ([] if failure else ["budget-1"])
+        assert next(pages, None) is None
 
 
 class TestListWorkspaceBudgets:

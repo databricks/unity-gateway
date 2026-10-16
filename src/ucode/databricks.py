@@ -32,8 +32,6 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, urlencode, urlparse
 
-from databricks.sdk import environments
-
 from ucode.config_io import APP_DIR
 from ucode.constants import (
     MODEL_PROVIDER_SERVICE_HEADER,
@@ -119,7 +117,7 @@ class BudgetLimitStatus:
     budget_id: str
     scope_type: str
     time_period: str
-    percent_consumed: Decimal
+    percent_consumed: Decimal | None
     spend: Decimal | None = None
     threshold: Decimal | None = None
 
@@ -3751,7 +3749,7 @@ def resolve_current_budget_spend(
     return (spend, threshold), None
 
 
-_BUDGET_SPEND_STATUS_API_PATH = "/api/2.1/accounts/{account_id}/budget-spend-statuses"
+_BUDGET_SPEND_STATUS_API_PATH = "/api/ai-gateway/v2/budget-spend-statuses"
 _BUDGET_SPEND_STATUS_PAGE_SIZE = 100
 _BUDGET_SCOPE_TYPES = frozenset(
     {
@@ -3760,59 +3758,6 @@ _BUDGET_SCOPE_TYPES = frozenset(
     }
 )
 _BUDGET_TIME_PERIODS = frozenset({"DAY", "MONTH"})
-
-
-def _get_databricks_account_token(
-    account_host: str,
-    account_id: str,
-) -> tuple[str | None, str | None]:
-    """Mint an account-audience token without forwarding workspace credentials."""
-    env = os.environ.copy()
-    for key in (
-        "DATABRICKS_ACCOUNT_ID",
-        "DATABRICKS_AUTH_TYPE",
-        "DATABRICKS_BEARER",
-        "DATABRICKS_BEARER_COMMAND",
-        "DATABRICKS_CONFIG_PROFILE",
-        "DATABRICKS_HOST",
-        "DATABRICKS_TOKEN",
-        "DATABRICKS_WORKSPACE_ID",
-    ):
-        env.pop(key, None)
-    cmd = [
-        databricks_cli_path(),
-        "auth",
-        "token",
-        "--host",
-        account_host,
-        "--account-id",
-        account_id,
-        "--output",
-        "json",
-    ]
-    try:
-        result = run(
-            cmd,
-            check=False,
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=15,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return None, f"Databricks CLI could not get an account token: {exc}"
-    _debug("account auth token", _format_subprocess_result(result))
-    if result.returncode != 0:
-        detail = (result.stderr or "").strip()[:500]
-        suffix = f": {detail}" if detail else ""
-        return None, f"Databricks CLI could not get an account token{suffix}"
-    try:
-        token = json.loads(result.stdout or "{}").get("access_token", "")
-    except json.JSONDecodeError:
-        return None, "Databricks CLI returned an invalid account token response"
-    if not isinstance(token, str) or not token.strip():
-        return None, "Databricks CLI returned no account token"
-    return token.strip(), None
 
 
 def _budget_limit_status(entry: object, budget_id: str) -> BudgetLimitStatus | None:
@@ -3824,9 +3769,12 @@ def _budget_limit_status(entry: object, budget_id: str) -> BudgetLimitStatus | N
     if (
         scope_type not in _BUDGET_SCOPE_TYPES
         or time_period not in _BUDGET_TIME_PERIODS
-        or percent_consumed is None
-        or not percent_consumed.is_finite()
-        or percent_consumed < 0
+        or (
+            "percent_consumed" in entry
+            and (
+                percent_consumed is None or not percent_consumed.is_finite() or percent_consumed < 0
+            )
+        )
     ):
         return None
 
@@ -3853,43 +3801,18 @@ def list_current_user_budget_spend_statuses(
     timeout: int = 10,
 ) -> tuple[list[BudgetLimitStatus], str | None]:
     """List the caller's spend against blocking AI Gateway budget thresholds."""
-    discovery_url = f"{workspace_origin(workspace)}/.well-known/databricks-config"
-    discovery, reason = _http_get_json(discovery_url, workspace_token, timeout=timeout)
-    if reason is not None:
-        return [], reason
-    if not isinstance(discovery, dict):
-        return [], "workspace discovery returned an unexpected response shape"
-
-    account_id = discovery.get("account_id")
-    workspace_id = discovery.get("workspace_id") or workspace_org_id(workspace)
-    if not isinstance(account_id, str) or not account_id.strip():
-        return [], "workspace discovery returned no account ID"
-    if not isinstance(workspace_id, str) or not workspace_id.isdigit():
-        return [], "workspace discovery returned no numeric workspace ID"
-    account_id = account_id.strip()
-
-    environment = environments.get_environment_for_hostname(workspace_hostname(workspace))
-    account_host = environment.deployment_url("accounts")
-    account_token, reason = _get_databricks_account_token(account_host, account_id)
-    if account_token is None:
-        return [], reason or "could not get an account token"
-
-    base_url = account_host + _BUDGET_SPEND_STATUS_API_PATH.format(
-        account_id=quote(account_id, safe="")
-    )
+    base_url = workspace_origin(workspace) + _BUDGET_SPEND_STATUS_API_PATH
     statuses: list[BudgetLimitStatus] = []
     page_token: str | None = None
     seen_page_tokens: set[str] = set()
     while True:
-        params = {
-            "page_size": _BUDGET_SPEND_STATUS_PAGE_SIZE,
-            "filter": f"workspace_id = {workspace_id}",
-        }
+        params: dict[str, int | str] = {"page_size": _BUDGET_SPEND_STATUS_PAGE_SIZE}
         if page_token is not None:
             params["page_token"] = page_token
-        payload, reason = _http_get_json(
-            f"{base_url}?{urlencode(params)}", account_token, timeout=timeout
-        )
+        with spinner("Checking AI Gateway spend limits..."):
+            payload, reason = _http_get_json(
+                f"{base_url}?{urlencode(params)}", workspace_token, timeout=timeout
+            )
         if reason is not None:
             return [], reason
         if not isinstance(payload, dict):

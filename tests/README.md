@@ -12,6 +12,13 @@ mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 | Integration CUJs | `integration/test_*.py` | Public configure, TUI, script, command, protocol, and lifecycle journeys |
 | Installation | `integration/test_installation.py` | Fresh installed package, CLI, and local helpers without credentials on Linux and advisory native Windows |
 
+`test_databricks.py` covers the workspace-authenticated spend-status client:
+workspace URL/token reuse without account discovery or account CLI authentication,
+personal/shared decimal parsing, optional percentages, pagination through empty pages,
+invalid/repeated tokens, malformed responses, and discarding partial results after failures.
+Obsolete account-token tests are replaced by workspace-auth assertions. These are
+unit/component checks, not live workspace or sign-in coverage; CLI wiring is separate.
+
 Claude mod entry-point coverage lives in `test_claude_mod.py` (generated plugin contents),
 `test_claude_smart_routing_v2.py` (launch wiring), and the explicitly selected
 `native_claude/test_mod.py` suite. Claude 2.1.290 validates the module and runs its
