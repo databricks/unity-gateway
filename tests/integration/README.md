@@ -1,5 +1,9 @@
 # Integration tests
 
+`../test_routing_rationale.py` covers routing-reason wording, availability and profiling
+fallbacks, preserved gateway notices, and unchanged decisions as component checks with
+controlled HTTP responses. It does not establish live agent rendering coverage.
+
 The separate [dedicated-workspace CUJ](../e2e_cuj/AGENTS.md) lives in `tests/e2e_cuj/`
 and runs directly with pytest. It does not use this suite's runner or config fixtures.
 It reuses the session, terminal, file-task, and transcript helpers in `utils/`.
