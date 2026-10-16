@@ -65,6 +65,10 @@ The Claude mod entry point has separate native component checks in
 `../native_claude/test_mod.py`. Claude 2.1.290 validates the module and runs its
 TypeScript event-forwarding and launch-option tests in a dedicated CI job. The
 existing Claude skill-toggle journey checks the live recipe payload field across on/off/on.
+The required Isaac feedback form is checked separately by native component tests
+using engine boundaries, including the 16-character minimum, cancellation before
+disabling, and submission failure after a valid reason. The gateway
+toggle journey does not prove Isaac evidence submission.
 
 The existing unit tests keep their fixtures. Integration has an independent
 pytest configuration and uses `--confcutdir` so those fixtures cannot leak in.

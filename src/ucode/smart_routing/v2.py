@@ -410,6 +410,7 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
         "register.ts",
         "constants.ts",
         "extra-body.ts",
+        "feedback.ts",
         "smart-routing-status.ts",
         "subagent-routing.ts",
     ):
