@@ -43,6 +43,7 @@ from ucode.databricks import (
     get_databricks_token,
     list_anthropic_model_catalog,
     list_anthropic_models,
+    maybe_add_gpt_1m_suffix,
 )
 from ucode.launcher import exec_or_spawn
 from ucode.os_compatibility import subprocess_cross_os
@@ -325,14 +326,11 @@ def _routed_claude_agent_name(model: str) -> str:
 
 
 def _routed_claude_agent_definitions(model_ids: list[str]) -> dict[str, dict[str, str]]:
-    # Imported here because ucode.agents.claude imports this module at load time.
-    from ucode.agents.claude import _maybe_add_1m_suffix
-
     return {
         _routed_claude_agent_name(model): {
             "description": f"Smart-routed coding agent using {model}",
             "prompt": CLAUDE_ROUTED_AGENT_PROMPT,
-            "model": _maybe_add_1m_suffix(model),
+            "model": maybe_add_gpt_1m_suffix(model),
         }
         for model in _canonical_claude_models(model_ids)
     }

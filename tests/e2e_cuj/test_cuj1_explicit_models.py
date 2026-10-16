@@ -189,7 +189,7 @@ def _assert_generated_configs(session, claude_headers: dict[str, str], workspace
     assert claude_picker["options"] == [
         {"model": model, "label": label}
         for model, label in zip(
-            (CLAUDE_MODELS[0] + "[1m]", CLAUDE_MODELS[1] + "[1m]", CLAUDE_MODELS[2]),
+            CLAUDE_MODELS,
             ("Claude Opus 4.8", "Claude Sonnet 4.6", "Claude Haiku 4.5"),
             strict=True,
         )
@@ -271,8 +271,7 @@ def _trace_pair_count(
             "SELECT "
             f"'{source}' AS marker_source, "
             f"{marker_expression} AS marker, "
-            # Claude Code reports a launched `[1m]` context hint in the model name.
-            f"replace(variant_get(attributes, '$[\"{model_key}\"]', 'STRING'), '[1m]', '') AS model "
+            f"variant_get(attributes, '$[\"{model_key}\"]', 'STRING') AS model "
             f"FROM {table} WHERE kind = 'SPAN_KIND_INTERNAL' "
             f"AND name = '{span_names[source]}' "
             "AND time > current_timestamp() - INTERVAL 90 MINUTES"

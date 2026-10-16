@@ -240,11 +240,7 @@ def test_claude_model_lifecycle(harness):
     private, managed = harness.claude_files()
     assert managed["availableModels"] == CLAUDE_A, managed
     assert private["availableModels"] == CLAUDE_A, private
-    assert [o["model"] for o in managed["modelPicker"]["options"]] == [
-        CLAUDE_A[0] + "[1m]",
-        CLAUDE_A[1] + "[1m]",
-        CLAUDE_A[2],
-    ], managed
+    assert [o["model"] for o in managed["modelPicker"]["options"]] == CLAUDE_A, managed
     assert managed["enforceAvailableModels"] is True
     assert managed["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"] == CLAUDE_A[0] + "[1m]", managed
     assert managed["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] == CLAUDE_A[1] + "[1m]", managed
@@ -257,10 +253,7 @@ def test_claude_model_lifecycle(harness):
     assert managed["availableModels"] == CLAUDE_B, managed
     assert private["availableModels"] == CLAUDE_B, private
     assert "system.ai.claude-opus-4-8" not in managed["availableModels"], managed
-    assert [o["model"] for o in managed["modelPicker"]["options"]] == [
-        CLAUDE_B[0] + "[1m]",
-        CLAUDE_B[1],
-    ], managed
+    assert [o["model"] for o in managed["modelPicker"]["options"]] == CLAUDE_B, managed
     assert "ANTHROPIC_DEFAULT_OPUS_MODEL" not in managed["env"], managed
     assert managed["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] == CLAUDE_B[0] + "[1m]", managed
     assert managed["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == CLAUDE_B[1], managed

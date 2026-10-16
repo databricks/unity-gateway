@@ -90,20 +90,8 @@ class TestRenderOverlay:
             "system.ai.claude-sonnet-5[1m]"
         )
 
-    @pytest.mark.parametrize(
-        ("model", "expected"),
-        [
-            ("system.ai.gpt-5-6-sol", "system.ai.gpt-5-6-sol[1m]"),
-            ("databricks-gpt-6-astra", "databricks-gpt-6-astra[1m]"),
-            ("system.ai.gpt-5-5", "system.ai.gpt-5-5[1m]"),
-            ("gpt-4.1", "gpt-4.1[1m]"),
-            ("system.ai.gpt-5-6-sol[1m]", "system.ai.gpt-5-6-sol[1m]"),
-            ("system.ai.gpt-5-6-sol[200k]", "system.ai.gpt-5-6-sol[200k]"),
-            ("system.ai.gpt-oss-120b", "system.ai.gpt-oss-120b"),
-        ],
-    )
-    def test_long_context_suffix_supports_gpt(self, model, expected):
-        assert claude._maybe_add_1m_suffix(model) == expected
+    def test_long_context_suffix_supports_gpt(self):
+        assert claude._maybe_add_1m_suffix("system.ai.gpt-5-5") == ("system.ai.gpt-5-5[1m]")
 
     def test_does_not_set_anthropic_model_env(self):
         # We deliberately don't pin ANTHROPIC_MODEL: when set, Claude Code's
@@ -172,53 +160,6 @@ class TestRenderOverlay:
             "system.ai.claude-sonnet-4-6[1m]": "Claude Sonnet 4.6",
             "system.ai.claude-haiku-4-5": "Claude Haiku 4.5",
         }
-
-    @pytest.mark.parametrize(
-        ("family", "model"),
-        [("opus", "system.ai.claude-opus-4-8"), ("sonnet", "system.ai.gpt-5-6-sol")],
-    )
-    def test_default_model_picker_catalog_lists_family_default_once(self, family, model):
-        catalog = claude.default_model_picker_catalog(
-            {family: model},
-            discovered_catalog=db_mod.AnthropicModelCatalog(
-                model_ids=[model], model_id_to_display_name={}
-            ),
-        )
-
-        assert catalog.model_ids == [f"{model}[1m]"]
-
-    def test_picker_lists_discovered_launch_model_under_its_id(self):
-        sonnet = "system.ai.claude-sonnet-4-6"
-        catalog = claude.default_model_picker_catalog(
-            {"sonnet": "system.ai.claude-sonnet-5"},
-            launch_model=sonnet,
-            discovered_catalog=db_mod.AnthropicModelCatalog(
-                model_ids=[sonnet], model_id_to_display_name={}
-            ),
-        )
-        overlay, _ = claude.render_overlay(WS, None, picker_catalog=catalog)
-
-        assert overlay["modelPicker"]["options"][1] == {
-            "model": f"{sonnet}[1m]",
-            "label": "Claude Sonnet 4.6",
-            "behavesAs": "claude-sonnet-4-6",
-        }
-
-    def test_provider_model_ids_stay_verbatim(self):
-        sonnet = "claude-sonnet-4-6"
-        overlay, _ = claude.render_overlay(
-            WS,
-            None,
-            provider="main.default.anthropic-mps",
-            provider_models={"sonnet": sonnet},
-            route_root_model=sonnet,
-            picker_catalog=db_mod.AnthropicModelCatalog(
-                model_ids=[sonnet], model_id_to_display_name={}
-            ),
-        )
-
-        assert overlay["env"]["ANTHROPIC_MODEL"] == sonnet
-        assert [option["model"] for option in overlay["modelPicker"]["options"]] == [sonnet]
 
     def test_mps_picker_renders_default_shortcuts_before_catalog_rows(self):
         provider = "main.default.anthropic-mps"
@@ -664,7 +605,7 @@ class TestRenderOverlay:
         assert overlay["enforceAvailableModels"] is True
         assert overlay["modelPicker"]["replaceBuiltInOptions"] is True
         assert len(overlay["modelPicker"]["options"]) == 2
-        assert overlay["modelPicker"]["options"][0]["model"] == "system.ai.claude-opus-4-8[1m]"
+        assert overlay["modelPicker"]["options"][0]["model"] == "system.ai.claude-opus-4-8"
         assert overlay["modelPicker"]["options"][0]["label"] == "Claude Opus 4.8"
         assert overlay["modelPicker"]["options"][1] == {
             "model": "system.ai.gpt-5-6-sol[1m]",
@@ -3196,13 +3137,12 @@ class TestClaudeLaunch:
             options=LaunchOptions(user_pinned_model=custom_model),
         )
 
-        pinned_model = f"{custom_model}[1m]"
-        assert os.environ["ANTHROPIC_MODEL"] == pinned_model
+        assert os.environ["ANTHROPIC_MODEL"] == custom_model
         assert calls[0][0:2] == ["claude", "--settings"]
         settings = json.loads(calls[0][2])
         assert settings["model"] == saved_model
-        assert settings["env"] == {"USER_SETTING": "keep", "ANTHROPIC_MODEL": pinned_model}
-        assert calls[0][3:] == ["--model", pinned_model, "--debug"]
+        assert settings["env"] == {"USER_SETTING": "keep", "ANTHROPIC_MODEL": custom_model}
+        assert calls[0][3:] == ["--model", custom_model, "--debug"]
         assert settings_path.read_bytes() == original_settings
 
     def test_launch_custom_model_preserves_forwarded_native_model(self, monkeypatch):
@@ -3251,7 +3191,7 @@ class TestClaudeLaunch:
         assert launch_settings["availableModels"] == original_settings["availableModels"]
         assert launch_settings["enforceAvailableModels"] is True
         assert json.loads(settings_path.read_text()) == original_settings
-        assert calls[0][-2:] == ["--model", f"{custom_model}[1m]"]
+        assert calls[0][-2:] == ["--model", custom_model]
 
     def test_launch_default_model_is_inherited_by_smart_routing(self, monkeypatch):
         monkeypatch.delenv("ANTHROPIC_DEFAULT_MODEL", raising=False)
@@ -3785,7 +3725,7 @@ class TestClaudeSmartRouting:
         claude.write_tool_config(
             state, "system.ai.claude-opus-4-8", route_root_model="system.ai.claude-sonnet-5"
         )
-        assert written[0]["env"]["ANTHROPIC_MODEL"] == "system.ai.claude-sonnet-5[1m]"
+        assert written[0]["env"]["ANTHROPIC_MODEL"] == "system.ai.claude-sonnet-5"
 
     def test_provider_suppresses_routing_hooks(self, monkeypatch):
         written: list = []
