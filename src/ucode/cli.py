@@ -3012,6 +3012,7 @@ def _launch_tool(
     model: str | None = None,
     parent_schema: str | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
+    native_web_search: bool | None = None,
 ) -> None:
     previous = {}
     try:
@@ -3336,6 +3337,11 @@ def _launch_tool(
                 launch_model=model or forwarded_model or route_root_model,
                 discovered_catalog=picker_catalog,
             )
+        if tool == "claude" and native_web_search is not None:
+            # Persisted (written by configure_tool's save) so a later bare `ug claude` keeps it; the
+            # explicit flag also outranks the one-launch environment override.
+            state[claude_agent.NATIVE_WEB_SEARCH_STATE_KEY] = native_web_search
+            os.environ.pop(claude_agent.NATIVE_WEB_SEARCH_ENV, None)
         state = configure_tool(
             tool,
             state,
@@ -3377,6 +3383,8 @@ def _launch_tool(
         print_section(_launch_title(tool))
         if provider:
             print_kv("Provider", provider)
+        if tool == "claude" and claude_agent.native_web_search_enabled(state):
+            print_kv("Web search", "Claude Code built-in WebSearch")
         if tool in CAN_USE_CACHED_CONFIG_AGENTS and smart_routing_enabled and not provider:
             print_note(
                 f"{TOOL_SPECS[tool]['display']} may require one-time hook review. Open "
@@ -3731,6 +3739,15 @@ def claude_cmd(
             help="Enable or disable AI Gateway model routing for this Claude Code launch or session.",
         ),
     ] = None,
+    native_web_search: Annotated[
+        bool | None,
+        typer.Option(
+            "--native-web-search/--no-native-web-search",
+            help="Use Claude Code's built-in WebSearch through AI Gateway instead of ug's "
+            "web_search MCP server. Remembered for later launches; "
+            "UG_CLAUDE_NATIVE_WEB_SEARCH=1/0 overrides it for one launch.",
+        ),
+    ] = None,
 ) -> None:
     """Launch Claude Code via Databricks."""
     if _toggle_current_smart_routing_session(enable_smart_routing_flag):
@@ -3752,6 +3769,7 @@ def claude_cmd(
                 workspace_url=workspace,
                 parent_schema=model_location,
                 custom_oauth=custom_oauth,
+                native_web_search=native_web_search,
             )
 
 

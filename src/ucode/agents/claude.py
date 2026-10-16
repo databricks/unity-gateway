@@ -114,6 +114,13 @@ CLAUDE_MCP_CONFIG_PATH = Path.home() / ".claude.json"
 CLAUDE_USER_SETTINGS_PATH = CLAUDE_CONFIG_DIR / "settings.json"
 CLAUDE_BACKUP_PATH = APP_DIR / "claude-ucode-settings.backup.json"
 WEB_SEARCH_MCP_STATE_KEY = "claude_web_search_mcp"
+# Opt-in to Claude Code's built-in WebSearch instead of ug's `web_search` MCP replacement, for
+# workspaces whose gateway accepts the built-in tool.
+NATIVE_WEB_SEARCH_STATE_KEY = "claude_native_web_search"
+NATIVE_WEB_SEARCH_ENV = "UG_CLAUDE_NATIVE_WEB_SEARCH"
+BUILTIN_WEB_SEARCH_TOOL = "WebSearch"
+_NATIVE_WEB_SEARCH_TRUE = {"1", "true", "yes", "on"}
+_NATIVE_WEB_SEARCH_FALSE = {"0", "false", "no", "off"}
 MINIMUM_CLAUDE_VERSION = (2, 1, 290)
 MINIMUM_CLAUDE_VERSION_TEXT = "2.1.290"
 MANAGED_MCP_SETTINGS_KEY = "managedMcpServers"
@@ -163,6 +170,24 @@ def _resolve_web_search_model(state: dict) -> str | None:
         if isinstance(first, str) and first.strip():
             return first.strip()
     return None
+
+
+def native_web_search_enabled(state: dict) -> bool:
+    """Whether Claude Code keeps its built-in WebSearch instead of ug's MCP replacement.
+
+    ``UG_CLAUDE_NATIVE_WEB_SEARCH`` overrides the persisted ``ug claude --native-web-search``
+    choice for one launch; an unset or empty value defers to it."""
+    value = os.environ.get(NATIVE_WEB_SEARCH_ENV, "").strip().lower()
+    if value in _NATIVE_WEB_SEARCH_TRUE:
+        return True
+    if value in _NATIVE_WEB_SEARCH_FALSE:
+        return False
+    if value:
+        raise RuntimeError(
+            f"{NATIVE_WEB_SEARCH_ENV} must be 1 or 0 (also true/false, yes/no, on/off), "
+            f"got {value!r}."
+        )
+    return state.get(NATIVE_WEB_SEARCH_STATE_KEY) is True
 
 
 WEB_SEARCH_MCP_NAME = "web_search"
@@ -558,9 +583,10 @@ def render_overlay(
     # mechanism for built-in tools; a bare tool name in `deny` drops it, whereas
     # a scoped rule like `WebSearch(*)` would leave it advertised.) The
     # replacement `web_search` MCP server is registered separately via the
-    # claude CLI.
+    # claude CLI. A workspace whose gateway accepts the built-in tool can opt in to
+    # native web search (see `native_web_search_enabled`).
     if disable_web_search:
-        overlay["permissions"] = {"deny": ["WebSearch"]}
+        overlay["permissions"] = {"deny": [BUILTIN_WEB_SEARCH_TOOL]}
         keys.append(["permissions", "deny"])
 
     if static_models and not provider and not parent_schema and not relayed:
@@ -1285,6 +1311,35 @@ def _prepare_external_web_search_args(state: dict, tool_args: list[str]) -> list
     return result
 
 
+def _unregister_owned_web_search_mcp(state: dict) -> None:
+    """Remove ug's own user-scope web_search registration so it doesn't duplicate WebSearch.
+
+    Only an unchanged ug-generated entry is removed; an edited or foreign one is left alone."""
+    previous_entry = state.get(WEB_SEARCH_MCP_STATE_KEY)
+    if not previous_entry:
+        return
+    config = _read_claude_config_for_rewrite(claude_mcp_config_path())
+    servers = config.get("mcpServers", {}) if config is not None else None
+    existing = servers.get(WEB_SEARCH_MCP_NAME) if isinstance(servers, dict) else None
+    if isinstance(servers, dict) and existing is None:
+        state.pop(WEB_SEARCH_MCP_STATE_KEY, None)
+        return
+    if existing != previous_entry or not _generated_search_entry(existing):
+        print_warning(
+            "Native web search is on, but the web_search MCP entry is not an unchanged "
+            "ug-generated registration, so it was kept. Remove it with "
+            f"`claude mcp remove {WEB_SEARCH_MCP_NAME} -s {MCP_USER_SCOPE}` to avoid two "
+            "search tools."
+        )
+        return
+    try:
+        remove_claude_mcp_server(WEB_SEARCH_MCP_NAME, MCP_USER_SCOPE)
+    except RuntimeError as exc:
+        print_warning(f"{exc} Re-run `ug claude` to retry.")
+        return
+    state.pop(WEB_SEARCH_MCP_STATE_KEY, None)
+
+
 def _unregister_web_search_mcp() -> None:
     """Remove the web_search MCP server from all scopes. Used by revert."""
     for scope in MCP_CLEANUP_SCOPES:
@@ -1335,7 +1390,8 @@ def write_tool_config(
     # (treated as unmanaged), never blocking the write.
     managed_config_present = refresh_managed_config(state).manifest is not None
     previous_keys = ((state.get("managed_configs") or {}).get("claude") or {}).get("keys", [])
-    web_search_model = _resolve_web_search_model(state)
+    native_web_search = native_web_search_enabled(state)
+    web_search_model = None if native_web_search else _resolve_web_search_model(state)
     should_write_tracing_settings = (
         bool(state.get("claude_otel_tracing")) and managed_config_present
     )
@@ -1379,6 +1435,8 @@ def write_tool_config(
         + [["env", key] for key in CLAUDE_OTEL_TRACE_ENV_KEYS]
         + [["otelHeadersHelper"]]
         + [["hooks", event] for event in ("PreToolUse", "SessionStart", "SubagentStart")]
+        # Owned while native search is on so withdrawing a stale deny counts as a managed change.
+        + ([CLAUDE_PERMISSIONS_DENY_PATH] if native_web_search else [])
     ):
         if path not in managed_file_keys:
             managed_file_keys.append(path)
@@ -1517,6 +1575,10 @@ def write_tool_config(
                 elif not ug_picker:
                     _warn_unrecorded_allow_list(merged, managed_settings_snapshots)
         sync_smart_routing_hooks(merged, state, enabled=False)
+        if native_web_search:
+            # deep_merge_dict keeps the deny an earlier launch wrote; an admin's own deny is
+            # re-applied afterwards by the managed-settings passthrough.
+            _drop_builtin_web_search_deny(merged)
         return merged
 
     managed_snapshots = managed_file_snapshots("claude", _parse_managed_settings)
@@ -1576,11 +1638,19 @@ def write_tool_config(
         [*managed_file_keys, *passthrough.paths],
         relayed,
         [key for key in CLAUDE_MANAGED_PICKER_KEYS if key in overlay],
-        withdrawn_denies=withdrawn_list_items(
-            CLAUDE_PERMISSIONS_DENY_PATH, passthrough, previous_leaves
-        ),
+        withdrawn_denies=[
+            *withdrawn_list_items(CLAUDE_PERMISSIONS_DENY_PATH, passthrough, previous_leaves),
+            *([BUILTIN_WEB_SEARCH_TOOL] if native_web_search else []),
+        ],
         passthrough_leaves=passthrough.record(),
     )
+    if native_web_search and BUILTIN_WEB_SEARCH_TOOL in passthrough.items_at(
+        CLAUDE_PERMISSIONS_DENY_PATH
+    ):
+        print_warning(
+            "Your workspace's managed coding agent config denies WebSearch, so Claude Code's "
+            "built-in web search stays disabled. Ask your administrator to remove that rule."
+        )
 
     custom_oauth = state.get("custom_oauth")
     web_search_profile = (
@@ -1589,7 +1659,9 @@ def write_tool_config(
         else state.get("profile")
     )
     # Ownership describes the installed registration, even when no search model is available.
-    if web_search_model and not external_search:
+    if native_web_search:
+        _unregister_owned_web_search_mcp(state)
+    elif web_search_model and not external_search:
         web_search_entry = _web_search_mcp_entry(
             state["workspace"],
             web_search_model,
@@ -1892,6 +1964,22 @@ def _reconcile_managed_settings(
     mark_managed_file_verified(state, "claude", path)
     record_ug_picker("claude", {key: desired_settings[key] for key in picker_keys})
     record_settings_passthrough("claude", passthrough_leaves or [])
+
+
+def _drop_builtin_web_search_deny(settings: dict) -> None:
+    permissions = settings.get("permissions")
+    if not isinstance(permissions, dict):
+        return
+    denies = permissions.get("deny")
+    if not isinstance(denies, list) or BUILTIN_WEB_SEARCH_TOOL not in denies:
+        return
+    remaining = [rule for rule in denies if rule != BUILTIN_WEB_SEARCH_TOOL]
+    if remaining:
+        permissions["deny"] = remaining
+        return
+    permissions.pop("deny")
+    if not permissions:
+        settings.pop("permissions")
 
 
 def _preserve_permission_denies(

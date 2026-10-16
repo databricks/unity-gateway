@@ -577,6 +577,41 @@ class TestSubcommandRouting:
         assert result.exit_code == 0, result.output
         mock_set.assert_not_called()
 
+    @pytest.mark.parametrize(
+        ("flag", "expected"),
+        [("--native-web-search", True), ("--no-native-web-search", False), (None, None)],
+    )
+    def test_claude_native_web_search_flag_is_persisted(self, monkeypatch, flag, expected):
+        # The explicit flag also outranks the one-launch environment override.
+        monkeypatch.setenv("UG_CLAUDE_NATIVE_WEB_SEARCH", "0" if expected else "1")
+        # A private copy: the shared MINIMAL_STATE must not carry the persisted choice to other tests.
+        launch_state = dict(MINIMAL_STATE)
+        configured: list[dict] = []
+        with contextlib.ExitStack() as stack:
+            for item in _patch_launch("claude"):
+                stack.enter_context(item)
+            for target in ("ensure_provider_state", "configure_shared_state"):
+                stack.enter_context(patch(f"ucode.cli.{target}", return_value=launch_state))
+            stack.enter_context(
+                patch(
+                    "ucode.cli.resolve_launch_model",
+                    return_value=(launch_state, "databricks-claude-sonnet-4"),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "ucode.cli.configure_tool",
+                    side_effect=lambda _tool, state, *a, **kw: (
+                        configured.append(dict(state)) or state
+                    ),
+                )
+            )
+            result = runner.invoke(app, ["claude", *([flag] if flag else [])])
+
+        assert result.exit_code == 0, result.output
+        assert configured[0].get("claude_native_web_search") is expected
+        assert ("UG_CLAUDE_NATIVE_WEB_SEARCH" in os.environ) is (flag is None)
+
     def test_codex_enable_smart_routing_is_consumed_by_ucode(self):
         enabled_during_launch = []
         with patch(

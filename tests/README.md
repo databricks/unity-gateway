@@ -168,6 +168,12 @@ selection, and errors without browser consent through the MCP handler. These
 component checks replace external auth/network boundaries; they do not establish
 live search, parent/child discovery, or classifier permission behavior.
 
+`TestNativeWebSearch` in `test_agent_claude.py` covers `--native-web-search` through the
+real private/OS-managed settings reconcile (privileged writes and the `claude mcp` CLI
+replaced by file edits): no `WebSearch` deny or generated `web_search` registration,
+withdrawal of a stale deny, admin denies kept, and off/on/off round trips. It does not
+establish that a live gateway serves Claude Code's built-in WebSearch.
+
 `test_databricks.py` also covers process-local CLI token memoization, expiry
 margins on both wall and monotonic clocks (including suspend and clock rollback),
 short-lived failure entries only for confirmed invalid/missing credentials,

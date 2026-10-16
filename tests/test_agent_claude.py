@@ -4248,3 +4248,219 @@ class TestManagedUserAgent:
         monkeypatch.setattr(claude, "_managed_settings_path", lambda: path)
 
         assert claude.managed_user_agent() == expected
+
+
+class TestNativeWebSearch:
+    """`ug claude --native-web-search` keeps Claude Code's built-in WebSearch in every file ug writes."""
+
+    SEARCH_MODEL = "databricks-gpt-5"
+
+    @pytest.fixture
+    def env(self, tmp_path, monkeypatch):
+        """Real private/managed reconcile flow and Claude MCP config, with privileged writes and the
+        `claude mcp` CLI replaced by direct file edits."""
+        managed_path = tmp_path / "managed-settings.json"
+        backup_dir = tmp_path / "managed-backups"
+        mcp_config_path = tmp_path / ".claude.json"
+        mcp_config_path.write_text(json.dumps({"mcpServers": {}}), encoding="utf-8")
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        monkeypatch.delenv(claude.NATIVE_WEB_SEARCH_ENV, raising=False)
+        monkeypatch.setattr(managed_files, "managed_files_supported", lambda: True)
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
+        monkeypatch.setattr(managed_files, "MANAGED_BACKUP_DIR", backup_dir)
+        monkeypatch.setattr(
+            managed_files, "MANAGED_BACKUP_MANIFEST_PATH", backup_dir / "manifest.json"
+        )
+        monkeypatch.setattr(
+            managed_files,
+            "_sudo_replace",
+            lambda target, text: target.write_text(text, encoding="utf-8"),
+        )
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
+        monkeypatch.setattr(claude, "save_state", lambda state: None)
+        monkeypatch.setattr(claude, "ug_version", lambda: "1.0")
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.0")
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", tmp_path / "ucode-settings.json")
+        monkeypatch.setattr("ucode.databricks.shutil.which", lambda command: f"/tools/{command}")
+
+        def edit_servers(edit):
+            config = json.loads(mcp_config_path.read_text())
+            edit(config["mcpServers"])
+            mcp_config_path.write_text(json.dumps(config), encoding="utf-8")
+
+        removed: list[tuple[str, str]] = []
+
+        def remove(name, scope):
+            removed.append((name, scope))
+            edit_servers(lambda servers: servers.pop(name, None))
+            return True
+
+        monkeypatch.setattr(claude, "remove_claude_mcp_server", remove)
+        monkeypatch.setattr(
+            claude,
+            "add_claude_mcp_server",
+            lambda name, entry, scope=claude.MCP_USER_SCOPE: edit_servers(
+                lambda servers: servers.update({name: entry})
+            ),
+        )
+        return SimpleNamespace(
+            managed_path=managed_path,
+            private_path=tmp_path / "ucode-settings.json",
+            mcp_config_path=mcp_config_path,
+            removed=removed,
+        )
+
+    def _state(self, native: bool | None = None) -> dict:
+        state: dict = {"workspace": WS, "codex_models": [self.SEARCH_MODEL]}
+        if native is not None:
+            state[claude.NATIVE_WEB_SEARCH_STATE_KEY] = native
+        return state
+
+    @staticmethod
+    def _denies(path: Path) -> list | None:
+        return (json.loads(path.read_text()).get("permissions") or {}).get("deny")
+
+    def _servers(self, env) -> dict:
+        return json.loads(env.mcp_config_path.read_text())["mcpServers"]
+
+    @pytest.mark.parametrize(
+        ("env_value", "persisted", "expected"),
+        [
+            (None, None, False),
+            (None, True, True),
+            ("1", None, True),
+            ("true", False, True),
+            ("0", True, False),
+            ("off", True, False),
+            ("", True, True),
+        ],
+    )
+    def test_env_var_overrides_persisted_choice(self, monkeypatch, env_value, persisted, expected):
+        if env_value is None:
+            monkeypatch.delenv(claude.NATIVE_WEB_SEARCH_ENV, raising=False)
+        else:
+            monkeypatch.setenv(claude.NATIVE_WEB_SEARCH_ENV, env_value)
+        state = {} if persisted is None else {claude.NATIVE_WEB_SEARCH_STATE_KEY: persisted}
+        assert claude.native_web_search_enabled(state) is expected
+
+    def test_invalid_env_value_is_actionable(self, monkeypatch):
+        monkeypatch.setenv(claude.NATIVE_WEB_SEARCH_ENV, "maybe")
+        with pytest.raises(RuntimeError, match=claude.NATIVE_WEB_SEARCH_ENV):
+            claude.native_web_search_enabled({})
+
+    def test_default_denies_websearch_and_registers_mcp(self, env):
+        state = self._state()
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        assert self._denies(env.private_path) == ["WebSearch"]
+        assert self._denies(env.managed_path) == ["WebSearch"]
+        assert self._servers(env)[claude.WEB_SEARCH_MCP_NAME]["env"]["UCODE_WEB_SEARCH_MODEL"] == (
+            self.SEARCH_MODEL
+        )
+        assert state[claude.WEB_SEARCH_MCP_STATE_KEY] == self._servers(env)["web_search"]
+
+    def test_native_writes_no_deny_and_registers_no_mcp(self, env):
+        state = self._state(native=True)
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        assert "permissions" not in json.loads(env.private_path.read_text())
+        assert "permissions" not in json.loads(env.managed_path.read_text())
+        assert self._servers(env) == {}
+        assert claude.WEB_SEARCH_MCP_STATE_KEY not in state
+
+    def test_native_keeps_other_denies_in_both_files(self, env):
+        env.private_path.write_text(
+            json.dumps({"permissions": {"deny": ["WebSearch", "Bash(rm:*)"]}}), encoding="utf-8"
+        )
+        env.managed_path.write_text(
+            json.dumps(
+                {
+                    "permissions": {
+                        "allowManagedPermissionRulesOnly": True,
+                        "deny": ["WebSearch", "Artifact", "ArtifactData"],
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        claude.write_tool_config(self._state(native=True), "databricks-claude-sonnet-4")
+
+        assert self._denies(env.private_path) == ["Bash(rm:*)"]
+        managed = json.loads(env.managed_path.read_text())
+        assert managed["permissions"] == {
+            "allowManagedPermissionRulesOnly": True,
+            "deny": ["Artifact", "ArtifactData"],
+        }
+
+    def test_native_withdraws_stale_managed_deny_without_a_terminal(self, env, monkeypatch):
+        # Removing the deny is an owned-path change, so it is applied even when ug would otherwise
+        # only verify a compatible managed file.
+        env.managed_path.write_text(
+            json.dumps({"permissions": {"deny": ["WebSearch"]}}), encoding="utf-8"
+        )
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: False)
+        claude.write_tool_config(self._state(native=True), "databricks-claude-sonnet-4")
+
+        assert "permissions" not in json.loads(env.managed_path.read_text())
+
+    def test_admin_websearch_deny_is_kept_with_warning(self, env, capsys):
+        state = self._state(native=True)
+        state[claude.SETTINGS_PASSTHROUGH_STATE_KEY] = {"permissions": {"deny": ["WebSearch"]}}
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        assert self._denies(env.managed_path) == ["WebSearch"]
+        assert "built-in web search stays disabled" in " ".join(capsys.readouterr().out.split())
+
+    def test_native_keeps_an_edited_mcp_entry(self, env, capsys):
+        state = self._state()
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        config = json.loads(env.mcp_config_path.read_text())
+        config["mcpServers"]["web_search"]["env"]["UCODE_WEB_SEARCH_MODEL"] = "hand-picked"
+        env.mcp_config_path.write_text(json.dumps(config), encoding="utf-8")
+
+        state[claude.NATIVE_WEB_SEARCH_STATE_KEY] = True
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        assert self._servers(env)["web_search"]["env"]["UCODE_WEB_SEARCH_MODEL"] == "hand-picked"
+        assert env.removed == [("web_search", claude.MCP_USER_SCOPE)]  # only the pre-register clear
+        assert "claude mcp remove web_search" in " ".join(capsys.readouterr().out.split())
+
+    def test_toggle_off_on_off_round_trips(self, env):
+        state = self._state()
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        assert self._denies(env.managed_path) == ["WebSearch"]
+        assert "web_search" in self._servers(env)
+
+        state[claude.NATIVE_WEB_SEARCH_STATE_KEY] = True
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        assert "permissions" not in json.loads(env.private_path.read_text())
+        assert "permissions" not in json.loads(env.managed_path.read_text())
+        assert self._servers(env) == {}
+        assert claude.WEB_SEARCH_MCP_STATE_KEY not in state
+
+        state[claude.NATIVE_WEB_SEARCH_STATE_KEY] = False
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        assert self._denies(env.private_path) == ["WebSearch"]
+        assert self._denies(env.managed_path) == ["WebSearch"]
+        assert state[claude.WEB_SEARCH_MCP_STATE_KEY] == self._servers(env)["web_search"]
+
+    def test_env_override_applies_without_persisting(self, env, monkeypatch):
+        monkeypatch.setenv(claude.NATIVE_WEB_SEARCH_ENV, "1")
+        state = self._state()
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        assert "permissions" not in json.loads(env.managed_path.read_text())
+        assert claude.NATIVE_WEB_SEARCH_STATE_KEY not in state
+
+    def test_per_launch_settings_carry_no_deny_when_native(self, env):
+        claude.write_tool_config(self._state(native=True), "databricks-claude-sonnet-4")
+        caller = json.dumps({"hooks": {}})
+
+        argv = claude._build_claude_argv("claude", ["--settings", caller])
+        settings, _ = claude._compose_v2_settings([])
+
+        assert "WebSearch" not in json.dumps(json.loads(argv[argv.index("--settings") + 1]))
+        assert "permissions" not in settings

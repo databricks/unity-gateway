@@ -160,6 +160,14 @@ Claude-only setup also discovers GPT models for its generated `web_search`
 server; installing or configuring Codex is not required. Search registration
 requires an available Responses-capable model.
 
+If your workspace's gateway accepts Claude Code's built-in `WebSearch` tool, launch
+with `ug claude --native-web-search`; the choice is remembered for later launches
+until `ug claude --no-native-web-search`. `UG_CLAUDE_NATIVE_WEB_SEARCH=1` (or `0`)
+overrides it for one launch. In native mode ug writes no `WebSearch` deny rule,
+withdraws the one it wrote earlier from its private and OS-managed settings, and
+removes its unchanged generated `web_search` registration. A `WebSearch` deny from
+your workspace's managed coding agent config is kept.
+
 Claude's generated `web_search` server uses the same saved custom OAuth CLI
 profile as its harness, when configured. It stores the profile name, not an
 access token, and refreshes credentials for search requests. This does not
