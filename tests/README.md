@@ -40,8 +40,14 @@ retain their agent and workspace markers, including `managed_fixture` when neede
 See [the harness opt-in guide](integration/README.md#opting-into-harness-latest).
 
 CUJ 4's preset journeys check Claude's ON/OFF status band, routing scope, and
-updates after off/on toggles. Checks ignore terminal styling and trailing UI controls;
-offline cases reject stale states, wrong routing scope, and command confirmations.
+updates after off/on toggles, and that the band is hidden after the launch turn and by
+the second turn after each toggle. They also check that the prompt hint row under the
+input ends with `smart router ON` from launch, flips to `OFF` and back to `ON` with each
+toggle, and keeps that state after the band hides. Checks ignore terminal styling and
+trailing UI controls; offline cases reject stale states, wrong routing scope, and command
+confirmations, and keep the band, the hint row, and the toggle reply apart.
+The mod's own tests (`native_claude/mod_tests`) cover the same rules for both toggles
+without a live agent.
 
 Dedicated CUJs reuse `integration/utils` session/terminal mechanics and file-task
 and transcript readers, not its config stubs or pytest fixtures. Prompt/model
@@ -125,6 +131,18 @@ These are component checks, not live Windows coverage for every agent.
 
 Agent configuration tests also verify `ug` auth/MCP helper commands, including
 quoted executable paths and replacement of legacy `ucode` routing/web-search helpers.
+
+`test_desktop_auth.py`, `test_desktop_auth_cli.py`, and `test_file_lock_cross_os.py`
+cover Desktop token-only stdout, explicit workspace/profile arguments, interactive-only
+browser recovery, bounded login/lock waits, cancellation, and lock contention.
+Recovery regressions check token recheck before browser login, lock release after
+success/failure, one shared deadline, and network/CLI failures at each recovery stage.
+Invalid token output must not appear in helper errors or stdout/stderr.
+Shared CLI discovery selects the newest absolute binary for cached tokens and every
+recovery subprocess; a missing CLI fails before token fetch or browser login.
+Missing-option checks exercise plain and ANSI-colored stderr and require parser exit
+code 2 with empty stdout. These component tests replace external authentication;
+they do not establish native Desktop GUI or browser-login coverage.
 
 `TestChildStdoutLaunch` in `test_cli.py` checks Claude `-p`/`--print` and Codex `exec`
 (plain and `--json`) and `app-server` status/error output on stderr, argument forwarding with
@@ -505,6 +523,11 @@ no elevation for unchanged files, target/symlink rejection, bounded shutdown and
 and real-shell copy/rename failure handling in temporary directories.
 `test_cli.py` covers the workspace configure session boundary.
 These are unit/component checks; they do not establish live sudo password-prompt behavior.
+
+Codex desktop OTEL component tests cover the startup unit, reuse of CLI proxy/auth,
+fixed-port collisions, setup failures that only warn, unchanged launches that keep the
+service running, and leaving another exporter alone. They do not establish a live
+desktop GUI or systemd login/reboot pass.
 
 | Scenario | Status / requirement |
 | --- | --- |

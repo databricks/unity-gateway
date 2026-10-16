@@ -195,7 +195,10 @@ def test_latest_harness_slack_notification(
         expected = f"✅ Latest harness test succeeded. {versions}. Link to run {run_url}"
     else:
         link = job_url if not api_error else run_url
-        expected = f"❌ ALERT! Latest harness test failed. {versions}. Link to failed job: {link}"
+        expected = (
+            f"❌ ALERT! Latest harness test failed. {versions}. Link to failed job: {link} "
+            "<@U09DPGC3DFY> <@U09EFHFRT24>"
+        )
     assert posted == [{"text": expected}]
     assert expected in capsys.readouterr().out
 
@@ -664,3 +667,15 @@ def test_integration_tests_describe_the_scenario_and_expected_result():
             if any(arg.arg == "configured" for arg in node.args.args):
                 violations.append(f"{path.name}:{node.lineno}: setup must be visible in the test")
     assert not violations, "\n".join(violations)
+
+
+def test_live_suites_use_fresh_id_for_random_ids():
+    root = Path(__file__).parent
+    helper = root / "integration/utils/evidence.py"
+    offenders = [
+        str(path.relative_to(root))
+        for suite in ("integration", "e2e_cuj")
+        for path in (root / suite).rglob("*.py")
+        if path != helper and "uuid4(" in path.read_text(encoding="utf-8")
+    ]
+    assert not offenders, f"Use fresh_id() from integration/utils/evidence.py: {offenders}"

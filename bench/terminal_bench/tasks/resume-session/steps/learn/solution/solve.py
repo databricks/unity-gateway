@@ -4,6 +4,6 @@ import os
 import tempfile
 from pathlib import Path
 
-vault = Path(os.environ.get("TASK_APP_DIR", "/app"), "vault.txt")
-Path(tempfile.gettempdir(), "ug-bench-passphrase").write_text(vault.read_text().split(": ", 1)[1])
-vault.unlink()
+note = Path(os.environ.get("TASK_APP_DIR", "/app"), "note.txt")
+Path(tempfile.gettempdir(), "ug-bench-code-word").write_text(note.read_text().split(": ", 1)[1])
+note.unlink()

@@ -11,12 +11,11 @@ import os
 import re
 import signal
 import time
-import uuid
 
 import pexpect
 import pyte
 
-from .evidence import agent_sessions, assert_no_terminal_api_error
+from .evidence import agent_sessions, assert_no_terminal_api_error, fresh_id
 
 
 def _claude_background_task_menu(text):
@@ -27,9 +26,21 @@ def _claude_background_task_menu(text):
     )
 
 
+def _claude_background_task_detail(text):
+    # With a single task, /tasks opens that task's detail panel instead of the list.
+    return re.search(
+        r"(?ms)^[ \t]*agent › .+?\n[ \t]*(\S.*?)[ \t]*\n.*"
+        r"^[ \t]*← to go back · Esc/Enter/Space to close.*\Z",
+        text,
+    )
+
+
 def _claude_background_tasks_complete(text):
     if re.search(r"(?m)^\s*No tasks currently running\s*$", text):
         return True
+    detail = _claude_background_task_detail(text)
+    if detail is not None:
+        return re.match(r"✔ Completed\b", detail[1]) is not None
     menu = _claude_background_task_menu(text)
     if menu is None:
         return False
@@ -90,7 +101,9 @@ class TerminalProcess:
         # its process group even if the ug leader exited before its children.
         with contextlib.suppress(ProcessLookupError):
             os.killpg(self.child.pid, signal.SIGTERM)
-        self.child.close(force=True)
+        # close() gives up if the child outlives its kill delay; the SIGKILL below still kills it.
+        with contextlib.suppress(pexpect.ExceptionPexpect):
+            self.child.close(force=True)
         with contextlib.suppress(ProcessLookupError):
             os.killpg(self.child.pid, signal.SIGKILL)
         routing_log = (
@@ -338,7 +351,7 @@ class AgentTerminal(TerminalProcess):
         )
 
     def check_input_and_exit(self):
-        marker = "ug-boot-" + uuid.uuid4().hex[:12]
+        marker = "ug-boot-" + fresh_id()
         self.send(marker, "type into the prompt without submitting a model request")
         self.wait_for(lambda text: marker in text, "typed text in the prompt")
         self.send("\x15", "Ctrl-U clears the prompt")
@@ -439,6 +452,7 @@ class AgentTerminal(TerminalProcess):
             lambda text: (
                 "No tasks currently running" not in text
                 and _claude_background_task_menu(text) is None
+                and _claude_background_task_detail(text) is None
             ),
             "the prompt after closing the background-task view",
         )

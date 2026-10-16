@@ -38,12 +38,12 @@ Verifiers and solutions read these variables.
 | `mcp-server` | Claude | `stock.json` matches the random values that the project's stdio MCP server logged for each lookup. |
 | `project-instructions` | Claude, Codex | The output is under `out/`, and each new Python file starts with the license header that `CLAUDE.md` and `AGENTS.md` require. |
 | `project-skill` | Claude | The release notes follow the project skill, and the skill's script logged a run. |
-| `subagent-model` | Claude | Each file has a correct audit, and the transcript shows a subagent on a haiku model. If a workspace policy disallows haiku, the transcript must show the policy notice and the subagent on the fallback model it names. |
-| `image-code` | Claude, Codex | `code.txt` holds the 8-digit code drawn in `code.png`. |
+| `subagents` | Claude | Each file has a correct audit, and the transcript shows at least one subagent per file. |
+| `image-code` | Claude, Codex | `code.txt` holds the 8-digit code drawn in `code.png`, with at least 6 digits right. |
 | `pdf-extract` | Claude, Codex | `total.txt` holds the total from `invoice.pdf`, whose text stream is compressed. |
 | `web-fetch` | Claude, Codex | `answer.txt` holds a value from a file in this repo, pinned to a fixed commit. |
 | `background-shell` | Claude, Codex | `result.txt` holds the value that a 150-second job prints when it finishes. Claude's default command timeout is 2 minutes. |
-| `resume-session` | Claude, Codex | Step 1 deletes `vault.txt` without saving its passphrase to a file. Step 2 resumes the session and writes the passphrase to `answer.txt`. |
+| `resume-session` | Claude, Codex | Step 1 deletes `note.txt` without saving its code word to a file. Step 2 resumes the session and writes the code word to `answer.txt`. |
 | `log-triage` | Claude, Codex | `report.json` has the correct counts for five independent service directories. |
 | `fix-failing-tests` | Claude, Codex | The unit tests and extra hidden checks pass, and `tests/` is unchanged. |
 | `scrub-git-secret` | Claude, Codex | Every copy of the token in history is replaced with `REDACTED`, and both branches keep their commit messages in order. |

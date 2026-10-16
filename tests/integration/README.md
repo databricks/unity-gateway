@@ -299,6 +299,18 @@ model appears in the picker. No managed config, provider, model location, discov
 flag, or inherited discovery environment variable enables this path. This runs with
 the pinned Claude version (currently 2.1.280 in CI).
 
+Desktop credential-helper coverage remains in `../test_desktop_auth.py`,
+`../test_desktop_auth_cli.py`, and `../test_file_lock_cross_os.py`. These component
+checks cover token-only stdout, explicit workspace/profile arguments in plain and
+ANSI-colored parser errors, browser gating, cancellation, and bounded lock/login
+waits. Recovery checks also cover token recheck before browser login, lock release,
+the shared deadline, and network/CLI failures at each recovery stage. Invalid token
+output stays out of helper errors and streams.
+Shared CLI discovery checks pin the newest absolute binary through recovery and
+reject a missing CLI before token fetch or browser login.
+They replace external authentication and do not establish native Desktop
+GUI or browser-login coverage; this integration suite does not launch Desktop.
+
 ## Test layout and format
 
 All user journeys are top-level tests. There is no separate regressions category:
@@ -451,7 +463,8 @@ The tests assert that a span with the marker arrived and identifies the requeste
 Scoped discovery additionally requires Model Services
 `main.ucode.ci_e2e_claude` and `main.ucode.ci_e2e_codex`. Override them with
 `--parent-schema`, `--claude-parent-model`, or `--codex-parent-model`. The tests
-consume but never create or modify them.
+consume but never create or modify them. Claude and Codex scoped pickers must
+match the parent schema's live gateway catalog, which must include the configured parent model.
 
 These unmanaged journeys require a workspace that publishes no CodingAgentConfig.
 Before any of them configures or launches an agent, a session-scoped, read-only
