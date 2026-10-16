@@ -3,7 +3,9 @@ import type { On, PluginOptions } from 'claude-code'
 type RoutingRecord = { model: string; rationale: string; seconds?: number }
 
 const shortModel = (model: string): string => model.replace(/^system\.ai\./, '').replace(/^databricks-/, '')
-const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+// Claude's own spinner glyphs, played forwards then back as Claude does.
+const SPINNER_GLYPHS = ['·', '✢', '✳', '✶', '✻', '✽']
+const SPINNER = [...SPINNER_GLYPHS, ...SPINNER_GLYPHS.slice(1, -1).reverse()]
 const SPINNER_INTERVAL_MS = 100
 
 // The timer is cosmetic: without a clock it is omitted rather than blocking routing.
