@@ -244,11 +244,17 @@ def main() -> int:
             stdin=subprocess.DEVNULL,
         )
 
-    results = [
-        run_task(args, TASKS_DIR / name, out, attempt)
-        for name in names
-        for attempt in range(1, args.attempts + 1)
-    ]
+    results = []
+    for name in names:
+        passes = fails = 0
+        # Stop once the task has enough passes, or too many fails to get them.
+        while passes < args.min_passes and fails <= args.attempts - args.min_passes:
+            result = run_task(args, TASKS_DIR / name, out, passes + fails + 1)
+            results.append(result)
+            if result["passed"]:
+                passes += 1
+            else:
+                fails += 1
     write_summary(args, results, out)
     return 0 if results and not failing_tasks(results, args.min_passes) else 1
 
