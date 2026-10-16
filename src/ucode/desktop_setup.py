@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import sys
 
-from ucode.agents.claude_desktop import (
+from ucode.agents.desktop.claude import (
     claude_desktop_directory,
     configure_claude_desktop,
     revert_claude_desktop,

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from ucode import desktop_setup
-from ucode.agents import claude_desktop
+from ucode.agents.desktop import claude as claude_desktop
 from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER, MODEL_SERVICE_PARENT_SCHEMA_HEADER
 from ucode.databricks import AnthropicModelCatalog
 
