@@ -7,7 +7,8 @@ import re
 import shutil
 import subprocess
 import threading
-from collections.abc import Callable
+from collections import Counter
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 from urllib.parse import urlparse
@@ -575,6 +576,105 @@ def _servers_by_name(mcp_servers: list[dict]) -> dict[str, dict]:
     return servers
 
 
+def _legacy_mcp_service_entry_name(full_name: str) -> str:
+    """Dashed entry name (`main-default-exa`): agent CLIs reject dots in registered names."""
+    return full_name.replace(".", "-")
+
+
+def mcp_service_entry_names(
+    full_names: Iterable[str],
+    workspace: str,
+    *,
+    existing_servers: Iterable[dict] = (),
+    managed_names: Iterable[str] = (),
+) -> dict[str, str]:
+    """Map each MCP service full name (`<cat>.<schema>.<id>`) to its agent entry name.
+
+    The entry name is the leaf (`exa` for `main.default.exa`). A service falls back to the dashed
+    full name (`main-default-exa`) when its leaf is not unique: two services in ``full_names`` share
+    it, or an entry in ``existing_servers`` (other ug entries, managed servers) has that name but
+    points at a different URL. An existing entry with the same URL is the same service, not a
+    clash. A service whose dashed name is in ``managed_names`` keeps it: managed config written by
+    an older ug still holds it under that name, and the "already managed" skip matches on names.
+    URLs are unaffected."""
+    unique = sorted(set(full_names))
+    leaf_counts = Counter(full_name.rsplit(".", 1)[-1] for full_name in unique)
+    url_by_name = {
+        name: server.get("url") for server in existing_servers if (name := _server_name(server))
+    }
+    legacy_managed = set(managed_names)
+    names: dict[str, str] = {}
+    for full_name in unique:
+        leaf = full_name.rsplit(".", 1)[-1]
+        clash = (
+            _legacy_mcp_service_entry_name(full_name) in legacy_managed
+            or leaf_counts[leaf] > 1
+            or (
+                leaf in url_by_name
+                and url_by_name[leaf] != build_mcp_service_url(workspace, full_name)
+            )
+        )
+        names[full_name] = _legacy_mcp_service_entry_name(full_name) if clash else leaf
+    return names
+
+
+def _mcp_service_full_name(server: dict, workspace: str) -> str | None:
+    """Full name of the MCP service a ug-named entry registers, else None.
+
+    Only entries named with the leaf or the legacy dashed full name qualify, so a hand-named entry
+    or a non-service server is never touched."""
+    name, url = _server_name(server), server.get("url")
+    prefix = build_mcp_service_url(workspace, "")
+    if not name or not isinstance(url, str) or not url.startswith(prefix):
+        return None
+    full_name = url.removeprefix(prefix)
+    if full_name.count(".") != 2 or not all(full_name.split(".")):
+        return None
+    if name not in (full_name.rsplit(".", 1)[-1], _legacy_mcp_service_entry_name(full_name)):
+        return None
+    return full_name
+
+
+def _normalize_mcp_service_entry_names(
+    servers: list[dict], workspace: str, existing_servers: Iterable[dict] = ()
+) -> list[dict]:
+    """Rename ug-named MCP service entries to the current naming rule, in place and in order.
+
+    Upgrades legacy dashed entries (`main-default-exa`) to the leaf (`exa`) and downgrades leaf
+    entries that now collide. Entries that end up with the same name (the legacy and the new entry
+    of one service, e.g. after a `union`) are merged, their clients combined, so nothing is
+    duplicated or orphaned. Other entries are returned untouched; ``existing_servers`` (managed
+    servers) only constrain the names chosen."""
+    full_names = [_mcp_service_full_name(server, workspace) for server in servers]
+    service_fulls = {full for full in full_names if full}
+    if not service_fulls:
+        return servers
+    others = [s for s, full in zip(servers, full_names, strict=True) if not full]
+    managed = list(existing_servers)
+    names = mcp_service_entry_names(
+        service_fulls,
+        workspace,
+        existing_servers=[*others, *managed],
+        managed_names=[n for server in managed if (n := _server_name(server))],
+    )
+    result: list[dict] = []
+    index_by_name: dict[str, int] = {}
+    for server, full in zip(servers, full_names, strict=True):
+        if not full:
+            result.append(server)
+            continue
+        new_name = names[full]
+        if new_name in index_by_name:
+            kept = result[index_by_name[new_name]]
+            clients = list(kept.get("clients") or [])
+            merged = clients + [c for c in server.get("clients") or [] if c not in clients]
+            result[index_by_name[new_name]] = {**kept, "clients": merged}
+            continue
+        index_by_name[new_name] = len(result)
+        result.append(server if server.get("name") == new_name else {**server, "name": new_name})
+    return result
+
+
 def _mcp_entry_url_host(entry: dict) -> str | None:
     """Return the host of an MCP entry's URL, or ``None`` if missing/malformed."""
     url = entry.get("url")
@@ -661,11 +761,13 @@ def _mcp_service_choice(
     shows rows you can act on, so two kinds are hidden: a managed service (never ug's to add or
     remove) and, under `mcp add`, an already-configured one (nothing to add). Replace mode still
     lists ug's own as a removable toggle; an unregistered service is an add-choice."""
-    registered_as = name.replace(".", "-")
     display_title = f"MCP: {name}"
-    if registered_as in (managed_names or set()):
+    # An entry may carry the leaf name or, from older ug versions / collisions, the dashed full name.
+    candidates = (name.rsplit(".", 1)[-1], _legacy_mcp_service_entry_name(name))
+    if any(c in (managed_names or set()) for c in candidates):
         return None
-    if registered_as in known_names:
+    registered_as = next((c for c in candidates if c in known_names), None)
+    if registered_as is not None:
         return None if additive else _server_choice(registered_as, True, display_title)
     return _add_choice(f"{MCP_SERVICE_SELECTION_PREFIX}{name}", display_title)
 
@@ -712,7 +814,7 @@ def build_mcp_picker_choices(
         # (see resolver). The shared helper is also used by the background walk that
         # streams more services in, so up-front and streamed rows match exactly.
         push(_mcp_service_choice(name, known_names, additive, managed))
-        displayed_names.add(name.replace(".", "-"))
+        displayed_names.update((name.rsplit(".", 1)[-1], _legacy_mcp_service_entry_name(name)))
 
     for name in available_external_names:
         display_title = f"Connection: {name}"
@@ -922,12 +1024,9 @@ def _resolve_managed_mcp_servers(
     # slowing every `ug configure`. The `unity_catalog_location` selector above is the one path that
     # still discovers, since a whole-schema pointer has no explicit set to register.
     working: list[dict] = []
-    seen: set[str] = set()
+    entry_names = mcp_service_entry_names(names, workspace)
     for full_name in sorted(set(names)):
-        entry_name = full_name.replace(".", "-")
-        if entry_name in seen:
-            continue
-        seen.add(entry_name)
+        entry_name = entry_names[full_name]
         working.append(
             {
                 "name": entry_name,
@@ -1232,9 +1331,12 @@ def _resolve_mcp_selection(
         full_name = selection.removeprefix(MCP_SERVICE_SELECTION_PREFIX)
         if not full_name:
             raise RuntimeError("missing MCP service name")
-        # Agent CLIs (claude/codex/gemini) reject dots in registered names.
-        # URL keeps the UC `<cat>.<schema>.<id>` form; entry name uses dashes.
-        return full_name.replace(".", "-"), build_mcp_service_url(workspace, full_name)
+        # Agent CLIs (claude/codex/gemini) reject dots in registered names. URL keeps the UC
+        # `<cat>.<schema>.<id>` form. The entry name here is the collision-safe dashed form; callers
+        # shorten it to the leaf via `_normalize_mcp_service_entry_names` once the whole set is known.
+        return _legacy_mcp_service_entry_name(full_name), build_mcp_service_url(
+            workspace, full_name
+        )
 
     if selection.startswith(VECTOR_SEARCH_SELECTION_PREFIX):
         return _resolve_catalog_schema_selection(
@@ -1660,6 +1762,7 @@ def _resolve_location_mcp_servers(
     location: str,
     original_servers: list[dict],
     services: set[str] | None = None,
+    managed_servers: list[dict] | None = None,
 ) -> list[dict]:
     """Build the desired MCP server list for ``--location <cat>.<schema>``.
 
@@ -1716,10 +1819,25 @@ def _resolve_location_mcp_servers(
         ]
 
     original_by_name = _servers_by_name(original_servers)
+    # The location is a strict replacement, so previously-registered MCP services don't count as
+    # name holders; every other entry (and every managed server) does.
+    service_prefix = build_mcp_service_url(workspace, "")
+    holders = [
+        s for s in original_servers if not str(s.get("url") or "").startswith(service_prefix)
+    ]
+    entry_names = mcp_service_entry_names(
+        names,
+        workspace,
+        existing_servers=[*holders, *(managed_servers or [])],
+        managed_names=[n for server in managed_servers or [] if (n := _server_name(server))],
+    )
     working_servers: list[dict] = []
     for full_name in names:
-        entry_name = full_name.replace(".", "-")
-        original = original_by_name.get(entry_name)
+        entry_name = entry_names[full_name]
+        # An entry from an older ug carries the dashed name; adopt it so it is renamed, not duplicated.
+        original = original_by_name.get(entry_name) or original_by_name.get(
+            _legacy_mcp_service_entry_name(full_name)
+        )
         original_clients = list((original or {}).get("clients") or [])
         merged_clients = original_clients + [c for c in clients if c not in original_clients]
         candidate = {
@@ -1906,7 +2024,8 @@ def _configure_v2_mcp_selectors(
     picker_servers = [s for s in original_mcp_servers if s.get("kind") != SKILLS_MCP_KIND]
     original_by_name = _servers_by_name(picker_servers)
 
-    managed_names = managed_mcp_server_names(state, set(clients))
+    managed_servers = managed_mcp_servers(state, set(clients))
+    managed_names = {name for server in managed_servers if (name := _server_name(server))}
     working_mcp_servers: list[dict] = list(skills_servers)
     working_names: set[str] = set()
     skipped_managed: set[str] = set()
@@ -1929,6 +2048,14 @@ def _configure_v2_mcp_selectors(
 
     if append:
         working_mcp_servers = _union_missing(original_mcp_servers, working_mcp_servers)
+    working_mcp_servers = _normalize_mcp_service_entry_names(
+        working_mcp_servers, workspace, managed_servers
+    )
+    working_names = {
+        n
+        for s in working_mcp_servers
+        if s.get("kind") != SKILLS_MCP_KIND and (n := _server_name(s))
+    }
 
     changed = apply_mcp_server_changes(
         original_mcp_servers,
@@ -2000,17 +2127,26 @@ def configure_mcp_command(
         state, "Add MCP Servers" if append else "MCP Servers", agents=agents
     )
 
-    managed_names = managed_mcp_server_names(state, set(clients))
+    managed_servers = managed_mcp_servers(state, set(clients))
+    managed_names = {name for server in managed_servers if (name := _server_name(server))}
 
     original_mcp_servers_for_location: list[dict] = list(state.get("mcp_servers") or [])
     if location is not None:
         working_mcp_servers = _resolve_location_mcp_servers(
-            workspace, profile, clients, location, original_mcp_servers_for_location, services
+            workspace,
+            profile,
+            clients,
+            location,
+            original_mcp_servers_for_location,
+            services,
+            managed_servers,
         )
         working_mcp_servers = _drop_managed_servers(working_mcp_servers, managed_names)
         if append:
-            working_mcp_servers = _union_missing(
-                original_mcp_servers_for_location, working_mcp_servers
+            working_mcp_servers = _normalize_mcp_service_entry_names(
+                _union_missing(original_mcp_servers_for_location, working_mcp_servers),
+                workspace,
+                managed_servers,
             )
         changed = apply_mcp_server_changes(
             original_mcp_servers_for_location,
@@ -2110,6 +2246,15 @@ def configure_mcp_command(
 
     if append:
         working_mcp_servers = _union_missing(original_mcp_servers, working_mcp_servers)
+    # Shorten dashed names to the leaf and upgrade legacy dashed entries now the whole set is known.
+    working_mcp_servers = _normalize_mcp_service_entry_names(
+        working_mcp_servers, workspace, managed_servers
+    )
+    working_names = {
+        n
+        for s in working_mcp_servers
+        if s.get("kind") != SKILLS_MCP_KIND and (n := _server_name(s))
+    }
 
     changed = apply_mcp_server_changes(
         original_mcp_servers,
