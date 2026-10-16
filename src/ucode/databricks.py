@@ -691,9 +691,6 @@ def run(
         text=text,
         env=env,
         timeout=timeout,
-        # Captured commands can't prompt the user. Keep them off our stdin: on Windows a child
-        # sharing a stdin pipe that another thread is blocked reading (the MCP servers' request
-        # loop) hangs until its timeout.
         **(
             {"stdin": subprocess.DEVNULL}
             if capture_output
