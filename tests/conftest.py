@@ -29,7 +29,6 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     it can never touch the developer's real ~/.ucode/state.json or invoke the
     privileged writer for an OS-managed agent config.
     """
-    import ucode.cli as cli_mod
     import ucode.config_io as config_io_mod
     import ucode.databricks as databricks_mod
     import ucode.managed_config as managed_config_mod
@@ -69,16 +68,6 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     # Windows CI runners are elevated; never let an unmocked test write C:\Program Files.
     monkeypatch.setattr(managed_files_mod.system_cross_os, "is_admin", lambda: False)
     monkeypatch.setattr(managed_files_mod, "_windows_replace", reject_privileged_write)
-    # A plain Claude launch lists the gateway catalog; keep it off the real `databricks auth token`
-    # and the network. An empty catalog leaves Claude Code's own discovery in place.
-    monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *_args, **_kwargs: "token")
-    monkeypatch.setattr(
-        cli_mod,
-        "list_anthropic_model_catalog",
-        lambda *_args, **_kwargs: databricks_mod.AnthropicModelCatalog(
-            model_ids=[], model_id_to_display_name={}
-        ),
-    )
     monkeypatch.delenv("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", raising=False)
     monkeypatch.delenv("UCODE_SESSION_ENV_FILE", raising=False)

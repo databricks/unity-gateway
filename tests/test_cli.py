@@ -66,6 +66,19 @@ def no_state_writes():
         yield
 
 
+@pytest.fixture(autouse=True)
+def no_gateway_catalog_fetch(monkeypatch):
+    """Keep plain Claude launches off real auth and the network; an empty catalog falls back."""
+    monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *_args, **_kwargs: "token")
+    monkeypatch.setattr(
+        cli_mod,
+        "list_anthropic_model_catalog",
+        lambda *_args, **_kwargs: db_mod.AnthropicModelCatalog(
+            model_ids=[], model_id_to_display_name={}
+        ),
+    )
+
+
 MINIMAL_STATE = {
     "workspace": "https://example.databricks.com",
     "base_urls": {

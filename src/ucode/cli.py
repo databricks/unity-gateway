@@ -3329,8 +3329,8 @@ def _launch_tool(
                 resolved_model = model
         if model and tool == "claude" and not provider:
             route_root_model = None
-        # Claude Code's own discovery rows lack the `[1m]` hint: they run at 200K and don't match
-        # a `[1m]` launch model, so plain launches list the gateway's models themselves.
+        # List the gateway's models in ug's own /model picker so GPT rows get the `[1m]` hint.
+        # Claude Code's own discovery lists them without it, so they would run at 200K.
         if tool == "claude" and managed is None and not provider and not parent_schema:
             discovered = list_anthropic_model_catalog(
                 state["workspace"],
