@@ -608,6 +608,8 @@ def reconcile_managed_file(
                 "Run the command from an interactive terminal."
             )
         raise RuntimeError(_windows_admin_required_message(display, path, "ug configure"))
+    # Before the backup, which would otherwise keep an untrusted file's text for `ug revert`.
+    _refuse_untrusted_windows_target(path)
     if current_text == desired_text:
         return "unchanged"
     if current_text is not None:
@@ -725,6 +727,7 @@ def revert_managed_file(
                     "`ug revert` from an interactive terminal."
                 )
             raise RuntimeError(_windows_admin_required_message(display, path, "ug revert"))
+        _refuse_untrusted_windows_target(path)
         try:
             if desired_text is None:
                 _privileged_remove(path)
@@ -1325,18 +1328,21 @@ def _validate_windows_target(path: Path) -> None:
         raise RuntimeError(f"Refusing to replace symlinked managed settings: {path}")
 
 
-def _refuse_user_created_program_data_entries(path: Path) -> None:
+def _refuse_untrusted_windows_target(path: Path) -> None:
     """Standard users can create folders and files under ProgramData and keep full control of them,
     so an existing entry they made could later rewrite what we write there."""
+    if current_os() is not OS.WINDOWS or path != windows_codex_requirements_path():
+        return
     root = system_cross_os.windows_program_data_dir()
     entry = path
     while entry != root and root in entry.parents:
         if entry.is_symlink() or entry.is_junction():
-            raise RuntimeError(f"Refusing to write managed settings through link {entry}")
+            raise RuntimeError(f"Refusing to use managed settings through link {entry}")
         if entry.exists() and not system_cross_os.windows_owned_by_admin(entry):
             raise RuntimeError(
-                f"Refusing to write {path}: {entry} was created by a standard user, who could "
-                f"change it. Delete {entry} from an elevated terminal, then rerun."
+                f"Refusing to use {path}: {entry} isn't owned by Administrators, SYSTEM, or "
+                "TrustedInstaller, so a standard user may be able to change it. Delete it, or make "
+                "Administrators its owner, from an elevated terminal, then rerun."
             )
         entry = entry.parent
 
@@ -1350,9 +1356,9 @@ def _windows_replace(path: Path, desired_text: str) -> None:
     _validate_windows_target(path)
     if not system_cross_os.is_admin():
         raise PermissionError("administrator rights are required")
-    if path == windows_codex_requirements_path():
-        _refuse_user_created_program_data_entries(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Again after mkdir: a standard user could have created a missing folder since the last check.
+    _refuse_untrusted_windows_target(path)
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as tmp:

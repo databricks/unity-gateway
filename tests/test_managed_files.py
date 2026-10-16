@@ -759,6 +759,9 @@ class TestWindowsManagedWrites:
             "run",
             lambda *a, **k: pytest.fail("Windows writes must not shell out to sudo"),
         )
+        monkeypatch.setattr(
+            managed_files.system_cross_os, "windows_owned_by_admin", lambda entry: True
+        )
         return managed_files.windows_claude_managed_settings_path()
 
     def _reconcile(self, path, text):
@@ -867,22 +870,54 @@ class TestWindowsManagedWrites:
         assert self._reconcile_codex(path, 'model_provider = "Databricks"\n') == "created"
         assert path.read_text(encoding="utf-8") == 'model_provider = "Databricks"\n'
 
-    def test_refuses_codex_folder_a_standard_user_created(self, windows, monkeypatch):
+    @pytest.mark.parametrize("levels_up", [0, 1, 2])
+    def test_refuses_codex_entry_a_standard_user_owns(self, windows, monkeypatch, levels_up):
         # Its owner keeps full control, so they could swap the file after we write it.
         monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
         path = managed_files.windows_codex_requirements_path()
         path.parent.mkdir(parents=True)
-        user_created = path.parent.parent
+        path.write_text('model_provider = "Elsewhere"\n', encoding="utf-8")
+        user_owned = [path, path.parent, path.parent.parent][levels_up]
         monkeypatch.setattr(
             managed_files.system_cross_os,
             "windows_owned_by_admin",
-            lambda entry: entry != user_created,
+            lambda entry: entry != user_owned,
         )
 
-        with pytest.raises(RuntimeError, match="created by a standard user"):
+        with pytest.raises(RuntimeError, match="isn't owned by Administrators"):
+            self._reconcile_codex(path, 'model_provider = "Databricks"\n')
+
+        assert path.read_text(encoding="utf-8") == 'model_provider = "Elsewhere"\n'
+        # No backup, so `ug revert` can't later restore the untrusted text.
+        assert not managed_files.MANAGED_BACKUP_MANIFEST_PATH.exists()
+
+    def test_rechecks_codex_folders_after_creating_them(self, windows, monkeypatch):
+        # A standard user may create a missing folder between the first check and mkdir.
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
+        monkeypatch.setattr(
+            managed_files.system_cross_os, "windows_owned_by_admin", lambda entry: False
+        )
+        path = managed_files.windows_codex_requirements_path()
+
+        with pytest.raises(RuntimeError, match="isn't owned by Administrators"):
             self._reconcile_codex(path, 'model_provider = "Databricks"\n')
 
         assert not path.exists()
+
+    def test_revert_refuses_codex_entry_a_standard_user_owns(self, windows, monkeypatch):
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
+        path = managed_files.windows_codex_requirements_path()
+        self._reconcile_codex(path, 'model_provider = "Databricks"\n')
+        monkeypatch.setattr(
+            managed_files.system_cross_os, "windows_owned_by_admin", lambda entry: False
+        )
+
+        with pytest.raises(RuntimeError, match="isn't owned by Administrators"):
+            managed_files.revert_managed_file(
+                "codex", display="Codex", parser=tomllib.loads, dumper=lambda doc: ""
+            )
+
+        assert path.exists()
 
     def test_refuses_linked_codex_folder(self, windows, tmp_path, monkeypatch):
         monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)

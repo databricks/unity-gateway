@@ -50,9 +50,11 @@ user's config and `-c`. It takes only requirement keys: UG writes `model_provide
 `Databricks` provider entry, but not `model` or `mcp_servers` (managed MCP servers stay in user
 scope there). A required provider entry replaces the configured one instead of merging, so the
 launch-scoped routing headers reach Codex through `env_http_headers` and the
-`UG_CODEX_MODEL_PROVIDER_SERVICE` and `UG_CODEX_MODEL_SERVICE_PARENT_SCHEMA` variables. Standard users
-can create folders under ProgramData and keep control of them, so UG refuses to write through a
-linked folder or one a standard user created.
+`UG_CODEX_MODEL_PROVIDER_SERVICE`, `UG_CODEX_MODEL_SERVICE_PARENT_SCHEMA`, and
+`UG_CODEX_SMART_ROUTER_RECIPE` variables that `ug codex` sets at launch. Standard users can create
+folders under ProgramData and keep control of them, so before reading, backing up, writing, or
+reverting the file, UG refuses a linked `OpenAI`/`Codex` folder or file, or one not owned by
+Administrators, SYSTEM, or TrustedInstaller, and checks again after creating missing folders.
 
 This is a new shared ucode distinction. The previous implementation inferred interactivity from
 command shape in some flows and did not guard managed-file writes consistently.

@@ -116,6 +116,7 @@ _PROVIDER_HTTP_HEADERS_KEY_PATHS = [
 _LAUNCH_ROUTING_HEADER_ENV_VARS = {
     MODEL_PROVIDER_SERVICE_HEADER: "UG_CODEX_MODEL_PROVIDER_SERVICE",
     MODEL_SERVICE_PARENT_SCHEMA_HEADER: "UG_CODEX_MODEL_SERVICE_PARENT_SCHEMA",
+    SMART_ROUTER_RECIPE_HEADER: "UG_CODEX_SMART_ROUTER_RECIPE",
 }
 MINIMUM_CODEX_VERSION = (0, 145, 0)
 MINIMUM_CODEX_VERSION_TEXT = "0.145.0"
@@ -1072,16 +1073,22 @@ def _set_parent_schema_header(config: dict, parent_schema: str | None) -> None:
     _set_routing_header(config, MODEL_SERVICE_PARENT_SCHEMA_HEADER, parent_schema)
 
 
-def _set_launch_routing_env(provider: str | None, parent_schema: str | None) -> None:
-    for header, value in (
-        (MODEL_PROVIDER_SERVICE_HEADER, provider),
-        (MODEL_SERVICE_PARENT_SCHEMA_HEADER, parent_schema),
-    ):
-        name = _LAUNCH_ROUTING_HEADER_ENV_VARS[header]
-        if value:
+def _export_launch_routing_headers(config: dict) -> None:
+    """Mirror the routing headers this launch passes with ``-c`` into the variables that Windows
+    ``requirements.toml`` reads through ``env_http_headers``."""
+    headers = _managed_provider_headers(config) or {}
+    for header, name in _LAUNCH_ROUTING_HEADER_ENV_VARS.items():
+        value = headers.get(header)
+        if isinstance(value, str) and value:
             os.environ[name] = value
         else:
             os.environ.pop(name, None)
+
+
+def _render_launch_overlay(*args, **kwargs) -> dict:
+    overlay = render_overlay(*args, **kwargs)
+    _export_launch_routing_headers(overlay)
+    return overlay
 
 
 def _set_routing_header(config: dict, header: str, value: str | None) -> None:
@@ -1389,7 +1396,7 @@ def launch(
         )
     _set_provider_header(profile_doc, provider)
     _set_parent_schema_header(profile_doc, parent_schema if not provider else None)
-    _set_launch_routing_env(provider, parent_schema if not provider else None)
+    _export_launch_routing_headers(profile_doc)
     updating = tool_args[:1] == ["update"]
     if updating and _is_ucode_catalog_reference(profile_doc.get("model_catalog_json")):
         profile_doc.pop("model_catalog_json")
@@ -1458,7 +1465,7 @@ def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
         tool_args,
         binary=binary,
         start_model=start_model,
-        render_overlay=render_overlay,
+        render_overlay=_render_launch_overlay,
     )
 
 
