@@ -800,6 +800,54 @@ class TestSubcommandRouting:
         calls["resolve_model"].assert_not_called()
         calls["launch"].assert_called_once()
 
+    @pytest.mark.parametrize("custom_cli_enabled", [False, True])
+    @pytest.mark.parametrize(
+        "source_args",
+        [[], ["--model-location", "main.default"], ["--provider", "main.default.anthropic"]],
+        ids=["default-catalog", "model-location", "provider"],
+    )
+    def test_claude_catalog_uses_launch_auth_profile(
+        self, monkeypatch, custom_cli_enabled, source_args
+    ):
+        monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "1" if custom_cli_enabled else "0")
+        expected_profile = "custom-profile" if custom_cli_enabled else "workspace-profile"
+
+        def fetch_token(workspace, profile):
+            if profile != expected_profile:
+                raise RuntimeError(f"No cached credentials for {profile}")
+            return "launch-token"
+
+        with (
+            _launch_policy_patches(None) as calls,
+            patch("ucode.cli.get_databricks_token", side_effect=fetch_token) as token,
+        ):
+            calls["state"]["profile"] = "workspace-profile"
+            calls["state"]["custom_oauth"] = {
+                "client_id": "custom-client",
+                "redirect_url": "http://localhost:8020/callback",
+                "scopes": ["offline_access", "all-apis"],
+                "profile": "custom-profile",
+            }
+            result = runner.invoke(
+                app,
+                [
+                    "claude",
+                    "--client-id",
+                    "custom-client",
+                    "--scopes",
+                    "offline_access,all-apis",
+                    *source_args,
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        token.assert_called_once_with(MINIMAL_STATE["workspace"], expected_profile)
+        assert calls["list_catalog"].call_args.args == (
+            MINIMAL_STATE["workspace"],
+            "launch-token",
+        )
+        calls["launch"].assert_called_once()
+
     def test_unmanaged_claude_launch_lists_gateway_catalog(self):
         with _launch_policy_patches(None) as calls:
             result = runner.invoke(app, ["claude"])

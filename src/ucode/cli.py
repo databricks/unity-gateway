@@ -3278,6 +3278,12 @@ def _launch_tool(
         # lookup via resolve_gemini_provider_model (below), and uses no family model map.
         provider_models = None
         picker_catalog = None
+        # Custom OAuth setup (e.g. Isaac) authenticates a separate CLI profile.
+        catalog_profile = (
+            state["custom_oauth"].get("profile")
+            if custom_oauth_cli_enabled(state.get("custom_oauth"))
+            else state.get("profile")
+        )
         relayed = False
         coding_agent_config_defaults = (
             managed_claude_family_models(managed) or {}
@@ -3318,7 +3324,7 @@ def _launch_tool(
             )
         )
         if should_fetch_claude_picker_catalog:
-            token = get_databricks_token(state["workspace"], state.get("profile"))
+            token = get_databricks_token(state["workspace"], catalog_profile)
             picker_catalog = list_anthropic_model_catalog(
                 state["workspace"],
                 token,
@@ -3405,7 +3411,7 @@ def _launch_tool(
         if tool == "claude" and managed is None and not provider and not parent_schema:
             discovered = list_anthropic_model_catalog(
                 state["workspace"],
-                get_databricks_token(state["workspace"], state.get("profile")),
+                get_databricks_token(state["workspace"], catalog_profile),
             )
             if discovered.model_ids:
                 picker_catalog = claude_agent.default_model_picker_catalog(
