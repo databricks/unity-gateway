@@ -71,6 +71,15 @@ independently asserted task. Configuration alone must never be presented as
 inference coverage. Do not add shortcuts around the behavior a test claims to
 exercise.
 
+## Agent warm-up
+
+Always warm OpenCode before any launch that runs under a timeout. On its first load of a
+config dir, OpenCode npm-installs ug's auth plugin (about 63MB; 9-12s on Linux and far
+longer on Windows), which would otherwise eat into the launch's timeout. In `test_e2e.py`,
+call `_warm_agent("opencode", env)` with the launch's env first; elsewhere, run
+`opencode models` (no model request) with the same env and its own timeout. To warm another
+agent, add it to `AGENT_WARM_UPS` in `test_e2e.py`.
+
 ## Add / modify / remove
 
 ### Required integration test format
