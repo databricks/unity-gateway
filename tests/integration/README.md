@@ -169,6 +169,32 @@ recommendation while its generated `ANTHROPIC_MODEL` setting and native header s
 Sonnet, then exits. It does not verify Claude's inference model. All three cases leave
 workspace and budget configuration unchanged.
 
+`../test_usage.py` covers the local `ENABLE_UG_USAGE_SPEND_API` flag: exact `1` selects
+the new API/output; unset, empty, `0`, and other values keep the legacy `recommendModel`
+summary and unavailable-budget message. Both paths retain invalid-token errors and
+must not call the other API as a fallback. Legacy renderer/client component checks
+are retained. These flag checks are not live integration coverage; CUJ5 above continues
+to exercise the default legacy behavior.
+
+With the flag enabled, `../test_usage.py` and `../test_budget.py` separately cover workspace-authenticated
+spend-status requests, configured profile/token reuse without account discovery or login,
+personal/shared limits, empty intermediate pages, pagination validation, and lookup failures
+including disabled endpoints and failures after a successful page. Failed lookups must not
+be reported as absent budgets. Valid limits remain eligible for display when percentages are missing,
+even when none are supplied, with “Usage percentage not reported” and any personal amounts
+the API provides. Known zero percentages remain visible; missing amounts are not invented.
+Component selection checks cover the five-limit cap, highest-percentage category
+representatives, remaining-slot ranking, stable ties, and truncation counts. They also
+verify that output does not advertise the deferred `--all` option.
+Component presentation checks also cover leading whitespace, neutral text, Isaac's meter
+colors below 80%, from 80% to below 100%, and at/above 100%, exact decimal boundaries,
+over-limit labels, and color-disabled output. These do not establish live terminal coverage.
+Renderer cases check literal generic
+labels and period contexts without misclassifying future enums or exposing unknown-scope
+dollar amounts. Command-level error distinctions remain covered.
+Account-login/cache checks were removed with the obsolete
+account-authentication path. These are unit/component checks, not live sign-in coverage.
+
 Shared subprocess command resolution is covered by `../test_subprocess_cross_os.py` and
 enforced by Ruff. These component checks do not establish native Windows coverage
 for every agent; the Windows journeys below validate their explicitly selected paths.

@@ -322,6 +322,33 @@ Managed smart defaults are covered by `test_managed_config.py`, `test_cli.py`,
 without tier rules, applying recommendations when tiers exist, and serializing the current
 API field. These are unit/component checks; live request-count coverage is not included.
 
+`test_usage.py` covers the client-side `ENABLE_UG_USAGE_SPEND_API` opt-in: only the exact
+value `1` selects the new endpoint and multi-limit output. Unset, empty, `0`, and other
+values preserve the legacy `recommendModel` summary and unavailable-budget message.
+Both paths reject invalid tokens and never call the other API as a fallback.
+Legacy renderer and `test_databricks.py` client regressions are retained for the default path.
+With the flag enabled, `test_usage.py` distinguishes successful empty spend-limit lookups from disabled/missing
+endpoint, permission, network, server, and malformed-response failures, while preserving
+invalid-token errors and configured workspace/profile authentication. `test_budget.py`
+checks the workspace spend-status endpoint and token without account discovery or CLI auth,
+unchanged caller auth settings, personal/shared parsing, pagination through empty pages,
+empty/absent and invalid/repeated tokens, and errors after earlier successful pages.
+Valid omitted percentages remain eligible for display as “Usage percentage not reported” in
+summaries and additional limits, including when no percentages are supplied. Known zero percentages
+and supplied personal amounts remain visible without inventing missing spend or thresholds.
+Opt-in output selects at most five limits, preserving the highest-percentage limit in each
+personal/shared daily/monthly category before filling remaining slots by percentage. Tests
+cover all four categories, single-category fill, stable ties, missing percentages, and
+truncation counts without advertising a deferred `--all` option.
+Presentation checks cover a leading blank line, neutral headings and percentages, Isaac's
+green/yellow/red meter thresholds at 80% and 100% using exact decimal comparisons,
+unclipped over-limit percentages, and readable output with terminal colors disabled.
+Unknown scope/period labels remain literal and do not imply shared/monthly semantics.
+Personal amounts for unknown periods use a generic period context; unknown scopes
+do not expose dollar amounts.
+Account-token caching and account-login tests were removed because usage no longer uses
+account authentication. These are unit/component checks, not live sign-in coverage.
+
 `test_codex_smart_routing_v2.py` checks that the remote Codex TUI receives the
 gateway provider on Windows while Unix launch arguments stay unchanged and routing
 hooks stay with the app-server. This is component coverage, not a live Windows
