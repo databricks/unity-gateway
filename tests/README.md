@@ -541,7 +541,8 @@ ordinary pushes do not rerun reviews. `test_ug_review_bot.py` covers gateway aut
 OIDC-authenticated npm-proxy configuration and credential cleanup, and the workflow contract,
 not live inference or GitHub posting. The old custom
 Responses/diff/parser/summary-rendering tests are obsolete because that implementation
-is removed. `/user-journey-check` runs the user-journey gate,
+is removed. `test_polly_review.py` covers the Polly review workflow contract and its
+summary helper. `/user-journey-check` runs the user-journey gate,
 which runs automatically only for in-repo PRs.
 
 ## Gaps and deferred scope
