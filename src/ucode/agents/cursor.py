@@ -17,12 +17,19 @@ whole-file backup.
 
 from __future__ import annotations
 
+import shutil
+import sys
 from pathlib import Path
 
 from ucode.config_io import apply_json_mcp_diff, read_json_safe, write_json_file
 from ucode.launcher import exec_or_spawn
 
 CURSOR_BINARY = "cursor-agent"
+CURSOR_APP_BINARY = "cursor"
+CURSOR_MACOS_APP_PATHS = (
+    Path("/Applications/Cursor.app"),
+    Path.home() / "Applications" / "Cursor.app",
+)
 CURSOR_CONFIG_DIR = Path.home() / ".cursor"
 CURSOR_MCP_CONFIG_PATH = CURSOR_CONFIG_DIR / "mcp.json"
 
@@ -103,3 +110,27 @@ def launch(state: dict, tool_args: list[str]) -> None:
     convenience wrapper over `cursor-agent` (kept for symmetry with the other
     `ucode <agent>` launchers)."""
     exec_or_spawn([CURSOR_BINARY, *tool_args])
+
+
+def find_app_launch_argv(tool_args: list[str]) -> list[str] | None:
+    """Return the argv that opens the Cursor desktop app, or None if it isn't installed.
+
+    Prefers the `cursor` shell command (installed by Cursor on every platform), and
+    falls back to `open -a` on the macOS app bundle when that command isn't on PATH."""
+    binary = shutil.which(CURSOR_APP_BINARY)
+    if binary:
+        return [binary, *tool_args]
+    if sys.platform == "darwin":
+        for bundle in CURSOR_MACOS_APP_PATHS:
+            if bundle.exists():
+                return ["open", "-a", str(bundle), *tool_args]
+    return None
+
+
+def launch_app(argv: list[str]) -> None:
+    """Open the Cursor desktop app.
+
+    The desktop app reads the same ~/.cursor/mcp.json as `cursor-agent`, and the
+    Databricks MCP servers in it run `ug mcp-proxy`, so no env or token wiring is
+    needed here."""
+    exec_or_spawn(argv)

@@ -142,6 +142,37 @@ class TestLaunch:
         assert execs == [["cursor-agent", "--resume"]]
 
 
+class TestLaunchApp:
+    def test_uses_cursor_command_on_path(self, monkeypatch):
+        monkeypatch.setattr(cursor.shutil, "which", lambda name: "/usr/bin/cursor")
+
+        assert cursor.find_app_launch_argv(["."]) == ["/usr/bin/cursor", "."]
+
+    def test_macos_falls_back_to_open_app_bundle(self, tmp_path, monkeypatch):
+        bundle = tmp_path / "Cursor.app"
+        bundle.mkdir()
+        monkeypatch.setattr(cursor.shutil, "which", lambda name: None)
+        monkeypatch.setattr(cursor.sys, "platform", "darwin")
+        monkeypatch.setattr(cursor, "CURSOR_MACOS_APP_PATHS", (tmp_path / "missing.app", bundle))
+
+        assert cursor.find_app_launch_argv(["."]) == ["open", "-a", str(bundle), "."]
+
+    def test_not_installed_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cursor.shutil, "which", lambda name: None)
+        monkeypatch.setattr(cursor.sys, "platform", "linux")
+        monkeypatch.setattr(cursor, "CURSOR_MACOS_APP_PATHS", (tmp_path / "missing.app",))
+
+        assert cursor.find_app_launch_argv([]) is None
+
+    def test_launch_app_execs_argv(self, monkeypatch):
+        execs: list[list[str]] = []
+        monkeypatch.setattr(cursor, "exec_or_spawn", lambda argv: execs.append(argv))
+
+        cursor.launch_app(["cursor", "."])
+
+        assert execs == [["cursor", "."]]
+
+
 class TestWriteUserMcpServers:
     def test_batched_add_remove_preserves_user_entries(self, tmp_path, monkeypatch):
         path = tmp_path / "mcp.json"

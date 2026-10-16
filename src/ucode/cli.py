@@ -3861,7 +3861,7 @@ def pi_cmd(
     rich_help_panel="Launch",
 )
 def cursor_cmd(ctx: typer.Context) -> None:
-    """Launch Cursor Agent.
+    """Launch Cursor Agent (`ug cursor app` opens the Cursor desktop app).
 
     Cursor is MCP-only: `cursor-agent` runs models on your own Cursor account, so
     ug configures no models for it. Its Databricks MCP servers (added via
@@ -3872,6 +3872,21 @@ def cursor_cmd(ctx: typer.Context) -> None:
     from ucode.agents import cursor
 
     try:
+        if ctx.args and ctx.args[0] == "app":
+            argv = cursor.find_app_launch_argv(ctx.args[1:])
+            if argv is None:
+                raise RuntimeError(
+                    "The Cursor desktop app was not found. Install it "
+                    "(https://cursor.com/download), then re-run `ug cursor app`."
+                )
+            print_section("Unity Gateway with Cursor")
+            print_note(
+                "Cursor runs models on your Cursor account; its Databricks MCP servers "
+                "in ~/.cursor/mcp.json authenticate through `ug mcp-proxy`."
+            )
+            print_success("Opening the Cursor app")
+            cursor.launch_app(argv)
+            return
         if not shutil.which(cursor.CURSOR_BINARY):
             raise RuntimeError(
                 f"`{cursor.CURSOR_BINARY}` was not found on PATH. Install Cursor Agent "
