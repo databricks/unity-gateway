@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from ucode.agents import claude_desktop_config as desktop_config
+from ucode.agents.desktop import claude_config as desktop_config
 
 MANIFEST_FILENAME = "claude-desktop.json"
 MANIFEST_VERSION = 1

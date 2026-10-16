@@ -5,8 +5,8 @@ configuration. This module owns only the profile entry it creates, plus the ``ap
 selection while that selection still points at the Unity Gateway profile. Optional custom headers
 and the observed ``alwaysStartWithDefaultModel`` boolean are written only when supplied.
 
-Profile rendering and file writes live in ``claude_desktop_config``; ownership records and
-revert policy live in ``claude_desktop_state``.
+Profile rendering and file writes live in ``claude_config``; ownership records and
+revert policy live in ``claude_state``.
 
 The native path is supported only on macOS.  ``directory=`` is an explicit filesystem injection
 for tests and does not imply support for another native platform.
@@ -21,9 +21,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from ucode.agents import claude_desktop_config as desktop_config
-from ucode.agents import claude_desktop_state as desktop_state
-from ucode.agents.claude_desktop_config import (
+from ucode.agents.desktop import claude_config as desktop_config
+from ucode.agents.desktop import claude_state as desktop_state
+from ucode.agents.desktop.claude_config import (
     ALL_PROFILE_KEYS,
     META_FILENAME,
     OPTIONAL_PROFILE_KEYS,
@@ -35,7 +35,7 @@ from ucode.agents.claude_desktop_config import (
     ClaudeDesktopUnsupportedError,
     render_profile,
 )
-from ucode.agents.claude_desktop_state import (
+from ucode.agents.desktop.claude_state import (
     MANIFEST_FILENAME,
     MANIFEST_VERSION,
     PROFILE_NAMESPACE,

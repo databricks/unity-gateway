@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from ucode.agents import claude_desktop as desktop
-from ucode.agents import claude_desktop_config as desktop_config
+from ucode.agents.desktop import claude as desktop
+from ucode.agents.desktop import claude_config as desktop_config
 
 
 def _uuid() -> str:

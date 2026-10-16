@@ -315,7 +315,8 @@ GUI or browser-login coverage; this integration suite does not launch Desktop.
 UUIDs, owned-field refresh, deleted-profile recovery, legacy-ID migration, ownership
 conflicts, user-edit preservation on revert, and rollback across profile, metadata,
 and ownership files. It uses temporary files and injected write failures in the
-`claude_desktop_config` module, with ownership/revert policy in `claude_desktop_state`.
+`agents/desktop/claude_config.py` module, with ownership/revert policy in
+`agents/desktop/claude_state.py`.
 Native Desktop activation, model selection, browser login, and inference remain outside
 this coverage; the adapter resolves native paths only on macOS.
 

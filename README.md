@@ -390,8 +390,9 @@ tests remain available separately:
 UCODE_TEST_WORKSPACE=<db_workspace_url> uv run pytest tests/test_e2e.py -v
 ```
 
-To add a new agent, implement `src/ucode/agents/<name>.py`, register it in
+To add a new CLI agent, implement `src/ucode/agents/<name>.py`, register it in
 `src/ucode/agents/__init__.py`, and add focused tests.
+Desktop-app adapters live separately in `src/ucode/agents/desktop/`.
 
 ## Documentation
 
