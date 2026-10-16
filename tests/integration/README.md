@@ -348,12 +348,12 @@ native browser-consent coverage.
 dry-run, and revert using native path resolution under temporary homes on simulated macOS,
 Windows, and Linux, without replacing the path resolver, including
 host-native absolute helper paths with spaces and missing-app checks before
-authentication/discovery. Revert without Desktop ownership preserves existing files.
+authentication/discovery. Revert without a UG profile preserves existing files.
 These checks do not launch the Desktop GUI or its credential helper.
-They also cover CLI profile labels, label refresh with a stable workspace UUID, and
-configure/revert warnings that preserve profile and ownership files on lock timeout.
-An existing generated UUID without ownership records is refreshed and reverted to
-its original profile and metadata; these remain filesystem component checks.
+They also cover CLI profile labels, workspace switches with a fixed UUID, and
+configure/revert warnings that preserve profile and selection-state files on lock timeout.
+An existing reserved UUID without records is replaced on configure and deleted on revert;
+these remain filesystem component checks.
 
 ## Test layout and format
 

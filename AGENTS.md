@@ -137,14 +137,15 @@ Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file 
 
 Claude Desktop third-party profiles live under `Claude-3p/configLibrary` in
 `~/Library/Application Support` on macOS, `%LOCALAPPDATA%` on current Windows releases,
-and `~/.config` on Linux. Windows and Linux require Desktop to have opened once. UG creates its
-workspace-derived UUID profile regardless of prior ownership records and updates
-its metadata entry and applied selection. Random-ID profiles are left untouched. It
-owns gateway/provider/auth-helper fields, `inferenceModels`, and the headers it
-writes. Ownership is recorded in `~/.ucode/claude-desktop.json`; other profiles and
-unknown fields are preserved. Repeat configure reapplies UG-owned fields, even if
-edited or deleted; revert preserves edits made after the latest configure.
-Desktop setup is configure-only and best-effort.
+and `~/.config` on Linux. Windows and Linux require Desktop to have opened once.
+UG reserves UUID `5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6` for its fully owned profile.
+Configure replaces the whole file, updates its metadata entry, and selects it;
+changing workspaces replaces the same profile. Revert deletes that file and entry.
+Unrelated profiles and metadata are preserved. Only the previous selection is saved
+in `~/.ucode/claude-desktop.json`; profile contents are not restored on revert.
+Old random-ID and workspace-derived profiles are left untouched.
+Desktop setup is configure-only and best-effort. Writes retain atomic replacement,
+failure rollback, and the Desktop-only five-second lock timeout.
 See `docs/claude-desktop.md` for native validation limits and revert behavior.
 
 <details>

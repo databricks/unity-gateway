@@ -73,7 +73,6 @@ def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
         headers[name] = value
 
     result = configure_claude_desktop(
-        workspace,
         model_ids=model_ids,
         base_url=build_tool_base_url("claude", workspace.rstrip("/")),
         helper_command=os.path.abspath(sys.executable),
@@ -94,21 +93,16 @@ def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
     print_success("Claude Desktop gateway profile configured. Quit and reopen Claude Desktop.")
 
 
-def revert_desktop(state: dict) -> str:
+def revert_desktop() -> str:
     if sys.platform not in ("darwin", "win32", "linux") or is_dry_run():
         return "unchanged"
     if claude_desktop_directory() is None:
         return "unchanged"
-    workspace = state.get("workspace")
-    if not isinstance(workspace, str) or not workspace:
-        return "unchanged"
     try:
-        result = revert_claude_desktop(workspace, profile_key=state.get("profile"))
-    except Exception as exc:  # noqa: BLE001 -- Preserve other revert operations and Desktop edits
-        print_warning(f"Could not revert Claude Desktop: {exc}. Ownership records were retained.")
+        result = revert_claude_desktop()
+    except Exception as exc:  # noqa: BLE001 -- Preserve other revert operations on failure
+        print_warning(f"Could not revert Claude Desktop: {exc}. Desktop setup was retained.")
         return "failed"
     for warning in result.warnings:
         print_warning(warning)
-    if result.drifted:
-        print_warning("Claude Desktop user edits were preserved during revert.")
-    return "restored" if result.changed else "unchanged"
+    return "removed" if result.changed else "unchanged"

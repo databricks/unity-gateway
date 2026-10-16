@@ -176,11 +176,11 @@ dry-run, and revert with native path resolution under temporary homes on simulat
 Windows, and Linux, without replacing the path resolver. The helper
 executable uses an absolute host-native path containing spaces. Missing Windows/Linux
 app data fails before external authentication or model discovery, and revert without
-Desktop ownership leaves existing settings untouched. These remain component checks.
+a UG profile leaves existing settings untouched. These remain component checks.
 They also assert `Unity Gateway - <CLI profile name>` labels, label refresh without
 changing the UUID, and configure/revert warnings on profile-lock timeout without
-changing profile or ownership files. An existing generated UUID with no ownership record
-is refreshed, with its original profile and metadata restored by revert.
+changing profile or selection-state files. An existing reserved UUID without records
+is replaced on configure and deleted on revert. Workspace changes reuse the same file.
 
 `TestChildStdoutLaunch` in `test_cli.py` checks Claude `-p`/`--print` and Codex `exec`
 (plain and `--json`) and `app-server` status/error output on stderr, argument forwarding with

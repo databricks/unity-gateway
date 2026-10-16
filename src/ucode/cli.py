@@ -1386,7 +1386,7 @@ def revert() -> int:
     from ucode.desktop_setup import revert_desktop
 
     state = load_state()
-    desktop_result = revert_desktop(state)
+    desktop_result = revert_desktop()
     managed_configs = state.get("managed_configs") or {}
     mcp_results = revert_mcp_configs(state)
     claude_managed_result = claude_agent.revert_managed_settings()

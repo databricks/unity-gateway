@@ -1,7 +1,6 @@
 """Configure-only orchestration with real temporary Desktop profile files."""
 
 import json
-import uuid
 from types import SimpleNamespace
 
 import pytest
@@ -119,7 +118,7 @@ def test_reconfigure_refreshes_existing_profile_without_deletion(desktop, capsys
         "x-databricks-use-coding-agent-mode": "true",
         "X-Admin": "updated",
     }
-    assert refreshed["userOwned"] == {"keep": True}
+    assert "userOwned" not in refreshed
     assert {path.name for path in desktop.glob("*.json")} == {
         "_meta.json",
         f"{profile_id}.json",
@@ -129,8 +128,8 @@ def test_reconfigure_refreshes_existing_profile_without_deletion(desktop, capsys
     assert "Could not configure Claude Desktop" not in output
 
 
-def test_configure_overwrites_workspace_uuid_without_ownership_record(desktop, capsys):
-    profile_id = str(uuid.uuid5(claude_desktop.PROFILE_NAMESPACE, "https://workspace.example"))
+def test_configure_overwrites_reserved_uuid_without_ownership_record(desktop, capsys):
+    profile_id = claude_desktop.PROFILE_ID
     profile_path = desktop / f"{profile_id}.json"
     original_profile = {"inferenceProvider": "old-provider", "userOwned": {"keep": True}}
     profile_path.write_text(json.dumps(original_profile))
@@ -148,12 +147,15 @@ def test_configure_overwrites_workspace_uuid_without_ownership_record(desktop, c
     assert metadata["entries"] == [{"id": profile_id, "name": "Unity Gateway - chosen-profile"}]
     assert metadata["userMetadata"] == "keep"
     assert configured_profile(desktop)["inferenceProvider"] == "gateway"
-    assert configured_profile(desktop)["userOwned"] == {"keep": True}
+    assert "userOwned" not in configured_profile(desktop)
     assert "Could not configure Claude Desktop" not in capsys.readouterr().out
 
-    assert desktop_setup.revert_desktop(state) == "restored"
-    assert json.loads(profile_path.read_text()) == original_profile
-    assert json.loads((desktop / "_meta.json").read_text()) == original_metadata
+    assert desktop_setup.revert_desktop() == "removed"
+    assert not profile_path.exists()
+    assert json.loads((desktop / "_meta.json").read_text()) == {
+        "entries": [],
+        "userMetadata": "keep",
+    }
 
 
 def test_managed_static_catalog_does_not_fetch_discovery(desktop, monkeypatch):
@@ -251,7 +253,7 @@ def test_profile_lock_timeout_warns_and_preserves_state(desktop, monkeypatch, ca
     state = {"workspace": "https://workspace.example", "profile": "chosen-profile"}
     desktop_setup.configure_desktop_after_claude(state)
     before = {path.name: path.read_bytes() for path in desktop.glob("*.json")}
-    manifest_path = claude_desktop.APP_DIR / claude_desktop.MANIFEST_FILENAME
+    manifest_path = claude_desktop.APP_DIR / claude_desktop.STATE_FILENAME
     manifest_before = manifest_path.read_bytes()
     capsys.readouterr()
 
@@ -263,7 +265,7 @@ def test_profile_lock_timeout_warns_and_preserves_state(desktop, monkeypatch, ca
     if operation == "configure":
         desktop_setup.configure_desktop_after_claude(state)
     else:
-        assert desktop_setup.revert_desktop(state) == "failed"
+        assert desktop_setup.revert_desktop() == "failed"
 
     assert {path.name: path.read_bytes() for path in desktop.glob("*.json")} == before
     assert manifest_path.read_bytes() == manifest_before
@@ -286,7 +288,7 @@ def test_unsupported_platform_does_not_configure_desktop(monkeypatch, capsys):
     monkeypatch.setattr(desktop_setup, "sys", SimpleNamespace(platform="freebsd"))
     desktop_setup.configure_desktop_after_claude({})
     assert capsys.readouterr().out == ""
-    assert desktop_setup.revert_desktop({}) == "unchanged"
+    assert desktop_setup.revert_desktop() == "unchanged"
 
 
 @pytest.mark.parametrize("platform", ["win32", "linux"])
@@ -310,29 +312,24 @@ def test_missing_app_warns_before_model_discovery(platform, monkeypatch, tmp_pat
     assert not directory.parent.exists()
 
 
-def test_revert_uses_independent_profile_manifest(desktop):
+def test_revert_removes_profile_and_selection_state(desktop):
     state = {"workspace": "https://workspace.example", "profile": "chosen-profile"}
     desktop_setup.configure_desktop_after_claude(state)
-    assert desktop_setup.revert_desktop(state) == "restored"
+    assert desktop_setup.revert_desktop() == "removed"
     assert json.loads((desktop / "_meta.json").read_text()) == {"entries": []}
     assert list(desktop.glob("*.json")) == [desktop / "_meta.json"]
-    assert desktop_setup.revert_desktop(state) == "unchanged"
+    assert desktop_setup.revert_desktop() == "unchanged"
 
 
 def test_revert_without_desktop_ownership_leaves_existing_settings_untouched(desktop):
     before = {path.name: path.read_bytes() for path in desktop.iterdir()}
 
-    assert (
-        desktop_setup.revert_desktop(
-            {"workspace": "https://workspace.example", "profile": "chosen-profile"}
-        )
-        == "unchanged"
-    )
+    assert desktop_setup.revert_desktop() == "unchanged"
 
     assert {path.name: path.read_bytes() for path in desktop.iterdir()} == before
 
 
-def test_reconfigure_recreates_deleted_profile_with_same_workspace_id(desktop, capsys):
+def test_reconfigure_recreates_deleted_profile_with_fixed_id(desktop, capsys):
     state = {"workspace": "https://workspace.example", "profile": "chosen-profile"}
     desktop_setup.configure_desktop_after_claude(state)
     metadata_path = desktop / "_meta.json"
@@ -357,3 +354,30 @@ def test_reconfigure_recreates_deleted_profile_with_same_workspace_id(desktop, c
     output = capsys.readouterr().out
     assert "gateway profile configured" in output
     assert "Could not configure Claude Desktop" not in output
+
+
+def test_switching_workspace_replaces_one_reserved_profile(desktop):
+    desktop_setup.configure_desktop_after_claude(
+        {"workspace": "https://first.example", "profile": "first"}
+    )
+    desktop_setup.configure_desktop_after_claude(
+        {"workspace": "https://second.example", "profile": "second"}
+    )
+    assert json.loads((desktop / "_meta.json").read_text()) == {
+        "entries": [{"id": claude_desktop.PROFILE_ID, "name": "Unity Gateway - second"}],
+        "appliedId": claude_desktop.PROFILE_ID,
+    }
+    profile = configured_profile(desktop)
+    assert profile["inferenceGatewayBaseUrl"] == "https://second.example/ai-gateway/anthropic"
+    assert profile["inferenceCredentialHelperArgs"][-4:] == [
+        "--host",
+        "https://second.example",
+        "--profile",
+        "second",
+    ]
+    assert {path.name for path in desktop.glob("*.json")} == {
+        "_meta.json",
+        f"{claude_desktop.PROFILE_ID}.json",
+    }
+    assert desktop_setup.revert_desktop() == "removed"
+    assert not (desktop / f"{claude_desktop.PROFILE_ID}.json").exists()
