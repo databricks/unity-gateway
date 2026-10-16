@@ -52,9 +52,9 @@ scope there). A required provider entry replaces the configured one instead of m
 launch-scoped routing headers reach Codex through `env_http_headers` and the
 `UG_CODEX_MODEL_PROVIDER_SERVICE`, `UG_CODEX_MODEL_SERVICE_PARENT_SCHEMA`, and
 `UG_CODEX_SMART_ROUTER_RECIPE` variables that `ug codex` sets at launch. Standard users can create
-folders under ProgramData and keep control of them, so before reading, backing up, writing, or
-reverting the file, UG refuses a linked `OpenAI`/`Codex` folder or file, or one not owned by
-Administrators, SYSTEM, or TrustedInstaller, and checks again after creating missing folders.
+folders under ProgramData, so UG refuses to write through a linked `OpenAI` or `Codex` folder. A
+standard user who creates those folders before an administrator runs UG keeps control of them; UG
+doesn't check or change their ownership, and Codex itself doesn't either.
 
 This is a new shared ucode distinction. The previous implementation inferred interactivity from
 command shape in some flows and did not guard managed-file writes consistently.
