@@ -21,6 +21,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -2163,6 +2164,7 @@ def clear_model_services_cache() -> None:
     """Forget cached model-service listings (used by tests, and after a workspace switch)."""
     _MODEL_SERVICES_CACHE.clear()
     _MODEL_PROVIDER_SERVICES_CACHE.clear()
+    _CLAUDE_CALLABLE_CACHE.clear()
 
 
 def has_cached_model_provider_services(workspace: str, parent: str | None = None) -> bool:
@@ -2325,6 +2327,60 @@ def discover_claude_models_unbucketed(workspace: str, token: str) -> tuple[list[
     return [m for m in ids if "claude-" in m.lower()], None
 
 
+# Per-process memo of `_claude_model_is_callable`, keyed by (workspace, model id). Only definite
+# answers are stored; a probe that could not tell is never cached.
+_CLAUDE_CALLABLE_CACHE: dict[tuple[str, str], bool] = {}
+
+
+def _claude_model_is_callable(workspace: str, token: str, model_id: str) -> bool:
+    """False only when the gateway answers a 1-token request with a 403 permission denial.
+
+    The model-services listing does not say which services the caller may invoke, so a model the
+    user lacks EXECUTE on still shows up. Any other outcome (success, OAuth-scope 403,
+    5xx, network error) returns True: an inconclusive probe must keep today's behavior.
+    """
+    key = (workspace, model_id)
+    cached = _CLAUDE_CALLABLE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    _payload, reason = _http_post_json(
+        f"{workspace_origin(workspace)}/ai-gateway/anthropic/v1/messages",
+        token,
+        {"model": model_id, "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]},
+        timeout=10,
+    )
+    if reason is None:
+        callable_ = True
+    elif _looks_like_permission_failure(reason) and not _looks_like_scope_failure(reason):
+        callable_ = False
+    else:
+        return True
+    _CLAUDE_CALLABLE_CACHE[key] = callable_
+    return callable_
+
+
+def _drop_uncallable_claude_models(
+    workspace: str, token: str, candidates: dict[str, list[str]]
+) -> dict[str, str]:
+    """Pick the newest callable model per Claude family; drop families with none.
+
+    Families are probed in parallel, newest candidate first, stopping at the first callable one. If
+    no family has a callable model (e.g. the probe itself is failing), fall back to the newest
+    model per family so behavior matches the unprobed path.
+    """
+    newest = {family: models[0] for family, models in candidates.items()}
+    if not candidates:
+        return newest
+
+    def pick(models: list[str]) -> str | None:
+        return next((m for m in models if _claude_model_is_callable(workspace, token, m)), None)
+
+    with ThreadPoolExecutor(max_workers=len(candidates)) as pool:
+        picks = dict(zip(candidates, pool.map(pick, candidates.values()), strict=True))
+    chosen = {family: model for family, model in picks.items() if model}
+    return chosen or newest
+
+
 def discover_model_services(
     workspace: str, token: str
 ) -> tuple[dict[str, str], list[str], list[str], list[str], str | None]:
@@ -2347,14 +2403,15 @@ def discover_model_services(
     if not ids:
         return {}, [], [], [], reason
 
-    claude_models: dict[str, str] = {}
+    claude_candidates: dict[str, list[str]] = {}
     for family in ANTHROPIC_FAMILIES:
         candidates = sorted(
             [m for m in ids if f"claude-{family}-" in m],
             reverse=True,
         )
         if candidates:
-            claude_models[family] = candidates[0]
+            claude_candidates[family] = candidates
+    claude_models = _drop_uncallable_claude_models(workspace, token, claude_candidates)
 
     codex_models = sorted([m for m in ids if "gpt-" in m], key=model_version_sort_key)
     gemini_models = sorted([m for m in ids if "gemini-" in m], key=model_version_sort_key)

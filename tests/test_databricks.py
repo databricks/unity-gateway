@@ -520,6 +520,87 @@ class TestModelTokenLimits:
         assert db_mod.model_token_limits("system.ai.kimi-k2-7-code") is None
 
 
+# conftest stubs the probe for offline tests; keep the real one for the probe tests below.
+_REAL_CLAUDE_PROBE = db_mod._claude_model_is_callable
+
+_DENIED = "HTTP 403 Forbidden: User does not have permission to use model service 'x'"
+
+
+class TestUncallableClaudeModels:
+    def _listing(self, monkeypatch, ids):
+        payload = {"model_services": [_model_service(i) for i in ids]}
+        monkeypatch.setattr(
+            db_mod, "_http_get_json", lambda url, token, timeout=10: (payload, None)
+        )
+
+    def _post(self, monkeypatch, denied, error=None):
+        calls = []
+
+        def fake(url, token, payload, *, timeout=10, headers=None):
+            calls.append(payload["model"])
+            if payload["model"] in denied:
+                return None, _DENIED
+            return ({"id": "msg"}, None) if error is None else (None, error)
+
+        monkeypatch.setattr(db_mod, "_http_post_json", fake)
+        monkeypatch.setattr(db_mod, "_claude_model_is_callable", _REAL_CLAUDE_PROBE)
+        return calls
+
+    def test_denied_model_excluded_and_not_default(self, monkeypatch):
+        self._listing(
+            monkeypatch,
+            [
+                "system.ai.claude-opus-5-5",
+                "system.ai.claude-opus-4-8",
+                "system.ai.claude-sonnet-4-6",
+            ],
+        )
+        self._post(monkeypatch, {"system.ai.claude-opus-5-5"})
+        claude, *_ = db_mod.discover_model_services(WS, "token")
+        assert claude == {
+            "opus": "system.ai.claude-opus-4-8",
+            "sonnet": "system.ai.claude-sonnet-4-6",
+        }
+
+    def test_family_with_no_callable_model_is_dropped(self, monkeypatch):
+        self._listing(monkeypatch, ["system.ai.claude-opus-5-5", "system.ai.claude-sonnet-4-6"])
+        self._post(monkeypatch, {"system.ai.claude-opus-5-5"})
+        claude, *_ = db_mod.discover_model_services(WS, "token")
+        assert claude == {"sonnet": "system.ai.claude-sonnet-4-6"}
+        from ucode.agents import claude as claude_agent
+
+        assert (
+            claude_agent.default_model({"claude_models": claude}) == "system.ai.claude-sonnet-4-6"
+        )
+
+    def test_accessible_models_unaffected_and_cached(self, monkeypatch):
+        self._listing(monkeypatch, ["system.ai.claude-opus-5-5", "system.ai.claude-opus-4-8"])
+        calls = self._post(monkeypatch, set())
+        claude, *_ = db_mod.discover_model_services(WS, "token")
+        assert claude == {"opus": "system.ai.claude-opus-5-5"}
+        assert calls == ["system.ai.claude-opus-5-5"]
+        assert db_mod._claude_model_is_callable(WS, "token", "system.ai.claude-opus-5-5")
+        assert calls == ["system.ai.claude-opus-5-5"]
+
+    @pytest.mark.parametrize(
+        "error", ["HTTP 500 Internal Server Error", "network error: timed out", "HTTP 429 Too Many"]
+    )
+    def test_probe_failure_keeps_current_behavior(self, monkeypatch, error):
+        self._listing(monkeypatch, ["system.ai.claude-opus-5-5", "system.ai.claude-opus-4-8"])
+        self._post(monkeypatch, set(), error=error)
+        claude, *_ = db_mod.discover_model_services(WS, "token")
+        assert claude == {"opus": "system.ai.claude-opus-5-5"}
+
+    def test_all_denied_keeps_current_behavior(self, monkeypatch):
+        self._listing(monkeypatch, ["system.ai.claude-opus-5-5", "system.ai.claude-sonnet-4-6"])
+        self._post(monkeypatch, {"system.ai.claude-opus-5-5", "system.ai.claude-sonnet-4-6"})
+        claude, *_ = db_mod.discover_model_services(WS, "token")
+        assert claude == {
+            "opus": "system.ai.claude-opus-5-5",
+            "sonnet": "system.ai.claude-sonnet-4-6",
+        }
+
+
 class TestDiscoverModelServices:
     def test_buckets_families_by_name(self, monkeypatch):
         payload = {
