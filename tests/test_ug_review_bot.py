@@ -158,6 +158,18 @@ def test_workflow_uses_pinned_open_code_review_action_and_cli():
     assert "tests/**/*.py" in rules["include"]
 
 
+def test_workflow_posts_findings_inline_and_drops_summary_only_when_nothing_was_routed():
+    workflow = WORKFLOW_PATH.read_text()
+    assert "route_severity_below" not in workflow
+    step = workflow.split("      - name: Remove the summary comment\n", 1)[1].split(
+        "\n      - name:", 1
+    )[0]
+    assert "steps.ocr.outputs.comments_failed == '0'" in step
+    assert "steps.ocr.outputs.comments_routed == '0'" in step
+    assert "<!-- ocr-summary-run:${process.env.REVIEW_RUN} -->" in step
+    assert "github.rest.issues.deleteComment(args)" in step
+
+
 def test_workflow_routes_review_through_gateway_with_service_principal_token():
     workflow = WORKFLOW_PATH.read_text()
     assert "llm_url: ${{ env.DATABRICKS_HOST }}/ai-gateway/anthropic\n" in workflow

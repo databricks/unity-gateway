@@ -4,9 +4,10 @@ Add either `ug-review` or `code-review` to an in-repository PR, or have an
 organization member or owner post exactly `/ug-review` on any PR, to run
 [Open Code Review](https://github.com/alibaba/open-code-review) with the UG rubric.
 Label triggers do not run on fork PRs, whose `pull_request` events cannot access
-the gateway secret; use the member comment instead. Medium- and higher-severity
-findings become inline review comments; low-severity findings go to the summary
-comment.
+the gateway secret; use the member comment instead. Findings become inline review
+comments. OCR always posts a summary comment, so the workflow deletes it when every
+finding was posted inline; Polly posts the overall review. The summary stays only
+when it holds findings GitHub would not accept inline.
 
 The job retains the existing protected runner, workspace, service principal, and
 `UG_CLI_REVIEW_BOT_SP_CLIENT_SECRET`. `auth.py` uses the same OAuth
