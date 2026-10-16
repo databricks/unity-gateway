@@ -8,6 +8,7 @@ from collections.abc import Mapping, MutableMapping
 from ucode.constants import (
     AGENT_CLAUDE,
     AGENT_CODEX,
+    ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
@@ -30,7 +31,10 @@ SUBAGENT_ORCH_V0 = "subagent_orch_v0"
 # Route only subagents with V2, subagent-only, and orchestration all enabled.
 SUBAGENT_ORCH_V1 = "subagent_orch_v1"
 
-# Preserve subagent_orch_v0 for Claude, with all Codex routing flags disabled.
+# Add the Codex orchestration runtime while retaining Claude's V1 behavior.
+SUBAGENT_ORCH_V2 = "subagent_orch_v2"
+
+# Preserve subagent_orch_v0 for Claude, with all Codex routing and orchestration flags disabled.
 SUBAGENT_ORCH_V0_CLAUDE_ONLY = "subagent_orch_v0_claude_only"
 
 _BASE_VERSIONS = {
@@ -38,26 +42,37 @@ _BASE_VERSIONS = {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
     },
     SUBAGENT_ONLY_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
     },
     SUBAGENT_ONLY_V1: {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
     },
     SUBAGENT_ORCH_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+        ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
     },
     SUBAGENT_ORCH_V1: {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+        ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
+    },
+    SUBAGENT_ORCH_V2: {
+        ENABLE_SMART_ROUTING_ENV_VAR: "1",
+        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+        ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "1",
     },
 }
 
@@ -83,6 +98,10 @@ _VERSIONS = {
         AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ORCH_V1],
         AGENT_CODEX: _BASE_VERSIONS[SUBAGENT_ORCH_V1],
     },
+    SUBAGENT_ORCH_V2: {
+        AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ORCH_V1],
+        AGENT_CODEX: _BASE_VERSIONS[SUBAGENT_ORCH_V2],
+    },
     # Codex opts out of routing and orchestration; Claude keeps subagent_orch_v0.
     SUBAGENT_ORCH_V0_CLAUDE_ONLY: {
         AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ORCH_V0],
@@ -90,6 +109,7 @@ _VERSIONS = {
             ENABLE_SMART_ROUTING_ENV_VAR: "0",
             ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
             ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+            ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR: "0",
         },
     },
 }

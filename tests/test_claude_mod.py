@@ -36,12 +36,17 @@ def test_launch_options_resolve_versions_without_mutating_input(version):
         "SMART_ROUTER_NAME": " custom_recipe ",
     }
     before = env.copy()
-    expected = config._VERSIONS.get(version, {}).get(
-        AGENT_CLAUDE, dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
-    )
+    preset = config._VERSIONS.get(version, {}).get(AGENT_CLAUDE)
+    if preset is None:
+        # Unknown selectors leave inherited values in place and preserve absent flags.
+        expected = {key: env.get(key, "") for key in SMART_ROUTING_ENV_KEYS}
+        unset = [key for key in SMART_ROUTING_ENV_KEYS if key not in env]
+    else:
+        expected = preset
+        unset = []
     assert v2._claude_mod_launch_options(env) == {
         **expected,
-        "unset": [],
+        "unset": unset,
         "recipe": "custom_recipe",
     }
     # Taking the baseline must not alter the caller's launch environment.
@@ -53,6 +58,11 @@ def test_launch_options_preserve_empty_and_absent_values():
         "ENABLE_SMART_ROUTING_V2": "",
         "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "",
         "ENABLE_SMART_ROUTER_ORCHESTRATOR": "",
-        "unset": ["ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "ENABLE_SMART_ROUTER_ORCHESTRATOR"],
+        "ENABLE_CODEX_ORCHESTRATOR_RUNTIME": "",
+        "unset": [
+            "ENABLE_SMART_ROUTING_SUBAGENT_ONLY",
+            "ENABLE_SMART_ROUTER_ORCHESTRATOR",
+            "ENABLE_CODEX_ORCHESTRATOR_RUNTIME",
+        ],
         "recipe": "task_v3",
     }
