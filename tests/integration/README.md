@@ -344,6 +344,12 @@ release. New lock-wait limits are scoped to Desktop profile updates; existing
 non-Desktop callers retain their prior behavior. These are component checks, not
 native browser-consent coverage.
 
+`../test_desktop_setup.py` separately exercises configure/refresh/recovery,
+dry-run, and revert on simulated macOS, Windows, and Linux selections, including
+host-native absolute helper paths with spaces and missing-app checks before
+authentication/discovery. Revert without Desktop ownership preserves existing files.
+These checks do not launch the Desktop GUI or its credential helper.
+
 ## Test layout and format
 
 All user journeys are top-level tests. There is no separate regressions category:

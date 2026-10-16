@@ -1,7 +1,7 @@
 # Claude Desktop through Unity Gateway
 
 After Claude Code is successfully configured, `ug configure` also creates and
-selects a dedicated Unity Gateway profile for Claude Desktop on macOS. This uses
+selects a dedicated Unity Gateway profile for Claude Desktop on macOS, Windows, and Linux. This uses
 the same workspace, Databricks CLI OAuth profile, model source, and managed HTTP
 headers as Claude Code. There is no separate Desktop checkbox or managed field.
 
@@ -9,9 +9,10 @@ headers as Claude Code. There is no separate Desktop checkbox or managed field.
 ug configure --profile <your-profile> --agents claude
 ```
 
-Quit Claude Desktop before configuring, then reopen it normally from Applications
-or the Dock. No terminal process needs to stay running. Claude Desktop must already
-be installed; UG does not install it or manage the customer's MDM process.
+Quit Claude Desktop before configuring, then reopen it normally from your app launcher.
+No terminal process needs to stay running. Claude Desktop must already be installed;
+UG does not install it or manage the customer's MDM process. On Windows and Linux,
+open Desktop once before configuring so it initializes its application-data directory.
 
 ## Models and authentication
 
@@ -31,8 +32,16 @@ serialized. If the original message failed during login, resend it.
 
 ## Existing profiles and rollback
 
-Profiles live in
-`~/Library/Application Support/Claude-3p/configLibrary`. UG records its UUID and
+Profiles use Anthropic's [documented locations](https://claude.com/docs/third-party/claude-desktop/data-storage#where-data-lives):
+
+- macOS: `~/Library/Application Support/Claude-3p/configLibrary`
+- Windows: `%LOCALAPPDATA%\Claude-3p\configLibrary`
+- Linux: `~/.config/Claude-3p/configLibrary`
+
+Older Windows releases used `%APPDATA%\Claude-3p`; update and open Desktop to let
+the app migrate its data before configuring. UG does not move app data.
+
+UG records its UUID and
 ownership separately in `~/.ucode/claude-desktop.json`. It never adopts a profile
 just because its name is "Unity Gateway" or its UUID matches. The profile ID is
 a UUIDv5 derived from the normalized workspace URL in a UG-specific namespace.
@@ -72,8 +81,12 @@ The native profile format comes from a working macOS Claude Desktop/Cowork
 2.19675.0 export. Tests cover configuration, ownership, helper behavior, and CLI
 orchestration; they do not prove GUI inference on every app version.
 
-- Windows profile location and MSIX behavior need native validation. Windows
-  currently reports a warning and does not write Desktop settings; Linux is a no-op.
+- Windows and Linux profile paths follow the documented shared `configLibrary`
+  layout. Component tests exercise filesystem configure/refresh/revert using all
+  three platform selections; they do not establish native GUI, helper execution,
+  browser-login, or inference coverage on Windows or Linux.
+- Anthropic's [Linux Desktop beta](https://code.claude.com/docs/en/desktop-linux)
+  supports Ubuntu 22.04+ and Debian 12+. Cowork additionally requires QEMU/KVM.
 - A profile selection is not proof that a fresh ordinary installation has switched
   to third-party inference mode. Fresh-install activation remains a native test gate.
 - The exported `alwaysStartWithDefaultModel` boolean does not identify a model.
@@ -88,5 +101,8 @@ orchestration; they do not prove GUI inference on every app version.
 - Observed inference applies to Cowork. Ordinary Chat is not claimed to use the
   same gateway path.
 
-See [native integration-test plan](claude-desktop-integration-testing.md) for
-Windows runner prerequisites, GUI journeys, browser auth, and release gates.
+Before native rollout on Windows and Linux, verify that the app reads the generated
+profile after restart, completes a gateway task, refreshes credentials silently,
+opens browser login when interactive recovery is needed, and preserves unrelated
+settings through repeat configure and revert. Run these checks on the supported
+app version and packaging used by your organization.

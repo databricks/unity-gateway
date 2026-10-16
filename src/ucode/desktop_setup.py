@@ -18,7 +18,7 @@ from ucode.ui import print_note, print_success, print_warning
 
 
 def configure_desktop_after_claude(state: dict, *, parent_schema: str | None = None) -> None:
-    if sys.platform not in ("darwin", "win32"):
+    if sys.platform not in ("darwin", "win32", "linux"):
         return
     if is_dry_run():
         print_note("Would configure Claude Desktop alongside Claude Code.")
@@ -30,8 +30,11 @@ def configure_desktop_after_claude(state: dict, *, parent_schema: str | None = N
 
 
 def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
-    if claude_desktop_directory() is None:
-        raise RuntimeError("The native Windows profile location has not been validated yet.")
+    directory = claude_desktop_directory()
+    if directory is None:
+        raise RuntimeError("Claude Desktop profile configuration is unavailable on this platform.")
+    if sys.platform != "darwin" and not directory.parent.is_dir():
+        raise RuntimeError("Open Claude Desktop once, then run ug configure again.")
     if state.get("claude_relayed"):
         raise RuntimeError("Anthropic subscription relay is not supported for Desktop yet.")
     if state.get("custom_oauth") or state.get("use_pat"):
@@ -92,7 +95,7 @@ def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
 
 
 def revert_desktop(state: dict) -> str:
-    if sys.platform not in ("darwin", "win32") or is_dry_run():
+    if sys.platform not in ("darwin", "win32", "linux") or is_dry_run():
         return "unchanged"
     if claude_desktop_directory() is None:
         return "unchanged"

@@ -171,6 +171,12 @@ Existing CLI URL normalization is unchanged. Native Desktop activation, acceptan
 the `_comment` notice field, GUI/helper/browser behavior, and inference remain untested;
 these component checks do not establish native Windows or Linux support.
 
+`test_desktop_setup.py` exercises configure, refresh, deleted-profile recovery,
+dry-run, and revert with simulated macOS, Windows, and Linux selections. The helper
+executable uses an absolute host-native path containing spaces. Missing Windows/Linux
+app data fails before external authentication or model discovery, and revert without
+Desktop ownership leaves existing settings untouched. These remain component checks.
+
 `TestChildStdoutLaunch` in `test_cli.py` checks Claude `-p`/`--print` and Codex `exec`
 (plain and `--json`) and `app-server` status/error output on stderr, argument forwarding with
 and without ug's `--`, and an unchanged stdout descriptor. Detection checks exact tokens before

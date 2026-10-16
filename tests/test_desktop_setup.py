@@ -11,15 +11,17 @@ from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER, MODEL_SERVICE_PARENT_
 from ucode.databricks import AnthropicModelCatalog
 
 
-@pytest.fixture
-def desktop(monkeypatch, tmp_path):
+@pytest.fixture(params=["darwin", "win32", "linux"])
+def desktop(request, monkeypatch, tmp_path):
     directory = tmp_path / "Claude-3p" / "configLibrary"
     directory.mkdir(parents=True)
     (directory / "_meta.json").write_text(json.dumps({"entries": []}))
     monkeypatch.setattr(
         desktop_setup,
         "sys",
-        SimpleNamespace(platform="darwin", executable="/venv with spaces/bin/python"),
+        SimpleNamespace(
+            platform=request.param, executable=str(tmp_path / "venv with spaces" / "python")
+        ),
     )
     monkeypatch.setattr(desktop_setup, "claude_desktop_directory", lambda: directory)
     monkeypatch.setattr(claude_desktop, "claude_desktop_directory", lambda: directory)
@@ -53,7 +55,9 @@ def test_configure_uses_full_gateway_catalog_and_absolute_helper(desktop):
         {"name": "system.ai.oss-model"},
     ]
     assert profile["inferenceGatewayBaseUrl"] == "https://workspace.example/ai-gateway/anthropic"
-    assert profile["inferenceCredentialHelper"] == "/venv with spaces/bin/python"
+    assert profile["inferenceCredentialHelper"] == str(
+        desktop.parent.parent / "venv with spaces" / "python"
+    )
     assert profile["inferenceCredentialHelperArgs"] == [
         "-m",
         "ucode.cli",
@@ -95,7 +99,9 @@ def test_reconfigure_refreshes_existing_profile_without_deletion(desktop, capsys
     assert json.loads(metadata_path.read_text()) == original_metadata
     assert refreshed["inferenceModels"] == [{"name": "main.models.new"}]
     assert refreshed["inferenceGatewayBaseUrl"] == "https://workspace.example/ai-gateway/anthropic"
-    assert refreshed["inferenceCredentialHelper"] == "/venv with spaces/bin/python"
+    assert refreshed["inferenceCredentialHelper"] == str(
+        desktop.parent.parent / "venv with spaces" / "python"
+    )
     assert refreshed["inferenceCredentialHelperArgs"][-2:] == ["--profile", "updated-profile"]
     assert refreshed["inferenceCustomHeaders"] == {
         "x-databricks-use-coding-agent-mode": "true",
@@ -210,14 +216,26 @@ def test_dry_run_does_not_discover_or_create_profiles(desktop, monkeypatch):
     assert before == {p.name: p.read_bytes() for p in desktop.glob("*.json")}
 
 
-def test_linux_noop_and_windows_unverified_warning(monkeypatch, capsys):
-    monkeypatch.setattr(desktop_setup, "sys", SimpleNamespace(platform="linux"))
+def test_unsupported_platform_does_not_configure_desktop(monkeypatch, capsys):
+    monkeypatch.setattr(desktop_setup, "sys", SimpleNamespace(platform="freebsd"))
     desktop_setup.configure_desktop_after_claude({})
     assert capsys.readouterr().out == ""
-    monkeypatch.setattr(desktop_setup, "sys", SimpleNamespace(platform="win32"))
-    monkeypatch.setattr(desktop_setup, "claude_desktop_directory", lambda: None)
+    assert desktop_setup.revert_desktop({}) == "unchanged"
+
+
+@pytest.mark.parametrize("platform", ["win32", "linux"])
+def test_missing_app_warns_before_model_discovery(platform, monkeypatch, tmp_path, capsys):
+    directory = tmp_path / "missing-app" / "configLibrary"
+    monkeypatch.setattr(desktop_setup, "sys", SimpleNamespace(platform=platform))
+    monkeypatch.setattr(desktop_setup, "claude_desktop_directory", lambda: directory)
+
+    def reject_token_fetch(*_args):
+        pytest.fail("Missing Desktop must be detected before external authentication")
+
+    monkeypatch.setattr(desktop_setup, "get_databricks_token", reject_token_fetch)
     desktop_setup.configure_desktop_after_claude({})
-    assert "Windows profile location" in capsys.readouterr().out
+    assert "Open Claude Desktop once" in capsys.readouterr().out
+    assert not directory.parent.exists()
 
 
 def test_revert_uses_independent_profile_manifest(desktop):
@@ -227,6 +245,19 @@ def test_revert_uses_independent_profile_manifest(desktop):
     assert json.loads((desktop / "_meta.json").read_text()) == {"entries": []}
     assert list(desktop.glob("*.json")) == [desktop / "_meta.json"]
     assert desktop_setup.revert_desktop(state) == "unchanged"
+
+
+def test_revert_without_desktop_ownership_leaves_existing_settings_untouched(desktop):
+    before = {path.name: path.read_bytes() for path in desktop.iterdir()}
+
+    assert (
+        desktop_setup.revert_desktop(
+            {"workspace": "https://workspace.example", "profile": "chosen-profile"}
+        )
+        == "unchanged"
+    )
+
+    assert {path.name: path.read_bytes() for path in desktop.iterdir()} == before
 
 
 def test_reconfigure_recreates_deleted_profile_with_same_workspace_id(desktop, capsys):

@@ -135,8 +135,9 @@ Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file 
 
 </details>
 
-Claude Desktop third-party profiles live in
-`~/Library/Application Support/Claude-3p/configLibrary` on macOS. UG creates its
+Claude Desktop third-party profiles live under `Claude-3p/configLibrary` in
+`~/Library/Application Support` on macOS, `%LOCALAPPDATA%` on current Windows releases,
+and `~/.config` on Linux. Windows and Linux require Desktop to have opened once. UG creates its
 own UUID profile and merges only its metadata entry and applied selection. It
 owns gateway/provider/auth-helper fields, `inferenceModels`, and the headers it
 writes. Ownership is recorded in `~/.ucode/claude-desktop.json`; other profiles and
