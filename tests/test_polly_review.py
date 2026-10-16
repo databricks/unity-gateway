@@ -109,7 +109,7 @@ def test_workflow_installs_packages_only_through_jfrog_proxies():
     assert "@anthropic-ai/claude-code@$CLAUDE_VERSION" in workflow
     assert "@openai/codex@$CODEX_VERSION" in workflow
     assert (
-        'if: always()\n        run: rm -f "$RUNNER_TEMP/ug-review-package-config/.npmrc"'
+        'if: always()\n        run: rm -rf "$RUNNER_TEMP/ug-review-package-config" ~/.jfrog'
         " ~/.databrickscfg ~/.omnigent/config.yaml" in workflow
     )
     job_environment = workflow.split("    env:\n", 1)[1].split("    steps:\n", 1)[0]
@@ -143,6 +143,7 @@ def test_workflow_prompt_uses_trusted_policy_and_marks_pr_content_untrusted():
 def test_workflow_skips_reviewed_heads_and_posts_with_markers_and_token_scan():
     workflow = _workflow()
     assert 'select(.user.type == "Bot")' in workflow
+    assert "polly-reviewed-sha: {os.environ['HEAD_SHA']}" in workflow
     assert "<!-- polly-reviewed-sha: ${HEAD_SHA} -->" in workflow
     assert "<!-- polly-skipped-sha: ${HEAD_SHA} -->" in workflow
     assert "/review force" not in workflow
@@ -151,9 +152,55 @@ def test_workflow_skips_reviewed_heads_and_posts_with_markers_and_token_scan():
     scan = workflow.index("Scan review output for secrets")
     post = workflow.index("name: Post review comment")
     assert workflow.index("compose /tmp/pr_diff_summary.json") < scan < post
-    assert 'grep -qF "$GATEWAY_TOKEN" /tmp/polly_review.txt' in workflow
-    assert "model_at_capacity=true" in workflow
+    assert "for name in GATEWAY_TOKEN JFROG_TOKEN; do" in workflow
+    assert 'grep -qF "${!name}" /tmp/polly_review.txt' in workflow
+    assert "JFROG_TOKEN: ${{ steps.jfrog.outputs.oidc-token }}" in workflow
+    assert 'for key in ("GATEWAY_TOKEN", "JFROG_TOKEN")' in workflow
     assert 'text.replace(token, "[REDACTED]")' in workflow
+    assert "model_at_capacity=true" in workflow
+
+
+def _step(name: str) -> str:
+    steps = _workflow().split("\n      - name: ")
+    return next(step for step in steps if step.startswith(name))
+
+
+def test_package_credentials_are_gone_before_agents_run_and_never_exported():
+    workflow = _workflow()
+    assert "NPM_CONFIG_USERCONFIG=" not in workflow.replace("NPM_CONFIG_USERCONFIG: ", "")
+    assert "GITHUB_ENV" not in _step("Configure npm")
+    remove = workflow.index("name: Remove package credentials before any agent runs")
+    assert workflow.index("name: Install Omnigent") < remove < workflow.index("name: Run Polly")
+    assert 'rm -rf "$RUNNER_TEMP/ug-review-package-config" ~/.jfrog' in _step("Remove package")
+    # Package-index credentials exist only in the install step.
+    assert workflow.count("UV_INDEX_DATABRICKS_PYPI_PASSWORD") == 1
+    assert "UV_INDEX_DATABRICKS_PYPI_PASSWORD" in _step("Install Omnigent")
+    assert workflow.count("NPM_CONFIG_USERCONFIG: ") == 2
+    for step in ("Run Polly review", "Collect PR context"):
+        assert 'ACTIONS_ID_TOKEN_REQUEST_URL: ""' in _step(step)
+        assert 'ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""' in _step(step)
+
+
+def test_one_frozen_head_sha_is_used_by_gate_diff_and_marker():
+    workflow = _workflow()
+    assert "head_sha=" not in workflow.replace('head_sha="$(jq', "")
+    assert "steps.ctx.outputs" not in workflow
+    assert "HEAD_SHA: ${{ steps.pr.outputs.head }}" in _step("Skip if this commit")
+    collect = _step("Collect PR context")
+    assert "HEAD_SHA: ${{ steps.pr.outputs.head }}" in collect
+    assert 'if [ "$head_sha" != "$HEAD_SHA" ]; then' in collect
+    assert "::error::PR moved before review started; request a new review" in collect
+    assert "HEAD_SHA: ${{ steps.pr.outputs.head }}" in _step("Post review comment")
+
+
+def test_final_comment_body_is_bounded_not_the_raw_review():
+    workflow = _workflow()
+    assert "[:61440]" not in workflow
+    post = _step("Post review comment")
+    assert "limit = 65000" in post
+    assert "len(head) + len(review) + len(tail) > limit" in post
+    assert "review truncated to fit GitHub's comment limit" in post
+    assert "--body-file /tmp/comment.md" in post
 
 
 def test_embedded_python_blocks_are_syntactically_valid():
@@ -161,7 +208,7 @@ def test_embedded_python_blocks_are_syntactically_valid():
     blocks = re.findall(
         r"python3 (?:-u )?<<'(PY|PYEOF)'\n(.*?)\n\s*\1\n", workflow, flags=re.DOTALL
     )
-    assert len(blocks) == 4
+    assert len(blocks) == 5
     for _, body in blocks:
         lines = body.splitlines()
         indent = min(len(line) - len(line.lstrip()) for line in lines if line.strip())

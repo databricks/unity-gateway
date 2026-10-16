@@ -148,6 +148,8 @@ jobs:
         with:
           oidc-provider-name: github-actions
 
+      # The path is passed only to the install step, never exported, so later steps and
+      # agents neither see the token file's location nor inherit it.
       - name: Configure npm for the existing npm proxy
         if: steps.gate.outputs.review == 'true'
         env:
@@ -159,7 +161,6 @@ jobs:
           mkdir -p "$(dirname "$NPM_CONFIG_USERCONFIG")"
           printf 'registry=%s\n//%s:_authToken=%s\n' \
             "$NPM_CONFIG_REGISTRY" "${NPM_CONFIG_REGISTRY#https://}" "$NPM_TOKEN" > "$NPM_CONFIG_USERCONFIG"
-          printf 'NPM_CONFIG_USERCONFIG=%s\n' "$NPM_CONFIG_USERCONFIG" >> "$GITHUB_ENV"
 
       - name: Authenticate to the existing Databricks gateway
         if: steps.gate.outputs.review == 'true'
@@ -188,6 +189,7 @@ jobs:
           UV_INDEX_DATABRICKS_PYPI_USERNAME: ${{ steps.jfrog.outputs.oidc-user }}
           UV_INDEX_DATABRICKS_PYPI_PASSWORD: ${{ steps.jfrog.outputs.oidc-token }}
           UV_PYTHON_PREFERENCE: system
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/ug-review-package-config/.npmrc
         # Install the locked, hashed pins without re-resolving: Omnigent's uv.toml cooldown
         # needs upload dates, which the JFrog index does not report.
         run: |
@@ -197,6 +199,11 @@ jobs:
           uv venv --no-config .venv
           uv pip install --no-config --python .venv -r "$requirements"
           npm install -g "@anthropic-ai/claude-code@$CLAUDE_VERSION" "@openai/codex@$CODEX_VERSION"
+
+      # Agents run later in this job; they must not find package-proxy credentials.
+      - name: Remove package credentials before any agent runs
+        if: steps.gate.outputs.review == 'true'
+        run: rm -rf "$RUNNER_TEMP/ug-review-package-config" ~/.jfrog
 
       - name: Write the gateway profile and Omnigent provider config
         if: steps.gate.outputs.review == 'true'
@@ -250,22 +257,29 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
+          # The head the skip gate checked; the diff and review marker must use it too.
+          HEAD_SHA: ${{ steps.pr.outputs.head }}
+          ACTIONS_ID_TOKEN_REQUEST_URL: ""
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           POLICY_DIR: ${{ github.workspace }}/.ug-review-trusted
           SUMMARY_PY: .ug-review-trusted/.github/scripts/polly-review/summary.py
         run: |
           set -euo pipefail
 
-          # Freeze both revisions so the file and review marker describe the same diff.
+          # Freeze the head once so the gate, diff, and review marker describe the same commit.
           gh pr view "$PR_NUMBER" --repo "$REPO" \
             --json title,body,baseRefName,headRefName,baseRefOid,headRefOid,additions,deletions,changedFiles,labels \
             > /tmp/pr_meta.json
           base_sha="$(jq -r .baseRefOid /tmp/pr_meta.json)"
           head_sha="$(jq -r .headRefOid /tmp/pr_meta.json)"
+          if [ "$head_sha" != "$HEAD_SHA" ]; then
+            echo "::error::PR moved before review started; request a new review (expected ${HEAD_SHA:0:7}, found ${head_sha:0:7})."
+            exit 1
+          fi
           gh api "repos/${REPO}/compare/${base_sha}...${head_sha}" \
             -H "Accept: application/vnd.github.v3.diff" \
             > /tmp/pr_diff.txt
           chmod 444 /tmp/pr_diff.txt
-          echo "head_sha=${head_sha}" >> "$GITHUB_OUTPUT"
 
           # Issues the PR closes define its scope; null records an unavailable lookup.
           python3 "$SUMMARY_PY" linked-issues "${REPO}#${PR_NUMBER}" /tmp/linked_issues.json
@@ -520,6 +534,9 @@ jobs:
         timeout-minutes: 25
         working-directory: .polly-omnigent
         env:
+          # Agents must not mint GitHub OIDC tokens (id-token: write exposes the request URL).
+          ACTIONS_ID_TOKEN_REQUEST_URL: ""
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           OMNIGENT_POLLY_HARNESS: ${{ vars.UG_POLLY_HARNESS || 'codex' }}
           OMNIGENT_POLLY_MODEL: ${{ vars.UG_POLLY_MODEL || 'system.ai.gpt-6-1-sol' }}
         run: |
@@ -565,8 +582,9 @@ jobs:
                       fh.write("model_at_capacity=true\n")
                   raise SystemExit("::error::Polly review failed: the review model was at capacity.")
               raise SystemExit("::error::Polly produced no publishable review; see the diagnostics artifact.")
-          # GitHub comments are limited to about 65 KB.
-          pathlib.Path("/tmp/polly_review.txt").write_text(cleaned[:61440])
+          # Not truncated here: a cut review would fail the summary check. The post step
+          # enforces GitHub's comment limit on the final body.
+          pathlib.Path("/tmp/polly_review.txt").write_text(cleaned)
           PY
 
       # Runs after "Run Polly review" fails, but only for a capacity failure.
@@ -604,13 +622,16 @@ jobs:
         if: steps.gate.outputs.review == 'true'
         env:
           GATEWAY_TOKEN: ${{ steps.gateway-auth.outputs.token }}
+          JFROG_TOKEN: ${{ steps.jfrog.outputs.oidc-token }}
         run: |
           set -euo pipefail
-          # Prompt injection could trick Polly into echoing the token into the comment.
-          if [ -n "$GATEWAY_TOKEN" ] && grep -qF "$GATEWAY_TOKEN" /tmp/polly_review.txt; then
-            echo "::error::Review output contains the gateway token; aborting post."
-            exit 1
-          fi
+          # Prompt injection could trick Polly into echoing a token into the comment.
+          for name in GATEWAY_TOKEN JFROG_TOKEN; do
+            if [ -n "${!name}" ] && grep -qF "${!name}" /tmp/polly_review.txt; then
+              echo "::error::Review output contains the ${name,,} credential; aborting post."
+              exit 1
+            fi
+          done
 
       - name: Post review comment
         if: steps.gate.outputs.review == 'true'
@@ -618,23 +639,34 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
-          HEAD_SHA: ${{ steps.ctx.outputs.head_sha }}
+          HEAD_SHA: ${{ steps.pr.outputs.head }}
           RUN_URL: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
         run: |
           set -euo pipefail
 
-          # Read the validated review as data, never as shell source.
-          {
-            echo "<!-- polly-review-bot -->"
-            echo "<!-- polly-reviewed-sha: ${HEAD_SHA} -->"
-            echo "<!-- polly-review-run:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT} -->"
-            echo "## Polly AI Review"
-            echo ""
-            cat /tmp/polly_review.txt
-            echo ""
-            echo "---"
-            echo "<sub>Automated review by Polly · [workflow run](${RUN_URL})</sub>"
-          } > /tmp/comment.md
+          # Read the validated review as data, never as shell source. GitHub rejects comment
+          # bodies over 65536 characters, so fit the review into what the frame leaves.
+          python3 <<'PY'
+          import os
+          import pathlib
+
+          limit = 65000
+          head = (
+              "<!-- polly-review-bot -->\n"
+              f"<!-- polly-reviewed-sha: {os.environ['HEAD_SHA']} -->\n"
+              f"<!-- polly-review-run:{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']} -->\n"
+              "## Polly AI Review\n\n"
+          )
+          tail = (
+              "\n\n---\n"
+              f"<sub>Automated review by Polly · [workflow run]({os.environ['RUN_URL']})</sub>\n"
+          )
+          review = pathlib.Path("/tmp/polly_review.txt").read_text(encoding="utf-8")
+          note = "\n\n*(review truncated to fit GitHub's comment limit)*"
+          if len(head) + len(review) + len(tail) > limit:
+              review = review[: limit - len(head) - len(tail) - len(note)] + note
+          pathlib.Path("/tmp/comment.md").write_text(head + review + tail, encoding="utf-8")
+          PY
 
           gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file /tmp/comment.md
 
@@ -642,6 +674,7 @@ jobs:
         if: always() && (failure() || (steps.polly.outcome != '' && steps.polly.outcome != 'skipped'))
         env:
           GATEWAY_TOKEN: ${{ steps.gateway-auth.outputs.token }}
+          JFROG_TOKEN: ${{ steps.jfrog.outputs.oidc-token }}
         run: |
           python3 <<'PY'
           import os
@@ -658,12 +691,12 @@ jobs:
           logs = pathlib.Path.home() / ".omnigent" / "logs"
           for source in logs.rglob("*.log"):
               sources["process-logs/" + str(source.relative_to(logs))] = source
-          token = os.environ.get("GATEWAY_TOKEN")
+          tokens = [os.environ.get(key) for key in ("GATEWAY_TOKEN", "JFROG_TOKEN")]
           for name, source in sources.items():
               if not source.is_file():
                   continue
               text = source.read_text(errors="replace")
-              if token:
+              for token in filter(None, tokens):
                   text = text.replace(token, "[REDACTED]")
               target = destination / name
               target.parent.mkdir(parents=True, exist_ok=True)
@@ -681,4 +714,4 @@ jobs:
 
       - name: Remove temporary credentials
         if: always()
-        run: rm -f "$RUNNER_TEMP/ug-review-package-config/.npmrc" ~/.databrickscfg ~/.omnigent/config.yaml
+        run: rm -rf "$RUNNER_TEMP/ug-review-package-config" ~/.jfrog ~/.databrickscfg ~/.omnigent/config.yaml
