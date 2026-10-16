@@ -442,6 +442,9 @@ daemon/background dispatch remain deferred. CUJ4 covers interactive explicit-mod
 bypass. Plugin generation and launch arguments are covered
 by component tests in `../test_claude_smart_routing_v2.py`, not by a live registration journey.
 
+Exact candidate-model and router-name preservation in decision logs has component
+coverage in `../test_claude_routing.py`; this suite does not assert those fields.
+
 PATH conflicts for the Smart Router skill have subprocess/component coverage in
 `../test_smart_router.py`: the skill uses the launching interpreter despite a different
 `ug` first in PATH. The live journeys above do not inject a second installation or
