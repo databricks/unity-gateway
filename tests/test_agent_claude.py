@@ -90,6 +90,9 @@ class TestRenderOverlay:
             "system.ai.claude-sonnet-5[1m]"
         )
 
+    def test_long_context_suffix_supports_gpt(self):
+        assert claude._maybe_add_1m_suffix("system.ai.gpt-5-5") == ("system.ai.gpt-5-5[1m]")
+
     def test_does_not_set_anthropic_model_env(self):
         # We deliberately don't pin ANTHROPIC_MODEL: when set, Claude Code's
         # /model picker surfaces a duplicate catalog row on top of the family
@@ -238,6 +241,24 @@ class TestRenderOverlay:
         overlay, _ = claude.render_overlay(WS, "s4")
         assert "x-databricks-use-coding-agent-mode" in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
 
+    @pytest.mark.parametrize(
+        "routing_flag", ["ENABLE_SMART_ROUTING_V2", "ENABLE_SMART_ROUTING_SUBAGENT_ONLY"]
+    )
+    def test_routing_recipe_is_not_added_to_custom_headers(self, monkeypatch, routing_flag):
+        monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "0")
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "0")
+        monkeypatch.setenv(routing_flag, "1")
+        overlay, _ = claude.render_overlay(WS, "s4")
+        headers = overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        assert "Databricks-Smart-Router-Recipe" not in headers
+        # Drop the recipe ug used to write while preserving other caller headers.
+        merged = claude._merge_anthropic_custom_headers(
+            "Databricks-Smart-Router-Recipe: old\nx-caller: keep", headers
+        )
+        assert "Databricks-Smart-Router-Recipe" not in merged
+        assert "x-caller: keep" in merged
+
     def test_request_tags_header_added_when_env_set(self, monkeypatch):
         # A JSON value (commas + colons) must survive intact: ANTHROPIC_CUSTOM_HEADERS
         # is newline-delimited and split on the first colon, so the value is preserved.
@@ -310,10 +331,10 @@ class TestRenderOverlay:
         assert shlex.split(overlay["apiKeyHelper"]) == ["/my tools/ug", "auth-token", "--host", WS]
 
     def test_sets_custom_oauth_api_key_helper(self, monkeypatch):
-        from ucode import custom_oauth
-
         monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/opt/ug")
-        monkeypatch.setattr(custom_oauth.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(
+            "ucode.os_compatibility.subprocess_cross_os.platform.system", lambda: "Linux"
+        )
         overlay, _ = claude.render_overlay(
             WS,
             "s4",
@@ -337,10 +358,10 @@ class TestRenderOverlay:
         ]
 
     def test_saved_custom_oauth_profile_uses_minimal_api_key_helper(self, monkeypatch):
-        from ucode import custom_oauth
-
         monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/opt/ug")
-        monkeypatch.setattr(custom_oauth.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(
+            "ucode.os_compatibility.subprocess_cross_os.platform.system", lambda: "Linux"
+        )
         overlay, _ = claude.render_overlay(
             WS,
             "s4",
@@ -578,7 +599,7 @@ class TestRenderOverlay:
 
     def test_static_models_populates_picker(self):
         # Static models are written into the picker allow-list.
-        static = ["system.ai.claude-opus-4-8", "system.ai.claude-sonnet-4-6"]
+        static = ["system.ai.claude-opus-4-8", "system.ai.gpt-5-6-sol"]
         overlay, keys = claude.render_overlay(WS, "s4", static_models=static)
         assert overlay["availableModels"] == static
         assert overlay["enforceAvailableModels"] is True
@@ -586,6 +607,10 @@ class TestRenderOverlay:
         assert len(overlay["modelPicker"]["options"]) == 2
         assert overlay["modelPicker"]["options"][0]["model"] == "system.ai.claude-opus-4-8"
         assert overlay["modelPicker"]["options"][0]["label"] == "Claude Opus 4.8"
+        assert overlay["modelPicker"]["options"][1] == {
+            "model": "system.ai.gpt-5-6-sol[1m]",
+            "label": "GPT 5.6 Sol",
+        }
 
     def test_static_models_keys_tracked(self):
         # The picker keys are added to managed_keys so they're tracked in the managed file.
@@ -1347,6 +1372,7 @@ class TestWriteToolConfigManagedSettings:
         managed_path = tmp_path / "managed-settings.json"
         backup_dir = tmp_path / "managed-backups"
         monkeypatch.setattr(managed_files, "managed_files_supported", lambda: True)
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
         monkeypatch.setattr(managed_files, "MANAGED_BACKUP_DIR", backup_dir)
         monkeypatch.setattr(
             managed_files, "MANAGED_BACKUP_MANIFEST_PATH", backup_dir / "manifest.json"
@@ -1407,6 +1433,7 @@ class TestWriteToolConfigManagedSettings:
         backup_dir = tmp_path / "managed-backups"
         sudo_writes: list[str] = []
         monkeypatch.setattr(managed_files, "managed_files_supported", lambda: True)
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
         monkeypatch.setattr(managed_files, "MANAGED_BACKUP_DIR", backup_dir)
         monkeypatch.setattr(
             managed_files, "MANAGED_BACKUP_MANIFEST_PATH", backup_dir / "manifest.json"
@@ -2208,6 +2235,94 @@ class TestWriteToolConfigManagedSettings:
         written = json.loads(managed_writes[0][1])["env"]
         assert written["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "system.ai.claude-opus-9-admin", written
 
+    @pytest.mark.parametrize(
+        ("picker", "writer_env", "managed_config", "keeps_writer_defaults"),
+        [
+            (True, {"ANTHROPIC_DEFAULT_OPUS_MODEL": "writer-opus"}, None, True),
+            (False, {"ANTHROPIC_DEFAULT_OPUS_MODEL": "writer-opus"}, None, False),
+            (True, {}, None, False),
+            (True, {"ANTHROPIC_DEFAULT_OPUS_MODEL": "writer-opus"}, {"claude": {}}, False),
+        ],
+        ids=["picker", "no-picker", "picker-without-defaults", "picker-under-managed-config"],
+    )
+    def test_managed_file_picker_owner_decides_family_defaults(
+        self, monkeypatch, picker, writer_env, managed_config, keeps_writer_defaults
+    ):
+        private_writes: list = []
+        managed_writes: list = []
+        managed = {"env": dict(writer_env)}
+        if picker:
+            managed["modelPicker"] = {"replaceBuiltInOptions": True, "options": [{"model": "o"}]}
+        existing = {
+            str(FAKE_MANAGED_PATH): managed,
+            # A mapping left by an earlier workspace must not survive in the private file.
+            str(claude.CLAUDE_SETTINGS_PATH): {
+                "env": {"ANTHROPIC_DEFAULT_FABLE_MODEL": "system.ai.claude-fable-old"}
+            },
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        monkeypatch.setattr(
+            claude,
+            "refresh_managed_config",
+            lambda *a, **kw: _managed_config_result(managed_config),
+        )
+        discovered = {
+            "fable": "system.ai.claude-fable-5-1",
+            "opus": "system.ai.claude-opus-5-5",
+            "sonnet": "system.ai.claude-sonnet-5-5",
+            "haiku": "system.ai.claude-haiku-5-5",
+        }
+        state = {"workspace": WS, "codex_models": [], "claude_models": discovered}
+
+        claude.write_tool_config(state, None)
+
+        managed_env = json.loads(managed_writes[0][1])["env"]
+        private_env = private_writes[0][1]["env"]
+        family_keys = claude.CLAUDE_DEFAULT_MODEL_ENV_KEYS.values()
+        if keeps_writer_defaults:
+            for env in (managed_env, private_env):
+                assert {k: env[k] for k in family_keys if k in env} == writer_env, env
+        else:
+            assert managed_env["ANTHROPIC_DEFAULT_FABLE_MODEL"] == discovered["fable"], managed_env
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"provider": "bedrock", "provider_models": {"opus": "us.anthropic.opus"}},
+            {"parent_schema": "main.default"},
+        ],
+        ids=["provider", "model-location"],
+    )
+    def test_managed_file_picker_ignored_when_launch_supplies_models(self, monkeypatch, kwargs):
+        monkeypatch.setattr(
+            claude, "refresh_managed_config", lambda *a, **kw: _managed_config_result(None)
+        )
+        family_keys = claude.CLAUDE_DEFAULT_MODEL_ENV_KEYS.values()
+
+        def family_defaults(picker):
+            private_writes: list = []
+            managed_writes: list = []
+            managed = {"env": {"ANTHROPIC_DEFAULT_OPUS_MODEL": "writer-opus"}}
+            if picker:
+                managed["modelPicker"] = {"options": [{"model": "writer-opus"}]}
+            self._patch(
+                monkeypatch, private_writes, managed_writes, {str(FAKE_MANAGED_PATH): managed}
+            )
+            state = {
+                "workspace": WS,
+                "codex_models": [],
+                "claude_models": {"fable": "system.ai.claude-fable-5-1"},
+            }
+            claude.write_tool_config(state, None, **kwargs)
+            managed_env = json.loads(managed_writes[0][1])["env"] if managed_writes else {}
+            private_env = private_writes[0][1]["env"]
+            return [
+                {k: env[k] for k in family_keys if k in env} for env in (managed_env, private_env)
+            ]
+
+        # The launch's own source decides, exactly as if no other writer had a picker.
+        assert family_defaults(picker=True) == family_defaults(picker=False)
+
     def test_managed_file_applies_fable_default_precedence_without_opt_in(self, monkeypatch):
         managed_defaults = self._write_managed_model_defaults(
             monkeypatch,
@@ -2249,7 +2364,7 @@ class TestWriteToolConfigManagedSettings:
         monkeypatch.setattr(claude, "relayed_proxy_base_url", lambda state: "http://127.0.0.1:9999")
         state = {"workspace": WS, "codex_models": []}
 
-        with pytest.raises(RuntimeError, match="run `ucode revert`"):
+        with pytest.raises(RuntimeError, match="run `ug revert`"):
             claude.write_tool_config(state, "databricks-claude-sonnet-4", relayed=True)
 
         assert managed_writes == []
@@ -2266,6 +2381,43 @@ class TestWriteToolConfigManagedSettings:
             claude.write_tool_config(state, "databricks-claude-sonnet-4", relayed=True)
 
         assert managed_writes == []
+
+    def test_windows_non_admin_uses_local_settings_silently(self, monkeypatch):
+        # Same as a headless Linux/macOS run: no machine-wide file, no warning.
+        private_writes: list = []
+        managed_writes: list = []
+        warns: list = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: False)
+        monkeypatch.setattr(claude, "current_os", lambda: managed_files.OS.WINDOWS)
+        monkeypatch.setattr(claude, "print_warning", warns.append)
+
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+        )
+
+        assert managed_writes == []
+        assert warns == []
+
+    def test_windows_non_admin_with_conflicting_machine_settings_quits(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ProgramW6432", str(tmp_path / "Program Files"))
+        monkeypatch.setattr(claude, "current_os", lambda: managed_files.OS.WINDOWS)
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.WINDOWS)
+        path = managed_files.windows_claude_managed_settings_path()
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"apiKeyHelper": "it-helper"}), encoding="utf-8")
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: path)
+
+        with pytest.raises(RuntimeError, match="requires administrator rights.*ug configure"):
+            claude._reconcile_managed_settings(
+                {},
+                lambda base: {**base, "apiKeyHelper": "ug auth-token"},
+                [["apiKeyHelper"]],
+                False,
+                [],
+            )
+
+        assert json.loads(path.read_text(encoding="utf-8")) == {"apiKeyHelper": "it-helper"}
 
     def test_noninteractive_uses_local_settings_when_managed_file_is_compatible(self, monkeypatch):
         private_writes: list = []
@@ -4191,3 +4343,60 @@ class TestManagedUserAgent:
         monkeypatch.setattr(claude, "_managed_settings_path", lambda: path)
 
         assert claude.managed_user_agent() == expected
+
+
+class TestGetFamilyDefaults:
+    PICKER = {"replaceBuiltInOptions": True, "options": [{"model": "writer-opus"}]}
+    WRITER_ENV = {
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": "system.ai.claude-opus-5-5[1m]",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "system.ai.claude-haiku-4-5",
+    }
+
+    NO_SOURCE = {"managed_config": False, "provider": None, "parent_schema": None}
+
+    @pytest.fixture
+    def managed_file(self, monkeypatch):
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: FAKE_MANAGED_PATH)
+        monkeypatch.delenv(managed_files.SKIP_OS_SETTINGS_ENV, raising=False)
+        return lambda text: monkeypatch.setattr(claude, "read_managed_file", lambda path: text)
+
+    @pytest.mark.parametrize(
+        ("settings", "expected"),
+        [
+            (None, None),
+            ({"env": WRITER_ENV}, None),
+            (
+                {"modelPicker": PICKER, "env": WRITER_ENV},
+                {"opus": "system.ai.claude-opus-5-5[1m]", "haiku": "system.ai.claude-haiku-4-5"},
+            ),
+            ({"modelPicker": PICKER}, None),
+        ],
+        ids=["no-file", "no-picker", "picker", "picker-without-defaults"],
+    )
+    def test_returns_the_picker_owners_family_models(self, managed_file, settings, expected):
+        managed_file(None if settings is None else json.dumps(settings))
+        assert claude.get_family_defaults({}, **self.NO_SOURCE) == expected
+
+    def test_invalid_file_counts_as_no_picker(self, managed_file):
+        managed_file("not json{")
+        assert claude.get_family_defaults({}, **self.NO_SOURCE) is None
+
+    def test_opting_out_of_os_settings_ignores_the_file(self, managed_file, monkeypatch):
+        managed_file(json.dumps({"modelPicker": self.PICKER, "env": self.WRITER_ENV}))
+        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        assert claude.get_family_defaults({}, **self.NO_SOURCE) is None
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            ({}, {"managed_config": True}),
+            ({"claude_static_models": ["system.ai.claude-opus-4-8"]}, {}),
+            ({}, {"provider": "bedrock"}),
+            ({}, {"parent_schema": "main.default"}),
+        ],
+        ids=["managed-config", "static-models", "provider", "model-location"],
+    )
+    def test_a_launch_model_source_overrides_the_picker(self, managed_file, source):
+        managed_file(json.dumps({"modelPicker": self.PICKER, "env": self.WRITER_ENV}))
+        state, kwargs = source
+        assert claude.get_family_defaults(state, **{**self.NO_SOURCE, **kwargs}) is None

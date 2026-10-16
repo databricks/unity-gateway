@@ -3,6 +3,7 @@
 Interactive updates preserve unrelated policy, retain a private baseline for ``ucode revert``, and
 verify the privileged atomic replacement. Existing-file repairs may run without a terminal;
 the shared writer uses sudo's non-prompting mode without consuming the caller's standard input.
+Windows has no sudo: only an elevated process writes there, with or without a terminal.
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from ucode.config_io import APP_DIR, is_dry_run
-from ucode.os_compatibility import subprocess_cross_os
+from ucode.os_compatibility import subprocess_cross_os, system_cross_os
 from ucode.ui import console, print_note, print_success, print_warning
 
 # Absolute path so a stripped PATH (desktop/GUI launchers) still finds it.
@@ -60,6 +61,8 @@ class OS(Enum):
     WINDOWS = "windows"
     OTHER = "other"
 
+
+MANAGED_FILES_SUPPORTED_OSES = (OS.LINUX, OS.MACOS, OS.WINDOWS)
 
 _SUDO_REPLACE_TARGETS = {
     OS.LINUX: frozenset(
@@ -104,21 +107,27 @@ def managed_settings_skipped() -> bool:
 
 
 def managed_files_supported() -> bool:
-    """True on the platforms whose managed-settings write path is implemented (Linux, macOS).
+    """True on the platforms whose managed-settings write path is implemented.
 
-    The write path needs `sudo` (`sudo cp`, `chattr`/`chflags`), which is Unix-only — so Windows and
-    any other platform are unsupported. ``UG_SKIP_OS_SETTINGS`` also opts out entirely, which
-    routes managed MCP servers to the user scope instead of the sudo-backed OS-managed file.
+    Linux and macOS write through `sudo`; Windows writes directly from an elevated process.
+    ``UG_SKIP_OS_SETTINGS`` also opts out entirely, which routes managed MCP servers to the user
+    scope instead of the OS-managed file.
     """
     if managed_settings_skipped():
         return False
-    return current_os() in (OS.LINUX, OS.MACOS)
+    return current_os() in MANAGED_FILES_SUPPORTED_OSES
+
+
+def windows_claude_managed_settings_path() -> Path:
+    """The only machine-wide settings file Claude Code reads on Windows."""
+    return system_cross_os.windows_program_files_dir() / "ClaudeCode" / "managed-settings.json"
 
 
 def read_managed_file(path: Path) -> str | None:
     """Read a managed file strictly, returning ``None`` only when it is absent."""
     try:
-        return path.read_text(encoding="utf-8")
+        # utf-8-sig: Windows PowerShell 5.1 writes a BOM that JSON and TOML parsers reject.
+        return path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         return None
     except OSError as exc:
@@ -190,12 +199,25 @@ def managed_file_scope(state: dict, tool: str) -> str:
 
 def _sudo_may_prompt() -> bool:
     """A terminal is attached, so sudo can prompt and the persistent worker is usable."""
-    return sys.stdin.isatty()
+    return current_os() is not OS.WINDOWS and sys.stdin.isatty()
 
 
 def managed_writes_allowed(*, repair_existing: bool = False) -> bool:
-    """Writes need either an interactive terminal or an existing file to repair in place."""
-    return _sudo_may_prompt() or repair_existing
+    """Writes need either an interactive terminal or an existing file to repair in place.
+
+    Windows has nothing to prompt with, so only an elevated (or SYSTEM) process may write there,
+    which lets device provisioning run ``ug configure`` without a terminal."""
+    if current_os() is not OS.WINDOWS:
+        return _sudo_may_prompt() or repair_existing
+    return system_cross_os.is_admin()
+
+
+def _windows_admin_required_message(display: str, path: Path, command: str) -> str:
+    return (
+        f"Updating {display} machine-wide settings at {path} requires administrator rights. "
+        f"Run `{command}` from an elevated terminal (Run as administrator), or ask your "
+        "administrator to run it."
+    )
 
 
 @contextmanager
@@ -574,10 +596,12 @@ def reconcile_managed_file(
         )
     current_text = read_managed_file(path)
     if not managed_writes_allowed(repair_existing=current_text is not None) and not is_dry_run():
-        raise RuntimeError(
-            f"Refusing to update {display} managed settings at {path} non-interactively. "
-            "Run the command from an interactive terminal."
-        )
+        if current_os() is not OS.WINDOWS:
+            raise RuntimeError(
+                f"Refusing to update {display} managed settings at {path} non-interactively. "
+                "Run the command from an interactive terminal."
+            )
+        raise RuntimeError(_windows_admin_required_message(display, path, "ug configure"))
     if current_text == desired_text:
         return "unchanged"
     if current_text is not None:
@@ -591,7 +615,8 @@ def reconcile_managed_file(
         if semantically_unchanged:
             return "unchanged"
     if is_dry_run():
-        console.print(f"\n[bold]\\[dry run] {path} (via sudo)[/bold]\n{desired_text}")
+        via = "as administrator" if current_os() is OS.WINDOWS else "via sudo"
+        console.print(f"\n[bold]\\[dry run] {path} ({via})[/bold]\n{desired_text}")
         return "written"
 
     created = current_text is None
@@ -605,12 +630,17 @@ def reconcile_managed_file(
         )
     for attempt in range(2):
         try:
-            _sudo_replace(path, desired_text)
+            _privileged_replace(path, desired_text)
         except PermissionError as exc:
+            if current_os() is not OS.WINDOWS:
+                raise ManagedFileWriteUnavailable(
+                    f"{display} cannot start because ucode could not update {path}: {exc}. "
+                    "Run the ucode command from an interactive terminal and approve the "
+                    "administrator prompt, or contact your administrator."
+                ) from exc
             raise ManagedFileWriteUnavailable(
-                f"{display} cannot start because ucode could not update {path}: {exc}. "
-                "Run the ucode command from an interactive terminal and approve the administrator "
-                "prompt, or contact your administrator."
+                f"{display} cannot start because ucode could not update {path}: {exc}. Check "
+                "that it isn't read-only or open in another program, or contact your administrator."
             ) from exc
         except subprocess.CalledProcessError as exc:
             raise ManagedFileWriteUnavailable(_sudo_failure_message(path, display, exc)) from exc
@@ -683,19 +713,21 @@ def revert_managed_file(
 
     if desired_text != current_text:
         if not managed_writes_allowed():
-            raise RuntimeError(
-                f"Cannot restore {display} managed settings non-interactively. Run `ucode revert` "
-                "from an interactive terminal."
-            )
+            if current_os() is not OS.WINDOWS:
+                raise RuntimeError(
+                    f"Cannot restore {display} managed settings non-interactively. Run "
+                    "`ug revert` from an interactive terminal."
+                )
+            raise RuntimeError(_windows_admin_required_message(display, path, "ug revert"))
         try:
             if desired_text is None:
-                _sudo_remove(path)
+                _privileged_remove(path)
             else:
-                _sudo_replace(path, desired_text)
+                _privileged_replace(path, desired_text)
         except (PermissionError, subprocess.CalledProcessError) as exc:
             raise RuntimeError(
                 f"Could not restore {display} managed settings at {path}. The backup was retained "
-                f"under {MANAGED_BACKUP_DIR}. Resolve the permission issue and run `ucode revert` "
+                f"under {MANAGED_BACKUP_DIR}. Resolve the permission issue and run `ug revert` "
                 "again."
             ) from exc
         if read_managed_file(path) != desired_text:
@@ -785,7 +817,7 @@ def _ensure_backup(tool: str, path: Path, current_text: str | None) -> bool:
         if existing.get("path") != str(path):
             raise RuntimeError(
                 f"The saved {tool} managed-settings backup targets {existing.get('path')}, not "
-                f"{path}. Run `ucode revert` before configuring this path."
+                f"{path}. Run `ug revert` before configuring this path."
             )
         if existing.get("original_existed"):
             _original_text(existing)
@@ -1263,6 +1295,48 @@ def _session_worker() -> _SudoReplaceWorker:
     if worker is None:
         worker = _managed_write_worker = _SudoReplaceWorker()
     return worker
+
+
+def _privileged_replace(path: Path, desired_text: str) -> None:
+    if current_os() is not OS.WINDOWS:
+        _sudo_replace(path, desired_text)
+        return
+    _windows_replace(path, desired_text)
+
+
+def _privileged_remove(path: Path) -> None:
+    if current_os() is not OS.WINDOWS:
+        _sudo_remove(path)
+        return
+    _validate_windows_target(path)
+    path.unlink(missing_ok=True)
+
+
+def _validate_windows_target(path: Path) -> None:
+    if path != windows_claude_managed_settings_path():
+        raise RuntimeError(f"Refusing unexpected managed-settings target: {path}")
+    if path.is_symlink():
+        raise RuntimeError(f"Refusing to replace symlinked managed settings: {path}")
+
+
+def _windows_replace(path: Path, desired_text: str) -> None:
+    """Atomically replace ``path`` from this elevated process.
+
+    The temp file is created beside the target so the rename stays on one volume and the new file
+    inherits the folder's ACL, which under Program Files lets standard users read but not write."""
+    _validate_windows_target(path)
+    if not system_cross_os.is_admin():
+        raise PermissionError("administrator rights are required")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as tmp:
+            tmp.write(desired_text)
+        os.replace(tmp_name, path)
+    except BaseException:
+        with suppress(FileNotFoundError):
+            os.unlink(tmp_name)
+        raise
 
 
 def _sudo_remove(path: Path) -> None:

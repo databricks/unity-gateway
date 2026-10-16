@@ -26,7 +26,6 @@ from ucode.config_io import (
     write_json_file,
 )
 from ucode.constants import (
-    AGENT_CLAUDE,
     AI_GATEWAY_REQUEST_TAGS_HEADER,
     LOOPBACK_HOST,
     MCP_CLEANUP_SCOPES,
@@ -48,6 +47,7 @@ from ucode.databricks import (
     build_otel_traces_endpoint,
     build_tool_base_url,
     get_databricks_token,
+    maybe_add_gpt_1m_suffix,
     ug_binary,
 )
 from ucode.launcher import exec_or_spawn
@@ -76,6 +76,7 @@ from ucode.managed_files import (
     record_ug_picker,
     revert_managed_file,
     warn_skipped_settings_passthrough,
+    windows_claude_managed_settings_path,
     withdrawn_list_items,
 )
 from ucode.mcp_oauth import (
@@ -97,7 +98,6 @@ from ucode.smart_routing.claude_hooks import (
     remove_smart_routing_hooks,
     sync_smart_routing_hooks,
 )
-from ucode.smart_routing.routing import configured_router_name
 from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
 from ucode.ui import print_note, print_success, print_warning
@@ -244,7 +244,7 @@ CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
         "user-agent",
         MODEL_PROVIDER_SERVICE_HEADER.casefold(),
         MODEL_SERVICE_PARENT_SCHEMA_HEADER.casefold(),
-        SMART_ROUTER_RECIPE_HEADER.casefold(),
+        SMART_ROUTER_RECIPE_HEADER.casefold(),  # Remove recipe headers written by older ug versions.
     }
 )
 # ug replaces these only when it emits them (e.g. AI_GATEWAY_REQUEST_TAGS is set); otherwise an
@@ -282,8 +282,10 @@ def _managed_settings_path() -> Path | None:
     Returns None on unsupported platforms."""
     if current_os() is OS.LINUX:
         return Path("/etc/claude-code/managed-settings.json")
-    if current_os() is OS.MACOS:
+    elif current_os() is OS.MACOS:
         return Path("/Library/Application Support/ClaudeCode/managed-settings.json")
+    elif current_os() is OS.WINDOWS:
+        return windows_claude_managed_settings_path()
     return None
 
 
@@ -297,6 +299,38 @@ def _parse_managed_settings(text: str) -> dict:
     if not isinstance(settings, dict):
         raise RuntimeError("the top-level JSON value must be an object")
     return settings
+
+
+def get_family_defaults(
+    state: dict, *, managed_config: bool, provider: str | None, parent_schema: str | None
+) -> dict[str, str] | None:
+    """Claude's family default models when another writer of the OS-managed settings owns them.
+
+    A ``modelPicker`` in that file (e.g. one a launcher wrote) means its writer chooses Claude's
+    models, so ug uses that file's ``ANTHROPIC_DEFAULT_*_MODEL`` values as they are instead of
+    discovering its own. Returns them by family, or None when ug picks the defaults: a managed config, its static
+    model list (whose picker is ug's own), a provider, or a model location supplies the models,
+    or the file has no picker with family defaults.
+    """
+    if managed_config or state.get("claude_static_models") or provider or parent_schema:
+        return None
+    path = _managed_settings_path()
+    if path is None or managed_settings_skipped():
+        return None
+    try:
+        text = read_managed_file(path)
+        settings = _parse_managed_settings(text) if text is not None else {}
+    except RuntimeError:
+        return None
+    env = settings.get("env")
+    if "modelPicker" not in settings or not isinstance(env, dict):
+        return None
+    defaults = {
+        family: model
+        for family, key in CLAUDE_DEFAULT_MODEL_ENV_KEYS.items()
+        if isinstance(model := env.get(key), str) and model
+    }
+    return defaults or None
 
 
 def managed_user_agent() -> str | None:
@@ -478,8 +512,6 @@ def render_overlay(
         header_lines.append(f"{MODEL_PROVIDER_SERVICE_HEADER}: {provider}")
     elif parent_schema:
         header_lines.append(f"{MODEL_SERVICE_PARENT_SCHEMA_HEADER}: {parent_schema}")
-    if smart_routing_v2.smart_routing_enabled(None, default=False, agent=AGENT_CLAUDE):
-        header_lines.append(f"{SMART_ROUTER_RECIPE_HEADER}: {configured_router_name()}")
     request_tags = request_tags_header_value()
     if request_tags:
         header_lines.append(f"{AI_GATEWAY_REQUEST_TAGS_HEADER}: {request_tags}")
@@ -510,7 +542,7 @@ def render_overlay(
     # on the routed model rather than the family default.
     _ = model  # API stability; no longer pinned via env.
     if route_root_model:
-        env["ANTHROPIC_MODEL"] = route_root_model
+        env["ANTHROPIC_MODEL"] = maybe_add_gpt_1m_suffix(route_root_model)
     # A Bedrock-backed provider needs its provider-side ids pinned verbatim
     # (Claude Code's canonical names aren't routable there). These come from the
     # service's targets, already de-duped to one id per family upstream.
@@ -569,7 +601,10 @@ def render_overlay(
         overlay["enforceAvailableModels"] = True
         overlay["modelPicker"] = {
             "replaceBuiltInOptions": True,
-            "options": [{"model": m, "label": _picker_label(m)} for m in static_models],
+            "options": [
+                {"model": maybe_add_gpt_1m_suffix(m), "label": _picker_label(m)}
+                for m in static_models
+            ],
         }
         keys += [[key] for key in CLAUDE_MANAGED_PICKER_KEYS]
     elif picker_catalog and picker_catalog.model_ids and not relayed:
@@ -577,7 +612,7 @@ def render_overlay(
             "replaceBuiltInOptions": True,
             "options": [
                 _picker_option(
-                    model,
+                    maybe_add_gpt_1m_suffix(model),
                     picker_catalog.model_id_to_display_name.get(model) or _picker_label(model),
                     picker_catalog.model_id_to_description.get(model),
                 )
@@ -635,11 +670,12 @@ def _picker_option(model: str, label: str, description: str | None = None) -> di
 
 
 def _maybe_add_1m_suffix(model: str) -> str:
+    """Add Claude Code's `[1m]` hint to Claude Opus/Sonnet 4.6+ ids and GPT ids except gpt-oss."""
     if model.endswith("[1m]"):
         return model
     match = _CLAUDE_MODEL_RE.match(model)
     if not match:
-        return model
+        return maybe_add_gpt_1m_suffix(model)
 
     family, major_raw, minor_raw, _ = match.groups()
     major = int(major_raw)
@@ -1072,7 +1108,7 @@ def _register_web_search_mcp(
     try:
         add_claude_mcp_server(WEB_SEARCH_MCP_NAME, entry)
     except RuntimeError as exc:
-        print_warning(f"{exc} Web search will be unavailable; re-run `ucode claude` to retry.")
+        print_warning(f"{exc} Web search will be unavailable; re-run `ug claude` to retry.")
         return False
     return True
 
@@ -1364,6 +1400,16 @@ def write_tool_config(
         managed_http_headers=state.get("claude_http_headers"),
     )
     source_scoped_defaults = bool((provider or parent_schema) and coding_agent_config_defaults)
+    family_defaults = get_family_defaults(
+        state, managed_config=managed_config_present, provider=provider, parent_schema=parent_schema
+    )
+    if family_defaults is not None:
+        # Write the owner's defaults exactly, so the managed file is unchanged and neither file
+        # keeps a family the owner omits.
+        for family, key in CLAUDE_DEFAULT_MODEL_ENV_KEYS.items():
+            overlay["env"].pop(key, None)
+            if family in family_defaults:
+                overlay["env"][key] = family_defaults[family]
     # Native discovery must not inherit UG's prior static allow-list. Keep a replacement picker
     # written by this launch, and remove only previously owned picker keys that no longer apply.
     stale_picker_keys = [
@@ -1454,6 +1500,7 @@ def write_tool_config(
         should_preserve_preexisting_claude_family_defaults = (
             not managed_config_present
             and not coding_agent_config_defaults
+            and family_defaults is None
             and isinstance(base_env, dict)
         )
         if should_preserve_preexisting_claude_family_defaults:
@@ -1556,7 +1603,8 @@ def write_tool_config(
                 _compose(
                     base,
                     enforce_model_default_hierarchy=(
-                        source_scoped_defaults or (provider is None and parent_schema is None)
+                        source_scoped_defaults
+                        or (provider is None and parent_schema is None and family_defaults is None)
                     ),
                     managed_settings_snapshots=managed_snapshots,
                 ),
@@ -1852,7 +1900,7 @@ def _reconcile_managed_settings(
                 "Claude subscription relay cannot start because enterprise managed settings "
                 f"define {', '.join(conflicts)} at {path}. Ask your administrator to remove "
                 "those entries or use standard Databricks authentication. If ucode previously "
-                "created them, run `ucode revert` from an interactive terminal first."
+                "created them, run `ug revert` first."
             )
         mark_managed_file_verified(state, "claude", path, scope="relay-compatible")
         return
@@ -2211,7 +2259,7 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     workspace = state["workspace"]
     port = state.get("relayed_proxy_port")
     if not isinstance(port, int):
-        raise RuntimeError("Relayed proxy port was not configured; re-run `ucode claude`.")
+        raise RuntimeError("Relayed proxy port was not configured; re-run `ug claude`.")
 
     profile = state.get("profile")
 
@@ -2266,6 +2314,9 @@ def launch(
         os.environ["ANTHROPIC_DEFAULT_MODEL"] = launch_default_model
     # Smart routing also spawns Claude directly, so it needs the native executable.
     binary = _resolve_launch_binary(binary)
+    pinned_model = (
+        maybe_add_gpt_1m_suffix(options.user_pinned_model) if options.user_pinned_model else None
+    )
     routing_setup_failed = False
     if options.launch_smart_routing:
         try:
@@ -2275,7 +2326,7 @@ def launch(
                 binary=binary,
                 user_settings_path=CLAUDE_USER_SETTINGS_PATH,
                 # With no user pin, let Claude resolve its starting model from its own settings.
-                launch_model=options.user_pinned_model,
+                launch_model=pinned_model,
                 compose_settings=_compose_v2_settings,
                 launch_model_args=_launch_model_args,
                 model_name=_maybe_add_1m_suffix,
@@ -2289,12 +2340,12 @@ def launch(
         os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
     settings_override = None
     launch_args = list(tool_args)
-    if options.user_pinned_model:
+    if pinned_model:
         # Pass the exact ID: managed family defaults can override temporary aliases.
-        os.environ["ANTHROPIC_MODEL"] = options.user_pinned_model
-        settings_override = {"env": {"ANTHROPIC_MODEL": options.user_pinned_model}}
+        os.environ["ANTHROPIC_MODEL"] = pinned_model
+        settings_override = {"env": {"ANTHROPIC_MODEL": pinned_model}}
         launch_args = [
-            *_launch_model_args(tool_args, options.user_pinned_model),
+            *_launch_model_args(tool_args, pinned_model),
             *tool_args,
         ]
     else:

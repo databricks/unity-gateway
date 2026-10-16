@@ -88,6 +88,8 @@ not that an assistant echoed it or a skill merely existed on disk.
 Task inference must contain the exact task/routed prompt and tools, excluding Claude title
 requests and parent continuations from child-inference checks. Only Claude child requests
 after the routing checkpoint may append one transport newline to that exact prompt.
+Codex 0.162.1 encrypts child instructions, so those requests instead match the routed
+task name to the child message's recipient. The child's hidden-value and model checks remain.
 Parent and child requests use the same verified thinking-display recovery as CUJ3:
 only known display/safeguards rejections followed by native removal of the rejected field
 and a final non-empty 200 are accepted. Model, prompt, budget, and effort must remain unchanged.
@@ -95,7 +97,11 @@ Each preset session then explicitly requests one child for a separate hidden-val
 file task. Assertions require a new native child transcript containing the value,
 a correlated spawn-routing decision and successful child inference on the
 router's selected model when routing is enabled. Disabled routing requires no router
-requests, new routing decisions, recipe headers, or orchestrator context. This tests requested delegation, not automatic orchestrator delegation.
+requests, new routing decisions, recipe metadata, or orchestrator context. Claude's parent
+and child inference payloads carry the launch recipe in `smart_router_recipe_name`
+without a recipe header; Codex retains the recipe header. This tests requested delegation, not automatic orchestrator delegation.
+Claude's recipe is compared with the recorded routing request's selector rather than
+a hardcoded default recipe name.
 The wait uses the child's answer directly; parent-answer reconstruction is reserved for first-prompt tasks.
 Offline checks reject parent-only answers and accept child answers before the parent replies.
 Offline evidence regressions do not establish a live CUJ pass.

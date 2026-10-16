@@ -120,7 +120,9 @@ def test_windows_subagent_routing_uses_native_binary_without_unix_imports(tmp_pa
     assert settings["env"][v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
     assert v2.ENABLE_SMART_ROUTING_ENV_VAR not in settings["env"]
     assert "UserPromptSubmit" not in settings["hooks"]
-    assert "route-subagent" in str(settings["hooks"]["PreToolUse"])
+    assert "PreToolUse" not in settings["hooks"]
+    command = settings["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"]["routeCommand"]
+    assert command[1:3] == ["claude-router-hook", "route-subagent-mod"]
     assert settings["modelOverrides"] == {"claude-opus-4-8": "system.ai.claude-opus-4-8"}
     assert not captured["settings_path"].exists()
     assert not captured["plugin_dir"].exists()

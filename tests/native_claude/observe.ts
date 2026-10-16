@@ -9,6 +9,9 @@ export const register: Register = (on, options) => {
   });
   on('command.run', {command: 'routing-probe'}, async ($) => ({text: JSON.stringify({
     revision: 'initial', options,
+    route: (options.routeCommand as readonly string[]).length
+      ? await $.process.run(options.routeCommand as readonly string[], {stdin: '{}', timeoutMs: 10000})
+      : null,
     environment: {
       ENABLE_SMART_ROUTING_V2: await $.env.get('ENABLE_SMART_ROUTING_V2') ?? null,
       ENABLE_SMART_ROUTING_SUBAGENT_ONLY: await $.env.get('ENABLE_SMART_ROUTING_SUBAGENT_ONLY') ?? null,

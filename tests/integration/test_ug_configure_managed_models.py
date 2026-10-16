@@ -226,6 +226,7 @@ def test_ug_configure_managed_codex_catalog_fallback(live_session, workspace, ro
     [None, "first_prompt_and_subagent_no_orch_v0"],
     ids=["managed-default", "first_prompt_and_subagent_no_orch_v0"],
 )
+@pytest.mark.harness_latest
 def test_managed_fixture_claude_smart_routing_banner(
     live_session, workspace, SMART_ROUTER_CONFIG_VERSION
 ):
@@ -271,6 +272,7 @@ def test_managed_fixture_claude_smart_routing_banner(
     [None, "first_prompt_and_subagent_no_orch_v0"],
     ids=["managed-default", "first_prompt_and_subagent_no_orch_v0"],
 )
+@pytest.mark.harness_latest
 def test_managed_fixture_codex_smart_routing_banner(
     live_session, workspace, SMART_ROUTER_CONFIG_VERSION
 ):

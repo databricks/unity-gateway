@@ -7,7 +7,7 @@ import os
 import shutil
 import subprocess
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
 from enum import StrEnum
 from importlib import metadata
 from typing import Annotated, Any
@@ -139,16 +139,22 @@ from ucode.skills_download import (
 from ucode.skills_list import configured_skill_counts_by_agent, list_configured_skills_command
 from ucode.skills_state import records_for_scope
 from ucode.smart_routing import v2 as smart_routing_v2
-from ucode.smart_routing.claude_hooks import FIRST_PROMPT_SOCKET_ENV, ROUTE_FIRST_PROMPT_EVENT
+from ucode.smart_routing.claude_hooks import (
+    FIRST_PROMPT_SOCKET_ENV,
+    ROUTE_FIRST_PROMPT_EVENT,
+    ROUTE_SUBAGENT_MOD_EVENT,
+)
 from ucode.smart_routing.session_env import (
     effective_environment,
     session_env_path,
     set_session_environment,
 )
 from ucode.state import (
+    MANAGED_OVERLAY_KEY,
     SELF_MANAGED_AGENTS_KEY,
     add_self_managed_agent,
     clear_state,
+    get_model_location,
     get_provider_service,
     is_self_managed,
     load_full_state,
@@ -156,6 +162,7 @@ from ucode.state import (
     remove_self_managed_agent,
     save_state,
     set_current_workspace,
+    set_model_location,
     set_provider_service,
     workspace_self_managed_agents,
 )
@@ -171,6 +178,7 @@ from ucode.ui import (
     print_success,
     print_warning,
     prompt_for_selection,
+    prompt_for_text,
     prompt_for_tools,
     prompt_for_workspace,
     prompt_yes_no,
@@ -792,6 +800,10 @@ def _setup_single_agent(
     state = configure_single_tool(tool, state, parent_schema=parent_schema)
     if apply_managed and not managed_enabled_tools(managed or {}):
         state = _record_unmanaged_configured_agents(state, [tool])
+    if apply_managed and tool == "claude":
+        from ucode.desktop_setup import configure_claude_desktop
+
+        configure_claude_desktop(state, parent_schema=parent_schema)
     install_databricks_ai_tools_for_agents(
         [tool], state, force_refresh=tool not in ("claude", "codex")
     )
@@ -827,16 +839,19 @@ def _provider_summary(tool: str, state: dict) -> str:
     Model Provider Service is configured, otherwise the external provider type
     backing this tool (claude routes to Anthropic, codex to OpenAI)."""
     if not get_provider_service(state, tool):
-        return "Databricks"
+        location = get_model_location(state, tool)
+        return f"Databricks, {location}" if location else "Databricks"
     return {"claude": "Anthropic", "codex": "OpenAI"}.get(tool, "Model Provider Service")
 
 
 def _maybe_select_provider_service(tool: str, state: dict) -> dict:
-    """Interactively let the user route claude/codex through a Model Provider
-    Service instead of Databricks models, and persist (or clear) the choice.
+    """Interactively let the user pick where claude/codex get their models — Databricks hosted
+    (``system.ai``), a Model Provider Service, or a custom Unity Catalog model location — and
+    persist (or clear) the choice.
 
-    No-op for tools other than claude/codex/gemini. Falls back to Databricks when no
-    matching provider services are found or the listing fails.
+    No-op for tools other than claude/codex/gemini (gemini has no custom location). Falls back
+    to Databricks when no matching provider services are found or the listing fails and no
+    custom location is offered.
     """
     if tool not in ("claude", "codex", "gemini"):
         return state
@@ -844,6 +859,7 @@ def _maybe_select_provider_service(tool: str, state: dict) -> dict:
 
     def _use_databricks() -> dict:
         new_state = set_provider_service(state, tool, None)
+        set_model_location(new_state, tool, None)
         save_state(new_state)
         return new_state
 
@@ -853,39 +869,63 @@ def _maybe_select_provider_service(tool: str, state: dict) -> dict:
     token = get_databricks_token(state["workspace"], state.get("profile"))
     with spinner("Checking for model provider services..."):
         names, reason = list_tool_provider_services(tool, state["workspace"], token)
+    offers_location = tool in ("claude", "codex")
     if reason is not None:
         # Most workspaces don't have the feature enabled — that's the common case,
-        # so fall back to Databricks silently. Only surface unexpected failures.
+        # so skip the provider choice silently. Only surface unexpected failures.
         if not is_model_provider_feature_unavailable(reason):
             print_warning(f"Could not list model provider services: {reason}")
-            print_note("Falling back to Databricks models.")
-        return _use_databricks()
-    if not names:
+            if not offers_location:
+                print_note("Falling back to Databricks models.")
+        names = []
+    elif not names and not offers_location:
         # Feature is on but no service matches this tool's provider type.
         print_note(f"Using Databricks models for {display}.")
+    if not names and not offers_location:
         return _use_databricks()
 
-    choice = prompt_for_selection(
-        f"How should {display} get its models?",
-        [
-            ("databricks", "Databricks Hosted"),
-            ("mps", "External Models"),
-        ],
-    )
+    options = [("databricks", "Databricks Hosted")]
+    if names:
+        options.append(("mps", "External Models"))
+    if offers_location:
+        options.append(("location", "Custom Model Location"))
+    choice = prompt_for_selection(f"How should {display} get its models?", options)
     if choice is None:
         raise KeyboardInterrupt
     if choice == "databricks":
         return _use_databricks()
+
+    if choice == "location":
+        location = _prompt_for_model_location()
+        state = set_provider_service(state, tool, None)
+        state = set_model_location(state, tool, location)
+        save_state(state)
+        print_success(f"{display} will discover models in {location}")
+        return state
 
     selected = prompt_for_selection(
         "Select a model provider service:", [(name, name) for name in names]
     )
     if selected is None:
         raise KeyboardInterrupt
+    state = set_model_location(state, tool, None)
     state = set_provider_service(state, tool, selected)
     save_state(state)
     print_success(f"{display} will route through {selected}")
     return state
+
+
+def _prompt_for_model_location() -> str:
+    """Ask for a ``<catalog>.<schema>`` until a valid one is entered."""
+    while True:
+        location = prompt_for_text(
+            "Model location (<catalog>.<schema>, e.g. main.default)", required=True
+        )
+        if location is None:
+            raise KeyboardInterrupt
+        if is_valid_catalog_schema(location):
+            return location
+        print_err("Model location must be `<catalog>.<schema>`.")
 
 
 def configure_workspace_command(
@@ -999,6 +1039,10 @@ def _configure_workspace_command(
                 last = configured.get("last_configured_tools")
                 if last is None or tool_name in last:
                     configured_tools.append(tool_name)
+                    if tool_name == "claude":
+                        from ucode.desktop_setup import configure_claude_desktop
+
+                        configure_claude_desktop(configured, parent_schema=parent_schema)
         if not configured_tools:
             raise RuntimeError(
                 "None of the coding agents enabled by your workspace configuration "
@@ -1073,6 +1117,10 @@ def _configure_workspace_command(
     state = _record_unmanaged_configured_agents(
         state, [tool_name for tool_name in picked if tool_name in configured_set]
     )
+    if "claude" in configured_set and "claude" in picked:
+        from ucode.desktop_setup import configure_claude_desktop
+
+        configure_claude_desktop(state)
     summary_lines = [f"[bold]Workspace:[/bold] [cyan]{state['workspace']}[/cyan]"]
     for tool_name in picked:
         spec = TOOL_SPECS[tool_name]
@@ -1289,7 +1337,12 @@ def status() -> int:
             ),
             (
                 "Model provider",
-                provider_service or "Databricks AI Gateway",
+                provider_service
+                or (
+                    f"Databricks AI Gateway ({location})"
+                    if (location := get_model_location(effective_state, tool))
+                    else "Databricks AI Gateway"
+                ),
             ),
         ]
         models = (
@@ -1334,7 +1387,10 @@ def status() -> int:
 
 
 def revert() -> int:
+    from ucode.desktop_setup import revert_desktop
+
     state = load_state()
+    desktop_result = revert_desktop()
     managed_configs = state.get("managed_configs") or {}
     mcp_results = revert_mcp_configs(state)
     claude_managed_result = claude_agent.revert_managed_settings()
@@ -1361,6 +1417,7 @@ def revert() -> int:
     if legacy_codex_stripped:
         print_kv("Codex shared config", "ucode entries removed")
     print_kv("Claude Code OS-managed settings", claude_managed_result)
+    print_kv("Claude Desktop profile", desktop_result)
     print_kv("Codex OS-managed settings", codex_managed_result)
     print_kv("Pi settings", "restored" if pi_settings_restored else "unchanged")
     for client, spec in MCP_CLIENTS.items():
@@ -1368,6 +1425,9 @@ def revert() -> int:
             f"{spec['display']} MCP config",
             "restored" if mcp_results.get(client) else "unchanged",
         )
+    if desktop_result == "failed":
+        print_warning("ug state cleared. Fix the Claude Desktop error and run ug revert again.")
+        return 1
     print_success("ug state cleared")
     return 0
 
@@ -2057,7 +2117,7 @@ def skills_add(
                 else:
                     configure_skills_download_picker_command(path=path)
                 return
-            raise RuntimeError("--location is required for `ucode skills add`.")
+            raise RuntimeError("--location is required for `ug skills add`.")
         if mcp:
             configured_agents = (
                 _configure_agents_for_mcp(sorted(requested_agents)) if requested_agents else None
@@ -2220,6 +2280,28 @@ def mcp_proxy_cmd(
     serve(url, workspace, profile, use_pat=use_pat or bool(state.get("use_pat")))
 
 
+@app.command("claude-desktop-auth", hidden=True)
+def claude_desktop_auth_cmd(
+    host: Annotated[str, typer.Option("--host", help="Configured workspace URL.")],
+    profile: Annotated[str, typer.Option("--profile", help="Configured Databricks CLI profile.")],
+) -> None:
+    """Print a Desktop credential, allowing browser login only for interactive requests."""
+    import sys
+
+    from ucode.desktop_auth import get_claude_desktop_token
+
+    try:
+        with redirect_stdout(sys.stderr):
+            token = get_claude_desktop_token(host, profile)
+    except (RuntimeError, ValueError) as exc:
+        print_err(str(exc))
+        raise typer.Exit(1) from None
+    except KeyboardInterrupt:
+        print_err("Databricks sign-in cancelled. Start a new Cowork task to try again.")
+        raise typer.Exit(130) from None
+    sys.stdout.write(token + "\n")
+
+
 @app.command("auth-token", hidden=True)
 def auth_token_cmd(
     host: Annotated[
@@ -2235,6 +2317,7 @@ def auth_token_cmd(
         bool,
         typer.Option("--force-refresh", help="Force the Databricks CLI to mint a new token."),
     ] = False,
+    browser_login: Annotated[bool, typer.Option("--browser-login", hidden=True)] = False,
     client_id: Annotated[
         str | None,
         typer.Option(
@@ -2314,13 +2397,38 @@ def auth_token_cmd(
                 force_refresh=force_refresh,
             )
         else:
-            token = get_databricks_token(workspace, profile, force_refresh=force_refresh)
+            token = get_databricks_token(
+                workspace, profile, force_refresh=force_refresh, browser_login=browser_login
+            )
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
     # Write the bare token (with trailing newline) to stdout — nothing else may
     # land on stdout or the consuming agent will treat it as part of the token.
     sys.stdout.write(token + "\n")
+
+
+@app.command("otel-proxy", hidden=True)
+def otel_proxy_cmd(
+    host: Annotated[str, typer.Option("--host")],
+    port: Annotated[int, typer.Option("--port", min=1, max=65535)],
+) -> None:
+    """Run the same OTLP proxy as a Codex CLI session, for desktop."""
+    from ucode import gateway_proxy
+
+    try:
+        state = load_full_state().get("workspaces", {}).get(host)
+        if not state:
+            raise RuntimeError(f"No saved configuration for {host}. Run `ug configure` first.")
+        apply_pat_environment(state)
+        server, _cache, _client = gateway_proxy.start_otel_proxy(
+            host, codex_agent._otel_token_provider(state, host), port=port
+        )
+        # systemd stops this with SIGTERM, which exits without cleanup, and nothing needs it.
+        server.serve_forever()
+    except (OSError, RuntimeError) as exc:
+        print_err(str(exc))
+        raise typer.Exit(1) from None
 
 
 @app.command("otel-headers", hidden=True)
@@ -2537,9 +2645,9 @@ def claude_router_hook_cmd(
                 )
             )
         # When matched is None the harness didn't report the subagent model —
-        # the PreToolUse hook already injected the routed model, so emit nothing.
+        # routing already injected the selected model, so emit nothing.
         return
-    if event != "route-subagent" or not host:
+    if event not in {"route-subagent", ROUTE_SUBAGENT_MOD_EVENT} or not host:
         return
     token = os.environ.get("OAUTH_TOKEN") or os.environ.get("DATABRICKS_BEARER")
     if not token:
@@ -2549,12 +2657,15 @@ def claude_router_hook_cmd(
             token = get_databricks_token(host, profile)
         except RuntimeError:
             return
-    output = smart_routing_v2.route_claude_pre_tool_use(
+    output = smart_routing_v2.route_claude_subagent(
         payload,
         workspace=host,
         token=token,
         available_models=model or [],
         audit_decision=True,
+        # Hooks persisted by earlier UG versions still call route-subagent and expect a
+        # PreToolUse response; the mod's route-subagent-mod event takes the plain details.
+        hook_output=event == "route-subagent",
     )
     if output is not None:
         sys.stdout.write(json.dumps(output))
@@ -2916,6 +3027,30 @@ def _managed_smart_routing_enabled(managed: dict | None, tool: str) -> bool:
     return agent_config.get("smart_routing_enabled") is True
 
 
+def _skip_model_discovery(
+    managed: dict | None,
+    tool: str,
+    *,
+    provider: str | None,
+    managed_parent_schema: str | None,
+    family_defaults: dict[str, str] | None,
+) -> bool:
+    """Whether a launch can skip Databricks model discovery.
+
+    Discovery exists to find the workspace's models, so it is wasted work once something else has
+    named them: a Model Provider Service or managed Unity Catalog location (which list their own),
+    a managed config's model list, or another writer's OS-managed ``modelPicker``
+    (``family_defaults``). In the last case it is also harmful: discovered family defaults would
+    overwrite that writer's on every launch, and each rewrite of the managed file costs a sudo prompt.
+    """
+    return (
+        bool(provider)
+        or bool(managed_parent_schema)
+        or managed_supplies_models(managed, tool)
+        or family_defaults is not None
+    )
+
+
 def _launch_tool(
     tool_name: str,
     ctx: typer.Context,
@@ -2995,7 +3130,20 @@ def _launch_tool(
         explicit_provider = provider
         # An explicit --provider overrides the persisted choice; otherwise fall
         # back to whatever `ug configure` saved for this tool.
-        provider = provider or get_provider_service(state, tool)
+        # A persisted model location is the same source as an explicit --model-location, so it
+        # follows the same rules below; an explicit --provider (or --model-location) displaces it.
+        explicit_parent_schema = parent_schema
+        persisted_provider = get_provider_service(state, tool)
+        if (
+            parent_schema is None
+            and explicit_provider is None
+            and not persisted_provider
+            and tool in {"claude", "codex"}
+        ):
+            parent_schema = get_model_location(state, tool)
+        # An explicit --model-location displaces a persisted provider, as --provider displaces a
+        # persisted location.
+        provider = provider or (None if parent_schema is not None else persisted_provider)
         state = _migrate_legacy_smart_routing(state)
         # Fetched before `configure_shared_state` because it decides whether this agent may launch
         # at all and whether the model discovery below can be skipped.
@@ -3017,8 +3165,12 @@ def _launch_tool(
         _reject_managed_launch_source_options(
             managed,
             provider=explicit_provider,
-            parent_schema=parent_schema,
+            parent_schema=explicit_parent_schema,
         )
+        if managed is not None:
+            # The managed config alone chooses the source; a developer's saved location never
+            # applies (and was never typed on this command line).
+            parent_schema = None
         if explicit_provider is not None and parent_schema is not None:
             raise RuntimeError("--provider and --model-location cannot be used together.")
         if parent_schema is not None and not is_valid_catalog_schema(parent_schema):
@@ -3050,20 +3202,32 @@ def _launch_tool(
         smart_routing_enabled = smart_routing_v2.smart_routing_enabled(
             None, default=managed_smart_routing_enabled, agent=tool
         )
-        # Discovery exists to find models and isn't needed for managed config that already names them.
-        managed_models_known = managed_supplies_models(managed, tool)
         # Re-fetch model lists on every launch so newly-added Databricks
         # endpoints show up without a manual `ug configure` (and so that
         # tools like pi which read multiple model bundles never run on
         # stale state from before a tool added a new bundle). Under a provider
         # this heavy discovery is skipped (only a web-search model is fetched).
         configure_kwargs = {"custom_oauth": custom_oauth} if custom_oauth is not None else {}
+        family_defaults = (
+            claude_agent.get_family_defaults(
+                state,
+                managed_config=managed is not None,
+                provider=provider,
+                parent_schema=parent_schema,
+            )
+            if tool == "claude"
+            else None
+        )
         state = configure_shared_state(
             state["workspace"],
             profile=state.get("profile"),
             tools=[tool],
-            skip_model_discovery=(
-                bool(provider) or bool(managed_parent_schema) or managed_models_known
+            skip_model_discovery=_skip_model_discovery(
+                managed,
+                tool,
+                provider=provider,
+                managed_parent_schema=managed_parent_schema,
+                family_defaults=family_defaults,
             ),
             skip_preflight=skip_preflight,
             **configure_kwargs,
@@ -3090,6 +3254,14 @@ def _launch_tool(
             )
         elif not coding_agent_config_feature_disabled:
             print_note("No managed coding agent config found; using your own settings")
+        if family_defaults is not None:
+            # Launch on the picker owner's models; the overlay keeps the cached ones in state.json.
+            state.setdefault(MANAGED_OVERLAY_KEY, {}).setdefault(
+                "claude_models", state.get("claude_models")
+            )
+            state["claude_models"] = {
+                family: model.removesuffix("[1m]") for family, model in family_defaults.items()
+            }
         if provider and parent_schema is not None:
             raise RuntimeError("--provider and --model-location cannot be used together.")
         # Checked after the managed config settles `provider`: an admin-set provider must trip this
@@ -3228,6 +3400,19 @@ def _launch_tool(
                 resolved_model = model
         if model and tool == "claude" and not provider:
             route_root_model = None
+        # List the gateway's models in ug's own /model picker so GPT rows get the `[1m]` hint.
+        # Claude Code's own discovery lists them without it, so they would run at 200K.
+        if tool == "claude" and managed is None and not provider and not parent_schema:
+            discovered = list_anthropic_model_catalog(
+                state["workspace"],
+                get_databricks_token(state["workspace"], state.get("profile")),
+            )
+            if discovered.model_ids:
+                picker_catalog = claude_agent.default_model_picker_catalog(
+                    state.get("claude_models") or {},
+                    launch_model=model or forwarded_model,
+                    discovered_catalog=discovered,
+                )
         if coding_agent_config_defaults and not state.get("claude_static_models") and not relayed:
             picker_catalog = claude_agent.default_model_picker_catalog(
                 coding_agent_config_defaults,
@@ -3248,7 +3433,12 @@ def _launch_tool(
             coding_agent_config_defaults=coding_agent_config_defaults,
             parent_schema=parent_schema,
         )
-        if picker_catalog and picker_catalog.model_ids:
+        # A plain launch keeps Claude Code's own starting model, as its own picker did.
+        if (
+            picker_catalog
+            and picker_catalog.model_ids
+            and (managed is not None or provider or parent_schema)
+        ):
             # Claude re-adds an out-of-catalog saved model to /model even when built-ins are
             # replaced. Keep the catalog launch-scoped and leave the user's settings alone.
             state["_claude_launch_picker_models"] = picker_catalog.model_ids
