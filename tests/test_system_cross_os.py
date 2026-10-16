@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -67,29 +65,3 @@ def test_windows_program_data_dir(monkeypatch, program_data, expected):
         monkeypatch.setenv("ProgramData", program_data)
 
     assert system_cross_os.windows_program_data_dir() == expected
-
-
-@pytest.mark.skipif(sys.platform != "win32", reason="asks Windows for the owner")
-def test_windows_owned_by_admin_recognizes_the_windows_folder():
-    assert system_cross_os.windows_owned_by_admin(Path(os.environ["SystemRoot"])) is True
-
-
-@pytest.mark.skipif(sys.platform != "win32", reason="changes a real owner on Windows")
-def test_windows_make_administrators_owner(tmp_path):
-    # Only an elevated process (as on CI runners) may give a folder to Administrators.
-    if not _REAL_IS_ADMIN():
-        pytest.skip("needs an elevated process")
-    folder = tmp_path / "owned"
-    folder.mkdir()
-
-    system_cross_os.windows_make_administrators_owner(folder)
-
-    assert system_cross_os.windows_owned_by_admin(folder) is True
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="covered by the real Windows checks")
-def test_windows_ownership_is_windows_only(tmp_path):
-    with pytest.raises(NotImplementedError):
-        system_cross_os.windows_owned_by_admin(tmp_path)
-    with pytest.raises(NotImplementedError):
-        system_cross_os.windows_make_administrators_owner(tmp_path)

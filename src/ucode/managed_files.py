@@ -608,8 +608,6 @@ def reconcile_managed_file(
                 "Run the command from an interactive terminal."
             )
         raise RuntimeError(_windows_admin_required_message(display, path, "ug configure"))
-    # Before the backup, which would otherwise keep an untrusted file's text for `ug revert`.
-    _refuse_untrusted_windows_target(path)
     if current_text == desired_text:
         return "unchanged"
     if current_text is not None:
@@ -727,7 +725,6 @@ def revert_managed_file(
                     "`ug revert` from an interactive terminal."
                 )
             raise RuntimeError(_windows_admin_required_message(display, path, "ug revert"))
-        _refuse_untrusted_windows_target(path)
         try:
             if desired_text is None:
                 _privileged_remove(path)
@@ -1326,48 +1323,23 @@ def _validate_windows_target(path: Path) -> None:
         raise RuntimeError(f"Refusing unexpected managed-settings target: {path}")
     if path.is_symlink():
         raise RuntimeError(f"Refusing to replace symlinked managed settings: {path}")
-
-
-def _refuse_untrusted_windows_target(path: Path) -> None:
-    """Standard users can create folders and files under ProgramData and keep full control of them,
-    so an existing entry they made could later rewrite what we write there."""
-    if current_os() is not OS.WINDOWS or path != windows_codex_requirements_path():
-        return
-    root = system_cross_os.windows_program_data_dir()
-    entry = path
-    while entry != root and root in entry.parents:
-        if entry.is_symlink() or entry.is_junction():
-            raise RuntimeError(f"Refusing to use managed settings through link {entry}")
-        if entry.exists() and not system_cross_os.windows_owned_by_admin(entry):
-            raise RuntimeError(
-                f"Refusing to use {path}: {entry} isn't owned by Administrators, SYSTEM, or "
-                "TrustedInstaller, so a standard user may be able to change it. Delete it, or make "
-                "Administrators its owner, from an elevated terminal, then rerun."
-            )
-        entry = entry.parent
+    if path == windows_codex_requirements_path():
+        # Standard users can create folders under ProgramData; a linked one would redirect us.
+        for folder in (path.parent, path.parent.parent):
+            if folder.is_symlink() or folder.is_junction():
+                raise RuntimeError(f"Refusing to write managed settings through link {folder}")
 
 
 def _windows_replace(path: Path, desired_text: str) -> None:
     """Atomically replace ``path`` from this elevated process.
 
     The temp file is created beside the target so the rename stays on one volume and the new file
-    inherits the folder's ACL, which under Program Files and admin-created ProgramData folders lets
-    standard users read but not change it."""
+    inherits the folder's ACL, which under Program Files lets standard users read but not write."""
     _validate_windows_target(path)
     if not system_cross_os.is_admin():
         raise PermissionError("administrator rights are required")
-    is_codex = path == windows_codex_requirements_path()
-    if is_codex:
-        root = system_cross_os.windows_program_data_dir()
-        for folder in [entry for entry in reversed(path.parents) if root in entry.parents]:
-            with suppress(FileExistsError):
-                folder.mkdir()
-                # Only folders this process made: owning one a user made would leave them its ACE.
-                system_cross_os.windows_make_administrators_owner(folder)
-        # Again after mkdir: a standard user could have created a missing folder since the last check.
-        _refuse_untrusted_windows_target(path)
-    else:
-        path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _validate_windows_target(path)  # a missing folder may have been created as a link meanwhile
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as tmp:
@@ -1377,8 +1349,6 @@ def _windows_replace(path: Path, desired_text: str) -> None:
         with suppress(FileNotFoundError):
             os.unlink(tmp_name)
         raise
-    if is_codex:
-        system_cross_os.windows_make_administrators_owner(path)
 
 
 def _sudo_remove(path: Path) -> None:
