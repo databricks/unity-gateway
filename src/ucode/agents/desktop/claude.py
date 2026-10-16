@@ -8,13 +8,14 @@ and the observed ``alwaysStartWithDefaultModel`` boolean are written only when s
 Profile rendering and file writes live in ``claude_config``; ownership records and
 revert policy live in ``claude_state``.
 
-The native path is supported only on macOS.  ``directory=`` is an explicit filesystem injection
-for tests and does not imply support for another native platform.
+Native paths follow Claude Desktop's macOS, Windows, and Linux application-data layout.
+``directory=`` explicitly selects a profile store instead of resolving the native path.
 """
 
 from __future__ import annotations
 
 import copy
+import os
 import sys
 import uuid
 from collections.abc import Mapping, Sequence
@@ -100,28 +101,26 @@ class _Paths:
 def claude_desktop_root_directory(
     *, home: Path | str | None = None, platform: str | None = None
 ) -> Path | None:
-    """Return the native Claude-3p root, or ``None`` on unsupported hosts.
-
-    Windows has no validated equivalent in this adapter yet.  Callers that pass ``directory=``
-    to :func:`configure_claude_desktop` or :func:`revert_claude_desktop` are explicitly selecting
-    a filesystem fixture and therefore do not use this native resolver.
-    """
+    """Return the documented Claude-3p application-data root."""
 
     platform_name = (platform if platform is not None else sys.platform).lower()
-    if platform_name != "darwin":
+    if platform_name not in ("darwin", "win32", "linux"):
         return None
     home_path = Path(home) if home is not None else Path.home()
-    return home_path / "Library" / "Application Support" / "Claude-3p"
+    if platform_name == "darwin":
+        return home_path / "Library" / "Application Support" / "Claude-3p"
+    if platform_name == "linux":
+        return home_path / ".config" / "Claude-3p"
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    return (
+        Path(local_app_data) if local_app_data else home_path / "AppData" / "Local"
+    ) / "Claude-3p"
 
 
 def claude_desktop_directory(
     *, home: Path | str | None = None, platform: str | None = None
 ) -> Path | None:
-    """Return the validated native Claude-3p profile-storage directory.
-
-    Claude Desktop stores the native ``_meta.json`` and UUID profiles under ``configLibrary`` on
-    macOS. Windows has no validated equivalent in this adapter yet.
-    """
+    """Return the native configLibrary store for UUID profiles and metadata."""
 
     root = claude_desktop_root_directory(home=home, platform=platform)
     return root / "configLibrary" if root is not None else None
@@ -324,7 +323,10 @@ def revert_claude_desktop(
     if not isinstance(workspace, str) or not workspace:
         raise ValueError("Claude Desktop workspace must be a non-empty string.")
     workspace = desktop_state.normalize_workspace(workspace)
-    paths = _resolve_paths(directory=directory, state_path=state_path)
+    manifest_path = Path(state_path) if state_path is not None else APP_DIR / MANIFEST_FILENAME
+    if not manifest_path.exists():
+        return RevertResult(profile_id=None, changed=False)
+    paths = _resolve_paths(directory=directory, state_path=manifest_path)
     with desktop_config.locked(paths.lock):
         manifest = desktop_state.read_manifest(paths.state)
         scope, record = desktop_state.find_workspace_record(manifest, paths.directory, workspace)
@@ -408,16 +410,17 @@ def _resolve_paths(
         native_directory = claude_desktop_directory()
         if native_directory is None:
             raise ClaudeDesktopUnsupportedError(
-                "Claude Desktop profile configuration is currently supported only on macOS; "
-                "Windows support is not validated yet."
+                "Claude Desktop profile configuration is unavailable on this platform."
             )
         resolved_directory = native_directory
         if not resolved_directory.exists():
-            if not _claude_desktop_installed():
+            can_initialize = resolved_directory.parent.is_dir()
+            if sys.platform == "darwin":
+                can_initialize = _claude_desktop_installed()
+            if not can_initialize:
                 raise ClaudeDesktopUnavailableError(
-                    f"Claude Desktop profile directory is unavailable at {resolved_directory}, and "
-                    "Claude Desktop was not found in the standard macOS Applications folders. "
-                    "Install/open Claude Desktop, then run configure again; Unity Gateway will not "
+                    f"Claude Desktop profile directory is unavailable at {resolved_directory}. "
+                    "Install/open Claude Desktop once, then run configure again; Unity Gateway will not "
                     "install it."
                 )
             directory_was_absent = True
@@ -428,8 +431,7 @@ def _resolve_paths(
                     f"Could not initialize Claude Desktop profile directory at {resolved_directory}."
                 ) from exc
     else:
-        # An injected path is a test/embedding seam. It intentionally bypasses native platform
-        # detection, but we never present it as a supported Windows or Linux app location.
+        # Embedders select their own profile store without native app detection.
         resolved_directory = Path(directory)
         if not resolved_directory.exists():
             directory_was_absent = True

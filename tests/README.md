@@ -145,8 +145,10 @@ user edits or workspace switches. Injected write failures verify exact-byte roll
 at each file boundary in `agents/desktop/claude_config.py`. Ownership and revert
 policy live in `agents/desktop/claude_state.py`; the public adapter lives in
 `agents/desktop/claude.py`. These are filesystem component checks, not native Desktop
-activation, model-selection, browser-login, or inference coverage. Native path
-resolution is macOS-only; Windows Desktop support remains unvalidated.
+activation, model-selection, browser-login, or inference coverage. Simulated macOS,
+Windows, and Linux paths exercise native-store configure, refresh, revert without prior ownership, and missing-app
+handling; Windows path checks include relocated and default Local AppData. Native Windows
+and Linux GUI/helper/browser/inference journeys remain unvalidated.
 
 `TestChildStdoutLaunch` in `test_cli.py` checks Claude `-p`/`--print` and Codex `exec`
 (plain and `--json`) and `app-server` status/error output on stderr, argument forwarding with

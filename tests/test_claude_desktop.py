@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -32,7 +33,7 @@ def _seed_metadata(directory: Path, *, name: str = "Default") -> str:
 
 
 def _configure(
-    directory: Path,
+    directory: Path | None,
     state_path: Path,
     *,
     workspace: str = "https://workspace.example",
@@ -826,23 +827,98 @@ def test_existing_config_library_directory_is_used_before_creating_metadata(tmp_
     assert not (root / desktop.META_FILENAME).exists()
 
 
-def test_native_resolution_is_macos_only_and_does_not_install_missing_app(
+@pytest.fixture(params=["darwin", "win32", "linux"])
+def native_directory(request, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    home = tmp_path / "home"
+    local_app_data = tmp_path / "relocated local app data"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    monkeypatch.setattr(desktop, "sys", SimpleNamespace(platform=request.param))
+    monkeypatch.setattr(desktop, "_claude_desktop_installed", lambda: False)
+    roots = {
+        "darwin": home / "Library" / "Application Support" / "Claude-3p",
+        "win32": local_app_data / "Claude-3p",
+        "linux": home / ".config" / "Claude-3p",
+    }
+    return roots[request.param] / "configLibrary"
+
+
+def test_native_configure_refresh_and_revert_use_platform_profile_store(
+    native_directory: Path, tmp_path: Path
+) -> None:
+    default_id = _seed_metadata(native_directory)
+    before = (native_directory / f"{default_id}.json").read_bytes()
+    state_path = tmp_path / "state.json"
+
+    configured = _configure(None, state_path)
+    assert configured.profile_path.parent == native_directory
+    assert configured.metadata_path == native_directory / desktop.META_FILENAME
+    assert _read(configured.metadata_path)["appliedId"] == configured.profile_id
+
+    refreshed = _configure(None, state_path, models=("system.ai.claude-sonnet-5",))
+    assert refreshed.profile_id == configured.profile_id
+    assert _read(refreshed.profile_path)["inferenceModels"] == [
+        {"name": "system.ai.claude-sonnet-5"}
+    ]
+    reverted = desktop.revert_claude_desktop("https://workspace.example", state_path=state_path)
+    assert reverted.changed is True
+    assert _read(configured.metadata_path)["appliedId"] == default_id
+    assert (native_directory / f"{default_id}.json").read_bytes() == before
+    assert not configured.profile_path.exists()
+
+
+def test_native_resolution_does_not_install_missing_app(
+    native_directory: Path, tmp_path: Path
+) -> None:
+    with pytest.raises(desktop.ClaudeDesktopUnavailableError, match="will not install"):
+        _configure(None, tmp_path / "state.json")
+    assert not native_directory.parent.exists()
+    assert not (tmp_path / "state.json").exists()
+
+
+def test_native_revert_without_ownership_does_not_create_files(
+    native_directory: Path, tmp_path: Path
+) -> None:
+    state_path = tmp_path / "state.json"
+
+    result = desktop.revert_claude_desktop("https://workspace.example", state_path=state_path)
+
+    assert result == desktop.RevertResult(profile_id=None, changed=False)
+    assert not native_directory.parent.exists()
+    assert not state_path.exists()
+
+
+def test_native_resolution_initializes_library_after_app_has_opened(
+    native_directory: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    native_directory.parent.mkdir(parents=True)
+    monkeypatch.setattr(desktop, "_claude_desktop_installed", lambda: True)
+
+    configured = _configure(None, tmp_path / "state.json")
+
+    assert configured.profile_path.parent == native_directory
+    assert _read(configured.metadata_path)["entries"] == [
+        {"id": configured.profile_id, "name": desktop.PROFILE_NAME}
+    ]
+
+
+def test_windows_native_path_defaults_to_local_app_data(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    assert desktop.claude_desktop_directory(platform="linux") is None
-    assert desktop.claude_desktop_directory(platform="win32") is None
-    monkeypatch.setattr(desktop, "claude_desktop_directory", lambda: tmp_path / "missing")
-    monkeypatch.setattr(desktop, "_claude_desktop_installed", lambda: False)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    assert desktop.claude_desktop_directory(home=tmp_path, platform="win32") == (
+        tmp_path / "AppData" / "Local" / "Claude-3p" / "configLibrary"
+    )
 
-    with pytest.raises(desktop.ClaudeDesktopUnavailableError, match="will not install"):
-        desktop.configure_claude_desktop(
-            "https://workspace.example",
-            model_ids=("model",),
-            base_url="https://workspace.example/ai-gateway/anthropic",
-            helper_command="/usr/local/bin/ug",
-            helper_args=("claude-desktop-auth", "--host", "host", "--profile", "selectedprofile"),
-        )
-    assert not (tmp_path / "missing").exists()
+
+def test_unrecognized_native_platform_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(desktop, "sys", SimpleNamespace(platform="freebsd"))
+    with pytest.raises(desktop.ClaudeDesktopUnsupportedError, match="platform"):
+        _configure(None, tmp_path / "state.json")
+    assert not (tmp_path / "state.json").exists()
 
 
 def test_fresh_metadata_has_no_dangling_default_and_revert_removes_it(tmp_path: Path) -> None:

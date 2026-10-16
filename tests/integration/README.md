@@ -317,8 +317,10 @@ conflicts, user-edit preservation on revert, and rollback across profile, metada
 and ownership files. It uses temporary files and injected write failures in the
 `agents/desktop/claude_config.py` module, with ownership/revert policy in
 `agents/desktop/claude_state.py`.
-Native Desktop activation, model selection, browser login, and inference remain outside
-this coverage; the adapter resolves native paths only on macOS.
+Simulated macOS, Windows, and Linux paths also exercise native-store configure,
+refresh, revert without prior ownership, missing-app handling, and Windows Local AppData resolution.
+Native Desktop activation, helper execution, model selection, browser login, and inference
+remain outside this coverage; no Windows or Linux GUI journey has been verified.
 
 ## Test layout and format
 
