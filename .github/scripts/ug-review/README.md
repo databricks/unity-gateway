@@ -70,7 +70,7 @@ dependencies and the `@anthropic-ai/claude-code` and `@openai/codex` CLIs (pinne
 `integration.yml` versions) install through the Databricks JFrog proxies, authenticated with
 GitHub OIDC. Polly reads the trusted default-branch `AGENTS.md` and UG rubric as policy and
 treats the PR as untrusted data. Set the repository variables `UG_POLLY_HARNESS` and
-`UG_POLLY_MODEL` to override the defaults (`codex`, `system.ai.gpt-5-6`).
+`UG_POLLY_MODEL` to override the defaults (`codex`, `system.ai.gpt-6-1-sol`, the model main's old reviewer used through `UG_CI_REVIEW_MODEL`).
 
 `.github/scripts/polly-review/summary.py` is adapted from Omnigent (Apache-2.0).
 `tests/test_polly_review.py` covers the workflow contract and the summary helper, not live

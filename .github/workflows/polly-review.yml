@@ -229,7 +229,7 @@ jobs:
                           "base_url": f"{host}/ai-gateway/codex/v1",
                           "api_key_ref": "env:LLM_API_KEY",
                           "wire_api": "responses",
-                          "models": {"default": "system.ai.gpt-5-6"},
+                          "models": {"default": "system.ai.gpt-6-1-sol"},
                       },
                   }
               }
@@ -519,7 +519,7 @@ jobs:
         working-directory: .polly-omnigent
         env:
           OMNIGENT_POLLY_HARNESS: ${{ vars.UG_POLLY_HARNESS || 'codex' }}
-          OMNIGENT_POLLY_MODEL: ${{ vars.UG_POLLY_MODEL || 'system.ai.gpt-5-6' }}
+          OMNIGENT_POLLY_MODEL: ${{ vars.UG_POLLY_MODEL || 'system.ai.gpt-6-1-sol' }}
         run: |
           set -euo pipefail
 

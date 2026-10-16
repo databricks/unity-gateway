@@ -74,7 +74,8 @@ def test_workflow_pins_actions_omnigent_and_models():
     assert all(re.fullmatch(r"[0-9a-f]{40}", ref) for ref in refs)
     assert re.search(r"^      OMNIGENT_SHA: [0-9a-f]{40}$", workflow, re.MULTILINE)
     assert "system.ai.claude-opus-5-5" in workflow
-    assert "system.ai.gpt-5-6" in workflow
+    assert workflow.count("system.ai.gpt-6-1-sol") == 2
+    assert "system.ai.gpt-5-6" not in workflow
     assert "vars.UG_POLLY_HARNESS || 'codex'" in workflow
     assert "uv run --no-sync omnigent run examples/polly/" in workflow
     assert "uv export --frozen --package omnigent --extra all --no-dev" in workflow
