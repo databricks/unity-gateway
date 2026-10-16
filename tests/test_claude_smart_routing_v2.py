@@ -1006,6 +1006,21 @@ class TestV2HeadlessClaude:
         assert launched["settings"]["env"][v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
         assert v2.FIRST_PROMPT_SOCKET_ENV not in launched["settings"]["env"]
 
+    def test_orchestrated_print_launch_uses_answer_output_adapter(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", "1")
+        captured = {}
+
+        def deliver(argv, *, session_path, stdin_prompt):
+            captured.update(argv=argv, session_path=session_path, stdin_prompt=stdin_prompt)
+            assert session_path.is_file()
+            return 0
+
+        monkeypatch.setattr(v2.claude_answer_delivery, "run", deliver)
+        launched, _ = self._launch(monkeypatch, tmp_path, ["-p", "request"])
+        assert not launched
+        assert captured["argv"][-2:] == ["-p", "request"]
+        assert captured["stdin_prompt"] is None
+
     def test_prompt_argument_is_routed_without_reading_stdin(self, tmp_path, monkeypatch):
         launched, prompts = self._launch(
             monkeypatch, tmp_path, ["-p", "fix the parser", "--output-format", "json"]

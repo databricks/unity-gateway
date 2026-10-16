@@ -34,6 +34,42 @@ Role instructions belong in each task prompt because routing may replace the
 requested Claude role or Codex model. Hook approval in the native `/hooks` UI
 is still required where the harness prompts for it.
 
+## Claude answer delivery
+
+Orchestrated Claude print-mode launches (`ug claude -- -p`) let the parent deliver an
+accepted child answer verbatim instead of generating it again. Interactive Claude and
+Codex keep normal parent-written answers. No additional environment control or runtime
+dependency is introduced. The parent ends with either a single selection or an ordered
+composition of literal text and complete child answers:
+
+```json
+{"use_agent_answer":"<agentId>"}
+{"answer_parts":["Introduction\n\n",{"use_agent_answer":"<agentId>"},"\n\nAdditional findings"]}
+```
+
+Parts are joined without rewriting their contents; the parent remains responsible for
+coverage, evidence, conflicts and acceptance. A selection must name a uniquely owned
+direct local child of the current session and its latest successfully completed
+revision. A `SendMessage` resume invalidates the previous answer until it completes.
+Background execution is recognized from the linked launch result, and a background
+answer must match its completion notification. Missing, foreign, stale, failed,
+incomplete, malformed and ambiguous selections are rejected with a delivery error and
+a nonzero status.
+
+The launcher requests verbose stream-json internally, preserves the caller's input mode
+and stdin, buffers stdout until the process ends, then renders the requested text, JSON
+or stream-json format. Stream-json output is not a live token stream: the complete root
+assistant text and terminal result are rewritten and the result gains
+`ug_answer_delivery`; partial events stay raw. Usage, costs, stderr and nonzero exit
+statuses are preserved. Native API failures remain native errors in JSON and
+stream-json output; text output reports any error result on stderr.
+
+While the launcher runs it creates a capability marker next to the session-control
+file, and the orchestration hooks describe the selection syntax only while that marker
+exists. `claude-answer-delivery-receipts.json` in the session directory records each
+selection with SHA-256 hashes of the delivered answer and its parts, without answer
+bodies.
+
 ## Task ownership
 
 Both workflows keep easy work in the root and delegate only when a child can own
