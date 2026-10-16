@@ -203,9 +203,13 @@ Desktop OTEL component tests cover native trace settings gated by `claude_otel_t
 for static and discovered models on simulated macOS, Windows, and Linux. They verify
 the collector base URL, protobuf protocol, refreshing `.sh`/`.cmd` headers helpers
 without persisted tokens, literal argument quoting, repeated native helper execution
-with rotated bearer overrides, and JSON-only stdout/failure output. Lifecycle checks
-cover repeat configure, workspace changes, disable/re-enable, rollback of helper bytes
+with rotated bearer overrides, Unicode and trailing-backslash arguments, and
+JSON-only stdout/failure output. Windows wrappers select UTF-8 before the command.
+Lifecycle checks cover repeat configure, workspace changes, disable/re-enable, rollback of helper bytes
 and permissions at each write boundary, and revert preserving unrelated telemetry.
+Revert also cleans up the helper and selection state after the Desktop library or
+application-data root is removed, without recreating either directory; failed cleanup
+restores helper bytes, permissions, and selection state for a later retry.
 Byte-writer checks cover explicit permissions independent of contents, unchanged
 JSON formatting, helper execute-permission repair, and failed atomic replacement
 without leftover temporary files.

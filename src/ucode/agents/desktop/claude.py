@@ -185,9 +185,11 @@ def revert_claude_desktop(*, state_path: Path | str | None = None) -> RevertResu
     """Delete UG's reserved profile and registration, preserving unrelated profiles."""
 
     directory = claude_desktop_directory()
-    if directory is None or not directory.exists():
+    if directory is None:
         return RevertResult(profile_id=None, changed=False)
-    paths = _resolve_paths(state_path=state_path)
+    paths = _resolve_paths(state_path=state_path, initialize=False)
+    if not any(path.exists() for path in (paths.directory, paths.state, paths.otel_helper)):
+        return RevertResult(profile_id=None, changed=False)
     profile_path = paths.directory / f"{PROFILE_ID}.json"
     with desktop_config.locked(paths.lock):
         profile_before = desktop_config.read_optional_bytes(profile_path)
@@ -239,13 +241,13 @@ def _serialize_json(payload: Mapping[str, object] | None, before: bytes | None) 
     return json.dumps(payload, indent=2).encode("utf-8")
 
 
-def _resolve_paths(*, state_path: Path | str | None) -> _Paths:
+def _resolve_paths(*, state_path: Path | str | None, initialize: bool = True) -> _Paths:
     resolved_directory = claude_desktop_directory()
     if resolved_directory is None:
         raise ClaudeDesktopUnsupportedError(
             "Claude Desktop profile configuration is unavailable on this platform."
         )
-    if not resolved_directory.exists():
+    if initialize and not resolved_directory.exists():
         can_initialize = resolved_directory.parent.is_dir()
         if sys.platform == "darwin":
             can_initialize = _claude_desktop_installed()
@@ -261,7 +263,7 @@ def _resolve_paths(*, state_path: Path | str | None) -> _Paths:
             raise ClaudeDesktopUnavailableError(
                 f"Could not initialize Claude Desktop profile directory at {resolved_directory}."
             ) from exc
-    if not resolved_directory.is_dir():
+    if resolved_directory.exists() and not resolved_directory.is_dir():
         raise ClaudeDesktopUnavailableError(
             f"Claude Desktop profile path is not a directory: {resolved_directory}."
         )

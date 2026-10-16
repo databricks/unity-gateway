@@ -182,6 +182,67 @@ def test_otel_reconfigure_switch_disable_and_revert_preserve_other_profiles(desk
     assert json.loads(metadata_path.read_text()) == metadata
 
 
+@pytest.mark.parametrize("removed_directory", ["library", "app-root"])
+def test_otel_revert_cleans_helper_after_desktop_removal(desktop, tmp_path, removed_directory):
+    desktop_setup.configure_claude_desktop(
+        {
+            "workspace": "https://workspace.example",
+            "profile": "chosen-profile",
+            "claude_otel_tracing": True,
+        }
+    )
+    helper = Path(configured_profile(desktop)["otlpHeadersHelper"])
+    state = claude_desktop.APP_DIR / claude_desktop.STATE_FILENAME
+    original_directory = desktop if removed_directory == "library" else desktop.parent
+    removed = original_directory.rename(tmp_path / "removed-desktop")
+    before = {path: path.read_bytes() for path in removed.rglob("*.json")}
+
+    assert desktop_setup.revert_desktop() == "removed"
+
+    assert not helper.exists()
+    assert not state.exists()
+    assert not original_directory.exists()
+    assert {path: path.read_bytes() for path in removed.rglob("*.json")} == before
+    assert desktop_setup.revert_desktop() == "unchanged"
+    assert not original_directory.exists()
+
+
+@pytest.mark.parametrize("failed_file", ["helper", "state"])
+def test_otel_revert_after_desktop_removal_rolls_back(desktop, tmp_path, monkeypatch, failed_file):
+    desktop_setup.configure_claude_desktop(
+        {
+            "workspace": "https://workspace.example",
+            "profile": "chosen-profile",
+            "claude_otel_tracing": True,
+        }
+    )
+    helper = Path(configured_profile(desktop)["otlpHeadersHelper"])
+    state = claude_desktop.APP_DIR / claude_desktop.STATE_FILENAME
+    targets = {"helper": helper, "state": state}
+    before = {path: path.read_bytes() for path in targets.values()}
+    modes = {path: stat.S_IMODE(path.stat().st_mode) for path in targets.values()}
+    desktop.rename(tmp_path / "removed-desktop")
+    write = desktop_config._write_or_remove
+
+    def fail_removal(path, contents, *, mode):
+        if path == targets[failed_file] and contents is None:
+            raise OSError("simulated removal failure")
+        write(path, contents, mode=mode)
+
+    monkeypatch.setattr(desktop_config, "_write_or_remove", fail_removal)
+
+    assert desktop_setup.revert_desktop() == "failed"
+
+    assert {path: path.read_bytes() for path in targets.values()} == before
+    assert {path: stat.S_IMODE(path.stat().st_mode) for path in targets.values()} == modes
+    assert not desktop.exists()
+    monkeypatch.setattr(desktop_config, "_write_or_remove", write)
+    assert desktop_setup.revert_desktop() == "removed"
+    assert not helper.exists()
+    assert not state.exists()
+    assert not desktop.exists()
+
+
 @pytest.mark.parametrize("failed_file", ["helper", "profile", "metadata", "state"])
 @pytest.mark.parametrize("operation", ["enable", "switch", "disable", "revert"])
 def test_otel_write_failure_rolls_back_existing_profile(

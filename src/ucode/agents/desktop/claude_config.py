@@ -109,9 +109,15 @@ def render_otel_helper(command: Sequence[str], *, windows: bool) -> str:
         return f"#!/bin/sh\nexec {shlex.join(command)}\n"
     if any(character in argument for argument in command for character in '"\r\n\0'):
         raise ClaudeDesktopError("Claude Desktop OTEL helper arguments contain invalid characters.")
-    # Quote every argument for cmd.exe, including metacharacters without spaces.
-    quoted = " ".join('"' + argument.replace("%", "%%") + '"' for argument in command)
-    return f"@echo off\r\nsetlocal DisableDelayedExpansion\r\n{quoted}\r\n"
+    # cmd.exe needs every arg quoted; the child parser needs trailing backslashes doubled.
+    quoted = " ".join(
+        '"'
+        + argument.replace("%", "%%")
+        + "\\" * (len(argument) - len(argument.rstrip("\\")))
+        + '"'
+        for argument in command
+    )
+    return f"@echo off\r\nsetlocal DisableDelayedExpansion\r\nchcp 65001 >nul\r\n{quoted}\r\n"
 
 
 @contextmanager
@@ -215,9 +221,12 @@ def write_configuration(
     written: list[tuple[Path, bytes | None, int]] = []
     try:
         for path, before, after, mode in changes:
-            if before == after and (
-                after is None or not mode & stat.S_IXUSR or original_modes[path] & stat.S_IXUSR
-            ):
+            needs_exec_bit = (
+                after is not None
+                and mode & stat.S_IXUSR
+                and not original_modes.get(path, mode) & stat.S_IXUSR
+            )
+            if before == after and not needs_exec_bit:
                 continue
             written.append((path, before, original_modes.get(path, mode)))
             _write_or_remove(path, after, mode=mode)
