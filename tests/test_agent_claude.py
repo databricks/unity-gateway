@@ -161,6 +161,20 @@ class TestRenderOverlay:
             "system.ai.claude-haiku-4-5": "Claude Haiku 4.5",
         }
 
+    @pytest.mark.parametrize(
+        ("family", "model"),
+        [("opus", "system.ai.claude-opus-4-8"), ("sonnet", "system.ai.gpt-5-6-sol")],
+    )
+    def test_default_model_picker_catalog_lists_family_default_once(self, family, model):
+        catalog = claude.default_model_picker_catalog(
+            {family: model},
+            discovered_catalog=db_mod.AnthropicModelCatalog(
+                model_ids=[model], model_id_to_display_name={}
+            ),
+        )
+
+        assert catalog.model_ids == [f"{model}[1m]"]
+
     def test_mps_picker_renders_default_shortcuts_before_catalog_rows(self):
         provider = "main.default.anthropic-mps"
         sonnet = "anthropic.claude-sonnet-4-6"

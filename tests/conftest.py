@@ -29,6 +29,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     it can never touch the developer's real ~/.ucode/state.json or invoke the
     privileged writer for an OS-managed agent config.
     """
+    import ucode.cli as cli_mod
     import ucode.config_io as config_io_mod
     import ucode.databricks as databricks_mod
     import ucode.managed_config as managed_config_mod
@@ -64,6 +65,13 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(managed_files_mod, "_sudo_replace", reject_privileged_write)
+
+    def reject_real_token(*_args, **_kwargs):
+        raise RuntimeError("test reached the real Databricks token helper; patch it")
+
+    # A plain Claude launch lists the gateway catalog; an unpatched token fetch would shell out to
+    # the real `databricks auth token`. The launch treats this failure as "no catalog".
+    monkeypatch.setattr(cli_mod, "get_databricks_token", reject_real_token)
     monkeypatch.delenv("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", raising=False)
     monkeypatch.delenv("UCODE_SESSION_ENV_FILE", raising=False)

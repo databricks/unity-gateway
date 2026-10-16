@@ -3228,6 +3228,26 @@ def _launch_tool(
                 resolved_model = model
         if model and tool == "claude" and not provider:
             route_root_model = None
+        # Claude Code's own discovery rows lack the `[1m]` hint: they run at 200K and don't match
+        # a `[1m]` launch model, so plain launches list the gateway's models themselves.
+        gateway_catalog = (
+            tool == "claude" and managed is None and not provider and not parent_schema
+        )
+        if gateway_catalog:
+            try:
+                discovered = list_anthropic_model_catalog(
+                    state["workspace"],
+                    get_databricks_token(state["workspace"], state.get("profile")),
+                )
+            except Exception:  # noqa: BLE001 - Claude Code's own discovery remains the fallback
+                discovered = None
+            gateway_catalog = bool(discovered and discovered.model_ids)
+            if gateway_catalog:
+                picker_catalog = claude_agent.default_model_picker_catalog(
+                    state.get("claude_models") or {},
+                    launch_model=model or forwarded_model,
+                    discovered_catalog=discovered,
+                )
         if coding_agent_config_defaults and not state.get("claude_static_models") and not relayed:
             picker_catalog = claude_agent.default_model_picker_catalog(
                 coding_agent_config_defaults,
@@ -3248,7 +3268,8 @@ def _launch_tool(
             coding_agent_config_defaults=coding_agent_config_defaults,
             parent_schema=parent_schema,
         )
-        if picker_catalog and picker_catalog.model_ids:
+        # A plain launch keeps Claude Code's own starting model, as its own picker did.
+        if picker_catalog and picker_catalog.model_ids and not gateway_catalog:
             # Claude re-adds an out-of-catalog saved model to /model even when built-ins are
             # replaced. Keep the catalog launch-scoped and leave the user's settings alone.
             state["_claude_launch_picker_models"] = picker_catalog.model_ids
