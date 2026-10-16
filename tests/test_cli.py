@@ -905,6 +905,51 @@ class TestSubcommandRouting:
         assert calls["configure"].call_args.kwargs["relayed"] is True
         assert "_claude_launch_default_model" not in calls["launch"].call_args.args[1]
 
+    def test_claude_launch_uses_saved_model_location(self):
+        with _launch_policy_patches(None) as calls:
+            calls["state"]["model_locations"] = {"claude": "main.saved"}
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        calls["list_catalog"].assert_called_once_with(
+            calls["state"]["workspace"], "token", parent_schema="main.saved"
+        )
+        assert calls["configure"].call_args.kwargs["parent_schema"] == "main.saved"
+
+    def test_explicit_model_location_overrides_saved_location(self):
+        with _launch_policy_patches(None) as calls:
+            calls["state"]["model_locations"] = {"claude": "main.saved"}
+            result = runner.invoke(app, ["claude", "--model-location", "main.flag"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["configure"].call_args.kwargs["parent_schema"] == "main.flag"
+
+    def test_explicit_provider_overrides_saved_location(self):
+        with _launch_policy_patches(None) as calls:
+            calls["state"]["model_locations"] = {"claude": "main.saved"}
+            result = runner.invoke(app, ["claude", "--provider", "main.default.anthropic"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["configure"].call_args.kwargs["parent_schema"] is None
+        assert calls["configure"].call_args.kwargs["provider"] == "main.default.anthropic"
+
+    def test_explicit_model_location_overrides_saved_provider(self):
+        with _launch_policy_patches(None, persisted_provider="main.default.anthropic") as calls:
+            result = runner.invoke(app, ["claude", "--model-location", "main.flag"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["configure"].call_args.kwargs["parent_schema"] == "main.flag"
+        assert calls["configure"].call_args.kwargs["provider"] is None
+
+    def test_saved_model_location_is_ignored_under_managed_config(self):
+        managed = {"enabled_agents": {"claude": {"model_config": {}}}}
+        with _launch_policy_patches(managed) as calls:
+            calls["state"]["model_locations"] = {"claude": "main.saved"}
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["configure"].call_args.kwargs["parent_schema"] is None
+
     def test_codex_model_location_is_forwarded(self):
         with patch("ucode.cli._launch_tool") as mock_launch:
             result = runner.invoke(app, ["codex", "--model-location", "main.default"])
@@ -4058,6 +4103,100 @@ class TestConfigureAgentsSelection:
         assert cli_mod.configure_workspace_command(selected_tools=["claude", "codex"]) == 0
         assert install_calls == ["claude", "codex"]
         assert configured == [["claude", "codex"]]
+
+    def _picker(self, monkeypatch, tool, *, services, answers, text=("main.models",)):
+        state = {**MINIMAL_STATE, "provider_services": {tool: "old.mps.name"}}
+        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *a: "token")
+        monkeypatch.setattr(cli_mod, "list_tool_provider_services", lambda *a: services)
+        saved: list[dict] = []
+        monkeypatch.setattr(cli_mod, "save_state", lambda s: saved.append(dict(s)))
+        asked: list[list[str]] = []
+        replies = iter(answers)
+
+        def _select(prompt, options):
+            asked.append([value for value, _ in options])
+            return next(replies)
+
+        monkeypatch.setattr(cli_mod, "prompt_for_selection", _select)
+        texts = iter(text)
+        monkeypatch.setattr(cli_mod, "prompt_for_text", lambda *a, **k: next(texts))
+        return state, saved, asked
+
+    def test_picker_saves_custom_model_location_and_clears_provider(self, monkeypatch):
+        state, saved, asked = self._picker(
+            monkeypatch, "claude", services=(["a.b.mps"], None), answers=["location"]
+        )
+
+        result = cli_mod._maybe_select_provider_service("claude", state)
+
+        assert asked == [["databricks", "mps", "location"]]
+        assert cli_mod.get_model_location(result, "claude") == "main.models"
+        assert cli_mod.get_provider_service(result, "claude") is None
+        assert saved
+
+    def test_picker_offers_location_when_provider_feature_unavailable(self, monkeypatch):
+        state, _saved, asked = self._picker(
+            monkeypatch,
+            "codex",
+            services=([], "model provider services are not enabled"),
+            answers=["location"],
+        )
+        monkeypatch.setattr(cli_mod, "is_model_provider_feature_unavailable", lambda r: True)
+
+        result = cli_mod._maybe_select_provider_service("codex", state)
+
+        assert asked == [["databricks", "location"]]
+        assert cli_mod.get_model_location(result, "codex") == "main.models"
+
+    def test_picker_reprompts_until_location_is_valid(self, monkeypatch):
+        state, _saved, _asked = self._picker(
+            monkeypatch,
+            "claude",
+            services=(["a.b.mps"], None),
+            answers=["location"],
+            text=("not-a-schema", "a.b.c", "main.models"),
+        )
+
+        result = cli_mod._maybe_select_provider_service("claude", state)
+
+        assert cli_mod.get_model_location(result, "claude") == "main.models"
+
+    def test_picker_cancelled_location_prompt_exits_without_saving(self, monkeypatch):
+        state, saved, _asked = self._picker(
+            monkeypatch, "claude", services=(["a.b.mps"], None), answers=["location"]
+        )
+        monkeypatch.setattr(cli_mod, "prompt_for_text", lambda *a, **k: None)
+
+        with pytest.raises(KeyboardInterrupt):
+            cli_mod._maybe_select_provider_service("claude", state)
+
+        assert saved == []
+
+    def test_picker_databricks_and_mps_clear_saved_location(self, monkeypatch):
+        state, _saved, _asked = self._picker(
+            monkeypatch, "claude", services=(["a.b.mps"], None), answers=["databricks"]
+        )
+        state["model_locations"] = {"claude": "main.old"}
+        result = cli_mod._maybe_select_provider_service("claude", state)
+        assert cli_mod.get_model_location(result, "claude") is None
+        assert cli_mod.get_provider_service(result, "claude") is None
+
+        state, _saved, _asked = self._picker(
+            monkeypatch, "claude", services=(["a.b.mps"], None), answers=["mps", "a.b.mps"]
+        )
+        state["model_locations"] = {"claude": "main.old"}
+        result = cli_mod._maybe_select_provider_service("claude", state)
+        assert cli_mod.get_model_location(result, "claude") is None
+        assert cli_mod.get_provider_service(result, "claude") == "a.b.mps"
+
+    def test_picker_gemini_has_no_custom_location(self, monkeypatch):
+        state, _saved, asked = self._picker(
+            monkeypatch, "gemini", services=(["a.b.g"], None), answers=["databricks"]
+        )
+
+        cli_mod._maybe_select_provider_service("gemini", state)
+
+        assert asked == [["databricks", "mps"]]
 
     def test_provider_picker_gated_by_interactive_path(self, monkeypatch):
         import ucode.cli as cli_mod

@@ -11,7 +11,7 @@ description: >-
 model: inherit
 argument-hint: "[task]"
 metadata:
-  version: "1.3.0"
+  version: "1.4.0"
 
 ---
 
@@ -52,27 +52,30 @@ before using a different role map.
 
 ## Delegation gate
 
-Choose ownership from the unresolved work before investigating it. A connected
-investigation, including its dependent questions, can itself be one complete
-owner assignment; it need not contain a separate parallel branch. Having the
-necessary context means already having decisive evidence for the caller's
-requirements, not merely knowing the vocabulary, file names, or entrypoints.
-Finish in the root when retained evidence and a bounded check suffice, or when
-briefing and acceptance would repeat the work. Otherwise compare complete
-child ownership plus acceptance with acquiring and checking all that evidence
-in the root. Delegate when that assignment replaces enough root work to justify
-its execution and acceptance; name the displaced work and keep it with its owner.
-Broad scope, many files, or a cheaper model alone is insufficient. Natural
-zero-child outcomes remain valid, and explicit no-delegation requests take
-precedence.
+Choose ownership before gathering source evidence. When the caller's request
+needs investigation, implementation, debugging, or verification beyond the
+facts already in context and a bounded lookup, assign that complete outcome to
+a native owner first. A connected investigation is one complete assignment,
+even when it has no independent parallel branch. Knowing the topic, filenames,
+or entrypoints is not having the evidence needed to answer. Do not investigate
+the request in the parent in order to decide whether to delegate it.
 
-Choose the execution path after the gate settles. Do not split by numbered questions,
-files, or languages alone, and do not reserve a connected branch merely to keep
-the parent busy. Launch ready independent assignments together. Keep required
-independent checks, but do not add an automatic reviewer or manager stage.
-If spawning is unavailable or prohibited, continue locally within the caller's
-instructions. Reuse complete instructions already received; recover only missing
-or truncated portions instead of rereading them as a setup ritual.
+Finish directly when retained evidence already supports the answer, a bounded
+lookup completes a small request, or delegation is prohibited or unavailable.
+Do not force a child for these cases. Follow explicit caller ownership choices.
+For delegated work, the owner acquires the evidence and produces the requested
+answer or change, including its checks. The parent owns acceptance and
+cross-owner decisions; it does not retain a duplicate investigation.
+
+Use one owner for a connected outcome. Add independent owners only when the
+caller requires independent checks or when their non-overlapping outputs are
+needed to complete the request. Do not split by numbered questions, languages,
+or files alone. Launch ready independent assignments together. While an owner
+works, perform only distinct necessary work; when none exists, wait for the
+owner instead of repeating its searches or creating an extra reviewer.
+
+Reuse complete instructions already received. Recover only missing or
+truncated portions instead of rereading them as a setup ritual.
 
 | Role | Scope | Claude default |
 | --- | --- | --- |
@@ -189,16 +192,24 @@ takes precedence; report conflicts without clearing it.
 
 ## Integrate and verify
 
-Parent acceptance is the default review. Add a reviewer only for a distinct risk,
-an explicit request, or a required independent check, not as an automatic stage.
-Inspect actual changes and verify important claims against cited evidence and the
-caller contract; a completion message alone is not proof. Reopen a named gap,
-contradiction, changed input, or required check from the smallest useful source
-window instead of repeating broad discovery. Preserve substantive correctness
-checks, conditions, exceptions, limitations, citations, and requested presentation.
+Accept against the caller's requirements using the owner's complete answer,
+cited evidence, and check results. A completion claim without this evidence is
+insufficient. Inspect the actual diff for edit tasks. For research, check
+coverage and whether the supplied evidence supports the important claims.
+Perform a focused independent source check when a concrete unsupported claim,
+contradiction, changed input, or required validation calls for it; do not repeat
+the owner's discovery to manufacture a second copy of the evidence.
 
-Integrate the owner's draft and narrow amendments without restarting the
-investigation or regenerating the full narrative. Deliver the complete answer;
+Return a missing requirement or correction to the same available owner with
+the exact gap and needed evidence. Let it make the amendment. Take over from
+its existing evidence if the owner is unavailable; do not let an unavailable
+owner leave the caller blocked. Preserve qualifications and unresolved facts.
+Do not add a reviewer unless the caller or a distinct risk requires one.
+
+Use the owner's answer-shaped draft as the final answer's base. Preserve its
+supported details, citations, conditions, and requested presentation. Edit
+only what acceptance or integration requires; do not regenerate an already
+complete narrative in the parent. Deliver the complete answer;
 if blocked, report completed coverage and explicit partial status. Resolve
 conflicts and findings before handoff. Account for every required
 child; a launch or success-shaped summary alone is not completion. For empty or
