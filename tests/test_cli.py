@@ -23,6 +23,7 @@ from typer.testing import CliRunner
 
 import ucode.cli as cli_mod
 import ucode.databricks as db_mod
+import ucode.managed_files as managed_files
 from ucode.cli import app
 from ucode.databricks import GatewayProbe
 from ucode.managed_config import ManagedConfigResult, normalize_managed_config
@@ -64,6 +65,19 @@ def no_state_writes():
         patch("ucode.agents.opencode.save_state"),
     ):
         yield
+
+
+@pytest.fixture(autouse=True)
+def no_gateway_catalog_fetch(monkeypatch):
+    """Keep plain Claude launches off real auth and the network; an empty catalog falls back."""
+    monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *_args, **_kwargs: "token")
+    monkeypatch.setattr(
+        cli_mod,
+        "list_anthropic_model_catalog",
+        lambda *_args, **_kwargs: db_mod.AnthropicModelCatalog(
+            model_ids=[], model_id_to_display_name={}
+        ),
+    )
 
 
 MINIMAL_STATE = {
@@ -773,9 +787,8 @@ class TestSubcommandRouting:
         assert "Model: system.ai.gpt-5-6-luna" not in output
         assert mock_launch.call_args.args[2] == forwarded_args
 
-    @pytest.mark.parametrize("persisted_provider", [None, "main.default.anthropic"])
-    def test_unmanaged_claude_launch_keeps_native_defaults(self, persisted_provider):
-        with _launch_policy_patches(None, persisted_provider=persisted_provider) as calls:
+    def test_unmanaged_claude_launch_with_saved_provider_keeps_native_defaults(self):
+        with _launch_policy_patches(None, persisted_provider="main.default.anthropic") as calls:
             result = runner.invoke(app, ["claude"])
 
         assert result.exit_code == 0, result.output
@@ -784,10 +797,35 @@ class TestSubcommandRouting:
         assert calls["configure"].call_args.kwargs["picker_catalog"] is None
         assert "_claude_launch_picker_models" not in calls["launch"].call_args.args[1]
         assert "_claude_launch_default_model" not in calls["launch"].call_args.args[1]
-        if persisted_provider:
-            calls["resolve_model"].assert_not_called()
-        else:
-            calls["resolve_model"].assert_called_once()
+        calls["resolve_model"].assert_not_called()
+        calls["launch"].assert_called_once()
+
+    def test_unmanaged_claude_launch_lists_gateway_catalog(self):
+        with _launch_policy_patches(None) as calls:
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
+        calls["list_catalog"].assert_called_once_with("https://example.databricks.com", "token")
+        picker = calls["configure"].call_args.kwargs["picker_catalog"]
+        # The saved family default leads; discovered models follow.
+        assert picker.model_ids == ["databricks-claude-sonnet-4", "main.default.claude-sonnet-5"]
+        launch_state = calls["launch"].call_args.args[1]
+        assert "_claude_launch_picker_models" not in launch_state
+        assert "_claude_launch_default_model" not in launch_state
+        calls["resolve_model"].assert_called_once()
+
+    def test_unmanaged_claude_launch_falls_back_to_native_discovery(self):
+        with _launch_policy_patches(None) as calls:
+            calls["list_catalog"].return_value = db_mod.AnthropicModelCatalog(
+                model_ids=[], model_id_to_display_name={}, error_msg="HTTP 503"
+            )
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
+        assert calls["configure"].call_args.kwargs["picker_catalog"] is None
+        assert "_claude_launch_picker_models" not in calls["launch"].call_args.args[1]
         calls["launch"].assert_called_once()
 
     def test_claude_model_location_replaces_builtin_models(self):
@@ -1613,10 +1651,16 @@ class TestClaudeModelFlag:
             == "system.ai.claude-opus-4-8"
         )
 
-    @pytest.mark.parametrize("model", ["system.ai.claude-sonnet-4-5", "system.ai.gpt-5-6-luna"])
+    @pytest.mark.parametrize(
+        ("model", "expected_model"),
+        [
+            ("system.ai.claude-sonnet-4-5", "system.ai.claude-sonnet-4-5"),
+            ("system.ai.gpt-5-6-luna", "system.ai.gpt-5-6-luna[1m]"),
+        ],
+    )
     @pytest.mark.parametrize("equals_form", [False, True], ids=["separate", "equals"])
     def test_unmanaged_claude_model_reaches_native_launcher(
-        self, monkeypatch, tmp_path, model, equals_form
+        self, monkeypatch, tmp_path, model, expected_model, equals_form
     ):
         """No workspace policy/catalog: explicit IDs reach native --model, not opus aliases."""
         from ucode.agents import claude
@@ -1649,11 +1693,10 @@ class TestClaudeModelFlag:
         assert "_claude_launch_picker_models" not in calls["launch"].call_args.args[1]
         assert "claude_static_models" not in calls["launch"].call_args.args[1]
         assert calls["configure"].call_args.kwargs["custom_model"] is None
-        calls["list_catalog"].assert_not_called()
         assert len(native_calls) == 1
-        assert native_calls[0][3:] == ["--model", model]
+        assert native_calls[0][3:] == ["--model", expected_model]
         settings = json.loads(native_calls[0][2])
-        assert settings["env"]["ANTHROPIC_MODEL"] == model
+        assert settings["env"]["ANTHROPIC_MODEL"] == expected_model
         for key, value in original_settings["env"].items():
             assert settings["env"][key] == value
         assert json.loads(settings_path.read_text()) == original_settings
@@ -6414,3 +6457,58 @@ class TestChildStdoutLaunch:
         captured = capfd.readouterr()
         assert captured.out == '{"result":"child output"}\n'
         assert "Gateway status" in captured.err
+
+
+class TestLaunchWithManagedFilePicker:
+    PICKER_MODELS = {"opus": "system.ai.claude-opus-5-5", "haiku": "system.ai.claude-haiku-4-5"}
+
+    @contextlib.contextmanager
+    def _managed_file_picker(self, monkeypatch):
+        settings = {
+            "modelPicker": {"options": [{"model": "system.ai.claude-opus-5-5"}]},
+            "env": {
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": "system.ai.claude-opus-5-5[1m]",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL": "system.ai.claude-haiku-4-5",
+            },
+        }
+        monkeypatch.delenv(managed_files.SKIP_OS_SETTINGS_ENV, raising=False)
+        with (
+            patch(
+                "ucode.agents.claude._managed_settings_path",
+                return_value=Path("/managed-settings.json"),
+            ),
+            patch("ucode.agents.claude.read_managed_file", return_value=json.dumps(settings)),
+        ):
+            yield
+
+    def test_launch_uses_the_picker_owners_models(self, monkeypatch):
+        monkeypatch.delenv("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY", raising=False)
+        discovered = {"opus": "system.ai.claude-opus-5-5", "fable": "system.ai.claude-fable-5-1"}
+        with self._managed_file_picker(monkeypatch), _launch_policy_patches(None) as calls:
+            calls["state"]["claude_models"] = dict(discovered)
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["shared"].call_args.kwargs["skip_model_discovery"] is True
+        launch_state = calls["configure"].call_args.args[1]
+        assert launch_state["claude_models"] == self.PICKER_MODELS
+        # The picker's models are launch-only; state.json keeps the discovered cache.
+        from ucode import state as state_mod
+
+        assert state_mod._without_managed_overlay(launch_state)["claude_models"] == discovered
+
+    @pytest.mark.parametrize(
+        "args",
+        [["--provider", "bedrock"], ["--model-location", "main.default"]],
+        ids=["provider", "model-location"],
+    )
+    def test_launch_source_ignores_the_picker(self, monkeypatch, args):
+        monkeypatch.delenv("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY", raising=False)
+        discovered = {"opus": "system.ai.claude-opus-5-5", "fable": "system.ai.claude-fable-5-1"}
+        with self._managed_file_picker(monkeypatch), _launch_policy_patches(None) as calls:
+            calls["state"]["claude_models"] = dict(discovered)
+            result = runner.invoke(app, ["claude", *args])
+
+        assert result.exit_code == 0, result.output
+        # The launch's own source supplies the models, so the picker neither seeds nor skips.
+        assert calls["configure"].call_args.args[1]["claude_models"] == discovered

@@ -604,6 +604,7 @@ class TestSubagentRouting:
                 "anthropic-aigw-73ea02b-system.ai.glm-5-2",
             ),
             ("system.ai.claude-opus-4-8", "claude-opus-4-8"),
+            ("system.ai.gpt-5-6-sol[1m]", "gpt-5-6-sol"),
         ],
     )
     def test_normalizes_router_model_id(self, model, expected):
@@ -754,7 +755,7 @@ class TestSubagentRouting:
 
     def test_writes_routed_agents_as_launch_scoped_plugin(self, tmp_path):
         plugin_dir = tmp_path / "routing-plugin"
-        models = ["databricks-claude-opus-4-8", "system.ai.glm-5-3"]
+        models = ["databricks-claude-opus-4-8", "system.ai.glm-5-3", "system.ai.gpt-5-6-sol"]
 
         v2._write_routed_claude_plugin(plugin_dir, models)
 
@@ -763,6 +764,7 @@ class TestSubagentRouting:
         assert _plugin_agent_models(plugin_dir) == {
             "system.ai.claude-opus-4-8",
             "system.ai.glm-5-3",
+            "system.ai.gpt-5-6-sol[1m]",
         }
         for model in models:
             slug = v2._routed_claude_agent_slug(model)
