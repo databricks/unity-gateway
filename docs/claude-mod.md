@@ -44,21 +44,27 @@ that file atomically. Session start restores only the launch baseline, so an ove
 before `/clear` still survives it. The plugin test host provides no process capability, so
 this path is covered by the live skill-toggle journey rather than `claude plugin test`.
 
-After a successful on-to-off change, Isaac sessions with
-`ISAAC_SMART_ROUTER_FEEDBACK=1` and an available `/isaac-feedback` command
-show an optional reason form once per session. Isaac sets this flag from its
+Before each on-to-off change, Isaac sessions with
+`ISAAC_SMART_ROUTER_FEEDBACK=1` require a reason of at least 16 characters after
+trimming surrounding whitespace. Isaac sets this flag from its
 rollout setting or the user's explicit `1`/`0` override. It controls Isaac feedback
 availability, so UG's routing presets and on/off toggles leave it unchanged.
-Enter sends the reason through
-`/isaac-feedback --category smart-routing`; Skip or Escape sends nothing.
-The form makes no model requests. Only submitting invokes the feedback command.
-Command discovery, UI and submission failures leave routing off. The CLI/skill
-path, including Codex, prints an optional command invitation after disabling.
+The native form keeps routing on until Enter accepts a valid reason, then disables
+routing and sends the exact text through `/isaac-feedback --category smart-routing`.
+Cancel or Escape leaves routing on and sends nothing. Missing commands or an
+unavailable form leave routing on. A feedback submission failure after a valid
+reason leaves routing off and reports the failure. Opening or dismissing the form
+makes no model requests; only submitting invokes the feedback command.
+
+The CLI/skill path, including Codex, enforces the same minimum through the session
+toggle's `--smart-router-feedback` argument. The skill asks for the reason before
+retrying the toggle and submits it through `/isaac-feedback` on success. The CLI
+validates the reason; the skill or native form owns submission.
 
 The native component suite exercises the registered toggle and form handlers
 with engine boundaries replaced where Claude 2.1.290's test host lacks APIs.
-It checks the off-before-prompt ordering, submission, dismissal, repeated
-toggles and failures. These checks do not establish a live evidence upload.
+It checks validation before disabling, exact reason submission, cancellation,
+repeated toggles and failures. These checks do not establish a live evidence upload.
 
 The existing Claude skill-toggle integration journey checks recorded inference
 payloads during its three calculation phases: launch recipe, `DISABLED` after off,

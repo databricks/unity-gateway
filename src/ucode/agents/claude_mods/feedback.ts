@@ -2,7 +2,11 @@ import type { On } from 'claude-code';
 
 export const FEEDBACK_PANE = 'smart-router-feedback';
 
-type FeedbackState = { offered: boolean; submitted: boolean; reason: string };
+export type FeedbackState = {
+  submitted: boolean;
+  reason: string;
+  disableRouting?: (reason: string) => Promise<void>;
+};
 
 export function registerFeedback(on: On, state: FeedbackState): void {
   on('ui.render', { component: 'Pane' }, ($, e, next) => {
@@ -11,27 +15,38 @@ export function registerFeedback(on: On, state: FeedbackState): void {
     return Box({
       flexDirection: 'column',
       children: [
-        Text({ children: ['Why are you turning Smart Router off? (optional)'] }),
-        Text({ children: ['Send your reason and available session evidence with /isaac-feedback.'] }),
+        Text({ children: ['Why are you turning Smart Router off?'] }),
+        Text({ children: ['Enter at least 16 characters. Your reason and session evidence go to /isaac-feedback.'] }),
         Input({
           key: 'reason',
           label: 'Reason',
           value: state.reason,
           autoFocus: true,
-          submitLabel: 'Send feedback',
+          submitLabel: 'Send feedback and turn off',
           onInput: (value) => { state.reason = value; },
           onSubmit: async (value) => {
-            if (state.submitted || !value.trim()) return;
+            if (state.submitted || !state.disableRouting) return;
+            if (Array.from(value.trim()).length < 16) {
+              $.ui.toast('Enter at least 16 characters, excluding surrounding whitespace.');
+              return;
+            }
             state.submitted = true;
+            try {
+              await state.disableRouting(value);
+            } catch {
+              state.submitted = false;
+              $.ui.toast('Could not update Smart Router. Smart Router is still on; retry or restart through UG.');
+              return;
+            }
             try {
               await $.ui.close({ id: FEEDBACK_PANE });
               await $.command.run({ command: 'isaac-feedback', args: `--category smart-routing ${value}` });
             } catch {
-              $.ui.toast('Could not open /isaac-feedback. Smart Router is still off.');
+              $.ui.toast('Smart Router is off, but feedback could not open. Retry with /isaac-feedback --category smart-routing.');
             }
           },
         }),
-        Button({ key: 'skip', label: 'Skip', onPress: () => $.ui.close({ id: FEEDBACK_PANE }) }),
+        Button({ key: 'cancel', label: 'Cancel (keep routing on)', onPress: () => $.ui.close({ id: FEEDBACK_PANE }) }),
       ],
     });
   });
