@@ -429,7 +429,8 @@ def write_decision_record(
             "router_name": decision.router_name,
             # Persisted for diagnosis: an empty value means the gateway returned
             # no rationale (vs. a placement bug in how we surface it).
-            "rationale": decision.raw_rationale
+            "rationale": decision.rationale,
+            "raw_rationale": decision.raw_rationale
             if decision.raw_rationale is not None
             else decision.rationale,
             "at": time.time(),
