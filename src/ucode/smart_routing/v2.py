@@ -307,8 +307,6 @@ def _claude_model_overrides(model_ids: list[str]) -> dict[str, str]:
     overrides: dict[str, str] = {}
     prefix = "system.ai."
     for model in _canonical_claude_models(model_ids):
-        # Picker rows can carry Claude Code's `[1m]` hint; override keys must be model ids.
-        model = model.removesuffix("[1m]")
         if model.startswith(f"{prefix}claude-"):
             overrides[model[len(prefix) :]] = model
     return overrides

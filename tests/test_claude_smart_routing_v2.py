@@ -783,13 +783,11 @@ class TestSubagentRouting:
             [
                 "system.ai.claude-opus-4-8",
                 "databricks-claude-sonnet-5",
-                "system.ai.claude-sonnet-4-6[1m]",
                 "catalog.schema.gpt-5",
             ]
         ) == {
             "claude-opus-4-8": "system.ai.claude-opus-4-8",
             "claude-sonnet-5": "system.ai.claude-sonnet-5",
-            "claude-sonnet-4-6": "system.ai.claude-sonnet-4-6",
         }
 
     def test_model_switch_lock_serializes_routed_sessions(self, tmp_path, monkeypatch):

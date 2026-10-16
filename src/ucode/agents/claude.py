@@ -687,8 +687,7 @@ def default_model_picker_catalog(
 
     if discovered_catalog is not None:
         for model in discovered_catalog.model_ids:
-            # A family default is already listed with the `[1m]` hint the picker gives this row.
-            if model not in model_ids and _maybe_add_1m_suffix(model) not in model_ids:
+            if model not in model_ids:
                 model_ids.append(model)
             if label := discovered_catalog.model_id_to_display_name.get(model):
                 display_names[model] = label
