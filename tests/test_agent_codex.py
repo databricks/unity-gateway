@@ -190,6 +190,14 @@ class TestRenderOverlay:
         headers = overlay["model_providers"]["Databricks"]["http_headers"]
         assert "Databricks-Ai-Gateway-Request-Tags" not in headers
 
+    def test_ug_headers_follow_env(self, monkeypatch):
+        monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: testenv://liteswap/abc")
+        headers = codex.render_overlay(WS)["model_providers"]["Databricks"]["http_headers"]
+        assert headers["x-databricks-traffic-id"] == "testenv://liteswap/abc"
+        monkeypatch.delenv("UG_HEADERS")
+        headers = codex.render_overlay(WS)["model_providers"]["Databricks"]["http_headers"]
+        assert "x-databricks-traffic-id" not in headers
+
     def test_parent_adds_discovery_header(self):
         overlay = codex.render_overlay(WS, parent_schema="main.default")
         headers = overlay["model_providers"]["Databricks"]["http_headers"]
@@ -1668,6 +1676,22 @@ class TestCodexManagedConfig:
         assert "model" not in doc
         assert "Databricks" in doc["model_providers"]
         assert read_toml_safe(config_path)["model_provider"] == "Databricks"
+
+    def test_ug_headers_stay_out_of_managed_config(self, tmp_path, monkeypatch):
+        # The machine-wide file is written as without `ug --header`, even when one overrides a
+        # header of ug's own.
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+        state = {"workspace": WS, "codex_models": ["gpt-5"]}
+        codex.write_tool_config(state)
+        managed = read_toml_safe(managed_path).unwrap()
+
+        monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: abc\nUser-Agent: probe")
+        codex.write_tool_config(state)
+
+        assert read_toml_safe(managed_path).unwrap() == managed
+        headers = read_toml_safe(config_path)["model_providers"]["Databricks"]["http_headers"]
+        assert headers["x-databricks-traffic-id"] == "abc"
+        assert headers["User-Agent"] == "probe"
 
     def test_skip_env_bypasses_managed_config(self, tmp_path, monkeypatch):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)

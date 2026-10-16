@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ucode.ug_headers import ug_headers
+
 ROUTER_NAME = "task_v3"
 ROUTER_NAME_ENV_VAR = "SMART_ROUTER_NAME"
 ROUTING_PATH = "/ai-gateway/routing/v1/routes:select"
@@ -232,6 +234,7 @@ def select_route(
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
+            **ug_headers(),
         },
         method="POST",
     )

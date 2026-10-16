@@ -13,7 +13,7 @@ import subprocess
 import sys
 import threading
 import traceback
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Sequence
 from pathlib import Path
 
 from ucode.config_io import (
@@ -98,8 +98,15 @@ from ucode.smart_routing.claude_hooks import (
     remove_smart_routing_hooks,
     sync_smart_routing_hooks,
 )
-from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
+from ucode.state import (
+    MANAGED_OVERLAY_KEY,
+    is_tool_managed,
+    load_full_state,
+    mark_tool_managed,
+    save_state,
+)
 from ucode.telemetry import agent_version, ug_version
+from ucode.ug_headers import ug_headers
 from ucode.ui import print_note, print_success, print_warning
 
 from .args import LaunchOptions, has_explicit_model_arg
@@ -1430,6 +1437,34 @@ def write_tool_config(
         if path not in managed_file_keys:
             managed_file_keys.append(path)
 
+    # Remember the `ug --header` names written, so a later launch without them removes them.
+    header_names = sorted(name.casefold() for name in ug_headers())
+    # The settings file is shared by every workspace, so also own names saved under other ones.
+    owned_header_names = {
+        *header_names,
+        *(state.get("claude_header_names") or []),
+        *(
+            name
+            for ws_state in load_full_state()["workspaces"].values()
+            for name in ws_state.get("claude_header_names") or []
+        ),
+    }
+    if header_names:
+        state["claude_header_names"] = header_names
+    else:
+        state.pop("claude_header_names", None)
+    # Only ug's own file gets `ug --header` lines. Claude takes ANTHROPIC_CUSTOM_HEADERS from the
+    # OS-managed file whole whenever it sets one, so those lines are dropped then.
+    local_custom_headers = "\n".join(
+        _apply_managed_header_lines(
+            [
+                *overlay["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY].splitlines(),
+                *(f"{name}: {value}" for name, value in ug_headers().items()),
+            ],
+            state.get("claude_http_headers"),  # the admin's headers still win
+        )
+    )
+
     # V2 installs routing hooks in a transient per-launch settings file. Persistent settings must
     # contain no ucode routing hooks; surgically strip legacy ones while preserving user hooks.
     def _compose(
@@ -1516,6 +1551,9 @@ def write_tool_config(
         for key in stale_picker_keys:
             merged.pop(key, None)
         overlay_custom_headers = overlay_for_merge["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY]
+        owned_names: Collection[str] = ()
+        if managed_settings_snapshots is None:  # ug's own file, not the OS-managed one
+            overlay_custom_headers, owned_names = local_custom_headers, owned_header_names
         if managed_config_present:
             # ug owns the whole value under a managed config: overwrite wholesale so a header ug no
             # longer emits is dropped and no stale or foreign header lingers.
@@ -1524,7 +1562,7 @@ def write_tool_config(
             # No managed config: preserve the developer's own pre-existing headers, replacing only
             # the header names ug manages.
             merged["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = _merge_anthropic_custom_headers(
-                existing_custom_headers, overlay_custom_headers
+                existing_custom_headers, overlay_custom_headers, owned_names
             )
         # Drop any apiKeyHelper a prior non-relayed launch left in the file; relayed
         # must not carry one (it would outrank the subscription OAuth).
@@ -1630,6 +1668,17 @@ def write_tool_config(
         ),
         passthrough_leaves=passthrough.record(),
     )
+    # Claude would take the managed file's ANTHROPIC_CUSTOM_HEADERS and drop `ug --header`.
+    managed_path = _managed_settings_path()
+    if (
+        ug_headers()
+        and managed_path is not None
+        and f"env.{ANTHROPIC_CUSTOM_HEADERS_ENV_KEY}" in _managed_relayed_conflicts(managed_path)
+    ):
+        raise RuntimeError(
+            "ug --header can't apply to Claude Code because ANTHROPIC_CUSTOM_HEADERS is set by "
+            "the managed settings, which overrides it."
+        )
 
     custom_oauth = state.get("custom_oauth")
     web_search_profile = (
@@ -1667,7 +1716,9 @@ def write_tool_config(
     return state
 
 
-def _merge_anthropic_custom_headers(existing: object, ucode_headers: str) -> str:
+def _merge_anthropic_custom_headers(
+    existing: object, ucode_headers: str, owned_names: Collection[str] = ()
+) -> str:
     """Preserve user headers while replacing the header names managed by ucode.
 
     Claude's ``ANTHROPIC_CUSTOM_HEADERS`` value is a newline-delimited string. To merge it, we:
@@ -1703,6 +1754,7 @@ def _merge_anthropic_custom_headers(existing: object, ucode_headers: str) -> str
         normalized_name = name.strip().casefold()
         if separator and (
             normalized_name in CLAUDE_MANAGED_CUSTOM_HEADER_NAMES
+            or normalized_name in owned_names
             or (
                 normalized_name in CLAUDE_OPTIONAL_CUSTOM_HEADER_NAMES
                 and normalized_name in ucode_lines_by_name
