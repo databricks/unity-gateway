@@ -189,11 +189,30 @@ def test_posix_otel_helper_preserves_literal_shell_arguments(tmp_path):
 def test_native_otel_helper_preserves_arguments_and_child_failure(tmp_path):
     windows = sys.platform == "win32"
     helper = tmp_path / ("headers with spaces.cmd" if windows else "headers with spaces.sh")
-    arguments = ["spaces in profile", "a&b|c<d>e^f(ghi)", "%UG_WRAPPER_TEST%", "bang!", "'quoted'"]
+    legacy_code_page = "@echo off\r\nchcp 437 >nul\r\n" if windows else ""
+    arguments = [
+        "spaces in profile",
+        "profilé-工作区",
+        "a&b|c<d>e^f(ghi)",
+        "%UG_WRAPPER_TEST%",
+        "bang!",
+        "'quoted'",
+        "C:\\dir\\",
+        "profile\\\\",
+        "after trailing backslashes",
+    ]
     helper.write_bytes(
-        desktop_config.render_otel_helper(
-            [sys.executable, "-c", "import json,sys;print(json.dumps(sys.argv[1:]))", *arguments],
-            windows=windows,
+        (
+            legacy_code_page
+            + desktop_config.render_otel_helper(
+                [
+                    sys.executable,
+                    "-c",
+                    "import json,sys;print(json.dumps(sys.argv[1:]))",
+                    *arguments,
+                ],
+                windows=windows,
+            )
         ).encode("utf-8")
     )
     helper.chmod(0o700)
@@ -236,8 +255,18 @@ def test_windows_otel_helper_quotes_all_args_and_disables_expansion():
         [r"C:\Program Files\Python!\python.exe", "--profile", "a&b|c<d>e^f(ghi)%NAME%!"],
         windows=True,
     ) == (
-        "@echo off\r\nsetlocal DisableDelayedExpansion\r\n"
+        "@echo off\r\nsetlocal DisableDelayedExpansion\r\nchcp 65001 >nul\r\n"
         '"C:\\Program Files\\Python!\\python.exe" "--profile" "a&b|c<d>e^f(ghi)%%NAME%%!"\r\n'
+    )
+
+
+def test_windows_otel_helper_escapes_trailing_backslashes():
+    helper = desktop_config.render_otel_helper(
+        ["python.exe", "--profile", "profile\\", "C:\\dir\\\\", "last"], windows=True
+    )
+
+    assert helper.splitlines()[-1] == (
+        '"python.exe" "--profile" "profile\\\\" "C:\\dir\\\\\\\\" "last"'
     )
 
 

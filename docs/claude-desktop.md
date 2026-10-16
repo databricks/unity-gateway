@@ -70,6 +70,8 @@ the explicit workspace and CLI profile. It prints only a JSON `Authorization`
 header, using the existing cached-token/silent-refresh mechanism. Neither the
 profile nor wrapper stores a token. No proxy or background service is needed;
 Codex's Linux-only OTEL service is unchanged.
+The Windows wrapper selects UTF-8 and preserves literal arguments, including
+non-ASCII profile names and trailing backslashes.
 
 Requirements: Desktop must support `otlpTracesEnabled` (added in 1.22209.0) and
 `otlpHeadersHelper` (added in 1.30096.1), Claude tracing must be enabled in the managed
@@ -77,7 +79,9 @@ configuration, and the workspace must accept OTLP trace ingestion with the user'
 credentials. Disable Claude tracing and rerun configure to remove the OTLP keys
 and helper; `ug revert` also deletes the helper and UG profile. Writes and rollback
 cover the wrapper alongside the profile and selection files. Other profiles remain
-untouched.
+untouched. If Desktop's application-data directory has already been removed,
+revert still deletes the helper and previous-selection state without recreating
+Desktop directories.
 
 Restart Desktop and start a new Cowork task or Code session after configuring.
 Code and Cowork sessions receive the headers helper and rerun it as tokens rotate,

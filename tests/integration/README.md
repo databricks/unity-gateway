@@ -378,10 +378,13 @@ Desktop OTEL coverage remains in `../test_claude_desktop.py` and
 model sources on simulated macOS, Windows, and Linux. Component checks cover the
 collector base URL, protobuf protocol, refreshing `.sh`/`.cmd` helpers without
 persisted tokens, quoting, repeated native helper execution with rotated bearer
-overrides, JSON-only stdout/failures, repeat configure, workspace changes,
+overrides, Unicode and trailing-backslash arguments, Windows UTF-8 selection,
+JSON-only stdout/failures, repeat configure, workspace changes,
 disable/re-enable, helper-byte/permission rollback, and revert preserving unrelated
-telemetry. Byte-writer component cases also check explicit permissions independent
-of contents, unchanged JSON formatting, helper execute-permission repair, and
+telemetry. Revert cleanup also covers a removed native library or application-data
+root without recreating Desktop directories, plus rollback and retry after cleanup
+failure. Byte-writer component cases check explicit permissions independent of
+contents, unchanged JSON formatting, helper execute-permission repair, and
 atomic-replacement failure cleanup. This suite does not launch
 Desktop or establish native export, open-session token refresh, or trace ingestion.
 See `../../docs/claude-desktop.md` for native validation steps and auth limits.
