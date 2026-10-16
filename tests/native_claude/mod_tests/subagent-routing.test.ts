@@ -41,16 +41,19 @@ test('routing preserves distinct results for identical tasks and forwards each c
   const a = await $.ui.mount(row('call-a'));
   expect(await a.find({ type: 'Text', text: 'original Agent row' })).toBeDefined();
   expect(await a.find({ type: 'Text', text: 'claude-sonnet-5' })).toBeDefined();
+  expect(await a.find({ type: 'Text', text: '⚡ ' })).toBeDefined();
   expect(await a.find({ type: 'Text', text: '      Reason: Selected for call-a' })).toBeDefined();
   expect(await a.find({ type: 'Text', text: 'claude-opus-4-8' })).toBeUndefined();
-  // The row names the dispatched agent, never the type the parent requested.
-  expect(await a.find({ type: 'Text', text: /^ug-smart-router:call-a\s*$/ })).toBeDefined();
+  // UG's routed agent name only repeats the model, and the requested type is never shown.
+  expect(await a.find({ type: 'Text', text: /ug-smart-router:/ })).toBeUndefined();
   expect(await a.find({ type: 'Text', text: /Explore/ })).toBeUndefined();
+  expect(await a.find({ type: 'Text', text: /orchestrator/ })).toBeUndefined();
   await a.unmount();
   const b = await $.ui.mount(row('call-b'));
   expect(await b.find({ type: 'Text', text: 'claude-opus-4-8' })).toBeDefined();
   expect(await b.find({ type: 'Text', text: '      Reason: Selected for call-b' })).toBeDefined();
-  expect(await b.find({ type: 'Text', text: /^ug-smart-router:call-b \[orchestrator on\]\s*$/ })).toBeDefined();
+  expect(await b.find({ type: 'Text', text: /ug-smart-router:/ })).toBeUndefined();
+  expect(await b.find({ type: 'Text', text: ' [orchestrator on]' })).toBeDefined();
   await b.unmount();
 });
 
@@ -79,6 +82,7 @@ for (const [name, result, warningCount] of [
     const ui = await $.ui.mount(row('call-a'));
     expect(await ui.find({ type: 'Text', text: 'original Agent row' })).toBeDefined();
     expect(await ui.find({ type: 'Text', text: /Reason:/ })).toBeUndefined();
+    expect(await ui.find({ type: 'Text', text: /⚡/ })).toBeUndefined();
     await ui.unmount();
   });
 }

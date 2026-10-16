@@ -1,6 +1,7 @@
 import type { On, PluginOptions } from 'claude-code'
+import { ROUTED_AGENT_PREFIX } from './constants.ts'
 
-type RoutingRecord = { model: string; rationale: string; name: string }
+type RoutingRecord = { model: string; rationale: string; name: string; orchestrator: boolean }
 
 const shortModel = (model: string): string => model.replace(/^system\.ai\./, '').replace(/^databricks-/, '')
 
@@ -34,11 +35,13 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     if (!route) return next(e)
     if (tool_use_id) {
       // Name the agent that is dispatched, not the type the parent originally requested.
+      // UG's own routed definitions are omitted: the model already says what they are.
       const name = route.updatedInput.subagent_type
       records.set(tool_use_id, {
         model: route.model,
         rationale: route.rationale,
-        name: route.orchestrator === true ? `${name} [orchestrator on]` : name,
+        name: name.startsWith(ROUTED_AGENT_PREFIX) ? '' : name,
+        orchestrator: route.orchestrator === true,
       })
       $.ui.invalidate('ui.render')
     }
@@ -56,8 +59,11 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       flexDirection: 'row',
       children: [
         Text({ dimColor: true, children: ['  ↳ '] }),
+        // The lightning bolt marks the line as Smart Router's, not Claude's own output.
+        Text({ children: ['⚡ '] }),
         ...(record.name ? [Text({ color: 'primary', bold: true, children: [`${record.name}  `] })] : []),
         Text({ color: 'primary', children: [shortModel(record.model)] }),
+        ...(record.orchestrator ? [Text({ dimColor: true, children: [' [orchestrator on]'] })] : []),
       ],
     })
     const children = record.rationale
