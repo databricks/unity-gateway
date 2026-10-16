@@ -755,6 +755,45 @@ def _configure_shared_workspace_states(
     return states
 
 
+_MODEL_LOCATION_TOOLS = ("claude", "codex")
+_PROVIDER_TOOLS = ("claude", "codex", "gemini")
+
+
+def _apply_headless_model_source(
+    state: dict,
+    tools: list[str],
+    managed: dict | None,
+    *,
+    model_location: str | None,
+    provider: str | None,
+) -> dict:
+    """Persist ``ug configure --model-location`` / ``--provider`` for ``tools``.
+
+    The headless equivalent of the interactive model-source picker: each tool's choice replaces
+    the other source, as the picker does. Rejected when a managed config is in effect, which
+    controls the model source itself, and for agents that can't use the requested source.
+    """
+    if model_location is None and provider is None:
+        return state
+    flag = "--model-location" if model_location is not None else "--provider"
+    if managed is not None:
+        raise RuntimeError(
+            f"`{flag}` is not allowed when a managed config exists for the workspace; "
+            "the managed config controls the model source."
+        )
+    supported = _MODEL_LOCATION_TOOLS if model_location is not None else _PROVIDER_TOOLS
+    unsupported = [tool for tool in tools if tool not in supported]
+    if unsupported:
+        names = ", ".join(TOOL_SPECS[tool]["display"] for tool in unsupported)
+        allowed = ", ".join(TOOL_SPECS[tool]["display"] for tool in supported)
+        raise RuntimeError(f"`{flag}` isn't supported for {names}. Supported: {allowed}.")
+    for tool in tools:
+        state = set_provider_service(state, tool, provider)
+        state = set_model_location(state, tool, model_location)
+    save_state(state)
+    return state
+
+
 def _setup_single_agent(
     workspace_entries: list[tuple[str, str | None]],
     tool: str,
@@ -763,6 +802,8 @@ def _setup_single_agent(
     use_pat: bool = False,
     databricks_ai_tools_enabled: bool | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
+    model_location: str | None = None,
+    provider: str | None = None,
 ) -> dict:
     """Log in, discover the agent's models, and write its config, then print the summary.
 
@@ -770,6 +811,11 @@ def _setup_single_agent(
     ``ug configure --agent`` path: admin-enabled applies the admin config, a disabled agent is
     rejected). ``ug agents add`` passes ``apply_managed=False`` to set up a self-managed agent
     standalone, independent of the managed config.
+
+    ``model_location`` (``<catalog>.<schema>``) and ``provider`` (``<catalog>.<schema>.<name>``)
+    are the headless equivalents of the interactive model-source picker. When set, the choice is
+    persisted to state for later launches; a managed config rejects them (see
+    :func:`_apply_headless_model_source`).
     """
     states = _configure_shared_workspace_states(
         workspace_entries,
@@ -792,7 +838,12 @@ def _setup_single_agent(
                 parent_schema = managed_unity_catalog_location(managed, tool)
     elif apply_managed:
         managed, _ = refresh_managed_config(state, force_refresh=False)
-    state = configure_single_tool(tool, state, parent_schema=parent_schema)
+    state = _apply_headless_model_source(
+        state, [tool], managed, model_location=model_location, provider=provider
+    )
+    state = configure_single_tool(
+        tool, state, parent_schema=parent_schema or model_location, provider=provider
+    )
     if apply_managed and not managed_enabled_tools(managed or {}):
         state = _record_unmanaged_configured_agents(state, [tool])
     install_databricks_ai_tools_for_agents(
@@ -928,6 +979,8 @@ def configure_workspace_command(
     databricks_ai_tools_enabled: bool | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
     offer_optional_setup: bool = False,
+    model_location: str | None = None,
+    provider: str | None = None,
 ) -> int:
     """Configure a workspace while sharing one lazy privileged settings session.
 
@@ -944,6 +997,8 @@ def configure_workspace_command(
             databricks_ai_tools_enabled=databricks_ai_tools_enabled,
             custom_oauth=custom_oauth,
             offer_optional_setup=offer_optional_setup,
+            model_location=model_location,
+            provider=provider,
         )
 
 
@@ -956,6 +1011,8 @@ def _configure_workspace_command(
     databricks_ai_tools_enabled: bool | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
     offer_optional_setup: bool = False,
+    model_location: str | None = None,
+    provider: str | None = None,
 ) -> int:
     if tool is not None and selected_tools is not None:
         raise RuntimeError("Use either --agent or --agents, not both.")
@@ -975,6 +1032,8 @@ def _configure_workspace_command(
             use_pat=use_pat,
             databricks_ai_tools_enabled=databricks_ai_tools_enabled,
             custom_oauth=custom_oauth,
+            model_location=model_location,
+            provider=provider,
         )
         return 0
 
@@ -996,6 +1055,9 @@ def _configure_workspace_command(
     managed, _ = refresh_managed_config(state, force_refresh=True)
     managed_tools = managed_enabled_tools(managed) if managed is not None else []
     if managed is not None and managed_tools:
+        _apply_headless_model_source(
+            state, [], managed, model_location=model_location, provider=provider
+        )
         configured_tools: list[str] = []
         for tool_name in managed_tools:
             resolved = resolve_state(managed, state, tool_name)
@@ -1082,6 +1144,10 @@ def _configure_workspace_command(
     if offer_provider:
         for tool_name in picked:
             state = _maybe_select_provider_service(tool_name, state)
+    else:
+        state = _apply_headless_model_source(
+            state, picked, None, model_location=model_location, provider=provider
+        )
 
     if offer_optional_setup:
         state = configure_selected_tools(state, picked, install_ai_tools=False)
@@ -4034,6 +4100,25 @@ def configure(
             "'low' prints terse single-line status instead.",
         ),
     ] = "normal",
+    model_location: Annotated[
+        str | None,
+        typer.Option(
+            "--model-location",
+            help="Discover models from a Unity Catalog schema (<catalog>.<schema>, e.g. "
+            "main.default) instead of system.ai. Only applies with --agent or --agents for "
+            "claude or codex. Cannot be combined with --provider.",
+        ),
+    ] = None,
+    provider: Annotated[
+        str | None,
+        typer.Option(
+            "--provider",
+            help="Route through a Unity Catalog Model Provider Service "
+            "(<catalog>.<schema>.<name>) instead of Databricks-hosted models. Only applies "
+            "with --agent or --agents for claude, codex, or gemini. Cannot be combined with "
+            "--model-location.",
+        ),
+    ] = None,
 ) -> None:
     """Configure workspace URL and AI Gateway."""
     if ctx.invoked_subcommand is not None:
@@ -4047,6 +4132,14 @@ def configure(
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
         if custom_oauth is not None and use_pat:
             raise RuntimeError("--client-id cannot be combined with --use-pat.")
+        if model_location is not None and provider is not None:
+            raise RuntimeError("--model-location and --provider cannot be combined.")
+        if model_location is not None and not is_valid_catalog_schema(model_location):
+            raise RuntimeError("--model-location must be <catalog>.<schema>, e.g. main.default.")
+        if model_location is not None and agent is None and agents is None:
+            raise RuntimeError("--model-location requires --agent or --agents.")
+        if provider is not None and agent is None and agents is None:
+            raise RuntimeError("--provider requires --agent or --agents.")
         install_databricks_cli()
         if agent is not None and agents is not None:
             raise RuntimeError("Use either --agent or --agents, not both.")
@@ -4083,6 +4176,10 @@ def configure(
         # MCP setup prompt so flag-driven / scripted runs are never interrupted.
         fully_interactive = False
         combined_optional_setup = False
+        if model_location is not None:
+            skip_kwargs["model_location"] = model_location
+        if provider is not None:
+            skip_kwargs["provider"] = provider
         if agent is not None:
             tool = normalize_tool(agent)
             install_tool_binary(
