@@ -499,15 +499,13 @@ workflow with secrets on the PR's current head commit, or `/integration-test <sh
 only if the head is still the commit they reviewed. It posts a `Fork integration` status,
 and works on in-repo PRs too as an on-demand rerun. Each new push needs a new command.
 It runs main's workflow definitions and never caches fork builds. `/ug-review` requests
-the official Claude code-review plugin with the trusted UG rubric and inline findings.
-It reuses the review service principal through the Databricks gateway with Haiku,
-Sonnet, and Opus aliases. Adding either `ug-review` or `code-review` also requests
+Open Code Review with the trusted UG rubric and inline findings.
+It reuses the review service principal through the Databricks gateway's Anthropic route.
+Adding either `ug-review` or `code-review` also requests
 review on in-repository PRs; fork PRs still require the member comment because
 their PR-triggered runs cannot access the gateway secret. Label removal and
-ordinary pushes do not rerun reviews. The stock plugin validates findings; the optional direct-Anthropic
-comment classifier is disabled. `test_ug_review_bot.py` covers gateway authentication,
-OIDC-authenticated npm-proxy configuration, action-step Bun authentication and
-credential cleanup, and the workflow contract,
+ordinary pushes do not rerun reviews. `test_ug_review_bot.py` covers gateway authentication,
+OIDC-authenticated npm-proxy configuration and credential cleanup, and the workflow contract,
 not live inference or GitHub posting. The old custom
 Responses/diff/parser/summary-rendering tests are obsolete because that implementation
 is removed. `/user-journey-check` runs the user-journey gate,

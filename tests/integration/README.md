@@ -868,15 +868,13 @@ bypass, only `@rohita5l` or `@lilly-luo` can post the exact PR comment
 visible `skip-user-journey-test` label, causing the gate to rerun. Editing or deleting the
 comment removes the label and reruns the gate; manually adding the label does not bypass it.
 
-The separate member-triggered `/ug-review` workflow uses the official Claude review
-plugin and inline comments through the Databricks gateway with per-family model
-aliases and no action source patches. Adding `ug-review` or `code-review` also
+The separate member-triggered `/ug-review` workflow runs the pinned Open Code Review
+action through the Databricks gateway's Anthropic route. Adding `ug-review` or `code-review` also
 requests review on in-repository PRs; fork PRs use the member comment to access
 secrets safely. `../test_ug_review_bot.py` covers gateway authentication,
-OIDC-authenticated npm-proxy configuration, action-step Bun authentication and
-credential cleanup, and the workflow contract
-as component tests. This integration suite does not establish
-live review-model access, plugin finding validation, or inline GitHub posting.
+OIDC-authenticated npm-proxy configuration and credential cleanup, and the workflow
+contract as component tests. This integration suite does not establish
+live review-model access or GitHub comment posting.
 
 For a manual run, use **Actions → Integration → Run workflow**, select the branch,
 and set the ug/agent versions. Manual runs execute the complete integration suite.
