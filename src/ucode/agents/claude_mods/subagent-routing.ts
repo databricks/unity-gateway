@@ -14,6 +14,10 @@ const now = async ($: any): Promise<number | undefined> => {
     return undefined
   }
 }
+const secondsSince = async ($: any, start: number | undefined): Promise<number | undefined> => {
+  const current = start === undefined ? undefined : await now($)
+  return current === undefined || start === undefined ? undefined : Math.max(0, current - start) / 1000
+}
 
 export const registerSubagentRouting = (on: On, options: PluginOptions): void => {
   const records = new Map<string, RoutingRecord>()
@@ -60,18 +64,9 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       spinner?.cancel()
     }
     if (tool_use_id) {
-      const startedAt = pending.get(tool_use_id)
+      const seconds = await secondsSince($, pending.get(tool_use_id))
       pending.delete(tool_use_id)
-      const finishedAt = startedAt === undefined ? undefined : await now($)
-      if (route) {
-        records.set(tool_use_id, {
-          model: route.model,
-          rationale: route.rationale,
-          seconds: finishedAt === undefined || startedAt === undefined
-            ? undefined
-            : Math.max(0, finishedAt - startedAt) / 1000,
-        })
-      }
+      if (route) records.set(tool_use_id, { model: route.model, rationale: route.rationale, seconds })
       $.ui.invalidate('ui.render')
     }
     if (!route) return next(e)
@@ -86,11 +81,8 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
 
     const { Box, Text } = $.ui.resolve(e)
     if (!record) {
-      const startedAt = pending.get(e.requestId)
-      const current = startedAt === undefined ? undefined : await now($)
-      const elapsed = current === undefined || startedAt === undefined
-        ? ''
-        : ` ${Math.max(0, Math.floor((current - startedAt) / 1000))}s`
+      const seconds = await secondsSince($, pending.get(e.requestId))
+      const elapsed = seconds === undefined ? '' : ` ${Math.floor(seconds)}s`
       return Box({ flexDirection: 'column', children: [original, Box({
         flexDirection: 'row',
         children: [

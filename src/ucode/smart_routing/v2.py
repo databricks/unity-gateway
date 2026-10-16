@@ -35,7 +35,6 @@ from ucode.constants import (
     LOOPBACK_HOST,
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
-    TRUTHY_ENV_VALUES,
 )
 from ucode.custom_oauth import custom_oauth_cli_enabled, get_custom_client_token
 from ucode.databricks import (
@@ -170,10 +169,6 @@ def _model_picker_catalog() -> AnthropicModelCatalog | None:
     return None
 
 
-def _env_truthy(value: str | None) -> bool:
-    return isinstance(value, str) and value.strip().lower() in TRUTHY_ENV_VALUES
-
-
 def smart_routing_enabled(
     env: MutableMapping[str, str] | None, *, default: bool, agent: str
 ) -> bool:
@@ -181,7 +176,7 @@ def smart_routing_enabled(
     values = [
         source.get(var) for var in (ENABLE_SMART_ROUTING_ENV_VAR, ENABLE_SUBAGENT_ROUTING_ENV_VAR)
     ]
-    if any(_env_truthy(value) for value in values):
+    if "1" in values:
         return True
     if "0" in values:
         return False
@@ -193,8 +188,9 @@ def first_prompt_routing_enabled(
 ) -> bool:
     """Whether the first prompt is routed. Subagent-only wins over the full V2 flag."""
     source = resolve_environment(env, agent=agent)
-    return _env_truthy(source.get(ENABLE_SMART_ROUTING_ENV_VAR)) and not _env_truthy(
-        source.get(ENABLE_SUBAGENT_ROUTING_ENV_VAR)
+    return (
+        source.get(ENABLE_SMART_ROUTING_ENV_VAR) == "1"
+        and source.get(ENABLE_SUBAGENT_ROUTING_ENV_VAR) != "1"
     )
 
 

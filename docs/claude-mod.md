@@ -11,23 +11,17 @@ input with the permission mode) always ends with `smart router ON` or `smart rou
 routing launches use this path, and the existing temporary-directory lifecycle
 cleans up the files when Claude exits.
 
-The same entry point intercepts Agent/Task calls through native `tool.call` hooks.
-It runs `ug claude-router-hook route-subagent-mod` with a JSON payload on stdin.
-Python uses the same routing API client as Codex and returns the updated input,
-model, and rationale as JSON on stdout. The mod keeps that result in memory by
-`tool_use_id` and renders the model and rationale under the matching Agent row.
-While the router answers, the row shows a spinner with the elapsed seconds; the selected
-row then notes how long routing took. Both use `$.clock` and are omitted without it.
-It writes no routing sidecar file. Disabled routing or an unavailable route leaves
-the call unchanged; command failures and invalid responses also keep the original
-input and show a diagnostic. Other mods and Claude's permission checks still run.
+The same entry point routes Agent/Task calls in a native `tool.call` hook. It pipes the
+call as JSON to `ug claude-router-hook route-subagent-mod`, whose argument list arrives in
+the `routeCommand` plugin option, and continues the call with the returned input. The
+matching Agent row shows a spinner and elapsed seconds while the router answers, then the
+selected model, routing time, and rationale. Results live in memory by `tool_use_id`, so a
+plugin reload drops them. Disabled routing, command failures, and invalid responses keep
+the original call; failures also log a diagnostic.
 
-Launch settings pass the command's argument list through the native `routeCommand`
-plugin option, including the workspace, profile/PAT selection, and offered model IDs.
-SessionStart/SubagentStart audit hooks remain; the old routing PreToolUse hook is
-removed so the same call cannot be routed twice. A `route-subagent` hook that an earlier
-UG version persisted still gets its PreToolUse response and plain-text notice. UI details last for the loaded
-mod's lifetime; a plugin reload does not restore earlier routing annotations.
+The old routing PreToolUse hook is no longer written, so a call is not routed twice. A
+`route-subagent` hook that an earlier UG version persisted still gets its PreToolUse
+response and plain-text notice.
 
 `constants.ts` holds the values the mod shares with UG's CLI and the gateway: the recipe
 body field, the disabled recipe, the CLI module, agent, and routing flags, and the
@@ -59,10 +53,8 @@ routing hooks apply over the environment, so an "off" saved earlier by the CLI o
 cannot outlast the command. The mod writes no file itself: it runs the existing
 `--enable-smart-routing`/`--disable-smart-routing` entry point, which validates and replaces
 that file atomically. Session start restores only the launch baseline, so an override saved
-before `/clear` still survives it. The live skill-toggle journey covers the real CLI write; native component tests
-use the test host's process stubs to check the subagent routing protocol and display.
-A native process check also runs the real disabled Python CLI and verifies inherited
-launch flags and a dummy token; it makes no gateway request.
+before `/clear` still survives it. The live skill-toggle journey covers the real CLI write;
+native component tests stub the process calls.
 
 The existing Claude skill-toggle integration journey checks recorded inference
 payloads during its three calculation phases: launch recipe, `DISABLED` after off,

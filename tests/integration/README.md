@@ -1082,8 +1082,3 @@ recipe change does not require editing the test.
 Local Claude mod confirmation replaces the old saved-control-file/assistant-turn wait;
 Codex retains its CLI control-file checks. No extra TUI sessions or tasks are added.
 Clear/reload, compaction, and denied-write rollback are not independently checked.
-
-The Claude skill-toggle journey exercises the mod's Python routing command against the
-live gateway. Component protocol, rendering, fallback, and subprocess coverage is documented
-in [the test overview](../README.md) and [mod guide](../../docs/claude-mod.md); those checks
-do not establish live gateway/TUI coverage.

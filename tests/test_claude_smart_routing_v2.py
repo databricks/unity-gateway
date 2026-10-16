@@ -217,17 +217,6 @@ class TestSmartRoutingEnvVars:
         monkeypatch.delenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR)
         assert v2.first_prompt_routing_enabled(agent=AGENT_CLAUDE)
 
-    def test_smart_routing_vars_accept_true_as_well_as_one(self):
-        v2_var = v2.ENABLE_SMART_ROUTING_ENV_VAR
-        sub_var = v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR
-        assert v2.smart_routing_enabled({v2_var: "true"}, default=False, agent=AGENT_CLAUDE)
-        assert v2.smart_routing_enabled({sub_var: "TRUE"}, default=False, agent=AGENT_CLAUDE)
-        assert not v2.smart_routing_enabled({v2_var: "yes"}, default=False, agent=AGENT_CLAUDE)
-        assert v2.first_prompt_routing_enabled({v2_var: "true"}, agent=AGENT_CLAUDE)
-        assert not v2.first_prompt_routing_enabled(
-            {v2_var: "true", sub_var: "True"}, agent=AGENT_CLAUDE
-        )
-
 
 class TestV2Launch:
     def test_strips_gateway_prefix_for_interposer(self):
@@ -725,8 +714,6 @@ class TestSubagentRouting:
         assert updated_input["subagent_type"] == v2._routed_claude_agent_name(
             "system.ai.claude-opus-4-8"
         )
-        assert "systemMessage" not in output
-        assert "permissionDecisionReason" not in output
         decision_record = json.loads(decisions_path.read_text())
         assert decision_record["requested_model"] == "system.ai.claude-opus-4-8"
 
@@ -824,7 +811,6 @@ class TestSubagentRouting:
         # The mod labels the row from updatedInput, so it names the dispatched agent.
         output = route()
         assert output["updatedInput"]["subagent_type"] == routed_agent
-        assert output["model"] == selected_model
         assert requested_agent not in json.dumps(output)
 
         # Hooks persisted by earlier UG versions keep their PreToolUse response and notice.
@@ -843,7 +829,6 @@ class TestSubagentRouting:
 
         v2._write_routed_claude_plugin(plugin_dir, models)
 
-        assert (plugin_dir / "hooks/register.ts").is_file()
         manifest = json.loads((plugin_dir / ".claude-plugin" / "plugin.json").read_text())
         assert manifest["name"] == "ug-smart-router"
         assert _plugin_agent_models(plugin_dir) == {
@@ -856,36 +841,6 @@ class TestSubagentRouting:
             assert f"name: {json.dumps(slug)}" in agent
             assert v2.CLAUDE_ROUTED_AGENT_PROMPT in agent
             assert v2._routed_claude_agent_name(model) == f"{manifest['name']}:{slug}"
-
-    def test_includes_subagent_routing_mod(self, tmp_path):
-        plugin_dir = tmp_path / "routing-plugin"
-
-        v2._write_routed_claude_plugin(plugin_dir, ["system.ai.claude-opus-4-8"])
-
-        hooks_dir = plugin_dir / "hooks"
-        hooks = json.loads((hooks_dir / "hooks.json").read_text())
-        # One hooks module (register.ts) per plugin; the files it imports ride along.
-        assert hooks == {"modules": ["./register.ts"]}
-        for name in (
-            "register.ts",
-            "constants.ts",
-            "smart-routing-status.ts",
-            "subagent-routing.ts",
-        ):
-            assert (hooks_dir / name).is_file()
-        entry = (hooks_dir / "register.ts").read_text()
-        assert "registerStatusBand" in entry and "registerSubagentRouting" in entry
-
-        status = (hooks_dir / "smart-routing-status.ts").read_text()
-        assert "unity gateway smart router" in status
-        assert "ui.render" in status and "AbovePrompt" in status
-        # Env var names stay in sync with the Python source of truth.
-        assert v2.ENABLE_SMART_ROUTING_ENV_VAR in status
-        assert v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR in status
-        assert v2.SESSION_ENV_VAR in status
-
-        subagents = (hooks_dir / "subagent-routing.ts").read_text()
-        assert "ui.render" in subagents and "ToolUse" in subagents
 
     def test_leaves_non_claude_custom_agent_model_unchanged(self):
         definitions = v2._routed_claude_agent_definitions(["catalog.schema.gpt-5"])

@@ -3,8 +3,6 @@
 LOCALHOST = "localhost"
 LOOPBACK_HOST = "127.0.0.1"
 
-# Values an on/off env var may use to mean "on" (compare after .strip().lower()).
-TRUTHY_ENV_VALUES = frozenset({"1", "true"})
 AGENT_CLAUDE = "claude"
 AGENT_CODEX = "codex"
 
