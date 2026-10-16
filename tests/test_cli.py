@@ -3282,6 +3282,27 @@ def test_unknown_routing_config_does_not_block_launch(monkeypatch, args):
     assert dict(os.environ) == previous
 
 
+class TestOtelProxyCommand:
+    def test_reuses_cli_proxy_and_auth_for_the_configured_workspace(self):
+        workspace = "https://configured.example"
+        real_save_state({"workspace": workspace, "profile": "saved-profile"})
+        real_save_state({"workspace": "https://other.example", "profile": "other-profile"})
+        server, cache, client = MagicMock(), MagicMock(), MagicMock()
+        with (
+            patch(
+                "ucode.gateway_proxy.start_otel_proxy", return_value=(server, cache, client)
+            ) as start,
+            patch("ucode.agents.codex.get_databricks_token", return_value="fresh-token") as token,
+        ):
+            result = runner.invoke(app, ["otel-proxy", "--host", workspace, "--port", "43199"])
+            assert start.call_args.args[1](True) == "fresh-token"
+        assert result.exit_code == 0, result.output
+        assert start.call_args.args[0] == workspace
+        assert start.call_args.kwargs == {"port": 43199}
+        token.assert_called_once_with(workspace, "saved-profile", force_refresh=True)
+        server.serve_forever.assert_called_once()
+
+
 class TestDoctorCommand:
     def test_invokes_doctor(self):
         with patch("ucode.doctor.doctor", return_value=0) as mock_doctor:
@@ -4139,6 +4160,17 @@ class TestConfigureAgentsSelection:
         result = cli_mod._maybe_select_provider_service("claude", state)
 
         assert cli_mod.get_model_location(result, "claude") == "main.models"
+
+    def test_picker_cancelled_location_prompt_exits_without_saving(self, monkeypatch):
+        state, saved, _asked = self._picker(
+            monkeypatch, "claude", services=(["a.b.mps"], None), answers=["location"]
+        )
+        monkeypatch.setattr(cli_mod, "prompt_for_text", lambda *a, **k: None)
+
+        with pytest.raises(KeyboardInterrupt):
+            cli_mod._maybe_select_provider_service("claude", state)
+
+        assert saved == []
 
     def test_picker_databricks_and_mps_clear_saved_location(self, monkeypatch):
         state, _saved, _asked = self._picker(

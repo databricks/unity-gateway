@@ -41,12 +41,13 @@ a useful assignment. Split work only when the deliverables are independent or a
 concrete risk needs independent verification. The agent-specific instructions
 differ in how they divide discovery and the final answer:
 
-- **Claude:** choose ownership before discovery. A connected investigation can be
-  one complete assignment; keep it in the root when retained evidence and a bounded
-  check suffice or briefing and acceptance would repeat the work. Delegated owners
-  return an answer covering every assigned requirement with cited evidence. Missing
-  evidence stays with the same owner for a focused amendment. Each child brief
-  repeats the no-recursive-teams and return-to-owner boundaries.
+- **Claude:** choose ownership before gathering evidence. Work beyond retained
+  context and a bounded lookup goes to one native owner for the connected outcome;
+  the root does not investigate in order to decide whether to delegate. The owner
+  acquires the evidence and produces the answer or change with its checks, while
+  the root owns acceptance and cross-owner decisions. Gaps return to the same owner
+  for a focused amendment, and no reviewer stage is added by default. Each child
+  brief repeats the no-recursive-teams and return-to-owner boundaries.
 - **Codex:** choose who will synthesize the final answer before delegating. When
   the root must deliver a delegated read-only investigation's answer, one owner
   acquires the complete evidence and the root synthesizes it. Implementation
@@ -70,8 +71,7 @@ model selection and requires no preference setup or locking.
 Migrated from the Databricks `model-orchestrator` plugin by Arnav Singhvi. The base
 workflow came from version 0.4.21 (source commit
 `474b08e5809205d0aa9abbd059b82d5ab541ca92`); the Claude and Codex workflows now carry
-separate refinements. Claude uses the C12 workflow at version 1.3.0; Codex uses
-version 1.2.0.
+separate refinements. Claude uses version 1.4.0; Codex uses version 1.2.0.
 Originally adapted from
 [donvito/codex-astra-luna-orchestrator](https://github.com/donvito/codex-astra-luna-orchestrator/tree/21710352ec201f8634874d8298e0eca694e298a8)
 under Apache-2.0; see [LICENSE.upstream](LICENSE.upstream). UG changes add shared

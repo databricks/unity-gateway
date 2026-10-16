@@ -7,7 +7,7 @@ import os
 import shutil
 import subprocess
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
 from enum import StrEnum
 from importlib import metadata
 from typing import Annotated, Any
@@ -933,7 +933,9 @@ def _prompt_for_model_location() -> str:
         location = prompt_for_text(
             "Model location (<catalog>.<schema>, e.g. main.default)", required=True
         )
-        if location and is_valid_catalog_schema(location):
+        if location is None:
+            raise KeyboardInterrupt
+        if is_valid_catalog_schema(location):
             return location
         print_err("Model location must be `<catalog>.<schema>`.")
 
@@ -2296,6 +2298,28 @@ def mcp_proxy_cmd(
     serve(url, workspace, profile, use_pat=use_pat or bool(state.get("use_pat")))
 
 
+@app.command("claude-desktop-auth", hidden=True)
+def claude_desktop_auth_cmd(
+    host: Annotated[str, typer.Option("--host", help="Configured workspace URL.")],
+    profile: Annotated[str, typer.Option("--profile", help="Configured Databricks CLI profile.")],
+) -> None:
+    """Print a Desktop credential, allowing browser login only for interactive requests."""
+    import sys
+
+    from ucode.desktop_auth import get_claude_desktop_token
+
+    try:
+        with redirect_stdout(sys.stderr):
+            token = get_claude_desktop_token(host, profile)
+    except (RuntimeError, ValueError) as exc:
+        print_err(str(exc))
+        raise typer.Exit(1) from None
+    except KeyboardInterrupt:
+        print_err("Databricks sign-in cancelled. Start a new Cowork task to try again.")
+        raise typer.Exit(130) from None
+    sys.stdout.write(token + "\n")
+
+
 @app.command("auth-token", hidden=True)
 def auth_token_cmd(
     host: Annotated[
@@ -2400,6 +2424,29 @@ def auth_token_cmd(
     # Write the bare token (with trailing newline) to stdout — nothing else may
     # land on stdout or the consuming agent will treat it as part of the token.
     sys.stdout.write(token + "\n")
+
+
+@app.command("otel-proxy", hidden=True)
+def otel_proxy_cmd(
+    host: Annotated[str, typer.Option("--host")],
+    port: Annotated[int, typer.Option("--port", min=1, max=65535)],
+) -> None:
+    """Run the same OTLP proxy as a Codex CLI session, for desktop."""
+    from ucode import gateway_proxy
+
+    try:
+        state = load_full_state().get("workspaces", {}).get(host)
+        if not state:
+            raise RuntimeError(f"No saved configuration for {host}. Run `ug configure` first.")
+        apply_pat_environment(state)
+        server, _cache, _client = gateway_proxy.start_otel_proxy(
+            host, codex_agent._otel_token_provider(state, host), port=port
+        )
+        # systemd stops this with SIGTERM, which exits without cleanup, and nothing needs it.
+        server.serve_forever()
+    except (OSError, RuntimeError) as exc:
+        print_err(str(exc))
+        raise typer.Exit(1) from None
 
 
 @app.command("otel-headers", hidden=True)

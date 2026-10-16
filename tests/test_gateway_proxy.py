@@ -11,6 +11,7 @@ import threading
 import time
 
 import httpx
+import pytest
 
 from ucode import gateway_proxy
 
@@ -531,6 +532,11 @@ class TestStartProxyPortFallback:
         occupied.listen(1)
         busy_port = occupied.getsockname()[1]
         try:
+            # Desktop's exporter cannot follow a fallback to a different port.
+            with pytest.raises(OSError):
+                gateway_proxy.start_otel_proxy(
+                    "https://workspace.example", lambda _: "token", port=busy_port
+                )
             server, _cache, client = gateway_proxy.start_relay_proxy(
                 "https://x.staging.cloud.databricks.com",
                 lambda _force: "tok",
