@@ -1,5 +1,6 @@
 import type { EngineInterface, On, PluginOptions } from 'claude-code';
 import { registerStatusBand, showStatusBand } from './smart-routing-status.ts';
+import { registerSubagentRouting } from './subagent-routing.ts';
 import {
   CLI_AGENT,
   CLI_MODULE,
@@ -142,4 +143,5 @@ export function register(on: On, options: PluginOptions): void {
   });
   registerFeedback(on, feedback);
   registerStatusBand(on);
+  registerSubagentRouting(on, options);
 }

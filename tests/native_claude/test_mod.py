@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -30,6 +32,14 @@ def native_binary():
 def test_mod_validation_and_event_forwarding(native_binary, tmp_path):
     path = tmp_path / "plugin"
     _write_routed_claude_plugin(path, [])
+    manifest = path / ".claude-plugin/plugin.json"
+    doc = json.loads(manifest.read_text())
+    doc["userConfig"]["routeCommand"]["default"] = [
+        "/bin/ug",
+        "claude-router-hook",
+        "route-subagent-mod",
+    ]
+    manifest.write_text(json.dumps(doc))
     shutil.copytree(Path(__file__).with_name("mod_tests"), path / "tests")
     for command in ("validate", "test"):
         result = subprocess.run(
@@ -55,3 +65,27 @@ def test_native_options_are_launch_local(native_binary, tmp_path):
         assert a.observe()["options"] == _claude_mod_launch_options(env)
         assert b.observe()["options"] == _claude_mod_launch_options({})
         assert not (a.plugin / "hooks/launch.json").exists()
+
+
+def test_native_process_inherits_settings_and_runs_python_cli(native_binary, tmp_path):
+    # The child checks launch settings before replacing itself with the real disabled router.
+    script = (
+        "import os, sys; "
+        "assert os.environ['ENABLE_SMART_ROUTING_V2'] == '0'; "
+        "assert os.environ['OAUTH_TOKEN'] == 'fixture-dummy-token'; "
+        "os.execv(sys.executable, [sys.executable, '-m', 'ucode.cli', "
+        "'claude-router-hook', 'route-subagent-mod', '--host', 'https://example.com'])"
+    )
+    with Session(
+        native_binary,
+        tmp_path / "process with spaces",
+        {
+            "ENABLE_SMART_ROUTING_V2": "0",
+            "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0",
+            "OAUTH_TOKEN": "fixture-dummy-token",
+        },
+        route_command=[sys.executable, "-c", script],
+    ) as session:
+        result = session.observe()["route"]
+        assert result["exitCode"] == 0, result
+        assert result["stdout"] == result["stderr"] == "", result

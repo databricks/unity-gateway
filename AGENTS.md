@@ -21,7 +21,7 @@ Tests live in `tests/`.
 
 - Use Python 3.12+.
 - Keep changes scoped to the requested behavior.
-- Follow the existing module boundaries: CLI orchestration in `cli.py`, agent-specific behavior in `agents/<name>.py`, shared agent dispatch in `agents/__init__.py`, Databricks calls in `databricks.py`, skill download (UC fetch client + on-disk writer + download orchestration) in `skills_download.py`, MCP-connection state glue in `mcp.py`, and presentation helpers in `ui.py`. Skill download persists no disk state — it writes files to `--path` (or the home dir) and registers only the schema-less skills MCP connection. `ug configure skills` with no `--location` (or `--mcp` with no `--location`) registers that schema-less connection without downloading anything.
+- Follow the existing module boundaries: CLI orchestration in `cli.py`, CLI-agent behavior in `agents/<name>.py`, desktop-app adapters in `agents/desktop/`, shared agent dispatch in `agents/__init__.py`, Databricks calls in `databricks.py`, skill download (UC fetch client + on-disk writer + download orchestration) in `skills_download.py`, MCP-connection state glue in `mcp.py`, and presentation helpers in `ui.py`. Skill download persists no disk state — it writes files to `--path` (or the home dir) and registers only the schema-less skills MCP connection. `ug configure skills` with no `--location` (or `--mcp` with no `--location`) registers that schema-less connection without downloading anything.
 - Prefer existing helpers for config file writes, state persistence, UI messages, and Databricks authentication.
 - Use `ucode.os_compatibility.subprocess_cross_os.run` / `ucode.os_compatibility.subprocess_cross_os.popen` for subprocesses; they resolve Windows npm wrappers automatically and default text streams to UTF-8 with replacement for invalid bytes. Keep commands as argument lists. Do not repeat these encoding defaults at callsites; explicit encoding/error overrides and binary mode remain supported. Ruff rejects direct `subprocess.run` / `subprocess.Popen` calls outside `os_compatibility/subprocess_cross_os.py` and tests.
 - Use `acquire_exclusive_file_lock` / `release_file_lock` from `ucode.os_compatibility.file_lock_cross_os` instead of calling `fcntl.flock`, `fcntl.lockf`, or `msvcrt.locking` directly. Ruff enforces this outside the compatibility module and tests.
@@ -134,6 +134,21 @@ Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file 
 | Smart Router Orchestrator hooks | Merge | Merge | Launch-only `UserPromptSubmit` and compact `SessionStart` handlers for smart-routed sessions with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`; read the same session controls as routing |
 
 </details>
+
+Claude Desktop third-party profiles live under `Claude-3p/configLibrary` in
+`~/Library/Application Support` on macOS, `%LOCALAPPDATA%` on current Windows releases,
+and `~/.config` on Linux. Windows and Linux require Desktop to have opened once.
+UG reserves UUID `5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6` for its fully owned profile.
+Configure replaces the whole file, updates its metadata entry, and selects it;
+changing workspaces replaces the same profile. Revert deletes that file and entry.
+Unrelated profiles and metadata are preserved. Only the previous selection is saved
+in `~/.ucode/claude-desktop.json`; profile contents are not restored on revert.
+Old random-ID and workspace-derived profiles are left untouched.
+Desktop setup is configure-only and best-effort. Writes retain atomic replacement,
+failure rollback, and the Desktop-only five-second lock timeout.
+Desktop filters both static and discovered model IDs with case-insensitive `\bclaude-`;
+shared discovery and Claude Code lists are unchanged. If no IDs match, setup warns without writes.
+See `docs/claude-desktop.md` for native validation limits and revert behavior.
 
 <details>
 <summary>Codex</summary>
