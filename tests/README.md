@@ -182,6 +182,17 @@ after successful and failed login attempts; `test_mcp_proxy.py` checks fresh tok
 on async post-login retries. These checks do not establish live login or
 launch-time savings.
 
+Shared-host workspaces (one host serving several workspaces, selected by `?o=<workspace id>`):
+`test_databricks.py` covers reading the `?o=` selector and resolving the workspace's own host
+from the unauthenticated OIDC discovery issuer, including non-HTTPS, account-level, malformed,
+and failed responses. `test_cli.py` covers `--workspace` with a selector and `--profile` with a
+`workspace_id`: resolution to the workspace host, dropping a profile that points at the shared
+host, dropping a selector on the workspace's own host, no lookup without a workspace id, and
+keeping the URL as given when the lookup fails. `test_state.py` covers copying the workspace's
+entry under the shared host on every save, re-pointing the alias to another workspace, removing
+it on clear, dry run, and a malformed alias map. The discovery request is stubbed. No live CI
+journey covers this, because the CI workspace is not behind a shared host.
+
 `test_mcp_web_search_concurrency.py` drives the real stdio dispatcher with controlled
 HTTP and authentication boundaries. It covers concurrent results and catalog requests,
 the four-worker limit, active and queued cancellation, isolated worker errors, and

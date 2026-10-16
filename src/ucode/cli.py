@@ -77,7 +77,10 @@ from ucode.databricks import (
     probe_unity_gateway_capabilities,
     resolve_pat_token,
     resolve_provider_launch_model,
+    resolve_workspace_host,
     run_databricks_login,
+    workspace_origin,
+    workspace_url_org_id,
 )
 from ucode.managed_budget import (
     budget_usage_percent,
@@ -155,6 +158,7 @@ from ucode.state import (
     is_self_managed,
     load_full_state,
     load_state,
+    record_workspace_alias,
     remove_self_managed_agent,
     save_state,
     set_current_workspace,
@@ -442,7 +446,7 @@ def _parse_workspace_option(workspace: str) -> list[tuple[str, str | None]]:
         url = normalize_workspace_url(workspace)
     except ValueError as exc:
         raise RuntimeError(str(exc)) from exc
-    return [(url, None)]
+    return [_resolve_shared_host(url, None, workspace_url_org_id(url))]
 
 
 def _parse_profile_option(profile: str) -> list[tuple[str, str | None]]:
@@ -475,7 +479,36 @@ def _parse_profile_option(profile: str) -> list[tuple[str, str | None]]:
         workspace = normalize_workspace_url(host)
     except ValueError as exc:
         raise RuntimeError(str(exc)) from exc
-    return [(workspace, name)]
+    workspace_id = str(entry.get("workspace_id") or "").strip()
+    return [_resolve_shared_host(workspace, name, workspace_id if workspace_id.isdigit() else None)]
+
+
+def _resolve_shared_host(
+    workspace: str, profile: str | None, workspace_id: str | None
+) -> tuple[str, str | None]:
+    """Swap a host shared by several workspaces for the selected workspace's own host.
+
+    ``workspace_id`` comes from the URL's ``?o=`` selector or the profile's ``workspace_id``.
+    When it names a workspace served from another host, that host is configured and the shared
+    host is recorded as an alias of it. The profile is dropped then: it addresses the shared host,
+    so a login for the workspace host must not rewrite it. When the lookup fails, the URL is used
+    as given.
+    """
+    if workspace_id is None:
+        return workspace, profile
+    shared = workspace_origin(workspace)
+    host = resolve_workspace_host(workspace, workspace_id)
+    if host is None:
+        print_warning(
+            f"Could not look up the host of workspace {workspace_id} behind {shared}; "
+            f"using {workspace} as given."
+        )
+        return workspace, profile
+    if host == shared:
+        return shared, profile
+    print_note(f"Workspace {workspace_id} on {shared} is served by {host}; configuring {host}.")
+    record_workspace_alias(shared, host)
+    return host, None
 
 
 def configure_shared_state(

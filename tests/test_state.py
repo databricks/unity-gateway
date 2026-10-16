@@ -9,8 +9,10 @@ import pytest
 
 import ucode.state as state_mod
 from ucode.state import (
+    ALIAS_OF_KEY,
     SELF_MANAGED_AGENTS_KEY,
     STATE_VERSION,
+    WORKSPACE_ALIASES_KEY,
     add_self_managed_agent,
     build_agent_state,
     clear_state,
@@ -22,6 +24,7 @@ from ucode.state import (
     load_full_state,
     load_state,
     mark_tool_managed,
+    record_workspace_alias,
     remove_self_managed_agent,
     save_state,
     self_managed_agents,
@@ -167,6 +170,106 @@ class TestClearState:
 
     def test_clear_when_no_state_is_noop(self):
         clear_state()  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# shared-host workspace aliases
+# ---------------------------------------------------------------------------
+
+SHARED_WS = "https://shared.databricks.com"
+OTHER_WS = "https://other.databricks.com"
+
+
+class TestWorkspaceAliases:
+    def test_save_mirrors_entry_under_alias(self):
+        record_workspace_alias(SHARED_WS, FAKE_WS)
+        save_state({"workspace": FAKE_WS, "claude_models": {"opus": "system.ai.opus"}})
+
+        full = load_full_state()
+        assert full["current_workspace"] == FAKE_WS
+        assert full[WORKSPACE_ALIASES_KEY] == {SHARED_WS: FAKE_WS}
+        alias = full["workspaces"][SHARED_WS]
+        assert alias == {**full["workspaces"][FAKE_WS], ALIAS_OF_KEY: FAKE_WS}
+        # The copy keeps the workspace's own host, which readers use for gateway calls.
+        assert alias["workspace"] == FAKE_WS
+        assert alias["claude_models"] == {"opus": "system.ai.opus"}
+
+    def test_later_saves_refresh_the_copy(self):
+        record_workspace_alias(SHARED_WS, FAKE_WS)
+        save_state({"workspace": FAKE_WS, "claude_models": {"opus": "old"}})
+        save_state({"workspace": FAKE_WS, "claude_models": {"opus": "new"}})
+
+        assert load_full_state()["workspaces"][SHARED_WS]["claude_models"] == {"opus": "new"}
+
+    def test_recording_mirrors_an_already_configured_workspace(self):
+        save_state({"workspace": FAKE_WS, "claude_models": {"opus": "o"}})
+
+        record_workspace_alias(SHARED_WS, FAKE_WS)
+
+        full = load_full_state()
+        assert full["workspaces"][SHARED_WS][ALIAS_OF_KEY] == FAKE_WS
+        assert full["workspaces"][SHARED_WS]["claude_models"] == {"opus": "o"}
+
+    def test_saving_another_workspace_leaves_alias_alone(self):
+        record_workspace_alias(SHARED_WS, FAKE_WS)
+        save_state({"workspace": FAKE_WS, "claude_models": {"opus": "o"}})
+        save_state({"workspace": OTHER_WS, "claude_models": {"opus": "x"}})
+
+        full = load_full_state()
+        assert full["workspaces"][SHARED_WS]["workspace"] == FAKE_WS
+        assert full["workspaces"][SHARED_WS]["claude_models"] == {"opus": "o"}
+
+    def test_repointing_alias_drops_the_previous_copy(self):
+        record_workspace_alias(SHARED_WS, FAKE_WS)
+        save_state({"workspace": FAKE_WS})
+
+        record_workspace_alias(SHARED_WS, OTHER_WS)
+
+        full = load_full_state()
+        assert full[WORKSPACE_ALIASES_KEY] == {SHARED_WS: OTHER_WS}
+        assert SHARED_WS not in full["workspaces"]
+        save_state({"workspace": OTHER_WS})
+        assert load_full_state()["workspaces"][SHARED_WS][ALIAS_OF_KEY] == OTHER_WS
+
+    def test_clear_removes_the_workspace_aliases(self):
+        record_workspace_alias(SHARED_WS, FAKE_WS)
+        record_workspace_alias("https://kept.databricks.com", OTHER_WS)
+        save_state({"workspace": OTHER_WS})
+        save_state({"workspace": FAKE_WS})
+
+        clear_state()
+
+        full = load_full_state()
+        assert SHARED_WS not in full["workspaces"]
+        assert full[WORKSPACE_ALIASES_KEY] == {"https://kept.databricks.com": OTHER_WS}
+        assert "https://kept.databricks.com" in full["workspaces"]
+
+    def test_record_respects_dry_run(self):
+        import ucode.config_io as config_io_mod
+
+        config_io_mod.set_dry_run(True)
+        try:
+            record_workspace_alias(SHARED_WS, FAKE_WS)
+            assert not state_mod.STATE_PATH.exists()
+        finally:
+            config_io_mod.set_dry_run(False)
+
+    def test_malformed_alias_map_is_ignored(self):
+        state_mod.STATE_PATH.write_text(
+            json.dumps(
+                {
+                    "state_version": STATE_VERSION,
+                    "current_workspace": None,
+                    "workspaces": {},
+                    WORKSPACE_ALIASES_KEY: ["not", "a", "map"],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        save_state({"workspace": FAKE_WS})
+
+        assert set(load_full_state()["workspaces"]) == {FAKE_WS}
 
 
 class TestProviderService:
