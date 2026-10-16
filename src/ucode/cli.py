@@ -2643,16 +2643,11 @@ def claude_router_hook_cmd(
         token=token,
         available_models=model or [],
         audit_decision=True,
+        # Hooks persisted by earlier UG versions still call route-subagent and expect a
+        # PreToolUse response; the mod's route-subagent-mod event takes the plain details.
+        hook_output=event == "route-subagent",
     )
     if output is not None:
-        if event == "route-subagent":
-            output = {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "allow",
-                    "updatedInput": output["updatedInput"],
-                }
-            }
         sys.stdout.write(json.dumps(output))
 
 

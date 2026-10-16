@@ -23,7 +23,8 @@ input and show a diagnostic. Other mods and Claude's permission checks still run
 Launch settings pass the command's argument list through the native `routeCommand`
 plugin option, including the workspace, profile/PAT selection, and offered model IDs.
 SessionStart/SubagentStart audit hooks remain; the old routing PreToolUse hook is
-removed so the same call cannot be routed twice. UI details last for the loaded
+removed so the same call cannot be routed twice. A `route-subagent` hook that an earlier
+UG version persisted still gets its PreToolUse response and plain-text notice. UI details last for the loaded
 mod's lifetime; a plugin reload does not restore earlier routing annotations.
 
 `constants.ts` holds the values the mod shares with UG's CLI and the gateway: the recipe

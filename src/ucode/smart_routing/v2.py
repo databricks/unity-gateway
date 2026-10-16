@@ -490,8 +490,13 @@ def route_claude_subagent(
     token: str,
     available_models: list[str],
     audit_decision: bool = False,
+    hook_output: bool = False,
 ) -> dict | None:
-    """Return a routed Agent input and UI details using the shared Python client."""
+    """Return a routed Agent input and UI details using the shared Python client.
+
+    ``hook_output`` returns the legacy PreToolUse hook response instead, with its plain-text
+    notice, for hooks that earlier UG versions persisted in settings files.
+    """
     route = routing.resolve_spawn_route(
         payload,
         is_spawn_agent=claude_routing.is_spawn_agent_tool,
@@ -511,14 +516,34 @@ def route_claude_subagent(
             route.decision,
             route.routed_model,
         )
+    updated_input = {
+        **{key: value for key, value in route.tool_input.items() if key != "model"},
+        "subagent_type": _routed_claude_agent_name(route.routed_model),
+    }
+    orchestrator_enabled = orchestrator.enabled(agent=AGENT_CLAUDE)
+    if hook_output:
+        agent_name = updated_input["subagent_type"]
+        if orchestrator_enabled:
+            agent_name += " [orchestrator on]"
+        routing_message = claude_routing.SUBAGENT_NOTICE_CONFIG.message(
+            route.decision,
+            route.routed_model,
+            {**updated_input, "subagent_type": agent_name},
+        )
+        return {
+            "systemMessage": routing_message,
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "allow",
+                "updatedInput": updated_input,
+                "permissionDecisionReason": routing_message,
+            },
+        }
     return {
-        "updatedInput": {
-            **{key: value for key, value in route.tool_input.items() if key != "model"},
-            "subagent_type": _routed_claude_agent_name(route.routed_model),
-        },
+        "updatedInput": updated_input,
         "model": route.routed_model,
         "rationale": route.decision.rationale,
-        "orchestrator": orchestrator.enabled(agent=AGENT_CLAUDE),
+        "orchestrator": orchestrator_enabled,
     }
 
 

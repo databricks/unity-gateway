@@ -804,25 +804,40 @@ class TestSubagentRouting:
                 None,
             ),
         )
-        output = v2.route_claude_subagent(
-            {
-                "tool_name": "Agent",
-                "tool_input": {
-                    "description": "Create a proof file",
-                    "subagent_type": requested_agent,
-                    "prompt": "Write a small proof file.",
-                },
+        payload = {
+            "tool_name": "Agent",
+            "tool_input": {
+                "description": "Create a proof file",
+                "subagent_type": requested_agent,
+                "prompt": "Write a small proof file.",
             },
-            workspace="https://example.com",
-            token="token",
-            available_models=[selected_model, "system.ai.glm-5-3-flash"],
-        )
+        }
+
+        def route(**kwargs):
+            return v2.route_claude_subagent(
+                payload,
+                workspace="https://example.com",
+                token="token",
+                available_models=[selected_model, "system.ai.glm-5-3-flash"],
+                **kwargs,
+            )
 
         # The mod labels the row from updatedInput, so it names the dispatched agent.
+        output = route()
         assert output["updatedInput"]["subagent_type"] == routed_agent
         assert output["model"] == selected_model
         assert requested_agent not in json.dumps(output)
         assert output["orchestrator"] is (orchestrator_enabled == "1")
+
+        # Hooks persisted by earlier UG versions keep their PreToolUse response and notice.
+        legacy = route(hook_output=True)
+        hook = legacy["hookSpecificOutput"]
+        assert hook["permissionDecision"] == "allow"
+        assert hook["updatedInput"] == output["updatedInput"]
+        for notice in (legacy["systemMessage"], hook["permissionDecisionReason"]):
+            assert f"Subagent:{routed_agent}" in "".join(notice.split())
+            assert requested_agent not in notice
+            assert ("[orchestrator on]" in notice) == (orchestrator_enabled == "1")
 
     def test_writes_routed_agents_as_launch_scoped_plugin(self, tmp_path):
         plugin_dir = tmp_path / "routing-plugin"

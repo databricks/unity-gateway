@@ -1149,16 +1149,18 @@ class TestSubcommandRouting:
     def test_claude_v2_subagent_hook_uses_v2_router(self, monkeypatch):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
         routed = {
+            "systemMessage": "Smart Router notice",
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "allow",
                 "updatedInput": {"prompt": "fix it", "model": "opus"},
-            }
+                "permissionDecisionReason": "Smart Router notice",
+            },
         }
         with (
             patch(
                 "ucode.cli.smart_routing_v2.route_claude_subagent",
-                return_value={"updatedInput": routed["hookSpecificOutput"]["updatedInput"]},
+                return_value=routed,
             ) as mock_v2_route,
         ):
             result = runner.invoke(
@@ -1177,7 +1179,9 @@ class TestSubcommandRouting:
 
         assert result.exit_code == 0, result.output
         assert json.loads(result.output) == routed
+        # A hook persisted by an earlier UG version gets its PreToolUse response and notice.
         mock_v2_route.assert_called_once()
+        assert mock_v2_route.call_args.kwargs["hook_output"] is True
 
     @pytest.mark.parametrize("enabled", [False, True])
     def test_claude_mod_route_respects_session_controls(self, tmp_path, monkeypatch, enabled):
@@ -1223,6 +1227,7 @@ class TestSubcommandRouting:
                 token="token",
                 available_models=["system.ai.claude-opus-4-8"],
                 audit_decision=True,
+                hook_output=False,
             )
         else:
             assert result.output == ""
