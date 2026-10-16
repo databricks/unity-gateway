@@ -1,7 +1,8 @@
 # Claude Desktop through Unity Gateway
 
 After Claude Code is successfully configured, `ug configure` also creates and
-selects a dedicated Unity Gateway profile for Claude Desktop on macOS, Windows, and Linux. This uses
+selects a `Unity Gateway - <CLI profile name>` profile for Claude Desktop on macOS,
+Windows, and Linux. This uses
 the same workspace, Databricks CLI OAuth profile, model source, and managed HTTP
 headers as Claude Code. There is no separate Desktop checkbox or managed field.
 
@@ -41,33 +42,39 @@ Profiles use Anthropic's [documented locations](https://claude.com/docs/third-pa
 Older Windows releases used `%APPDATA%\Claude-3p`; update and open Desktop to let
 the app migrate its data before configuring. UG does not move app data.
 
-UG records its UUID and
-ownership separately in `~/.ucode/claude-desktop.json`. It never adopts a profile
-just because its name is "Unity Gateway" or its UUID matches. The profile ID is
-a UUIDv5 derived from the normalized workspace URL in a UG-specific namespace.
+The profile ID is a UUIDv5 derived from the normalized workspace URL in a UG-specific
+namespace. UG manages that UUID: configure creates it if absent and refreshes it if
+present, regardless of prior ownership records. Revert baselines are stored separately
+in `~/.ucode/claude-desktop.json`.
 The same workspace has the same ID across machines; different workspaces have
-different IDs. Changing the Databricks CLI profile updates the helper rather
-than creating another Desktop profile.
+different IDs. Changing the Databricks CLI profile updates the display name and
+helper rather than creating another Desktop profile. Reconfigure also upgrades
+profiles at that UUID named just "Unity Gateway".
 
 If the UG profile is deleted in Desktop, running `ug configure` recreates it with
-the same ID and selects it again. Older UG-owned random-ID profiles migrate to
-the deterministic ID, preserving unknown fields. A conflicting unowned profile
-or multiple legacy ownership records cause a warning without overwriting them.
+the same ID and selects it again. Old random-ID profiles and their metadata entries
+are left untouched; configure does not migrate or remove them.
 
 Running `ug configure` again replaces UG-owned fields, including values edited or
 deleted in Desktop. Other profiles and unknown fields are preserved. Previously
 managed optional fields retain their last UG value when configure omits them;
-optional fields UG has never written remain user-owned. Renaming the UG metadata
-entry still causes a conflict warning.
+optional fields UG has never written remain user-owned. Configure updates the managed
+metadata entry and selection even if that entry was renamed or no ownership record exists.
 
 `ug revert` restores UG-owned changes for the current workspace and preserves edits
 and profile selections made after the latest configure. Profiles configured for
 other workspaces remain untouched.
+Repeated configure retains the original profile and metadata-entry baselines for
+revert, including when the UUID profile existed before UG recorded it.
 After recreating a deleted profile, revert restores the selection that was active
 immediately before recreation.
 If Desktop revert fails, UG keeps its state so the operation can be retried. Files
 are replaced atomically one at a time with best-effort rollback on write failure;
 this is not a crash-atomic transaction across the app and ownership files.
+Profile configure/revert waits at most five seconds to acquire its file lock.
+If another update holds it longer, UG warns without changing profile or ownership
+files; finish the other operation and retry. The timeout does not interrupt the
+operation already holding the lock.
 
 Desktop failures are warnings: successful Claude Code setup still returns exit 0.
 `--dry-run` performs no Desktop discovery or writes. Removing Claude from managed
@@ -89,7 +96,7 @@ orchestration; they do not prove GUI inference on every app version.
   supports Ubuntu 22.04+ and Debian 12+. Cowork additionally requires QEMU/KVM.
 - A profile selection is not proof that a fresh ordinary installation has switched
   to third-party inference mode. Fresh-install activation remains a native test gate.
-- The exported `alwaysStartWithDefaultModel` boolean does not identify a model.
+- UG does not configure Desktop's default-model selection.
   Inheriting a particular Claude Code default needs further native evidence; UG
   does not guess a field or claim that list order selects the default.
 - Inspected Desktop code rejects model IDs containing other vendors' model names,

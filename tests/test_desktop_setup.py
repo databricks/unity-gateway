@@ -1,19 +1,31 @@
 """Configure-only orchestration with real temporary Desktop profile files."""
 
 import json
+import uuid
 from types import SimpleNamespace
 
 import pytest
 
 from ucode import desktop_setup
 from ucode.agents.desktop import claude as claude_desktop
+from ucode.agents.desktop import claude_config as desktop_config
 from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER, MODEL_SERVICE_PARENT_SCHEMA_HEADER
 from ucode.databricks import AnthropicModelCatalog
 
 
 @pytest.fixture(params=["darwin", "win32", "linux"])
 def desktop(request, monkeypatch, tmp_path):
-    directory = tmp_path / "Claude-3p" / "configLibrary"
+    home = tmp_path / "home"
+    local_app_data = tmp_path / "relocated local app data"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    roots = {
+        "darwin": home / "Library" / "Application Support" / "Claude-3p",
+        "win32": local_app_data / "Claude-3p",
+        "linux": home / ".config" / "Claude-3p",
+    }
+    directory = roots[request.param] / "configLibrary"
     directory.mkdir(parents=True)
     (directory / "_meta.json").write_text(json.dumps({"entries": []}))
     monkeypatch.setattr(
@@ -23,8 +35,7 @@ def desktop(request, monkeypatch, tmp_path):
             platform=request.param, executable=str(tmp_path / "venv with spaces" / "python")
         ),
     )
-    monkeypatch.setattr(desktop_setup, "claude_desktop_directory", lambda: directory)
-    monkeypatch.setattr(claude_desktop, "claude_desktop_directory", lambda: directory)
+    monkeypatch.setattr(claude_desktop, "sys", SimpleNamespace(platform=request.param))
     monkeypatch.setattr(claude_desktop, "APP_DIR", tmp_path / "ug")
     monkeypatch.setattr(
         desktop_setup, "get_databricks_token", lambda host, profile: "component-token"
@@ -45,19 +56,21 @@ def configured_profile(directory):
     return json.loads((directory / f"{metadata['appliedId']}.json").read_text())
 
 
-def test_configure_uses_full_gateway_catalog_and_absolute_helper(desktop):
+def test_configure_uses_full_gateway_catalog_and_absolute_helper(desktop, tmp_path):
     desktop_setup.configure_desktop_after_claude(
         {"workspace": "https://workspace.example/", "profile": "chosen-profile"}
     )
+    metadata = json.loads((desktop / "_meta.json").read_text())
+    assert metadata["entries"] == [
+        {"id": metadata["appliedId"], "name": "Unity Gateway - chosen-profile"}
+    ]
     profile = configured_profile(desktop)
     assert profile["inferenceModels"] == [
         {"name": "system.ai.claude-haiku-4-5"},
         {"name": "system.ai.oss-model"},
     ]
     assert profile["inferenceGatewayBaseUrl"] == "https://workspace.example/ai-gateway/anthropic"
-    assert profile["inferenceCredentialHelper"] == str(
-        desktop.parent.parent / "venv with spaces" / "python"
-    )
+    assert profile["inferenceCredentialHelper"] == str(tmp_path / "venv with spaces" / "python")
     assert profile["inferenceCredentialHelperArgs"] == [
         "-m",
         "ucode.cli",
@@ -70,7 +83,7 @@ def test_configure_uses_full_gateway_catalog_and_absolute_helper(desktop):
     assert "component-token" not in json.dumps(profile)
 
 
-def test_reconfigure_refreshes_existing_profile_without_deletion(desktop, capsys):
+def test_reconfigure_refreshes_existing_profile_without_deletion(desktop, capsys, tmp_path):
     state = {"workspace": "https://workspace.example", "profile": "chosen-profile"}
     desktop_setup.configure_desktop_after_claude(state)
     metadata_path = desktop / "_meta.json"
@@ -96,12 +109,11 @@ def test_reconfigure_refreshes_existing_profile_without_deletion(desktop, capsys
     )
 
     refreshed = configured_profile(desktop)
+    original_metadata["entries"][0]["name"] = "Unity Gateway - updated-profile"
     assert json.loads(metadata_path.read_text()) == original_metadata
     assert refreshed["inferenceModels"] == [{"name": "main.models.new"}]
     assert refreshed["inferenceGatewayBaseUrl"] == "https://workspace.example/ai-gateway/anthropic"
-    assert refreshed["inferenceCredentialHelper"] == str(
-        desktop.parent.parent / "venv with spaces" / "python"
-    )
+    assert refreshed["inferenceCredentialHelper"] == str(tmp_path / "venv with spaces" / "python")
     assert refreshed["inferenceCredentialHelperArgs"][-2:] == ["--profile", "updated-profile"]
     assert refreshed["inferenceCustomHeaders"] == {
         "x-databricks-use-coding-agent-mode": "true",
@@ -115,6 +127,33 @@ def test_reconfigure_refreshes_existing_profile_without_deletion(desktop, capsys
     output = capsys.readouterr().out
     assert "gateway profile configured" in output
     assert "Could not configure Claude Desktop" not in output
+
+
+def test_configure_overwrites_workspace_uuid_without_ownership_record(desktop, capsys):
+    profile_id = str(uuid.uuid5(claude_desktop.PROFILE_NAMESPACE, "https://workspace.example"))
+    profile_path = desktop / f"{profile_id}.json"
+    original_profile = {"inferenceProvider": "old-provider", "userOwned": {"keep": True}}
+    profile_path.write_text(json.dumps(original_profile))
+    original_metadata = {
+        "appliedId": profile_id,
+        "entries": [{"id": profile_id, "name": "Old label"}],
+        "userMetadata": "keep",
+    }
+    (desktop / "_meta.json").write_text(json.dumps(original_metadata))
+    state = {"workspace": "https://workspace.example", "profile": "chosen-profile"}
+
+    desktop_setup.configure_desktop_after_claude(state)
+
+    metadata = json.loads((desktop / "_meta.json").read_text())
+    assert metadata["entries"] == [{"id": profile_id, "name": "Unity Gateway - chosen-profile"}]
+    assert metadata["userMetadata"] == "keep"
+    assert configured_profile(desktop)["inferenceProvider"] == "gateway"
+    assert configured_profile(desktop)["userOwned"] == {"keep": True}
+    assert "Could not configure Claude Desktop" not in capsys.readouterr().out
+
+    assert desktop_setup.revert_desktop(state) == "restored"
+    assert json.loads(profile_path.read_text()) == original_profile
+    assert json.loads((desktop / "_meta.json").read_text()) == original_metadata
 
 
 def test_managed_static_catalog_does_not_fetch_discovery(desktop, monkeypatch):
@@ -207,6 +246,33 @@ def test_discovery_failure_is_warning_and_preserves_profile(desktop, monkeypatch
     assert "Discovery unavailable" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("operation", ["configure", "revert"])
+def test_profile_lock_timeout_warns_and_preserves_state(desktop, monkeypatch, capsys, operation):
+    state = {"workspace": "https://workspace.example", "profile": "chosen-profile"}
+    desktop_setup.configure_desktop_after_claude(state)
+    before = {path.name: path.read_bytes() for path in desktop.glob("*.json")}
+    manifest_path = claude_desktop.APP_DIR / claude_desktop.MANIFEST_FILENAME
+    manifest_before = manifest_path.read_bytes()
+    capsys.readouterr()
+
+    def time_out(handle, *, timeout):
+        assert timeout == 5
+        raise TimeoutError("Lock is held by another operation")
+
+    monkeypatch.setattr(desktop_config, "acquire_exclusive_file_lock", time_out)
+    if operation == "configure":
+        desktop_setup.configure_desktop_after_claude(state)
+    else:
+        assert desktop_setup.revert_desktop(state) == "failed"
+
+    assert {path.name: path.read_bytes() for path in desktop.glob("*.json")} == before
+    assert manifest_path.read_bytes() == manifest_before
+    output = capsys.readouterr().out
+    assert f"Could not {operation} Claude Desktop" in output
+    assert "Timed out waiting" in output
+    assert "retry" in output
+
+
 def test_dry_run_does_not_discover_or_create_profiles(desktop, monkeypatch):
     monkeypatch.setattr(desktop_setup, "is_dry_run", lambda: True)
     before = {p.name: p.read_bytes() for p in desktop.glob("*.json")}
@@ -225,9 +291,15 @@ def test_unsupported_platform_does_not_configure_desktop(monkeypatch, capsys):
 
 @pytest.mark.parametrize("platform", ["win32", "linux"])
 def test_missing_app_warns_before_model_discovery(platform, monkeypatch, tmp_path, capsys):
-    directory = tmp_path / "missing-app" / "configLibrary"
+    home = tmp_path / "home"
+    local_app_data = tmp_path / "local app data"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    root = local_app_data / "Claude-3p" if platform == "win32" else home / ".config" / "Claude-3p"
+    directory = root / "configLibrary"
     monkeypatch.setattr(desktop_setup, "sys", SimpleNamespace(platform=platform))
-    monkeypatch.setattr(desktop_setup, "claude_desktop_directory", lambda: directory)
+    monkeypatch.setattr(claude_desktop, "sys", SimpleNamespace(platform=platform))
 
     def reject_token_fetch(*_args):
         pytest.fail("Missing Desktop must be detected before external authentication")

@@ -172,10 +172,15 @@ the `_comment` notice field, GUI/helper/browser behavior, and inference remain u
 these component checks do not establish native Windows or Linux support.
 
 `test_desktop_setup.py` exercises configure, refresh, deleted-profile recovery,
-dry-run, and revert with simulated macOS, Windows, and Linux selections. The helper
+dry-run, and revert with native path resolution under temporary homes on simulated macOS,
+Windows, and Linux, without replacing the path resolver. The helper
 executable uses an absolute host-native path containing spaces. Missing Windows/Linux
 app data fails before external authentication or model discovery, and revert without
 Desktop ownership leaves existing settings untouched. These remain component checks.
+They also assert `Unity Gateway - <CLI profile name>` labels, label refresh without
+changing the UUID, and configure/revert warnings on profile-lock timeout without
+changing profile or ownership files. An existing generated UUID with no ownership record
+is refreshed, with its original profile and metadata restored by revert.
 
 `TestChildStdoutLaunch` in `test_cli.py` checks Claude `-p`/`--print` and Codex `exec`
 (plain and `--json`) and `app-server` status/error output on stderr, argument forwarding with
