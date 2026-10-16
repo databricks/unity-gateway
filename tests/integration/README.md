@@ -344,6 +344,29 @@ release. New lock-wait limits are scoped to Desktop profile updates; existing
 non-Desktop callers retain their prior behavior. These are component checks, not
 native browser-consent coverage.
 
+`../test_desktop_setup.py` separately exercises configure/refresh/recovery,
+successful setup without the default-model warning, recoverable setup failures that still warn,
+dry-run, and revert using native path resolution under temporary homes on simulated macOS,
+Windows, and Linux, without replacing the path resolver, including
+host-native absolute helper paths with spaces and missing-app checks before
+authentication/discovery. Revert without a UG profile preserves existing files.
+These checks do not launch the Desktop GUI or its credential helper.
+They also cover CLI profile labels, workspace switches with a fixed UUID, and
+configure/revert warnings that preserve profile and selection-state files on lock timeout.
+An existing reserved UUID without records is replaced on configure and deleted on revert;
+these remain filesystem component checks.
+CLI revert clears workspace state even when Desktop cleanup fails. A component
+regression verifies that a lock failure preserves Desktop files and selection state,
+then retry restores the previous selection without workspace state. This does not
+establish native Desktop coverage.
+
+Model-source tests require Desktop-only, case-insensitive `\bclaude-` filtering
+instead of copying every catalog entry. Mixed static/discovered lists exclude GPT/OSS
+aliases and lookalikes while preserving Claude IDs, order, duplicates, and source lists.
+Empty filtered lists warn and preserve all existing profile, metadata, and selection-state
+files, or leave fresh installs untouched. Tests cover modern, Bedrock, Vertex, and custom
+Claude-named routes; they do not verify the model behind a name.
+
 ## Test layout and format
 
 All user journeys are top-level tests. There is no separate regressions category:

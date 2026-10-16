@@ -171,6 +171,28 @@ Existing CLI URL normalization is unchanged. Native Desktop activation, acceptan
 the `_comment` notice field, GUI/helper/browser behavior, and inference remain untested;
 these component checks do not establish native Windows or Linux support.
 
+`test_desktop_setup.py` exercises configure, refresh, deleted-profile recovery,
+successful setup without the default-model warning, recoverable setup failures that still warn,
+dry-run, and revert with native path resolution under temporary homes on simulated macOS,
+Windows, and Linux, without replacing the path resolver. The helper
+executable uses an absolute host-native path containing spaces. Missing Windows/Linux
+app data fails before external authentication or model discovery, and revert without
+a UG profile leaves existing settings untouched. These remain component checks.
+They also assert `Unity Gateway - <CLI profile name>` labels, label refresh without
+changing the UUID, and configure/revert warnings on profile-lock timeout without
+changing profile or selection-state files. An existing reserved UUID without records
+is replaced on configure and deleted on revert. Workspace changes reuse the same file.
+CLI revert clears workspace state even when Desktop cleanup fails. A lock-failure
+regression verifies that Desktop files and previous-selection state survive, then
+retry deletes the UG profile and restores the previous selection without workspace state.
+
+Model-source tests require Desktop-only, case-insensitive `\bclaude-` filtering
+instead of copying every catalog entry. Mixed static/discovered lists exclude GPT/OSS
+aliases and lookalikes while preserving Claude IDs, order, duplicates, and source lists.
+Empty filtered lists warn and preserve all existing profile, metadata, and selection-state
+files, or leave fresh installs untouched. Tests cover modern, Bedrock, Vertex, and custom
+Claude-named routes; they do not verify the model behind a name.
+
 `TestChildStdoutLaunch` in `test_cli.py` checks Claude `-p`/`--print` and Codex `exec`
 (plain and `--json`) and `app-server` status/error output on stderr, argument forwarding with
 and without ug's `--`, and an unchanged stdout descriptor. Detection checks exact tokens before
