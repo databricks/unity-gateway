@@ -123,7 +123,7 @@ Claude-named IDs; Claude Code's catalog is unchanged. Desktop setup errors warn
 without failing Claude Code configuration. See [Claude Desktop setup](docs/claude-desktop.md)
 for authentication, profile preservation, and native validation limits.
 When managed Claude tracing is enabled, the same profile configures Desktop's native
-OTLP trace export with inference credentials; no additional service is needed.
+OTLP trace export with a refreshing headers helper; no background service is needed.
 
 ## MCP Servers
 

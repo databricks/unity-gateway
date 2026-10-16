@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
+import stat
 import tempfile
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
@@ -63,6 +65,7 @@ def render_profile(
     model_id_to_display_name: Mapping[str, str] | None = None,
     custom_headers: Mapping[str, str] | None = None,
     otel_endpoint: str | None = None,
+    otel_headers_helper: Path | None = None,
 ) -> dict[str, object]:
     """Render resolved models, headers, and literal helper arguments in Desktop's schema."""
 
@@ -90,14 +93,26 @@ def render_profile(
     }
     if custom_headers is not None:
         profile["inferenceCustomHeaders"] = dict(custom_headers)
-    if otel_endpoint:
+    if otel_endpoint and otel_headers_helper is not None:
         profile.update(
             otlpEndpoint=otel_endpoint,
             otlpProtocol="http/protobuf",
-            otlpAuthMode="inference-credential",
+            otlpHeadersHelper=os.fspath(otel_headers_helper),
             otlpTracesEnabled=True,
         )
     return profile
+
+
+def render_otel_helper(command: Sequence[str], *, windows: bool) -> str:
+    if not command:
+        raise ClaudeDesktopError("Claude Desktop OTEL headers command is required.")
+    if not windows:
+        return f"#!/bin/sh\nexec {shlex.join(command)}\n"
+    if any(character in argument for argument in command for character in '"\r\n\0'):
+        raise ClaudeDesktopError("Claude Desktop OTEL helper arguments contain invalid characters.")
+    # Quote every argument for cmd.exe, including metacharacters without spaces.
+    quoted = " ".join('"' + argument.replace("%", "%%") + '"' for argument in command)
+    return f"@echo off\r\nsetlocal DisableDelayedExpansion\r\n{quoted}\r\n"
 
 
 @contextmanager
@@ -184,7 +199,7 @@ def is_uuid(value: str) -> bool:
 
 
 def write_configuration(
-    changes: Sequence[tuple[Path, bytes | None, Mapping[str, object] | None]],
+    changes: Sequence[tuple[Path, bytes | None, Mapping[str, object] | str | None]],
 ) -> bool:
     """Apply file changes, restoring exact original bytes if any write fails."""
 
@@ -194,13 +209,21 @@ def write_configuration(
                 "Claude Desktop configuration changed during setup. Quit Claude Desktop and retry."
             )
     originals = {path: before for path, before, _after in changes}
+    modes = {
+        path: stat.S_IMODE(path.stat().st_mode) if before is not None else 0o600
+        for path, before, _after in changes
+    }
     written: list[Path] = []
     try:
         for path, before, after in changes:
-            contents = json.dumps(after, indent=2).encode("utf-8") if after is not None else None
-            if before == contents:
+            contents = None
+            if isinstance(after, str):
+                contents = after.encode("utf-8")
+            elif after is not None:
+                contents = json.dumps(after, indent=2).encode("utf-8")
+            if before == contents and (not isinstance(after, str) or modes[path] & stat.S_IXUSR):
                 continue
-            if before is not None and after is not None:
+            if before is not None and isinstance(after, Mapping):
                 try:
                     if json.loads(before) == after:
                         continue
@@ -212,7 +235,7 @@ def write_configuration(
         rollback_errors: list[Exception] = []
         for path in reversed(written):
             try:
-                _restore_original(path, originals[path])
+                _restore_original(path, originals[path], mode=modes[path])
             except Exception as rollback_exc:  # noqa: BLE001
                 rollback_errors.append(rollback_exc)
         if rollback_errors:
@@ -226,7 +249,7 @@ def write_configuration(
     return bool(written)
 
 
-def _write_or_remove(path: Path, payload: Mapping[str, object] | None) -> None:
+def _write_or_remove(path: Path, payload: Mapping[str, object] | str | None) -> None:
     if payload is None:
         try:
             path.unlink()
@@ -235,10 +258,13 @@ def _write_or_remove(path: Path, payload: Mapping[str, object] | None) -> None:
         except OSError as exc:
             raise ClaudeDesktopError(f"Could not remove Claude Desktop profile {path}.") from exc
         return
+    if isinstance(payload, str):
+        _restore_original(path, payload.encode("utf-8"), mode=0o700)
+        return
     atomic_write_json(path, payload)
 
 
-def _restore_original(path: Path, contents: bytes | None) -> None:
+def _restore_original(path: Path, contents: bytes | None, *, mode: int = 0o600) -> None:
     if contents is None:
         _write_or_remove(path, None)
         return
@@ -246,6 +272,7 @@ def _restore_original(path: Path, contents: bytes | None) -> None:
     try:
         with os.fdopen(fd, "wb") as handle:
             handle.write(contents)
+        os.chmod(temporary, mode)
         os.replace(temporary, path)
     finally:
         Path(temporary).unlink(missing_ok=True)

@@ -66,6 +66,7 @@ class _Paths:
     metadata: Path
     state: Path
     lock: Path
+    otel_helper: Path
 
 
 def claude_desktop_root_directory(
@@ -105,11 +106,13 @@ def configure_claude_desktop(
     model_id_to_display_name: Mapping[str, str] | None = None,
     custom_headers: Mapping[str, str] | None = None,
     otel_endpoint: str | None = None,
+    otel_headers_command: Sequence[str] = (),
     state_path: Path | str | None = None,
     profile_key: str | None = None,
 ) -> ConfigureResult:
     """Replace UG's reserved profile, register it, and select it."""
 
+    paths = _resolve_paths(state_path=state_path)
     rendered = render_profile(
         model_ids=model_ids,
         model_id_to_display_name=model_id_to_display_name,
@@ -118,8 +121,13 @@ def configure_claude_desktop(
         helper_args=helper_args,
         custom_headers=custom_headers,
         otel_endpoint=otel_endpoint,
+        otel_headers_helper=paths.otel_helper,
     )
-    paths = _resolve_paths(state_path=state_path)
+    otel_helper = (
+        desktop_config.render_otel_helper(otel_headers_command, windows=sys.platform == "win32")
+        if otel_endpoint
+        else None
+    )
     profile_path = paths.directory / f"{PROFILE_ID}.json"
     with desktop_config.locked(paths.lock):
         profile_before = desktop_config.read_optional_bytes(profile_path)
@@ -138,6 +146,11 @@ def configure_claude_desktop(
         )
         changed = desktop_config.write_configuration(
             [
+                (
+                    paths.otel_helper,
+                    desktop_config.read_optional_bytes(paths.otel_helper),
+                    otel_helper,
+                ),
                 (profile_path, profile_before, rendered),
                 (
                     paths.metadata,
@@ -185,6 +198,11 @@ def revert_claude_desktop(*, state_path: Path | str | None = None) -> RevertResu
                 (profile_path, profile_before, None),
                 (paths.metadata, metadata_before, metadata_after),
                 (paths.state, state_before, None),
+                (
+                    paths.otel_helper,
+                    desktop_config.read_optional_bytes(paths.otel_helper),
+                    None,
+                ),
             ]
         )
         return RevertResult(profile_id=PROFILE_ID if changed else None, changed=changed)
@@ -222,6 +240,9 @@ def _resolve_paths(*, state_path: Path | str | None) -> _Paths:
         metadata=resolved_directory / META_FILENAME,
         state=resolved_state,
         lock=resolved_state.with_name(f".{resolved_state.name}.lock"),
+        otel_helper=resolved_state.with_name(
+            "claude-desktop-otel-headers" + (".cmd" if sys.platform == "win32" else ".sh")
+        ),
     )
 
 

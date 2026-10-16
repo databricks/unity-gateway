@@ -1,6 +1,8 @@
 """Configure-only orchestration with real temporary Desktop profile files."""
 
 import json
+import stat
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -111,13 +113,28 @@ def test_configure_otel_follows_claude_tracing_setting(desktop, source, tracing)
         {
             "otlpEndpoint": "https://workspace.example/ai-gateway/otel",
             "otlpProtocol": "http/protobuf",
-            "otlpAuthMode": "inference-credential",
+            "otlpHeadersHelper": str(
+                claude_desktop.APP_DIR
+                / (
+                    "claude-desktop-otel-headers.cmd"
+                    if desktop_setup.sys.platform == "win32"
+                    else "claude-desktop-otel-headers.sh"
+                )
+            ),
             "otlpTracesEnabled": True,
         }
         if tracing
         else {}
     )
     assert "component-token" not in json.dumps(profile)
+    helpers = list(claude_desktop.APP_DIR.glob("claude-desktop-otel-headers.*"))
+    assert len(helpers) == int(bool(tracing))
+    if tracing:
+        helper = helpers[0].read_text()
+        assert "otel-headers" in helper
+        assert "https://workspace.example/" in helper
+        assert "chosen-profile" in helper
+        assert "component-token" not in helper
     assert state == original_state
 
 
@@ -139,28 +156,41 @@ def test_otel_reconfigure_switch_disable_and_revert_preserve_other_profiles(desk
         "claude_otel_tracing": True,
     }
     desktop_setup.configure_claude_desktop(state)
+    helper_path = Path(configured_profile(desktop)["otlpHeadersHelper"])
+    helper_before = helper_path.read_bytes()
     before = {path.name: path.read_bytes() for path in desktop.glob("*.json")}
     desktop_setup.configure_claude_desktop(state)
     assert {path.name: path.read_bytes() for path in desktop.glob("*.json")} == before
+    assert helper_path.read_bytes() == helper_before
 
     desktop_setup.configure_claude_desktop({**state, "workspace": "https://next.example/"})
     profile = configured_profile(desktop)
     assert profile["otlpEndpoint"] == "https://next.example/ai-gateway/otel"
     assert profile["inferenceGatewayBaseUrl"] == "https://next.example/ai-gateway/anthropic"
+    assert "https://next.example/" in helper_path.read_text()
 
     desktop_setup.configure_claude_desktop({**state, "claude_otel_tracing": False})
     assert not any(key.startswith("otlp") for key in configured_profile(desktop))
+    assert not helper_path.exists()
     desktop_setup.configure_claude_desktop(state)
     assert configured_profile(desktop)["otlpTracesEnabled"] is True
     assert desktop_setup.revert_desktop() == "removed"
     assert not (desktop / f"{claude_desktop.PROFILE_ID}.json").exists()
+    assert not helper_path.exists()
     assert json.loads(previous_path.read_text()) == previous
     assert json.loads(metadata_path.read_text()) == metadata
 
 
-@pytest.mark.parametrize("failed_file", ["profile", "metadata", "state"])
-def test_otel_write_failure_rolls_back_existing_profile(desktop, monkeypatch, failed_file, capsys):
-    state = {"workspace": "https://workspace.example", "profile": "chosen-profile"}
+@pytest.mark.parametrize("failed_file", ["helper", "profile", "metadata", "state"])
+@pytest.mark.parametrize("operation", ["enable", "switch", "disable", "revert"])
+def test_otel_write_failure_rolls_back_existing_profile(
+    desktop, monkeypatch, failed_file, operation, capsys
+):
+    state = {
+        "workspace": "https://workspace.example",
+        "profile": "chosen-profile",
+        "claude_otel_tracing": operation != "enable",
+    }
     desktop_setup.configure_claude_desktop(state)
     metadata_path = desktop / "_meta.json"
     metadata = json.loads(metadata_path.read_text())
@@ -171,11 +201,20 @@ def test_otel_write_failure_rolls_back_existing_profile(desktop, monkeypatch, fa
     metadata_path.write_text(json.dumps(metadata))
     selection_path = claude_desktop.APP_DIR / claude_desktop.STATE_FILENAME
     targets = {
+        "helper": claude_desktop.APP_DIR
+        / (
+            "claude-desktop-otel-headers.cmd"
+            if desktop_setup.sys.platform == "win32"
+            else "claude-desktop-otel-headers.sh"
+        ),
         "profile": desktop / f"{claude_desktop.PROFILE_ID}.json",
         "metadata": metadata_path,
         "state": selection_path,
     }
-    before = {path: path.read_bytes() for path in targets.values()}
+    before = {path: path.read_bytes() if path.exists() else None for path in targets.values()}
+    if operation == "switch":
+        targets["helper"].chmod(0o600)
+    modes = {path: stat.S_IMODE(path.stat().st_mode) for path in targets.values() if path.exists()}
     write = desktop_config._write_or_remove
     failed = False
 
@@ -187,10 +226,24 @@ def test_otel_write_failure_rolls_back_existing_profile(desktop, monkeypatch, fa
         write(path, payload)
 
     monkeypatch.setattr(desktop_config, "_write_or_remove", fail_once)
-    desktop_setup.configure_claude_desktop({**state, "claude_otel_tracing": True})
+    if operation == "revert":
+        assert desktop_setup.revert_desktop() == "failed"
+    else:
+        desktop_setup.configure_claude_desktop(
+            {
+                **state,
+                "workspace": "https://next.example"
+                if operation == "switch"
+                else state["workspace"],
+                "claude_otel_tracing": operation != "disable",
+            }
+        )
 
     assert failed
-    assert {path: path.read_bytes() for path in targets.values()} == before
+    assert {
+        path: path.read_bytes() if path.exists() else None for path in targets.values()
+    } == before
+    assert {path: stat.S_IMODE(path.stat().st_mode) for path in modes} == modes
     assert "rolled back" in capsys.readouterr().out
 
 
