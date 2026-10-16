@@ -1356,9 +1356,18 @@ def _windows_replace(path: Path, desired_text: str) -> None:
     _validate_windows_target(path)
     if not system_cross_os.is_admin():
         raise PermissionError("administrator rights are required")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Again after mkdir: a standard user could have created a missing folder since the last check.
-    _refuse_untrusted_windows_target(path)
+    is_codex = path == windows_codex_requirements_path()
+    if is_codex:
+        root = system_cross_os.windows_program_data_dir()
+        for folder in [entry for entry in reversed(path.parents) if root in entry.parents]:
+            with suppress(FileExistsError):
+                folder.mkdir()
+                # Only folders this process made: owning one a user made would leave them its ACE.
+                system_cross_os.windows_make_administrators_owner(folder)
+        # Again after mkdir: a standard user could have created a missing folder since the last check.
+        _refuse_untrusted_windows_target(path)
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as tmp:
@@ -1368,6 +1377,8 @@ def _windows_replace(path: Path, desired_text: str) -> None:
         with suppress(FileNotFoundError):
             os.unlink(tmp_name)
         raise
+    if is_codex:
+        system_cross_os.windows_make_administrators_owner(path)
 
 
 def _sudo_remove(path: Path) -> None:
