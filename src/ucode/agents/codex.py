@@ -5,14 +5,17 @@ from __future__ import annotations
 import copy
 import hashlib
 import os
+import plistlib
 import re
 import signal
 import socket
+import sys
 import tempfile
 import threading
 from collections.abc import Callable
 from pathlib import Path
-from subprocess import CalledProcessError
+from subprocess import CalledProcessError, list2cmdline
+from xml.sax.saxutils import escape
 
 import tomlkit
 from tomlkit.exceptions import ParseError
@@ -134,7 +137,9 @@ MANAGED_KEYS: list[list[str]] = [
     ["model_providers", CODEX_MODEL_PROVIDER_NAME, "http_headers"],
 ]
 CODEX_OTEL_SERVICE_NAME = "ug-codex-otel.service"
-_CODEX_OTEL_UNIT_MARKER = "# Managed by unity-gateway; do not edit."
+# The LaunchAgent label on macOS and the scheduled task name on Windows.
+CODEX_OTEL_SERVICE_LABEL = "com.databricks.ug-codex-otel"
+_CODEX_OTEL_UNIT_MARKER = "Managed by unity-gateway; do not edit."
 
 LEGACY_MANAGED_KEYS: list[list[str]] = [
     ["profile"],
@@ -607,18 +612,115 @@ def revert_managed_config() -> str:
 
 
 def _otel_service_path() -> Path:
+    system = current_os()
+    if system == OS.MACOS:
+        return Path.home() / "Library" / "LaunchAgents" / f"{CODEX_OTEL_SERVICE_LABEL}.plist"
+    if system == OS.WINDOWS:
+        # Task Scheduler keeps its own copy; this one records ownership, the port, and changes.
+        return APP_DIR / f"{CODEX_OTEL_SERVICE_LABEL}.xml"
     config_home = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
     return config_home.expanduser() / "systemd" / "user" / CODEX_OTEL_SERVICE_NAME
 
 
-def _run_systemctl(args: list[str]) -> None:
+def _run_service_command(argv: list[str], *, check: bool = True) -> bool:
+    """Run a service manager command; without ``check``, a failed exit returns False."""
     try:
-        subprocess_cross_os.run(
-            ["systemctl", "--user", *args], check=True, capture_output=True, text=True
-        )
-    except (OSError, CalledProcessError) as exc:
-        detail = exc.stderr if isinstance(exc, CalledProcessError) else str(exc)
-        raise RuntimeError(f"systemctl --user {' '.join(args)} failed: {detail}") from exc
+        subprocess_cross_os.run(argv, check=True, capture_output=True, text=True)
+    except CalledProcessError as exc:
+        if not check:
+            return False
+        raise RuntimeError(f"{' '.join(argv)} failed: {exc.stderr}") from exc
+    except OSError as exc:
+        raise RuntimeError(f"{' '.join(argv)} failed: {exc}") from exc
+    return True
+
+
+def _run_systemctl(args: list[str]) -> None:
+    _run_service_command(["systemctl", "--user", *args])
+
+
+def _otel_service_env() -> dict[str, str]:
+    """The configuring shell's settings that the proxy's token provider needs after login."""
+    env = {}
+    for name in (
+        "PATH",
+        "DATABRICKS_CONFIG_FILE",
+        "DATABRICKS_AUTH_STORAGE",
+        CUSTOM_OAUTH_CLI_ENV_VAR,
+    ):
+        value = os.environ.get(name)
+        if name == "DATABRICKS_CONFIG_FILE" and value:
+            value = str(Path(value).expanduser().absolute())
+        if value:
+            env[name] = value
+    return env
+
+
+def _launch_agent_plist(argv: list[str], env: dict[str, str]) -> str:
+    plist = plistlib.dumps(
+        {
+            "Label": CODEX_OTEL_SERVICE_LABEL,
+            "ProgramArguments": argv,
+            "EnvironmentVariables": env,
+            "RunAtLoad": True,
+            # Restart only after a failure, like the systemd unit's Restart=on-failure.
+            "KeepAlive": {"SuccessfulExit": False},
+        }
+    ).decode("utf-8")
+    return plist.replace("<plist", f"<!-- {_CODEX_OTEL_UNIT_MARKER} -->\n<plist", 1)
+
+
+def _start_launch_agent(path: Path, *, changed: bool) -> None:
+    domain = f"gui/{os.getuid()}"
+    target = f"{domain}/{CODEX_OTEL_SERVICE_LABEL}"
+    loaded = _run_service_command(["launchctl", "print", target], check=False)
+    if loaded and not changed:
+        return  # KeepAlive keeps a loaded agent running.
+    if loaded:
+        # A loaded agent keeps its old definition; only a reload reads the new plist.
+        _run_service_command(["launchctl", "bootout", target])
+    _run_service_command(["launchctl", "bootstrap", domain, str(path)])
+
+
+def _scheduled_task_xml(argv: list[str]) -> str:
+    # A non-admin may only register a logon trigger for their own account.
+    user = "\\".join(filter(None, (os.environ.get("USERDOMAIN"), os.environ.get("USERNAME"))))
+    return f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Description>{_CODEX_OTEL_UNIT_MARKER}</Description></RegistrationInfo>
+  <Triggers><LogonTrigger><UserId>{escape(user)}</UserId></LogonTrigger></Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{escape(argv[0])}</Command>
+      <Arguments>{escape(list2cmdline(argv[1:]))}</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"""
+
+
+def _start_scheduled_task(path: Path, *, changed: bool) -> None:
+    task = ["/TN", CODEX_OTEL_SERVICE_LABEL]
+    if changed or not _run_service_command(["schtasks", "/Query", *task], check=False):
+        # /Create /F leaves a running proxy on its old command line, so end it first.
+        _run_service_command(["schtasks", "/End", *task], check=False)
+        _run_service_command(["schtasks", "/Create", *task, "/XML", str(path), "/F"])
+    # IgnoreNew keeps this from starting a second proxy next to a running one.
+    # shortcut: RestartOnFailure ignores a nonzero exit, so a crashed proxy waits for the next
+    # login or launch; add a watchdog if that proves too slow.
+    _run_service_command(["schtasks", "/Run", *task])
 
 
 def _systemd_quote(value: str, *, exec_start: bool = False) -> str:
@@ -638,62 +740,94 @@ def _allocate_otel_port() -> int:
 
 
 def _owned_otel_service(path: Path) -> bool:
-    return path.is_file() and _CODEX_OTEL_UNIT_MARKER in path.read_text(encoding="utf-8")
+    return path.is_file() and _CODEX_OTEL_UNIT_MARKER in _read_otel_service(path)
+
+
+def _otel_service_encoding() -> str:
+    # UTF-16 is the encoding Task Scheduler exports and the only one schtasks documents reading.
+    return "utf-16" if current_os() == OS.WINDOWS else "utf-8"
+
+
+def _read_otel_service(path: Path) -> str:
+    return path.read_text(encoding=_otel_service_encoding())
 
 
 def _ensure_otel_service(workspace: str, port: int) -> None:
     path = _otel_service_path()
     if path.is_symlink():
-        raise RuntimeError(f"Refusing to replace a symlinked systemd unit: {path}")
+        raise RuntimeError(f"Refusing to replace a symlinked service file: {path}")
     if path.exists() and not _owned_otel_service(path):
-        raise RuntimeError(f"Refusing to replace an unmanaged systemd unit: {path}")
-    ug_path = ug_binary()
-    if not os.path.isabs(ug_path):
-        raise RuntimeError(
-            "Could not resolve an absolute ug executable for the Codex OTEL service."
-        )
-    lines = [
-        _CODEX_OTEL_UNIT_MARKER,
-        "[Service]",
-        # systemd expands `$` in ExecStart arguments but never in the executable path.
-        f"ExecStart={_systemd_quote(ug_path)} otel-proxy --host "
-        f"{_systemd_quote(workspace, exec_start=True)} --port {port}",
-        "Restart=on-failure",
-        "RestartSec=1s",
-    ]
-    for name in (
-        "PATH",
-        "DATABRICKS_CONFIG_FILE",
-        "DATABRICKS_AUTH_STORAGE",
-        CUSTOM_OAUTH_CLI_ENV_VAR,
-    ):
-        value = os.environ.get(name)
-        if name == "DATABRICKS_CONFIG_FILE" and value:
-            value = str(Path(value).expanduser().absolute())
-        if value:
+        raise RuntimeError(f"Refusing to replace an unmanaged service file: {path}")
+    system = current_os()
+    if system == OS.WINDOWS:
+        # pythonw runs the proxy without a console window that closing would kill.
+        pythonw = Path(sys.executable).with_name("pythonw.exe")
+        argv = [str(pythonw if pythonw.is_file() else sys.executable), "-m", "ucode.cli"]
+    else:
+        ug_path = ug_binary()
+        if not os.path.isabs(ug_path):
+            raise RuntimeError(
+                "Could not resolve an absolute ug executable for the Codex OTEL service."
+            )
+        argv = [ug_path]
+    argv += ["otel-proxy", "--host", workspace, "--port", str(port)]
+    if system == OS.MACOS:
+        text = _launch_agent_plist(argv, _otel_service_env())
+    elif system == OS.WINDOWS:
+        # shortcut: the task gets the logon environment, not this shell's DATABRICKS_* overrides;
+        # pass them through if a Windows user needs them.
+        text = _scheduled_task_xml(argv)
+    else:
+        lines = [
+            f"# {_CODEX_OTEL_UNIT_MARKER}",
+            "[Service]",
+            # systemd expands `$` in ExecStart arguments but never in the executable path.
+            f"ExecStart={_systemd_quote(argv[0])} otel-proxy --host "
+            f"{_systemd_quote(workspace, exec_start=True)} --port {port}",
+            "Restart=on-failure",
+            "RestartSec=1s",
+        ]
+        for name, value in _otel_service_env().items():
             lines.append(f"Environment={_systemd_quote(f'{name}={value}')}")
-    lines.extend(["", "[Install]", "WantedBy=default.target", ""])
-    text = "\n".join(lines)
-    if path.is_file() and path.read_text(encoding="utf-8") == text:
-        # Every launch: start a stopped proxy without restarting a running one mid-export.
-        # shortcut: a profile switch on one workspace waits for a service restart; restart if hit.
+        lines.extend(["", "[Install]", "WantedBy=default.target", ""])
+        text = "\n".join(lines)
+    changed = not path.is_file() or _read_otel_service(path) != text
+    if changed:
+        write_text_file(path, text, encoding=_otel_service_encoding())
+    # Every launch: start a stopped proxy without restarting a running one mid-export.
+    # shortcut: a profile switch on one workspace waits for a service restart; restart if hit.
+    if system == OS.MACOS:
+        _start_launch_agent(path, changed=changed)
+    elif system == OS.WINDOWS:
+        _start_scheduled_task(path, changed=changed)
+    elif changed:
+        _run_systemctl(["daemon-reload"])
+        _run_systemctl(["enable", CODEX_OTEL_SERVICE_NAME])
+        _run_systemctl(["restart", CODEX_OTEL_SERVICE_NAME])
+    else:
         _run_systemctl(["enable", "--now", CODEX_OTEL_SERVICE_NAME])
-        return
-    write_text_file(path, text)
-    _run_systemctl(["daemon-reload"])
-    _run_systemctl(["enable", CODEX_OTEL_SERVICE_NAME])
-    _run_systemctl(["restart", CODEX_OTEL_SERVICE_NAME])
 
 
 def _remove_otel_service() -> None:
     path = _otel_service_path()
     if path.is_symlink():
-        raise RuntimeError(f"Refusing to remove a symlinked systemd unit: {path}")
+        raise RuntimeError(f"Refusing to remove a symlinked service file: {path}")
     if not _owned_otel_service(path):
         return
-    _run_systemctl(["disable", "--now", CODEX_OTEL_SERVICE_NAME])
+    system = current_os()
+    # An already-stopped or unregistered service is fine to remove.
+    if system == OS.MACOS:
+        target = f"gui/{os.getuid()}/{CODEX_OTEL_SERVICE_LABEL}"
+        _run_service_command(["launchctl", "bootout", target], check=False)
+    elif system == OS.WINDOWS:
+        task = ["/TN", CODEX_OTEL_SERVICE_LABEL]
+        _run_service_command(["schtasks", "/End", *task], check=False)
+        _run_service_command(["schtasks", "/Delete", *task, "/F"], check=False)
+    else:
+        _run_systemctl(["disable", "--now", CODEX_OTEL_SERVICE_NAME])
     path.unlink(missing_ok=True)
-    _run_systemctl(["daemon-reload"])
+    if system == OS.LINUX:
+        _run_systemctl(["daemon-reload"])
 
 
 def _desktop_trace_exporter(port: int) -> dict:
@@ -701,12 +835,12 @@ def _desktop_trace_exporter(port: int) -> dict:
 
 
 def _sync_desktop_tracing(workspace: str | None) -> bool:
-    """Point Codex desktop's trace exporter at ug's login service on Linux; None removes both.
+    """Point Codex desktop's trace exporter at ug's login service; None removes both.
 
     It goes in the Codex App settings, which a ``ug codex`` session's own ``-c`` exporter outranks.
     Returns whether that file changed; setup problems only warn.
     """
-    if current_os() != OS.LINUX or is_dry_run():
+    if current_os() == OS.OTHER or is_dry_run():
         return False
     try:
         doc = _read_app_config()
@@ -715,8 +849,8 @@ def _sync_desktop_tracing(workspace: str | None) -> bool:
             raise RuntimeError(f"otel in {_legacy_config_path()} is not a table")
         # ug's own unit records the port, so only an exporter at that port is ug's.
         unit = _otel_service_path()
-        unit_text = unit.read_text(encoding="utf-8") if _owned_otel_service(unit) else ""
-        match = re.search(r" --port (\d+)$", unit_text, re.MULTILINE)
+        unit_text = _read_otel_service(unit) if _owned_otel_service(unit) else ""
+        match = re.search(r"--port\D+(\d+)", unit_text)
         port = int(match[1]) if match else None
         ours = port is not None and otel.get("trace_exporter") == _desktop_trace_exporter(port)
         if workspace is None:
@@ -735,7 +869,7 @@ def _sync_desktop_tracing(workspace: str | None) -> bool:
             )
             return False
         port = port or _allocate_otel_port()
-        # Before the exporter, so a missing systemd user manager leaves Codex settings untouched.
+        # Before the exporter, so a missing service manager leaves Codex settings untouched.
         _ensure_otel_service(workspace, port)
         if ours:
             return False
