@@ -34,6 +34,7 @@ DEFAULT_REDIRECT_URL = f"http://{LOCALHOST}:8020"
 DEFAULT_CLI_SCOPES = ("offline_access", "all-apis")
 # Custom OAuth may need a human to finish browser consent, not just a token fetch.
 CUSTOM_OAUTH_TIMEOUT_MS = 180_000
+CUSTOM_OAUTH_LOCK_TIMEOUT_SECONDS = 150
 CUSTOM_OAUTH_CLI_MIN_VERSION = (1, 17, 0)
 CUSTOM_OAUTH_CLI_ENV_VAR = "ENABLE_CUSTOM_OAUTH_FROM_CLI"
 
@@ -130,7 +131,7 @@ def _custom_oauth_lock(cache_dir: Path, redirect_url: str) -> Iterator[None]:
     cache_dir.mkdir(parents=True, exist_ok=True)
     port = urlparse(redirect_url).port
     with (cache_dir / f"ug-oauth-{port}.lock").open("a+b") as lock_file:
-        acquire_exclusive_file_lock(lock_file)
+        acquire_exclusive_file_lock(lock_file, timeout=CUSTOM_OAUTH_LOCK_TIMEOUT_SECONDS)
         try:
             yield
         finally:
@@ -237,6 +238,10 @@ def get_custom_client_token(
                 raise ValueError("OAuth returned no access token")
             cache.save(credentials)
             return token
+    except TimeoutError as exc:
+        raise RuntimeError(
+            "Custom-client OAuth timed out. Finish any other sign-in and retry."
+        ) from exc
     except Exception as exc:
         raise RuntimeError(
             "Custom-client OAuth failed. Check the workspace, client ID, and registered "

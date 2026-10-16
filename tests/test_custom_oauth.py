@@ -13,6 +13,7 @@ from databricks.sdk import oauth
 from typer.testing import CliRunner
 
 import ucode.cli as cli_mod
+import ucode.custom_oauth as custom_oauth_mod
 import ucode.databricks as db_mod
 from ucode.cli import app
 from ucode.custom_oauth import (
@@ -27,6 +28,27 @@ runner = CliRunner()
 
 
 class TestCustomOAuthLock:
+    def test_timeout_closes_handle_without_entering_login(self, tmp_path, monkeypatch):
+        handles = []
+
+        def contended_lock(handle, *, timeout=None):
+            assert timeout == 150
+            handles.append(handle)
+            raise TimeoutError("lock is held")
+
+        monkeypatch.setattr(custom_oauth_mod, "acquire_exclusive_file_lock", contended_lock)
+        monkeypatch.setattr(
+            custom_oauth_mod,
+            "release_file_lock",
+            lambda *_args: pytest.fail("unacquired lock released"),
+        )
+
+        with pytest.raises(TimeoutError):
+            with _custom_oauth_lock(tmp_path, "http://localhost:8020/callback"):
+                pytest.fail("login started without the lock")
+
+        assert handles[0].closed
+
     def test_releases_lock_when_login_fails(self, tmp_path):
         with pytest.raises(ValueError, match="login failed"):
             with _custom_oauth_lock(tmp_path, "http://localhost:8020/callback"):
@@ -176,6 +198,18 @@ class TestCustomClientToken:
         with pytest.raises(RuntimeError, match="registered redirect URL") as error:
             get_custom_client_token(WS, client_id="custom-client", scopes=TEST_SCOPES)
         assert "sensitive server response" not in str(error.value)
+
+    def test_lock_timeout_has_actionable_error_without_browser_login(self, monkeypatch):
+        def contended_lock(*_args, **_kwargs):
+            raise TimeoutError("sensitive lock details")
+
+        monkeypatch.setattr(custom_oauth_mod, "acquire_exclusive_file_lock", contended_lock)
+
+        with pytest.raises(RuntimeError, match="timed out.*sign-in.*retry") as error:
+            get_custom_client_token(WS, client_id="custom-client", scopes=TEST_SCOPES)
+
+        self.browser.assert_not_called()
+        assert "sensitive lock details" not in str(error.value)
 
     @pytest.mark.parametrize("scopes", [["offline_access"], ["catalog.catalogs:read"]])
     def test_api_scopes_are_required(self, scopes):

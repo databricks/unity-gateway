@@ -312,15 +312,42 @@ They replace external authentication and do not establish native Desktop
 GUI or browser-login coverage; this integration suite does not launch Desktop.
 
 `../test_claude_desktop.py` separately checks profile rendering, workspace-derived
-UUIDs, owned-field refresh, deleted-profile recovery, legacy-ID migration, ownership
-conflicts, user-edit preservation on revert, and rollback across profile, metadata,
+UUIDs, owned-field refresh, deleted-profile recovery, overwriting generated UUIDs
+without ownership records, preserving old random-ID profiles, user-edit preservation
+on revert, and rollback across profile, metadata,
 and ownership files. It uses temporary files and injected write failures in the
 `agents/desktop/claude_config.py` module, with ownership/revert policy in
 `agents/desktop/claude_state.py`.
-Simulated macOS, Windows, and Linux paths also exercise native-store configure,
-refresh, revert without prior ownership, missing-app handling, and Windows Local AppData resolution.
+All filesystem journeys resolve native paths under temporary homes across simulated macOS,
+Windows, and Linux, without profile-directory overrides. They cover configure, refresh,
+revert without prior ownership, missing apps, non-directory paths, creation failures,
+parent-metadata preservation, and Windows Local AppData resolution. Native-store assertions
+replace the removed override-specific layout ambiguity checks.
 Native Desktop activation, helper execution, model selection, browser login, and inference
 remain outside this coverage; no Windows or Linux GUI journey has been verified.
+
+Profile-name component cases cover CLI profile labels, refresh from the generic name,
+stable workspace UUIDs, and replacing renamed managed entries during configure while
+preserving later renames on revert. Original profile and metadata-entry baselines survive
+repeat configure and recreation. Configure/revert write failures restore exact bytes,
+including pre-existing UUID profiles without records. Configure/revert timeout cases
+preserve profile and ownership files without releasing another operation's lock.
+
+Desktop component tests preserve model order/duplicates, literal helper arguments,
+copied headers, and user-owned default-model settings. Header safety checks now live
+in shared managed-config parsing, covered for Claude and Codex in
+`../test_managed_config.py`; no live header-validation journey is added.
+
+Shared workspace identity canonicalization and unchanged CLI input normalization have
+component coverage in `../test_workspace_urls.py`. Desktop filesystem tests check stable
+UUIDs and ownership across equivalent URL spellings through refresh/revert; this adds
+no live workspace or native Desktop coverage.
+
+Lock-wait regressions in `../test_custom_oauth.py`, `../test_databricks.py`, and
+`../test_claude_smart_routing_v2.py` cover bounded OAuth/browser/model-lock acquisition,
+the shared browser-login budget, actionable auth errors, and failed-acquisition cleanup.
+`../test_file_lock_cross_os.py` tests real contention, preserving the holder on timeout
+and successful acquisition after release. These do not prove native browser consent.
 
 ## Test layout and format
 

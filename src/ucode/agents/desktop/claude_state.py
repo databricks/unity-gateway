@@ -8,9 +8,9 @@ import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
 
 from ucode.agents.desktop import claude_config as desktop_config
+from ucode.workspace_urls import canonical_workspace_origin
 
 MANIFEST_FILENAME = "claude-desktop.json"
 MANIFEST_VERSION = 1
@@ -32,12 +32,21 @@ def _validate_record(value: object, scope: str) -> dict[str, Any]:
             f"Unity Gateway ownership record for {scope} has an invalid profile ID."
         )
     entry_after = value.get("entry_after")
-    if not isinstance(entry_after, dict) or entry_after != {
-        "id": profile_id,
-        "name": desktop_config.PROFILE_NAME,
-    }:
+    if not isinstance(entry_after, dict) or entry_after not in (
+        {"id": profile_id, "name": desktop_config.PROFILE_NAME},
+        {"id": profile_id, "name": f"{desktop_config.PROFILE_NAME} - {value.get('profile_key')}"},
+    ):
         raise desktop_config.ClaudeDesktopConflictError(
             f"Unity Gateway ownership record for {scope} has an invalid metadata entry."
+        )
+    entry_before = value.get("entry_before")
+    if entry_before is not None and (
+        not isinstance(entry_before, dict)
+        or entry_before.get("id") != profile_id
+        or not isinstance(entry_before.get("name"), str)
+    ):
+        raise desktop_config.ClaudeDesktopConflictError(
+            f"Unity Gateway ownership record for {scope} has an invalid metadata baseline."
         )
     profile_before = value.get("profile_before")
     if profile_before is not None and not isinstance(profile_before, dict):
@@ -102,6 +111,7 @@ def new_record(
     profile_before: dict[str, object] | None,
     profile_after: dict[str, object],
     entry_after: Mapping[str, object],
+    entry_before: desktop_config.ProfileEntry | None,
     owned_keys: Sequence[str],
     prior_applied_present: bool,
     prior_applied: object,
@@ -116,6 +126,7 @@ def new_record(
         "owned_keys": list(owned_keys),
         "owned_after": owned_values(profile_after, owned_keys),
         "entry_after": copy.deepcopy(entry_after),
+        "entry_before": copy.deepcopy(entry_before),
         "prior_applied_present": prior_applied_present,
         "prior_applied": prior_applied,
     }
@@ -142,37 +153,16 @@ def read_manifest(path: Path) -> dict[str, Any]:
     return value
 
 
-def scope_key(directory: Path, workspace: str) -> str:
+def scope_key(directory: Path, profile_id: str) -> str:
     return json.dumps(
-        [str(directory), workspace],
+        [str(directory), profile_id],
         ensure_ascii=False,
         separators=(",", ":"),
     )
 
 
-def normalize_workspace(workspace: str) -> str:
-    value = workspace.strip()
-    parsed = urlsplit(value if "://" in value else f"https://{value}")
-    if (
-        parsed.scheme not in ("http", "https")
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.path.rstrip("/")
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise ValueError("Claude Desktop workspace must be an HTTP(S) workspace origin URL.")
-    authority = parsed.netloc.lower()
-    if (parsed.scheme == "https" and parsed.port == 443) or (
-        parsed.scheme == "http" and parsed.port == 80
-    ):
-        authority = authority.rsplit(":", 1)[0]
-    return urlunsplit((parsed.scheme, authority, "", "", ""))
-
-
 def find_workspace_record(
-    manifest: Mapping[str, Any], directory: Path, workspace: str
+    manifest: Mapping[str, Any], directory: Path, workspace: str, *, profile_id: str | None = None
 ) -> tuple[str | None, dict[str, Any] | None]:
     matches = []
     for scope, value in manifest["profiles"].items():
@@ -187,16 +177,22 @@ def find_workspace_record(
             )
         if (
             value["directory"] != str(directory)
-            or normalize_workspace(recorded_workspace) != workspace
+            or canonical_workspace_origin(recorded_workspace) != workspace
         ):
             continue
-        matches.append((scope, _validate_record(value, scope)))
+        matches.append((scope, value))
+    managed_id = profile_id or str(uuid.uuid5(PROFILE_NAMESPACE, workspace))
+    managed_matches = [item for item in matches if item[1].get("profile_id") == managed_id]
+    matches = managed_matches if profile_id is not None or managed_matches else matches
     if len(matches) > 1:
         raise desktop_config.ClaudeDesktopConflictError(
             "Multiple UG-owned Claude Desktop profiles exist for this workspace. "
-            "Resolve their ownership records before configuring; no profiles were overwritten."
+            "Resolve their revert records before retrying; no profiles were changed."
         )
-    return matches[0] if matches else (None, None)
+    if not matches:
+        return None, None
+    scope, value = matches[0]
+    return scope, _validate_record(value, scope)
 
 
 def merge_owned_profile(
@@ -227,49 +223,17 @@ def owned_values(
     return {key: copy.deepcopy(profile[key]) for key in keys if key in profile}
 
 
-def check_metadata_ownership(
-    metadata: Mapping[str, object],
-    record: Mapping[str, Any],
-    path: Path,
-    *,
-    allow_missing: bool = False,
-    allow_drift: bool = False,
-) -> None:
-    profile_id = record["profile_id"]
-    expected_entry = record["entry_after"]
-    entries = metadata.get("entries")
-    if not isinstance(entries, list):
-        raise desktop_config.ClaudeDesktopConflictError(
-            f"Claude Desktop metadata at {path} has no valid entries list."
-        )
-    matching = [
-        entry for entry in entries if isinstance(entry, dict) and entry.get("id") == profile_id
-    ]
-    if not matching:
-        if allow_missing:
-            return
-        raise desktop_config.ClaudeDesktopConflictError(
-            f"Claude Desktop Unity Gateway profile {profile_id} is missing from {path}; refusing to recreate it."
-        )
-    if len(matching) != 1 or matching[0] != expected_entry:
-        if allow_drift:
-            return
-        raise desktop_config.ClaudeDesktopConflictError(
-            f"Claude Desktop Unity Gateway metadata entry {profile_id} changed outside Unity Gateway."
-        )
-
-
 def apply_metadata(
-    metadata: Mapping[str, object], profile_id: str, entry: Mapping[str, object]
-) -> dict[str, object]:
-    result = copy.deepcopy(dict(metadata))
-    entries = result.get("entries")
-    if not isinstance(entries, list):
-        raise desktop_config.ClaudeDesktopConflictError(
-            "Claude Desktop metadata has no valid entries list."
-        )
-    if not any(isinstance(item, dict) and item.get("id") == profile_id for item in entries):
-        entries.append(copy.deepcopy(dict(entry)))
+    metadata: desktop_config.Metadata, profile_id: str, entry: desktop_config.ProfileEntry
+) -> desktop_config.Metadata:
+    result = copy.deepcopy(metadata)
+    entries = result["entries"]
+    for index, item in enumerate(entries):
+        if item["id"] == profile_id:
+            entries[index] = copy.deepcopy(entry)
+            break
+    else:
+        entries.append(copy.deepcopy(entry))
     result["appliedId"] = profile_id
     return result
 
@@ -309,29 +273,24 @@ def revert_profile(
 
 
 def revert_metadata(
-    metadata: Mapping[str, object], record: Mapping[str, Any], *, directory: Path, keep_entry: bool
-) -> tuple[dict[str, object], bool]:
-    result = copy.deepcopy(dict(metadata))
+    metadata: desktop_config.Metadata,
+    record: Mapping[str, Any],
+    *,
+    directory: Path,
+    keep_entry: bool,
+) -> tuple[desktop_config.Metadata, bool]:
+    result = copy.deepcopy(metadata)
     profile_id = record["profile_id"]
     expected_entry = record["entry_after"]
-    entries = result.get("entries")
-    if not isinstance(entries, list):
-        raise desktop_config.ClaudeDesktopConflictError(
-            "Claude Desktop metadata has no valid entries list."
-        )
-    result["entries"] = (
-        entries
-        if keep_entry
-        else [
-            entry
-            for entry in entries
-            if not (
-                isinstance(entry, dict)
-                and entry.get("id") == profile_id
-                and entry == expected_entry
-            )
-        ]
-    )
+    entries = result["entries"]
+    entry_before = record.get("entry_before")
+    if entry_before is not None:
+        for index, entry in enumerate(entries):
+            if entry == expected_entry:
+                entries[index] = copy.deepcopy(entry_before)
+                break
+    elif not keep_entry:
+        result["entries"] = [entry for entry in entries if entry != expected_entry]
     if result.get("appliedId") == profile_id:
         prior = record["prior_applied"]
         prior_exists = (

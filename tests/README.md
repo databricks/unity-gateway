@@ -140,15 +140,36 @@ they do not establish native Desktop GUI or browser-login coverage.
 
 `test_claude_desktop.py` exercises real temporary profile, metadata, and ownership
 files: workspace-derived UUIDs, repeat configure, owned-field refresh, deleted-profile
-recovery, legacy-ID migration, preservation of unrelated settings, and revert after
+recovery, overwriting an existing generated UUID without ownership records, preservation
+of unrelated settings and old random-ID profiles, and revert after
 user edits or workspace switches. Injected write failures verify exact-byte rollback
 at each file boundary in `agents/desktop/claude_config.py`. Ownership and revert
 policy live in `agents/desktop/claude_state.py`; the public adapter lives in
 `agents/desktop/claude.py`. These are filesystem component checks, not native Desktop
-activation, model-selection, browser-login, or inference coverage. Simulated macOS,
-Windows, and Linux paths exercise native-store configure, refresh, revert without prior ownership, and missing-app
-handling; Windows path checks include relocated and default Local AppData. Native Windows
+activation, model-selection, browser-login, or inference coverage. All filesystem journeys use
+native path resolution under temporary homes across simulated macOS, Windows, and Linux,
+without profile-directory overrides. They cover configure, refresh, revert without prior
+ownership, missing apps, non-directory paths, creation failures, and preserving parent metadata.
+Override-specific layout ambiguity checks were replaced by native-store assertions;
+Windows path checks include relocated and default Local AppData. Native Windows
 and Linux GUI/helper/browser/inference journeys remain unvalidated.
+
+Profile-name regressions cover CLI profile labels, generic-label refresh, unchanged
+workspace UUIDs when switching CLI profiles, and configure replacing user renames while
+revert preserves later renames. Original profile and metadata-entry baselines survive
+repeat configure and deleted-profile recreation. Configure/revert failures restore exact
+bytes at every write boundary, including pre-existing UUID profiles without records. Configure
+and revert lock-timeout checks preserve profile/ownership bytes and close unacquired handles.
+
+Rendering checks preserve model order/duplicates, literal helper arguments, and copied
+headers. Default-model selection remains user-owned. Header validation moved from the
+Desktop renderer to shared managed-config parsing; `test_managed_config.py` checks
+invalid header rejection for Claude and Codex plus unchanged valid values/type filtering.
+
+`test_workspace_urls.py` checks shared workspace identity canonicalization, invalid-origin
+rejection, and unchanged CLI input normalization. Desktop filesystem tests retain the
+fixed UUID and check that equivalent URL spellings share ownership through refresh and
+revert. These checks make no network requests.
 
 `TestChildStdoutLaunch` in `test_cli.py` checks Claude `-p`/`--print` and Codex `exec`
 (plain and `--json`) and `app-server` status/error output on stderr, argument forwarding with
@@ -516,8 +537,12 @@ which runs automatically only for in-repo PRs.
 
 ## Gaps and deferred scope
 
-Custom OAuth lock tests cover release after use, Windows contention retries, and
-permanent lock-error propagation. Native Windows browser consent and concurrent
+Custom OAuth lock tests cover release after use, Windows contention retries,
+bounded acquisition, actionable timeout errors, and permanent lock-error propagation.
+`test_databricks.py` checks the shared browser-login deadline includes lock waits;
+`test_claude_smart_routing_v2.py` checks model-lock timeouts and cleanup after snapshot
+failure. `test_file_lock_cross_os.py` exercises real contention, preserving the holder
+after timeout and acquiring after release. Native Windows browser consent and concurrent
 OAuth helpers still need platform validation.
 
 Gateway proxy tests exercise a busy cached port falling back to a free port with

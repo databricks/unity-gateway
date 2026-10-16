@@ -161,7 +161,7 @@ class AgentConfig:
     def from_wire(cls, config: object) -> AgentConfig:
         """Parse wire format AgentConfig into normalized AgentConfig."""
         config_dict = _as_dict(config)
-        headers = _clean_str_dict(config_dict.get("http_headers"))
+        headers = _parse_http_headers(config_dict.get("http_headers"))
         smart_routing = _as_dict(config_dict.get("smart_routing"))
         agent_models = AgentModels.from_wire(
             config_dict.get("default_models"), config_dict.get("models")
@@ -394,9 +394,16 @@ def _as_dict(value: object) -> dict[str, object]:
     return cast("dict[str, object]", value) if isinstance(value, dict) else {}
 
 
-def _clean_str_dict(value: object) -> dict[str, str]:
-    """Keep only the string->string entries of ``value`` (a headers map), or an empty dict."""
-    return {k: v for k, v in _as_dict(value).items() if isinstance(k, str) and isinstance(v, str)}
+def _parse_http_headers(value: object) -> dict[str, str]:
+    headers = {
+        k: v for k, v in _as_dict(value).items() if isinstance(k, str) and isinstance(v, str)
+    }
+    for name, header_value in headers.items():
+        if not name or "\r" in name or "\n" in name or "\r" in header_value or "\n" in header_value:
+            raise ValueError(
+                "Managed HTTP header names must be non-empty and names/values must not contain CR/LF."
+            )
+    return headers
 
 
 def _str(value: object) -> str | None:

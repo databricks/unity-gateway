@@ -788,6 +788,51 @@ class TestSubagentRouting:
             "claude-sonnet-5": "system.ai.claude-sonnet-5",
         }
 
+    def test_model_switch_lock_timeout_closes_handle_and_preserves_settings(
+        self, tmp_path, monkeypatch
+    ):
+        user_settings = tmp_path / "settings.json"
+        user_settings.write_text(json.dumps({"model": "haiku"}))
+        before = user_settings.read_bytes()
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        guard = v2._ClaudeModelSettingGuard(user_settings)
+        handles = []
+
+        def contended_lock(handle, *, timeout=None):
+            assert timeout == 5
+            handles.append(handle)
+            raise TimeoutError("lock is held")
+
+        monkeypatch.setattr(v2, "acquire_exclusive_file_lock", contended_lock)
+
+        with pytest.raises(TimeoutError):
+            guard.begin("system.ai.claude-opus-4-8")
+        guard.restore()
+
+        assert handles[0].closed
+        assert guard._lock is None
+        assert user_settings.read_bytes() == before
+
+    def test_model_switch_snapshot_failure_releases_lock(self, tmp_path, monkeypatch):
+        user_settings = tmp_path / "settings.json"
+        user_settings.write_text(json.dumps({"model": "haiku"}))
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        guard = v2._ClaudeModelSettingGuard(user_settings)
+        read = v2.read_json_safe
+
+        def failed_read(_path):
+            raise OSError("settings read failed")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(v2, "read_json_safe", failed_read)
+            with pytest.raises(OSError, match="settings read failed"):
+                guard.begin("system.ai.claude-opus-4-8")
+
+        assert guard._lock is None
+        guard.begin("system.ai.claude-sonnet-5")
+        guard.restore()
+        assert read(user_settings) == {"model": "haiku"}
+
     def test_model_switch_lock_serializes_routed_sessions(self, tmp_path, monkeypatch):
         user_settings = tmp_path / "settings.json"
         user_settings.write_text(json.dumps({"model": "haiku"}))

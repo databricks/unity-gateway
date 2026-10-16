@@ -393,9 +393,25 @@ UCODE_TEST_WORKSPACE=<db_workspace_url> uv run pytest tests/test_e2e.py -v
 To add a new CLI agent, implement `src/ucode/agents/<name>.py`, register it in
 `src/ucode/agents/__init__.py`, and add focused tests.
 Desktop-app adapters live separately in `src/ucode/agents/desktop/`.
+Desktop rendering consumes model IDs and headers from shared discovery/managed-config
+parsing without revalidating or deduplicating them. Managed header names must be non-empty;
+names and values cannot contain carriage returns or newlines, for any agent.
+Shared workspace identity canonicalization lives in `src/ucode/workspace_urls.py`;
+Desktop uses it for profile UUIDs and ownership lookup. Existing CLI input normalization
+is unchanged.
 Claude Desktop profiles use Anthropic's [documented application-data locations](https://claude.com/docs/third-party/claude-desktop/data-storage#where-data-lives)
-on macOS, Windows, and Linux. Windows and Linux require the app to have been opened once;
+on macOS, Windows, and Linux, with no profile-directory override. Windows and Linux require the app to have been opened once;
 their native GUI, credential-helper, and inference flows still need validation.
+Profiles are named `Unity Gateway - <CLI profile name>`; changing the CLI profile
+updates the label and helper without changing the workspace-derived UUID.
+That UUID identifies UG's managed profile even without an ownership record. Configure
+creates or refreshes it and selects it, leaving random-ID profiles untouched. Revert
+bookkeeping retains original profile and metadata baselines across repeated configure.
+
+File-lock waits are bounded across platforms: five seconds for Desktop profile updates
+and Claude model switching, 150 seconds for custom OAuth. Shared browser login uses one
+150-second budget for lock acquisition and login; the Desktop auth helper retains its
+existing shared deadline. A timeout leaves the operation holding the lock undisturbed.
 
 ## Documentation
 
