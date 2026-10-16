@@ -41,7 +41,9 @@ jobs:
       - name: Check out the explicitly reviewed smoke-test commit
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
-          ref: f5be0907f996c2d3a8016cedd2f2bf8bd6e4650b
+          ref: 2cc73f79189403eb44ff80c3bed758dd863adfd4
+          # A separate path keeps this sparse checkout from leaking into the action's checkout.
+          path: .ug-review-trusted
           sparse-checkout: |
             .github/scripts/ug-review
             .github/ug-review-instructions.md
@@ -52,6 +54,7 @@ jobs:
       # The review action re-checks out the workspace, so keep the policy as a step output.
       - name: Prepare the trusted review policy
         id: policy
+        working-directory: .ug-review-trusted
         run: |
           delimiter="ug-review-policy-$(openssl rand -hex 16)"
           {
@@ -85,7 +88,7 @@ jobs:
         env:
           DATABRICKS_CLIENT_ID: 6476a5e7-7f32-4073-abc5-ee30bb7d0060
           DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_CLI_REVIEW_BOT_SP_CLIENT_SECRET }}
-        run: python3 .github/scripts/ug-review/auth.py
+        run: python3 .ug-review-trusted/.github/scripts/ug-review/auth.py
 
       - name: Resolve the pull request
         id: pr
@@ -172,8 +175,8 @@ jobs:
           import json, os, pathlib
 
           result = pathlib.Path('/tmp/ocr-result.json')
-          if not result.is_file():
-              raise SystemExit('OCR did not produce a result; inspect the workflow logs.')
+          if not result.is_file() or not result.read_text().strip():
+              raise SystemExit('::error::OCR did not produce a result; inspect the workflow logs.')
           data = json.loads(result.read_text())
           summary = data.get('summary') or {}
           log = pathlib.Path('/tmp/ocr-stderr.log')

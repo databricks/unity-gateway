@@ -197,6 +197,9 @@ def test_workflow_uses_existing_authenticated_npm_proxy():
 def test_workflow_passes_trusted_rubric_as_background_and_checks_completeness():
     workflow = WORKFLOW_PATH.read_text()
     assert "cat AGENTS.md .github/ug-review-instructions.md" in workflow
+    assert "path: .ug-review-trusted" in workflow
+    assert "working-directory: .ug-review-trusted" in workflow
+    assert "run: python3 .ug-review-trusted/.github/scripts/ug-review/auth.py" in workflow
     assert "background: ${{ steps.policy.outputs.background }}" in workflow
     assert "OCR review is incomplete" in workflow
     assert "OCR result does not match the requested commit." in workflow
