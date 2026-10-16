@@ -195,7 +195,7 @@ jobs:
         with:
           version: 0.9.8
           enable-cache: ${{ inputs.ref == '' }}
-      - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
+      - uses: databricks/setup-cli@9b64c94a6d2b2e830592d80e9f14c26d32b42ad7  # v1.20.0
         with:
           version: 1.17.0
       - name: Expose the Databricks CLI on Windows
@@ -253,7 +253,7 @@ jobs:
         with:
           version: 0.9.8
           enable-cache: ${{ inputs.ref == '' }}
-      - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
+      - uses: databricks/setup-cli@9b64c94a6d2b2e830592d80e9f14c26d32b42ad7  # v1.20.0
         with:
           version: 1.17.0
       - name: Expose the Databricks CLI to native PowerShell
@@ -380,7 +380,7 @@ jobs:
         with:
           version: 0.9.8
           enable-cache: ${{ inputs.ref == '' }}
-      - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
+      - uses: databricks/setup-cli@9b64c94a6d2b2e830592d80e9f14c26d32b42ad7  # v1.20.0
         with:
           version: 1.17.0
       - name: Run the self-managed OpenCode journey against the managed workspace
@@ -439,7 +439,7 @@ jobs:
         with:
           version: 0.9.8
           enable-cache: ${{ inputs.ref == '' }}
-      - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
+      - uses: databricks/setup-cli@9b64c94a6d2b2e830592d80e9f14c26d32b42ad7  # v1.20.0
         with:
           version: 1.17.0
       - name: Run the managed cases against the managed e2e workspace
@@ -534,7 +534,7 @@ jobs:
         with:
           version: 0.9.8
           enable-cache: ${{ inputs.ref == '' }}
-      - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
+      - uses: databricks/setup-cli@9b64c94a6d2b2e830592d80e9f14c26d32b42ad7  # v1.20.0
         with:
           version: 1.17.0
       - name: Install ug and agent CLIs
