@@ -78,6 +78,10 @@ def test_workflow_pins_actions_omnigent_and_models():
     assert "system.ai.gpt-5-6" not in workflow
     assert "vars.UG_POLLY_HARNESS || 'codex'" in workflow
     assert "uv run --no-sync omnigent run examples/polly/" in workflow
+    assert (
+        "id: polly\n        # Bounded below the job timeout so a hung sub-agent still leaves diagnostics.\n        timeout-minutes: 25\n"
+        in workflow
+    )
     assert "uv export --frozen --package omnigent --extra all --no-dev" in workflow
     assert "uv pip install --no-config --python .venv -r" in workflow
     assert "uv sync" not in workflow

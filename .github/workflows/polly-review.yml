@@ -516,6 +516,8 @@ jobs:
       - name: Run Polly review
         if: steps.gate.outputs.review == 'true'
         id: polly
+        # Bounded below the job timeout so a hung sub-agent still leaves diagnostics.
+        timeout-minutes: 25
         working-directory: .polly-omnigent
         env:
           OMNIGENT_POLLY_HARNESS: ${{ vars.UG_POLLY_HARNESS || 'codex' }}
