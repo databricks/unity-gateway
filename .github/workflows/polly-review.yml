@@ -120,7 +120,7 @@ jobs:
         if: steps.gate.outputs.review == 'true'
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
-          ref: 0096e7158d5bc135907dcee7db0bc318d09a59fe
+          ref: d3a6af62ed045653cfe5c2992a65586d8ea52af3
           # A separate path keeps this checkout from colliding with the Omnigent checkout.
           path: .ug-review-trusted
           persist-credentials: false
@@ -183,9 +183,14 @@ jobs:
           UV_INDEX_DATABRICKS_PYPI_USERNAME: ${{ steps.jfrog.outputs.oidc-user }}
           UV_INDEX_DATABRICKS_PYPI_PASSWORD: ${{ steps.jfrog.outputs.oidc-token }}
           UV_PYTHON_PREFERENCE: system
+        # Install the locked, hashed pins without re-resolving: Omnigent's uv.toml cooldown
+        # needs upload dates, which the JFrog index does not report.
         run: |
           set -euo pipefail
-          uv sync --extra all
+          requirements=omnigent-requirements.txt
+          uv export --frozen --package omnigent --extra all --no-dev -o "$requirements"
+          uv venv --no-config .venv
+          uv pip install --no-config --python .venv -r "$requirements"
           npm install -g "@anthropic-ai/claude-code@$CLAUDE_VERSION" "@openai/codex@$CODEX_VERSION"
 
       - name: Write the gateway profile and Omnigent provider config
