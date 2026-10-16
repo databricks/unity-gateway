@@ -2269,7 +2269,7 @@ class TestWriteToolConfigManagedSettings:
         monkeypatch.setattr(claude, "relayed_proxy_base_url", lambda state: "http://127.0.0.1:9999")
         state = {"workspace": WS, "codex_models": []}
 
-        with pytest.raises(RuntimeError, match="run `ucode revert`"):
+        with pytest.raises(RuntimeError, match="run `ug revert`"):
             claude.write_tool_config(state, "databricks-claude-sonnet-4", relayed=True)
 
         assert managed_writes == []

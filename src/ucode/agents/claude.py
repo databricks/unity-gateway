@@ -1071,7 +1071,7 @@ def _register_web_search_mcp(
     try:
         add_claude_mcp_server(WEB_SEARCH_MCP_NAME, entry)
     except RuntimeError as exc:
-        print_warning(f"{exc} Web search will be unavailable; re-run `ucode claude` to retry.")
+        print_warning(f"{exc} Web search will be unavailable; re-run `ug claude` to retry.")
         return False
     return True
 
@@ -1851,7 +1851,7 @@ def _reconcile_managed_settings(
                 "Claude subscription relay cannot start because enterprise managed settings "
                 f"define {', '.join(conflicts)} at {path}. Ask your administrator to remove "
                 "those entries or use standard Databricks authentication. If ucode previously "
-                "created them, run `ucode revert` first."
+                "created them, run `ug revert` first."
             )
         mark_managed_file_verified(state, "claude", path, scope="relay-compatible")
         return
@@ -2210,7 +2210,7 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     workspace = state["workspace"]
     port = state.get("relayed_proxy_port")
     if not isinstance(port, int):
-        raise RuntimeError("Relayed proxy port was not configured; re-run `ucode claude`.")
+        raise RuntimeError("Relayed proxy port was not configured; re-run `ug claude`.")
 
     profile = state.get("profile")
 
