@@ -120,7 +120,7 @@ jobs:
         if: steps.gate.outputs.review == 'true'
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
-          ref: eef9468b4cb4f3737baa1476d1d2cc87181e3d1a
+          ref: 7e5bb7833664443d35f7cfa1e5dd2e345c39c3bf
           # A separate path keeps this checkout from colliding with the Omnigent checkout.
           path: .ug-review-trusted
           persist-credentials: false
@@ -511,6 +511,8 @@ jobs:
       - name: Run Polly review
         if: steps.gate.outputs.review == 'true'
         id: polly
+        # Bounded below the job timeout so a hung sub-agent still leaves diagnostics.
+        timeout-minutes: 25
         working-directory: .polly-omnigent
         env:
           OMNIGENT_POLLY_HARNESS: ${{ vars.UG_POLLY_HARNESS || 'codex' }}
