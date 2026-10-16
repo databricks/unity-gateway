@@ -41,7 +41,7 @@ def usage() -> int:
     state = load_state()
     workspace = state.get("workspace")
     if not workspace:
-        raise RuntimeError("Workspace is not configured. Run `ucode configure` first.")
+        raise RuntimeError("Workspace is not configured. Run `ug configure` first.")
 
     profile = state.get("profile")
     apply_pat_environment(state)

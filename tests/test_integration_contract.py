@@ -195,7 +195,10 @@ def test_latest_harness_slack_notification(
         expected = f"✅ Latest harness test succeeded. {versions}. Link to run {run_url}"
     else:
         link = job_url if not api_error else run_url
-        expected = f"❌ ALERT! Latest harness test failed. {versions}. Link to failed job: {link}"
+        expected = (
+            f"❌ ALERT! Latest harness test failed. {versions}. Link to failed job: {link} "
+            "<@U09DPGC3DFY> <@U09EFHFRT24>"
+        )
     assert posted == [{"text": expected}]
     assert expected in capsys.readouterr().out
 
@@ -421,15 +424,23 @@ def test_user_journey_fork_report_uses_the_evaluated_commit():
     assert "/pulls/" not in report and ".head.sha" not in report
 
 
-def test_ug_review_runs_only_on_member_command_from_the_default_branch():
+def test_ug_review_accepts_member_comments_and_in_repo_labels_with_trusted_checkout():
     workflow = _workflow("ug-review.yml")
 
-    assert re.search(r"(?m)^on:\n  issue_comment:\n    types: \[created\]\n", workflow)
+    assert re.search(r"(?m)^  issue_comment:\n    types: \[created\]\n", workflow)
+    assert re.search(r"(?m)^on:\n  pull_request:\n    types: \[labeled\]\n", workflow)
+    assert (
+        'contains(fromJSON(\'["ug-review", "code-review"]\'), github.event.label.name)' in workflow
+    )
+    assert "github.event.pull_request.head.repo.full_name == github.repository" in workflow
     assert "pull_request_target" not in workflow
     assert "github.event.comment.body == '/ug-review'" in workflow
     assert MEMBER_ONLY in workflow
     assert "ref: ${{ github.event.repository.default_branch }}" in workflow
-    assert "PR_NUMBER: ${{ github.event.issue.number }}" in workflow
+    assert (
+        "PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}"
+        in workflow
+    )
     assert "concurrency:" not in workflow.split("\njobs:\n", 1)[0]
 
 
@@ -664,3 +675,15 @@ def test_integration_tests_describe_the_scenario_and_expected_result():
             if any(arg.arg == "configured" for arg in node.args.args):
                 violations.append(f"{path.name}:{node.lineno}: setup must be visible in the test")
     assert not violations, "\n".join(violations)
+
+
+def test_live_suites_use_fresh_id_for_random_ids():
+    root = Path(__file__).parent
+    helper = root / "integration/utils/evidence.py"
+    offenders = [
+        str(path.relative_to(root))
+        for suite in ("integration", "e2e_cuj")
+        for path in (root / suite).rglob("*.py")
+        if path != helper and "uuid4(" in path.read_text(encoding="utf-8")
+    ]
+    assert not offenders, f"Use fresh_id() from integration/utils/evidence.py: {offenders}"

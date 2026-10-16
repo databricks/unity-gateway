@@ -43,6 +43,7 @@ from ucode.databricks import (
     get_databricks_token,
     list_anthropic_model_catalog,
     list_anthropic_models,
+    maybe_add_gpt_1m_suffix,
 )
 from ucode.launcher import exec_or_spawn
 from ucode.os_compatibility import subprocess_cross_os
@@ -298,8 +299,8 @@ def _unwrapped_claude_model_id(model: str) -> str:
 
 
 def _claude_router_model_id(model: str) -> str:
-    """Unwrap an Anthropic gateway id, then apply standard model normalization."""
-    return routing.normalize_model(_unwrapped_claude_model_id(model))
+    """Unwrap an Anthropic gateway id and drop Claude Code's `[1m]` hint, then normalize."""
+    return routing.normalize_model(_unwrapped_claude_model_id(model).removesuffix("[1m]"))
 
 
 def _claude_model_overrides(model_ids: list[str]) -> dict[str, str]:
@@ -329,7 +330,7 @@ def _routed_claude_agent_definitions(model_ids: list[str]) -> dict[str, dict[str
         _routed_claude_agent_name(model): {
             "description": f"Smart-routed coding agent using {model}",
             "prompt": CLAUDE_ROUTED_AGENT_PROMPT,
-            "model": model,
+            "model": maybe_add_gpt_1m_suffix(model),
         }
         for model in _canonical_claude_models(model_ids)
     }
@@ -491,18 +492,18 @@ def route_claude_pre_tool_use(
             route.decision,
             route.routed_model,
         )
-    agent_name = claude_routing.SUBAGENT_NOTICE_CONFIG.name(route.tool_input) or "subagent"
+    updated_input = {
+        **{key: value for key, value in route.tool_input.items() if key != "model"},
+        "subagent_type": _routed_claude_agent_name(route.routed_model),
+    }
+    agent_name = updated_input.get("subagent_type", "")
     if orchestrator.enabled(agent=AGENT_CLAUDE):
         agent_name += " [orchestrator on]"
     routing_message = claude_routing.SUBAGENT_NOTICE_CONFIG.message(
         route.decision,
         route.routed_model,
-        {**route.tool_input, "subagent_type": agent_name},
+        {**updated_input, "subagent_type": agent_name},
     )
-    updated_input = {
-        **{key: value for key, value in route.tool_input.items() if key != "model"},
-        "subagent_type": _routed_claude_agent_name(route.routed_model),
-    }
     hook_output = {
         "hookEventName": "PreToolUse",
         "permissionDecision": "allow",

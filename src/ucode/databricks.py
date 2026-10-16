@@ -230,6 +230,7 @@ def _log_auth_diagnostics() -> None:
             capture_output=True,
             text=True,
             timeout=10,
+            stdin=subprocess.DEVNULL,
         )
         version = (version_result.stdout or version_result.stderr or "").strip()
         _debug("databricks --version", version[:200])
@@ -243,6 +244,7 @@ def _log_auth_diagnostics() -> None:
             capture_output=True,
             text=True,
             timeout=10,
+            stdin=subprocess.DEVNULL,
         )
         _debug(
             "databricks auth profiles",
@@ -692,7 +694,11 @@ def run(
         text=text,
         env=env,
         timeout=timeout,
-        **({"stdout": status_subprocess_stdout()} if not capture_output else {}),
+        **(
+            {"stdin": subprocess.DEVNULL}
+            if capture_output
+            else {"stdout": status_subprocess_stdout()}
+        ),
     )
 
 
@@ -898,6 +904,9 @@ def _refresh_windows_path() -> None:
         if expanded and normalized not in known:
             new_entries.append(expanded)
             known.add(normalized)
+    if not new_entries:
+        return
+    # Writing renames the inherited `Path` to `PATH` for child processes, so only write on change.
     os.environ["PATH"] = os.pathsep.join([*new_entries, *entries])
     clear_databricks_cli_cache()
 
@@ -1991,10 +2000,9 @@ def build_auth_shell_command(
     Used where a tool wants the helper as one command *string* (Claude Code's
     `apiKeyHelper`). On every platform this resolves to the `ug auth-token`
     executable rather than a POSIX shell pipeline, so no `sh`/`jq` is required."""
-    argv = build_auth_token_argv(workspace, profile, use_pat=use_pat)
-    if platform.system() == "Windows":
-        return subprocess.list2cmdline(argv)
-    return shlex.join(argv)
+    return subprocess_cross_os.shell_command(
+        build_auth_token_argv(workspace, profile, use_pat=use_pat)
+    )
 
 
 def build_otel_headers_argv(
@@ -2013,10 +2021,9 @@ def build_otel_headers_shell_command(
     workspace: str, profile: str | None = None, *, use_pat: bool = False
 ) -> str:
     """Shell-quoted form of :func:`build_otel_headers_argv`."""
-    argv = build_otel_headers_argv(workspace, profile, use_pat=use_pat)
-    if platform.system() == "Windows":
-        return subprocess.list2cmdline(argv)
-    return shlex.join(argv)
+    return subprocess_cross_os.shell_command(
+        build_otel_headers_argv(workspace, profile, use_pat=use_pat)
+    )
 
 
 # A model-service's `name` is `model-services/system.ai.<model-name>`; the
@@ -3040,6 +3047,15 @@ def map_claude_family_models(targets: list[str]) -> dict[str, str]:
             best_key[family] = key
             result[family] = model_id
     return result
+
+
+# Claude Code sizes its context window from a `[1m]` id hint; gpt-oss's window is far below 1M.
+_GPT_1M_MODEL_RE = re.compile(r"^(?:system\.ai\.)?(?:databricks-)?gpt-\d[a-z0-9.-]*$")
+
+
+def maybe_add_gpt_1m_suffix(model: str) -> str:
+    """Add Claude Code's `[1m]` hint to GPT ids except gpt-oss; return other ids unchanged."""
+    return f"{model}[1m]" if _GPT_1M_MODEL_RE.match(model) else model
 
 
 # A bare launch pins the first tier the service offers, so it never dead-ends on a model the

@@ -202,7 +202,7 @@ through them without changing existing journey commands or completion assertions
 ## Run a specific combination
 
 Prerequisites: Python 3.12+, uv, and Node/npm. Live runs also require Databricks
-CLI 1.17.0. Full live/TUI runs require a POSIX host; Windows supports the explicit
+CLI 1.17.0. Windows drives TUIs through ConPTY (pywinpty) and supports the explicit
 headless subset described below. The runner installs the requested agents into a new
 npm prefix and ug into a new virtualenv. Pytest, the recorder's pinned `httpx`, and,
 for live runs, the PTY/screen libraries (pexpect and pyte) live in a different
@@ -298,6 +298,74 @@ its native gateway cache to contain `system.ai` models, and checks that a discov
 model appears in the picker. No managed config, provider, model location, discovery
 flag, or inherited discovery environment variable enables this path. This runs with
 the pinned Claude version (currently 2.1.280 in CI).
+
+Desktop credential-helper coverage remains in `../test_desktop_auth.py`,
+`../test_desktop_auth_cli.py`, and `../test_file_lock_cross_os.py`. These component
+checks cover token-only stdout, explicit workspace/profile arguments in plain and
+ANSI-colored parser errors, browser gating, cancellation, and bounded lock/login
+waits. Recovery checks also cover token recheck before browser login, lock release,
+the shared deadline, and network/CLI failures at each recovery stage. Invalid token
+output stays out of helper errors and streams.
+Shared CLI discovery checks pin the newest absolute binary through recovery and
+reject a missing CLI before token fetch or browser login.
+They replace external authentication and do not establish native Desktop
+GUI or browser-login coverage; this integration suite does not launch Desktop.
+
+`../test_claude_desktop.py` exercises real temporary profile, shared metadata,
+and previous-selection files. Coverage includes the fixed reserved UUID, complete
+replacement without ownership records (including malformed profiles), repeat configure,
+workspace/profile switches, deleted-profile recovery, labels, and preservation of
+unrelated profiles and metadata. Revert deletes the reserved profile even after edits
+or without selection state. Selection tests restore a still-existing previous profile
+or preserve a later unrelated selection without leaving a dangling appliedId.
+
+Injected failures at every profile, metadata, and selection-state write boundary verify
+exact-byte rollback, including malformed pre-existing UG profiles. Concurrency checks
+reject changed snapshots. Desktop-only lock-timeout tests preserve files and close
+unacquired handles. Paths use temporary homes across simulated macOS, Windows, and Linux,
+including relocated/default Windows Local AppData, missing apps, invalid paths, creation
+failures, and parent-metadata preservation.
+
+Rendering tests cover the valid JSON generated-file notice, complete model IDs,
+order/duplicates, literal helper arguments, and copied headers. Omitted optional fields
+are removed on replacement. Shared managed-header parsing retains its pre-Desktop behavior;
+the extra header-validation tests were removed with that out-of-scope parser change.
+The default-model warning assertion was removed because that limitation is documented
+instead of returned as a runtime warning.
+Obsolete baseline restoration, edit preservation, ownership/migration, and workspace
+canonicalization tests are replaced by reserved-file replacement/deletion coverage.
+Existing CLI URL normalization is unchanged. Native Desktop activation, acceptance of
+the `_comment` notice field, GUI/helper/browser behavior, and inference remain untested;
+these component checks do not establish native Windows or Linux support.
+
+`../test_file_lock_cross_os.py` tests the shared timeout mechanism used by Desktop:
+real contention, preserving the holder on timeout, and successful acquisition after
+release. New lock-wait limits are scoped to Desktop profile updates; existing
+non-Desktop callers retain their prior behavior. These are component checks, not
+native browser-consent coverage.
+
+`../test_desktop_setup.py` separately exercises configure/refresh/recovery,
+successful setup without the default-model warning, recoverable setup failures that still warn,
+dry-run, and revert using native path resolution under temporary homes on simulated macOS,
+Windows, and Linux, without replacing the path resolver, including
+host-native absolute helper paths with spaces and missing-app checks before
+authentication/discovery. Revert without a UG profile preserves existing files.
+These checks do not launch the Desktop GUI or its credential helper.
+They also cover CLI profile labels, workspace switches with a fixed UUID, and
+configure/revert warnings that preserve profile and selection-state files on lock timeout.
+An existing reserved UUID without records is replaced on configure and deleted on revert;
+these remain filesystem component checks.
+CLI revert clears workspace state even when Desktop cleanup fails. A component
+regression verifies that a lock failure preserves Desktop files and selection state,
+then retry restores the previous selection without workspace state. This does not
+establish native Desktop coverage.
+
+Model-source tests require Desktop-only, case-insensitive `\bclaude-` filtering
+instead of copying every catalog entry. Mixed static/discovered lists exclude GPT/OSS
+aliases and lookalikes while preserving Claude IDs, order, duplicates, and source lists.
+Empty filtered lists warn and preserve all existing profile, metadata, and selection-state
+files, or leave fresh installs untouched. Tests cover modern, Bedrock, Vertex, and custom
+Claude-named routes; they do not verify the model behind a name.
 
 ## Test layout and format
 
@@ -395,6 +463,10 @@ their original legacy-env or managed-default cases remain. Explicit-model select
 forwarding, app-server initialization, and catalog fallback retain their original legacy flags
 and on/off coverage; preset-specific behavior there is not covered.
 
+The Claude route-subagent hook journey checks that both hook notices name the agent
+in `updatedInput`, rather than the originally requested type. Native task-header
+rendering is outside that hook-contract check.
+
 The unit/component `../test_smart_routing_config.py` includes a 162-case Cartesian oracle over all
 three legacy routing flags (`None`, `0`, `1`) and six selector forms (`None` plus the five
 supported presets, including the customer first-prompt-and-subagent mode). It independently
@@ -447,7 +519,8 @@ The tests assert that a span with the marker arrived and identifies the requeste
 Scoped discovery additionally requires Model Services
 `main.ucode.ci_e2e_claude` and `main.ucode.ci_e2e_codex`. Override them with
 `--parent-schema`, `--claude-parent-model`, or `--codex-parent-model`. The tests
-consume but never create or modify them.
+consume but never create or modify them. Claude and Codex scoped pickers must
+match the parent schema's live gateway catalog, which must include the configured parent model.
 
 These unmanaged journeys require a workspace that publishes no CodingAgentConfig.
 Before any of them configures or launches an agent, a session-scoped, read-only
@@ -469,7 +542,8 @@ overrides. Cases 11/13 also require explicit Claude provider/model-location laun
 built-in picker rows when no managed config exists. They also check that the remaining
 Default row names the model in the scoped fixture catalog, selected through the launch-only
 `ANTHROPIC_DEFAULT_MODEL` environment variable. Unit tests cover the existing Opus, Sonnet,
-then Haiku preference for catalogs with multiple families. Plain Claude launches retain native defaults.
+then Haiku preference for catalogs with multiple families. Plain Claude launches replace the
+picker with the gateway catalog (saved family defaults first) but keep Claude's own starting model.
 Obsolete disable-flag scenarios and duplicate managed variants are
 removed, not skipped; managed discovery and rejection remain covered by Cases
 1–6. Repository scenario numbers run consecutively from 01 to 14, with
@@ -850,6 +924,14 @@ bypass, only `@rohita5l` or `@lilly-luo` can post the exact PR comment
 `/skip-user-journey-test`. A trusted comment workflow mirrors that authorization to the
 visible `skip-user-journey-test` label, causing the gate to rerun. Editing or deleting the
 comment removes the label and reruns the gate; manually adding the label does not bypass it.
+
+The separate member-triggered `/ug-review` workflow runs the pinned Open Code Review
+action through the Databricks gateway's Anthropic route. Adding `ug-review` or `code-review` also
+requests review on in-repository PRs; fork PRs use the member comment to access
+secrets safely. `../test_ug_review_bot.py` covers gateway authentication,
+OIDC-authenticated npm-proxy configuration and credential cleanup, and the workflow
+contract as component tests. This integration suite does not establish
+live review-model access or GitHub comment posting.
 
 For a manual run, use **Actions → Integration → Run workflow**, select the branch,
 and set the ug/agent versions. Manual runs execute the complete integration suite.
