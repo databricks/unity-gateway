@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
+import shlex
+import stat
+import subprocess
+import sys
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +16,7 @@ import pytest
 
 from ucode.agents.desktop import claude as desktop
 from ucode.agents.desktop import claude_config as desktop_config
+from ucode.os_compatibility import subprocess_cross_os
 
 
 def _uuid() -> str:
@@ -106,6 +112,168 @@ def test_render_profile_accepts_custom_headers(tmp_path: Path) -> None:
     assert profile["inferenceCustomHeaders"] == {"x-fake-header": "foo"}
     assert "alwaysStartWithDefaultModel" not in profile
     assert profile["inferenceModels"] == [{"name": "system.ai.claude-opus-5-5"}]
+
+
+def test_render_profile_uses_refreshing_otel_helper_without_storing_credentials(tmp_path):
+    profile = desktop.render_profile(
+        model_ids=("system.ai.claude-sonnet-5",),
+        base_url="https://workspace.example/ai-gateway/anthropic",
+        helper_command=tmp_path / "ug",
+        helper_args=("auth-helper",),
+        otel_endpoint="https://workspace.example/ai-gateway/otel",
+        otel_headers_helper=tmp_path / "otel-headers.sh",
+    )
+
+    assert {key: value for key, value in profile.items() if key.startswith("otlp")} == {
+        "otlpEndpoint": "https://workspace.example/ai-gateway/otel",
+        "otlpProtocol": "http/protobuf",
+        "otlpHeadersHelper": str(tmp_path / "otel-headers.sh"),
+        "otlpTracesEnabled": True,
+    }
+    assert "Authorization" not in json.dumps(profile)
+
+
+def test_native_otel_helper_returns_current_headers_on_each_invocation(tmp_path):
+    helper = tmp_path / (
+        "headers with spaces.cmd" if sys.platform == "win32" else "headers with spaces.sh"
+    )
+    helper.write_bytes(
+        desktop_config.render_otel_helper(
+            [
+                sys.executable,
+                "-m",
+                "ucode.cli",
+                "otel-headers",
+                "--host",
+                "https://workspace.example",
+                "--profile",
+                "selected & profile",
+            ],
+            windows=sys.platform == "win32",
+        ).encode("utf-8")
+    )
+    helper.chmod(0o700)
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path),
+        "USERPROFILE": str(tmp_path),
+        "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
+    }
+    command = (
+        [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/c", str(helper)]
+        if sys.platform == "win32"
+        else [str(helper)]
+    )
+    for token in ("first-component-token", "rotated-component-token"):
+        result = subprocess_cross_os.run(
+            command,
+            env={**env, "DATABRICKS_BEARER": token},
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == {"Authorization": f"Bearer {token}"}
+    assert "component-token" not in helper.read_text()
+
+
+def test_posix_otel_helper_preserves_literal_shell_arguments(tmp_path):
+    arguments = ["spaces & $HOME; 'quoted'", "line\nbreak", "100% !value!"]
+    command = [str(tmp_path / "python with spaces"), "otel-headers", *arguments]
+    helper = desktop_config.render_otel_helper(command, windows=False)
+    assert helper.startswith("#!/bin/sh\nexec ")
+    assert shlex.split(helper.removeprefix("#!/bin/sh\nexec ")) == command
+
+
+def test_native_otel_helper_preserves_arguments_and_child_failure(tmp_path):
+    windows = sys.platform == "win32"
+    helper = tmp_path / ("headers with spaces.cmd" if windows else "headers with spaces.sh")
+    legacy_code_page = "@echo off\r\nchcp 437 >nul\r\n" if windows else ""
+    arguments = [
+        "spaces in profile",
+        "profilé-工作区",
+        "a&b|c<d>e^f(ghi)",
+        "%UG_WRAPPER_TEST%",
+        "bang!",
+        "'quoted'",
+        "C:\\dir\\",
+        "profile\\\\",
+        "after trailing backslashes",
+    ]
+    helper.write_bytes(
+        (
+            legacy_code_page
+            + desktop_config.render_otel_helper(
+                [
+                    sys.executable,
+                    "-c",
+                    "import json,sys;print(json.dumps(sys.argv[1:]))",
+                    *arguments,
+                ],
+                windows=windows,
+            )
+        ).encode("utf-8")
+    )
+    helper.chmod(0o700)
+    command = (
+        [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/c", str(helper)]
+        if windows
+        else [str(helper)]
+    )
+    result = subprocess_cross_os.run(
+        command,
+        env={**os.environ, "UG_WRAPPER_TEST": "must not expand"},
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == arguments
+
+    helper.write_bytes(
+        desktop_config.render_otel_helper(
+            [sys.executable, "-c", "import sys;sys.stderr.write('Refresh failed');sys.exit(7)"],
+            windows=windows,
+        ).encode("utf-8")
+    )
+    result = subprocess_cross_os.run(
+        command,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        timeout=10,
+    )
+    assert result.returncode == 7
+    assert result.stdout == ""
+    assert result.stderr == "Refresh failed"
+
+
+def test_windows_otel_helper_quotes_all_args_and_disables_expansion():
+    assert desktop_config.render_otel_helper(
+        [r"C:\Program Files\Python!\python.exe", "--profile", "a&b|c<d>e^f(ghi)%NAME%!"],
+        windows=True,
+    ) == (
+        "@echo off\r\nsetlocal DisableDelayedExpansion\r\nchcp 65001 >nul\r\n"
+        '"C:\\Program Files\\Python!\\python.exe" "--profile" "a&b|c<d>e^f(ghi)%%NAME%%!"\r\n'
+    )
+
+
+def test_windows_otel_helper_escapes_trailing_backslashes():
+    helper = desktop_config.render_otel_helper(
+        ["python.exe", "--profile", "profile\\", "C:\\dir\\\\", "last"], windows=True
+    )
+
+    assert helper.splitlines()[-1] == (
+        '"python.exe" "--profile" "profile\\\\" "C:\\dir\\\\\\\\" "last"'
+    )
+
+
+@pytest.mark.parametrize("argument", ['bad" & exit', "bad\rline", "bad\nline", "bad\0value"])
+def test_windows_otel_helper_rejects_unsafe_batch_arguments(argument):
+    with pytest.raises(desktop.ClaudeDesktopError, match="invalid characters"):
+        desktop_config.render_otel_helper(["python.exe", argument], windows=True)
 
 
 def test_render_profile_uses_catalog_labels_without_changing_routing_ids(tmp_path):
@@ -247,6 +415,18 @@ def test_configure_leaves_unrelated_and_old_generated_profiles_untouched(tmp_pat
     for name, contents in files_before.items():
         if name != desktop.META_FILENAME:
             assert (directory / name).read_bytes() == contents
+
+
+def test_repeat_configure_preserves_equivalent_json_bytes(tmp_path, directory):
+    state_path = tmp_path / "state.json"
+    result = _configure(state_path)
+    paths = [result.profile_path, result.metadata_path, state_path]
+    for path in paths:
+        path.write_bytes((json.dumps(_read(path), sort_keys=True) + "\n").encode("utf-8"))
+    before = {path: path.read_bytes() for path in paths}
+
+    assert not _configure(state_path).changed
+    assert {path: path.read_bytes() for path in paths} == before
 
 
 @pytest.mark.parametrize("profile_key", ["team profile", "研发", None])
@@ -432,12 +612,12 @@ def test_write_failure_rolls_back_exact_bytes(
     write = desktop_config._write_or_remove
     failed = False
 
-    def fail_once(path, payload):
+    def fail_once(path, contents, *, mode):
         nonlocal failed
         if path == targets[failed_file] and not failed:
             failed = True
             raise OSError("simulated write failure")
-        write(path, payload)
+        write(path, contents, mode=mode)
 
     monkeypatch.setattr(desktop_config, "_write_or_remove", fail_once)
     with pytest.raises(desktop.ClaudeDesktopError, match="rolled back"):
@@ -491,8 +671,50 @@ def test_writer_rejects_concurrent_changes_without_overwrite(tmp_path):
     path = tmp_path / "profile.json"
     path.write_bytes(b"changed")
     with pytest.raises(desktop.ClaudeDesktopConflictError, match="changed during setup"):
-        desktop_config.write_configuration([(path, b"original", {"new": True})])
+        desktop_config.write_configuration([(path, b"original", b'{"new": true}', 0o600)])
     assert path.read_bytes() == b"changed"
+
+
+@pytest.mark.parametrize("contents", [b'{"enabled": true}', b"#!/bin/sh\nexit 0\n", b"\xff\x00"])
+@pytest.mark.parametrize("mode", [0o600, 0o700])
+def test_writer_uses_explicit_permissions_independently_of_contents(tmp_path, contents, mode):
+    path = tmp_path / "nested" / "helper.cmd"
+    assert desktop_config.write_configuration([(path, None, contents, mode)])
+    assert path.read_bytes() == contents
+    if os.name != "nt":
+        assert stat.S_IMODE(path.stat().st_mode) == mode
+    assert path.stat().st_mode & stat.S_IWUSR
+    assert not desktop_config.write_configuration([(path, contents, contents, mode)])
+
+    assert desktop_config.write_configuration([(path, contents, None, mode)])
+    assert not path.exists()
+
+
+def test_writer_failed_atomic_replace_restores_bytes_and_permissions(tmp_path, monkeypatch):
+    directory = tmp_path / "files"
+    directory.mkdir()
+    path = directory / "existing.cmd"
+    original = b"original\xff\x00"
+    path.write_bytes(original)
+    path.chmod(0o640)
+    original_mode = stat.S_IMODE(path.stat().st_mode)
+    new_path = directory / "new.json"
+    replace = os.replace
+
+    def fail_new_file(source, destination):
+        if destination == new_path:
+            raise OSError("simulated atomic replacement failure")
+        replace(source, destination)
+
+    monkeypatch.setattr(desktop_config.os, "replace", fail_new_file)
+    with pytest.raises(desktop.ClaudeDesktopError, match="rolled back"):
+        desktop_config.write_configuration(
+            [(path, original, b"replacement", 0o700), (new_path, None, b"{}", 0o600)]
+        )
+
+    assert path.read_bytes() == original
+    assert stat.S_IMODE(path.stat().st_mode) == original_mode
+    assert list(directory.iterdir()) == [path]
 
 
 @pytest.mark.parametrize("operation", ["configure", "revert"])

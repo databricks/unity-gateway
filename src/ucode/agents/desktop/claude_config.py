@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
+import stat
 import tempfile
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
@@ -11,7 +13,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import NotRequired, TypedDict, cast
 
-from ucode.config_io import atomic_write_json
 from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
     release_file_lock,
@@ -62,6 +63,8 @@ def render_profile(
     helper_args: Sequence[str],
     model_id_to_display_name: Mapping[str, str] | None = None,
     custom_headers: Mapping[str, str] | None = None,
+    otel_endpoint: str | None = None,
+    otel_headers_helper: Path | None = None,
 ) -> dict[str, object]:
     """Render resolved models, headers, and literal helper arguments in Desktop's schema."""
 
@@ -89,7 +92,32 @@ def render_profile(
     }
     if custom_headers is not None:
         profile["inferenceCustomHeaders"] = dict(custom_headers)
+    if otel_endpoint and otel_headers_helper is not None:
+        profile.update(
+            otlpEndpoint=otel_endpoint,
+            otlpProtocol="http/protobuf",
+            otlpHeadersHelper=os.fspath(otel_headers_helper),
+            otlpTracesEnabled=True,
+        )
     return profile
+
+
+def render_otel_helper(command: Sequence[str], *, windows: bool) -> str:
+    if not command:
+        raise ClaudeDesktopError("Claude Desktop OTEL headers command is required.")
+    if not windows:
+        return f"#!/bin/sh\nexec {shlex.join(command)}\n"
+    if any(character in argument for argument in command for character in '"\r\n\0'):
+        raise ClaudeDesktopError("Claude Desktop OTEL helper arguments contain invalid characters.")
+    # cmd.exe needs every arg quoted; the child parser needs trailing backslashes doubled.
+    quoted = " ".join(
+        '"'
+        + argument.replace("%", "%%")
+        + "\\" * (len(argument) - len(argument.rstrip("\\")))
+        + '"'
+        for argument in command
+    )
+    return f"@echo off\r\nsetlocal DisableDelayedExpansion\r\nchcp 65001 >nul\r\n{quoted}\r\n"
 
 
 @contextmanager
@@ -176,35 +204,37 @@ def is_uuid(value: str) -> bool:
 
 
 def write_configuration(
-    changes: Sequence[tuple[Path, bytes | None, Mapping[str, object] | None]],
+    changes: Sequence[tuple[Path, bytes | None, bytes | None, int]],
 ) -> bool:
-    """Apply file changes, restoring exact original bytes if any write fails."""
+    """Apply (path, before, after, mode) changes, restoring originals on failure."""
 
-    for path, before, _after in changes:
+    for path, before, _after, _mode in changes:
         if read_optional_bytes(path) != before:
             raise ClaudeDesktopConflictError(
                 "Claude Desktop configuration changed during setup. Quit Claude Desktop and retry."
             )
-    originals = {path: before for path, before, _after in changes}
-    written: list[Path] = []
+    original_modes = {
+        path: stat.S_IMODE(path.stat().st_mode)
+        for path, before, _after, _mode in changes
+        if before is not None
+    }
+    written: list[tuple[Path, bytes | None, int]] = []
     try:
-        for path, before, after in changes:
-            contents = json.dumps(after, indent=2).encode("utf-8") if after is not None else None
-            if before == contents:
+        for path, before, after, mode in changes:
+            needs_exec_bit = (
+                after is not None
+                and mode & stat.S_IXUSR
+                and not original_modes.get(path, mode) & stat.S_IXUSR
+            )
+            if before == after and not needs_exec_bit:
                 continue
-            if before is not None and after is not None:
-                try:
-                    if json.loads(before) == after:
-                        continue
-                except (UnicodeError, json.JSONDecodeError):
-                    pass
-            written.append(path)
-            _write_or_remove(path, after)
+            written.append((path, before, original_modes.get(path, mode)))
+            _write_or_remove(path, after, mode=mode)
     except Exception as exc:  # noqa: BLE001 - preserve the original failure through rollback
         rollback_errors: list[Exception] = []
-        for path in reversed(written):
+        for path, before, mode in reversed(written):
             try:
-                _restore_original(path, originals[path])
+                _write_or_remove(path, before, mode=mode)
             except Exception as rollback_exc:  # noqa: BLE001
                 rollback_errors.append(rollback_exc)
         if rollback_errors:
@@ -218,8 +248,8 @@ def write_configuration(
     return bool(written)
 
 
-def _write_or_remove(path: Path, payload: Mapping[str, object] | None) -> None:
-    if payload is None:
+def _write_or_remove(path: Path, contents: bytes | None, *, mode: int) -> None:
+    if contents is None:
         try:
             path.unlink()
         except FileNotFoundError:
@@ -227,17 +257,12 @@ def _write_or_remove(path: Path, payload: Mapping[str, object] | None) -> None:
         except OSError as exc:
             raise ClaudeDesktopError(f"Could not remove Claude Desktop profile {path}.") from exc
         return
-    atomic_write_json(path, payload)
-
-
-def _restore_original(path: Path, contents: bytes | None) -> None:
-    if contents is None:
-        _write_or_remove(path, None)
-        return
+    path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "wb") as handle:
             handle.write(contents)
+        os.chmod(temporary, mode)
         os.replace(temporary, path)
     finally:
         Path(temporary).unlink(missing_ok=True)

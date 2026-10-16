@@ -373,6 +373,22 @@ lists. Scoped discovery uses the same response for IDs and labels without extra 
 Repeat configure refreshes or removes labels. Source lists/maps remain unchanged.
 These checks use temporary files on simulated platforms, not the native model picker.
 
+Desktop OTEL coverage remains in `../test_claude_desktop.py` and
+`../test_desktop_setup.py`: native settings follow Claude's tracing flag for both
+model sources on simulated macOS, Windows, and Linux. Component checks cover the
+collector base URL, protobuf protocol, refreshing `.sh`/`.cmd` helpers without
+persisted tokens, quoting, repeated native helper execution with rotated bearer
+overrides, Unicode and trailing-backslash arguments, Windows UTF-8 selection,
+JSON-only stdout/failures, repeat configure, workspace changes,
+disable/re-enable, helper-byte/permission rollback, and revert preserving unrelated
+telemetry. Revert cleanup also covers a removed native library or application-data
+root without recreating Desktop directories, plus rollback and retry after cleanup
+failure. Byte-writer component cases check explicit permissions independent of
+contents, unchanged JSON formatting, helper execute-permission repair, and
+atomic-replacement failure cleanup. This suite does not launch
+Desktop or establish native export, open-session token refresh, or trace ingestion.
+See `../../docs/claude-desktop.md` for native validation steps and auth limits.
+
 ## Test layout and format
 
 All user journeys are top-level tests. There is no separate regressions category:

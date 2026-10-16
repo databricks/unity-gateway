@@ -199,6 +199,22 @@ lists. Scoped discovery uses the same response for IDs and labels without extra 
 Repeat configure refreshes or removes labels. Source lists/maps remain unchanged.
 These checks use temporary files on simulated platforms, not the native model picker.
 
+Desktop OTEL component tests cover native trace settings gated by `claude_otel_tracing`
+for static and discovered models on simulated macOS, Windows, and Linux. They verify
+the collector base URL, protobuf protocol, refreshing `.sh`/`.cmd` headers helpers
+without persisted tokens, literal argument quoting, repeated native helper execution
+with rotated bearer overrides, Unicode and trailing-backslash arguments, and
+JSON-only stdout/failure output. Windows wrappers select UTF-8 before the command.
+Lifecycle checks cover repeat configure, workspace changes, disable/re-enable, rollback of helper bytes
+and permissions at each write boundary, and revert preserving unrelated telemetry.
+Revert also cleans up the helper and selection state after the Desktop library or
+application-data root is removed, without recreating either directory; failed cleanup
+restores helper bytes, permissions, and selection state for a later retry.
+Byte-writer checks cover explicit permissions independent of contents, unchanged
+JSON formatting, helper execute-permission repair, and failed atomic replacement
+without leftover temporary files.
+These checks do not prove native export, token refresh in open sessions, or ingestion.
+
 `TestChildStdoutLaunch` in `test_cli.py` checks Claude `-p`/`--print` and Codex `exec`
 (plain and `--json`) and `app-server` status/error output on stderr, argument forwarding with
 and without ug's `--`, and an unchanged stdout descriptor. Detection checks exact tokens before

@@ -1,6 +1,9 @@
 """Configure-only orchestration with real temporary Desktop profile files."""
 
 import json
+import os
+import stat
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -88,6 +91,240 @@ def test_configure_uses_claude_catalog_and_absolute_helper(desktop, tmp_path, ca
     output = capsys.readouterr().out
     assert "gateway profile configured" in output
     assert "default-model" not in output
+
+
+@pytest.mark.parametrize("source", ["discovery", "static"])
+@pytest.mark.parametrize("tracing", [None, False, True])
+def test_configure_otel_follows_claude_tracing_setting(desktop, source, tracing):
+    state = {
+        "workspace": "https://workspace.example/",
+        "profile": "chosen-profile",
+        "codex_otel_tracing": True,
+    }
+    if source == "static":
+        state["claude_static_models"] = ["system.ai.claude-sonnet-5"]
+    if tracing is not None:
+        state["claude_otel_tracing"] = tracing
+    original_state = dict(state)
+
+    desktop_setup.configure_claude_desktop(state)
+
+    profile = configured_profile(desktop)
+    assert {key: value for key, value in profile.items() if key.startswith("otlp")} == (
+        {
+            "otlpEndpoint": "https://workspace.example/ai-gateway/otel",
+            "otlpProtocol": "http/protobuf",
+            "otlpHeadersHelper": str(
+                claude_desktop.APP_DIR
+                / (
+                    "claude-desktop-otel-headers.cmd"
+                    if desktop_setup.sys.platform == "win32"
+                    else "claude-desktop-otel-headers.sh"
+                )
+            ),
+            "otlpTracesEnabled": True,
+        }
+        if tracing
+        else {}
+    )
+    assert "component-token" not in json.dumps(profile)
+    helpers = list(claude_desktop.APP_DIR.glob("claude-desktop-otel-headers.*"))
+    assert len(helpers) == int(bool(tracing))
+    if tracing:
+        helper = helpers[0].read_text()
+        assert "otel-headers" in helper
+        assert "https://workspace.example/" in helper
+        assert "chosen-profile" in helper
+        assert "component-token" not in helper
+    assert state == original_state
+
+
+def test_otel_reconfigure_switch_disable_and_revert_preserve_other_profiles(desktop):
+    previous_id = "74074d15-5e9e-4465-a670-2d5bb1b83d00"
+    previous = {"otlpEndpoint": "https://other-collector.example", "otlpTracesEnabled": True}
+    previous_path = desktop / f"{previous_id}.json"
+    previous_path.write_text(json.dumps(previous))
+    metadata_path = desktop / "_meta.json"
+    metadata = {
+        "entries": [{"id": previous_id, "name": "Other profile"}],
+        "appliedId": previous_id,
+        "unrelated": "keep",
+    }
+    metadata_path.write_text(json.dumps(metadata))
+    state = {
+        "workspace": "https://workspace.example",
+        "profile": "chosen-profile",
+        "claude_otel_tracing": True,
+    }
+    desktop_setup.configure_claude_desktop(state)
+    helper_path = Path(configured_profile(desktop)["otlpHeadersHelper"])
+    helper_before = helper_path.read_bytes()
+    before = {path.name: path.read_bytes() for path in desktop.glob("*.json")}
+    desktop_setup.configure_claude_desktop(state)
+    assert {path.name: path.read_bytes() for path in desktop.glob("*.json")} == before
+    assert helper_path.read_bytes() == helper_before
+
+    desktop_setup.configure_claude_desktop({**state, "workspace": "https://next.example/"})
+    profile = configured_profile(desktop)
+    assert profile["otlpEndpoint"] == "https://next.example/ai-gateway/otel"
+    assert profile["inferenceGatewayBaseUrl"] == "https://next.example/ai-gateway/anthropic"
+    assert "https://next.example/" in helper_path.read_text()
+
+    desktop_setup.configure_claude_desktop({**state, "claude_otel_tracing": False})
+    assert not any(key.startswith("otlp") for key in configured_profile(desktop))
+    assert not helper_path.exists()
+    desktop_setup.configure_claude_desktop(state)
+    assert configured_profile(desktop)["otlpTracesEnabled"] is True
+    assert desktop_setup.revert_desktop() == "removed"
+    assert not (desktop / f"{claude_desktop.PROFILE_ID}.json").exists()
+    assert not helper_path.exists()
+    assert json.loads(previous_path.read_text()) == previous
+    assert json.loads(metadata_path.read_text()) == metadata
+
+
+@pytest.mark.parametrize("removed_directory", ["library", "app-root"])
+def test_otel_revert_cleans_helper_after_desktop_removal(desktop, tmp_path, removed_directory):
+    desktop_setup.configure_claude_desktop(
+        {
+            "workspace": "https://workspace.example",
+            "profile": "chosen-profile",
+            "claude_otel_tracing": True,
+        }
+    )
+    helper = Path(configured_profile(desktop)["otlpHeadersHelper"])
+    state = claude_desktop.APP_DIR / claude_desktop.STATE_FILENAME
+    original_directory = desktop if removed_directory == "library" else desktop.parent
+    removed = original_directory.rename(tmp_path / "removed-desktop")
+    before = {path: path.read_bytes() for path in removed.rglob("*.json")}
+
+    assert desktop_setup.revert_desktop() == "removed"
+
+    assert not helper.exists()
+    assert not state.exists()
+    assert not original_directory.exists()
+    assert {path: path.read_bytes() for path in removed.rglob("*.json")} == before
+    assert desktop_setup.revert_desktop() == "unchanged"
+    assert not original_directory.exists()
+
+
+@pytest.mark.parametrize("failed_file", ["helper", "state"])
+def test_otel_revert_after_desktop_removal_rolls_back(desktop, tmp_path, monkeypatch, failed_file):
+    desktop_setup.configure_claude_desktop(
+        {
+            "workspace": "https://workspace.example",
+            "profile": "chosen-profile",
+            "claude_otel_tracing": True,
+        }
+    )
+    helper = Path(configured_profile(desktop)["otlpHeadersHelper"])
+    state = claude_desktop.APP_DIR / claude_desktop.STATE_FILENAME
+    targets = {"helper": helper, "state": state}
+    before = {path: path.read_bytes() for path in targets.values()}
+    modes = {path: stat.S_IMODE(path.stat().st_mode) for path in targets.values()}
+    desktop.rename(tmp_path / "removed-desktop")
+    write = desktop_config._write_or_remove
+
+    def fail_removal(path, contents, *, mode):
+        if path == targets[failed_file] and contents is None:
+            raise OSError("simulated removal failure")
+        write(path, contents, mode=mode)
+
+    monkeypatch.setattr(desktop_config, "_write_or_remove", fail_removal)
+
+    assert desktop_setup.revert_desktop() == "failed"
+
+    assert {path: path.read_bytes() for path in targets.values()} == before
+    assert {path: stat.S_IMODE(path.stat().st_mode) for path in targets.values()} == modes
+    assert not desktop.exists()
+    monkeypatch.setattr(desktop_config, "_write_or_remove", write)
+    assert desktop_setup.revert_desktop() == "removed"
+    assert not helper.exists()
+    assert not state.exists()
+    assert not desktop.exists()
+
+
+@pytest.mark.parametrize("failed_file", ["helper", "profile", "metadata", "state"])
+@pytest.mark.parametrize("operation", ["enable", "switch", "disable", "revert"])
+def test_otel_write_failure_rolls_back_existing_profile(
+    desktop, monkeypatch, failed_file, operation, capsys
+):
+    state = {
+        "workspace": "https://workspace.example",
+        "profile": "chosen-profile",
+        "claude_otel_tracing": operation != "enable",
+    }
+    desktop_setup.configure_claude_desktop(state)
+    metadata_path = desktop / "_meta.json"
+    metadata = json.loads(metadata_path.read_text())
+    previous_id = "74074d15-5e9e-4465-a670-2d5bb1b83d00"
+    (desktop / f"{previous_id}.json").write_text("{}")
+    metadata["entries"].append({"id": previous_id, "name": "Other profile"})
+    metadata["appliedId"] = previous_id
+    metadata_path.write_text(json.dumps(metadata))
+    selection_path = claude_desktop.APP_DIR / claude_desktop.STATE_FILENAME
+    targets = {
+        "helper": claude_desktop.APP_DIR
+        / (
+            "claude-desktop-otel-headers.cmd"
+            if desktop_setup.sys.platform == "win32"
+            else "claude-desktop-otel-headers.sh"
+        ),
+        "profile": desktop / f"{claude_desktop.PROFILE_ID}.json",
+        "metadata": metadata_path,
+        "state": selection_path,
+    }
+    before = {path: path.read_bytes() if path.exists() else None for path in targets.values()}
+    if operation == "switch":
+        targets["helper"].chmod(0o600)
+    modes = {path: stat.S_IMODE(path.stat().st_mode) for path in targets.values() if path.exists()}
+    write = desktop_config._write_or_remove
+    failed = False
+
+    def fail_once(path, contents, *, mode):
+        nonlocal failed
+        if path == targets[failed_file] and not failed:
+            failed = True
+            raise OSError("simulated write failure")
+        write(path, contents, mode=mode)
+
+    monkeypatch.setattr(desktop_config, "_write_or_remove", fail_once)
+    if operation == "revert":
+        assert desktop_setup.revert_desktop() == "failed"
+    else:
+        desktop_setup.configure_claude_desktop(
+            {
+                **state,
+                "workspace": "https://next.example"
+                if operation == "switch"
+                else state["workspace"],
+                "claude_otel_tracing": operation != "disable",
+            }
+        )
+
+    assert failed
+    assert {
+        path: path.read_bytes() if path.exists() else None for path in targets.values()
+    } == before
+    assert {path: stat.S_IMODE(path.stat().st_mode) for path in modes} == modes
+    assert "rolled back" in capsys.readouterr().out
+
+
+def test_reconfigure_repairs_otel_helper_execute_permission(desktop):
+    state = {
+        "workspace": "https://workspace.example",
+        "profile": "chosen-profile",
+        "claude_otel_tracing": True,
+    }
+    desktop_setup.configure_claude_desktop(state)
+    helper = Path(configured_profile(desktop)["otlpHeadersHelper"])
+    original = helper.read_bytes()
+    helper.chmod(0o600)
+    desktop_setup.configure_claude_desktop(state)
+
+    assert helper.read_bytes() == original
+    if os.name != "nt":
+        assert stat.S_IMODE(helper.stat().st_mode) == 0o700
+    assert helper.stat().st_mode & stat.S_IWUSR
 
 
 @pytest.mark.parametrize("source", ["discovery", "static"])
