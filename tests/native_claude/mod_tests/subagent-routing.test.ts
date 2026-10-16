@@ -23,7 +23,7 @@ test('routing preserves distinct results for identical tasks and forwards each c
     expect(payload.tool_input).toEqual(originalInput);
     const model = payload.tool_use_id === 'call-a' ? 'system.ai.claude-sonnet-5' : 'system.ai.claude-opus-4-8';
     return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
-      model, rationale: `Selected for ${payload.tool_use_id}`,
+      model, rationale: `Selected for ${payload.tool_use_id}`, orchestrator: payload.tool_use_id === 'call-b',
       updatedInput: { prompt: originalInput.prompt, description: originalInput.description, subagent_type: `ug-smart-router:${payload.tool_use_id}` },
     }) } };
   });
@@ -43,10 +43,14 @@ test('routing preserves distinct results for identical tasks and forwards each c
   expect(await a.find({ type: 'Text', text: 'claude-sonnet-5' })).toBeDefined();
   expect(await a.find({ type: 'Text', text: '      Reason: Selected for call-a' })).toBeDefined();
   expect(await a.find({ type: 'Text', text: 'claude-opus-4-8' })).toBeUndefined();
+  // The row names the dispatched agent, never the type the parent requested.
+  expect(await a.find({ type: 'Text', text: /^ug-smart-router:call-a\s*$/ })).toBeDefined();
+  expect(await a.find({ type: 'Text', text: /Explore/ })).toBeUndefined();
   await a.unmount();
   const b = await $.ui.mount(row('call-b'));
   expect(await b.find({ type: 'Text', text: 'claude-opus-4-8' })).toBeDefined();
   expect(await b.find({ type: 'Text', text: '      Reason: Selected for call-b' })).toBeDefined();
+  expect(await b.find({ type: 'Text', text: /^ug-smart-router:call-b \[orchestrator on\]\s*$/ })).toBeDefined();
   await b.unmount();
 });
 

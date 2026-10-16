@@ -25,6 +25,8 @@ from utils.managed import use_managed_config_fixture
 from utils.request_recorder import TuiRequestRecorder, served_inference_request
 from utils.terminal import AgentTerminal
 
+pytestmark = pytest.mark.harness_latest
+
 SMART_ROUTING_BANNER = "Using Unity Gateway Smart Router."
 SMART_ROUTING_SUBAGENT_NOTICE = "Using Unity Gateway Smart Router - Subagent"
 CLAUDE_MODELS = [
@@ -206,10 +208,17 @@ def _toggle_with_skill(
     before_answers, before_confirmations = completion_counts()
     tui.submit(invocation)
 
-    def toggled(_screen):
+    def toggled(screen):
+        if tui.approve_windows_command(screen):
+            return False
+        try:
+            controls_now = json.loads(controls[0].read_text())
+        except PermissionError:
+            # Windows denies reads while ug replaces the controls file; try again next frame.
+            return False
         answers, confirmations = completion_counts()
         return (
-            json.loads(controls[0].read_text()) == expected
+            controls_now == expected
             and confirmations > before_confirmations
             and answers > before_answers
         )
@@ -247,7 +256,8 @@ def test_smart_routing_claude_route_subagent_hook(
     subagent routing or each supported selector.
 
     Expected: the shared Python client calls the real router and returns model,
-    rationale, and an updated input naming a routed agent while preserving the task.
+    rationale, and an updated input naming the dispatched ``ucode-route-`` agent while
+    preserving the task, so the mod labels the row with the agent that actually runs.
     One decision is audited for the session. This checks the mod's CLI protocol;
     no native mod or agent decides to spawn.
     """
@@ -283,6 +293,8 @@ def test_smart_routing_claude_route_subagent_hook(
     assert updated["subagent_type"].startswith("ug-smart-router:ucode-route-"), updated
     assert updated["prompt"] == payload["tool_input"]["prompt"], updated
     assert updated["description"] == payload["tool_input"]["description"], updated
+    assert "general-purpose" not in json.dumps(output), output
+    assert isinstance(output["orchestrator"], bool), output
 
     decisions_path = session.home / ".ucode" / "claude-smart-routing-decisions.jsonl"
     assert decisions_path.is_file(), f"hook wrote no routing decision record: {decisions_path}"
@@ -402,8 +414,9 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
     Expected: routing-only cases install Smart Router; enabling orchestration also installs
     Smart Router Orchestrator. Each local invocation confirms the new state in the TUI.
     All three uniquely tagged calculations complete in native parent and child sessions;
-    their recorded inference requests carry the launch recipe, DISABLED, then the launch
-    recipe again, and receive non-empty HTTP 200 responses (including verified native
+    their recorded inference payloads carry smart_router_recipe_name with the launch
+    recipe, DISABLED, then the launch recipe again, without a recipe header, and receive
+    non-empty HTTP 200 responses (including verified native
     compatibility retries). Only the first and third show native model/rationale rows
     and produce live gateway decisions correlated with those children. Claude's native
     task view reports no running tasks before /exit. No first-prompt routing wrapper starts.
@@ -432,7 +445,7 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
             session, "claude", [str(session.binary), "claude"], "smart-router-skill-toggle"
         ) as tui:
             tui.boot()
-            launch_recipe = session.env.get("SMART_ROUTER_NAME", "").strip() or "task_v3"
+            launch_recipe = None
             for expression, result, routed in [
                 ("1+1", "2", True),
                 ("1+2", "3", False),
@@ -466,13 +479,37 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
                     and task.marker in json.dumps(request.payload.get("messages", []))
                 ]
                 assert inferences, f"No recorded inference for {task.marker}"
-                recipe = launch_recipe if routed else "DISABLED"
+                if routed:
+                    routes = [
+                        request
+                        for request in requests
+                        if request.method == "POST"
+                        and request.path == "/ai-gateway/routing/v1/routes:select"
+                        and task.marker in request.payload.get("task", {}).get("prompt", "")
+                    ]
+                    assert len(routes) == 1, (task.marker, routes)
+                    recipe = routes[0].payload.get("route_selector", {}).get("router_name")
+                    assert isinstance(recipe, str) and recipe.strip() and recipe != "DISABLED", (
+                        task.marker,
+                        routes[0].sequence,
+                        routes[0].payload.get("route_selector"),
+                    )
+                    if launch_recipe is None:
+                        launch_recipe = recipe
+                    else:
+                        assert recipe == launch_recipe, (task.marker, recipe, launch_recipe)
+                else:
+                    recipe = "DISABLED"
                 for request in inferences:
-                    assert request.headers.get("databricks-smart-router-recipe") == recipe, (
+                    assert request.payload.get("smart_router_recipe_name") == recipe, (
                         task.marker,
                         request.sequence,
-                        request.headers.get("databricks-smart-router-recipe"),
+                        request.payload.get("smart_router_recipe_name"),
                         recipe,
+                    )
+                    assert "databricks-smart-router-recipe" not in request.headers, (
+                        task.marker,
+                        request.sequence,
                     )
                     served_inference_request(recorder, requests, request, "claude")
             tui.wait_for_background_tasks()

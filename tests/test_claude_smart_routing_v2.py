@@ -6,7 +6,6 @@ import json
 import os
 import sys
 import threading
-import time
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -150,6 +149,7 @@ class TestFirstPromptHook:
         socket_path = tmp_path / "first.sock"
         blocked: list[tuple[str, str]] = []
         stop = threading.Event()
+        ready = threading.Event()
         claude_pty.serve_first_prompt_socket(
             socket_path,
             lambda _prompt: claude_pty.FirstPromptRoute(
@@ -157,11 +157,11 @@ class TestFirstPromptHook:
             ),
             lambda prompt, model: blocked.append((prompt, model)),
             stop,
+            # Wait on [READY], logged after listen(); the socket file exists from bind().
+            log=lambda message: ready.set() if message.startswith("[READY]") else None,
         )
         try:
-            deadline = time.monotonic() + 5
-            while not socket_path.exists() and time.monotonic() < deadline:
-                time.sleep(0.01)
+            assert ready.wait(5)
             first = claude_pty.request_first_prompt_route(
                 socket_path, {"session_id": "s1", "prompt": "fix the parser"}
             )
@@ -762,6 +762,7 @@ class TestSubagentRouting:
                 "prompt": "inspect the parser",
                 "subagent_type": v2._routed_claude_agent_name("system.ai.claude-opus-4-8"),
             },
+            "orchestrator": False,
         }
         assert not any(path.is_file() for path in tmp_path.rglob("*"))
 
@@ -780,6 +781,48 @@ class TestSubagentRouting:
         assert settings["hooks"]["PreToolUse"] == [{"hooks": [{"command": "user-policy"}]}]
         assert "session-start" in str(settings["hooks"]["SessionStart"])
         assert "record-subagent" in str(settings["hooks"]["SubagentStart"])
+
+    @pytest.mark.parametrize("orchestrator_enabled", ["0", "1"])
+    def test_routed_agent_details_match_executed_agent(
+        self, tmp_path, monkeypatch, orchestrator_enabled
+    ):
+        session_file = tmp_path / "env.json"
+        session_file.write_text("{}")
+        monkeypatch.setenv("UCODE_SESSION_ENV_FILE", str(session_file))
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "1")
+        monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", orchestrator_enabled)
+        monkeypatch.delenv("ISAAC_LAUNCH_MODE", raising=False)
+        selected_model = "system.ai.claude-haiku-5-5"
+        requested_agent = v2._routed_claude_agent_name("system.ai.glm-5-3-flash")
+        routed_agent = v2._routed_claude_agent_name(selected_model)
+        # Control only the remote router response; exercise routing and the mod details together.
+        monkeypatch.setattr(
+            v2,
+            "_request_claude_routing_decision",
+            lambda *_args: (
+                routing.RoutingDecision(model=selected_model, raw_model="claude-haiku-5-5"),
+                None,
+            ),
+        )
+        output = v2.route_claude_subagent(
+            {
+                "tool_name": "Agent",
+                "tool_input": {
+                    "description": "Create a proof file",
+                    "subagent_type": requested_agent,
+                    "prompt": "Write a small proof file.",
+                },
+            },
+            workspace="https://example.com",
+            token="token",
+            available_models=[selected_model, "system.ai.glm-5-3-flash"],
+        )
+
+        # The mod labels the row from updatedInput, so it names the dispatched agent.
+        assert output["updatedInput"]["subagent_type"] == routed_agent
+        assert output["model"] == selected_model
+        assert requested_agent not in json.dumps(output)
+        assert output["orchestrator"] is (orchestrator_enabled == "1")
 
     def test_writes_routed_agents_as_launch_scoped_plugin(self, tmp_path):
         plugin_dir = tmp_path / "routing-plugin"
@@ -1092,3 +1135,13 @@ class TestV2HeadlessClaude:
 
         assert prompts == ["fix the parser"]
         assert "--model" not in launched["argv"]
+
+
+def test_routing_hook_command_keeps_posix_quoting_on_windows(monkeypatch):
+    """Claude Code runs hooks through Git Bash on Windows, which strips unquoted backslashes."""
+    from ucode.os_compatibility import subprocess_cross_os
+    from ucode.smart_routing import claude_hooks
+
+    monkeypatch.setattr(subprocess_cross_os.platform, "system", lambda: "Windows")
+    hook = claude_hooks._routing_command_hook([r"C:\Users\me\.local\bin\ug.EXE", "route-subagent"])
+    assert hook["command"] == r"'C:\Users\me\.local\bin\ug.EXE' route-subagent"

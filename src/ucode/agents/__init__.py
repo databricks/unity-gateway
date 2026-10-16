@@ -11,6 +11,7 @@ below and to `TOOL_ALIASES` if needed.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -28,7 +29,7 @@ from ucode.databricks import (
 from ucode.managed_config import refresh_managed_config
 from ucode.managed_files import managed_write_batch
 from ucode.os_compatibility import subprocess_cross_os
-from ucode.state import get_provider_service, load_state, save_state
+from ucode.state import get_model_location, get_provider_service, load_state, save_state
 from ucode.telemetry import agent_version
 from ucode.ui import (
     print_err,
@@ -83,6 +84,10 @@ _NATIVE_UPGRADE_COMMANDS = {
     "claude": ["claude", "upgrade"],
     "codex": ["codex", "update"],
 }
+# Lets launchers that already own the agent install (e.g. Isaac) skip the
+# required-upgrade confirmation; declining it would only fail the launch.
+AUTO_UPGRADE_AGENT_ENV = "UG_AUTO_UPGRADE_AGENT"
+_TRUE_VALUES = {"1", "true", "yes", "on"}
 
 # ucode tool -> `databricks aitools` agent id. gemini/pi aren't supported.
 AITOOLS_AGENT_TOKENS = {
@@ -154,6 +159,10 @@ def _update_installed_tool_binary(tool: str, version: str | None = None) -> bool
     return bool(shutil.which(binary))
 
 
+def _auto_upgrade_agent_enabled() -> bool:
+    return os.environ.get(AUTO_UPGRADE_AGENT_ENV, "").strip().lower() in _TRUE_VALUES
+
+
 def _minimum_version_error(tool: str) -> str | None:
     checker = getattr(_MODULES[tool], "minimum_version_error", None)
     if not callable(checker):
@@ -213,8 +222,12 @@ def install_tool_binary(
             print_warning(version_error)
             # Native upgraders run in place, so confirm before mutating the install;
             # EOF/piped runs take the default and upgrade (a required fix must not stall).
-            if tool in _NATIVE_UPGRADE_COMMANDS and not prompt_yes_no_default(
-                f"Upgrade {spec['display']} if available?", default=True
+            if (
+                tool in _NATIVE_UPGRADE_COMMANDS
+                and not _auto_upgrade_agent_enabled()
+                and not prompt_yes_no_default(
+                    f"Upgrade {spec['display']} if available?", default=True
+                )
             ):
                 raise RuntimeError(version_error)
             if not _update_installed_tool_binary(tool):
@@ -534,6 +547,7 @@ def configure_single_tool(
     tool: str, state: dict, *, parent_schema: str | None = None, provider: str | None = None
 ) -> dict:
     """Check availability, configure, and persist state for one tool only."""
+    parent_schema = parent_schema or _persisted_model_location(tool, state, provider)
     provider = None if parent_schema else provider or get_provider_service(state, tool)
     # A Model Provider Service or parent schema routes through the same gateway and pins no
     # globally discovered Databricks model, so the availability check doesn't apply.
@@ -551,6 +565,17 @@ def configure_single_tool(
     state["available_tools"] = available_tools
     save_state(state)
     return state
+
+
+def _persisted_model_location(tool: str, state: dict, provider: str | None) -> str | None:
+    """The model location ``ug configure`` saved for ``tool``, unless a provider is in play.
+
+    Only claude and codex discover models by parent schema; an explicit or persisted provider
+    keeps the source it names.
+    """
+    if tool not in (AGENT_CLAUDE, AGENT_CODEX) or provider or get_provider_service(state, tool):
+        return None
+    return get_model_location(state, tool)
 
 
 def _configure_one(
@@ -601,7 +626,9 @@ def configure_selected_tools(
     configured: list[str] = []
     with managed_write_batch(_managed_settings_displays(tools)):
         for tool in tools:
-            parent_schema = (parent_schemas or {}).get(tool)
+            parent_schema = (parent_schemas or {}).get(tool) or _persisted_model_location(
+                tool, state, None
+            )
             provider = None if parent_schema else get_provider_service(state, tool)
             try:
                 state = _configure_one(tool, state, provider, parent_schema=parent_schema)

@@ -33,10 +33,12 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     }
     if (!route) return next(e)
     if (tool_use_id) {
+      // Name the agent that is dispatched, not the type the parent originally requested.
+      const name = route.updatedInput.subagent_type
       records.set(tool_use_id, {
         model: route.model,
         rationale: route.rationale,
-        name: typeof input.subagent_type === 'string' ? input.subagent_type : '',
+        name: route.orchestrator === true ? `${name} [orchestrator on]` : name,
       })
       $.ui.invalidate('ui.render')
     }

@@ -19,7 +19,12 @@ from tests.e2e_cuj.helpers.evidence import (
     get_cuj_helper,
 )
 from tests.e2e_cuj.helpers.tui_request_recorder import RecordedRequest, RecordedResponse
-from tests.e2e_cuj.test_cuj4_smart_routing import _smart_router_band_shown, _task_inference_request
+from tests.e2e_cuj.test_cuj4_smart_routing import (
+    _smart_router_band_hidden,
+    _smart_router_band_shown,
+    _smart_router_hint_shown,
+    _task_inference_request,
+)
 from tests.integration.utils.evidence import FileTask, read_jsonl
 from tests.integration.utils.provider_catalog import MODEL_SERVICE_PARENT_SCHEMA_HEADER
 
@@ -41,6 +46,22 @@ def test_cuj4_status_band_requires_current_state_and_scope(enabled, first_prompt
         assert not _smart_router_band_shown(tui, enabled=enabled, first_prompt=not first_prompt)
     tui.screen.display = [f"Smart Router is {state.lower()} for this session."]
     assert not _smart_router_band_shown(tui, enabled=enabled, first_prompt=first_prompt)
+
+
+@pytest.mark.parametrize("state", ["ON", "OFF"])
+def test_cuj4_band_hidden_ignores_the_hint_row_and_toggle_reply(state):
+    tui = SimpleNamespace(
+        screen=SimpleNamespace(
+            display=[f"unity gateway smart router  {state}  — routing subagents"]
+        )
+    )
+    assert not _smart_router_band_hidden(tui)
+    # The hint row and the toggle's reply name the state but are not the band.
+    tui.screen.display = [
+        f"  ug-smart-router: Smart Router is {state.lower()}",
+        f"  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents · smart router {state}",
+    ]
+    assert _smart_router_band_hidden(tui)
 
 
 def records(agent, task, model):
@@ -291,6 +312,30 @@ def test_cuj_task_inference_selection_uses_exact_tool_prompt():
         _task_inference_request([parent, child], CODEX, child_prompt, after=5)
 
 
+@pytest.mark.parametrize("lite", [False, True], ids=["codex-0.154.0", "codex-0.162.1"])
+def test_cuj_codex_task_inference_accepts_both_tool_formats(lite):
+    prompt = "Read input-file.txt using a tool. Reply with only its contents."
+    request = _inference_request(CODEX, 2, prompt, [{"type": "function", "name": "read_file"}])
+    tool_holder = request.payload
+    if lite:
+        tool_holder = {
+            "type": "additional_tools",
+            "role": "developer",
+            "tools": request.payload.pop("tools"),
+        }
+        request.payload["input"].insert(0, tool_holder)
+
+    assert _task_inference_request([request], CODEX, prompt, after=1) is request
+    with pytest.raises(AssertionError, match="No tool-capable"):
+        _task_inference_request([request], CODEX, prompt + " Different task.")
+    with pytest.raises(AssertionError, match="No tool-capable"):
+        _task_inference_request([request], CODEX, prompt, after=2)
+    for invalid_tools in ([], {}, None):
+        tool_holder["tools"] = invalid_tools
+        with pytest.raises(AssertionError, match="No tool-capable"):
+            _task_inference_request([request], CODEX, prompt)
+
+
 @pytest.mark.parametrize("agent", [CLAUDE, CODEX])
 @pytest.mark.parametrize("after", [0, 1])
 @pytest.mark.parametrize("suffix", ["\n", "\n\n", " ", "\nDifferent task."])
@@ -302,6 +347,36 @@ def test_cuj_task_inference_only_allows_claude_child_transport_newline(agent, af
     else:
         with pytest.raises(AssertionError, match="No tool-capable"):
             _task_inference_request([request], agent, prompt, after=after)
+
+
+def test_cuj_codex_encrypted_child_inference_matches_routed_task_name():
+    request = _inference_request(CODEX, 3, "parent prompt", [{"name": "exec"}])
+    message = {
+        "type": "agent_message",
+        "author": "/root",
+        "recipient": "/root/read_file",
+        "content": [{"type": "encrypted_content", "encrypted_content": "gAAAAAopaque"}],
+    }
+    request.payload["input"].append(message)
+    assert _task_inference_request([request], CODEX, "read_file", after=2) is request
+    for prompt, after in (("another_task", 2), ("read_file", 0), ("read_file", 3)):
+        with pytest.raises(AssertionError, match="No tool-capable"):
+            _task_inference_request([request], CODEX, prompt, after=after)
+    for change in (
+        {"type": "message", "role": "user"},
+        {"recipient": "/root/another_task"},
+        {"content": [{"type": "input_text", "text": "read_file"}]},
+        {"content": [{"type": "encrypted_content", "encrypted_content": ""}]},
+    ):
+        original = message.copy()
+        message.update(change)
+        with pytest.raises(AssertionError, match="No tool-capable"):
+            _task_inference_request([request], CODEX, "read_file", after=2)
+        message.clear()
+        message.update(original)
+    request.payload["tools"] = []
+    with pytest.raises(AssertionError, match="No tool-capable"):
+        _task_inference_request([request], CODEX, "read_file", after=2)
 
 
 def test_cuj_evidence_ignores_existing_session(tmp_path):
@@ -428,3 +503,22 @@ def test_cuj_claude_headless_model_requires_expected_model_output_tokens(failure
     else:
         with pytest.raises(AssertionError):
             assert_claude_headless_model(result, model)
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_cuj4_hint_row_requires_the_current_state(enabled):
+    state, other = ("ON", "OFF") if enabled else ("OFF", "ON")
+    row = f"  ⏵⏵ auto mode on (shift+tab to cycle) · PR #1138 · ← for agents · smart router {state}"
+    tui = SimpleNamespace(screen=SimpleNamespace(display=[row]))
+    assert _smart_router_hint_shown(tui, enabled=enabled)
+    assert not _smart_router_hint_shown(tui, enabled=not enabled)
+    # A row holding only the state, as when no other hint shows, still counts.
+    tui.screen.display = [f"  smart router {state}  "]
+    assert _smart_router_hint_shown(tui, enabled=enabled)
+    # The band and the toggle reply name the state but are not the hint row.
+    tui.screen.display = [
+        f"unity gateway smart router  {state}  — routing subagents    [-]",
+        f"  ug-smart-router: Smart Router is {state.lower()}",
+        f"  ⏵⏵ auto mode on (shift+tab to cycle) · smart router {other}",
+    ]
+    assert not _smart_router_hint_shown(tui, enabled=enabled)
