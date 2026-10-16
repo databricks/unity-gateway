@@ -320,7 +320,7 @@ on/off controls retain their existing precedence over presets.
 
 `subagent_orch_savings_v0` uses the routing and orchestration flags from `subagent_orch_v1`
 and sets `ENABLE_SMART_ROUTING_SAVINGS=1`. Savings tracking, endpoint-price refresh,
-pricing, and the above-prompt savings/orchestrator-version row are opt-in and currently
+pricing, and the above-prompt savings row are opt-in and currently
 implemented for Claude. Every existing preset sets this flag to `"0"`, overriding an
 inherited `"1"`. Without a selector, explicitly set `ENABLE_SMART_ROUTING_SAVINGS=1`
 with routing enabled to use the feature.

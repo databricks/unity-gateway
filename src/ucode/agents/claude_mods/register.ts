@@ -327,24 +327,24 @@ async function flush($: any): Promise<void> {
 }
 
 // Styled like the status band: a bold label, the amount in a pill, a dim italic trailer.
+// Nothing until there is an estimate: the band and prompt hint already show routing state.
 function savingsRow({ Box, Text }: any): unknown {
-  const children: unknown[] = [];
-  if (estimate) {
-    const color = estimate.saved ? 'green' : 'yellow';
+  if (!estimate) return null;
+  const color = estimate.saved ? 'green' : 'yellow';
+  const children: unknown[] = [
+    Text({
+      bold: true,
+      children: [estimate.saved ? '💰 Est. saved with smart routing' : 'Smart routing cost'],
+    }),
+    Text({ bold: true, color: 'black', backgroundColor: color, children: [` ${estimate.amount} `] }),
+    Text({ color, children: [`${estimate.saved ? '' : 'more '}(${estimate.percent})`] }),
+  ];
+  if (version) {
     children.push(
-      Text({
-        bold: true,
-        children: [estimate.saved ? '💰 Est. saved with smart routing' : 'Smart routing cost'],
-      }),
-      Text({ bold: true, color: 'black', backgroundColor: color, children: [` ${estimate.amount} `] }),
-      Text({ color, children: [`${estimate.saved ? '' : 'more '}(${estimate.percent})`] }),
+      Text({ dimColor: true, italic: true, children: [`— Unity Gateway Smart Router v${version}`] }),
     );
   }
-  if (version) {
-    const label = `Unity Gateway Smart Router v${version}`;
-    children.push(Text({ dimColor: true, italic: true, children: [estimate ? `— ${label}` : label] }));
-  }
-  return children.length ? Box({ flexDirection: 'row', columnGap: 1, children }) : null;
+  return Box({ flexDirection: 'row', columnGap: 1, children });
 }
 
 function registerSavings(on: On, options: PluginOptions): void {
