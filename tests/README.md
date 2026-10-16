@@ -537,13 +537,14 @@ which runs automatically only for in-repo PRs.
 
 ## Gaps and deferred scope
 
-Custom OAuth lock tests cover release after use, Windows contention retries,
-bounded acquisition, actionable timeout errors, and permanent lock-error propagation.
-`test_databricks.py` checks the shared browser-login deadline includes lock waits;
-`test_claude_smart_routing_v2.py` checks model-lock timeouts and cleanup after snapshot
-failure. `test_file_lock_cross_os.py` exercises real contention, preserving the holder
-after timeout and acquiring after release. Native Windows browser consent and concurrent
+Custom OAuth lock tests cover release after use, Windows contention retries, and
+permanent lock-error propagation. Native Windows browser consent and concurrent
 OAuth helpers still need platform validation.
+
+`test_file_lock_cross_os.py` exercises the shared timeout mechanism used by Desktop:
+real contention, preserving the holder after timeout, and acquiring after release.
+New lock-wait limits are scoped to Desktop profile updates; existing non-Desktop
+callers retain their prior behavior.
 
 Gateway proxy tests exercise a busy cached port falling back to a free port with
 address reuse disabled, plus the platform-specific reuse policy. Linux runs do

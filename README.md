@@ -408,10 +408,9 @@ That UUID identifies UG's managed profile even without an ownership record. Conf
 creates or refreshes it and selects it, leaving random-ID profiles untouched. Revert
 bookkeeping retains original profile and metadata baselines across repeated configure.
 
-File-lock waits are bounded across platforms: five seconds for Desktop profile updates
-and Claude model switching, 150 seconds for custom OAuth. Shared browser login uses one
-150-second budget for lock acquisition and login; the Desktop auth helper retains its
-existing shared deadline. A timeout leaves the operation holding the lock undisturbed.
+Claude Desktop profile updates wait up to five seconds for the file lock across
+platforms. A timeout leaves the operation holding the lock undisturbed. The Desktop
+auth helper retains its existing shared deadline.
 
 ## Documentation
 

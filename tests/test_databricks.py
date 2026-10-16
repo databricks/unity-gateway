@@ -2403,55 +2403,6 @@ class TestGetDatabricksToken:
             None,
         )
 
-    def test_browser_login_lock_timeout_closes_handle_and_does_not_fetch(
-        self, tmp_path, monkeypatch
-    ):
-        monkeypatch.setattr(db_mod, "_BROWSER_LOGIN_LOCK_PATH", tmp_path / "auth-login.lock")
-        clock = iter([10.0, 12.0])
-        monkeypatch.setattr(db_mod.time, "monotonic", lambda: next(clock))
-        handles = []
-
-        def contended_lock(handle, *, timeout=None):
-            assert timeout == 148
-            handles.append(handle)
-            raise TimeoutError("lock is held")
-
-        monkeypatch.setattr(db_mod, "acquire_exclusive_file_lock", contended_lock)
-
-        with pytest.raises(RuntimeError, match="Timed out waiting for another Databricks sign-in"):
-            db_mod._browser_login(WS, None, {}, lambda: pytest.fail("fetch ran without the lock"))
-
-        assert handles[0].closed
-
-    def test_browser_login_lock_wait_and_login_share_budget(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(db_mod, "_BROWSER_LOGIN_LOCK_PATH", tmp_path / "auth-login.lock")
-        clock = iter([10.0, 11.0, 20.0])
-        monkeypatch.setattr(db_mod.time, "monotonic", lambda: next(clock))
-        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "/tools/databricks")
-        waits = []
-        monkeypatch.setattr(
-            db_mod, "acquire_exclusive_file_lock", lambda _handle, *, timeout: waits.append(timeout)
-        )
-        logins = []
-
-        def login(argv, *, timeout, **_kwargs):
-            logins.append((argv, timeout))
-
-        monkeypatch.setattr(db_mod.subprocess_cross_os, "run", login)
-        tokens = iter([("", None), ("fresh-token", None)])
-
-        assert db_mod._browser_login(WS, "chosen-profile", {}, lambda: next(tokens)) == (
-            "fresh-token",
-            None,
-        )
-        assert waits == [149]
-        assert logins == [
-            (
-                ["/tools/databricks", "auth", "login", "--host", WS, "--profile", "chosen-profile"],
-                140,
-            )
-        ]
-
     def test_browser_login_skips_login_once_lock_wait_spends_the_budget(
         self, tmp_path, monkeypatch
     ):

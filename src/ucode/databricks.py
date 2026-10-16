@@ -1580,20 +1580,15 @@ def _browser_login(
     fetch: Callable[[], tuple[str, float | None]],
 ) -> tuple[str, float | None]:
     """Serialize browser sign-in across helpers sharing the CLI's callback port."""
-    deadline = time.monotonic() + _BROWSER_LOGIN_TIMEOUT_SECONDS
+    started = time.monotonic()
     _BROWSER_LOGIN_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
     with _BROWSER_LOGIN_LOCK_PATH.open("a+b") as lock_file:
-        try:
-            acquire_exclusive_file_lock(lock_file, timeout=max(0, deadline - time.monotonic()))
-        except TimeoutError as exc:
-            raise RuntimeError(
-                "Timed out waiting for another Databricks sign-in. Finish that sign-in and retry."
-            ) from exc
+        acquire_exclusive_file_lock(lock_file)
         # Another helper may have signed in while we waited.
         token, lifetime_s = fetch()
         if token:
             return token, lifetime_s
-        remaining = deadline - time.monotonic()
+        remaining = _BROWSER_LOGIN_TIMEOUT_SECONDS - (time.monotonic() - started)
         if remaining <= 0:
             return "", None
         try:

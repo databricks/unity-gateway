@@ -343,11 +343,11 @@ component coverage in `../test_workspace_urls.py`. Desktop filesystem tests chec
 UUIDs and ownership across equivalent URL spellings through refresh/revert; this adds
 no live workspace or native Desktop coverage.
 
-Lock-wait regressions in `../test_custom_oauth.py`, `../test_databricks.py`, and
-`../test_claude_smart_routing_v2.py` cover bounded OAuth/browser/model-lock acquisition,
-the shared browser-login budget, actionable auth errors, and failed-acquisition cleanup.
-`../test_file_lock_cross_os.py` tests real contention, preserving the holder on timeout
-and successful acquisition after release. These do not prove native browser consent.
+`../test_file_lock_cross_os.py` tests the shared timeout mechanism used by Desktop:
+real contention, preserving the holder on timeout, and successful acquisition after
+release. New lock-wait limits are scoped to Desktop profile updates; existing
+non-Desktop callers retain their prior behavior. These are component checks, not
+native browser-consent coverage.
 
 ## Test layout and format
 

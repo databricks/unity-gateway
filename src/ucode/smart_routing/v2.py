@@ -73,7 +73,6 @@ CODEX_INTERPOSER_LOG = APP_DIR / "codex-v2-interposer.log"
 
 CLAUDE_TARGET_MODEL = "system.ai.claude-sonnet-4-6[1m]"  # TODO(lilly): replace with smart router.
 CLAUDE_PTY_LOG = APP_DIR / "claude-v2-pty.log"
-CLAUDE_MODEL_LOCK_TIMEOUT_SECONDS = 5
 
 APP_SERVER_READY_TIMEOUT_SECONDS = 30
 PROCESS_SHUTDOWN_TIMEOUT_SECONDS = 5
@@ -555,13 +554,8 @@ class _ClaudeModelSettingGuard:
     def begin(self, routed_model: str) -> None:
         APP_DIR.mkdir(parents=True, exist_ok=True)
         self._lock = open(APP_DIR / "claude-v2-model.lock", "a+", encoding="utf-8")
-        try:
-            acquire_exclusive_file_lock(self._lock, timeout=CLAUDE_MODEL_LOCK_TIMEOUT_SECONDS)
-            self._before = read_json_safe(self.settings_path)
-        except BaseException:
-            self._lock.close()
-            self._lock = None
-            raise
+        acquire_exclusive_file_lock(self._lock)
+        self._before = read_json_safe(self.settings_path)
         self._routed_model = routed_model
 
     def is_routed(self) -> bool:
