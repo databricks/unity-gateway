@@ -377,10 +377,6 @@ they do not establish live agent coverage.
 
 ## CUJ coverage matrix
 
-`test_routing_rationale.py` covers plain-language reasons for Claude and Codex, model
-availability and profiling fallbacks, preserved gateway notices, and unchanged model
-selection and diagnostic reasons. It replaces the HTTP response; it does not run live agents.
-
 These are **implemented assertions**, not a claim that every version passes.
 Consult the run's JUnit report and artifacts for results. Each function states
 its **Scenario** and **Expected** outcome and shows its configure and launch
