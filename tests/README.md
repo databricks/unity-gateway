@@ -217,6 +217,11 @@ Codex browser-login component tests cover invalid refresh tokens, token-only std
 network errors, and reuse of a concurrent sign-in within the timeout. Codex config
 tests cover the helper flag; real browser consent and desktop behavior are not covered.
 
+`test_cli.py` covers Claude catalog requests using the custom OAuth CLI profile,
+including a stale ordinary profile, default discovery, model locations, and providers.
+It also checks ordinary-profile selection when CLI custom OAuth is disabled.
+These component tests replace authentication and gateway calls.
+
 `test_mcp_web_search.py` and `test_agent_claude.py` cover custom OAuth search
 registration, stale registration repair, SDK cache reuse/refresh, CLI profile
 selection, and errors without browser consent through the MCP handler. These
