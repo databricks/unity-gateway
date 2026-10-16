@@ -1210,12 +1210,40 @@ class TestSubcommandRouting:
                     "system.ai.claude-opus-4-8",
                 ],
                 input='{"tool_name":"Agent","tool_input":{"prompt":"fix it"}}',
-                env={"OAUTH_TOKEN": "token"},
+                env={"OAUTH_TOKEN": _jwt(time.time() + 300)},
             )
 
         assert result.exit_code == 0, result.output
         assert json.loads(result.output) == routed
         mock_v2_route.assert_called_once()
+
+    def test_claude_subagent_hook_refreshes_expired_oauth_token(self, monkeypatch):
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        with (
+            patch("ucode.cli.get_databricks_token", return_value="fresh-token") as mock_token,
+            patch(
+                "ucode.cli.smart_routing_v2.route_claude_pre_tool_use", return_value=None
+            ) as route,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "claude-router-hook",
+                    "route-subagent",
+                    "--host",
+                    "https://example.com",
+                    "--profile",
+                    "my-profile",
+                ],
+                input='{"tool_name":"Agent","tool_input":{"prompt":"fix it"}}',
+                # Inherited from the shell that started the session, long since expired.
+                env={"OAUTH_TOKEN": _jwt(time.time() - 3600)},
+            )
+
+        assert result.exit_code == 0, result.output
+        mock_token.assert_called_once_with("https://example.com", "my-profile", force_refresh=True)
+        assert route.call_args.kwargs["token"] == "fresh-token"
 
 
 class TestManagedConfigLaunchSourceGuard:

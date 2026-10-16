@@ -2626,14 +2626,17 @@ def claude_router_hook_cmd(
         return
     if event != "route-subagent" or not host:
         return
-    token = os.environ.get("OAUTH_TOKEN") or os.environ.get("DATABRICKS_BEARER")
+    if use_pat and not ensure_pat_bearer(profile):
+        return
+    token = os.environ.get("DATABRICKS_BEARER", "").strip()
     if not token:
-        if use_pat and not ensure_pat_bearer(profile):
-            return
-        try:
-            token = get_databricks_token(host, profile)
-        except RuntimeError:
-            return
+        # A session started from another shell can inherit an expired OAUTH_TOKEN.
+        token = os.environ.get("OAUTH_TOKEN", "").strip()
+        if not _oauth_token_is_fresh(token):
+            try:
+                token = get_databricks_token(host, profile, force_refresh=True)
+            except RuntimeError:
+                return
     output = smart_routing_v2.route_claude_pre_tool_use(
         payload,
         workspace=host,
