@@ -1021,6 +1021,7 @@ class TestCodexLaunch:
         self._patch(tmp_path, monkeypatch)
         monkeypatch.setenv("UG_CODEX_MODEL_PROVIDER_SERVICE", "stale")
         monkeypatch.setenv("UG_CODEX_MODEL_SERVICE_PARENT_SCHEMA", "stale")
+        monkeypatch.setenv("UG_CODEX_SMART_ROUTER_RECIPE", "stale")
         monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "app-catalog.json")
         monkeypatch.setattr(
             codex, "_model_catalog_path", lambda workspace, scope: tmp_path / "m.json"
@@ -1033,6 +1034,20 @@ class TestCodexLaunch:
 
         assert os.environ.get("UG_CODEX_MODEL_PROVIDER_SERVICE") == provider_env
         assert os.environ.get("UG_CODEX_MODEL_SERVICE_PARENT_SCHEMA") == parent_env
+        assert "UG_CODEX_SMART_ROUTER_RECIPE" not in os.environ
+
+    def test_smart_routing_overlay_exports_router_recipe(self, monkeypatch):
+        monkeypatch.setenv("UG_CODEX_SMART_ROUTER_RECIPE", "stale")
+        headers = {codex.SMART_ROUTER_RECIPE_HEADER: "task_v3"}
+        monkeypatch.setattr(
+            codex,
+            "render_overlay",
+            lambda *a, **k: {"model_providers": {"Databricks": {"http_headers": headers}}},
+        )
+
+        codex._render_launch_overlay(WS)
+
+        assert os.environ["UG_CODEX_SMART_ROUTER_RECIPE"] == "task_v3"
 
     def test_sets_oauth_token(self, tmp_path, monkeypatch):
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
@@ -1713,6 +1728,7 @@ class TestCodexManagedConfig:
         assert doc["model_providers"]["Databricks"]["env_http_headers"] == {
             codex.MODEL_PROVIDER_SERVICE_HEADER: "UG_CODEX_MODEL_PROVIDER_SERVICE",
             codex.MODEL_SERVICE_PARENT_SCHEMA_HEADER: "UG_CODEX_MODEL_SERVICE_PARENT_SCHEMA",
+            codex.SMART_ROUTER_RECIPE_HEADER: "UG_CODEX_SMART_ROUTER_RECIPE",
         }
         profile = read_toml_safe(config_path)
         assert profile["model"] == "gpt-5"
