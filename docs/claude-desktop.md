@@ -47,6 +47,47 @@ If authentication is missing, it opens browser login only when Desktop supplies
 a new Cowork task. Browser login has a bounded timeout and concurrent sign-ins are
 serialized. If the original message failed during login, resend it.
 
+## OpenTelemetry tracing
+
+When the managed coding-agent configuration enables Claude tracing, `ug configure`
+also enables Desktop's [native OTLP export](https://claude.com/docs/third-party/claude-desktop/configuration#otlp).
+The profile sets:
+
+```json
+{
+  "otlpEndpoint": "https://<workspace>/ai-gateway/otel",
+  "otlpProtocol": "http/protobuf",
+  "otlpAuthMode": "inference-credential",
+  "otlpTracesEnabled": true
+}
+```
+
+Desktop appends `/v1/traces` to the collector base URL. It reuses the inference
+bearer token from the existing credential helper, so no token is written to the
+profile and no proxy, background service, or additional helper is needed. The
+configuration is shared across macOS, Windows, and Linux. Codex's Linux-only OTEL
+service is unchanged.
+
+Requirements: Desktop must support `otlpTracesEnabled` (added in 1.22209.0) and
+`otlpAuthMode` (added in 1.30096.1), Claude tracing must be enabled in the managed
+configuration, and the workspace must accept OTLP trace ingestion with the user's
+credentials. Disable Claude tracing and rerun configure to remove the OTLP keys;
+`ug revert` deletes them with the UG profile. Other profiles remain untouched.
+
+Restart Desktop and start a new Cowork task or Code session after configuring.
+Cowork receives the current token at task start; a Code session keeps its starting
+token. Long Code sessions can outlive that token and need a fresh session. Before
+inference sign-in, exports may be unauthenticated. UG does not enable raw-content
+capture. Desktop can also attempt logs and metrics exports to the collector base;
+the gateway currently accepts only `/v1/traces`, not `/v1/logs` or `/v1/metrics`.
+
+Component tests verify the generated configuration and lifecycle, not native export
+or ingestion. To validate natively, configure a tracing-enabled workspace, restart
+Desktop, complete a small Cowork task, then confirm that its session spans reached
+the workspace's configured trace table. Check Desktop logs for authentication or
+trace-export errors, and repeat with a fresh task after token refresh. Do not share
+unredacted credentials or diagnostic bundles.
+
 ## Existing profiles and rollback
 
 Profiles use Anthropic's [documented locations](https://claude.com/docs/third-party/claude-desktop/data-storage#where-data-lives):
@@ -119,7 +160,9 @@ orchestration; they do not prove GUI inference on every app version.
   models without renaming them; that name filter does not reproduce every native
   validation rule.
 - Anthropic subscription relay, custom OAuth/PAT profiles, Desktop Smart Routing,
-  connector/plugin compatibility, and native OTEL are not implemented here.
+  and connector/plugin compatibility are not implemented here. Native OTEL settings
+  are generated, but native export and ingestion remain unverified; session auth
+  limits are described above.
 - Observed inference applies to Cowork. Ordinary Chat is not claimed to use the
   same gateway path.
 

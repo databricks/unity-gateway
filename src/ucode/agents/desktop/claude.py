@@ -104,6 +104,7 @@ def configure_claude_desktop(
     helper_args: Sequence[str],
     model_id_to_display_name: Mapping[str, str] | None = None,
     custom_headers: Mapping[str, str] | None = None,
+    otel_endpoint: str | None = None,
     state_path: Path | str | None = None,
     profile_key: str | None = None,
 ) -> ConfigureResult:
@@ -116,6 +117,7 @@ def configure_claude_desktop(
         helper_command=helper_command,
         helper_args=helper_args,
         custom_headers=custom_headers,
+        otel_endpoint=otel_endpoint,
     )
     paths = _resolve_paths(state_path=state_path)
     profile_path = paths.directory / f"{PROFILE_ID}.json"

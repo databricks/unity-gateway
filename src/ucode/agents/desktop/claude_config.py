@@ -62,6 +62,7 @@ def render_profile(
     helper_args: Sequence[str],
     model_id_to_display_name: Mapping[str, str] | None = None,
     custom_headers: Mapping[str, str] | None = None,
+    otel_endpoint: str | None = None,
 ) -> dict[str, object]:
     """Render resolved models, headers, and literal helper arguments in Desktop's schema."""
 
@@ -89,6 +90,13 @@ def render_profile(
     }
     if custom_headers is not None:
         profile["inferenceCustomHeaders"] = dict(custom_headers)
+    if otel_endpoint:
+        profile.update(
+            otlpEndpoint=otel_endpoint,
+            otlpProtocol="http/protobuf",
+            otlpAuthMode="inference-credential",
+            otlpTracesEnabled=True,
+        )
     return profile
 
 

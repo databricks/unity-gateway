@@ -108,6 +108,24 @@ def test_render_profile_accepts_custom_headers(tmp_path: Path) -> None:
     assert profile["inferenceModels"] == [{"name": "system.ai.claude-opus-5-5"}]
 
 
+def test_render_profile_uses_native_otel_auth_without_storing_credentials(tmp_path):
+    profile = desktop.render_profile(
+        model_ids=("system.ai.claude-sonnet-5",),
+        base_url="https://workspace.example/ai-gateway/anthropic",
+        helper_command=tmp_path / "ug",
+        helper_args=("auth-helper",),
+        otel_endpoint="https://workspace.example/ai-gateway/otel",
+    )
+
+    assert {key: value for key, value in profile.items() if key.startswith("otlp")} == {
+        "otlpEndpoint": "https://workspace.example/ai-gateway/otel",
+        "otlpProtocol": "http/protobuf",
+        "otlpAuthMode": "inference-credential",
+        "otlpTracesEnabled": True,
+    }
+    assert "Authorization" not in json.dumps(profile)
+
+
 def test_render_profile_uses_catalog_labels_without_changing_routing_ids(tmp_path):
     model_ids = ["system.ai.claude-sonnet-5", "custom/claude-opus-5", "claude-haiku-4-5"]
     model_ids.append(model_ids[0])

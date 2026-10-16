@@ -101,6 +101,9 @@ def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
             profile,
         ],
         custom_headers=headers,
+        otel_endpoint=(
+            f"{workspace.rstrip('/')}/ai-gateway/otel" if state.get("claude_otel_tracing") else None
+        ),
         profile_key=profile,
     )
     print_success("Claude Desktop gateway profile configured. Quit and reopen Claude Desktop.")
