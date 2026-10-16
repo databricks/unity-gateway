@@ -766,7 +766,9 @@ def _codex_runtime_proxy(state: dict, overlay: dict, binary: str) -> Iterator[bo
 
     version = codex._parse_version(codex.agent_version(binary))
     if version is None or version < (0, 160, 0):
-        raise RuntimeError("Codex V10 orchestration requires a verified Codex 0.160.0 or newer.")
+        raise RuntimeError(
+            "Codex orchestration runtime requires a verified Codex 0.160.0 or newer."
+        )
     provider = overlay["model_providers"][overlay["model_provider"]]
     upstream_url = provider["base_url"]
     skill = skills.skill_entrypoint(orchestrator.skill_directory(), AGENT_CODEX)

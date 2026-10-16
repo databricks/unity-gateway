@@ -58,11 +58,11 @@ def test_launch_options_preserve_empty_and_absent_values():
         "ENABLE_SMART_ROUTING_V2": "",
         "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "",
         "ENABLE_SMART_ROUTER_ORCHESTRATOR": "",
-        "ENABLE_CODEX_ORCHESTRATOR_V10": "",
+        "ENABLE_CODEX_ORCHESTRATOR_RUNTIME": "",
         "unset": [
             "ENABLE_SMART_ROUTING_SUBAGENT_ONLY",
             "ENABLE_SMART_ROUTER_ORCHESTRATOR",
-            "ENABLE_CODEX_ORCHESTRATOR_V10",
+            "ENABLE_CODEX_ORCHESTRATOR_RUNTIME",
         ],
         "recipe": "task_v3",
     }

@@ -7,17 +7,17 @@ Smart-routed Claude and Codex launches install and activate this skill alongside
 The `_v1` revision
 enables both V2 and subagent-only routing flags alongside orchestration; subagent-only still
 takes precedence, so the first prompt is not routed.
-`subagent_orch_v2` keeps the V1 mappings for Claude and adds the Codex V10 opt-in for
-Codex only. `ENABLE_CODEX_ORCHESTRATOR_V10` and `subagent_orch_v2` are UG-owned names,
+`subagent_orch_v2` keeps the V1 mappings for Claude and adds the Codex runtime opt-in for
+Codex only. `ENABLE_CODEX_ORCHESTRATOR_RUNTIME` and `subagent_orch_v2` are UG-owned names,
 not native Codex settings. The Codex path requires Codex 0.160.0 or newer; this scoped
 guard does not change UG's global minimum.
 The existing `ENABLE_SMART_ROUTER_ORCHESTRATOR=1` opt-in remains supported when
 `SMART_ROUTER_CONFIG_VERSION` is unset; `subagent_only_v0` explicitly leaves orchestration off.
 The feature is off by default; routing alone installs only `smart-router`.
 
-## Codex V10 scope
+## Codex runtime scope
 
-The V10 flag is effective only in an eligible `ug codex` session with Smart Router
+The runtime flag is effective only in an eligible `ug codex` session with Smart Router
 routing and orchestration enabled. It does not enable routing by itself, and the
 existing Smart Router off/on controls continue to apply. The active path uses the full
 bundled skill, carries the trusted child contract into delegated work, waits for
@@ -25,8 +25,7 @@ completed child evidence on eligible controller tasks instead of requesting prov
 replacement work, and shares the default prompt-cache key. Its provider relay is
 loopback-only and configured at launch.
 
-Handoff-only tools, report publication, compaction tool restoration, and the benchmark
-`/workspace` alias are outside this port. The new config and registry behavior has
+The new config and registry behavior has
 offline component coverage only; no live equivalence, quality, or savings claim is made.
 
 `SKILL.claude.md` and `SKILL.codex.md` hold each agent's instructions. UG installs
@@ -90,7 +89,7 @@ Migrated from the Databricks `model-orchestrator` plugin by Arnav Singhvi. The b
 workflow came from version 0.4.21 (source commit
 `474b08e5809205d0aa9abbd059b82d5ab541ca92`); the Claude and Codex workflows now carry
 separate refinements. Claude uses the C12 workflow at version 1.3.0; Codex uses
-version 1.3.0.
+version 1.2.0.
 Originally adapted from
 [donvito/codex-astra-luna-orchestrator](https://github.com/donvito/codex-astra-luna-orchestrator/tree/21710352ec201f8634874d8298e0eca694e298a8)
 under Apache-2.0; see [LICENSE.upstream](LICENSE.upstream). UG changes add shared

@@ -16,7 +16,7 @@ from ucode import skills
 from ucode.constants import (
     AGENT_CLAUDE,
     AGENT_CODEX,
-    ENABLE_CODEX_ORCHESTRATOR_V10_ENV_VAR,
+    ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
 )
 from ucode.smart_routing.config import resolve_environment
@@ -62,7 +62,7 @@ def skill_directory() -> Path:
 
 def codex_runtime_enabled(env: Mapping[str, str] | None = None) -> bool:
     source = effective_environment(env, agent=AGENT_CODEX)
-    return source.get(ENABLE_CODEX_ORCHESTRATOR_V10_ENV_VAR) == "1" and enabled(
+    return source.get(ENABLE_CODEX_ORCHESTRATOR_RUNTIME_ENV_VAR) == "1" and enabled(
         source, agent=AGENT_CODEX
     )
 

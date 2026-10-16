@@ -7,7 +7,7 @@ header. Native gateway discovery instead carries the Databricks credential in
 `Authorization`. The proxy refreshes the applicable header and streams responses
 back verbatim.
 
-The launch-owned Codex relay also applies the enabled V10 Responses policies.
+The launch-owned Codex relay also applies the enabled Codex orchestration policies.
 
 With relayed OSS-routing on, the proxy picks per request by the requested model:
 Databricks-hosted ids (system.ai / OSS) take the gateway-auth path while relayed
@@ -630,7 +630,7 @@ def start_codex_proxy(
     token_provider: Callable[[bool], str],
     runtime: CodexRuntime,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
-    """Start a launch-owned V10 Responses relay without changing saved provider settings."""
+    """Start a launch-owned Codex Responses relay without changing saved provider settings."""
     handler = cast(
         type[_ProxyHandler],
         type("BoundCodexRuntimeHandler", (_CodexProxyHandler,), {"runtime": runtime}),

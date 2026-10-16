@@ -17,7 +17,7 @@ Claude mod entry-point coverage lives in `test_claude_mod.py` (generated plugin 
 `native_claude/test_mod.py` suite. Claude 2.1.290 validates the module and runs its
 TypeScript event-forwarding and launch-option tests in CI. The existing Claude
 skill-toggle integration journey checks the live recipe payload field across on/off/on;
-the native mod component test also checks V10 launch capture and restoration on failure.
+the native mod component test also checks runtime launch capture and restoration on failure.
 See [the mod guide](../docs/claude-mod.md).
 
 The **harness-latest** workflow runs every six hours on `main` and currently covers
@@ -77,12 +77,12 @@ complete per-agent validation, session precedence, and preserving the preset sel
 until managed-default agent selection.
 They also cover the Codex-only `subagent_orch_v2` flag, Claude's preserved V1 mapping,
 unknown-selector no-op behavior, and routing/environment restoration. These checks do not
-establish live agent coverage; V10 activation, child completion, and provider-relay behavior
-remain without a live run for this patch.
+establish live agent coverage; runtime activation, child completion, and provider-relay behavior
+have no live run.
 
-The Codex V10 component suites are `test_codex_runtime.py`, `test_codex_runtime_launch.py`,
-and `test_codex_proxy.py`. They cover runtime contract transformations and eligibility,
-the scoped Codex version/session launch gate and relay lifetime, and the loopback relay's
+The Codex runtime component suites are `test_codex_runtime.py`, plus the runtime cases in
+`test_codex_smart_routing_v2.py` and `test_gateway_proxy.py`. They cover runtime contract
+transformations and eligibility, the scoped Codex version/session launch gate and relay lifetime, and the loopback relay's
 delegated-child contract injection, request/response preservation, stream translation, and
 protocol errors. The proxy tests exercise a local relay with a simulated upstream gateway;
 none of these component checks is a live Codex, gateway, or quality run.
@@ -283,12 +283,12 @@ and matching prompt/compaction hook content for Claude and Codex. It also covers
 shared `SKILL.md` bundles. These are component checks, not live agent execution.
 
 `test_smart_routing_config.py` includes a 648-case Cartesian component oracle: the three legacy
-routing flags and the V10 flag take unset, `0`, and `1`, while the selector takes unset or one
+routing flags and the runtime flag take unset, `0`, and `1`, while the selector takes unset or one
 of the seven supported presets, including the customer first-prompt-and-subagent mode. It uses
 the named version constants but independently hardcodes each preset's settings and asserts exact
 `resolve_environment` and `apply_config` settings, true-unset omission, unrelated-key and
 input preservation, valid-selector consumption, and environment restoration.
-Absent/unknown selectors are no-ops, and V10 alone does not enable routing; CLI checks cover auth,
+Absent/unknown selectors are no-ops, and the runtime flag alone does not enable routing; CLI checks cover auth,
 revert, and launch dispatch.
 These component checks do not establish live agent, hook, or gateway behavior.
 Three additional component cases compare the legacy flags with `subagent_only_v1`,
@@ -554,7 +554,7 @@ desktop GUI or systemd login/reboot pass.
 | TUI initial prompt supplied on the launch command line | Not yet covered; headless prompt arguments are covered |
 | Follow-up turns and conversation resume | Not covered; reopen proves startup, not conversation resume |
 | Claude/Codex interactive smart routing | First-prompt routing is covered by the `managed_fixture` banner journeys and CUJ4. The live subagent-only journeys spawn native children and invoke the installed Smart Router skill to verify routing on -> off -> on within one Claude/Codex session. The scheduled harness-latest workflow repeats CUJ4, routing hooks, skill toggles, and banners with both latest agents. Plugin-refresh survival and native daemon/background dispatch remain deferred. |
-| Codex Orchestrator V10 | Offline preset and environment-registry checks cover `subagent_orch_v2` and the Codex-only V10 flag. No live activation, child-completion, provider-relay, prompt-cache, quality, equivalence, or savings result is established. |
+| Codex orchestration runtime | Offline preset and environment-registry checks cover `subagent_orch_v2` and the Codex-only runtime flag. No live activation, child-completion, provider-relay, prompt-cache, quality, equivalence, or savings result is established. |
 | Full allow/deny tool-permission matrix | Not covered; onboarding/trust uses actual TUI choices |
 | Desktop Codex app, Isaac itself, auto-upgrades | Not covered by command forwarding or pinned-version tests |
 | Native macOS/Windows live TUI, managed settings, resize/signals | Windows fresh-install, CLI, local helpers, and the Claude headless gateway journey are advisory; Codex Windows CI is blocked on npm proxy access. Live PTY/TUI, managed settings, and signal behavior still need separate platform implementation and coverage |

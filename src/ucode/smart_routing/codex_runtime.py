@@ -1,7 +1,8 @@
-"""Frozen V10 Codex request and response policies for the local Responses relay."""
+"""Codex orchestration request and response policies for the local Responses relay."""
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -10,8 +11,21 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from ucode.smart_routing import codex_v2_transport, delegated_wait
-
+NATIVE_NAMESPACE = "collaboration"
+WIRE_NAMESPACE = "ucode_collaboration"
+PLAINTEXT_TOOLS = frozenset({"spawn_agent", "send_message", "followup_task"})
+_FERNET_TOKEN_RE = re.compile(r"^gAAAAA[A-Za-z0-9_-]+={0,2}$")
+COLLABORATION_NAMESPACES = frozenset({"collaboration", "ucode_collaboration"})
+DELEGATION_TOOLS = frozenset({"spawn_agent", "followup_task"})
+_AWAIT_COMPLETION = {
+    "type": "boolean",
+    "description": (
+        "Set true only when this owner has all remaining work, no independent parent work, "
+        "and no explicit cadence/deadline requiring shorter native waits"
+    ),
+}
+_TASK_NAME = re.compile(r"(?:/root/|root/)?[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*\Z")
+_DOCUMENTED_MAX = re.compile(r"\bmax(?:imum)?\s*(?::|=)?\s*([\d,]+)\b", re.IGNORECASE)
 _MAX_NATIVE_IDENTIFIER_LENGTH = 512
 _MAX_SSE_EVENT_BYTES = 16 * 1024 * 1024
 _ACTIVATION_SENTENCE = "Smart Router Orchestrator is on for this session."
@@ -67,7 +81,7 @@ class PreparedRequest:
 
 
 class CodexRuntime:
-    """Apply the active V10 policy set without changing Codex model or effort fields."""
+    """Apply the active policy set without changing Codex model or effort fields."""
 
     max_response_bytes = 16 * 1024 * 1024
 
@@ -115,8 +129,8 @@ class CodexRuntime:
             root_activated = is_root and thread_id in self._activated_roots
             wait_enabled = root_activated
             if wait_enabled:
-                changed = delegated_wait.extend_collaboration_schema(payload) or changed
-                wait_binding = delegated_wait.eligible_wait(payload, state.wait_flags)
+                changed = extend_collaboration_schema(payload) or changed
+                wait_binding = eligible_wait(payload, state.wait_flags)
                 if wait_binding is not None:
                     response, content_type = _controller_wait(wait_binding, thread_id, payload)
                     return PreparedRequest(
@@ -141,7 +155,7 @@ class CodexRuntime:
                 changed = True
 
             forwarded = _encode_json(payload) if changed else body
-            forwarded, transport_changed = codex_v2_transport.prepare_request(forwarded)
+            forwarded, transport_changed = prepare_transport_request(forwarded)
             adapt_response = (
                 transport_changed
                 or _has_collaboration_tools(payload)
@@ -484,8 +498,8 @@ def _has_collaboration_tools(payload: dict[str, Any]) -> bool:
     for tools in _request_tool_sets(payload):
         for declaration in tools:
             if isinstance(declaration, dict) and (
-                declaration.get("name") in delegated_wait.COLLABORATION_NAMESPACES
-                or declaration.get("namespace") in delegated_wait.COLLABORATION_NAMESPACES
+                declaration.get("name") in COLLABORATION_NAMESPACES
+                or declaration.get("namespace") in COLLABORATION_NAMESPACES
             ):
                 return True
     return False
@@ -504,8 +518,7 @@ def _has_delegation_tools(payload: dict[str, Any]) -> bool:
             if not isinstance(nested, list):
                 continue
             if any(
-                isinstance(tool, dict) and tool.get("name") in delegated_wait.DELEGATION_TOOLS
-                for tool in nested
+                isinstance(tool, dict) and tool.get("name") in DELEGATION_TOOLS for tool in nested
             ):
                 return True
     return False
@@ -656,7 +669,7 @@ class _ResponseTransformer:
     def transform_event(self, event: dict[str, Any]) -> dict[str, Any]:
         if self._lock is None:
             return event
-        result = codex_v2_transport.transform_response_event(event)
+        result = transform_transport_event(event)
         if not self._wait_enabled:
             return result
         item = result.get("item")
@@ -726,10 +739,7 @@ class _ResponseTransformer:
         if binding is None:
             raise ValueError("Codex function-argument event has no preceding item binding")
         namespace, name, call_id = binding
-        if (
-            namespace != codex_v2_transport.NATIVE_NAMESPACE
-            or name not in delegated_wait.DELEGATION_TOOLS
-        ):
+        if namespace != NATIVE_NAMESPACE or name not in DELEGATION_TOOLS:
             return
         if not isinstance(call_id, str) or not call_id:
             raise ValueError("Codex delegation item has no call id")
@@ -768,10 +778,7 @@ class _ResponseTransformer:
             if previous is not None and previous != binding:
                 raise ValueError("Codex response item changed its native call binding")
             self._function_items[item_id] = binding
-        if (
-            namespace != codex_v2_transport.NATIVE_NAMESPACE
-            or name not in delegated_wait.DELEGATION_TOOLS
-        ):
+        if namespace != NATIVE_NAMESPACE or name not in DELEGATION_TOOLS:
             return
         if (
             not isinstance(item_id, str)
@@ -857,3 +864,451 @@ def _line_ending(line: bytes) -> bytes:
     if line.endswith(b"\r"):
         return b"\r"
     return b""
+
+
+def prepare_transport_request(body: bytes) -> tuple[bytes, bool]:
+    """Rewrite native tool schemas and plaintext history, preserving encrypted replay."""
+    try:
+        payload = json.loads(body)
+    except (TypeError, UnicodeDecodeError, json.JSONDecodeError):
+        return body, False
+    if not isinstance(payload, dict):
+        return body, False
+
+    changed = _rewrite_tool_list(payload.get("tools"))
+    input_items = payload.get("input")
+    if isinstance(input_items, list):
+        encrypted_call_ids = {
+            item["call_id"]
+            for item in input_items
+            if isinstance(item, dict)
+            and isinstance(item.get("call_id"), str)
+            and _is_encrypted_replay(item)
+        }
+        for item in input_items:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "additional_tools":
+                changed |= _rewrite_tool_list(item.get("tools"))
+            elif item.get("type") in {"function_call", "function_call_output"}:
+                if item.get("call_id") not in encrypted_call_ids:
+                    changed |= _rewrite_replay_item(item)
+
+    if not changed:
+        return body, False
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"), True
+
+
+def transform_transport_event(event: dict[str, Any]) -> dict[str, Any]:
+    """Restore native calls and reject opaque plaintext assignments before dispatch."""
+    if not isinstance(event, dict):
+        raise ValueError("Codex v2 response event must be a JSON object")
+
+    result = copy.deepcopy(event)
+    item = result.get("item")
+    if isinstance(item, dict):
+        _rewrite_response_item(
+            item, validate_arguments=result.get("type") != "response.output_item.added"
+        )
+    for response in (result, result.get("response")):
+        if not isinstance(response, dict):
+            continue
+        output = response.get("output")
+        if isinstance(output, list):
+            for output_item in output:
+                if isinstance(output_item, dict):
+                    _rewrite_response_item(output_item, validate_arguments=True)
+    return result
+
+
+def _check_wire_namespace(item: dict[str, Any]) -> None:
+    if item.get("namespace") == WIRE_NAMESPACE or (
+        item.get("type") == "namespace" and item.get("name") == WIRE_NAMESPACE
+    ):
+        raise ValueError(f"request already contains reserved namespace {WIRE_NAMESPACE!r}")
+
+
+def _rewrite_tool_list(tools: Any) -> bool:
+    if not isinstance(tools, list):
+        return False
+    changed = False
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        _check_wire_namespace(tool)
+        if tool.get("type") != "namespace" or tool.get("name") != NATIVE_NAMESPACE:
+            continue
+        tool["name"] = WIRE_NAMESPACE
+        changed = True
+        functions = tool.get("tools")
+        if isinstance(functions, list):
+            for function in functions:
+                if isinstance(function, dict) and function.get("name") in PLAINTEXT_TOOLS:
+                    _remove_message_encrypted_marker(function)
+    return changed
+
+
+def _remove_message_encrypted_marker(tool: dict[str, Any]) -> None:
+    parameters = tool.get("parameters")
+    properties = parameters.get("properties") if isinstance(parameters, dict) else None
+    message = properties.get("message") if isinstance(properties, dict) else None
+    if isinstance(message, dict):
+        message.pop("encrypted", None)
+
+
+def _is_encrypted_replay(item: dict[str, Any]) -> bool:
+    return (
+        item.get("namespace") == NATIVE_NAMESPACE
+        and item.get("type") == "function_call"
+        and (
+            ("encrypted_function_args" in item and item["encrypted_function_args"] != [])
+            or _contains_opaque_message(item.get("arguments"))
+        )
+    )
+
+
+def _rewrite_replay_item(item: dict[str, Any]) -> bool:
+    _check_wire_namespace(item)
+    if item.get("namespace") != NATIVE_NAMESPACE or _is_encrypted_replay(item):
+        return False
+    item["namespace"] = WIRE_NAMESPACE
+    if item.get("type") == "function_call" and item.get("name") in PLAINTEXT_TOOLS:
+        if item.get("encrypted_function_args") == []:
+            del item["encrypted_function_args"]
+    return True
+
+
+def _rewrite_response_item(item: dict[str, Any], *, validate_arguments: bool) -> None:
+    namespace = item.get("namespace")
+    if namespace == NATIVE_NAMESPACE:
+        raise ValueError("response returned native collaboration namespace")
+    if namespace != WIRE_NAMESPACE:
+        return
+    if item.get("type") != "function_call":
+        raise ValueError("wire collaboration response is not a function call")
+    item["namespace"] = NATIVE_NAMESPACE
+    if item.get("name") not in PLAINTEXT_TOOLS:
+        return
+    if item.get("encrypted_function_args", []) != []:
+        raise ValueError("wire collaboration response contains encrypted function arguments")
+    if validate_arguments:
+        _validate_plaintext_arguments(item.get("arguments"))
+    item["encrypted_function_args"] = []
+
+
+def _contains_opaque_message(arguments: Any) -> bool:
+    if isinstance(arguments, str):
+        stripped = arguments.strip()
+        if _FERNET_TOKEN_RE.fullmatch(stripped):
+            return True
+        try:
+            arguments = json.loads(stripped)
+        except json.JSONDecodeError:
+            return False
+    if isinstance(arguments, dict):
+        message = arguments.get("message")
+        return isinstance(message, str) and bool(_FERNET_TOKEN_RE.fullmatch(message.strip()))
+    return False
+
+
+def _validate_plaintext_arguments(arguments: Any) -> None:
+    if not isinstance(arguments, str) or not arguments.strip():
+        raise ValueError("wire collaboration response has empty arguments")
+    if _contains_opaque_message(arguments):
+        raise ValueError("wire collaboration response contains an opaque message")
+    try:
+        parsed = json.loads(arguments)
+    except json.JSONDecodeError as exc:
+        raise ValueError("wire collaboration response arguments are not valid JSON") from exc
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("message"), str):
+        raise ValueError("wire collaboration response arguments lack a string message")
+    if not parsed["message"].strip():
+        raise ValueError("wire collaboration response arguments have an empty message")
+
+
+def extend_collaboration_schema(payload: dict[str, Any]) -> bool:
+    """Add an optional wait hint to native collaboration delegation tools."""
+    changed = False
+    for tools in _tool_sets(payload):
+        for declaration in tools:
+            if not isinstance(declaration, dict):
+                continue
+            declaration_type = declaration.get("type")
+            if (
+                declaration_type == "namespace"
+                and declaration.get("name") in COLLABORATION_NAMESPACES
+            ):
+                namespace = declaration["name"]
+                namespace_tools = declaration.get("tools", [])
+            elif (
+                declaration_type in {"function", "custom"}
+                and declaration.get("namespace") in COLLABORATION_NAMESPACES
+            ):
+                namespace = declaration["namespace"]
+                namespace_tools = [declaration]
+            else:
+                continue
+            if not isinstance(namespace_tools, list):
+                raise ValueError(f"{namespace} tool namespace must contain a list")
+            for tool in namespace_tools:
+                if (
+                    not isinstance(tool, dict)
+                    or tool.get("type") not in {"function", "custom"}
+                    or tool.get("name") not in DELEGATION_TOOLS
+                ):
+                    continue
+                parameters = tool.get("parameters")
+                properties = parameters.get("properties") if isinstance(parameters, dict) else None
+                if not isinstance(properties, dict):
+                    raise ValueError("collaboration delegation tool has no parameter properties")
+                if (
+                    "await_completion" in properties
+                    and properties["await_completion"] != _AWAIT_COMPLETION
+                ):
+                    raise ValueError("unsupported existing await_completion schema")
+                if "await_completion" not in properties:
+                    properties["await_completion"] = dict(_AWAIT_COMPLETION)
+                    changed = True
+                required = parameters.get("required")
+                if required is not None and not isinstance(required, list):
+                    raise ValueError("collaboration tool required fields must be a list")
+                if isinstance(required, list) and "await_completion" in required:
+                    parameters["required"] = [
+                        name for name in required if name != "await_completion"
+                    ]
+                    changed = True
+    return changed
+
+
+def eligible_wait(
+    payload: dict[str, Any], declared_calls: Mapping[str, bool] | None = None
+) -> dict[str, Any] | None:
+    """Return a synthetic wait binding only for a declared, successful sole owner."""
+    items = payload.get("input")
+    if not isinstance(items, list) or not items:
+        return None
+    final_output = items[-1]
+    if not isinstance(final_output, dict) or final_output.get("type") != "function_call_output":
+        return None
+    source_call_id = final_output.get("call_id")
+    if not isinstance(source_call_id, str) or not source_call_id:
+        return None
+
+    wait_bindings = []
+    for tools in _tool_sets(payload):
+        for declaration in tools:
+            binding = _namespace_tools(declaration)
+            if binding is None:
+                continue
+            namespace, namespace_tools = binding
+            for tool in namespace_tools:
+                if (
+                    isinstance(tool, dict)
+                    and tool.get("type") in {"function", "custom"}
+                    and tool.get("name") == "wait_agent"
+                ):
+                    wait_bindings.append((namespace, tool))
+    if len(wait_bindings) != 1:
+        return None
+    wait_namespace, wait_tool = wait_bindings[0]
+    parameters = wait_tool.get("parameters")
+    properties = parameters.get("properties") if isinstance(parameters, dict) else None
+    timeout = properties.get("timeout_ms") if isinstance(properties, dict) else None
+    if (
+        not isinstance(timeout, dict)
+        or timeout.get("type") not in {"number", "integer"}
+        or isinstance(timeout.get("maximum"), bool)
+    ):
+        return None
+    maximum = timeout.get("maximum")
+    description = timeout.get("description", "")
+    if not isinstance(description, str):
+        return None
+    match = _DOCUMENTED_MAX.search(description)
+    documented_max = int(match.group(1).replace(",", "")) if match else None
+    if maximum is not None and maximum != 3_600_000:
+        return None
+    if documented_max is not None and documented_max != 3_600_000:
+        return None
+    if maximum != 3_600_000 and documented_max != 3_600_000:
+        return None
+
+    source_calls = [
+        (index, item)
+        for index, item in enumerate(items[:-1])
+        if isinstance(item, dict)
+        and item.get("type") == "function_call"
+        and item.get("call_id") == source_call_id
+    ]
+    if len(source_calls) != 1:
+        return None
+    source_index, source_call = source_calls[0]
+    if any(
+        isinstance(event, dict)
+        and (
+            event.get("type") == "agent_message"
+            or (
+                event.get("type") == "message"
+                and event.get("role") in {"user", "developer", "agent"}
+            )
+        )
+        for event in items[source_index + 1 : -1]
+    ):
+        return None
+
+    spawn_bindings: dict[str, str] = {}
+    owners = set()
+    for index, item in enumerate(items[:-1]):
+        if not isinstance(item, dict) or item.get("type") != "function_call":
+            continue
+        name, arguments = _call_parts(item)
+        if name == "followup_task" and arguments is not None:
+            targets = [
+                _normalize_task_name(arguments[key])
+                for key in ("target", "task_name")
+                if key in arguments
+            ]
+            if not targets or None in targets or len(set(targets)) != 1:
+                return None
+            owners.update(targets)
+            continue
+        if name != "spawn_agent" or arguments is None:
+            continue
+        call_id = item.get("call_id")
+        requested_owner = _normalize_task_name(arguments.get("task_name"))
+        outputs = [
+            event
+            for event in items[index + 1 :]
+            if isinstance(event, dict)
+            and event.get("type") == "function_call_output"
+            and event.get("call_id") == call_id
+        ]
+        if (
+            not isinstance(call_id, str)
+            or not call_id
+            or requested_owner is None
+            or len(outputs) != 1
+        ):
+            return None
+        try:
+            result = json.loads(outputs[0].get("output", ""))
+        except (TypeError, ValueError):
+            return None
+        returned_owner = (
+            _normalize_task_name(result.get("task_name")) if isinstance(result, dict) else None
+        )
+        if (
+            returned_owner is None
+            or returned_owner != requested_owner
+            or result.get("error")
+            or result.get("ok") is False
+            or result.get("success") is False
+        ):
+            return None
+        spawn_bindings[call_id] = returned_owner
+        owners.add(returned_owner)
+    if len(owners) != 1:
+        return None
+    owner = next(iter(owners))
+
+    source_name, source_arguments = _call_parts(source_call)
+    if (
+        source_name is None
+        or source_arguments is None
+        or declared_calls is None
+        or declared_calls.get(source_call_id) is not True
+    ):
+        return None
+    if source_name == "spawn_agent":
+        if spawn_bindings.get(source_call_id) != owner:
+            return None
+    else:
+        targets = [
+            source_arguments[key] for key in ("target", "task_name") if key in source_arguments
+        ]
+        if not targets or any(_normalize_task_name(target) != owner for target in targets):
+            return None
+        output = final_output.get("output")
+        if not isinstance(output, str):
+            return None
+        if output.strip():
+            try:
+                result = json.loads(output)
+            except (TypeError, ValueError):
+                return None
+            if (
+                not isinstance(result, dict)
+                or _normalize_task_name(result.get("task_name")) != owner
+                or result.get("error")
+                or result.get("ok") is False
+                or result.get("success") is False
+            ):
+                return None
+
+    return {
+        "owner": owner,
+        "source_call_id": source_call_id,
+        "verified_tool_binding": {"namespace": wait_namespace, "tool": wait_tool},
+    }
+
+
+def _tool_sets(payload: dict[str, Any]) -> list[list[Any]]:
+    result = []
+    if "tools" in payload:
+        tools = payload["tools"]
+        if not isinstance(tools, list):
+            raise ValueError("native tools must be a list")
+        result.append(tools)
+    items = payload.get("input")
+    if items is not None and not isinstance(items, list):
+        raise ValueError("native input must be a list")
+    for item in items or []:
+        if isinstance(item, dict) and item.get("type") == "additional_tools":
+            tools = item.get("tools")
+            if not isinstance(tools, list):
+                raise ValueError("Responses Lite additional_tools must contain a list")
+            result.append(tools)
+    return result
+
+
+def _namespace_tools(declaration: Any) -> tuple[str, list[Any]] | None:
+    if not isinstance(declaration, dict):
+        return None
+    if (
+        declaration.get("type") == "namespace"
+        and declaration.get("name") in COLLABORATION_NAMESPACES
+    ):
+        return declaration["name"], declaration.get("tools", [])
+    if (
+        declaration.get("type") in {"function", "custom"}
+        and declaration.get("namespace") in COLLABORATION_NAMESPACES
+    ):
+        return declaration["namespace"], [declaration]
+    return None
+
+
+def _call_parts(call: dict[str, Any]) -> tuple[str | None, dict[str, Any] | None]:
+    namespace = call.get("namespace")
+    name = call.get("name")
+    if isinstance(name, str) and "." in name:
+        prefix, name = name.rsplit(".", 1)
+        if namespace is not None and namespace != prefix:
+            return None, None
+        namespace = prefix
+    if namespace not in COLLABORATION_NAMESPACES or name not in DELEGATION_TOOLS:
+        return None, None
+    try:
+        arguments = json.loads(call.get("arguments", ""))
+    except (TypeError, ValueError):
+        return None, None
+    return (name, arguments) if isinstance(arguments, dict) else (None, None)
+
+
+def _normalize_task_name(value: Any) -> str | None:
+    if not isinstance(value, str) or not _TASK_NAME.fullmatch(value):
+        return None
+    if value.startswith("/root/"):
+        value = value[len("/root/") :]
+    elif value.startswith("root/"):
+        value = value[len("root/") :]
+    return "/root/" + value

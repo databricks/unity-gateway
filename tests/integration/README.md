@@ -12,23 +12,23 @@ skill name as data; skill download and invocation are not covered.
 
 The dedicated smart-routing CUJ in `../e2e_cuj/test_cuj4_smart_routing.py` runs the original
 managed-default and explicit-model cases, with explicit-model bypass assertions enabled for
-both Claude and Codex. One parameterized test runs all six pre-V10
+both Claude and Codex. One parameterized test runs all six earlier
 `SMART_ROUTER_CONFIG_VERSION` values, checking both agents' first-prompt routing, orchestrator
 context in inference input, and completed explicitly requested native subagents.
 This is not automatic orchestrator-delegation coverage. No workspace configuration is modified.
-The new `subagent_orch_v2` Codex V10 path is not in this live CUJ; its preset and registry
-checks are offline-only, and this patch has no V10 live run.
+The new `subagent_orch_v2` Codex runtime path is not in this live CUJ; its preset and registry
+checks are offline-only, and it has no live run.
 CUJ4 matches both Codex 0.154.0's top-level tools and 0.162.1's Responses Lite
 `additional_tools` input items. Encrypted child messages match the routed task name
 to the recipient; plaintext prompts still match exactly. Both require tools.
-The shared preset CUJ runs both agents for each of the six pre-V10 versions and derives routing and
+The shared preset CUJ runs both agents for each of the six earlier versions and derives routing and
 orchestration assertions from each agent's resolved flags. Both must complete a native
 child task. `subagent_orch_v0_claude_only` routes Claude's child; Codex uses the managed
 default without routing requests, new router decisions, recipe headers, or orchestrator context.
 
 Agent-specific smart-routing preset component checks cover shared base presets, explicit agent mappings,
 complete per-agent validation, session precedence, and preserving the preset selector
-until managed-default agent selection. They also cover the V10 opt-in's Codex-only value.
+until managed-default agent selection. They also cover the runtime opt-in's Codex-only value.
 These checks do not establish live agent coverage.
 
 The shared request recorder and native compatibility-retry checks live in
@@ -414,7 +414,7 @@ in `updatedInput`, rather than the originally requested type. Native task-header
 rendering is outside that hook-contract check.
 
 The unit/component `../test_smart_routing_config.py` includes a 648-case Cartesian oracle over all
-three legacy routing flags and the V10 flag (`None`, `0`, `1`), plus eight selector forms
+three legacy routing flags and the runtime flag (`None`, `0`, `1`), plus eight selector forms
 (`None` and all seven presets, including the customer first-prompt-and-subagent mode). It independently
 hardcodes preset values and asserts exact
 `resolve_environment` and `apply_config` settings, true-unset omission, unrelated-key and

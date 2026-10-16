@@ -1,4 +1,4 @@
-"""Offline policy tests for the frozen Codex V10 Responses runtime."""
+"""Offline policy tests for the Codex orchestration Responses runtime."""
 
 from __future__ import annotations
 
@@ -12,9 +12,10 @@ from ucode.smart_routing.codex_runtime import (
     CodexRuntime,
     _ResponseTransformer,
     bound_owner_contract,
+    eligible_wait,
+    extend_collaboration_schema,
     inject_owner_contract,
 )
-from ucode.smart_routing.delegated_wait import eligible_wait, extend_collaboration_schema
 
 SKILL = """---
 name: smart-router-orchestrator
