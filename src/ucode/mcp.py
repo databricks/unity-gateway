@@ -484,12 +484,14 @@ def discover_all_mcp_service_names(
     on_progress: Callable[[int, int, int], None] | None = None,
     on_services: Callable[[list[str]], None] | None = None,
     cancel_event: threading.Event | None = None,
+    on_error: Callable[[str], None] | None = None,
 ) -> list[str]:
     """All MCP services across every `<catalog>.<schema>` in the workspace. This
     walks the workspace (see `list_all_mcp_services`) and is the workspace-wide
     counterpart to `discover_mcp_service_names`. `on_progress` is forwarded to
     the walk for live count reporting, and `on_services` to stream newly-found
-    service names into the picker as the walk progresses."""
+    service names into the picker as the walk progresses. `on_error` receives the walk's
+    failure/timeout reason (partial results were already streamed via `on_services`)."""
     token = get_databricks_token(workspace, profile)
     names, reason = list_all_mcp_services(
         workspace,
@@ -499,6 +501,8 @@ def discover_all_mcp_service_names(
         cancel_event=cancel_event,
     )
     raise_for_invalid_access_token(workspace, reason)
+    if reason is not None and on_error is not None:
+        on_error(reason)
     return names
 
 
@@ -808,7 +812,9 @@ def prompt_for_mcp_server_choices(
     allow_back: bool = False,
     additive: bool = False,
     managed_names: set[str] | None = None,
-    background_loader: Callable[[Callable[[list[questionary.Choice]], None], threading.Event], None]
+    background_loader: Callable[
+        [Callable[[list[questionary.Choice]], None], threading.Event], str | None
+    ]
     | None = None,
 ) -> list[str] | None | _Back:
     """Show the MCP server picker. Returns the list of selected values, `None`
@@ -1317,15 +1323,19 @@ def _mcp_services_background_loader(
     known_names: set[str],
     additive: bool,
     managed_names: set[str] | None = None,
-) -> Callable[[Callable[[list[questionary.Choice]], None], threading.Event], None]:
+) -> Callable[[Callable[[list[questionary.Choice]], None], threading.Event], str | None]:
     """Return a picker `background_loader` that runs the workspace-wide MCP-services walk and
     streams each schema's newly-found services into the open picker as choices, so the walk
     never blocks the picker from opening. Deduping against already-shown rows (e.g. the fast
-    `system.ai` list) is handled by the picker's append."""
+    `system.ai` list) is handled by the picker's append. The walk is bounded by a wall-clock
+    deadline; on a timeout or error the picker keeps what streamed in (at least `system.ai`) and
+    the footer says why the list may be incomplete."""
 
     def loader(
         append: Callable[[list[questionary.Choice]], None], cancel_event: threading.Event
-    ) -> None:
+    ) -> str | None:
+        failure: list[str] = []
+
         def on_services(new_names: list[str]) -> None:
             # A streamed service can be hidden (managed, or already configured under `mcp add`),
             # in which case its choice is None — drop those so only real rows reach the picker.
@@ -1339,8 +1349,15 @@ def _mcp_services_background_loader(
                 append(new_choices)
 
         discover_all_mcp_service_names(
-            workspace, profile, on_services=on_services, cancel_event=cancel_event
+            workspace,
+            profile,
+            on_services=on_services,
+            cancel_event=cancel_event,
+            on_error=failure.append,
         )
+        if failure and "deadline exceeded" in failure[0]:
+            return "⚠ Timed out listing your MCP services; to add one not shown, use `ug mcp add`"
+        return None
 
     return loader
 

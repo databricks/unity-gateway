@@ -3266,6 +3266,11 @@ def walk_catalog_schemas[T](
             return "deadline exceeded while listing UC schemas"
         return "no UC schemas found"
 
+    # Probe the likeliest homes of a user's own services first: the `main` catalog and any
+    # `default` schema (where `CREATE MCP SERVICE` lands by default). Under the wall-clock
+    # deadline a big workspace returns partial results, so order decides what is found.
+    schema_refs.sort(key=lambda ref: (ref[0] != "main", ref[1] != "default"))
+
     schemas_total = len(schema_refs)
     schemas_done = 0
 
@@ -3328,11 +3333,16 @@ def list_all_mcp_services(
     )
     if reason is not None:
         return [], reason
+    timed_out = time.monotonic() > deadline
     if not names:
-        if time.monotonic() > deadline:
-            return [], "deadline exceeded while listing MCP services"
-        return [], "no MCP services found"
-    return sorted(names), None
+        return (
+            [],
+            "deadline exceeded while listing MCP services"
+            if timed_out
+            else "no MCP services found",
+        )
+    # Partial results are still returned, but flagged so callers can say the list is incomplete.
+    return sorted(names), "deadline exceeded while listing MCP services" if timed_out else None
 
 
 def _get_anthropic_models_json(

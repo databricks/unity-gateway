@@ -1743,6 +1743,41 @@ class TestListAllMcpServices:
         assert names == []
         assert reason == "no UC catalogs found"
 
+    def test_probes_main_default_first(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            self._fake_http(
+                catalogs=["zeta", "main"],
+                schemas_by_catalog={"zeta": ["default", "x"], "main": ["alpha", "default"]},
+                services_by_schema={},
+            ),
+        )
+        probed: list[str] = []
+        monkeypatch.setattr(
+            db_mod,
+            "list_mcp_services",
+            lambda workspace, token, parent="system.ai": probed.append(parent) or ([], None),
+        )
+
+        db_mod.list_all_mcp_services(WS, "token")
+
+        # The user's likeliest schema leads, so a deadline cut-off still finds it.
+        assert probed[0] == "main.default"
+
+    def test_flags_partial_results_past_deadline(self, monkeypatch):
+        def slow_walk(workspace, token, *, deadline, probe, collect, **kwargs):
+            collect((["main.default.exa"], None), 1, 2)
+            while time.monotonic() <= deadline:
+                time.sleep(0.01)
+
+        monkeypatch.setattr(db_mod, "walk_catalog_schemas", slow_walk)
+
+        names, reason = db_mod.list_all_mcp_services(WS, "token", deadline_seconds=0.05)
+
+        assert names == ["main.default.exa"]
+        assert reason == "deadline exceeded while listing MCP services"
+
 
 def _foundation_models_payload(names):
     return {
