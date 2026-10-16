@@ -270,6 +270,14 @@ The routing notice names the generated agent selected for launch and its model.
 Claude Code's own task header can still show the agent type the parent originally
 requested. That name may contain a different model; it is not the routing result.
 
+For interactive requests with orchestration enabled, the AbovePrompt banner also shows
+a per-request spawning choice once known; opting out hides it. Full and subagent-only
+smart-routing launches remain supported. See [Claude mod entry point](docs/claude-mod.md)
+for the exact text and reset behavior. A spawn choice stays latched for that request and
+reports requested spawning, not successful child execution; native permission refusals
+remain unchanged. The indicator leaves the existing ON/OFF banner,
+routing classifier, and routing policy unchanged.
+
 On Windows, Claude smart routing uses subagent hooks only. If first-prompt routing
 is enabled, ug warns and falls back to subagent routing because the first-prompt
 wrapper requires a Unix terminal.

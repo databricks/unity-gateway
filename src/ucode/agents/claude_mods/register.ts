@@ -108,5 +108,5 @@ export function register(on: On, options: PluginOptions): void {
       return {text: 'Could not update Smart Router. Check the recipe, CLAUDE_CODE_EXTRA_BODY, and environment permissions; retry or restart through UG.'};
     }
   });
-  registerStatusBand(on);
+  registerStatusBand(on, launchedEnabled && options.ENABLE_SMART_ROUTER_ORCHESTRATOR === '1');
 }

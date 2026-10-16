@@ -11,6 +11,20 @@ input with the permission mode) always ends with `smart router ON` or `smart rou
 routing launches use this path, and the existing temporary-directory lifecycle
 cleans up the files when Claude exits.
 
+For interactive requests with orchestration enabled, the AbovePrompt band also shows the
+main agent's per-request spawning choice once known. The main agent reports direct work
+through a status-only native tool; a root `Agent` or `Task` request marks spawning
+automatically. The two exact texts are
+`Main agent is not spawning subagents and is working on the task directly.` and
+`Main agent is spawning subagents.` A root `Agent` or `Task` request latches the spawning
+choice for that request; a later direct-work report does not clear it. The indicator
+reports requested spawning, not successful child execution; native permission refusals
+remain unchanged. A new root request clears the previous choice; child events do not change
+it. The indicator stays hidden until the choice is known and when orchestration is opted
+out. It shows no counts, progress, completion, or failure statuses and does not change the
+routing classifier or policy. The existing ON/OFF banner and its one-turn hiding are
+unchanged; the indicator line stays above the prompt after the banner hides.
+
 `constants.ts` holds the values the mod shares with UG's CLI and the gateway: the recipe
 body field, the disabled recipe, the CLI module, agent, and routing flags, and the
 routing keys used to read session overrides. It ships

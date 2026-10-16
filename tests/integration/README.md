@@ -1,5 +1,8 @@
 # Integration tests
 
+The per-request Claude spawning-choice indicator has offline native hook/render-tree
+coverage in `../native_claude/mod_tests/status.test.ts`; a live TUI journey is not covered.
+
 The separate [dedicated-workspace CUJ](../e2e_cuj/AGENTS.md) lives in `tests/e2e_cuj/`
 and runs directly with pytest. It does not use this suite's runner or config fixtures.
 It reuses the session, terminal, file-task, and transcript helpers in `utils/`.
