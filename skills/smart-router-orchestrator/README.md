@@ -89,7 +89,7 @@ Migrated from the Databricks `model-orchestrator` plugin by Arnav Singhvi. The b
 workflow came from version 0.4.21 (source commit
 `474b08e5809205d0aa9abbd059b82d5ab541ca92`); the Claude and Codex workflows now carry
 separate refinements. Claude uses the C12 workflow at version 1.3.0; Codex uses
-version 1.2.0.
+version 1.3.0.
 Originally adapted from
 [donvito/codex-astra-luna-orchestrator](https://github.com/donvito/codex-astra-luna-orchestrator/tree/21710352ec201f8634874d8298e0eca694e298a8)
 under Apache-2.0; see [LICENSE.upstream](LICENSE.upstream). UG changes add shared
