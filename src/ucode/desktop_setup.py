@@ -55,6 +55,7 @@ def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
     static_models = (
         state.get("claude_static_models") if not provider and not parent_schema else None
     )
+    display_names: dict[str, str] = {}
     if static_models:
         model_ids = static_models
     else:
@@ -65,6 +66,7 @@ def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
         if not catalog.model_ids:
             raise RuntimeError(catalog.error_msg or "Gateway model discovery returned no models.")
         model_ids = catalog.model_ids
+        display_names = catalog.model_id_to_display_name
 
     model_ids = [model_id for model_id in model_ids if _CLAUDE_MODEL_PATTERN.search(model_id)]
     if not model_ids:
@@ -86,6 +88,7 @@ def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
 
     write_claude_desktop_profile(
         model_ids=model_ids,
+        model_id_to_display_name=display_names,
         base_url=build_tool_base_url("claude", workspace.rstrip("/")),
         helper_command=os.path.abspath(sys.executable),
         helper_args=[

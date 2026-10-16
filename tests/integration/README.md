@@ -367,6 +367,12 @@ Empty filtered lists warn and preserve all existing profile, metadata, and selec
 files, or leave fresh installs untouched. Tests cover modern, Bedrock, Vertex, and custom
 Claude-named routes; they do not verify the model behind a name.
 
+Model-label component tests cover catalog display names in `labelOverride`, unchanged
+routing IDs, order/duplicates, and ID-only entries for missing/empty names or static
+lists. Scoped discovery uses the same response for IDs and labels without extra calls.
+Repeat configure refreshes or removes labels. Source lists/maps remain unchanged.
+These checks use temporary files on simulated platforms, not the native model picker.
+
 ## Test layout and format
 
 All user journeys are top-level tests. There is no separate regressions category:

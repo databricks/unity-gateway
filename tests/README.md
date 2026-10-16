@@ -193,6 +193,12 @@ Empty filtered lists warn and preserve all existing profile, metadata, and selec
 files, or leave fresh installs untouched. Tests cover modern, Bedrock, Vertex, and custom
 Claude-named routes; they do not verify the model behind a name.
 
+Model-label component tests cover catalog display names in `labelOverride`, unchanged
+routing IDs, order/duplicates, and ID-only entries for missing/empty names or static
+lists. Scoped discovery uses the same response for IDs and labels without extra calls.
+Repeat configure refreshes or removes labels. Source lists/maps remain unchanged.
+These checks use temporary files on simulated platforms, not the native model picker.
+
 `TestChildStdoutLaunch` in `test_cli.py` checks Claude `-p`/`--print` and Codex `exec`
 (plain and `--json`) and `app-server` status/error output on stderr, argument forwarding with
 and without ug's `--`, and an unchanged stdout descriptor. Detection checks exact tokens before
