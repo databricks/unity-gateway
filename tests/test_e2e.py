@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from urllib import error as urllib_error
 from urllib import request as urllib_request
@@ -98,6 +99,45 @@ def _timeout_output(output: str | bytes | None) -> str:
     if isinstance(output, bytes):
         return output.decode("utf-8", errors="replace")
     return output or ""
+
+
+# One-time setup an agent does on its first load of a config dir, which would otherwise land in
+# the first timed launch. Each entry maps an agent to a command that triggers that setup without a
+# model request, and the env var naming the config dir the setup is done once per.
+AGENT_WARM_UPS: dict[str, tuple[list[str], str]] = {
+    # OpenCode npm-installs ug's auth plugin (about 63MB; 9-12s on Linux, far longer on Windows).
+    "opencode": (["opencode", "models"], "XDG_CONFIG_HOME"),
+}
+AGENT_WARM_UP_TIMEOUT_SECONDS = 300
+_warmed_agent_configs: set[tuple[str, str]] = set()
+
+
+def _warm_agent(agent: str, env: dict) -> None:
+    """Run the agent's AGENT_WARM_UPS command once per config dir, outside timed launches."""
+    cmd, config_dir_var = AGENT_WARM_UPS[agent]
+    key = (agent, env.get(config_dir_var, ""))
+    if key in _warmed_agent_configs:
+        return
+    started = time.monotonic()
+    try:
+        result = subprocess_cross_os.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=AGENT_WARM_UP_TIMEOUT_SECONDS,
+            env=env,
+            stdin=subprocess.DEVNULL,
+        )
+        outcome = f"rc={result.returncode}"
+    except subprocess.TimeoutExpired:
+        # The timed launch that follows reports the real failure.
+        outcome = "timed out"
+    _warmed_agent_configs.add(key)
+    print(
+        f"[e2e] {agent} warm-up {outcome} in {time.monotonic() - started:.1f}s",
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def _codex_home_outside_tmp() -> Path:
@@ -887,8 +927,6 @@ class TestOpencodeLaunch:
         monkeypatch.setattr(opencode, "OPENCODE_CONFIG_PATH", config_path)
         monkeypatch.setattr(opencode, "OPENCODE_BACKUP_PATH", backup_path)
 
-        import time
-
         print(f"\n[opencode-per-model] {len(models)} models to test", flush=True)
         failures = []
         for provider, model in models:
@@ -909,10 +947,12 @@ class TestOpencodeLaunch:
                 )
 
             cmd = opencode.validate_cmd("opencode")
+            env = opencode.build_runtime_env(e2e_token)
+            _warm_agent("opencode", env)
             print(f"[opencode-per-model] -> {provider}/{model}", flush=True)
             t0 = time.monotonic()
             try:
-                result = _run_agent(cmd, env=opencode.build_runtime_env(e2e_token), timeout=180)
+                result = _run_agent(cmd, env=env, timeout=180)
             except subprocess.TimeoutExpired as exc:
                 elapsed = time.monotonic() - t0
                 partial_stdout = _timeout_output(exc.stdout)
@@ -980,11 +1020,9 @@ class TestOpencodeLaunch:
         }
         opencode.write_tool_config(state, model, token=e2e_token)
 
-        result = _run_agent(
-            opencode.validate_cmd("opencode"),
-            env=opencode.build_runtime_env(e2e_token),
-            timeout=180,
-        )
+        env = opencode.build_runtime_env(e2e_token)
+        _warm_agent("opencode", env)
+        result = _run_agent(opencode.validate_cmd("opencode"), env=env, timeout=180)
         combined = (result.stdout + result.stderr).strip()
         assert result.returncode == 0 and combined, (
             f"DeepSeek model={model} rc={result.returncode} "
@@ -1020,6 +1058,8 @@ class TestOpencodeLaunch:
             token=rejected_token,
         )
 
+        # Warm with the good token so the timed launch is the first to meet the rejected one.
+        _warm_agent("opencode", opencode.build_runtime_env(e2e_token))
         env = opencode.build_runtime_env(rejected_token)
         # CI authenticates this way; the helper subprocess inherits it and
         # returns the known-good token after OpenCode's first request gets 401.
