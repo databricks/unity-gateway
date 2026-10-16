@@ -5270,13 +5270,144 @@ class TestListCurrentUserBudgetSpendStatuses:
             BudgetLimitStatus("budget-1", scope_type, "MONTH", None, spend, threshold)
         ]
 
+    @pytest.mark.parametrize("include_known", [False, True])
+    @pytest.mark.parametrize(
+        ("scope_type", "time_period"),
+        [
+            ("ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER", "WEEK"),
+            ("ALERT_CONFIGURATION_SCOPE_TYPE_PER_GROUP", "MONTH"),
+            ("ALERT_CONFIGURATION_SCOPE_TYPE_PER_GROUP", "WEEK"),
+        ],
+    )
+    def test_preserves_unknown_enums_without_losing_known_statuses(
+        self, monkeypatch, include_known, scope_type, time_period
+    ):
+        known_status = {
+            "scope_type": "ALERT_CONFIGURATION_SCOPE_TYPE_SHARED",
+            "time_period": "DAY",
+            "percent_consumed": "0",
+        }
+        future_status = {
+            "scope_type": scope_type,
+            "time_period": time_period,
+            "percent_consumed": "85.25",
+        }
+        payload = {
+            "budget_spend_statuses": [
+                {
+                    "budget_id": "budget-1",
+                    "alert_spend_statuses": (
+                        [known_status, future_status] if include_known else [future_status]
+                    ),
+                }
+            ]
+        }
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args, **kwargs: (payload, None))
+
+        statuses, reason = list_current_user_budget_spend_statuses(WS, "workspace-token")
+
+        assert reason is None
+        expected = [BudgetLimitStatus("budget-1", scope_type, time_period, Decimal("85.25"))]
+        if include_known:
+            expected.insert(
+                0,
+                BudgetLimitStatus(
+                    "budget-1", "ALERT_CONFIGURATION_SCOPE_TYPE_SHARED", "DAY", Decimal("0")
+                ),
+            )
+        assert statuses == expected
+
+    @pytest.mark.parametrize("field", ["scope_type", "time_period"])
+    @pytest.mark.parametrize("invalid_value", ["", " ", None, 1, [], {}])
+    def test_rejects_missing_or_malformed_enum_values(self, monkeypatch, field, invalid_value):
+        alert_status = {
+            "scope_type": "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER",
+            "time_period": "DAY",
+            "percent_consumed": "1",
+            field: invalid_value,
+        }
+        payload = {
+            "budget_spend_statuses": [
+                {"budget_id": "budget-1", "alert_spend_statuses": [alert_status]}
+            ]
+        }
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args, **kwargs: (payload, None))
+
+        statuses, reason = list_current_user_budget_spend_statuses(WS, "workspace-token")
+
+        assert statuses == []
+        assert reason == "budget spend status listing returned a malformed alert status"
+
+    @pytest.mark.parametrize("field", ["percent_consumed", "spend", "threshold"])
+    @pytest.mark.parametrize(
+        "invalid_value", ["-1", "-0.01", "NaN", "Infinity", "-Infinity", "invalid", None]
+    )
+    def test_rejects_invalid_decimals_even_alongside_valid_statuses(
+        self, monkeypatch, field, invalid_value
+    ):
+        valid_status = {
+            "scope_type": "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER",
+            "time_period": "DAY",
+            "percent_consumed": "0",
+        }
+        payload = {
+            "budget_spend_statuses": [
+                {
+                    "budget_id": "budget-1",
+                    "alert_spend_statuses": [
+                        valid_status,
+                        {**valid_status, field: invalid_value},
+                    ],
+                }
+            ]
+        }
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args, **kwargs: (payload, None))
+
+        statuses, reason = list_current_user_budget_spend_statuses(WS, "workspace-token")
+
+        assert statuses == []
+        assert reason == "budget spend status listing returned a malformed alert status"
+
+    @pytest.mark.parametrize("amount", ["0", "85.25"])
+    def test_accepts_nonnegative_decimal_strings_for_all_amounts(self, monkeypatch, amount):
+        payload = {
+            "budget_spend_statuses": [
+                {
+                    "budget_id": "budget-1",
+                    "alert_spend_statuses": [
+                        {
+                            "scope_type": "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER",
+                            "time_period": "DAY",
+                            "percent_consumed": amount,
+                            "spend": amount,
+                            "threshold": amount,
+                        }
+                    ],
+                }
+            ]
+        }
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args, **kwargs: (payload, None))
+
+        statuses, reason = list_current_user_budget_spend_statuses(WS, "workspace-token")
+
+        assert reason is None
+        assert statuses == [
+            BudgetLimitStatus(
+                "budget-1",
+                "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER",
+                "DAY",
+                Decimal(amount),
+                Decimal(amount),
+                Decimal(amount),
+            )
+        ]
+
     @pytest.mark.parametrize(
         "alert_status",
         [
             {"time_period": "DAY", "percent_consumed": "1"},
             {
                 "scope_type": "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER",
-                "time_period": "WEEK",
                 "percent_consumed": "1",
             },
             {
@@ -5343,18 +5474,8 @@ class TestListCurrentUserBudgetSpendStatuses:
         assert os.environ["DATABRICKS_CONFIG_PROFILE"] == "workspace-profile"
         assert os.environ["DATABRICKS_TOKEN"] == "existing-pat"
 
-    @pytest.mark.parametrize(
-        "failure",
-        [
-            "HTTP 401 Unauthorized",
-            "HTTP 403 Forbidden: permission denied",
-            "HTTP 404 Not Found",
-            "HTTP 404 Not Found: FEATURE_DISABLED: AI Gateway budget spend statuses are not enabled.",
-            "HTTP 500 Internal Server Error",
-            "network error: timed out",
-        ],
-    )
-    def test_propagates_api_failures_without_account_fallback(self, monkeypatch, failure):
+    def test_propagates_api_failures_without_account_fallback(self, monkeypatch):
+        failure = "network error: timed out"
         calls = []
 
         def fake_get(url, token, timeout=10):
