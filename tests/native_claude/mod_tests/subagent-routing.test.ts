@@ -109,13 +109,19 @@ test('a call waiting on the router shows a spinner until its model is selected',
   await waiting.unmount();
   // The timer counts whole seconds since routing started.
   now += 2_500;
-  const later = await $.ui.mount(row('call-a'));
-  expect(await later.find({ type: 'Text', text: 'Selecting a model… 2s' })).toBeDefined();
-  await later.unmount();
+  // A parallel call starts its own ticker, but both rows show the frame the clock gives.
+  const parallel = $.tool.call({ tool: 'Agent', tool_use_id: 'call-b', ...originalInput });
+  for (const id of ['call-a', 'call-b']) {
+    const later = await $.ui.mount(row(id));
+    expect(await later.find({ type: 'Text', text: '✽ ' })).toBeDefined();
+    if (id === 'call-a') expect(await later.find({ type: 'Text', text: 'Selecting a model… 2s' })).toBeDefined();
+    await later.unmount();
+  }
 
   now += 700;
   release(undefined);
   await call;
+  await parallel;
   const done = await $.ui.mount(row('call-a'));
   expect(await done.find({ type: 'Text', text: /Selecting a model/ })).toBeUndefined();
   expect(await done.find({ type: 'Text', text: 'claude-sonnet-5' })).toBeDefined();

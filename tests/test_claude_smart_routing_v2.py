@@ -799,22 +799,21 @@ class TestSubagentRouting:
             },
         }
 
-        def route(**kwargs):
-            return v2.route_claude_subagent(
+        def route(route_fn):
+            return route_fn(
                 payload,
                 workspace="https://example.com",
                 token="token",
                 available_models=[selected_model, "system.ai.glm-5-3-flash"],
-                **kwargs,
             )
 
         # The mod labels the row from updatedInput, so it names the dispatched agent.
-        output = route()
+        output = route(v2.route_claude_subagent)
         assert output["updatedInput"]["subagent_type"] == routed_agent
         assert requested_agent not in json.dumps(output)
 
         # Hooks persisted by earlier UG versions keep their PreToolUse response and notice.
-        legacy = route(hook_output=True)
+        legacy = route(v2.route_claude_pre_tool_use)
         hook = legacy["hookSpecificOutput"]
         assert hook["permissionDecision"] == "allow"
         assert hook["updatedInput"] == output["updatedInput"]

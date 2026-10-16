@@ -479,20 +479,15 @@ def _route_print_mode_prompt(
     return model_name(_unwrapped_claude_model_id(decision.model))
 
 
-def route_claude_subagent(
+def _route_claude_agent(
     payload: dict,
     *,
     workspace: str,
     token: str,
     available_models: list[str],
-    audit_decision: bool = False,
-    hook_output: bool = False,
-) -> dict | None:
-    """Return a routed Agent input and UI details using the shared Python client.
-
-    ``hook_output`` returns the legacy PreToolUse hook response instead, with its plain-text
-    notice, for hooks that earlier UG versions persisted in settings files.
-    """
+    audit_decision: bool,
+) -> tuple[routing.SpawnRoute, dict] | None:
+    """Route an Agent call to a transient exact-model agent definition, with its new input."""
     route = routing.resolve_spawn_route(
         payload,
         is_spawn_agent=claude_routing.is_spawn_agent_tool,
@@ -516,29 +511,69 @@ def route_claude_subagent(
         **{key: value for key, value in route.tool_input.items() if key != "model"},
         "subagent_type": _routed_claude_agent_name(route.routed_model),
     }
-    if hook_output:
-        agent_name = updated_input["subagent_type"]
-        if orchestrator.enabled(agent=AGENT_CLAUDE):
-            agent_name += " [orchestrator on]"
-        routing_message = claude_routing.SUBAGENT_NOTICE_CONFIG.message(
-            route.decision,
-            route.routed_model,
-            {**updated_input, "subagent_type": agent_name},
-        )
-        return {
-            "systemMessage": routing_message,
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "allow",
-                "updatedInput": updated_input,
-                "permissionDecisionReason": routing_message,
-            },
-        }
+    return route, updated_input
+
+
+def route_claude_subagent(
+    payload: dict,
+    *,
+    workspace: str,
+    token: str,
+    available_models: list[str],
+    audit_decision: bool = False,
+) -> dict | None:
+    """Return the routed Agent input and the details the native mod renders."""
+    routed = _route_claude_agent(
+        payload,
+        workspace=workspace,
+        token=token,
+        available_models=available_models,
+        audit_decision=audit_decision,
+    )
+    if routed is None:
+        return None
+    route, updated_input = routed
     return {
         "updatedInput": updated_input,
         "model": route.routed_model,
         "rationale": route.decision.rationale,
     }
+
+
+def route_claude_pre_tool_use(
+    payload: dict,
+    *,
+    workspace: str,
+    token: str,
+    available_models: list[str],
+    audit_decision: bool = False,
+) -> dict | None:
+    """Answer a PreToolUse routing hook that an earlier UG version persisted in settings."""
+    routed = _route_claude_agent(
+        payload,
+        workspace=workspace,
+        token=token,
+        available_models=available_models,
+        audit_decision=audit_decision,
+    )
+    if routed is None:
+        return None
+    route, updated_input = routed
+    agent_name = updated_input["subagent_type"]
+    if orchestrator.enabled(agent=AGENT_CLAUDE):
+        agent_name += " [orchestrator on]"
+    routing_message = claude_routing.SUBAGENT_NOTICE_CONFIG.message(
+        route.decision,
+        route.routed_model,
+        {**updated_input, "subagent_type": agent_name},
+    )
+    hook_output = {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "allow",
+        "updatedInput": updated_input,
+        "permissionDecisionReason": routing_message,
+    }
+    return {"systemMessage": routing_message, "hookSpecificOutput": hook_output}
 
 
 def _is_claude_target_model(value: object) -> bool:

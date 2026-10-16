@@ -1159,7 +1159,7 @@ class TestSubcommandRouting:
         }
         with (
             patch(
-                "ucode.cli.smart_routing_v2.route_claude_subagent",
+                "ucode.cli.smart_routing_v2.route_claude_pre_tool_use",
                 return_value=routed,
             ) as mock_v2_route,
         ):
@@ -1181,7 +1181,6 @@ class TestSubcommandRouting:
         assert json.loads(result.output) == routed
         # A hook persisted by an earlier UG version gets its PreToolUse response and notice.
         mock_v2_route.assert_called_once()
-        assert mock_v2_route.call_args.kwargs["hook_output"] is True
 
     @pytest.mark.parametrize("enabled", [False, True])
     def test_claude_mod_route_respects_session_controls(self, tmp_path, monkeypatch, enabled):
@@ -1227,7 +1226,6 @@ class TestSubcommandRouting:
                 token="token",
                 available_models=["system.ai.claude-opus-4-8"],
                 audit_decision=True,
-                hook_output=False,
             )
         else:
             assert result.output == ""

@@ -2637,15 +2637,19 @@ def claude_router_hook_cmd(
             token = get_databricks_token(host, profile)
         except RuntimeError:
             return
-    output = smart_routing_v2.route_claude_subagent(
+    # Hooks persisted by earlier UG versions still call route-subagent and expect a
+    # PreToolUse response; the mod's route-subagent-mod event takes the plain details.
+    route = (
+        smart_routing_v2.route_claude_pre_tool_use
+        if event == "route-subagent"
+        else smart_routing_v2.route_claude_subagent
+    )
+    output = route(
         payload,
         workspace=host,
         token=token,
         available_models=model or [],
         audit_decision=True,
-        # Hooks persisted by earlier UG versions still call route-subagent and expect a
-        # PreToolUse response; the mod's route-subagent-mod event takes the plain details.
-        hook_output=event == "route-subagent",
     )
     if output is not None:
         sys.stdout.write(json.dumps(output))

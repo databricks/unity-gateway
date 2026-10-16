@@ -25,7 +25,6 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
   const records = new Map<string, RoutingRecord>()
   // Calls waiting on the router, by when routing started, shown with a spinner and timer.
   const pending = new Map<string, number | undefined>()
-  let frame = 0
 
   on('tool.call', { tool: ['Agent', 'Task'] }, async ($, e, next) => {
     const command = options.routeCommand as readonly string[]
@@ -35,12 +34,10 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     let spinner: { cancel: () => void } | undefined
     if (tool_use_id) {
       pending.set(tool_use_id, await now($))
-      // Mods have no global timers; $.clock ticks the spinner while the router answers.
+      // Mods have no global timers; $.clock redraws the spinner while the router answers.
+      // The frame comes from the clock, so parallel calls do not speed it up.
       try {
-        spinner = $.clock.every(SPINNER_INTERVAL_MS, () => {
-          frame = (frame + 1) % SPINNER.length
-          $.ui.invalidate('ui.render')
-        })
+        spinner = $.clock.every(SPINNER_INTERVAL_MS, () => $.ui.invalidate('ui.render'))
       } catch {}
       $.ui.invalidate('ui.render')
     }
@@ -83,13 +80,14 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
 
     const { Box, Text } = $.ui.resolve(e)
     if (!record) {
+      const glyph = SPINNER[Math.floor(((await now($)) ?? 0) / SPINNER_INTERVAL_MS) % SPINNER.length]
       const seconds = await secondsSince($, pending.get(e.requestId))
       const elapsed = seconds === undefined ? '' : ` ${Math.floor(seconds)}s`
       return Box({ flexDirection: 'column', children: [original, Box({
         flexDirection: 'row',
         children: [
           Text({ dimColor: true, children: ['  ↳ '] }),
-          Text({ color: 'green', children: [`${SPINNER[frame]} `] }),
+          Text({ color: 'green', children: [`${glyph} `] }),
           Text({ dimColor: true, children: [`Selecting a model…${elapsed}`] }),
         ],
       })] })

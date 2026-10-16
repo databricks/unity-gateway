@@ -75,7 +75,7 @@ def routing_hook_argv(state: dict, event: str) -> list[str]:
         ROUTING_HOOK_COMMAND_MARKER,
         event,
     ]
-    if event not in {"route-subagent", ROUTE_SUBAGENT_MOD_EVENT}:
+    if event != ROUTE_SUBAGENT_MOD_EVENT:
         return argv
     argv += ["--host", workspace]
     profile = state.get("profile")
