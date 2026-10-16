@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from collections.abc import Mapping, Sequence
@@ -124,7 +125,9 @@ def configure_claude_desktop(
         otel_headers_helper=paths.otel_helper,
     )
     otel_helper = (
-        desktop_config.render_otel_helper(otel_headers_command, windows=sys.platform == "win32")
+        desktop_config.render_otel_helper(
+            otel_headers_command, windows=sys.platform == "win32"
+        ).encode("utf-8")
         if otel_endpoint
         else None
     )
@@ -150,14 +153,24 @@ def configure_claude_desktop(
                     paths.otel_helper,
                     desktop_config.read_optional_bytes(paths.otel_helper),
                     otel_helper,
+                    0o700,
                 ),
-                (profile_path, profile_before, rendered),
+                (profile_path, profile_before, _serialize_json(rendered, profile_before), 0o600),
                 (
                     paths.metadata,
                     metadata_before,
-                    desktop_state.apply_metadata(metadata, profile_key=profile_key),
+                    _serialize_json(
+                        desktop_state.apply_metadata(metadata, profile_key=profile_key),
+                        metadata_before,
+                    ),
+                    0o600,
                 ),
-                (paths.state, state_before, {"prior_applied": prior_applied}),
+                (
+                    paths.state,
+                    state_before,
+                    _serialize_json({"prior_applied": prior_applied}, state_before),
+                    0o600,
+                ),
             ]
         )
         return ConfigureResult(
@@ -195,17 +208,35 @@ def revert_claude_desktop(*, state_path: Path | str | None = None) -> RevertResu
             )
         changed = desktop_config.write_configuration(
             [
-                (profile_path, profile_before, None),
-                (paths.metadata, metadata_before, metadata_after),
-                (paths.state, state_before, None),
+                (profile_path, profile_before, None, 0o600),
+                (
+                    paths.metadata,
+                    metadata_before,
+                    _serialize_json(metadata_after, metadata_before),
+                    0o600,
+                ),
+                (paths.state, state_before, None, 0o600),
                 (
                     paths.otel_helper,
                     desktop_config.read_optional_bytes(paths.otel_helper),
                     None,
+                    0o700,
                 ),
             ]
         )
         return RevertResult(profile_id=PROFILE_ID if changed else None, changed=changed)
+
+
+def _serialize_json(payload: Mapping[str, object] | None, before: bytes | None) -> bytes | None:
+    if payload is None:
+        return None
+    if before is not None:
+        try:
+            if json.loads(before) == payload:
+                return before
+        except (UnicodeError, json.JSONDecodeError):
+            pass
+    return json.dumps(payload, indent=2).encode("utf-8")
 
 
 def _resolve_paths(*, state_path: Path | str | None) -> _Paths:
