@@ -70,6 +70,7 @@ def _routing_display_for_task(
     lines = screen.splitlines()
     for index, line in enumerate(lines):
         if agent == "claude":
+            # The mod's routing line follows the tagged Agent row.
             if "↳" in line and marker in "".join(
                 "\n".join(lines[max(0, index - 2) : index]).split()
             ):
@@ -136,7 +137,7 @@ def _run_calculation(
         rationale = decision["rationale"]
         tui.wait_for(
             lambda screen: (
-                model in "".join(screen.split())
+                f"SelectedModel:{model}" in "".join(screen.split())
                 and (
                     not rationale
                     or "".join(f"Reason: {rationale}".split()) in "".join(screen.split())
@@ -294,7 +295,6 @@ def test_smart_routing_claude_route_subagent_hook(
     assert updated["prompt"] == payload["tool_input"]["prompt"], updated
     assert updated["description"] == payload["tool_input"]["description"], updated
     assert "general-purpose" not in json.dumps(output), output
-    assert isinstance(output["orchestrator"], bool), output
 
     decisions_path = session.home / ".ucode" / "claude-smart-routing-decisions.jsonl"
     assert decisions_path.is_file(), f"hook wrote no routing decision record: {decisions_path}"

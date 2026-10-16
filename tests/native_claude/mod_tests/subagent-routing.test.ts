@@ -23,7 +23,7 @@ test('routing preserves distinct results for identical tasks and forwards each c
     expect(payload.tool_input).toEqual(originalInput);
     const model = payload.tool_use_id === 'call-a' ? 'system.ai.claude-sonnet-5' : 'system.ai.claude-opus-4-8';
     return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
-      model, rationale: `Selected for ${payload.tool_use_id}`, orchestrator: payload.tool_use_id === 'call-b',
+      model, rationale: `Selected for ${payload.tool_use_id}`,
       updatedInput: { prompt: originalInput.prompt, description: originalInput.description, subagent_type: `ug-smart-router:${payload.tool_use_id}` },
     }) } };
   });
@@ -40,19 +40,19 @@ test('routing preserves distinct results for identical tasks and forwards each c
 
   const a = await $.ui.mount(row('call-a'));
   expect(await a.find({ type: 'Text', text: 'original Agent row' })).toBeDefined();
+  expect(await a.find({ type: 'Text', text: '  ↳ Selected Model: ' })).toBeDefined();
   expect(await a.find({ type: 'Text', text: 'claude-sonnet-5' })).toBeDefined();
-  expect(await a.find({ type: 'Text', text: '      Reason: Selected for call-a' })).toBeDefined();
+  expect(await a.find({ type: 'Text', text: 'Reason: ' })).toBeDefined();
+  expect(await a.find({ type: 'Text', text: /Selected for call-a/ })).toBeDefined();
   expect(await a.find({ type: 'Text', text: 'claude-opus-4-8' })).toBeUndefined();
   // UG's routed agent name only repeats the model, and the requested type is never shown.
   expect(await a.find({ type: 'Text', text: /ug-smart-router:/ })).toBeUndefined();
   expect(await a.find({ type: 'Text', text: /Explore/ })).toBeUndefined();
-  expect(await a.find({ type: 'Text', text: /orchestrator/ })).toBeUndefined();
   await a.unmount();
   const b = await $.ui.mount(row('call-b'));
   expect(await b.find({ type: 'Text', text: 'claude-opus-4-8' })).toBeDefined();
-  expect(await b.find({ type: 'Text', text: '      Reason: Selected for call-b' })).toBeDefined();
+  expect(await b.find({ type: 'Text', text: /Selected for call-b/ })).toBeDefined();
   expect(await b.find({ type: 'Text', text: /ug-smart-router:/ })).toBeUndefined();
-  expect(await b.find({ type: 'Text', text: ' [orchestrator on]' })).toBeDefined();
   await b.unmount();
 });
 
@@ -81,6 +81,45 @@ for (const [name, result, warningCount] of [
     const ui = await $.ui.mount(row('call-a'));
     expect(await ui.find({ type: 'Text', text: 'original Agent row' })).toBeDefined();
     expect(await ui.find({ type: 'Text', text: /Reason:/ })).toBeUndefined();
+    expect(await ui.find({ type: 'Text', text: /Selected Model/ })).toBeUndefined();
     await ui.unmount();
   });
 }
+
+test('a call waiting on the router shows a spinner until its model is selected', async ($, on) => {
+  let release: (value: unknown) => void = () => {};
+  const routed = new Promise((resolve) => { release = resolve; });
+  let now = 10_000;
+  on('clock.now', () => ({ value: now }));
+  on('session.id', () => ({ value: 'session-1' }));
+  on('process.run', async () => {
+    await routed;
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+      model: 'system.ai.claude-sonnet-5', rationale: 'Selected for call-a',
+      updatedInput: { prompt: originalInput.prompt, subagent_type: 'ug-smart-router:call-a' },
+    }) } };
+  });
+  on('tool.call', () => ({ result: 'ok' }));
+  on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
+
+  const call = $.tool.call({ tool: 'Agent', tool_use_id: 'call-a', ...originalInput });
+  const waiting = await $.ui.mount(row('call-a'));
+  expect(await waiting.find({ type: 'Text', text: 'Selecting a model… 0s' })).toBeDefined();
+  expect(await waiting.find({ type: 'Text', text: /Selected Model/ })).toBeUndefined();
+  await waiting.unmount();
+  // The timer counts whole seconds since routing started.
+  now += 2_500;
+  const later = await $.ui.mount(row('call-a'));
+  expect(await later.find({ type: 'Text', text: 'Selecting a model… 2s' })).toBeDefined();
+  await later.unmount();
+
+  now += 700;
+  release(undefined);
+  await call;
+  const done = await $.ui.mount(row('call-a'));
+  expect(await done.find({ type: 'Text', text: /Selecting a model/ })).toBeUndefined();
+  expect(await done.find({ type: 'Text', text: 'claude-sonnet-5' })).toBeDefined();
+  // The selected row keeps how long routing took.
+  expect(await done.find({ type: 'Text', text: ' (routed in 3.2s)' })).toBeDefined();
+  await done.unmount();
+});

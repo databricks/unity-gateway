@@ -520,10 +520,9 @@ def route_claude_subagent(
         **{key: value for key, value in route.tool_input.items() if key != "model"},
         "subagent_type": _routed_claude_agent_name(route.routed_model),
     }
-    orchestrator_enabled = orchestrator.enabled(agent=AGENT_CLAUDE)
     if hook_output:
         agent_name = updated_input["subagent_type"]
-        if orchestrator_enabled:
+        if orchestrator.enabled(agent=AGENT_CLAUDE):
             agent_name += " [orchestrator on]"
         routing_message = claude_routing.SUBAGENT_NOTICE_CONFIG.message(
             route.decision,
@@ -543,7 +542,6 @@ def route_claude_subagent(
         "updatedInput": updated_input,
         "model": route.routed_model,
         "rationale": route.decision.rationale,
-        "orchestrator": orchestrator_enabled,
     }
 
 

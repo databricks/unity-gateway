@@ -762,7 +762,6 @@ class TestSubagentRouting:
                 "prompt": "inspect the parser",
                 "subagent_type": v2._routed_claude_agent_name("system.ai.claude-opus-4-8"),
             },
-            "orchestrator": False,
         }
         assert not any(path.is_file() for path in tmp_path.rglob("*"))
 
@@ -827,7 +826,6 @@ class TestSubagentRouting:
         assert output["updatedInput"]["subagent_type"] == routed_agent
         assert output["model"] == selected_model
         assert requested_agent not in json.dumps(output)
-        assert output["orchestrator"] is (orchestrator_enabled == "1")
 
         # Hooks persisted by earlier UG versions keep their PreToolUse response and notice.
         legacy = route(hook_output=True)

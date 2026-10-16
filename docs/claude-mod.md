@@ -16,6 +16,8 @@ It runs `ug claude-router-hook route-subagent-mod` with a JSON payload on stdin.
 Python uses the same routing API client as Codex and returns the updated input,
 model, and rationale as JSON on stdout. The mod keeps that result in memory by
 `tool_use_id` and renders the model and rationale under the matching Agent row.
+While the router answers, the row shows a spinner with the elapsed seconds; the selected
+row then notes how long routing took. Both use `$.clock` and are omitted without it.
 It writes no routing sidecar file. Disabled routing or an unavailable route leaves
 the call unchanged; command failures and invalid responses also keep the original
 input and show a diagnostic. Other mods and Claude's permission checks still run.
