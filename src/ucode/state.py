@@ -352,6 +352,33 @@ def set_provider_service(state: dict, tool: str, full_name: str | None) -> dict:
     return state
 
 
+def get_model_location(state: dict, tool: str) -> str | None:
+    """Return the persisted Unity Catalog model location (``<catalog>.<schema>``) for ``tool``.
+
+    Launches discover models in this schema instead of ``system.ai`` unless overridden by an
+    explicit ``--model-location`` or ``--provider`` flag.
+    """
+    locations = state.get("model_locations")
+    if not isinstance(locations, dict):
+        return None
+    location = locations.get(tool)
+    return location if isinstance(location, str) and location else None
+
+
+def set_model_location(state: dict, tool: str, location: str | None) -> dict:
+    """Persist (or clear, when ``location`` is None) ``tool``'s model location."""
+    locations = dict(state.get("model_locations") or {})
+    if location:
+        locations[tool] = location
+    else:
+        locations.pop(tool, None)
+    if locations:
+        state["model_locations"] = locations
+    else:
+        state.pop("model_locations", None)
+    return state
+
+
 # The managed configuration's ``update_time`` last applied to this workspace's agents. A launch
 # compares a freshly fetched config against it to decide whether to re-apply, so it is written only
 # after an apply succeeds — never on a plain fetch.

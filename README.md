@@ -80,6 +80,10 @@ Without a managed workspace config, `ug claude` automatically discovers gateway
 models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when
 no provider or model location is selected. Use `--provider` or `--model-location`
 to select another model source; managed workspace configs control their own sources.
+Interactive `ug configure` also offers a **Custom Model Location** (`<catalog>.<schema>`) for
+Claude Code and Codex alongside Databricks Hosted and External Models. The choice is saved
+with the rest of the configuration, so later `ug claude` / `ug codex` launches use it; an
+explicit `--provider` or `--model-location` still overrides it for that launch.
 
 `ug codex` validates discovered models with the installed Codex binary and publishes
 them to `~/.ucode/codex-model-catalog.json`, referenced by shared `~/.codex/config.toml`

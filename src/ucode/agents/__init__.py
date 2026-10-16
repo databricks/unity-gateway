@@ -29,7 +29,7 @@ from ucode.databricks import (
 from ucode.managed_config import refresh_managed_config
 from ucode.managed_files import managed_write_batch
 from ucode.os_compatibility import subprocess_cross_os
-from ucode.state import get_provider_service, load_state, save_state
+from ucode.state import get_model_location, get_provider_service, load_state, save_state
 from ucode.telemetry import agent_version
 from ucode.ui import (
     print_err,
@@ -559,6 +559,7 @@ def configure_single_tool(
     tool: str, state: dict, *, parent_schema: str | None = None, provider: str | None = None
 ) -> dict:
     """Check availability, configure, and persist state for one tool only."""
+    parent_schema = parent_schema or _persisted_model_location(tool, state, provider)
     provider = None if parent_schema else provider or get_provider_service(state, tool)
     # A Model Provider Service or parent schema routes through the same gateway and pins no
     # globally discovered Databricks model, so the availability check doesn't apply.
@@ -576,6 +577,17 @@ def configure_single_tool(
     state["available_tools"] = available_tools
     save_state(state)
     return state
+
+
+def _persisted_model_location(tool: str, state: dict, provider: str | None) -> str | None:
+    """The model location ``ug configure`` saved for ``tool``, unless a provider is in play.
+
+    Only claude and codex discover models by parent schema; an explicit or persisted provider
+    keeps the source it names.
+    """
+    if tool not in (AGENT_CLAUDE, AGENT_CODEX) or provider or get_provider_service(state, tool):
+        return None
+    return get_model_location(state, tool)
 
 
 def _configure_one(
@@ -626,7 +638,9 @@ def configure_selected_tools(
     configured: list[str] = []
     with managed_write_batch(_managed_settings_displays(tools)):
         for tool in tools:
-            parent_schema = (parent_schemas or {}).get(tool)
+            parent_schema = (parent_schemas or {}).get(tool) or _persisted_model_location(
+                tool, state, None
+            )
             provider = None if parent_schema else get_provider_service(state, tool)
             try:
                 state = _configure_one(tool, state, provider, parent_schema=parent_schema)

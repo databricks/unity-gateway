@@ -15,6 +15,7 @@ from ucode.state import (
     build_agent_state,
     clear_state,
     get_applied_managed_update_time,
+    get_model_location,
     get_provider_service,
     hydrate_state,
     is_self_managed,
@@ -26,6 +27,7 @@ from ucode.state import (
     self_managed_agents,
     set_applied_managed_update_time,
     set_current_workspace,
+    set_model_location,
     set_provider_service,
     workspace_self_managed_agents,
 )
@@ -197,6 +199,29 @@ class TestProviderService:
         state = set_provider_service(state, "claude", None)
         assert get_provider_service(state, "claude") is None
         assert get_provider_service(state, "codex") == "main.a.openai"
+
+
+class TestModelLocation:
+    def test_get_returns_none_when_unset_or_malformed(self):
+        assert get_model_location({}, "claude") is None
+        assert get_model_location({"model_locations": "main.models"}, "claude") is None
+        assert get_model_location({"model_locations": {"claude": ""}}, "claude") is None
+
+    def test_set_and_get_roundtrip_per_tool(self):
+        state = set_model_location({}, "claude", "main.models")
+        assert get_model_location(state, "claude") == "main.models"
+        assert get_model_location(state, "codex") is None
+
+    def test_set_none_clears_entry_and_key(self):
+        state = set_model_location({}, "claude", "main.models")
+        state = set_model_location(state, "claude", None)
+        assert "model_locations" not in state
+
+    def test_clearing_one_tool_keeps_the_other(self):
+        state = set_model_location({}, "claude", "main.a")
+        state = set_model_location(state, "codex", "main.b")
+        state = set_model_location(state, "claude", None)
+        assert get_model_location(state, "codex") == "main.b"
 
 
 class TestAppliedManagedUpdateTime:
