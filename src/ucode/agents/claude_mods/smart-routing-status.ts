@@ -4,6 +4,10 @@ import { SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY } from './constants.ts'
 const BANNER = 'unity gateway smart router'
 const DIRECT = 'Main agent is not spawning subagents and is working on the task directly.'
 const SPAWNING = 'Main agent is spawning subagents.'
+const REPORTED = 'Choice reported.'
+const NOT_REPORTED = 'Choice not reported: no active main-agent request.'
+// Child completion messages arrive as these origins; they continue the current request.
+const CHILD_ORIGINS: ReadonlySet<string> = new Set(['task-notification', 'peer', 'peer-send-message'])
 
 // The band shows at launch and after each toggle, and hides once the next prompt's turn
 // completes. A prompt submitted while it shows arms the hide for that prompt's turn.
@@ -84,7 +88,7 @@ export const registerStatusBand = (on: On, optedIn: boolean): void => {
 
   on('prompt.submit', async ($, e, next) => {
     if (band.isVisible) band.isHideArmed = true
-    if (e.origin.kind === 'task-notification' || e.origin.kind === 'peer-send-message') return next(e)
+    if (CHILD_ORIGINS.has(e.origin.kind)) return next(e)
     pendingRequests += 1
     try {
       const prompt = tool && (await readRoutingState($)).orchestrator
@@ -123,7 +127,8 @@ export const registerStatusBand = (on: On, optedIn: boolean): void => {
       else if (choice !== SPAWNING) choice = DIRECT
       $.ui.invalidate('ui.render')
     }
-    return e.tool === tool ? { result: { reported: Boolean(request && request === turn && enabled) } } : next(e)
+    if (e.tool !== tool) return next(e)
+    return { result: request && request === turn && enabled ? REPORTED : NOT_REPORTED }
   })
 
   on('turn.complete', async ($, e, next) => {

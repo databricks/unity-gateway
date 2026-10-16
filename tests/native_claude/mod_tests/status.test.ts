@@ -46,7 +46,7 @@ test('one indicator follows the main request choice, forwards native permissions
   const prompt = await $.prompt.submit({ text: 'first task', wait: false, origin: { kind: 'composer' } });
   expect(prompt.context?.join('\n')).toContain(TOOL);
   await $.turn.start({ text: 'first task', turnId: 'request-1' });
-  expect((await $.tool.call({ tool: TOOL })).result).toEqual({ reported: true });
+  expect((await $.tool.call({ tool: TOOL })).result).toEqual('Choice reported.');
   expect(await text()).toContain(DIRECT);
   expect(await text()).not.toContain(SPAWNING);
 
@@ -90,9 +90,9 @@ test('completion rejects late root reports while child notifications preserve th
   await $.turn.start({ text: 'task', turnId: 'request' });
   const complete = { answer: 'done', durationMs: 1, isAborted: false, reason: 'answer', turnId: 'request' } as const;
   await $.turn.complete({ ...complete, agentId: 'child' });
-  expect((await $.tool.call({ tool: TOOL })).result).toEqual({ reported: true });
+  expect((await $.tool.call({ tool: TOOL })).result).toEqual('Choice reported.');
   await $.turn.complete(complete);
-  expect((await $.tool.call({ tool: TOOL })).result).toEqual({ reported: false });
+  expect((await $.tool.call({ tool: TOOL })).result).toEqual('Choice not reported: no active main-agent request.');
   await $.tool.call({ tool: 'Agent', description: 'late', prompt: 'late', subagent_type: 'Explore' } as any);
   const ui = await $.ui.mount({ plugin: 'ug-smart-router', surface: 'terminal', component: 'AbovePrompt', props: {} as any });
   expect(JSON.stringify(await ui.drawn())).toContain(DIRECT);
@@ -118,6 +118,21 @@ test('the indicator stays after the band hides for the turn', { options: OPTIONS
   const drawn = JSON.stringify(await ui.drawn());
   expect(drawn).not.toContain('unity gateway smart router');
   expect(drawn).toContain(SPAWNING);
+  await ui.unmount();
+});
+
+test('a peer completion message from a child keeps the spawning choice', { options: OPTIONS }, async ($, on) => {
+  setup(on);
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' });
+  await $.prompt.submit({ text: 'task', wait: false, origin: { kind: 'composer' } });
+  await $.turn.start({ text: 'task', turnId: 'request' });
+  await $.tool.call({ tool: 'Agent', description: 'inspect', prompt: 'inspect', subagent_type: 'Explore' } as any);
+  await $.turn.complete({ answer: 'started', durationMs: 1, isAborted: false, reason: 'answer', turnId: 'request' });
+  const message = await $.prompt.submit({ text: 'child finished', wait: false, origin: { kind: 'peer' } as any });
+  expect(message.context).toBeUndefined();
+  await $.turn.start({ text: 'child finished', turnId: 'continuation' });
+  const ui = await $.ui.mount({ plugin: 'ug-smart-router', surface: 'terminal', component: 'AbovePrompt', props: {} as any });
+  expect(JSON.stringify(await ui.drawn())).toContain(SPAWNING);
   await ui.unmount();
 });
 
