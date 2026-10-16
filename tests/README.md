@@ -19,6 +19,12 @@ TypeScript event-forwarding and launch-option tests in CI. The existing Claude
 skill-toggle integration journey checks the live recipe payload field across on/off/on.
 See [the mod guide](../docs/claude-mod.md).
 
+Claude print-mode answer delivery is covered by `test_claude_answer_delivery.py`
+(selection, composition, ownership, completion and revision validation, and real local
+subprocess I/O with recorded events), `test_skills.py` (capability-gated activation), and
+`test_claude_smart_routing_v2.py` (launch wiring). These are offline component checks;
+they do not establish live model, gateway or interactive selection coverage.
+
 The **harness-latest** workflow runs every six hours on `main` and currently covers
 smart routing only.
 It resolves npm's `claude-code@latest`

@@ -14,7 +14,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import NoReturn, TextIO
 
-from ucode import config_io
+from ucode import claude_answer_delivery, config_io
 from ucode.codex_config import (
     codex_config_args,
     custom_catalog_models,
@@ -706,7 +706,11 @@ def launch_claude(
                 str(plugin_dir),
                 *remaining,
             ]
-            if route_first_prompt:
+            if _claude_print_mode(remaining) and orchestrator.enabled(agent=AGENT_CLAUDE):
+                returncode = claude_answer_delivery.run(
+                    argv, session_path=session_path, stdin_prompt=stdin_prompt
+                )
+            elif route_first_prompt:
                 returncode = claude_pty.run_claude_pty(
                     argv,
                     route_prompt=route_prompt,
