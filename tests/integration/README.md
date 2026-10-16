@@ -5,6 +5,10 @@ pagination, validation, and failure propagation are covered by component tests i
 `../test_databricks.py`. Account-authentication checks are replaced by assertions that
 the client reuses the workspace token without starting CLI auth. These checks do not
 establish live workspace, sign-in, or CLI output coverage.
+Client component tests also preserve unknown nonempty scope/period strings without
+losing known limits, and reject malformed enum types and invalid/negative/nonfinite
+amounts. Zero and fractional decimal strings remain valid. Redundant client error
+variants are reduced to one opaque passthrough case; later-page failure checks remain.
 
 The separate [dedicated-workspace CUJ](../e2e_cuj/AGENTS.md) lives in `tests/e2e_cuj/`
 and runs directly with pytest. It does not use this suite's runner or config fixtures.

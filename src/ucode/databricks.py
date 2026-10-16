@@ -3395,13 +3395,15 @@ def resolve_current_budget_spend(
 
 _BUDGET_SPEND_STATUS_API_PATH = "/api/ai-gateway/v2/budget-spend-statuses"
 _BUDGET_SPEND_STATUS_PAGE_SIZE = 100
-_BUDGET_SCOPE_TYPES = frozenset(
-    {
-        "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER",
-        "ALERT_CONFIGURATION_SCOPE_TYPE_SHARED",
-    }
-)
-_BUDGET_TIME_PERIODS = frozenset({"DAY", "MONTH"})
+
+
+def _optional_nonnegative_decimal(entry: dict[str, object], key: str) -> Decimal | None:
+    if key not in entry:
+        return None
+    parsed = _parse_decimal(entry[key])
+    if parsed is None or not parsed.is_finite() or parsed < 0:
+        raise ValueError(f"{key} must be a finite, nonnegative decimal")
+    return parsed
 
 
 def _budget_limit_status(entry: object, budget_id: str) -> BudgetLimitStatus | None:
@@ -3409,24 +3411,19 @@ def _budget_limit_status(entry: object, budget_id: str) -> BudgetLimitStatus | N
         return None
     scope_type = entry.get("scope_type")
     time_period = entry.get("time_period")
-    percent_consumed = _parse_decimal(entry.get("percent_consumed"))
     if (
-        scope_type not in _BUDGET_SCOPE_TYPES
-        or time_period not in _BUDGET_TIME_PERIODS
-        or (
-            "percent_consumed" in entry
-            and (
-                percent_consumed is None or not percent_consumed.is_finite() or percent_consumed < 0
-            )
-        )
+        not isinstance(scope_type, str)
+        or not scope_type.strip()
+        or not isinstance(time_period, str)
+        or not time_period.strip()
     ):
         return None
 
-    spend = _parse_decimal(entry.get("spend")) if "spend" in entry else None
-    threshold = _parse_decimal(entry.get("threshold")) if "threshold" in entry else None
-    if ("spend" in entry and (spend is None or not spend.is_finite() or spend < 0)) or (
-        "threshold" in entry and (threshold is None or not threshold.is_finite() or threshold < 0)
-    ):
+    try:
+        percent_consumed = _optional_nonnegative_decimal(entry, "percent_consumed")
+        spend = _optional_nonnegative_decimal(entry, "spend")
+        threshold = _optional_nonnegative_decimal(entry, "threshold")
+    except ValueError:
         return None
     return BudgetLimitStatus(
         budget_id=budget_id,
