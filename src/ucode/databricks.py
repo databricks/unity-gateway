@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, Literal, NamedTuple, NoReturn, cast, overload
 from urllib import error as urllib_error
 from urllib import request as urllib_request
-from urllib.parse import quote, urlencode, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 from ucode.config_io import APP_DIR
 from ucode.constants import (
@@ -714,6 +714,46 @@ def workspace_origin(workspace: str) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise RuntimeError(f"Unable to derive origin from workspace URL: {workspace}")
     return f"{parsed.scheme}://{parsed.netloc}"
+
+
+_OIDC_DISCOVERY_PATH = "/oidc/.well-known/oauth-authorization-server"
+
+
+def workspace_url_org_id(workspace: str) -> str | None:
+    """Return the workspace id from a URL's ``?o=<workspace id>`` selector, if it has one."""
+    values = parse_qs(urlparse(workspace).query).get("o") or []
+    org_id = values[0].strip() if values else ""
+    return org_id if org_id.isdigit() else None
+
+
+def resolve_workspace_host(workspace: str, workspace_id: str) -> str | None:
+    """Return the host that serves workspace ``workspace_id`` behind ``workspace``.
+
+    A host shared by several workspaces (e.g. ``https://isaac.databricks.com``) needs the
+    ``?o=<workspace id>`` selector on every request; without it, API calls redirect to a login
+    page. ug builds its API and gateway URLs from the bare origin, so it configures the
+    workspace's own host instead. The workspace's OIDC discovery document names that host as
+    its issuer and needs no token. Returns ``None`` when the lookup fails.
+    """
+    url = f"{workspace_origin(workspace)}{_OIDC_DISCOVERY_PATH}?{urlencode({'o': workspace_id})}"
+    request = urllib_request.Request(url, headers={"Accept": "application/json"})
+    try:
+        with urllib_request.urlopen(request, timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, ValueError) as exc:
+        _debug(f"GET {url}", f"{type(exc).__name__}: {exc}")
+        return None
+    issuer = payload.get("issuer") if isinstance(payload, dict) else None
+    parsed = urlparse(issuer) if isinstance(issuer, str) else None
+    if (
+        parsed is None
+        or parsed.scheme != "https"
+        or not parsed.netloc
+        or parsed.path.rstrip("/") != "/oidc"
+    ):
+        _debug(f"GET {url}", f"unexpected issuer: {issuer!r}")
+        return None
+    return f"https://{parsed.netloc}"
 
 
 def _parse_databricks_cli_version(output: str) -> tuple[int, int, int] | None:

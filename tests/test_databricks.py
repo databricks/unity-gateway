@@ -10,6 +10,7 @@ import threading
 import time
 from decimal import Decimal
 from pathlib import Path
+from urllib import error as urllib_error
 from urllib.parse import parse_qs
 
 import pytest
@@ -242,6 +243,87 @@ class TestWorkspaceOrgId:
         db_mod._http_get_json(f"{WS}/api/x", "token")
 
         assert db_mod.workspace_org_id(WS) is None
+
+
+SHARED_WS = "https://shared.databricks.com"
+SHARED_WS_ID = "1965859176160743"
+
+
+class TestWorkspaceUrlOrgId:
+    @pytest.mark.parametrize(
+        ("url", "expected"),
+        [
+            (f"{SHARED_WS}?o={SHARED_WS_ID}", SHARED_WS_ID),
+            (f"{SHARED_WS}/?o={SHARED_WS_ID}", SHARED_WS_ID),
+            (f"{SHARED_WS}/?foo=bar&o={SHARED_WS_ID}", SHARED_WS_ID),
+            (SHARED_WS, None),
+            (f"{SHARED_WS}?o=", None),
+            (f"{SHARED_WS}?o=abc", None),
+            (f"{SHARED_WS}?org=1", None),
+        ],
+    )
+    def test_reads_numeric_selector(self, url, expected):
+        assert db_mod.workspace_url_org_id(url) == expected
+
+
+class TestResolveWorkspaceHost:
+    def _stub(self, monkeypatch, response):
+        requests = []
+
+        def fake_urlopen(request, timeout=None):
+            requests.append(request)
+            if isinstance(response, Exception):
+                raise response
+            return _FakeResponse(response)
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        return requests
+
+    def test_returns_issuer_host_without_a_token(self, monkeypatch):
+        requests = self._stub(monkeypatch, {"issuer": "https://dbc-123.cloud.databricks.com/oidc"})
+
+        host = db_mod.resolve_workspace_host(f"{SHARED_WS}?o={SHARED_WS_ID}", SHARED_WS_ID)
+
+        assert host == "https://dbc-123.cloud.databricks.com"
+        assert [r.full_url for r in requests] == [
+            f"{SHARED_WS}/oidc/.well-known/oauth-authorization-server?o={SHARED_WS_ID}"
+        ]
+        assert requests[0].get_header("Authorization") is None
+
+    def test_issuer_on_the_same_host_returns_it(self, monkeypatch):
+        self._stub(monkeypatch, {"issuer": f"{WS}/oidc/"})
+
+        assert db_mod.resolve_workspace_host(WS, "42") == WS
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"issuer": "http://dbc-123.cloud.databricks.com/oidc"},
+            {"issuer": "https://accounts.cloud.databricks.com/oidc/accounts/abc"},
+            {"issuer": "https:///oidc"},
+            {"issuer": 7},
+            {},
+            [],
+            b"<html>login</html>",
+        ],
+    )
+    def test_unexpected_document_returns_none(self, monkeypatch, payload):
+        self._stub(monkeypatch, payload)
+
+        assert db_mod.resolve_workspace_host(SHARED_WS, SHARED_WS_ID) is None
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            urllib_error.URLError("no route"),
+            urllib_error.HTTPError(SHARED_WS, 404, "Not Found", None, None),
+            TimeoutError("timed out"),
+        ],
+    )
+    def test_request_failure_returns_none(self, monkeypatch, exc):
+        self._stub(monkeypatch, exc)
+
+        assert db_mod.resolve_workspace_host(SHARED_WS, SHARED_WS_ID) is None
 
 
 class TestBuildDatabricksCliEnv:

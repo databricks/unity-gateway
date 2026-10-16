@@ -26,6 +26,12 @@ STATE_VERSION = 3
 MANAGED_OVERLAY_KEY = "_managed_overlay"
 AUTH_COMMAND_TIMEOUT_MS = 5000
 AUTH_REFRESH_INTERVAL_MS = 900_000
+# Top-level map from a host shared by several workspaces to the workspace host it was configured
+# as, e.g. {"https://isaac.databricks.com": "https://dbc-123.cloud.databricks.com"}. Tools that look
+# state up by the shared host (Omnigent finds it by a Databricks CLI profile's `host`) read a copy
+# of the workspace's entry under that key; ALIAS_OF_KEY marks the copy so ug skips it.
+WORKSPACE_ALIASES_KEY = "workspace_aliases"
+ALIAS_OF_KEY = "alias_of"
 
 
 def load_full_state() -> dict:
@@ -68,6 +74,52 @@ def save_state(state: dict) -> None:
     if workspace:
         full["current_workspace"] = workspace
         full["workspaces"][workspace] = hydrate_state(_without_managed_overlay(state))
+        _mirror_workspace_aliases(full, workspace)
+    try:
+        APP_DIR.mkdir(parents=True, exist_ok=True)
+        STATE_PATH.write_text(json.dumps(full, indent=2), encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(f"Failed to write state file: {STATE_PATH}") from exc
+
+
+def _workspace_aliases(full: dict) -> dict[str, str]:
+    aliases = full.get(WORKSPACE_ALIASES_KEY)
+    if not isinstance(aliases, dict):
+        return {}
+    return {
+        alias: workspace
+        for alias, workspace in aliases.items()
+        if isinstance(alias, str) and isinstance(workspace, str)
+    }
+
+
+def _mirror_workspace_aliases(full: dict, workspace: str) -> None:
+    """Copy ``workspace``'s entry to every shared host aliased to it, so the copies never go stale."""
+    block = full["workspaces"].get(workspace)
+    if not isinstance(block, dict):
+        return
+    for alias, target in _workspace_aliases(full).items():
+        if target == workspace:
+            full["workspaces"][alias] = {**block, ALIAS_OF_KEY: workspace}
+
+
+def record_workspace_alias(alias: str, workspace: str) -> None:
+    """Expose ``workspace``'s state under the shared host ``alias`` from now on.
+
+    A shared host fronts one configured workspace at a time: configuring another workspace
+    behind the same host re-points the alias to it.
+    """
+    if is_dry_run():
+        return
+    full = load_full_state()
+    aliases = _workspace_aliases(full)
+    if aliases.get(alias) == workspace:
+        return
+    aliases[alias] = workspace
+    full[WORKSPACE_ALIASES_KEY] = aliases
+    # Drop the previous workspace's copy; the new one's is written once it has state.
+    full["workspaces"].pop(alias, None)
+    _mirror_workspace_aliases(full, workspace)
     try:
         APP_DIR.mkdir(parents=True, exist_ok=True)
         STATE_PATH.write_text(json.dumps(full, indent=2), encoding="utf-8")
@@ -245,6 +297,12 @@ def clear_state() -> None:
     workspace = full.get("current_workspace")
     if workspace:
         full.get("workspaces", {}).pop(workspace, None)
+        aliases = _workspace_aliases(full)
+        for alias in [alias for alias, target in aliases.items() if target == workspace]:
+            aliases.pop(alias)
+            full.get("workspaces", {}).pop(alias, None)
+        if WORKSPACE_ALIASES_KEY in full:
+            full[WORKSPACE_ALIASES_KEY] = aliases
         full["current_workspace"] = None
     try:
         APP_DIR.mkdir(parents=True, exist_ok=True)
