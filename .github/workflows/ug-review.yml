@@ -1,4 +1,4 @@
-name: UG Review
+name: UG Review Smoke (temporary)
 
 # Add `ug-review` or `code-review` to an in-repo PR, or have an org member comment
 # `/ug-review` on any PR. Fork PR events do not receive the gateway secret.
@@ -6,8 +6,6 @@ name: UG Review
 on:
   pull_request:
     types: [labeled]
-  issue_comment:
-    types: [created]
 
 permissions:
   contents: read
@@ -17,13 +15,10 @@ jobs:
     name: Review with the UG rubric
     if: >-
       ${{
-        (github.event_name == 'pull_request' &&
-          github.event.pull_request.head.repo.full_name == github.repository &&
-          contains(fromJSON('["ug-review", "code-review"]'), github.event.label.name)) ||
-        (github.event_name == 'issue_comment' &&
-          github.event.issue.pull_request &&
-          github.event.comment.body == '/ug-review' &&
-          contains(fromJSON('["MEMBER", "OWNER"]'), github.event.comment.author_association))
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        github.event.pull_request.head.ref == 'ug-review-smoke-20261015' &&
+        github.actor == 'rohita5l' &&
+        contains(fromJSON('["ug-review", "code-review"]'), github.event.label.name)
       }}
     # Job-level so ordinary PR comments, which skip this job, never cancel a review.
     concurrency:
@@ -43,10 +38,10 @@ jobs:
       NPM_CONFIG_REGISTRY: https://databricks.jfrog.io/artifactory/api/npm/db-npm/
       OCR_NO_UPDATE: "1"
     steps:
-      - name: Check out the trusted reviewer from the default branch
+      - name: Check out the explicitly reviewed smoke-test commit
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: 2cc73f79189403eb44ff80c3bed758dd863adfd4
           # A separate path keeps this sparse checkout from leaking into the action's checkout.
           path: .ug-review-trusted
           sparse-checkout: |
