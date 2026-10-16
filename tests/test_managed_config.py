@@ -106,50 +106,6 @@ class TestNormalize:
         claude = normalize_managed_config(RAW_MANIFEST)["enabled_agents"]["claude"]
         assert claude["http_headers"] == {"x-databricks-workspace": "eng-ml-inference"}
 
-    @pytest.mark.parametrize(
-        ("agent", "tool"),
-        [("CODING_AGENT_CLAUDE_CODE", "claude"), ("CODING_AGENT_CODEX", "codex")],
-    )
-    def test_http_headers_preserve_valid_values_and_drop_non_strings(self, agent, tool):
-        raw = {
-            "enabled_agents": [
-                {
-                    "agent": agent,
-                    "config": {
-                        "http_headers": {
-                            "x-team": "aig",
-                            "x-empty": "",
-                            "x-literal": "  keep spaces and \\n  ",
-                            "x-invalid": 1,
-                        }
-                    },
-                }
-            ]
-        }
-
-        assert normalize_managed_config(raw)["enabled_agents"][tool]["http_headers"] == {
-            "x-team": "aig",
-            "x-empty": "",
-            "x-literal": "  keep spaces and \\n  ",
-        }
-
-    @pytest.mark.parametrize("agent", ["CODING_AGENT_CLAUDE_CODE", "CODING_AGENT_CODEX"])
-    @pytest.mark.parametrize(
-        "headers",
-        [
-            {"x-header": "bad\nvalue"},
-            {"x-header": "bad\rvalue"},
-            {"x-\nheader": "value"},
-            {"x-\rheader": "value"},
-            {"": "value"},
-        ],
-    )
-    def test_reject_invalid_http_headers_at_shared_input_boundary(self, agent, headers):
-        raw = {"enabled_agents": [{"agent": agent, "config": {"http_headers": headers}}]}
-
-        with pytest.raises(ValueError, match="HTTP header.*CR/LF"):
-            normalize_managed_config(raw)
-
     def test_settings_are_carried_verbatim(self):
         agents = normalize_managed_config(RAW_MANIFEST)["enabled_agents"]
         assert agents["claude"]["agent_native_settings"] == {

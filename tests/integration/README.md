@@ -311,37 +311,30 @@ reject a missing CLI before token fetch or browser login.
 They replace external authentication and do not establish native Desktop
 GUI or browser-login coverage; this integration suite does not launch Desktop.
 
-`../test_claude_desktop.py` separately checks profile rendering, workspace-derived
-UUIDs, owned-field refresh, deleted-profile recovery, overwriting generated UUIDs
-without ownership records, preserving old random-ID profiles, user-edit preservation
-on revert, and rollback across profile, metadata,
-and ownership files. It uses temporary files and injected write failures in the
-`agents/desktop/claude_config.py` module, with ownership/revert policy in
-`agents/desktop/claude_state.py`.
-All filesystem journeys resolve native paths under temporary homes across simulated macOS,
-Windows, and Linux, without profile-directory overrides. They cover configure, refresh,
-revert without prior ownership, missing apps, non-directory paths, creation failures,
-parent-metadata preservation, and Windows Local AppData resolution. Native-store assertions
-replace the removed override-specific layout ambiguity checks.
-Native Desktop activation, helper execution, model selection, browser login, and inference
-remain outside this coverage; no Windows or Linux GUI journey has been verified.
+`../test_claude_desktop.py` exercises real temporary profile, shared metadata,
+and previous-selection files. Coverage includes the fixed reserved UUID, complete
+replacement without ownership records (including malformed profiles), repeat configure,
+workspace/profile switches, deleted-profile recovery, labels, and preservation of
+unrelated profiles and metadata. Revert deletes the reserved profile even after edits
+or without selection state. Selection tests restore a still-existing previous profile
+or preserve a later unrelated selection without leaving a dangling appliedId.
 
-Profile-name component cases cover CLI profile labels, refresh from the generic name,
-stable workspace UUIDs, and replacing renamed managed entries during configure while
-preserving later renames on revert. Original profile and metadata-entry baselines survive
-repeat configure and recreation. Configure/revert write failures restore exact bytes,
-including pre-existing UUID profiles without records. Configure/revert timeout cases
-preserve profile and ownership files without releasing another operation's lock.
+Injected failures at every profile, metadata, and selection-state write boundary verify
+exact-byte rollback, including malformed pre-existing UG profiles. Concurrency checks
+reject changed snapshots. Desktop-only lock-timeout tests preserve files and close
+unacquired handles. Paths use temporary homes across simulated macOS, Windows, and Linux,
+including relocated/default Windows Local AppData, missing apps, invalid paths, creation
+failures, and parent-metadata preservation.
 
-Desktop component tests preserve model order/duplicates, literal helper arguments,
-copied headers, and user-owned default-model settings. Header safety checks now live
-in shared managed-config parsing, covered for Claude and Codex in
-`../test_managed_config.py`; no live header-validation journey is added.
-
-Shared workspace identity canonicalization and unchanged CLI input normalization have
-component coverage in `../test_workspace_urls.py`. Desktop filesystem tests check stable
-UUIDs and ownership across equivalent URL spellings through refresh/revert; this adds
-no live workspace or native Desktop coverage.
+Rendering tests cover the valid JSON generated-file notice, complete model IDs,
+order/duplicates, literal helper arguments, and copied headers. Omitted optional fields
+are removed on replacement. Shared managed-header parsing retains its pre-Desktop behavior;
+the extra header-validation tests were removed with that out-of-scope parser change.
+Obsolete baseline restoration, edit preservation, ownership/migration, and workspace
+canonicalization tests are replaced by reserved-file replacement/deletion coverage.
+Existing CLI URL normalization is unchanged. Native Desktop activation, acceptance of
+the `_comment` notice field, GUI/helper/browser behavior, and inference remain untested;
+these component checks do not establish native Windows or Linux support.
 
 `../test_file_lock_cross_os.py` tests the shared timeout mechanism used by Desktop:
 real contention, preserving the holder on timeout, and successful acquisition after

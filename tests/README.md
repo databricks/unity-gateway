@@ -138,38 +138,30 @@ Missing-option checks exercise plain and ANSI-colored stderr and require parser 
 code 2 with empty stdout. These component tests replace external authentication;
 they do not establish native Desktop GUI or browser-login coverage.
 
-`test_claude_desktop.py` exercises real temporary profile, metadata, and ownership
-files: workspace-derived UUIDs, repeat configure, owned-field refresh, deleted-profile
-recovery, overwriting an existing generated UUID without ownership records, preservation
-of unrelated settings and old random-ID profiles, and revert after
-user edits or workspace switches. Injected write failures verify exact-byte rollback
-at each file boundary in `agents/desktop/claude_config.py`. Ownership and revert
-policy live in `agents/desktop/claude_state.py`; the public adapter lives in
-`agents/desktop/claude.py`. These are filesystem component checks, not native Desktop
-activation, model-selection, browser-login, or inference coverage. All filesystem journeys use
-native path resolution under temporary homes across simulated macOS, Windows, and Linux,
-without profile-directory overrides. They cover configure, refresh, revert without prior
-ownership, missing apps, non-directory paths, creation failures, and preserving parent metadata.
-Override-specific layout ambiguity checks were replaced by native-store assertions;
-Windows path checks include relocated and default Local AppData. Native Windows
-and Linux GUI/helper/browser/inference journeys remain unvalidated.
+`test_claude_desktop.py` exercises real temporary profile, shared metadata,
+and previous-selection files. Coverage includes the fixed reserved UUID, complete
+replacement without ownership records (including malformed profiles), repeat configure,
+workspace/profile switches, deleted-profile recovery, labels, and preservation of
+unrelated profiles and metadata. Revert deletes the reserved profile even after edits
+or without selection state. Selection tests restore a still-existing previous profile
+or preserve a later unrelated selection without leaving a dangling appliedId.
 
-Profile-name regressions cover CLI profile labels, generic-label refresh, unchanged
-workspace UUIDs when switching CLI profiles, and configure replacing user renames while
-revert preserves later renames. Original profile and metadata-entry baselines survive
-repeat configure and deleted-profile recreation. Configure/revert failures restore exact
-bytes at every write boundary, including pre-existing UUID profiles without records. Configure
-and revert lock-timeout checks preserve profile/ownership bytes and close unacquired handles.
+Injected failures at every profile, metadata, and selection-state write boundary verify
+exact-byte rollback, including malformed pre-existing UG profiles. Concurrency checks
+reject changed snapshots. Desktop-only lock-timeout tests preserve files and close
+unacquired handles. Paths use temporary homes across simulated macOS, Windows, and Linux,
+including relocated/default Windows Local AppData, missing apps, invalid paths, creation
+failures, and parent-metadata preservation.
 
-Rendering checks preserve model order/duplicates, literal helper arguments, and copied
-headers. Default-model selection remains user-owned. Header validation moved from the
-Desktop renderer to shared managed-config parsing; `test_managed_config.py` checks
-invalid header rejection for Claude and Codex plus unchanged valid values/type filtering.
-
-`test_workspace_urls.py` checks shared workspace identity canonicalization, invalid-origin
-rejection, and unchanged CLI input normalization. Desktop filesystem tests retain the
-fixed UUID and check that equivalent URL spellings share ownership through refresh and
-revert. These checks make no network requests.
+Rendering tests cover the valid JSON generated-file notice, complete model IDs,
+order/duplicates, literal helper arguments, and copied headers. Omitted optional fields
+are removed on replacement. Shared managed-header parsing retains its pre-Desktop behavior;
+the extra header-validation tests were removed with that out-of-scope parser change.
+Obsolete baseline restoration, edit preservation, ownership/migration, and workspace
+canonicalization tests are replaced by reserved-file replacement/deletion coverage.
+Existing CLI URL normalization is unchanged. Native Desktop activation, acceptance of
+the `_comment` notice field, GUI/helper/browser behavior, and inference remain untested;
+these component checks do not establish native Windows or Linux support.
 
 `TestChildStdoutLaunch` in `test_cli.py` checks Claude `-p`/`--print` and Codex `exec`
 (plain and `--json`) and `app-server` status/error output on stderr, argument forwarding with
