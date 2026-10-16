@@ -1,5 +1,11 @@
 # Integration tests
 
+The spend-status client's workspace authentication, optional percentage handling,
+pagination, validation, and failure propagation are covered by component tests in
+`../test_databricks.py`. Account-authentication checks are replaced by assertions that
+the client reuses the workspace token without starting CLI auth. These checks do not
+establish live workspace, sign-in, or CLI output coverage.
+
 The separate [dedicated-workspace CUJ](../e2e_cuj/AGENTS.md) lives in `tests/e2e_cuj/`
 and runs directly with pytest. It does not use this suite's runner or config fixtures.
 It reuses the session, terminal, file-task, and transcript helpers in `utils/`.
