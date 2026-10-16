@@ -374,12 +374,10 @@ preferences are ignored and their files are left untouched. See the bundled
 
 ### Codex desktop tracing
 
-With workspace tracing enabled, run `ug configure --agents codex` where Codex
-desktop's app server runs: your Mac or Windows PC, the Linux host the app
-connects to, or WSL if the Windows app's agent runs there. Then restart the app
-server once (on a Mac or PC, restart the Codex app). This points Codex's trace
-exporter in `~/.codex/config.toml` at the existing CLI OTEL proxy, run as a
-per-user service that starts at login; `ug codex` sessions keep their own proxy.
+With workspace tracing enabled, run `ug configure --agents codex` on the machine
+where Codex desktop's app server runs, then restart the app server once. This points
+Codex's trace exporter in `~/.codex/config.toml` at the existing CLI OTEL proxy, run
+as a per-user service that starts at login; `ug codex` sessions keep their own proxy.
 An exporter you already set is left alone. Disabling tracing or `ug revert` removes both.
 
 | OS | Service | Diagnostics |

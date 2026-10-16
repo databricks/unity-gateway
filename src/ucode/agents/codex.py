@@ -670,13 +670,9 @@ def _launch_agent_plist(argv: list[str], env: dict[str, str]) -> str:
     return plist.replace("<plist", f"<!-- {_CODEX_OTEL_UNIT_MARKER} -->\n<plist", 1)
 
 
-def _launch_agent_target() -> tuple[str, str]:
-    domain = f"gui/{os.getuid()}"
-    return domain, f"{domain}/{CODEX_OTEL_SERVICE_LABEL}"
-
-
 def _start_launch_agent(path: Path, *, changed: bool) -> None:
-    domain, target = _launch_agent_target()
+    domain = f"gui/{os.getuid()}"
+    target = f"{domain}/{CODEX_OTEL_SERVICE_LABEL}"
     loaded = _run_service_command(["launchctl", "print", target], check=False)
     if loaded and not changed:
         return  # KeepAlive keeps a loaded agent running.
@@ -684,12 +680,6 @@ def _start_launch_agent(path: Path, *, changed: bool) -> None:
         # A loaded agent keeps its old definition; only a reload reads the new plist.
         _run_service_command(["launchctl", "bootout", target])
     _run_service_command(["launchctl", "bootstrap", domain, str(path)])
-
-
-def _stop_launch_agent() -> None:
-    _, target = _launch_agent_target()
-    if _run_service_command(["launchctl", "print", target], check=False):
-        _run_service_command(["launchctl", "bootout", target])
 
 
 def _scheduled_task_xml(argv: list[str]) -> str:
@@ -731,13 +721,6 @@ def _start_scheduled_task(path: Path, *, changed: bool) -> None:
     # shortcut: RestartOnFailure ignores a nonzero exit, so a crashed proxy waits for the next
     # login or launch; add a watchdog if that proves too slow.
     _run_service_command(["schtasks", "/Run", *task])
-
-
-def _stop_scheduled_task() -> None:
-    task = ["/TN", CODEX_OTEL_SERVICE_LABEL]
-    if _run_service_command(["schtasks", "/Query", *task], check=False):
-        _run_service_command(["schtasks", "/End", *task], check=False)
-        _run_service_command(["schtasks", "/Delete", *task, "/F"])
 
 
 def _systemd_quote(value: str, *, exec_start: bool = False) -> str:
@@ -832,10 +815,14 @@ def _remove_otel_service() -> None:
     if not _owned_otel_service(path):
         return
     system = current_os()
+    # An already-stopped or unregistered service is fine to remove.
     if system == OS.MACOS:
-        _stop_launch_agent()
+        target = f"gui/{os.getuid()}/{CODEX_OTEL_SERVICE_LABEL}"
+        _run_service_command(["launchctl", "bootout", target], check=False)
     elif system == OS.WINDOWS:
-        _stop_scheduled_task()
+        task = ["/TN", CODEX_OTEL_SERVICE_LABEL]
+        _run_service_command(["schtasks", "/End", *task], check=False)
+        _run_service_command(["schtasks", "/Delete", *task, "/F"], check=False)
     else:
         _run_systemctl(["disable", "--now", CODEX_OTEL_SERVICE_NAME])
     path.unlink(missing_ok=True)
@@ -860,7 +847,7 @@ def _sync_desktop_tracing(workspace: str | None) -> bool:
         otel = doc.setdefault("otel", {})
         if not isinstance(otel, dict):
             raise RuntimeError(f"otel in {_legacy_config_path()} is not a table")
-        # ug's own service file records the port, so only an exporter at that port is ug's.
+        # ug's own unit records the port, so only an exporter at that port is ug's.
         unit = _otel_service_path()
         unit_text = _read_otel_service(unit) if _owned_otel_service(unit) else ""
         match = re.search(r"--port\D+(\d+)", unit_text)

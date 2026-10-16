@@ -2364,7 +2364,7 @@ def otel_proxy_cmd(
         server, _cache, _client = gateway_proxy.start_otel_proxy(
             host, codex_agent._otel_token_provider(state, host), port=port
         )
-        # The service manager stops this without cleanup, and nothing needs it.
+        # systemd stops this with SIGTERM, which exits without cleanup, and nothing needs it.
         server.serve_forever()
     except (OSError, RuntimeError) as exc:
         print_err(str(exc))

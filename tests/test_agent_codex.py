@@ -2134,7 +2134,6 @@ class TestCodexManagedConfig:
             ["print", target],
             ["bootout", target],
             ["bootstrap", "gui/501", str(plist_path)],
-            ["print", target],
             ["bootout", target],
         ]
 
@@ -2194,7 +2193,7 @@ class TestCodexManagedConfig:
             *["/End", "/Create", "/Run"],
             *["/Query", "/Run"],
             *["/End", "/Create", "/Run"],
-            *["/Query", "/End", "/Delete"],
+            *["/End", "/Delete"],
         ]
 
 
