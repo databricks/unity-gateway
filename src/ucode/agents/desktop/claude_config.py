@@ -13,7 +13,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import NotRequired, TypedDict, cast
 
-from ucode.config_io import atomic_write_json
 from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
     release_file_lock,
@@ -199,43 +198,34 @@ def is_uuid(value: str) -> bool:
 
 
 def write_configuration(
-    changes: Sequence[tuple[Path, bytes | None, Mapping[str, object] | str | None]],
+    changes: Sequence[tuple[Path, bytes | None, bytes | None, int]],
 ) -> bool:
-    """Apply file changes, restoring exact original bytes if any write fails."""
+    """Apply (path, before, after, mode) changes, restoring originals on failure."""
 
-    for path, before, _after in changes:
+    for path, before, _after, _mode in changes:
         if read_optional_bytes(path) != before:
             raise ClaudeDesktopConflictError(
                 "Claude Desktop configuration changed during setup. Quit Claude Desktop and retry."
             )
-    originals = {path: before for path, before, _after in changes}
-    modes = {
-        path: stat.S_IMODE(path.stat().st_mode) if before is not None else 0o600
-        for path, before, _after in changes
+    original_modes = {
+        path: stat.S_IMODE(path.stat().st_mode)
+        for path, before, _after, _mode in changes
+        if before is not None
     }
-    written: list[Path] = []
+    written: list[tuple[Path, bytes | None, int]] = []
     try:
-        for path, before, after in changes:
-            contents = None
-            if isinstance(after, str):
-                contents = after.encode("utf-8")
-            elif after is not None:
-                contents = json.dumps(after, indent=2).encode("utf-8")
-            if before == contents and (not isinstance(after, str) or modes[path] & stat.S_IXUSR):
+        for path, before, after, mode in changes:
+            if before == after and (
+                after is None or not mode & stat.S_IXUSR or original_modes[path] & stat.S_IXUSR
+            ):
                 continue
-            if before is not None and isinstance(after, Mapping):
-                try:
-                    if json.loads(before) == after:
-                        continue
-                except (UnicodeError, json.JSONDecodeError):
-                    pass
-            written.append(path)
-            _write_or_remove(path, after)
+            written.append((path, before, original_modes.get(path, mode)))
+            _write_or_remove(path, after, mode=mode)
     except Exception as exc:  # noqa: BLE001 - preserve the original failure through rollback
         rollback_errors: list[Exception] = []
-        for path in reversed(written):
+        for path, before, mode in reversed(written):
             try:
-                _restore_original(path, originals[path], mode=modes[path])
+                _write_or_remove(path, before, mode=mode)
             except Exception as rollback_exc:  # noqa: BLE001
                 rollback_errors.append(rollback_exc)
         if rollback_errors:
@@ -249,8 +239,8 @@ def write_configuration(
     return bool(written)
 
 
-def _write_or_remove(path: Path, payload: Mapping[str, object] | str | None) -> None:
-    if payload is None:
+def _write_or_remove(path: Path, contents: bytes | None, *, mode: int) -> None:
+    if contents is None:
         try:
             path.unlink()
         except FileNotFoundError:
@@ -258,16 +248,7 @@ def _write_or_remove(path: Path, payload: Mapping[str, object] | str | None) -> 
         except OSError as exc:
             raise ClaudeDesktopError(f"Could not remove Claude Desktop profile {path}.") from exc
         return
-    if isinstance(payload, str):
-        _restore_original(path, payload.encode("utf-8"), mode=0o700)
-        return
-    atomic_write_json(path, payload)
-
-
-def _restore_original(path: Path, contents: bytes | None, *, mode: int = 0o600) -> None:
-    if contents is None:
-        _write_or_remove(path, None)
-        return
+    path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "wb") as handle:

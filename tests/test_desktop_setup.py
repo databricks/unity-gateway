@@ -1,6 +1,7 @@
 """Configure-only orchestration with real temporary Desktop profile files."""
 
 import json
+import os
 import stat
 from pathlib import Path
 from types import SimpleNamespace
@@ -218,12 +219,12 @@ def test_otel_write_failure_rolls_back_existing_profile(
     write = desktop_config._write_or_remove
     failed = False
 
-    def fail_once(path, payload):
+    def fail_once(path, contents, *, mode):
         nonlocal failed
         if path == targets[failed_file] and not failed:
             failed = True
             raise OSError("simulated write failure")
-        write(path, payload)
+        write(path, contents, mode=mode)
 
     monkeypatch.setattr(desktop_config, "_write_or_remove", fail_once)
     if operation == "revert":
@@ -245,6 +246,24 @@ def test_otel_write_failure_rolls_back_existing_profile(
     } == before
     assert {path: stat.S_IMODE(path.stat().st_mode) for path in modes} == modes
     assert "rolled back" in capsys.readouterr().out
+
+
+def test_reconfigure_repairs_otel_helper_execute_permission(desktop):
+    state = {
+        "workspace": "https://workspace.example",
+        "profile": "chosen-profile",
+        "claude_otel_tracing": True,
+    }
+    desktop_setup.configure_claude_desktop(state)
+    helper = Path(configured_profile(desktop)["otlpHeadersHelper"])
+    original = helper.read_bytes()
+    helper.chmod(0o600)
+    desktop_setup.configure_claude_desktop(state)
+
+    assert helper.read_bytes() == original
+    if os.name != "nt":
+        assert stat.S_IMODE(helper.stat().st_mode) == 0o700
+    assert helper.stat().st_mode & stat.S_IWUSR
 
 
 @pytest.mark.parametrize("source", ["discovery", "static"])

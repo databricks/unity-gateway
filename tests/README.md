@@ -206,6 +206,9 @@ without persisted tokens, literal argument quoting, repeated native helper execu
 with rotated bearer overrides, and JSON-only stdout/failure output. Lifecycle checks
 cover repeat configure, workspace changes, disable/re-enable, rollback of helper bytes
 and permissions at each write boundary, and revert preserving unrelated telemetry.
+Byte-writer checks cover explicit permissions independent of contents, unchanged
+JSON formatting, helper execute-permission repair, and failed atomic replacement
+without leftover temporary files.
 These checks do not prove native export, token refresh in open sessions, or ingestion.
 
 `TestChildStdoutLaunch` in `test_cli.py` checks Claude `-p`/`--print` and Codex `exec`
