@@ -1404,8 +1404,7 @@ def revert() -> int:
     # Older Codex (< 0.134.0) had ucode edit the shared ~/.codex/config.toml in
     # place; restoring the per-profile file above does not undo that.
     legacy_codex_stripped = revert_legacy_shared_config()
-    if desktop_result != "failed":
-        clear_state()
+    clear_state()
 
     print_heading("Revert")
     print_kv("Workspace", state.get("workspace") or "none")
@@ -1423,7 +1422,7 @@ def revert() -> int:
             "restored" if mcp_results.get(client) else "unchanged",
         )
     if desktop_result == "failed":
-        print_warning("ug state retained. Fix the Claude Desktop error and run ug revert again.")
+        print_warning("ug state cleared. Fix the Claude Desktop error and run ug revert again.")
         return 1
     print_success("ug state cleared")
     return 0

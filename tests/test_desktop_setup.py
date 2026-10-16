@@ -5,7 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from ucode import desktop_setup
+from ucode import cli, desktop_setup
+from ucode import state as state_store
 from ucode.agents.desktop import claude as claude_desktop
 from ucode.agents.desktop import claude_config as desktop_config
 from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER, MODEL_SERVICE_PARENT_SCHEMA_HEADER
@@ -359,6 +360,52 @@ def test_profile_lock_timeout_warns_and_preserves_state(desktop, monkeypatch, ca
     assert f"Could not {operation} Claude Desktop" in output
     assert "Timed out waiting" in output
     assert "retry" in output
+
+
+def test_revert_failure_clears_workspace_state_and_allows_retry(desktop, monkeypatch, capsys):
+    previous_id = "12345678-1234-4abc-8def-123456789abc"
+    (desktop / f"{previous_id}.json").write_text("{}")
+    metadata_path = desktop / "_meta.json"
+    metadata_path.write_text(
+        json.dumps({"entries": [{"id": previous_id, "name": "Existing"}], "appliedId": previous_id})
+    )
+    state = {"workspace": "https://workspace.example", "profile": "chosen-profile"}
+    desktop_setup.configure_claude_desktop(state)
+    selection_path = claude_desktop.APP_DIR / claude_desktop.STATE_FILENAME
+    selection_before = selection_path.read_bytes()
+    profiles_before = {path.name: path.read_bytes() for path in desktop.glob("*.json")}
+    monkeypatch.setattr(state_store, "APP_DIR", state_store.STATE_PATH.parent)
+    state_store.save_state(state)
+
+    # Other agents' cleanup must not touch host configuration.
+    monkeypatch.setattr(cli, "restore_file", lambda *args: False)
+    monkeypatch.setattr(cli, "revert_mcp_configs", lambda state: {})
+    monkeypatch.setattr(cli, "revert_legacy_shared_config", lambda: False)
+    monkeypatch.setattr(cli.claude_agent, "revert_managed_settings", lambda: "unchanged")
+    monkeypatch.setattr(cli.codex_agent, "revert_managed_config", lambda: "unchanged")
+
+    def lock_timeout(handle, *, timeout):
+        raise TimeoutError("Lock is held by another operation")
+
+    with monkeypatch.context() as blocked:
+        blocked.setattr(desktop_config, "acquire_exclusive_file_lock", lock_timeout)
+        assert cli.revert() == 1
+
+    assert state_store.load_state() == {}
+    assert state_store.load_full_state()["workspaces"] == {}
+    assert selection_path.read_bytes() == selection_before
+    assert {path.name: path.read_bytes() for path in desktop.glob("*.json")} == profiles_before
+    assert "ug state cleared" in capsys.readouterr().out
+
+    assert cli.revert() == 0
+    assert not (desktop / f"{claude_desktop.PROFILE_ID}.json").exists()
+    assert not selection_path.exists()
+    assert json.loads(metadata_path.read_text()) == {
+        "entries": [{"id": previous_id, "name": "Existing"}],
+        "appliedId": previous_id,
+    }
+    assert (desktop / f"{previous_id}.json").read_text() == "{}"
+    assert cli.revert() == 0
 
 
 def test_dry_run_does_not_discover_or_create_profiles(desktop, monkeypatch):

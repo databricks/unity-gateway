@@ -76,7 +76,9 @@ is no longer needed; normal CLI URL handling is unchanged.
 
 Files are replaced atomically one at a time with best-effort rollback of their exact
 previous bytes on write failure. This is not a crash-atomic transaction across files.
-If Desktop revert fails, UG keeps its state so the operation can be retried.
+Workspace state is cleared even if Desktop revert fails. Desktop's separate
+previous-selection file is retained on failure, so cleanup can still be retried
+with `ug revert`.
 Profile configure/revert waits at most five seconds for its file lock. A timeout
 does not interrupt the holder or change profile, metadata, or selection-state files.
 

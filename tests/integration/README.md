@@ -355,6 +355,10 @@ They also cover CLI profile labels, workspace switches with a fixed UUID, and
 configure/revert warnings that preserve profile and selection-state files on lock timeout.
 An existing reserved UUID without records is replaced on configure and deleted on revert;
 these remain filesystem component checks.
+CLI revert clears workspace state even when Desktop cleanup fails. A component
+regression verifies that a lock failure preserves Desktop files and selection state,
+then retry restores the previous selection without workspace state. This does not
+establish native Desktop coverage.
 
 Model-source tests require Desktop-only, case-insensitive `\bclaude-` filtering
 instead of copying every catalog entry. Mixed static/discovered lists exclude GPT/OSS
