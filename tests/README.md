@@ -19,6 +19,10 @@ TypeScript event-forwarding and launch-option tests in CI. The existing Claude
 skill-toggle integration journey checks the live recipe payload field across on/off/on.
 See [the mod guide](../docs/claude-mod.md).
 
+The native mod suite also checks the two per-request spawning labels, child isolation,
+request reset, opt-out and native permission forwarding. These are offline hook/render-tree
+checks, not evidence of model compliance or live terminal paint.
+
 The **harness-latest** workflow runs every six hours on `main` and currently covers
 smart routing only.
 It resolves npm's `claude-code@latest`
