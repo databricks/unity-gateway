@@ -40,8 +40,14 @@ retain their agent and workspace markers, including `managed_fixture` when neede
 See [the harness opt-in guide](integration/README.md#opting-into-harness-latest).
 
 CUJ 4's preset journeys check Claude's ON/OFF status band, routing scope, and
-updates after off/on toggles. Checks ignore terminal styling and trailing UI controls;
-offline cases reject stale states, wrong routing scope, and command confirmations.
+updates after off/on toggles, and that the band is hidden after the launch turn and by
+the second turn after each toggle. They also check that the prompt hint row under the
+input ends with `smart router ON` from launch, flips to `OFF` and back to `ON` with each
+toggle, and keeps that state after the band hides. Checks ignore terminal styling and
+trailing UI controls; offline cases reject stale states, wrong routing scope, and command
+confirmations, and keep the band, the hint row, and the toggle reply apart.
+The mod's own tests (`native_claude/mod_tests`) cover the same rules for both toggles
+without a live agent.
 
 Dedicated CUJs reuse `integration/utils` session/terminal mechanics and file-task
 and transcript readers, not its config stubs or pytest fixtures. Prompt/model

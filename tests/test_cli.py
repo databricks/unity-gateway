@@ -23,6 +23,7 @@ from typer.testing import CliRunner
 
 import ucode.cli as cli_mod
 import ucode.databricks as db_mod
+import ucode.managed_files as managed_files
 from ucode.cli import app
 from ucode.databricks import GatewayProbe
 from ucode.managed_config import ManagedConfigResult, normalize_managed_config
@@ -64,6 +65,19 @@ def no_state_writes():
         patch("ucode.agents.opencode.save_state"),
     ):
         yield
+
+
+@pytest.fixture(autouse=True)
+def no_gateway_catalog_fetch(monkeypatch):
+    """Keep plain Claude launches off real auth and the network; an empty catalog falls back."""
+    monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *_args, **_kwargs: "token")
+    monkeypatch.setattr(
+        cli_mod,
+        "list_anthropic_model_catalog",
+        lambda *_args, **_kwargs: db_mod.AnthropicModelCatalog(
+            model_ids=[], model_id_to_display_name={}
+        ),
+    )
 
 
 MINIMAL_STATE = {
@@ -773,9 +787,8 @@ class TestSubcommandRouting:
         assert "Model: system.ai.gpt-5-6-luna" not in output
         assert mock_launch.call_args.args[2] == forwarded_args
 
-    @pytest.mark.parametrize("persisted_provider", [None, "main.default.anthropic"])
-    def test_unmanaged_claude_launch_keeps_native_defaults(self, persisted_provider):
-        with _launch_policy_patches(None, persisted_provider=persisted_provider) as calls:
+    def test_unmanaged_claude_launch_with_saved_provider_keeps_native_defaults(self):
+        with _launch_policy_patches(None, persisted_provider="main.default.anthropic") as calls:
             result = runner.invoke(app, ["claude"])
 
         assert result.exit_code == 0, result.output
@@ -784,10 +797,35 @@ class TestSubcommandRouting:
         assert calls["configure"].call_args.kwargs["picker_catalog"] is None
         assert "_claude_launch_picker_models" not in calls["launch"].call_args.args[1]
         assert "_claude_launch_default_model" not in calls["launch"].call_args.args[1]
-        if persisted_provider:
-            calls["resolve_model"].assert_not_called()
-        else:
-            calls["resolve_model"].assert_called_once()
+        calls["resolve_model"].assert_not_called()
+        calls["launch"].assert_called_once()
+
+    def test_unmanaged_claude_launch_lists_gateway_catalog(self):
+        with _launch_policy_patches(None) as calls:
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
+        calls["list_catalog"].assert_called_once_with("https://example.databricks.com", "token")
+        picker = calls["configure"].call_args.kwargs["picker_catalog"]
+        # The saved family default leads; discovered models follow.
+        assert picker.model_ids == ["databricks-claude-sonnet-4", "main.default.claude-sonnet-5"]
+        launch_state = calls["launch"].call_args.args[1]
+        assert "_claude_launch_picker_models" not in launch_state
+        assert "_claude_launch_default_model" not in launch_state
+        calls["resolve_model"].assert_called_once()
+
+    def test_unmanaged_claude_launch_falls_back_to_native_discovery(self):
+        with _launch_policy_patches(None) as calls:
+            calls["list_catalog"].return_value = db_mod.AnthropicModelCatalog(
+                model_ids=[], model_id_to_display_name={}, error_msg="HTTP 503"
+            )
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
+        assert calls["configure"].call_args.kwargs["picker_catalog"] is None
+        assert "_claude_launch_picker_models" not in calls["launch"].call_args.args[1]
         calls["launch"].assert_called_once()
 
     def test_claude_model_location_replaces_builtin_models(self):
@@ -904,6 +942,51 @@ class TestSubcommandRouting:
         assert calls["configure"].call_args.kwargs["picker_catalog"] is None
         assert calls["configure"].call_args.kwargs["relayed"] is True
         assert "_claude_launch_default_model" not in calls["launch"].call_args.args[1]
+
+    def test_claude_launch_uses_saved_model_location(self):
+        with _launch_policy_patches(None) as calls:
+            calls["state"]["model_locations"] = {"claude": "main.saved"}
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        calls["list_catalog"].assert_called_once_with(
+            calls["state"]["workspace"], "token", parent_schema="main.saved"
+        )
+        assert calls["configure"].call_args.kwargs["parent_schema"] == "main.saved"
+
+    def test_explicit_model_location_overrides_saved_location(self):
+        with _launch_policy_patches(None) as calls:
+            calls["state"]["model_locations"] = {"claude": "main.saved"}
+            result = runner.invoke(app, ["claude", "--model-location", "main.flag"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["configure"].call_args.kwargs["parent_schema"] == "main.flag"
+
+    def test_explicit_provider_overrides_saved_location(self):
+        with _launch_policy_patches(None) as calls:
+            calls["state"]["model_locations"] = {"claude": "main.saved"}
+            result = runner.invoke(app, ["claude", "--provider", "main.default.anthropic"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["configure"].call_args.kwargs["parent_schema"] is None
+        assert calls["configure"].call_args.kwargs["provider"] == "main.default.anthropic"
+
+    def test_explicit_model_location_overrides_saved_provider(self):
+        with _launch_policy_patches(None, persisted_provider="main.default.anthropic") as calls:
+            result = runner.invoke(app, ["claude", "--model-location", "main.flag"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["configure"].call_args.kwargs["parent_schema"] == "main.flag"
+        assert calls["configure"].call_args.kwargs["provider"] is None
+
+    def test_saved_model_location_is_ignored_under_managed_config(self):
+        managed = {"enabled_agents": {"claude": {"model_config": {}}}}
+        with _launch_policy_patches(managed) as calls:
+            calls["state"]["model_locations"] = {"claude": "main.saved"}
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["configure"].call_args.kwargs["parent_schema"] is None
 
     def test_codex_model_location_is_forwarded(self):
         with patch("ucode.cli._launch_tool") as mock_launch:
@@ -1568,10 +1651,16 @@ class TestClaudeModelFlag:
             == "system.ai.claude-opus-4-8"
         )
 
-    @pytest.mark.parametrize("model", ["system.ai.claude-sonnet-4-5", "system.ai.gpt-5-6-luna"])
+    @pytest.mark.parametrize(
+        ("model", "expected_model"),
+        [
+            ("system.ai.claude-sonnet-4-5", "system.ai.claude-sonnet-4-5"),
+            ("system.ai.gpt-5-6-luna", "system.ai.gpt-5-6-luna[1m]"),
+        ],
+    )
     @pytest.mark.parametrize("equals_form", [False, True], ids=["separate", "equals"])
     def test_unmanaged_claude_model_reaches_native_launcher(
-        self, monkeypatch, tmp_path, model, equals_form
+        self, monkeypatch, tmp_path, model, expected_model, equals_form
     ):
         """No workspace policy/catalog: explicit IDs reach native --model, not opus aliases."""
         from ucode.agents import claude
@@ -1604,11 +1693,10 @@ class TestClaudeModelFlag:
         assert "_claude_launch_picker_models" not in calls["launch"].call_args.args[1]
         assert "claude_static_models" not in calls["launch"].call_args.args[1]
         assert calls["configure"].call_args.kwargs["custom_model"] is None
-        calls["list_catalog"].assert_not_called()
         assert len(native_calls) == 1
-        assert native_calls[0][3:] == ["--model", model]
+        assert native_calls[0][3:] == ["--model", expected_model]
         settings = json.loads(native_calls[0][2])
-        assert settings["env"]["ANTHROPIC_MODEL"] == model
+        assert settings["env"]["ANTHROPIC_MODEL"] == expected_model
         for key, value in original_settings["env"].items():
             assert settings["env"][key] == value
         assert json.loads(settings_path.read_text()) == original_settings
@@ -4059,6 +4147,100 @@ class TestConfigureAgentsSelection:
         assert install_calls == ["claude", "codex"]
         assert configured == [["claude", "codex"]]
 
+    def _picker(self, monkeypatch, tool, *, services, answers, text=("main.models",)):
+        state = {**MINIMAL_STATE, "provider_services": {tool: "old.mps.name"}}
+        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *a: "token")
+        monkeypatch.setattr(cli_mod, "list_tool_provider_services", lambda *a: services)
+        saved: list[dict] = []
+        monkeypatch.setattr(cli_mod, "save_state", lambda s: saved.append(dict(s)))
+        asked: list[list[str]] = []
+        replies = iter(answers)
+
+        def _select(prompt, options):
+            asked.append([value for value, _ in options])
+            return next(replies)
+
+        monkeypatch.setattr(cli_mod, "prompt_for_selection", _select)
+        texts = iter(text)
+        monkeypatch.setattr(cli_mod, "prompt_for_text", lambda *a, **k: next(texts))
+        return state, saved, asked
+
+    def test_picker_saves_custom_model_location_and_clears_provider(self, monkeypatch):
+        state, saved, asked = self._picker(
+            monkeypatch, "claude", services=(["a.b.mps"], None), answers=["location"]
+        )
+
+        result = cli_mod._maybe_select_provider_service("claude", state)
+
+        assert asked == [["databricks", "mps", "location"]]
+        assert cli_mod.get_model_location(result, "claude") == "main.models"
+        assert cli_mod.get_provider_service(result, "claude") is None
+        assert saved
+
+    def test_picker_offers_location_when_provider_feature_unavailable(self, monkeypatch):
+        state, _saved, asked = self._picker(
+            monkeypatch,
+            "codex",
+            services=([], "model provider services are not enabled"),
+            answers=["location"],
+        )
+        monkeypatch.setattr(cli_mod, "is_model_provider_feature_unavailable", lambda r: True)
+
+        result = cli_mod._maybe_select_provider_service("codex", state)
+
+        assert asked == [["databricks", "location"]]
+        assert cli_mod.get_model_location(result, "codex") == "main.models"
+
+    def test_picker_reprompts_until_location_is_valid(self, monkeypatch):
+        state, _saved, _asked = self._picker(
+            monkeypatch,
+            "claude",
+            services=(["a.b.mps"], None),
+            answers=["location"],
+            text=("not-a-schema", "a.b.c", "main.models"),
+        )
+
+        result = cli_mod._maybe_select_provider_service("claude", state)
+
+        assert cli_mod.get_model_location(result, "claude") == "main.models"
+
+    def test_picker_cancelled_location_prompt_exits_without_saving(self, monkeypatch):
+        state, saved, _asked = self._picker(
+            monkeypatch, "claude", services=(["a.b.mps"], None), answers=["location"]
+        )
+        monkeypatch.setattr(cli_mod, "prompt_for_text", lambda *a, **k: None)
+
+        with pytest.raises(KeyboardInterrupt):
+            cli_mod._maybe_select_provider_service("claude", state)
+
+        assert saved == []
+
+    def test_picker_databricks_and_mps_clear_saved_location(self, monkeypatch):
+        state, _saved, _asked = self._picker(
+            monkeypatch, "claude", services=(["a.b.mps"], None), answers=["databricks"]
+        )
+        state["model_locations"] = {"claude": "main.old"}
+        result = cli_mod._maybe_select_provider_service("claude", state)
+        assert cli_mod.get_model_location(result, "claude") is None
+        assert cli_mod.get_provider_service(result, "claude") is None
+
+        state, _saved, _asked = self._picker(
+            monkeypatch, "claude", services=(["a.b.mps"], None), answers=["mps", "a.b.mps"]
+        )
+        state["model_locations"] = {"claude": "main.old"}
+        result = cli_mod._maybe_select_provider_service("claude", state)
+        assert cli_mod.get_model_location(result, "claude") is None
+        assert cli_mod.get_provider_service(result, "claude") == "a.b.mps"
+
+    def test_picker_gemini_has_no_custom_location(self, monkeypatch):
+        state, _saved, asked = self._picker(
+            monkeypatch, "gemini", services=(["a.b.g"], None), answers=["databricks"]
+        )
+
+        cli_mod._maybe_select_provider_service("gemini", state)
+
+        assert asked == [["databricks", "mps"]]
+
     def test_provider_picker_gated_by_interactive_path(self, monkeypatch):
         import ucode.cli as cli_mod
 
@@ -6275,3 +6457,58 @@ class TestChildStdoutLaunch:
         captured = capfd.readouterr()
         assert captured.out == '{"result":"child output"}\n'
         assert "Gateway status" in captured.err
+
+
+class TestLaunchWithManagedFilePicker:
+    PICKER_MODELS = {"opus": "system.ai.claude-opus-5-5", "haiku": "system.ai.claude-haiku-4-5"}
+
+    @contextlib.contextmanager
+    def _managed_file_picker(self, monkeypatch):
+        settings = {
+            "modelPicker": {"options": [{"model": "system.ai.claude-opus-5-5"}]},
+            "env": {
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": "system.ai.claude-opus-5-5[1m]",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL": "system.ai.claude-haiku-4-5",
+            },
+        }
+        monkeypatch.delenv(managed_files.SKIP_OS_SETTINGS_ENV, raising=False)
+        with (
+            patch(
+                "ucode.agents.claude._managed_settings_path",
+                return_value=Path("/managed-settings.json"),
+            ),
+            patch("ucode.agents.claude.read_managed_file", return_value=json.dumps(settings)),
+        ):
+            yield
+
+    def test_launch_uses_the_picker_owners_models(self, monkeypatch):
+        monkeypatch.delenv("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY", raising=False)
+        discovered = {"opus": "system.ai.claude-opus-5-5", "fable": "system.ai.claude-fable-5-1"}
+        with self._managed_file_picker(monkeypatch), _launch_policy_patches(None) as calls:
+            calls["state"]["claude_models"] = dict(discovered)
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["shared"].call_args.kwargs["skip_model_discovery"] is True
+        launch_state = calls["configure"].call_args.args[1]
+        assert launch_state["claude_models"] == self.PICKER_MODELS
+        # The picker's models are launch-only; state.json keeps the discovered cache.
+        from ucode import state as state_mod
+
+        assert state_mod._without_managed_overlay(launch_state)["claude_models"] == discovered
+
+    @pytest.mark.parametrize(
+        "args",
+        [["--provider", "bedrock"], ["--model-location", "main.default"]],
+        ids=["provider", "model-location"],
+    )
+    def test_launch_source_ignores_the_picker(self, monkeypatch, args):
+        monkeypatch.delenv("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY", raising=False)
+        discovered = {"opus": "system.ai.claude-opus-5-5", "fable": "system.ai.claude-fable-5-1"}
+        with self._managed_file_picker(monkeypatch), _launch_policy_patches(None) as calls:
+            calls["state"]["claude_models"] = dict(discovered)
+            result = runner.invoke(app, ["claude", *args])
+
+        assert result.exit_code == 0, result.output
+        # The launch's own source supplies the models, so the picker neither seeds nor skips.
+        assert calls["configure"].call_args.args[1]["claude_models"] == discovered

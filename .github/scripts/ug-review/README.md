@@ -75,4 +75,5 @@ treats the PR as untrusted data. Set the repository variables `UG_POLLY_HARNESS`
 
 `.github/scripts/polly-review/summary.py` is adapted from Omnigent (Apache-2.0).
 `tests/test_polly_review.py` covers the workflow contract and the summary helper, not live
-inference, tmux or apt availability, or the proxy resolving Omnigent's dependencies.
+inference. Disposable smoke runs on the protected runner verified the apt tmux install,
+the frozen-lockfile Omnigent install through JFrog, and a posted review.
