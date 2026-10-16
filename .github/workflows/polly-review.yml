@@ -188,9 +188,14 @@ jobs:
           UV_INDEX_DATABRICKS_PYPI_USERNAME: ${{ steps.jfrog.outputs.oidc-user }}
           UV_INDEX_DATABRICKS_PYPI_PASSWORD: ${{ steps.jfrog.outputs.oidc-token }}
           UV_PYTHON_PREFERENCE: system
+        # Install the locked, hashed pins without re-resolving: Omnigent's uv.toml cooldown
+        # needs upload dates, which the JFrog index does not report.
         run: |
           set -euo pipefail
-          uv sync --extra all
+          requirements=omnigent-requirements.txt
+          uv export --frozen --package omnigent --extra all --no-dev -o "$requirements"
+          uv venv --no-config .venv
+          uv pip install --no-config --python .venv -r "$requirements"
           npm install -g "@anthropic-ai/claude-code@$CLAUDE_VERSION" "@openai/codex@$CODEX_VERSION"
 
       - name: Write the gateway profile and Omnigent provider config
