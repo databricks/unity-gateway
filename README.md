@@ -53,6 +53,7 @@ ug opencode
 ug copilot
 ug pi
 ug cursor   # Cursor Agent, MCP-only
+ug cursor app   # Cursor desktop app, MCP-only
 ```
 
 On first launch of a model-backed agent, `ug` prompts for a Databricks

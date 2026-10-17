@@ -17,12 +17,30 @@ whole-file backup.
 
 from __future__ import annotations
 
+import os
+import re
+import shutil
+import subprocess
+import sys
 from pathlib import Path
+from typing import Any
 
 from ucode.config_io import apply_json_mcp_diff, read_json_safe, write_json_file
 from ucode.launcher import exec_or_spawn
+from ucode.os_compatibility import subprocess_cross_os
+
+_DETACHED_POPEN_OPTIONS: dict[str, Any] = (
+    {"creationflags": subprocess.CREATE_NO_WINDOW}
+    if sys.platform == "win32"
+    else {"start_new_session": True}
+)
 
 CURSOR_BINARY = "cursor-agent"
+CURSOR_APP_BINARY = "cursor"
+CURSOR_MACOS_APP_PATHS = (
+    Path("/Applications/Cursor.app"),
+    Path.home() / "Applications" / "Cursor.app",
+)
 CURSOR_CONFIG_DIR = Path.home() / ".cursor"
 CURSOR_MCP_CONFIG_PATH = CURSOR_CONFIG_DIR / "mcp.json"
 
@@ -103,3 +121,83 @@ def launch(state: dict, tool_args: list[str]) -> None:
     convenience wrapper over `cursor-agent` (kept for symmetry with the other
     `ucode <agent>` launchers)."""
     exec_or_spawn([CURSOR_BINARY, *tool_args])
+
+
+_LINE_COL_SUFFIX = re.compile(r"(:\d+){1,2}$")
+_OPEN_WAIT_SECONDS = 10
+
+
+def _absolutize_paths(tool_args: list[str]) -> list[str]:
+    """Resolve path-like args (existing paths, `.`/`..`, and `file:line[:col]`) against
+    the cwd. `open` starts the app with `/` as its cwd, so relative paths would break."""
+    resolved = []
+    for arg in tool_args:
+        if arg.startswith("-"):
+            resolved.append(arg)
+            continue
+        bare = _LINE_COL_SUFFIX.sub("", arg)
+        if arg in (".", "..") or Path(arg).exists() or Path(bare).exists():
+            resolved.append(os.path.abspath(arg))
+        else:
+            resolved.append(arg)
+    return resolved
+
+
+def find_app_launch_argv(tool_args: list[str]) -> list[str] | None:
+    """Return the argv that opens the Cursor desktop app, or None if it isn't installed.
+
+    When any flag is passed (`--new-window`, `--goto`, ...) the `cursor` shell command
+    is preferred on every platform: it is the editor's own CLI, handles flags and
+    relative paths, and reuses a running instance. Without it on macOS, flags go after
+    `open --args` with path-like args made absolute; macOS ignores `--args` when Cursor
+    is already running, so flags may have no effect then. No flags on macOS: `open -a`
+    on the bundle with absolute paths, which returns as soon as the app is launched.
+    Otherwise the `cursor` command is used; `launch_app` starts it detached so it can't
+    hold the terminal."""
+    has_flags = any(arg.startswith("-") for arg in tool_args)
+    binary = shutil.which(CURSOR_APP_BINARY)
+    if has_flags and binary:
+        return [binary, *tool_args]
+    if sys.platform == "darwin":
+        for bundle in CURSOR_MACOS_APP_PATHS:
+            if bundle.exists():
+                args = _absolutize_paths(tool_args)
+                if has_flags:
+                    return ["open", "-a", str(bundle), "--args", *args]
+                return ["open", "-a", str(bundle), *args]
+    if binary:
+        return [binary, *tool_args]
+    return None
+
+
+def launch_app(argv: list[str]) -> None:
+    """Open the Cursor desktop app and return without hanging the terminal.
+
+    The desktop app reads the same ~/.cursor/mcp.json as `cursor-agent`, and the
+    Databricks MCP servers in it run `ug mcp-proxy`, so no env or token wiring is
+    needed here. The process is detached (own session, no stdin/stdout) because the
+    `cursor` shell command can stay attached for as long as the app runs.
+
+    `open` returns quickly, so it is waited on briefly and a non-zero exit raises
+    RuntimeError with its stderr. The `cursor` command is not waited on; failing to
+    start it raises OSError."""
+    is_open = Path(argv[0]).name == "open"
+    proc = subprocess_cross_os.popen(
+        argv,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE if is_open else subprocess.DEVNULL,
+        **_DETACHED_POPEN_OPTIONS,
+    )
+    if not is_open:
+        return
+    try:
+        _, stderr = proc.communicate(timeout=_OPEN_WAIT_SECONDS)
+    except subprocess.TimeoutExpired:
+        return
+    if proc.returncode:
+        detail = (stderr or b"").decode(errors="replace").strip()
+        raise RuntimeError(
+            f"Failed to open the Cursor app (`open` exited {proc.returncode})"
+            + (f": {detail}" if detail else ".")
+        )

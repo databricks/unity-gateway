@@ -3683,6 +3683,47 @@ def test_cursor_launch_uses_unity_gateway_branding():
     assert "Unity Gateway with Cursor" in result.output
 
 
+def test_cursor_app_opens_desktop_app():
+    with (
+        patch("ucode.agents.cursor.find_app_launch_argv", return_value=["cursor", "."]) as find,
+        patch("ucode.agents.cursor.launch_app") as launch_app,
+        patch("ucode.agents.cursor.launch") as launch,
+    ):
+        result = runner.invoke(app, ["cursor", "app", "."])
+
+    assert result.exit_code == 0, result.output
+    find.assert_called_once_with(["."])
+    launch_app.assert_called_once_with(["cursor", "."])
+    launch.assert_not_called()
+
+
+def test_cursor_app_reports_when_not_installed():
+    with (
+        patch("ucode.agents.cursor.find_app_launch_argv", return_value=None),
+        patch("ucode.agents.cursor.launch_app") as launch_app,
+    ):
+        result = runner.invoke(app, ["cursor", "app"])
+
+    assert result.exit_code == 1
+    assert "Cursor desktop app was not found" in " ".join(result.output.split())
+    launch_app.assert_not_called()
+
+
+@pytest.mark.parametrize("exc", [RuntimeError("open exited 1"), OSError("exec failed")])
+def test_cursor_app_launch_failure_reports_error_without_success(exc):
+    with (
+        patch("ucode.agents.cursor.find_app_launch_argv", return_value=["cursor", "."]),
+        patch("ucode.agents.cursor.launch_app", side_effect=exc),
+    ):
+        result = runner.invoke(app, ["cursor", "app", "."])
+
+    assert result.exit_code == 1
+    out = " ".join(result.output.split())
+    assert str(exc) in out
+    assert "Opened the Cursor app" not in out
+    assert "Traceback" not in out
+
+
 @pytest.mark.parametrize(
     "names,expected",
     [
