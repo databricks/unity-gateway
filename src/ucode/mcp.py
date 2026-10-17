@@ -20,6 +20,7 @@ from ucode.config_io import restore_file
 from ucode.constants import MCP_CLEANUP_SCOPES, MCP_USER_SCOPE
 from ucode.databricks import (
     AIGW_MCP_SERVICES_SEGMENT,
+    MCP_SERVICES_WALK_TIMEOUT_REASON,
     MCP_SERVICES_WALK_TIMEOUT_REASONS,
     AuthTokenError,
     PermissionDeniedError,
@@ -494,17 +495,18 @@ def discover_all_mcp_service_names(
     service names into the picker as the walk progresses. `on_error` receives the walk's
     failure/timeout reason (partial results were already streamed via `on_services`)."""
     token = get_databricks_token(workspace, profile)
-    names, reason = list_all_mcp_services(
+    walk = list_all_mcp_services(
         workspace,
         token,
         on_progress=on_progress,
         on_services=on_services,
         cancel_event=cancel_event,
     )
-    raise_for_invalid_access_token(workspace, reason)
+    raise_for_invalid_access_token(workspace, walk.error)
+    reason = walk.error or (MCP_SERVICES_WALK_TIMEOUT_REASON if walk.timed_out else None)
     if reason is not None and on_error is not None:
         on_error(reason)
-    return names
+    return walk.names
 
 
 def _normalize_workspace_title(text: str) -> str:

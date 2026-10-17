@@ -3211,7 +3211,7 @@ def walk_catalog_schemas[T](
     skip_catalogs: frozenset[str] = _UC_FUNCTIONS_SKIP_CATALOGS,
     max_workers: int = _SCHEMA_PROBE_WORKERS,
     cancel_event: threading.Event | None = None,
-    on_incomplete: Callable[[], None] | None = None,
+    on_incomplete: Callable[[bool], None] | None = None,
 ) -> str | None:
     """Discover every user `<catalog>.<schema>` in the workspace and probe each one in parallel.
 
@@ -3224,8 +3224,10 @@ def walk_catalog_schemas[T](
       - `collect(result, done, total)`: handle each probe result as it lands — accumulating,
         de-duping, streaming — where `done`/`total` are the completed and total schema counts.
 
-    `on_incomplete`, if given, is called when the probe phase stopped (deadline or cancel) with
-    schemas left unprobed, so callers can flag partial results without re-checking the clock.
+    `on_incomplete(timed_out)`, if given, is called when the probe phase stopped with schemas left
+    unprobed, so callers can flag partial results without re-checking the clock. `timed_out` is
+    True when the deadline passed and False when `cancel_event` stopped the walk (e.g. the picker
+    closed), so a cancel is not reported as a timeout.
 
     Returns None once the probes run, or a short reason string if there are no catalogs or schemas
     to probe."""
@@ -3304,9 +3306,22 @@ def walk_catalog_schemas[T](
         should_stop=should_stop,
     )
     if not drained and on_incomplete is not None:
-        on_incomplete()
+        on_incomplete(time.monotonic() > deadline)
 
     return None
+
+
+@dataclass(frozen=True)
+class McpServicesWalk:
+    """Result of `list_all_mcp_services`.
+
+    `names`: sorted unique service full names found (possibly partial).
+    `error`: why the walk failed outright (no catalogs, bad token, early deadline); None otherwise.
+    `timed_out`: the deadline cut the probe phase short, so `names` may be incomplete."""
+
+    names: list[str]
+    error: str | None = None
+    timed_out: bool = False
 
 
 def list_all_mcp_services(
@@ -3317,7 +3332,7 @@ def list_all_mcp_services(
     on_progress: Callable[[int, int, int], None] | None = None,
     on_services: Callable[[list[str]], None] | None = None,
     cancel_event: threading.Event | None = None,
-) -> tuple[list[str], str | None]:
+) -> McpServicesWalk:
     """Return sorted unique MCP-service full names across every `<catalog>.<schema>`
     in the workspace. The mcp-services API is one-schema-per-call, so this walks
     catalogs -> schemas -> mcp-services in parallel under a wall-clock budget,
@@ -3334,11 +3349,11 @@ def list_all_mcp_services(
     (single schema)."""
     deadline = time.monotonic() + deadline_seconds
     names: set[str] = set()
-    incomplete = False
+    timed_out = False
 
-    def mark_incomplete() -> None:
-        nonlocal incomplete
-        incomplete = True
+    def mark_incomplete(deadline_passed: bool) -> None:
+        nonlocal timed_out
+        timed_out = deadline_passed
 
     def probe(catalog, schema):
         return list_mcp_services(workspace, token, f"{catalog}.{schema}")
@@ -3352,7 +3367,7 @@ def list_all_mcp_services(
         if on_services is not None and new:
             on_services(sorted(new))
 
-    reason = walk_catalog_schemas(
+    error = walk_catalog_schemas(
         workspace,
         token,
         deadline=deadline,
@@ -3361,12 +3376,14 @@ def list_all_mcp_services(
         cancel_event=cancel_event,
         on_incomplete=mark_incomplete,
     )
-    if reason is not None:
-        return [], reason
-    if not names:
-        return [], MCP_SERVICES_WALK_TIMEOUT_REASON if incomplete else "no MCP services found"
-    # Partial results are still returned, but flagged so callers can say the list is incomplete.
-    return sorted(names), MCP_SERVICES_WALK_TIMEOUT_REASON if incomplete else None
+    if error is not None:
+        return McpServicesWalk([], error=error)
+    # Partial results are still returned, flagged so callers can say the list is incomplete.
+    return McpServicesWalk(
+        sorted(names),
+        error=None if names or timed_out else "no MCP services found",
+        timed_out=timed_out,
+    )
 
 
 def _get_anthropic_models_json(
