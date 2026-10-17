@@ -21,7 +21,6 @@ from ucode.config_io import (
     ToolSpec,
     backup_existing_file,
     deep_merge_dict,
-    mcp_entry_url,
     prune_key_paths,
     read_json_safe,
     write_json_file,
@@ -1075,22 +1074,15 @@ def read_managed_mcp_urls() -> dict[str, str]:
     }
 
 
-def read_user_mcp_urls() -> dict[str, str]:
-    """``{name: url}`` for every server in Claude's user-scope ``mcpServers`` (empty if unreadable).
+def read_user_mcp_names() -> set[str] | None:
+    """Names in Claude's user-scope ``mcpServers``; ``None`` when the config can't be parsed.
 
-    The URL is the entry's own ``url`` (native HTTP) or the ``--url`` argument of a ``ug mcp-proxy``
-    command; ``""`` when the entry carries neither (a developer's own stdio server). Read-only, so ug
-    can tell a developer's hand-added server from its own before picking an entry name."""
+    Read-only, so ug can tell a name is free before picking an entry name."""
     config = _read_claude_config_for_rewrite(claude_mcp_config_path())
-    servers = (config or {}).get("mcpServers")
-    if not isinstance(servers, dict):
-        return {}
-    urls: dict[str, str] = {}
-    for name, entry in servers.items():
-        if not isinstance(entry, dict):
-            continue
-        urls[name] = mcp_entry_url(entry) or ""
-    return urls
+    if config is None:
+        return None
+    servers = config.get("mcpServers")
+    return set(servers) if isinstance(servers, dict) else set()
 
 
 def _register_web_search_mcp(

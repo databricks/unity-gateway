@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from ucode import mcp
-from ucode.agents import claude
+from ucode.agents import claude, codex
 
 WS = "https://example.databricks.com"
 CLAUDE_STATE = {"workspace": WS, "available_tools": ["claude"]}
@@ -1788,19 +1788,14 @@ class TestConfigureMcpFromLocation:
             "configure_client_mcp_server",
             lambda client, name, url, *a, **kw: configured.append((client, name, url)) or [],
         )
-        monkeypatch.setattr(
-            mcp,
-            "remove_client_mcp_server",
-            lambda client, name, *a, **kw: [],
-        )
         monkeypatch.setattr(mcp, "save_state", lambda state: saved_states.append(state.copy()))
 
         assert mcp.configure_mcp_command(location="system.ai") == 0
 
-        assert sorted(c[0] for c in configured) == ["claude", "codex"]
+        assert [c[0] for c in configured] == ["claude", "codex"]
         assert saved_states[-1]["mcp_servers"] == [
             {
-                "name": "github",
+                "name": "system-ai-github",
                 "url": f"{WS}/ai-gateway/mcp-services/system.ai.github",
                 "auth": "proxy",
                 "clients": ["claude", "codex"],
@@ -1889,10 +1884,9 @@ class TestAddMcpCommand:
 
         assert mcp.add_mcp_command(location="system.ai", services={"github"}) == 0
 
-        # The legacy dashed `system-ai-slack` is renamed to `slack` in place (old entry removed).
-        assert removed == [("claude", "system-ai-slack")]
+        assert removed == []
         names = [s["name"] for s in saved_states[-1]["mcp_servers"]]
-        assert names == ["github", "slack"]
+        assert names == ["github", "system-ai-slack"]
 
     def test_empty_services_is_a_noop(self, monkeypatch):
         """`mcp add --names ""` has nothing to add, so it's a no-op that never
@@ -2239,58 +2233,13 @@ class TestConfigureMcpServicesSubset:
             == 0
         )
 
-        # slack removed, gmail added; github is renamed in place (legacy dashed entry removed, leaf
-        # entry added).
-        assert sorted(removed) == [("claude", "system-ai-github"), ("claude", "system-ai-slack")]
-        assert sorted(c[1] for c in configured) == ["github", "gmail"]
+        # slack removed, gmail added, github untouched (entry unchanged).
+        assert removed == [("claude", "system-ai-slack")]
+        assert [c[1] for c in configured] == ["gmail"]
         assert sorted(s["name"] for s in saved_states[-1]["mcp_servers"]) == [
-            "github",
             "gmail",
+            "system-ai-github",
         ]
-
-    def test_failed_rename_is_not_saved_and_the_next_run_recovers(self, monkeypatch):
-        legacy = {
-            "name": "system-ai-github",
-            "url": f"{WS}/ai-gateway/mcp-services/system.ai.github",
-            "auth": "proxy",
-            "clients": ["claude"],
-        }
-        removed: list[tuple[str, str]] = []
-        configured: list[str] = []
-        saved_states: list[dict] = []
-        fail = [True]
-        _stub_location_base(monkeypatch, {**CLAUDE_STATE, "mcp_servers": [legacy]})
-        monkeypatch.setattr(
-            mcp, "list_mcp_services", lambda workspace, token, parent: (["system.ai.github"], None)
-        )
-
-        def configure(client, name, url, *a, **kw):
-            if fail[0]:
-                raise RuntimeError("claude mcp add failed")
-            configured.append(name)
-            return []
-
-        monkeypatch.setattr(mcp, "configure_client_mcp_server", configure)
-        monkeypatch.setattr(
-            mcp,
-            "remove_client_mcp_server",
-            lambda client, name, *a, **kw: removed.append((client, name)) or [],
-        )
-        monkeypatch.setattr(mcp, "save_state", lambda state: saved_states.append(state.copy()))
-
-        # Adding `github` fails after the legacy entry was removed: the error surfaces and ug state
-        # is not rewritten, so it still lists the legacy entry.
-        with pytest.raises(RuntimeError, match="claude mcp add failed"):
-            mcp.configure_mcp_command(location="system.ai")
-        assert removed == [("claude", "system-ai-github")]
-        assert saved_states == []
-
-        # The next run starts from the same state, removes the (already gone) legacy entry again and
-        # registers `github`, so the rename completes with nothing duplicated.
-        fail[0] = False
-        assert mcp.configure_mcp_command(location="system.ai") == 0
-        assert configured == ["github"]
-        assert [s["name"] for s in saved_states[-1]["mcp_servers"]] == ["github"]
 
     def test_full_names_without_location_derive_the_schema(self, monkeypatch):
         configured: list[tuple[str, str, str, dict]] = []
@@ -3282,354 +3231,11 @@ class TestPurgeCrossWorkspaceSkillsEntry:
         assert state["mcp_servers"] == []
 
 
-class TestMcpServiceEntryNames:
-    """Entry names are the service leaf (`exa`), falling back to the dashed full name on a clash."""
-
-    def test_unique_leaf_name_is_used(self):
-        assert mcp.mcp_service_entry_names(["main.default.exa"], WS) == {"main.default.exa": "exa"}
-
-    def test_colliding_leaf_names_fall_back_to_dashed_full_names(self):
-        names = mcp.mcp_service_entry_names(
-            ["main.default.exa", "ml.tools.exa", "main.default.x"], WS
-        )
-        assert names == {
-            "main.default.exa": "main-default-exa",
-            "ml.tools.exa": "ml-tools-exa",
-            "main.default.x": "x",
-        }
-
-    def test_leaf_held_by_another_server_falls_back(self):
-        other = {"name": "exa", "url": f"{WS}/api/2.0/mcp/external/exa"}
-        names = mcp.mcp_service_entry_names(["main.default.exa"], WS, existing_servers=[other])
-        assert names == {"main.default.exa": "main-default-exa"}
-
-    def test_existing_entry_for_the_same_service_is_not_a_clash(self):
-        same = {"name": "exa", "url": mcp.build_mcp_service_url(WS, "main.default.exa")}
-        names = mcp.mcp_service_entry_names(["main.default.exa"], WS, existing_servers=[same])
-        assert names == {"main.default.exa": "exa"}
-
-    def test_normalize_upgrades_legacy_entry_in_place_without_duplicating(self):
-        legacy = {
-            "name": "main-default-exa",
-            "url": mcp.build_mcp_service_url(WS, "main.default.exa"),
-            "auth": "proxy",
-            "clients": ["claude"],
-        }
-        fresh = {**legacy, "name": "exa", "clients": ["codex"]}
-        other = {"name": "databricks-sql", "url": f"{WS}/api/2.0/mcp/sql", "clients": ["claude"]}
-        assert mcp._normalize_mcp_service_entry_names([other, legacy], WS) == [
-            other,
-            {**legacy, "name": "exa"},
-        ]
-        merged = mcp._normalize_mcp_service_entry_names([legacy, fresh], WS)
-        assert merged == [{**legacy, "name": "exa", "clients": ["claude", "codex"]}]
-
-    def test_location_rerun_renames_legacy_entry_to_leaf(self, monkeypatch):
-        """Upgrade: an existing `main-default-exa` entry becomes `exa`; the old one is removed
-        from the agent and nothing is duplicated or orphaned."""
-        legacy = {
-            "name": "main-default-exa",
-            "url": mcp.build_mcp_service_url(WS, "main.default.exa"),
-            "auth": "proxy",
-            "clients": ["claude"],
-        }
-        saved_states: list[dict] = []
-        configured: list[tuple[str, str]] = []
-        removed: list[tuple[str, str]] = []
-        _stub_location_base(monkeypatch, {**CLAUDE_STATE, "mcp_servers": [legacy]})
-        monkeypatch.setattr(
-            mcp, "list_mcp_services", lambda ws, token, parent: (["main.default.exa"], None)
-        )
-        monkeypatch.setattr(
-            mcp,
-            "configure_client_mcp_server",
-            lambda client, name, url, *a, **kw: configured.append((client, name)) or [],
-        )
-        monkeypatch.setattr(
-            mcp,
-            "remove_client_mcp_server",
-            lambda client, name, *a, **kw: removed.append((client, name)) or [],
-        )
-        monkeypatch.setattr(mcp, "save_state", lambda state: saved_states.append(state.copy()))
-
-        assert mcp.configure_mcp_command(location="main.default") == 0
-
-        assert configured == [("claude", "exa")]
-        assert removed == [("claude", "main-default-exa")]
-        assert saved_states[-1]["mcp_servers"] == [{**legacy, "name": "exa"}]
-
-    def test_assigned_leaf_name_is_sticky_when_a_colliding_service_arrives(self):
-        held = {"name": "exa", "url": mcp.build_mcp_service_url(WS, "ml.tools.exa")}
-        names = mcp.mcp_service_entry_names(
-            ["main.default.exa", "ml.tools.exa"], WS, existing_servers=[held]
-        )
-        # `ml.tools.exa` keeps `exa`; the newcomer gets the dashed name. Neither is renamed.
-        assert names == {"ml.tools.exa": "exa", "main.default.exa": "main-default-exa"}
-
-    def test_add_keeps_the_existing_leaf_and_dashes_the_newcomer(self, monkeypatch):
-        existing = {
-            "name": "exa",
-            "url": mcp.build_mcp_service_url(WS, "ml.tools.exa"),
-            "auth": "proxy",
-            "clients": ["claude"],
-        }
-        saved_states: list[dict] = []
-        configured: list[tuple[str, str]] = []
-        removed: list[tuple[str, str]] = []
-        _stub_location_base(monkeypatch, {**CLAUDE_STATE, "mcp_servers": [existing]})
-        monkeypatch.setattr(
-            mcp, "list_mcp_services", lambda ws, token, parent: (["main.default.exa"], None)
-        )
-        monkeypatch.setattr(
-            mcp,
-            "configure_client_mcp_server",
-            lambda client, name, url, *a, **kw: configured.append((client, name)) or [],
-        )
-        monkeypatch.setattr(
-            mcp,
-            "remove_client_mcp_server",
-            lambda client, name, *a, **kw: removed.append((client, name)) or [],
-        )
-        monkeypatch.setattr(mcp, "save_state", lambda state: saved_states.append(state.copy()))
-
-        assert mcp.add_mcp_command(location="main.default", services={"main.default.exa"}) == 0
-
-        assert removed == []
-        assert configured == [("claude", "main-default-exa")]
-        assert sorted(s["name"] for s in saved_states[-1]["mcp_servers"]) == [
-            "exa",
-            "main-default-exa",
-        ]
-
-    def test_unrelated_entry_with_the_leaf_name_is_not_this_service(self):
-        # In ug state or the developer's config, an `exa` for another server is not `main.default.exa`.
-        other = {"name": "exa", "url": mcp.build_mcp_service_url(WS, "other.schema.exa")}
-        hand_named = {"name": "exa"}
-        for held in (other, hand_named):
-            names = mcp.mcp_service_entry_names(["main.default.exa"], WS, existing_servers=[held])
-            assert names == {"main.default.exa": "main-default-exa"}
-
-    def test_normalize_keeps_a_leaf_held_by_a_native_entry_for_another_server(self):
-        legacy = {
-            "name": "main-default-exa",
-            "url": mcp.build_mcp_service_url(WS, "main.default.exa"),
-            "clients": ["claude"],
-        }
-        native = {"name": "exa", "url": "https://other.example.com/mcp"}
-        out = mcp._normalize_mcp_service_entry_names([legacy], WS, foreign_servers=[native])
-        assert out == [legacy]
-
-    def test_location_leaves_a_developers_native_entry_alone(self, monkeypatch):
-        """A hand-added `github` in the developer's Claude config is never overwritten."""
-        configured: list[str] = []
-        _stub_location_base(monkeypatch, {**CLAUDE_STATE})
-        monkeypatch.setattr(
-            mcp.claude, "read_user_mcp_urls", lambda: {"github": "https://example.com/my-github"}
-        )
-        monkeypatch.setattr(
-            mcp, "list_mcp_services", lambda ws, token, parent: (["system.ai.github"], None)
-        )
-        monkeypatch.setattr(
-            mcp,
-            "configure_client_mcp_server",
-            lambda client, name, url, *a, **kw: configured.append(name) or [],
-        )
-        monkeypatch.setattr(mcp, "save_state", lambda state: None)
-
-        assert mcp.configure_mcp_command(location="system.ai") == 0
-
-        assert configured == ["system-ai-github"]
-
-    def test_location_takes_the_leaf_when_the_native_entry_is_the_same_service(self, monkeypatch):
-        configured: list[str] = []
-        _stub_location_base(monkeypatch, {**CLAUDE_STATE})
-        same = mcp.build_mcp_service_url(WS, "system.ai.github")
-        monkeypatch.setattr(mcp.claude, "read_user_mcp_urls", lambda: {"github": same})
-        monkeypatch.setattr(
-            mcp, "list_mcp_services", lambda ws, token, parent: (["system.ai.github"], None)
-        )
-        monkeypatch.setattr(
-            mcp,
-            "configure_client_mcp_server",
-            lambda client, name, url, *a, **kw: configured.append(name) or [],
-        )
-        monkeypatch.setattr(mcp, "save_state", lambda state: None)
-
-        assert mcp.configure_mcp_command(location="system.ai") == 0
-
-        assert configured == ["github"]
-
-    def test_native_servers_skip_ug_owned_names_and_read_both_clients(self, monkeypatch):
-        monkeypatch.setattr(
-            mcp.claude, "read_user_mcp_urls", lambda: {"mine": "u1", "ug-owned": "u2", "bare": ""}
-        )
-        monkeypatch.setattr(mcp.codex, "read_user_mcp_urls", lambda: {"mine": "u3"})
-        native = mcp._native_mcp_servers(["claude", "codex", "gemini"], [{"name": "ug-owned"}])
-        assert native == [
-            {"name": "mine", "url": "u1"},
-            {"name": "bare", "url": None},
-            {"name": "mine", "url": "u3"},
-        ]
-
-    def test_picker_ignores_an_unrelated_entry_with_the_leaf_name(self):
-        other = {"exa": mcp.build_mcp_service_url(WS, "other.schema.exa")}
-        mine = {"exa": mcp.build_mcp_service_url(WS, "main.default.exa")}
-        # Under `mcp add` an unrelated `exa` must not hide the service; its own entry still does.
-        shown = mcp._mcp_service_choice("main.default.exa", {"exa"}, True, None, other)
-        assert shown is not None and shown.value.startswith(mcp.MCP_ADD_PREFIX)
-        assert mcp._mcp_service_choice("main.default.exa", {"exa"}, True, None, mine) is None
-        # In replace mode the unrelated `exa` is no toggle for this service either.
-        replace = mcp._mcp_service_choice("main.default.exa", {"exa"}, False, None, other)
-        assert replace is not None and replace.value.startswith(mcp.MCP_ADD_PREFIX)
-        # A managed `exa` for another server doesn't make this service "managed".
-        assert mcp._mcp_service_choice("main.default.exa", set(), True, {"exa"}, other) is not None
-        assert mcp._mcp_service_choice("main.default.exa", set(), True, {"exa"}, mine) is None
-
-    def test_any_holder_with_a_different_url_makes_the_leaf_a_clash(self):
-        # Claude's hand-added `github` and Codex's `github` for this service share a name.
-        mine = {"name": "github", "url": mcp.build_mcp_service_url(WS, "system.ai.github")}
-        hand = {"name": "github", "url": "https://example.com/my-github"}
-        for order in ([mine, hand], [hand, mine]):
-            names = mcp.mcp_service_entry_names(["system.ai.github"], WS, existing_servers=order)
-            assert names == {"system.ai.github": "system-ai-github"}
-        same = mcp.mcp_service_entry_names(["system.ai.github"], WS, existing_servers=[mine, mine])
-        assert same == {"system.ai.github": "github"}
-
-    def test_picker_keeps_an_unrelated_leaf_entry_as_its_own_toggle(self):
-        other = {"name": "exa", "url": mcp.build_mcp_service_url(WS, "other.schema.exa")}
-        choices = mcp.build_mcp_picker_choices(
-            [], [], [], [other], available_mcp_service_names=["main.default.exa"]
-        )
-        values = [c.value for c in choices]
-        assert f"{mcp.MCP_ADD_PREFIX}{mcp.MCP_SERVICE_SELECTION_PREFIX}main.default.exa" in values
-        # The user's unrelated `exa` is still listed (so replace mode does not drop it).
-        assert "exa" in values
-
-    def test_picker_does_not_repeat_a_service_that_holds_its_leaf(self):
-        mine = {"name": "exa", "url": mcp.build_mcp_service_url(WS, "main.default.exa")}
-        choices = mcp.build_mcp_picker_choices(
-            [], [], [], [mine], available_mcp_service_names=["main.default.exa"]
-        )
-        assert [c.value for c in choices] == ["exa"]
-
-    def test_managed_entry_reuses_the_name_of_a_same_url_user_entry(self, monkeypatch):
-        monkeypatch.setattr(
-            mcp,
-            "_resolve_location_mcp_servers",
-            lambda *a, **k: pytest.fail("must not discover for explicit FQN names"),
-        )
-        legacy = {
-            "name": "system-ai-github",
-            "url": mcp.build_mcp_service_url(WS, "system.ai.github"),
-        }
-        out = mcp._resolve_managed_mcp_servers(
-            {"names": ["system.ai.github"]}, WS, None, ["claude"], [legacy]
-        )
-        assert [s["name"] for s in out] == ["system-ai-github"]
-
-    def test_reconfigure_does_not_inherit_clients_of_an_unrelated_entry(self, monkeypatch):
-        monkeypatch.setattr(
-            mcp, "list_mcp_services", lambda ws, token, parent: (["main.default.exa"], None)
-        )
-        monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "t")
-        unrelated = {
-            "name": "exa",
-            "url": mcp.build_mcp_service_url(WS, "ml.tools.exa"),
-            "auth": "proxy",
-            "clients": ["gemini"],
-        }
-        out = mcp._resolve_location_mcp_servers(WS, None, ["claude"], "main.default", [unrelated])
-        mine = [s for s in out if s["url"].endswith("main.default.exa")]
-        assert [(s["name"], s["clients"]) for s in mine] == [("exa", ["claude"])]
-
-    def test_drop_managed_matches_a_dashed_entry_by_url(self):
-        url = mcp.build_mcp_service_url(WS, "main.default.exa")
-        servers = [{"name": "main-default-exa", "url": url}, {"name": "keep", "url": "k"}]
-        kept = mcp._drop_managed_servers(servers, {"exa"}, {url})
-        assert [s["name"] for s in kept] == ["keep"]
-
-    def test_legacy_entry_renamed_onto_a_managed_name_is_dropped_not_duplicated(self, monkeypatch):
-        """`mcp add` unions the legacy `system-ai-github` back; once renamed to the managed
-        `github` it must be dropped (and removed from the agent), not registered twice."""
-        legacy = {
-            "name": "system-ai-github",
-            "url": mcp.build_mcp_service_url(WS, "system.ai.github"),
-            "auth": "proxy",
-            "clients": ["claude"],
-        }
-        saved_states: list[dict] = []
-        configured: list[str] = []
-        removed: list[tuple[str, str]] = []
-        _stub_location_base(monkeypatch, {**CLAUDE_STATE, "mcp_servers": [legacy]})
-        monkeypatch.setattr(mcp.claude, "read_managed_mcp_urls", lambda: {"github": legacy["url"]})
-        monkeypatch.setattr(mcp.codex, "read_managed_mcp_urls", lambda: {})
-        monkeypatch.setattr(
-            mcp, "list_mcp_services", lambda ws, token, parent: (["system.ai.slack"], None)
-        )
-        monkeypatch.setattr(
-            mcp,
-            "configure_client_mcp_server",
-            lambda client, name, url, *a, **kw: configured.append(name) or [],
-        )
-        monkeypatch.setattr(
-            mcp,
-            "remove_client_mcp_server",
-            lambda client, name, *a, **kw: removed.append((client, name)) or [],
-        )
-        monkeypatch.setattr(mcp, "save_state", lambda state: saved_states.append(state.copy()))
-
-        assert mcp.add_mcp_command(location="system.ai") == 0
-
-        assert configured == ["slack"]
-        assert removed == [("claude", "system-ai-github")]
-        assert [s["name"] for s in saved_states[-1]["mcp_servers"]] == ["slack"]
-
-
-class TestNativeMcpConfigReaders:
-    def test_claude_reads_http_and_proxy_urls(self, tmp_path):
-        mcp.claude.claude_mcp_config_path().write_text(
-            json.dumps(
-                {
-                    "mcpServers": {
-                        "http": {"type": "http", "url": "https://a.example.com/mcp"},
-                        "proxy": {"type": "stdio", "command": "ug", "args": ["--url", "u2"]},
-                        "own": {"type": "stdio", "command": "node", "args": ["x.js"]},
-                    }
-                }
-            )
-        )
-        assert mcp.claude.read_user_mcp_urls() == {
-            "http": "https://a.example.com/mcp",
-            "proxy": "u2",
-            "own": "",
-        }
-
-    def test_codex_reads_http_and_proxy_urls(self):
-        path = mcp.codex.user_mcp_config_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            '[mcp_servers.http]\nurl = "https://a.example.com/mcp"\n'
-            '[mcp_servers.proxy]\ncommand = "ug"\nargs = ["--url", "u2"]\n'
-            '[mcp_servers.own]\ncommand = "node"\n'
-        )
-        assert mcp.codex.read_user_mcp_urls() == {
-            "http": "https://a.example.com/mcp",
-            "proxy": "u2",
-            "own": "",
-        }
-
-    def test_missing_or_unparseable_configs_read_as_empty(self):
-        assert mcp.claude.read_user_mcp_urls() == {}
-        assert mcp.codex.read_user_mcp_urls() == {}
-        mcp.claude.claude_mcp_config_path().write_text("{not json")
-        assert mcp.claude.read_user_mcp_urls() == {}
-
-
 class TestResolveManagedMcpServers:
     def test_location_registers_the_whole_schema(self, monkeypatch):
         captured: dict = {}
 
-        def fake_loc(ws, profile, clients, location, original, services=None, *a, **kw):
+        def fake_loc(ws, profile, clients, location, original, services=None, existing_servers=()):
             captured.update(location=location, services=services, original=original)
             return [{"name": "system-ai-a", "url": "u", "auth": "proxy", "clients": clients}]
 
@@ -3675,39 +3281,6 @@ class TestResolveManagedMcpServers:
             {"names": ["system.ai.github", "system.ai.github"]}, WS, None, ["claude"]
         )
         assert [s["name"] for s in out] == ["github"]
-
-    def test_names_avoid_entries_the_developer_already_has(self, monkeypatch):
-        # A developer's own `github` (e.g. an external connection) must not be overwritten by the
-        # managed fallback; the same service already registered as `github` is not a clash.
-        monkeypatch.setattr(
-            mcp,
-            "_resolve_location_mcp_servers",
-            lambda *a, **k: pytest.fail("must not discover for explicit FQN names"),
-        )
-        mine = {"name": "github", "url": f"{WS}/api/2.0/mcp/external/github"}
-        out = mcp._resolve_managed_mcp_servers(
-            {"names": ["system.ai.github", "system.ai.jira"]}, WS, None, ["claude"], [mine]
-        )
-        assert [s["name"] for s in out] == ["system-ai-github", "jira"]
-        same = {"name": "github", "url": mcp.build_mcp_service_url(WS, "system.ai.github")}
-        out = mcp._resolve_managed_mcp_servers(
-            {"names": ["system.ai.github"]}, WS, None, ["claude"], [same]
-        )
-        assert [s["name"] for s in out] == ["github"]
-
-    def test_location_selector_passes_the_developers_entries_for_clash_checks(self, monkeypatch):
-        seen: dict = {}
-
-        def fake_loc(ws, profile, clients, location, original, services=None, *a, **kw):
-            seen.update(kw)
-            return []
-
-        monkeypatch.setattr(mcp, "_resolve_location_mcp_servers", fake_loc)
-        mine = {"name": "exa", "url": "https://example.com/exa"}
-        mcp._resolve_managed_mcp_servers(
-            {"unity_catalog_location": "system.ai"}, WS, None, ["claude"], [mine]
-        )
-        assert list(seen["foreign_servers"]) == [mine]
 
     def test_malformed_names_are_skipped_with_a_warning(self, monkeypatch):
         # A bare (`github`) or over-qualified (`a.b.c.d`) name isn't a full FQN and can't be
@@ -3760,9 +3333,7 @@ class TestReconcileManagedMcpServers:
         monkeypatch.setattr(
             mcp,
             "_resolve_managed_mcp_servers",
-            lambda selector, ws, profile, clients, *a, **kw: [
-                dict(s, clients=clients) for s in resolved
-            ],
+            lambda selector, ws, profile, clients, *_: [dict(s, clients=clients) for s in resolved],
         )
         monkeypatch.setattr(
             mcp,
@@ -3815,7 +3386,7 @@ class TestReconcileManagedMcpServers:
         monkeypatch.setattr(
             mcp,
             "_resolve_managed_mcp_servers",
-            lambda selector, ws, profile, clients, *a, **kw: (
+            lambda selector, ws, profile, clients, *_: (
                 seen_selector.update(selector)
                 or [dict(s, clients=clients) for s in [{"name": "system-ai-a", "url": "u"}]]
             ),
@@ -3825,37 +3396,6 @@ class TestReconcileManagedMcpServers:
         )
         assert seen_selector == {"unity_catalog_location": "system.ai"}
         assert [s["name"] for s in out] == ["system-ai-a"]
-
-    def test_reconcile_names_managed_servers_around_the_developers_entries(self, monkeypatch):
-        own = {"name": "exa", "url": "https://example.com/exa", "clients": ["claude"]}
-        state = {"workspace": WS, "profile": None, "managed_mcp_servers": [], "mcp_servers": [own]}
-        applied: dict = {}
-        self._wire(
-            monkeypatch,
-            state=state,
-            configured=["claude"],
-            resolved=[],
-            applied=applied,
-            saved={},
-            setup_calls=[],
-        )
-        monkeypatch.setattr(
-            mcp.claude, "read_user_mcp_urls", lambda: {"exa": "x", "hand": "https://h.example.com"}
-        )
-        seen: dict = {}
-
-        def fake_resolve(selector, ws, profile, clients, existing=()):
-            seen["existing"] = list(existing)
-            return []
-
-        monkeypatch.setattr(mcp, "_resolve_managed_mcp_servers", fake_resolve)
-
-        mcp.reconcile_managed_mcp_servers(
-            {"mcp_servers": {"names": ["main.tools.exa"]}}, {"claude"}
-        )
-
-        # The ug entry, plus the native entry ug doesn't own (`exa` is ug's, so it is skipped).
-        assert seen["existing"] == [own, {"name": "hand", "url": "https://h.example.com"}]
 
     def test_reconcile_removes_servers_the_admin_dropped(self, monkeypatch):
         # A config that no longer lists any MCP server clears the previously-registered managed set.
@@ -4391,7 +3931,10 @@ class TestManagedServersAreNotReAdded:
         configured: list[str] = []
         saved_states: list[dict] = []
         _stub_location_base(monkeypatch, {**CLAUDE_STATE})
-        self._stub_managed_files(monkeypatch, claude_urls={"system-ai-github": "managed-url"})
+        self._stub_managed_files(
+            monkeypatch,
+            claude_urls={"system-ai-github": f"{WS}/ai-gateway/mcp-services/system.ai.github"},
+        )
         monkeypatch.setattr(
             mcp,
             "list_mcp_services",
@@ -4823,3 +4366,129 @@ def test_setup_mcp_clients_user_messages_name_ug_not_ucode(monkeypatch, capsys):
         mcp.setup_mcp_clients(state, "Add MCP Servers", require_auth=False, agents={"codex"})
     with pytest.raises(RuntimeError, match="Run `ug configure` first"):
         mcp.setup_mcp_clients({}, "Add MCP Servers")
+
+
+class TestMcpServiceEntryNames:
+    """A service gets its short name only when it is completely free; nothing is ever renamed."""
+
+    @staticmethod
+    def _url(full_name):
+        return mcp.build_mcp_service_url(WS, full_name)
+
+    def _run(self, monkeypatch, services, state_extra=None, location="main.default"):
+        """Run `ug mcp add --location` and return ({name: url} configured, saved servers)."""
+        state = {**CLAUDE_STATE, **(state_extra or {})}
+        saved: list[dict] = []
+        configured: dict[str, str] = {}
+        _stub_location_base(monkeypatch, state)
+        monkeypatch.setattr(
+            mcp, "list_mcp_services", lambda ws, token, parent: (sorted(services), None)
+        )
+        monkeypatch.setattr(
+            mcp,
+            "configure_client_mcp_server",
+            lambda client, name, url, *a, **kw: configured.update({name: url}) or [],
+        )
+        monkeypatch.setattr(mcp, "remove_client_mcp_server", lambda *a, **kw: [])
+        monkeypatch.setattr(mcp, "save_state", lambda s: saved.append(s.copy()))
+        assert mcp.add_mcp_command(location=location, services=set(services)) == 0
+        return configured, (saved[-1]["mcp_servers"] if saved else state.get("mcp_servers"))
+
+    def test_free_leaf_gets_the_short_name(self, monkeypatch):
+        configured, _ = self._run(monkeypatch, {"main.default.exa", "main.default.github"})
+        assert sorted(configured) == ["exa", "github"]
+
+    def test_leaf_taken_in_ug_state_gets_the_dashed_name(self, monkeypatch):
+        held = {"name": "exa", "url": self._url("ml.tools.exa"), "auth": "proxy"}
+        held["clients"] = ["claude"]
+        configured, servers = self._run(monkeypatch, {"main.default.exa"}, {"mcp_servers": [held]})
+        assert list(configured) == ["main-default-exa"]
+        assert held in servers
+
+    def test_leaf_taken_by_a_managed_entry_gets_the_dashed_name(self, monkeypatch):
+        managed = {"name": "exa", "url": f"{WS}/api/2.0/mcp/external/exa", "clients": ["claude"]}
+        configured, _ = self._run(
+            monkeypatch, {"main.default.exa"}, {"managed_mcp_servers": [managed]}
+        )
+        assert list(configured) == ["main-default-exa"]
+
+    def test_same_service_already_managed_is_skipped_not_duplicated(self, monkeypatch):
+        managed = {"name": "exa", "url": self._url("main.default.exa"), "clients": ["claude"]}
+        configured, _ = self._run(
+            monkeypatch, {"main.default.exa"}, {"managed_mcp_servers": [managed]}
+        )
+        assert configured == {}
+
+    def test_leaf_in_native_claude_config_gets_the_dashed_name(self, monkeypatch):
+        # Any URL counts, even the same service registered by hand.
+        path = claude.claude_mcp_config_path()
+        path.write_text(json.dumps({"mcpServers": {"exa": {"url": self._url("main.default.exa")}}}))
+        configured, _ = self._run(monkeypatch, {"main.default.exa"})
+        assert list(configured) == ["main-default-exa"]
+
+    def test_leaf_in_native_codex_config_blocks_a_claude_only_run(self, monkeypatch):
+        codex.user_mcp_config_path().parent.mkdir(parents=True, exist_ok=True)
+        codex.user_mcp_config_path().write_text('[mcp_servers.exa]\nurl = "https://x.test/mcp"\n')
+        configured, _ = self._run(monkeypatch, {"main.default.exa", "main.default.github"})
+        assert sorted(configured) == ["github", "main-default-exa"]
+
+    def test_unreadable_native_config_makes_every_name_dashed(self, monkeypatch):
+        claude.claude_mcp_config_path().write_text("{not json")
+        configured, _ = self._run(monkeypatch, {"main.default.exa"})
+        assert list(configured) == ["main-default-exa"]
+
+    def test_services_sharing_a_leaf_in_one_run_both_get_dashed_names(self, monkeypatch):
+        names = mcp.mcp_service_entry_names(
+            ["main.default.exa", "ml.tools.exa", "main.default.x"], WS
+        )
+        assert names == {
+            "main.default.exa": "main-default-exa",
+            "ml.tools.exa": "ml-tools-exa",
+            "main.default.x": "x",
+        }
+
+    def test_rerun_never_renames_existing_entries(self, monkeypatch):
+        dashed = {
+            "name": "main-default-exa",
+            "url": self._url("main.default.exa"),
+            "auth": "proxy",
+            "clients": ["claude"],
+        }
+        short = {**dashed, "name": "github", "url": self._url("main.default.github")}
+        configured, servers = self._run(
+            monkeypatch,
+            {"main.default.exa", "main.default.github"},
+            {"mcp_servers": [dashed, short]},
+        )
+        assert sorted(s["name"] for s in servers) == ["github", "main-default-exa"]
+        assert set(configured) <= {"github", "main-default-exa"}
+
+    def test_managed_location_services_use_the_same_rule(self, monkeypatch):
+        monkeypatch.setattr(mcp, "get_databricks_token", lambda workspace, profile=None: "token")
+        monkeypatch.setattr(
+            mcp, "list_mcp_services", lambda ws, token, parent: (["main.default.exa"], None)
+        )
+        working = mcp._resolve_managed_mcp_servers(
+            {"unity_catalog_location": "main.default"}, WS, None, ["claude"]
+        )
+        assert [s["name"] for s in working] == ["exa"]
+        held = {"name": "exa", "url": f"{WS}/api/2.0/mcp/external/exa"}
+        working = mcp._resolve_managed_mcp_servers(
+            {"unity_catalog_location": "main.default"}, WS, None, ["claude"], [held]
+        )
+        assert [s["name"] for s in working] == ["main-default-exa"]
+
+    def test_picker_finds_a_service_registered_under_its_short_name(self):
+        urls = {"exa": self._url("main.default.exa")}
+        choice = mcp._mcp_service_choice(
+            "main.default.exa", {"exa"}, additive=False, entry_urls=urls
+        )
+        assert choice.value == "exa" and choice.checked
+        assert mcp._mcp_service_choice("main.default.exa", {"exa"}, True, entry_urls=urls) is None
+
+    def test_picker_ignores_an_unrelated_entry_with_the_leaf_name(self):
+        urls = {"exa": self._url("other.schema.exa")}
+        choice = mcp._mcp_service_choice(
+            "main.default.exa", {"exa"}, additive=False, entry_urls=urls
+        )
+        assert choice.value.startswith(mcp.MCP_ADD_PREFIX)

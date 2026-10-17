@@ -30,7 +30,6 @@ from ucode.config_io import (
     backup_existing_file,
     deep_merge_dict,
     is_dry_run,
-    mcp_entry_url,
     prune_key_paths,
     read_json_safe,
     read_toml_safe,
@@ -867,6 +866,17 @@ def _read_user_config_for_rewrite(path: Path) -> tomlkit.TOMLDocument | None:
         return None
 
 
+def read_user_mcp_names() -> set[str] | None:
+    """Names in Codex's user-scope ``[mcp_servers]``; ``None`` when the config can't be parsed.
+
+    Read-only, so ug can tell a name is free before picking an entry name."""
+    doc = _read_user_config_for_rewrite(user_mcp_config_path())
+    if doc is None:
+        return None
+    servers = doc.get(MANAGED_MCP_CONFIG_KEY)
+    return set(servers) if isinstance(servers, dict) else set()
+
+
 def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
     """Apply ``add``/``remove`` to Codex's user-scope ``[mcp_servers]`` (``~/.codex/config.toml``,
     or under ``$CODEX_HOME``) in a single read-modify-write, instead of one ``codex mcp`` subprocess
@@ -982,27 +992,11 @@ def read_managed_mcp_urls() -> dict[str, str]:
         return {}
     urls: dict[str, str] = {}
     for name, entry in servers.items():
-        url = mcp_entry_url(entry)
-        if url is not None:
-            urls[name] = url
-    return urls
-
-
-def read_user_mcp_urls() -> dict[str, str]:
-    """``{name: url}`` for every server in Codex's user-scope ``[mcp_servers]`` (empty if unreadable).
-
-    The URL is the entry's own ``url`` (native HTTP) or the ``--url`` argument of a ``ug mcp-proxy``
-    command; ``""`` when the entry carries neither (a developer's own server). Read-only, so ug can
-    tell a developer's hand-added server from its own before picking an entry name."""
-    doc = _read_user_config_for_rewrite(user_mcp_config_path())
-    servers = doc.get(MANAGED_MCP_CONFIG_KEY) if doc is not None else None
-    if not isinstance(servers, dict):
-        return {}
-    urls: dict[str, str] = {}
-    for name, entry in servers.items():
-        if not isinstance(entry, dict):
-            continue
-        urls[name] = mcp_entry_url(entry) or ""
+        args = entry.get("args") if isinstance(entry, dict) else None
+        if isinstance(args, list) and "--url" in args:
+            index = args.index("--url")
+            if index + 1 < len(args):
+                urls[name] = str(args[index + 1])
     return urls
 
 
