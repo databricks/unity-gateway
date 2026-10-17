@@ -280,7 +280,7 @@ def ensure_tool_binary_available(tool: str) -> None:
     raise RuntimeError(
         f"{spec['display']} is not installed (`{binary}` was not found on PATH). "
         f"Install it with `npm install -g {spec['package']}` or run "
-        f"`ucode configure` to try automatic installation."
+        f"`ug configure` to try automatic installation."
     )
 
 
@@ -325,7 +325,7 @@ def resolve_launch_model(
     # if model is not specified for codex, then launch with harness's default model.
     if not model and tool != "codex":
         raise RuntimeError(
-            f"No models available for {tool}. Run `ucode configure` to set up your workspace."
+            f"No models available for {tool}. Run `ug configure` to set up your workspace."
         )
     return state, model
 
@@ -681,11 +681,11 @@ def ensure_provider_state(tool: str) -> dict:
     state = load_state()
     workspace = state.get("workspace")
     if not workspace:
-        raise RuntimeError("No workspace configured. Run `ucode configure` first.")
+        raise RuntimeError("No workspace configured. Run `ug configure` first.")
     available_tools = state.get("available_tools") or []
     if tool not in available_tools:
         raise RuntimeError(
             f"{TOOL_SPECS[tool]['display']} is not available on this workspace. "
-            f"Run `ucode configure` to set up your agents."
+            f"Run `ug configure` to set up your agents."
         )
     return state

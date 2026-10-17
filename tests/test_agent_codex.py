@@ -1629,7 +1629,7 @@ class TestCodexLaunch:
         monkeypatch.setattr(codex, "get_databricks_token", lambda *_args, **_kw: "tok")
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
 
-        with pytest.raises(RuntimeError, match="ucode configure --agents codex"):
+        with pytest.raises(RuntimeError, match="ug configure --agents codex"):
             codex.launch({"workspace": WS}, ["update"], options=LaunchOptions())
 
         assert launches == []
