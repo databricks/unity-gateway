@@ -9,6 +9,7 @@ import pytest
 
 from ucode import mcp
 from ucode.agents import claude
+from ucode.databricks import McpServicesWalk
 
 WS = "https://example.databricks.com"
 CLAUDE_STATE = {"workspace": WS, "available_tools": ["claude"]}
@@ -1094,7 +1095,12 @@ class TestConfigureMcpCommand:
         walk_calls: list[str] = []
 
         def fake_walk(
-            workspace, profile=None, on_progress=None, on_services=None, cancel_event=None
+            workspace,
+            profile=None,
+            on_progress=None,
+            on_services=None,
+            cancel_event=None,
+            on_timeout=None,
         ):
             walk_calls.append(workspace)
             if on_services is not None:
@@ -1111,6 +1117,65 @@ class TestConfigureMcpCommand:
         assert [c.value for c in appended] == [
             f"{mcp.MCP_ADD_PREFIX}{mcp.MCP_SERVICE_SELECTION_PREFIX}mycat.myschema.weather"
         ]
+
+    def test_picker_includes_user_mcp_service_alongside_system_ai(self, monkeypatch):
+        """A user's own `main.default.exa` streams into a picker that already shows
+        the `system.ai` list, and a service seen by both lists appears once."""
+        from ucode.ui.interactive_picker import merge_new_choices
+
+        def fake_walk(workspace, profile=None, on_services=None, **kwargs):
+            on_services(["main.default.exa", "system.ai.github"])
+            return ["main.default.exa", "system.ai.github"]
+
+        monkeypatch.setattr(mcp, "discover_all_mcp_service_names", fake_walk)
+        shown = mcp.build_mcp_picker_choices([], [], [], [], ["system.ai.github"], additive=True)
+        loader = mcp._mcp_services_background_loader(WS, None, set(), additive=True)
+        streamed: list = []
+        assert loader(streamed.extend, threading.Event()) is None
+
+        merged = [*shown, *merge_new_choices(shown, streamed)]
+        values = [c.value for c in merged]
+        prefix = f"{mcp.MCP_ADD_PREFIX}{mcp.MCP_SERVICE_SELECTION_PREFIX}"
+        assert sorted(values) == [f"{prefix}main.default.exa", f"{prefix}system.ai.github"]
+
+    def test_walk_timeout_keeps_system_ai_and_warns(self, monkeypatch):
+        """A timed-out walk (flag set on `McpServicesWalk`) streams partial results and warns."""
+        monkeypatch.setattr(mcp, "get_databricks_token", lambda workspace, profile=None: "token")
+
+        def fake_list_all(workspace, token, on_services=None, **kwargs):
+            on_services(["main.default.exa"])
+            return McpServicesWalk(["main.default.exa"], timed_out=True)
+
+        monkeypatch.setattr(mcp, "list_all_mcp_services", fake_list_all)
+        shown = mcp.build_mcp_picker_choices([], [], [], [], ["system.ai.github"], additive=True)
+        loader = mcp._mcp_services_background_loader(WS, None, set(), additive=True)
+        streamed: list = []
+
+        message = loader(streamed.extend, threading.Event())
+
+        assert [c.value for c in streamed] == [
+            f"{mcp.MCP_ADD_PREFIX}{mcp.MCP_SERVICE_SELECTION_PREFIX}main.default.exa"
+        ]
+        assert message is not None and "Timed out" in message
+        assert "ug mcp add --names <catalog.schema.name>" in message
+        assert [c.value for c in shown] == [
+            f"{mcp.MCP_ADD_PREFIX}{mcp.MCP_SERVICE_SELECTION_PREFIX}system.ai.github"
+        ]
+
+    def test_walk_error_degrades_to_system_ai_only(self, monkeypatch):
+        """A non-timeout walk failure (e.g. no catalogs) adds nothing and shows no warning."""
+
+        monkeypatch.setattr(mcp, "get_databricks_token", lambda workspace, profile=None: "token")
+        monkeypatch.setattr(
+            mcp,
+            "list_all_mcp_services",
+            lambda *args, **kwargs: McpServicesWalk([], error="no UC catalogs found"),
+        )
+        loader = mcp._mcp_services_background_loader(WS, None, set(), additive=True)
+        streamed: list = []
+
+        assert loader(streamed.extend, threading.Event()) is None
+        assert streamed == []
 
     def test_mcp_service_choice_known_vs_unknown(self):
         # Unregistered -> an add-choice; already-registered -> a removable toggle in replace

@@ -1704,11 +1704,12 @@ class TestListAllMcpServices:
             ),
         )
 
-        names, reason = db_mod.list_all_mcp_services(WS, "token")
+        walk = db_mod.list_all_mcp_services(WS, "token")
 
-        assert reason is None
+        assert walk.error is None
+        assert not walk.timed_out
         # information_schema is skipped; results are sorted and de-duplicated.
-        assert names == [
+        assert walk.names == [
             "mycat.myschema.news",
             "mycat.myschema.weather",
             "other.ops.pager",
@@ -1726,14 +1727,14 @@ class TestListAllMcpServices:
         )
         progress: list[tuple[int, int, int]] = []
 
-        names, reason = db_mod.list_all_mcp_services(
+        walk = db_mod.list_all_mcp_services(
             WS,
             "token",
             on_progress=lambda done, total, found: progress.append((done, total, found)),
         )
 
-        assert reason is None
-        assert names == ["mycat.a.one", "mycat.b.two"]
+        assert walk.error is None
+        assert walk.names == ["mycat.a.one", "mycat.b.two"]
         # One callback per schema; the total is fixed and done/found climb.
         assert len(progress) == 2
         assert [p[1] for p in progress] == [2, 2]
@@ -1751,20 +1752,162 @@ class TestListAllMcpServices:
             ),
         )
 
-        names, reason = db_mod.list_all_mcp_services(WS, "token")
+        walk = db_mod.list_all_mcp_services(WS, "token")
 
-        assert names == []
-        assert reason == "no user UC catalogs found"
+        assert walk.names == []
+        assert walk.error == "no user UC catalogs found"
 
     def test_returns_reason_when_no_catalogs(self, monkeypatch):
         monkeypatch.setattr(
             db_mod, "_http_get_json", lambda url, token, timeout=30: ({"catalogs": []}, None)
         )
 
-        names, reason = db_mod.list_all_mcp_services(WS, "token")
+        walk = db_mod.list_all_mcp_services(WS, "token")
 
-        assert names == []
-        assert reason == "no UC catalogs found"
+        assert walk.names == []
+        assert walk.error == "no UC catalogs found"
+
+    def test_probes_main_default_first(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            self._fake_http(
+                catalogs=["zeta", "main"],
+                schemas_by_catalog={"zeta": ["default", "x"], "main": ["alpha", "default"]},
+                services_by_schema={},
+            ),
+        )
+        probed: list[str] = []
+        monkeypatch.setattr(
+            db_mod,
+            "list_mcp_services",
+            lambda workspace, token, parent="system.ai": probed.append(parent) or ([], None),
+        )
+
+        real_walk = db_mod.walk_catalog_schemas
+        monkeypatch.setattr(
+            db_mod,
+            "walk_catalog_schemas",
+            lambda *a, **kw: real_walk(*a, **{**kw, "max_workers": 1}),
+        )
+
+        db_mod.list_all_mcp_services(WS, "token")
+
+        # The user's likeliest schema leads, so a deadline cut-off still finds it.
+        assert probed[0] == "main.default"
+
+    def test_flags_partial_results_past_deadline(self, monkeypatch):
+        def slow_walk(workspace, token, *, deadline, probe, collect, on_incomplete, **kwargs):
+            collect((["main.default.exa"], None), 1, 2)
+            while time.monotonic() <= deadline:
+                time.sleep(0.01)
+            on_incomplete(True)
+
+        monkeypatch.setattr(db_mod, "walk_catalog_schemas", slow_walk)
+
+        walk = db_mod.list_all_mcp_services(WS, "token", deadline_seconds=0.05)
+
+        assert walk.names == ["main.default.exa"]
+        assert walk.timed_out
+        assert walk.error is None
+
+    def test_timeout_before_any_probe_sets_timed_out_with_error(self, monkeypatch):
+        """The deadline expiring while listing catalogs/schemas is still flagged as a timeout."""
+
+        def early_timeout_walk(workspace, token, *, on_incomplete, **kwargs):
+            on_incomplete(True)
+            return "deadline exceeded while listing UC schemas"
+
+        monkeypatch.setattr(db_mod, "walk_catalog_schemas", early_timeout_walk)
+
+        walk = db_mod.list_all_mcp_services(WS, "token")
+
+        assert walk.names == []
+        assert walk.timed_out
+        assert walk.error == "deadline exceeded while listing UC schemas"
+
+    def test_cancel_is_incomplete_but_not_a_timeout(self, monkeypatch):
+        def cancelled_walk(workspace, token, *, deadline, probe, collect, on_incomplete, **kwargs):
+            collect((["main.default.exa"], None), 1, 2)
+            on_incomplete(False)
+
+        monkeypatch.setattr(db_mod, "walk_catalog_schemas", cancelled_walk)
+
+        walk = db_mod.list_all_mcp_services(WS, "token")
+
+        assert walk.names == ["main.default.exa"]
+        assert not walk.timed_out
+        assert walk.error is None
+
+    def test_real_walk_flags_timeout_when_probe_blocks_past_deadline(self, monkeypatch):
+        """No `walk_catalog_schemas` stub: the real `_collect_concurrently` returns False
+        because the probe outlives the deadline, which must fire `on_incomplete`."""
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            self._fake_http(
+                catalogs=["main"],
+                schemas_by_catalog={"main": ["fast", "slow"]},
+                services_by_schema={},
+            ),
+        )
+        release = threading.Event()
+
+        def probe(workspace, token, parent="system.ai"):
+            if parent == "main.fast":
+                return (["main.fast.exa"], None)
+            release.wait(timeout=2)
+            return ([], None)
+
+        monkeypatch.setattr(db_mod, "list_mcp_services", probe)
+        try:
+            walk = db_mod.list_all_mcp_services(WS, "token", deadline_seconds=0.3)
+        finally:
+            release.set()
+
+        assert walk.names == ["main.fast.exa"]
+        assert walk.timed_out
+        assert walk.error is None
+
+    def test_real_walk_cancel_is_not_a_timeout(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            self._fake_http(
+                catalogs=["main"],
+                schemas_by_catalog={"main": ["slow"]},
+                services_by_schema={},
+            ),
+        )
+        release = threading.Event()
+        cancel = threading.Event()
+
+        def probe(workspace, token, parent="system.ai"):
+            cancel.set()
+            release.wait(timeout=2)
+            return ([], None)
+
+        monkeypatch.setattr(db_mod, "list_mcp_services", probe)
+        try:
+            walk = db_mod.list_all_mcp_services(WS, "token", cancel_event=cancel)
+        finally:
+            release.set()
+
+        assert not walk.timed_out
+
+    def test_fully_drained_walk_is_not_flagged_even_if_deadline_passes_after(self, monkeypatch):
+        def drained_walk(workspace, token, *, deadline, probe, collect, **kwargs):
+            collect((["main.default.exa"], None), 1, 1)
+            while time.monotonic() <= deadline:
+                time.sleep(0.01)
+
+        monkeypatch.setattr(db_mod, "walk_catalog_schemas", drained_walk)
+
+        walk = db_mod.list_all_mcp_services(WS, "token", deadline_seconds=0.05)
+
+        assert walk.names == ["main.default.exa"]
+        assert not walk.timed_out
+        assert walk.error is None
 
 
 def _foundation_models_payload(names):
