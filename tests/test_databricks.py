@@ -523,7 +523,10 @@ class TestModelTokenLimits:
 # conftest stubs the probe for offline tests; keep the real one for the probe tests below.
 _REAL_CLAUDE_PROBE = db_mod._claude_model_is_callable
 
-_DENIED = "HTTP 403 Forbidden: User does not have permission to use model service 'x'"
+_DENIED = (
+    "HTTP 403 Forbidden: User does not have permission to use model service "
+    "'system.ai.claude-opus-5-5'"
+)
 
 
 class TestUncallableClaudeModels:
@@ -583,13 +586,40 @@ class TestUncallableClaudeModels:
         assert calls == ["system.ai.claude-opus-5-5"]
 
     @pytest.mark.parametrize(
-        "error", ["HTTP 500 Internal Server Error", "network error: timed out", "HTTP 429 Too Many"]
+        "error",
+        [
+            "HTTP 500 Internal Server Error",
+            "network error: timed out",
+            "HTTP 429 Too Many",
+            "HTTP 403 Forbidden: Source IP is blocked by an IP access list",
+            "HTTP 403 Forbidden: Budget limit exceeded for this user",
+            "HTTP 403 Forbidden: OAuth token does not have required scopes",
+        ],
     )
     def test_probe_failure_keeps_current_behavior(self, monkeypatch, error):
         self._listing(monkeypatch, ["system.ai.claude-opus-5-5", "system.ai.claude-opus-4-8"])
         self._post(monkeypatch, set(), error=error)
         claude, *_ = db_mod.discover_model_services(WS, "token")
         assert claude == {"opus": "system.ai.claude-opus-5-5"}
+
+    def test_cache_is_scoped_to_identity(self, monkeypatch):
+        self._listing(monkeypatch, ["system.ai.claude-opus-5-5"])
+        calls = self._post(monkeypatch, set())
+        assert db_mod._claude_model_is_callable(WS, "token-a", "system.ai.claude-opus-5-5")
+        assert db_mod._claude_model_is_callable(WS, "token-a", "system.ai.claude-opus-5-5")
+        assert len(calls) == 1
+        # Same workspace, different identity: must re-probe, and may get a different answer.
+        self._post(monkeypatch, {"system.ai.claude-opus-5-5"})
+        assert db_mod._claude_model_is_callable(WS, "token-a", "system.ai.claude-opus-5-5")
+        assert not db_mod._claude_model_is_callable(WS, "token-b", "system.ai.claude-opus-5-5")
+
+    def test_probe_skipped_when_claude_not_wanted(self, monkeypatch):
+        self._listing(monkeypatch, ["system.ai.claude-opus-5-5", "system.ai.gpt-5-5"])
+        calls = self._post(monkeypatch, {"system.ai.claude-opus-5-5"})
+        claude, codex, *_ = db_mod.discover_model_services(WS, "token", probe_claude=False)
+        assert calls == []
+        assert claude == {"opus": "system.ai.claude-opus-5-5"}
+        assert codex == ["system.ai.gpt-5-5"]
 
     def test_all_denied_keeps_current_behavior(self, monkeypatch):
         self._listing(monkeypatch, ["system.ai.claude-opus-5-5", "system.ai.claude-sonnet-4-6"])

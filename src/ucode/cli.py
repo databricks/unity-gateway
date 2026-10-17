@@ -667,7 +667,7 @@ def configure_shared_state(
         # family only.
         with spinner("Fetching available models..."):
             ms_claude, ms_codex, ms_gemini, ms_oss, ms_reason = discover_model_services(
-                workspace, token
+                workspace, token, probe_claude=want_claude
             )
             if want_claude:
                 claude_models, claude_reason = ms_claude, ms_reason
@@ -1191,6 +1191,14 @@ def _status_default_model(tool: str, state: dict, models: list[str]) -> str | No
     return models[0] if models and tool in ("gemini", "opencode", "kilo", "copilot", "pi") else None
 
 
+_CLAUDE_MODEL_CONSUMERS = ("claude", "opencode", "kilo", "copilot", "pi")
+
+
+def _tools_want_claude(tools: set[str] | None) -> bool:
+    """True when any selected tool consumes the discovered Claude models (None = all tools)."""
+    return tools is None or any(t in tools for t in _CLAUDE_MODEL_CONSUMERS)
+
+
 def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
     """Return a fresh, read-only model inventory and its freshness label."""
     workspace = state.get("workspace")
@@ -1207,7 +1215,11 @@ def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
         with spinner("Refreshing live workspace models..."):
             token = get_databricks_token(workspace, profile)
             claude_models, codex_models, gemini_models, oss_models, shared_reason = (
-                discover_model_services(workspace, token)
+                discover_model_services(
+                    workspace,
+                    token,
+                    probe_claude=_tools_want_claude(tools),
+                )
             )
             reasons: dict[str, str | None] = {}
             if not claude_models:

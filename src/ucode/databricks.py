@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import configparser
 import functools
+import hashlib
 import json
 import logging
 import logging.handlers
@@ -2327,19 +2328,29 @@ def discover_claude_models_unbucketed(workspace: str, token: str) -> tuple[list[
     return [m for m in ids if "claude-" in m.lower()], None
 
 
-# Per-process memo of `_claude_model_is_callable`, keyed by (workspace, model id). Only definite
-# answers are stored; a probe that could not tell is never cached.
-_CLAUDE_CALLABLE_CACHE: dict[tuple[str, str], bool] = {}
+# Per-process memo of `_claude_model_is_callable`, keyed by (workspace, token fingerprint, model id)
+# so a profile/PAT switch on the same workspace never reuses another identity's answer. Only
+# definite answers are stored; a probe that could not tell is never cached.
+_CLAUDE_CALLABLE_CACHE: dict[tuple[str, str, str], bool] = {}
+
+
+def _token_fingerprint(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()[:16]
+
+
+def clear_claude_callable_cache() -> None:
+    _CLAUDE_CALLABLE_CACHE.clear()
 
 
 def _claude_model_is_callable(workspace: str, token: str, model_id: str) -> bool:
-    """False only when the gateway answers a 1-token request with a 403 permission denial.
+    """False only when the gateway answers a 1-token request with an EXECUTE-denial 403.
 
     The model-services listing does not say which services the caller may invoke, so a model the
-    user lacks EXECUTE on still shows up. Any other outcome (success, OAuth-scope 403,
-    5xx, network error) returns True: an inconclusive probe must keep today's behavior.
+    user lacks EXECUTE on still shows up. Any other outcome (success, OAuth-scope 403, IP-ACL /
+    budget / policy 403, 5xx, network error) returns True: an inconclusive probe must keep
+    today's behavior.
     """
-    key = (workspace, model_id)
+    key = (workspace, _token_fingerprint(token), model_id)
     cached = _CLAUDE_CALLABLE_CACHE.get(key)
     if cached is not None:
         return cached
@@ -2351,7 +2362,7 @@ def _claude_model_is_callable(workspace: str, token: str, model_id: str) -> bool
     )
     if reason is None:
         callable_ = True
-    elif _looks_like_permission_failure(reason) and not _looks_like_scope_failure(reason):
+    elif _looks_like_execute_denial(reason):
         callable_ = False
     else:
         return True
@@ -2382,7 +2393,7 @@ def _drop_uncallable_claude_models(
 
 
 def discover_model_services(
-    workspace: str, token: str
+    workspace: str, token: str, *, probe_claude: bool = True
 ) -> tuple[dict[str, str], list[str], list[str], list[str], str | None]:
     """Discover models via UC model-services and bucket them by family name.
 
@@ -2394,6 +2405,9 @@ def discover_model_services(
     - ``codex_models`` is the list of ``system.ai.*gpt-*`` ids, newest first.
     - ``gemini_models`` is the list of ``system.ai.*gemini-*`` ids, newest first.
     - ``oss_models`` is the list of OSS-model ``system.ai.*`` ids.
+
+    ``probe_claude`` gates the billed 1-token callability probes used to skip Claude models the
+    user cannot call; pass False when no Claude agent is wanted (newest-per-family is used).
 
     ``reason`` is None on success, else explains why nothing was found. Family
     bucketing is by name substring because the model-services API does not
@@ -2411,7 +2425,10 @@ def discover_model_services(
         )
         if candidates:
             claude_candidates[family] = candidates
-    claude_models = _drop_uncallable_claude_models(workspace, token, claude_candidates)
+    if probe_claude:
+        claude_models = _drop_uncallable_claude_models(workspace, token, claude_candidates)
+    else:
+        claude_models = {family: models[0] for family, models in claude_candidates.items()}
 
     codex_models = sorted([m for m in ids if "gpt-" in m], key=model_version_sort_key)
     gemini_models = sorted([m for m in ids if "gemini-" in m], key=model_version_sort_key)
@@ -3736,6 +3753,21 @@ def _looks_like_scope_failure(reason: str) -> bool:
 
 def _looks_like_permission_failure(reason: str) -> bool:
     return "HTTP 403" in reason
+
+
+def _looks_like_execute_denial(reason: str) -> bool:
+    """True only for the gateway's model-service EXECUTE denial.
+
+    Real wording: "User does not have permission to use model service 'system.ai.claude-opus-5-5'".
+    Other 403s (IP ACL, budget, policy, OAuth scope) say nothing about this model, so they are
+    "unknown" and must not drop a family.
+    """
+    lowered = reason.lower()
+    return (
+        "http 403" in lowered
+        and "permission to use model service" in lowered
+        and not _looks_like_scope_failure(reason)
+    )
 
 
 CODING_AGENT_RECOMMEND_MODEL_PATH = "/api/ai-gateway/v2/coding-agent-configs:recommendModel"
