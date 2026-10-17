@@ -1987,7 +1987,7 @@ def setup_mcp_clients(
     """
     workspace = state.get("workspace")
     if not workspace:
-        raise RuntimeError("Workspace is not configured. Run `ucode configure` first.")
+        raise RuntimeError("Workspace is not configured. Run `ug configure` first.")
 
     purge_cross_workspace_mcp_residue(state, workspace)
 
@@ -2003,12 +2003,12 @@ def setup_mcp_clients(
         if missing:
             raise RuntimeError(
                 f"Requested agent(s) not configured for MCP: {', '.join(missing)}. "
-                f"Configure them first with `ucode configure --agents {','.join(missing)}`."
+                f"Configure them first with `ug configure --agents {','.join(missing)}`."
             )
         clients = [client for client in clients if client in agents]
     if not clients:
         raise RuntimeError(
-            "No configured MCP-capable coding agents are installed. Run `ucode configure` "
+            "No configured MCP-capable coding agents are installed. Run `ug configure` "
             "for Codex, Claude, Gemini, OpenCode, or GitHub Copilot CLI first."
         )
     configured_tools = set(state.get("available_tools") or [])
@@ -2027,7 +2027,7 @@ def setup_mcp_clients(
         print_note(f"{action_note}: {client_names}")
     for client in missing_clients:
         print_warning(
-            f"{MCP_CLIENTS[client]['display']} is configured in ucode but not installed; "
+            f"{MCP_CLIENTS[client]['display']} is configured in ug but not installed; "
             "skipping MCP config."
         )
     return workspace, profile, clients
@@ -3094,7 +3094,7 @@ def _print_skills_summary(entry: dict) -> None:
             print_kv(f"{display} URL", build_skills_mcp_url(workspace, locations))
             print_kv(f"{display} tools", _skills_tools_description(locations))
     print_note(
-        "Run `ucode <agent>` to use the skills MCP. For existing sessions, "
+        "Run `ug <agent>` to use the skills MCP. For existing sessions, "
         "restart the agent for the skills to take effect."
     )
 

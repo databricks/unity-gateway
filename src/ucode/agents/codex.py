@@ -1373,7 +1373,7 @@ def launch(
     if not profile_doc:
         raise RuntimeError(
             f"Cannot launch Codex with the ucode profile because {CODEX_CONFIG_PATH} "
-            "is missing or empty. Run `ucode configure --agents codex` first."
+            "is missing or empty. Run `ug configure --agents codex` first."
         )
     _set_provider_header(profile_doc, provider)
     _set_parent_schema_header(profile_doc, parent_schema if not provider else None)
