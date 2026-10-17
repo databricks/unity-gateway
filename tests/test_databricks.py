@@ -559,7 +559,7 @@ class TestUncallableClaudeModels:
             ],
         )
         self._post(monkeypatch, {"system.ai.claude-opus-5-5"})
-        claude, *_ = db_mod.discover_model_services(WS, "token")
+        claude, *_ = db_mod.discover_model_services(WS, "token", probe_claude=True)
         assert claude == {
             "opus": "system.ai.claude-opus-4-8",
             "sonnet": "system.ai.claude-sonnet-4-6",
@@ -568,7 +568,7 @@ class TestUncallableClaudeModels:
     def test_family_with_no_callable_model_is_dropped(self, monkeypatch):
         self._listing(monkeypatch, ["system.ai.claude-opus-5-5", "system.ai.claude-sonnet-4-6"])
         self._post(monkeypatch, {"system.ai.claude-opus-5-5"})
-        claude, *_ = db_mod.discover_model_services(WS, "token")
+        claude, *_ = db_mod.discover_model_services(WS, "token", probe_claude=True)
         assert claude == {"sonnet": "system.ai.claude-sonnet-4-6"}
         from ucode.agents import claude as claude_agent
 
@@ -579,7 +579,7 @@ class TestUncallableClaudeModels:
     def test_accessible_models_unaffected_and_cached(self, monkeypatch):
         self._listing(monkeypatch, ["system.ai.claude-opus-5-5", "system.ai.claude-opus-4-8"])
         calls = self._post(monkeypatch, set())
-        claude, *_ = db_mod.discover_model_services(WS, "token")
+        claude, *_ = db_mod.discover_model_services(WS, "token", probe_claude=True)
         assert claude == {"opus": "system.ai.claude-opus-5-5"}
         assert calls == ["system.ai.claude-opus-5-5"]
         assert db_mod._claude_model_is_callable(WS, "token", "system.ai.claude-opus-5-5")
@@ -599,13 +599,12 @@ class TestUncallableClaudeModels:
     def test_probe_failure_keeps_current_behavior(self, monkeypatch, error):
         self._listing(monkeypatch, ["system.ai.claude-opus-5-5", "system.ai.claude-opus-4-8"])
         self._post(monkeypatch, set(), error=error)
-        claude, *_ = db_mod.discover_model_services(WS, "token")
+        claude, *_ = db_mod.discover_model_services(WS, "token", probe_claude=True)
         assert claude == {"opus": "system.ai.claude-opus-5-5"}
 
     def test_cache_is_scoped_to_identity(self, monkeypatch):
         self._listing(monkeypatch, ["system.ai.claude-opus-5-5"])
         calls = self._post(monkeypatch, set())
-        assert db_mod._claude_model_is_callable(WS, "token-a", "system.ai.claude-opus-5-5")
         assert db_mod._claude_model_is_callable(WS, "token-a", "system.ai.claude-opus-5-5")
         assert len(calls) == 1
         # Same workspace, different identity: must re-probe, and may get a different answer.
@@ -621,14 +620,35 @@ class TestUncallableClaudeModels:
         assert claude == {"opus": "system.ai.claude-opus-5-5"}
         assert codex == ["system.ai.gpt-5-5"]
 
-    def test_all_denied_keeps_current_behavior(self, monkeypatch):
+    def test_all_denied_omits_families(self, monkeypatch):
         self._listing(monkeypatch, ["system.ai.claude-opus-5-5", "system.ai.claude-sonnet-4-6"])
         self._post(monkeypatch, {"system.ai.claude-opus-5-5", "system.ai.claude-sonnet-4-6"})
+        claude, *_ = db_mod.discover_model_services(WS, "token", probe_claude=True)
+        assert claude == {}
+
+    def test_probing_is_opt_in(self, monkeypatch):
+        self._listing(monkeypatch, ["system.ai.claude-opus-5-5"])
+        calls = self._post(monkeypatch, {"system.ai.claude-opus-5-5"})
         claude, *_ = db_mod.discover_model_services(WS, "token")
-        assert claude == {
-            "opus": "system.ai.claude-opus-5-5",
-            "sonnet": "system.ai.claude-sonnet-4-6",
-        }
+        assert calls == []
+        assert claude == {"opus": "system.ai.claude-opus-5-5"}
+
+    def test_probe_capped_per_family(self, monkeypatch):
+        models = [f"system.ai.claude-opus-{v}" for v in ("5-5", "5-4", "5-3", "5-2")]
+        self._listing(monkeypatch, models)
+        calls = self._post(monkeypatch, set(models))
+        claude, *_ = db_mod.discover_model_services(WS, "token", probe_claude=True)
+        assert len(calls) == 2
+        # Candidates past the cap are unprobed (inconclusive), so the next one is kept.
+        assert claude == {"opus": "system.ai.claude-opus-5-3"}
+
+    def test_deadline_keeps_remaining_candidates(self, monkeypatch):
+        self._listing(monkeypatch, ["system.ai.claude-opus-5-5", "system.ai.claude-opus-4-8"])
+        calls = self._post(monkeypatch, {"system.ai.claude-opus-5-5"})
+        monkeypatch.setattr(db_mod, "_CLAUDE_PROBE_DEADLINE", 0.0)
+        claude, *_ = db_mod.discover_model_services(WS, "token", probe_claude=True)
+        assert calls == []
+        assert claude == {"opus": "system.ai.claude-opus-5-5"}
 
 
 class TestDiscoverModelServices:

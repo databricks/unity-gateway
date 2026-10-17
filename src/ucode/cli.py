@@ -6,7 +6,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from contextlib import contextmanager, redirect_stdout
 from enum import StrEnum
 from importlib import metadata
@@ -620,14 +620,7 @@ def configure_shared_state(
     else:
         print_warning(f"Model service: {model_service_probe.detail}")
 
-    want_claude = (
-        fetch_all
-        or "claude" in tools
-        or "opencode" in tools
-        or "kilo" in tools
-        or "copilot" in tools
-        or "pi" in tools
-    )
+    want_claude = fetch_all or _tools_want_claude(tools)
     want_gemini = (
         fetch_all or "gemini" in tools or "opencode" in tools or "kilo" in tools or "pi" in tools
     )
@@ -1194,7 +1187,7 @@ def _status_default_model(tool: str, state: dict, models: list[str]) -> str | No
 _CLAUDE_MODEL_CONSUMERS = ("claude", "opencode", "kilo", "copilot", "pi")
 
 
-def _tools_want_claude(tools: set[str] | None) -> bool:
+def _tools_want_claude(tools: Collection[str] | None) -> bool:
     """True when any selected tool consumes the discovered Claude models (None = all tools)."""
     return tools is None or any(t in tools for t in _CLAUDE_MODEL_CONSUMERS)
 

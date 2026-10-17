@@ -2334,6 +2334,11 @@ def discover_claude_models_unbucketed(workspace: str, token: str) -> tuple[list[
 _CLAUDE_CALLABLE_CACHE: dict[tuple[str, str, str], bool] = {}
 
 
+_CLAUDE_PROBE_TIMEOUT = 10
+_CLAUDE_PROBE_MAX_CANDIDATES = 2  # newest N per family; a deeper fallback is left unprobed
+_CLAUDE_PROBE_DEADLINE = 15.0  # overall seconds across all families
+
+
 def _token_fingerprint(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()[:16]
 
@@ -2342,7 +2347,9 @@ def clear_claude_callable_cache() -> None:
     _CLAUDE_CALLABLE_CACHE.clear()
 
 
-def _claude_model_is_callable(workspace: str, token: str, model_id: str) -> bool:
+def _claude_model_is_callable(
+    workspace: str, token: str, model_id: str, *, timeout: int = _CLAUDE_PROBE_TIMEOUT
+) -> bool:
     """False only when the gateway answers a 1-token request with an EXECUTE-denial 403.
 
     The model-services listing does not say which services the caller may invoke, so a model the
@@ -2358,7 +2365,7 @@ def _claude_model_is_callable(workspace: str, token: str, model_id: str) -> bool
         f"{workspace_origin(workspace)}/ai-gateway/anthropic/v1/messages",
         token,
         {"model": model_id, "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]},
-        timeout=10,
+        timeout=timeout,
     )
     if reason is None:
         callable_ = True
@@ -2375,25 +2382,36 @@ def _drop_uncallable_claude_models(
 ) -> dict[str, str]:
     """Pick the newest callable model per Claude family; drop families with none.
 
-    Families are probed in parallel, newest candidate first, stopping at the first callable one. If
-    no family has a callable model (e.g. the probe itself is failing), fall back to the newest
-    model per family so behavior matches the unprobed path.
+    Families are probed in parallel, newest candidate first, stopping at the first callable one.
+    Probing is bounded: at most ``_CLAUDE_PROBE_MAX_CANDIDATES`` candidates per family and an
+    overall ``_CLAUDE_PROBE_DEADLINE``. Anything not probed in time is inconclusive and kept, so the
+    result matches the unprobed path. A family whose probed candidates were all definitively
+    EXECUTE-denied is omitted rather than defaulted to a model we know is denied.
     """
-    newest = {family: models[0] for family, models in candidates.items()}
     if not candidates:
-        return newest
+        return {}
+    deadline = time.monotonic() + _CLAUDE_PROBE_DEADLINE
 
     def pick(models: list[str]) -> str | None:
-        return next((m for m in models if _claude_model_is_callable(workspace, token, m)), None)
+        for model in models[:_CLAUDE_PROBE_MAX_CANDIDATES]:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return model  # out of time: inconclusive, keep
+            if _claude_model_is_callable(
+                workspace, token, model, timeout=max(1, min(_CLAUDE_PROBE_TIMEOUT, int(remaining)))
+            ):
+                return model
+        if len(models) > _CLAUDE_PROBE_MAX_CANDIDATES:
+            return models[_CLAUDE_PROBE_MAX_CANDIDATES]  # beyond the probe cap: unprobed, keep
+        return None
 
     with ThreadPoolExecutor(max_workers=len(candidates)) as pool:
         picks = dict(zip(candidates, pool.map(pick, candidates.values()), strict=True))
-    chosen = {family: model for family, model in picks.items() if model}
-    return chosen or newest
+    return {family: model for family, model in picks.items() if model}
 
 
 def discover_model_services(
-    workspace: str, token: str, *, probe_claude: bool = True
+    workspace: str, token: str, *, probe_claude: bool = False
 ) -> tuple[dict[str, str], list[str], list[str], list[str], str | None]:
     """Discover models via UC model-services and bucket them by family name.
 
@@ -2407,7 +2425,8 @@ def discover_model_services(
     - ``oss_models`` is the list of OSS-model ``system.ai.*`` ids.
 
     ``probe_claude`` gates the billed 1-token callability probes used to skip Claude models the
-    user cannot call; pass False when no Claude agent is wanted (newest-per-family is used).
+    user cannot call; opt-in, pass True only when a Claude agent is wanted. A family whose candidates are all
+    denied is omitted.
 
     ``reason`` is None on success, else explains why nothing was found. Family
     bucketing is by name substring because the model-services API does not
