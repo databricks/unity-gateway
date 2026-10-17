@@ -1074,6 +1074,17 @@ def read_managed_mcp_urls() -> dict[str, str]:
     }
 
 
+def read_user_mcp_names() -> set[str] | None:
+    """Names in Claude's user-scope ``mcpServers``; ``None`` when the config can't be parsed.
+
+    Read-only, so ug can tell a name is free before picking an entry name."""
+    config = _read_claude_config_for_rewrite(claude_mcp_config_path())
+    if config is None:
+        return None
+    servers = config.get("mcpServers")
+    return set(servers) if isinstance(servers, dict) else set()
+
+
 def _register_web_search_mcp(
     workspace: str,
     search_model: str,

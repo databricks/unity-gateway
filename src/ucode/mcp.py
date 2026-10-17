@@ -7,7 +7,8 @@ import re
 import shutil
 import subprocess
 import threading
-from collections.abc import Callable
+from collections import Counter
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 from urllib.parse import urlparse
@@ -644,8 +645,79 @@ def _server_choice(name: str, checked: bool, title: str | None = None) -> questi
     )
 
 
+def _native_mcp_names() -> set[str] | None:
+    """Names in the developer's own Claude and Codex MCP config; ``None`` if either can't be parsed."""
+    names: set[str] = set()
+    for reader in (claude.read_user_mcp_names, codex.read_user_mcp_names):
+        found = reader()
+        if found is None:
+            return None
+        names |= found
+    return names
+
+
+def mcp_service_entry_names(
+    full_names: Iterable[str], workspace: str, existing_servers: Iterable[dict] = ()
+) -> dict[str, str]:
+    """Map each MCP service full name (`<cat>.<schema>.<id>`) to its agent entry name.
+
+    A service already registered in ``existing_servers`` (ug state, managed) keeps that entry's
+    name, so nothing is ever renamed. A new service gets its leaf (`exa` for `main.default.exa`)
+    only when the name is completely free: no existing entry, no entry in the developer's native
+    Claude/Codex config (any URL), no other service in ``full_names`` with the same leaf, and the
+    native config was readable. Otherwise it gets the dashed full name (`main-default-exa`; agent
+    CLIs reject dots in names)."""
+    unique = sorted(set(full_names))
+    leaf_counts = Counter(full_name.rsplit(".", 1)[-1] for full_name in unique)
+    name_by_url: dict[str, str] = {}
+    taken: set[str] = set()
+    for server in existing_servers:
+        if name := _server_name(server):
+            taken.add(name)
+            if isinstance(server.get("url"), str):
+                name_by_url.setdefault(server["url"], name)
+    native = (
+        _native_mcp_names()
+        if any(build_mcp_service_url(workspace, n) not in name_by_url for n in unique)
+        else set()
+    )
+    names: dict[str, str] = {}
+    for full_name in unique:
+        leaf = full_name.rsplit(".", 1)[-1]
+        if (url := build_mcp_service_url(workspace, full_name)) in name_by_url:
+            names[full_name] = name_by_url[url]
+        elif native is not None and leaf_counts[leaf] == 1 and leaf not in taken | native:
+            names[full_name] = leaf
+        else:
+            names[full_name] = full_name.replace(".", "-")
+    return names
+
+
+def _mcp_service_selection_names(
+    selections: Iterable[str], workspace: str, existing_servers: Iterable[dict]
+) -> dict[str, str]:
+    """Entry names for the MCP-service selections in ``selections``, decided as one set."""
+    prefix = MCP_SERVICE_SELECTION_PREFIX
+    full_names = [s.removeprefix(prefix) for s in selections if s.startswith(prefix)]
+    return mcp_service_entry_names([n for n in full_names if n], workspace, existing_servers)
+
+
 def _add_choice(selection: str, title: str) -> questionary.Choice:
     return questionary.Choice(title=title, value=f"{MCP_ADD_PREFIX}{selection}")
+
+
+def _mcp_service_holder(
+    name: str, names: set[str], entry_urls: dict[str, str | None]
+) -> str | None:
+    """Entry name in ``names`` that registers MCP service ``name`` (leaf or dashed), else None.
+
+    An entry counts only if its recorded URL is this service's, so an unrelated `exa` that merely
+    shares the leaf does not (an entry with no recorded URL is trusted)."""
+    for candidate in (name.replace(".", "-"), name.rsplit(".", 1)[-1]):
+        url = entry_urls.get(candidate)
+        if candidate in names and (url is None or url.endswith(f"/{name}")):
+            return candidate
+    return None
 
 
 def _mcp_service_choice(
@@ -653,6 +725,7 @@ def _mcp_service_choice(
     known_names: set[str],
     additive: bool,
     managed_names: set[str] | None = None,
+    entry_urls: dict[str, str | None] | None = None,
 ) -> questionary.Choice | None:
     """Picker choice for one MCP-service full name (`<catalog>.<schema>.<id>`), or None to hide it.
 
@@ -661,11 +734,11 @@ def _mcp_service_choice(
     shows rows you can act on, so two kinds are hidden: a managed service (never ug's to add or
     remove) and, under `mcp add`, an already-configured one (nothing to add). Replace mode still
     lists ug's own as a removable toggle; an unregistered service is an add-choice."""
-    registered_as = name.replace(".", "-")
+    urls = entry_urls or {}
     display_title = f"MCP: {name}"
-    if registered_as in (managed_names or set()):
+    if _mcp_service_holder(name, managed_names or set(), urls) is not None:
         return None
-    if registered_as in known_names:
+    if (registered_as := _mcp_service_holder(name, known_names, urls)) is not None:
         return None if additive else _server_choice(registered_as, True, display_title)
     return _add_choice(f"{MCP_SERVICE_SELECTION_PREFIX}{name}", display_title)
 
@@ -680,6 +753,7 @@ def build_mcp_picker_choices(
     available_uc_functions_servers: list[dict] | None = None,
     additive: bool = False,
     managed_names: set[str] | None = None,
+    entry_urls: dict[str, str | None] | None = None,
 ) -> list[questionary.Choice | questionary.Separator]:
     original_by_name = _servers_by_name(original_servers)
     managed = managed_names or set()
@@ -711,8 +785,11 @@ def build_mcp_picker_choices(
         # Picker shows the dotted UC name; state/agents store the dashed form
         # (see resolver). The shared helper is also used by the background walk that
         # streams more services in, so up-front and streamed rows match exactly.
-        push(_mcp_service_choice(name, known_names, additive, managed))
-        displayed_names.add(name.replace(".", "-"))
+        push(_mcp_service_choice(name, known_names, additive, managed, entry_urls))
+        # Only the entry this service holds is represented by its row.
+        held = _mcp_service_holder(name, known_names, entry_urls or {})
+        if held is not None:
+            displayed_names.add(held)
 
     for name in available_external_names:
         display_title = f"Connection: {name}"
@@ -810,6 +887,7 @@ def prompt_for_mcp_server_choices(
     managed_names: set[str] | None = None,
     background_loader: Callable[[Callable[[list[questionary.Choice]], None], threading.Event], None]
     | None = None,
+    entry_urls: dict[str, str | None] | None = None,
 ) -> list[str] | None | _Back:
     """Show the MCP server picker. Returns the list of selected values, `None`
     if cancelled (Ctrl-C), or `_BACK` if `allow_back` and the user pressed Left
@@ -839,6 +917,7 @@ def prompt_for_mcp_server_choices(
             available_uc_functions_servers,
             additive=additive,
             managed_names=managed_names,
+            entry_urls=entry_urls,
         ),
         style=picker_style(),
         instruction=instruction,
@@ -881,7 +960,11 @@ def _is_app_mcp_server(server: dict) -> bool:
 
 
 def _resolve_managed_mcp_servers(
-    selector: dict, workspace: str, profile: str | None, clients: list[str]
+    selector: dict,
+    workspace: str,
+    profile: str | None,
+    clients: list[str],
+    existing_servers: Iterable[dict] = (),
 ) -> list[dict]:
     """Resolve a managed ``mcp_servers`` selector into MCP server entries for ``clients``.
 
@@ -900,7 +983,9 @@ def _resolve_managed_mcp_servers(
     """
     location = selector.get("unity_catalog_location")
     if isinstance(location, str) and location:
-        return _resolve_location_mcp_servers(workspace, profile, clients, location, [])
+        return _resolve_location_mcp_servers(
+            workspace, profile, clients, location, [], existing_servers=existing_servers
+        )
     names = [n for n in (selector.get("names") or []) if isinstance(n, str) and n]
     if not names:
         return []
@@ -923,8 +1008,9 @@ def _resolve_managed_mcp_servers(
     # still discovers, since a whole-schema pointer has no explicit set to register.
     working: list[dict] = []
     seen: set[str] = set()
+    entry_names = mcp_service_entry_names(names, workspace, existing_servers)
     for full_name in sorted(set(names)):
-        entry_name = full_name.replace(".", "-")
+        entry_name = entry_names[full_name]
         if entry_name in seen:
             continue
         seen.add(entry_name)
@@ -1085,7 +1171,14 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
         workspace, profile, clients = setup_mcp_clients(
             state, "Managed MCP Servers", agents=scope, action_note="Registering for"
         )
-        working = _resolve_managed_mcp_servers(selector, workspace, profile, clients)
+        working = _resolve_managed_mcp_servers(
+            selector,
+            workspace,
+            profile,
+            clients,
+            # Managed entries first (file + fallback), so an entry already there keeps its name.
+            [*managed_mcp_servers(state), *(state.get("mcp_servers") or [])],
+        )
     else:
         # No MCP client configured: nothing to register, but still clear what a prior configure left.
         workspace = state.get("workspace")
@@ -1196,6 +1289,7 @@ def _resolve_mcp_selection(
     available_genie_servers: list[dict] | None = None,
     available_vector_search_servers: list[dict] | None = None,
     available_uc_functions_servers: list[dict] | None = None,
+    service_names: dict[str, str] | None = None,
 ) -> tuple[str, str]:
     if selection.startswith(APP_MCP_SELECTION_PREFIX):
         app_name = selection.removeprefix(APP_MCP_SELECTION_PREFIX)
@@ -1233,8 +1327,10 @@ def _resolve_mcp_selection(
         if not full_name:
             raise RuntimeError("missing MCP service name")
         # Agent CLIs (claude/codex/gemini) reject dots in registered names.
-        # URL keeps the UC `<cat>.<schema>.<id>` form; entry name uses dashes.
-        return full_name.replace(".", "-"), build_mcp_service_url(workspace, full_name)
+        # URL keeps the UC `<cat>.<schema>.<id>` form; the entry name is the dashed full name unless
+        # `service_names` (see `mcp_service_entry_names`) picked another for this run.
+        entry_name = (service_names or {}).get(full_name) or full_name.replace(".", "-")
+        return entry_name, build_mcp_service_url(workspace, full_name)
 
     if selection.startswith(VECTOR_SEARCH_SELECTION_PREFIX):
         return _resolve_catalog_schema_selection(
@@ -1317,6 +1413,7 @@ def _mcp_services_background_loader(
     known_names: set[str],
     additive: bool,
     managed_names: set[str] | None = None,
+    entry_urls: dict[str, str | None] | None = None,
 ) -> Callable[[Callable[[list[questionary.Choice]], None], threading.Event], None]:
     """Return a picker `background_loader` that runs the workspace-wide MCP-services walk and
     streams each schema's newly-found services into the open picker as choices, so the walk
@@ -1332,7 +1429,11 @@ def _mcp_services_background_loader(
             new_choices = [
                 choice
                 for name in new_names
-                if (choice := _mcp_service_choice(name, known_names, additive, managed_names))
+                if (
+                    choice := _mcp_service_choice(
+                        name, known_names, additive, managed_names, entry_urls
+                    )
+                )
                 is not None
             ]
             if new_choices:
@@ -1660,6 +1761,7 @@ def _resolve_location_mcp_servers(
     location: str,
     original_servers: list[dict],
     services: set[str] | None = None,
+    existing_servers: Iterable[dict] = (),
 ) -> list[dict]:
     """Build the desired MCP server list for ``--location <cat>.<schema>``.
 
@@ -1716,9 +1818,10 @@ def _resolve_location_mcp_servers(
         ]
 
     original_by_name = _servers_by_name(original_servers)
+    entry_names = mcp_service_entry_names(names, workspace, [*original_servers, *existing_servers])
     working_servers: list[dict] = []
     for full_name in names:
-        entry_name = full_name.replace(".", "-")
+        entry_name = entry_names[full_name]
         original = original_by_name.get(entry_name)
         original_clients = list((original or {}).get("clients") or [])
         merged_clients = original_clients + [c for c in clients if c not in original_clients]
@@ -1906,12 +2009,18 @@ def _configure_v2_mcp_selectors(
     picker_servers = [s for s in original_mcp_servers if s.get("kind") != SKILLS_MCP_KIND]
     original_by_name = _servers_by_name(picker_servers)
 
-    managed_names = managed_mcp_server_names(state, set(clients))
+    managed_servers = managed_mcp_servers(state, set(clients))
+    managed_names = {name for server in managed_servers if (name := _server_name(server))}
+    service_names = _mcp_service_selection_names(
+        selectors, workspace, [*original_mcp_servers, *managed_servers]
+    )
     working_mcp_servers: list[dict] = list(skills_servers)
     working_names: set[str] = set()
     skipped_managed: set[str] = set()
     for selection in selectors:
-        entry_name, url = _resolve_mcp_selection(selection, workspace, available_app_servers)
+        entry_name, url = _resolve_mcp_selection(
+            selection, workspace, available_app_servers, service_names=service_names
+        )
         if entry_name in working_names:
             continue
         if entry_name in managed_names:
@@ -2000,12 +2109,19 @@ def configure_mcp_command(
         state, "Add MCP Servers" if append else "MCP Servers", agents=agents
     )
 
-    managed_names = managed_mcp_server_names(state, set(clients))
+    managed_servers = managed_mcp_servers(state, set(clients))
+    managed_names = {name for server in managed_servers if (name := _server_name(server))}
 
     original_mcp_servers_for_location: list[dict] = list(state.get("mcp_servers") or [])
     if location is not None:
         working_mcp_servers = _resolve_location_mcp_servers(
-            workspace, profile, clients, location, original_mcp_servers_for_location, services
+            workspace,
+            profile,
+            clients,
+            location,
+            original_mcp_servers_for_location,
+            services,
+            existing_servers=managed_servers,
         )
         working_mcp_servers = _drop_managed_servers(working_mcp_servers, managed_names)
         if append:
@@ -2037,6 +2153,9 @@ def configure_mcp_command(
     if "apps" in excluded_sources:
         picker_servers = [s for s in picker_servers if not _is_app_mcp_server(s)]
     original_by_name = _servers_by_name(picker_servers)
+    entry_urls = {
+        n: s.get("url") for s in [*picker_servers, *managed_servers] if (n := _server_name(s))
+    }
 
     # Single source (MCP services), so there's no "choose sources" step — discover the fast
     # `system.ai` list, show the picker immediately, and let the workspace-wide walk stream in
@@ -2048,6 +2167,7 @@ def configure_mcp_command(
         set(original_by_name) | managed_names,
         additive=append,
         managed_names=managed_names,
+        entry_urls=entry_urls,
     )
     selections = prompt_for_mcp_server_choices(
         discovered["external"],
@@ -2060,6 +2180,7 @@ def configure_mcp_command(
         additive=append,
         managed_names=managed_names,
         background_loader=services_loader,
+        entry_urls=entry_urls,
     )
     if selections is None or isinstance(selections, _Back):
         # No back-navigation without the source step; `_Back` can't occur, but keep the guard
@@ -2071,6 +2192,33 @@ def configure_mcp_command(
     available_vector_search_servers = discovered["vector_search"]
     available_uc_functions_servers = discovered["uc_functions"]
 
+    # Names other selections in this run will hold (kept entries, and new non-service adds), so a
+    # service's leaf never collides with one of them.
+    run_names: list[dict] = []
+    for selection in selections:
+        if not selection.startswith(MCP_ADD_PREFIX):
+            run_names.append({"name": selection})
+        elif not selection.removeprefix(MCP_ADD_PREFIX).startswith(MCP_SERVICE_SELECTION_PREFIX):
+            try:
+                run_names.append(
+                    {
+                        "name": _resolve_mcp_selection(
+                            selection.removeprefix(MCP_ADD_PREFIX),
+                            workspace,
+                            discovered["apps"],
+                            discovered["genie"],
+                            discovered["vector_search"],
+                            discovered["uc_functions"],
+                        )[0]
+                    }
+                )
+            except RuntimeError:
+                pass  # reported when the selection is resolved below
+    service_names = _mcp_service_selection_names(
+        [s.removeprefix(MCP_ADD_PREFIX) for s in selections if s.startswith(MCP_ADD_PREFIX)],
+        workspace,
+        [*original_mcp_servers, *managed_servers, *run_names],
+    )
     working_mcp_servers: list[dict] = list(skills_servers)
     working_names: set[str] = set()
     add_selections: list[str] = []
@@ -2092,6 +2240,7 @@ def configure_mcp_command(
                 available_genie_mcp_servers,
                 available_vector_search_servers,
                 available_uc_functions_servers,
+                service_names=service_names,
             )
         except RuntimeError as exc:
             print_warning(f"Skipped MCP selection `{selection}`: {exc}.")

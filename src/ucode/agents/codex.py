@@ -866,6 +866,17 @@ def _read_user_config_for_rewrite(path: Path) -> tomlkit.TOMLDocument | None:
         return None
 
 
+def read_user_mcp_names() -> set[str] | None:
+    """Names in Codex's user-scope ``[mcp_servers]``; ``None`` when the config can't be parsed.
+
+    Read-only, so ug can tell a name is free before picking an entry name."""
+    doc = _read_user_config_for_rewrite(user_mcp_config_path())
+    if doc is None:
+        return None
+    servers = doc.get(MANAGED_MCP_CONFIG_KEY)
+    return set(servers) if isinstance(servers, dict) else set()
+
+
 def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
     """Apply ``add``/``remove`` to Codex's user-scope ``[mcp_servers]`` (``~/.codex/config.toml``,
     or under ``$CODEX_HOME``) in a single read-modify-write, instead of one ``codex mcp`` subprocess
