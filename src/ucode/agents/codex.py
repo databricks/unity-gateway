@@ -989,6 +989,30 @@ def read_managed_mcp_urls() -> dict[str, str]:
     return urls
 
 
+def read_user_mcp_urls() -> dict[str, str]:
+    """``{name: url}`` for every server in Codex's user-scope ``[mcp_servers]`` (empty if unreadable).
+
+    The URL is the entry's own ``url`` (native HTTP) or the ``--url`` argument of a ``ug mcp-proxy``
+    command; ``""`` when the entry carries neither (a developer's own server). Read-only, so ug can
+    tell a developer's hand-added server from its own before picking an entry name."""
+    doc = _read_user_config_for_rewrite(user_mcp_config_path())
+    servers = doc.get(MANAGED_MCP_CONFIG_KEY) if doc is not None else None
+    if not isinstance(servers, dict):
+        return {}
+    urls: dict[str, str] = {}
+    for name, entry in servers.items():
+        if not isinstance(entry, dict):
+            continue
+        args = entry.get("args")
+        if isinstance(entry.get("url"), str):
+            urls[name] = str(entry["url"])
+        elif isinstance(args, list) and "--url" in args and args.index("--url") + 1 < len(args):
+            urls[name] = str(args[args.index("--url") + 1])
+        else:
+            urls[name] = ""
+    return urls
+
+
 def default_model(state: dict) -> str | None:
     """Return a managed Codex model, or leave selection to Codex."""
     if isinstance(state.get("codex_default_model"), str):

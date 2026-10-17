@@ -1037,6 +1037,30 @@ def read_managed_mcp_urls() -> dict[str, str]:
     }
 
 
+def read_user_mcp_urls() -> dict[str, str]:
+    """``{name: url}`` for every server in Claude's user-scope ``mcpServers`` (empty if unreadable).
+
+    The URL is the entry's own ``url`` (native HTTP) or the ``--url`` argument of a ``ug mcp-proxy``
+    command; ``""`` when the entry carries neither (a developer's own stdio server). Read-only, so ug
+    can tell a developer's hand-added server from its own before picking an entry name."""
+    config = _read_claude_config_for_rewrite(claude_mcp_config_path())
+    servers = (config or {}).get("mcpServers")
+    if not isinstance(servers, dict):
+        return {}
+    urls: dict[str, str] = {}
+    for name, entry in servers.items():
+        if not isinstance(entry, dict):
+            continue
+        args = entry.get("args")
+        if isinstance(entry.get("url"), str):
+            urls[name] = entry["url"]
+        elif isinstance(args, list) and "--url" in args and args.index("--url") + 1 < len(args):
+            urls[name] = str(args[args.index("--url") + 1])
+        else:
+            urls[name] = ""
+    return urls
+
+
 def _register_web_search_mcp(
     workspace: str,
     search_model: str,
