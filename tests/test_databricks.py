@@ -1760,23 +1760,44 @@ class TestListAllMcpServices:
             lambda workspace, token, parent="system.ai": probed.append(parent) or ([], None),
         )
 
+        real_walk = db_mod.walk_catalog_schemas
+        monkeypatch.setattr(
+            db_mod,
+            "walk_catalog_schemas",
+            lambda *a, **kw: real_walk(*a, **{**kw, "max_workers": 1}),
+        )
+
         db_mod.list_all_mcp_services(WS, "token")
 
         # The user's likeliest schema leads, so a deadline cut-off still finds it.
         assert probed[0] == "main.default"
 
     def test_flags_partial_results_past_deadline(self, monkeypatch):
-        def slow_walk(workspace, token, *, deadline, probe, collect, **kwargs):
+        def slow_walk(workspace, token, *, deadline, probe, collect, on_incomplete, **kwargs):
             collect((["main.default.exa"], None), 1, 2)
             while time.monotonic() <= deadline:
                 time.sleep(0.01)
+            on_incomplete()
 
         monkeypatch.setattr(db_mod, "walk_catalog_schemas", slow_walk)
 
         names, reason = db_mod.list_all_mcp_services(WS, "token", deadline_seconds=0.05)
 
         assert names == ["main.default.exa"]
-        assert reason == "deadline exceeded while listing MCP services"
+        assert reason == db_mod.MCP_SERVICES_WALK_TIMEOUT_REASON
+
+    def test_fully_drained_walk_is_not_flagged_even_if_deadline_passes_after(self, monkeypatch):
+        def drained_walk(workspace, token, *, deadline, probe, collect, **kwargs):
+            collect((["main.default.exa"], None), 1, 1)
+            while time.monotonic() <= deadline:
+                time.sleep(0.01)
+
+        monkeypatch.setattr(db_mod, "walk_catalog_schemas", drained_walk)
+
+        names, reason = db_mod.list_all_mcp_services(WS, "token", deadline_seconds=0.05)
+
+        assert names == ["main.default.exa"]
+        assert reason is None
 
 
 def _foundation_models_payload(names):

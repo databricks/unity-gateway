@@ -20,6 +20,7 @@ from ucode.config_io import restore_file
 from ucode.constants import MCP_CLEANUP_SCOPES, MCP_USER_SCOPE
 from ucode.databricks import (
     AIGW_MCP_SERVICES_SEGMENT,
+    MCP_SERVICES_WALK_TIMEOUT_REASONS,
     AuthTokenError,
     PermissionDeniedError,
     apply_pat_environment,
@@ -1328,8 +1329,8 @@ def _mcp_services_background_loader(
     streams each schema's newly-found services into the open picker as choices, so the walk
     never blocks the picker from opening. Deduping against already-shown rows (e.g. the fast
     `system.ai` list) is handled by the picker's append. The walk is bounded by a wall-clock
-    deadline; on a timeout or error the picker keeps what streamed in (at least `system.ai`) and
-    the footer says why the list may be incomplete."""
+    deadline; on a timeout or error the picker keeps what streamed in (at least `system.ai`), and
+    only a timeout adds a footer warning that the list may be incomplete (other errors stay silent)."""
 
     def loader(
         append: Callable[[list[questionary.Choice]], None], cancel_event: threading.Event
@@ -1355,8 +1356,11 @@ def _mcp_services_background_loader(
             cancel_event=cancel_event,
             on_error=failure.append,
         )
-        if failure and "deadline exceeded" in failure[0]:
-            return "⚠ Timed out listing your MCP services; to add one not shown, use `ug mcp add`"
+        if failure and failure[0] in MCP_SERVICES_WALK_TIMEOUT_REASONS:
+            return (
+                "⚠ Timed out listing your MCP services; to add one not shown, use "
+                "`ug mcp add --names <catalog.schema.name>`"
+            )
         return None
 
     return loader

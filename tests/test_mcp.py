@@ -9,6 +9,7 @@ import pytest
 
 from ucode import mcp
 from ucode.agents import claude
+from ucode.databricks import MCP_SERVICES_WALK_TIMEOUT_REASON
 
 WS = "https://example.databricks.com"
 CLAUDE_STATE = {"workspace": WS, "available_tools": ["claude"]}
@@ -1139,7 +1140,7 @@ class TestConfigureMcpCommand:
 
     def test_walk_timeout_keeps_system_ai_and_warns(self, monkeypatch):
         def fake_walk(workspace, profile=None, on_error=None, **kwargs):
-            on_error("deadline exceeded while listing MCP services")
+            on_error(MCP_SERVICES_WALK_TIMEOUT_REASON)
             return []
 
         monkeypatch.setattr(mcp, "discover_all_mcp_service_names", fake_walk)
@@ -1151,6 +1152,7 @@ class TestConfigureMcpCommand:
 
         assert streamed == []
         assert message is not None and "Timed out" in message
+        assert "ug mcp add --names <catalog.schema.name>" in message
         assert [c.value for c in shown] == [
             f"{mcp.MCP_ADD_PREFIX}{mcp.MCP_SERVICE_SELECTION_PREFIX}system.ai.github"
         ]
