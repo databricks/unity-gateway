@@ -30,6 +30,7 @@ from ucode.config_io import (
     backup_existing_file,
     deep_merge_dict,
     is_dry_run,
+    mcp_entry_url,
     prune_key_paths,
     read_json_safe,
     read_toml_safe,
@@ -981,11 +982,9 @@ def read_managed_mcp_urls() -> dict[str, str]:
         return {}
     urls: dict[str, str] = {}
     for name, entry in servers.items():
-        args = entry.get("args") if isinstance(entry, dict) else None
-        if isinstance(args, list) and "--url" in args:
-            index = args.index("--url")
-            if index + 1 < len(args):
-                urls[name] = str(args[index + 1])
+        url = mcp_entry_url(entry)
+        if url is not None:
+            urls[name] = url
     return urls
 
 
@@ -1003,13 +1002,7 @@ def read_user_mcp_urls() -> dict[str, str]:
     for name, entry in servers.items():
         if not isinstance(entry, dict):
             continue
-        args = entry.get("args")
-        if isinstance(entry.get("url"), str):
-            urls[name] = str(entry["url"])
-        elif isinstance(args, list) and "--url" in args and args.index("--url") + 1 < len(args):
-            urls[name] = str(args[args.index("--url") + 1])
-        else:
-            urls[name] = ""
+        urls[name] = mcp_entry_url(entry) or ""
     return urls
 
 

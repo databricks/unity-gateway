@@ -21,6 +21,7 @@ from ucode.config_io import (
     ToolSpec,
     backup_existing_file,
     deep_merge_dict,
+    mcp_entry_url,
     prune_key_paths,
     read_json_safe,
     write_json_file,
@@ -1051,13 +1052,7 @@ def read_user_mcp_urls() -> dict[str, str]:
     for name, entry in servers.items():
         if not isinstance(entry, dict):
             continue
-        args = entry.get("args")
-        if isinstance(entry.get("url"), str):
-            urls[name] = entry["url"]
-        elif isinstance(args, list) and "--url" in args and args.index("--url") + 1 < len(args):
-            urls[name] = str(args[args.index("--url") + 1])
-        else:
-            urls[name] = ""
+        urls[name] = mcp_entry_url(entry) or ""
     return urls
 
 

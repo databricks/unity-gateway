@@ -3485,6 +3485,63 @@ class TestMcpServiceEntryNames:
         assert mcp._mcp_service_choice("main.default.exa", set(), True, {"exa"}, other) is not None
         assert mcp._mcp_service_choice("main.default.exa", set(), True, {"exa"}, mine) is None
 
+    def test_any_holder_with_a_different_url_makes_the_leaf_a_clash(self):
+        # Claude's hand-added `github` and Codex's `github` for this service share a name.
+        mine = {"name": "github", "url": mcp.build_mcp_service_url(WS, "system.ai.github")}
+        hand = {"name": "github", "url": "https://example.com/my-github"}
+        for order in ([mine, hand], [hand, mine]):
+            names = mcp.mcp_service_entry_names(["system.ai.github"], WS, existing_servers=order)
+            assert names == {"system.ai.github": "system-ai-github"}
+        same = mcp.mcp_service_entry_names(["system.ai.github"], WS, existing_servers=[mine, mine])
+        assert same == {"system.ai.github": "github"}
+
+    def test_picker_keeps_an_unrelated_leaf_entry_as_its_own_toggle(self):
+        other = {"name": "exa", "url": mcp.build_mcp_service_url(WS, "other.schema.exa")}
+        choices = mcp.build_mcp_picker_choices(
+            [], [], [], [other], available_mcp_service_names=["main.default.exa"]
+        )
+        values = [c.value for c in choices]
+        assert f"{mcp.MCP_ADD_PREFIX}{mcp.MCP_SERVICE_SELECTION_PREFIX}main.default.exa" in values
+        # The user's unrelated `exa` is still listed (so replace mode does not drop it).
+        assert "exa" in values
+
+    def test_picker_does_not_repeat_a_service_that_holds_its_leaf(self):
+        mine = {"name": "exa", "url": mcp.build_mcp_service_url(WS, "main.default.exa")}
+        choices = mcp.build_mcp_picker_choices(
+            [], [], [], [mine], available_mcp_service_names=["main.default.exa"]
+        )
+        assert [c.value for c in choices] == ["exa"]
+
+    def test_managed_entry_reuses_the_name_of_a_same_url_user_entry(self, monkeypatch):
+        monkeypatch.setattr(
+            mcp,
+            "_resolve_location_mcp_servers",
+            lambda *a, **k: pytest.fail("must not discover for explicit FQN names"),
+        )
+        legacy = {
+            "name": "system-ai-github",
+            "url": mcp.build_mcp_service_url(WS, "system.ai.github"),
+        }
+        out = mcp._resolve_managed_mcp_servers(
+            {"names": ["system.ai.github"]}, WS, None, ["claude"], [legacy]
+        )
+        assert [s["name"] for s in out] == ["system-ai-github"]
+
+    def test_reconfigure_does_not_inherit_clients_of_an_unrelated_entry(self, monkeypatch):
+        monkeypatch.setattr(
+            mcp, "list_mcp_services", lambda ws, token, parent: (["main.default.exa"], None)
+        )
+        monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "t")
+        unrelated = {
+            "name": "exa",
+            "url": mcp.build_mcp_service_url(WS, "ml.tools.exa"),
+            "auth": "proxy",
+            "clients": ["gemini"],
+        }
+        out = mcp._resolve_location_mcp_servers(WS, None, ["claude"], "main.default", [unrelated])
+        mine = [s for s in out if s["url"].endswith("main.default.exa")]
+        assert [(s["name"], s["clients"]) for s in mine] == [("exa", ["claude"])]
+
     def test_drop_managed_matches_a_dashed_entry_by_url(self):
         url = mcp.build_mcp_service_url(WS, "main.default.exa")
         servers = [{"name": "main-default-exa", "url": url}, {"name": "keep", "url": "k"}]

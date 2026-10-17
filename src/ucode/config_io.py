@@ -266,3 +266,18 @@ def parse_dotenv(path: Path) -> dict[str, str]:
 def write_dotenv(path: Path, env: dict[str, str]) -> None:
     content = "".join(f'{key}="{val}"\n' for key, val in env.items())
     write_text_file(path, content)
+
+
+def mcp_entry_url(entry: object) -> str | None:
+    """URL an MCP config entry points at, or None when it carries none.
+
+    The entry's own ``url`` (native HTTP) wins, else the value after ``--url`` in the ``args`` of a
+    ``ug mcp-proxy`` command. One parser for every reader so they cannot drift apart."""
+    if not isinstance(entry, dict):
+        return None
+    if isinstance(entry.get("url"), str):
+        return str(entry["url"])
+    args = entry.get("args")
+    if isinstance(args, list) and "--url" in args and args.index("--url") + 1 < len(args):
+        return str(args[args.index("--url") + 1])
+    return None
