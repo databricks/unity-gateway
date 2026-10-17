@@ -952,6 +952,29 @@ class TestMapClaudeFamilyModels:
         assert db_mod.map_claude_family_models(["amazon.titan-text-express-v1"]) == {}
 
 
+class TestMaybeAddGpt1mSuffix:
+    @pytest.mark.parametrize(
+        ("model", "expected"),
+        [
+            ("system.ai.gpt-5-6-sol", "system.ai.gpt-5-6-sol[1m]"),
+            ("databricks-gpt-6-astra", "databricks-gpt-6-astra[1m]"),
+            (
+                "anthropic-aigw-12e8d1ee-system.ai.gpt-5-6-sol",
+                "anthropic-aigw-12e8d1ee-system.ai.gpt-5-6-sol[1m]",
+            ),
+            ("system.ai.gpt-5-6-sol[1m]", "system.ai.gpt-5-6-sol[1m]"),
+            ("system.ai.gpt-5-6-sol[200k]", "system.ai.gpt-5-6-sol[200k]"),
+            ("system.ai.gpt-5-5", "system.ai.gpt-5-5[1m]"),
+            ("system.ai.gpt-5-4-nano", "system.ai.gpt-5-4-nano[1m]"),
+            ("gpt-4.1", "gpt-4.1[1m]"),
+            ("system.ai.gpt-oss-120b", "system.ai.gpt-oss-120b"),
+            ("system.ai.claude-opus-4-8", "system.ai.claude-opus-4-8"),
+        ],
+    )
+    def test_adds_hint_to_versioned_gpt_ids_only(self, model, expected):
+        assert db_mod.maybe_add_gpt_1m_suffix(model) == expected
+
+
 class TestResolveProviderLaunchModel:
     def test_defaults_to_sonnet_when_offered(self):
         # No --model: pin sonnet (Claude Code's own default tier) when the service allows it.

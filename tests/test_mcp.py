@@ -3013,7 +3013,7 @@ class TestPrintSkillsSummary:
             f"URL: {WS}/ai-gateway/skills/?schema=main.default "
             "Configured: Claude Code, Codex "
             "Tools: UC skill utility tools + skills tools in schema main.default "
-            "• Run `ucode <agent>` to use the skills MCP. For existing sessions, "
+            "• Run `ug <agent>` to use the skills MCP. For existing sessions, "
             "restart the agent for the skills to take effect."
         )
 
@@ -3025,7 +3025,7 @@ class TestPrintSkillsSummary:
             f"URL: {WS}/ai-gateway/skills/ "
             "Configured: Claude Code, Codex "
             "Tools: UC skill utility tools "
-            "• Run `ucode <agent>` to use the skills MCP. For existing sessions, "
+            "• Run `ug <agent>` to use the skills MCP. For existing sessions, "
             "restart the agent for the skills to take effect."
         )
 
@@ -4802,3 +4802,24 @@ class TestListMcpCommand:
         out = _unwrap(capsys.readouterr().out)
         assert "No MCP servers are configured by ug" in out
         assert "No supported MCP clients are installed" in out
+
+
+def test_setup_mcp_clients_user_messages_name_ug_not_ucode(monkeypatch, capsys):
+    """User-facing hints must say `ug`; `ucode` is only the internal package name."""
+    monkeypatch.setattr(mcp, "purge_cross_workspace_mcp_residue", lambda *a, **k: None)
+    monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
+    monkeypatch.setattr(mcp, "configured_mcp_clients", lambda state, installed: ["claude"])
+
+    state = {
+        "workspace": "https://example.cloud.databricks.com",
+        "available_tools": ["claude", "codex"],
+    }
+    mcp.setup_mcp_clients(state, "Add MCP Servers", require_auth=False)
+    out = _unwrap(capsys.readouterr().out)
+    assert "Codex is configured in ug but not installed" in out
+    assert "ucode" not in out
+
+    with pytest.raises(RuntimeError, match="`ug configure --agents codex`"):
+        mcp.setup_mcp_clients(state, "Add MCP Servers", require_auth=False, agents={"codex"})
+    with pytest.raises(RuntimeError, match="Run `ug configure` first"):
+        mcp.setup_mcp_clients({}, "Add MCP Servers")
