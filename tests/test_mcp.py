@@ -9,7 +9,7 @@ import pytest
 
 from ucode import mcp
 from ucode.agents import claude
-from ucode.databricks import MCP_SERVICES_WALK_TIMEOUT_REASON
+from ucode.databricks import McpServicesWalk
 
 WS = "https://example.databricks.com"
 CLAUDE_STATE = {"workspace": WS, "available_tools": ["claude"]}
@@ -1100,7 +1100,7 @@ class TestConfigureMcpCommand:
             on_progress=None,
             on_services=None,
             cancel_event=None,
-            on_error=None,
+            on_timeout=None,
         ):
             walk_calls.append(workspace)
             if on_services is not None:
@@ -1139,18 +1139,23 @@ class TestConfigureMcpCommand:
         assert sorted(values) == [f"{prefix}main.default.exa", f"{prefix}system.ai.github"]
 
     def test_walk_timeout_keeps_system_ai_and_warns(self, monkeypatch):
-        def fake_walk(workspace, profile=None, on_error=None, **kwargs):
-            on_error(MCP_SERVICES_WALK_TIMEOUT_REASON)
-            return []
+        """A timed-out walk (flag set on `McpServicesWalk`) streams partial results and warns."""
+        monkeypatch.setattr(mcp, "get_databricks_token", lambda workspace, profile=None: "token")
 
-        monkeypatch.setattr(mcp, "discover_all_mcp_service_names", fake_walk)
+        def fake_list_all(workspace, token, on_services=None, **kwargs):
+            on_services(["main.default.exa"])
+            return McpServicesWalk(["main.default.exa"], timed_out=True)
+
+        monkeypatch.setattr(mcp, "list_all_mcp_services", fake_list_all)
         shown = mcp.build_mcp_picker_choices([], [], [], [], ["system.ai.github"], additive=True)
         loader = mcp._mcp_services_background_loader(WS, None, set(), additive=True)
         streamed: list = []
 
         message = loader(streamed.extend, threading.Event())
 
-        assert streamed == []
+        assert [c.value for c in streamed] == [
+            f"{mcp.MCP_ADD_PREFIX}{mcp.MCP_SERVICE_SELECTION_PREFIX}main.default.exa"
+        ]
         assert message is not None and "Timed out" in message
         assert "ug mcp add --names <catalog.schema.name>" in message
         assert [c.value for c in shown] == [
@@ -1160,11 +1165,12 @@ class TestConfigureMcpCommand:
     def test_walk_error_degrades_to_system_ai_only(self, monkeypatch):
         """A non-timeout walk failure (e.g. no catalogs) adds nothing and shows no warning."""
 
-        def fake_walk(workspace, profile=None, on_error=None, **kwargs):
-            on_error("no UC catalogs found")
-            return []
-
-        monkeypatch.setattr(mcp, "discover_all_mcp_service_names", fake_walk)
+        monkeypatch.setattr(mcp, "get_databricks_token", lambda workspace, profile=None: "token")
+        monkeypatch.setattr(
+            mcp,
+            "list_all_mcp_services",
+            lambda *args, **kwargs: McpServicesWalk([], error="no UC catalogs found"),
+        )
         loader = mcp._mcp_services_background_loader(WS, None, set(), additive=True)
         streamed: list = []
 

@@ -1788,6 +1788,21 @@ class TestListAllMcpServices:
         assert walk.timed_out
         assert walk.error is None
 
+    def test_timeout_before_any_probe_sets_timed_out_with_error(self, monkeypatch):
+        """The deadline expiring while listing catalogs/schemas is still flagged as a timeout."""
+
+        def early_timeout_walk(workspace, token, *, on_incomplete, **kwargs):
+            on_incomplete(True)
+            return "deadline exceeded while listing UC schemas"
+
+        monkeypatch.setattr(db_mod, "walk_catalog_schemas", early_timeout_walk)
+
+        walk = db_mod.list_all_mcp_services(WS, "token")
+
+        assert walk.names == []
+        assert walk.timed_out
+        assert walk.error == "deadline exceeded while listing UC schemas"
+
     def test_cancel_is_incomplete_but_not_a_timeout(self, monkeypatch):
         def cancelled_walk(workspace, token, *, deadline, probe, collect, on_incomplete, **kwargs):
             collect((["main.default.exa"], None), 1, 2)

@@ -3097,17 +3097,10 @@ _PROBE_FAILED = object()
 # enough time to enumerate them; a slow workspace still degrades to partial
 # results once the budget is exceeded instead of hanging indefinitely.
 _MCP_SERVICES_WALK_DEADLINE_SECONDS = 30.0
-# Reasons the walk reports when the deadline cuts it short; callers match on these, not on text.
+# Reasons the walk reports when the deadline cuts it short before any schema is probed. Callers
+# learn about a timeout from `on_incomplete(True)` / `McpServicesWalk.timed_out`, not these strings.
 _WALK_TIMEOUT_CATALOGS_REASON = "deadline exceeded while listing UC catalogs"
 _WALK_TIMEOUT_SCHEMAS_REASON = "deadline exceeded while listing UC schemas"
-MCP_SERVICES_WALK_TIMEOUT_REASON = "deadline exceeded while listing MCP services"
-MCP_SERVICES_WALK_TIMEOUT_REASONS = frozenset(
-    {
-        _WALK_TIMEOUT_CATALOGS_REASON,
-        _WALK_TIMEOUT_SCHEMAS_REASON,
-        MCP_SERVICES_WALK_TIMEOUT_REASON,
-    }
-)
 # Skip UC catalogs whose schemas almost never carry user-callable functions
 # you'd want to expose as agent tools.
 _UC_FUNCTIONS_SKIP_CATALOGS = frozenset(
@@ -3224,8 +3217,8 @@ def walk_catalog_schemas[T](
       - `collect(result, done, total)`: handle each probe result as it lands — accumulating,
         de-duping, streaming — where `done`/`total` are the completed and total schema counts.
 
-    `on_incomplete(timed_out)`, if given, is called when the probe phase stopped with schemas left
-    unprobed, so callers can flag partial results without re-checking the clock. `timed_out` is
+    `on_incomplete(timed_out)`, if given, is called when the deadline or `cancel_event` stopped the
+    walk before every schema was probed (including before any probe ran), so callers can flag partial results without re-checking the clock. `timed_out` is
     True when the deadline passed and False when `cancel_event` stopped the walk (e.g. the picker
     closed), so a cancel is not reported as a timeout.
 
@@ -3255,6 +3248,8 @@ def walk_catalog_schemas[T](
     if not catalog_names:
         return "no user UC catalogs found"
     if time.monotonic() > deadline:
+        if on_incomplete is not None:
+            on_incomplete(True)
         return _WALK_TIMEOUT_CATALOGS_REASON
 
     schema_refs: list[tuple[str, str]] = []
@@ -3282,6 +3277,8 @@ def walk_catalog_schemas[T](
 
     if not schema_refs:
         if time.monotonic() > deadline:
+            if on_incomplete is not None:
+                on_incomplete(True)
             return _WALK_TIMEOUT_SCHEMAS_REASON
         return "no UC schemas found"
 
@@ -3377,7 +3374,7 @@ def list_all_mcp_services(
         on_incomplete=mark_incomplete,
     )
     if error is not None:
-        return McpServicesWalk([], error=error)
+        return McpServicesWalk([], error=error, timed_out=timed_out)
     # Partial results are still returned, flagged so callers can say the list is incomplete.
     return McpServicesWalk(
         sorted(names),

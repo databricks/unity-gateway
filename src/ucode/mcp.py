@@ -20,8 +20,6 @@ from ucode.config_io import restore_file
 from ucode.constants import MCP_CLEANUP_SCOPES, MCP_USER_SCOPE
 from ucode.databricks import (
     AIGW_MCP_SERVICES_SEGMENT,
-    MCP_SERVICES_WALK_TIMEOUT_REASON,
-    MCP_SERVICES_WALK_TIMEOUT_REASONS,
     AuthTokenError,
     PermissionDeniedError,
     apply_pat_environment,
@@ -486,14 +484,14 @@ def discover_all_mcp_service_names(
     on_progress: Callable[[int, int, int], None] | None = None,
     on_services: Callable[[list[str]], None] | None = None,
     cancel_event: threading.Event | None = None,
-    on_error: Callable[[str], None] | None = None,
+    on_timeout: Callable[[], None] | None = None,
 ) -> list[str]:
     """All MCP services across every `<catalog>.<schema>` in the workspace. This
     walks the workspace (see `list_all_mcp_services`) and is the workspace-wide
     counterpart to `discover_mcp_service_names`. `on_progress` is forwarded to
     the walk for live count reporting, and `on_services` to stream newly-found
-    service names into the picker as the walk progresses. `on_error` receives the walk's
-    failure/timeout reason (partial results were already streamed via `on_services`)."""
+    service names into the picker as the walk progresses. `on_timeout` is called when the walk's
+    deadline cut it short (partial results were already streamed via `on_services`)."""
     token = get_databricks_token(workspace, profile)
     walk = list_all_mcp_services(
         workspace,
@@ -503,9 +501,8 @@ def discover_all_mcp_service_names(
         cancel_event=cancel_event,
     )
     raise_for_invalid_access_token(workspace, walk.error)
-    reason = walk.error or (MCP_SERVICES_WALK_TIMEOUT_REASON if walk.timed_out else None)
-    if reason is not None and on_error is not None:
-        on_error(reason)
+    if walk.timed_out and on_timeout is not None:
+        on_timeout()
     return walk.names
 
 
@@ -1337,7 +1334,11 @@ def _mcp_services_background_loader(
     def loader(
         append: Callable[[list[questionary.Choice]], None], cancel_event: threading.Event
     ) -> str | None:
-        failure: list[str] = []
+        timed_out = False
+
+        def on_timeout() -> None:
+            nonlocal timed_out
+            timed_out = True
 
         def on_services(new_names: list[str]) -> None:
             # A streamed service can be hidden (managed, or already configured under `mcp add`),
@@ -1356,9 +1357,9 @@ def _mcp_services_background_loader(
             profile,
             on_services=on_services,
             cancel_event=cancel_event,
-            on_error=failure.append,
+            on_timeout=on_timeout,
         )
-        if failure and failure[0] in MCP_SERVICES_WALK_TIMEOUT_REASONS:
+        if timed_out:
             return (
                 "⚠ Timed out listing your MCP services; to add one not shown, use "
                 "`ug mcp add --names <catalog.schema.name>`"
