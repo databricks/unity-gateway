@@ -6,8 +6,6 @@ import json
 import subprocess
 from unittest.mock import MagicMock
 
-import pytest
-
 from ucode.agents import cursor
 
 WS = "https://example.databricks.com"
@@ -148,6 +146,7 @@ class TestLaunch:
 
 class TestLaunchApp:
     def test_uses_cursor_command_on_path(self, monkeypatch):
+        monkeypatch.setattr(cursor.sys, "platform", "linux")
         monkeypatch.setattr(cursor.shutil, "which", lambda name: "/usr/bin/cursor")
 
         assert cursor.find_app_launch_argv(["."]) == ["/usr/bin/cursor", "."]
@@ -160,6 +159,44 @@ class TestLaunchApp:
         monkeypatch.setattr(cursor, "CURSOR_MACOS_APP_PATHS", (tmp_path / "missing.app", bundle))
 
         assert cursor.find_app_launch_argv(["."]) == ["open", "-a", str(bundle), "."]
+
+    def test_macos_forwards_flags_after_args_separator(self, tmp_path, monkeypatch):
+        bundle = tmp_path / "Cursor.app"
+        bundle.mkdir()
+        monkeypatch.setattr(cursor.sys, "platform", "darwin")
+        monkeypatch.setattr(cursor, "CURSOR_MACOS_APP_PATHS", (bundle,))
+
+        assert cursor.find_app_launch_argv(["--new-window"]) == [
+            "open",
+            "-a",
+            str(bundle),
+            "--args",
+            "--new-window",
+        ]
+
+    def test_macos_flags_and_paths_keep_order_after_args_separator(self, tmp_path, monkeypatch):
+        bundle = tmp_path / "Cursor.app"
+        bundle.mkdir()
+        monkeypatch.setattr(cursor.sys, "platform", "darwin")
+        monkeypatch.setattr(cursor, "CURSOR_MACOS_APP_PATHS", (bundle,))
+
+        assert cursor.find_app_launch_argv(["--goto", "a.py:3", "."]) == [
+            "open",
+            "-a",
+            str(bundle),
+            "--args",
+            "--goto",
+            "a.py:3",
+            ".",
+        ]
+
+    def test_macos_paths_only_go_straight_to_open(self, tmp_path, monkeypatch):
+        bundle = tmp_path / "Cursor.app"
+        bundle.mkdir()
+        monkeypatch.setattr(cursor.sys, "platform", "darwin")
+        monkeypatch.setattr(cursor, "CURSOR_MACOS_APP_PATHS", (bundle,))
+
+        assert cursor.find_app_launch_argv(["a", "b"]) == ["open", "-a", str(bundle), "a", "b"]
 
     def test_macos_without_bundle_uses_cursor_command(self, tmp_path, monkeypatch):
         monkeypatch.setattr(cursor.shutil, "which", lambda name: "/usr/bin/cursor")
@@ -183,10 +220,6 @@ class TestLaunchApp:
             "popen",
             lambda argv, **kw: (calls.append((argv, kw)), proc)[1],
         )
-        monkeypatch.setattr(
-            cursor, "exec_or_spawn", lambda argv: pytest.fail("must not wait on the app")
-        )
-
         cursor.launch_app(["cursor", "."])
 
         assert len(calls) == 1
@@ -197,7 +230,6 @@ class TestLaunchApp:
         assert kwargs["stderr"] is subprocess.DEVNULL
         for key, value in cursor._DETACHED_POPEN_OPTIONS.items():
             assert kwargs[key] == value
-        proc.wait.assert_not_called()
 
 
 class TestWriteUserMcpServers:

@@ -125,11 +125,17 @@ def find_app_launch_argv(tool_args: list[str]) -> list[str] | None:
     """Return the argv that opens the Cursor desktop app, or None if it isn't installed.
 
     On macOS prefers `open -a` on the app bundle, which returns as soon as the app is
-    launched. Otherwise uses the `cursor` shell command (installed by Cursor on every
-    platform); `launch_app` starts it detached so it can't hold the terminal."""
+    launched. `open` parses dashed options itself, so args are forwarded two ways:
+    plain paths only (`ug cursor app .`) go straight after the bundle, so `open` hands
+    them to Cursor as files/folders to open; if any arg starts with `-`, all args go
+    after `--args` (in their original order, so flag values stay attached) and reach
+    Cursor verbatim. Otherwise uses the `cursor` shell command (installed by Cursor on
+    every platform); `launch_app` starts it detached so it can't hold the terminal."""
     if sys.platform == "darwin":
         for bundle in CURSOR_MACOS_APP_PATHS:
             if bundle.exists():
+                if any(arg.startswith("-") for arg in tool_args):
+                    return ["open", "-a", str(bundle), "--args", *tool_args]
                 return ["open", "-a", str(bundle), *tool_args]
     binary = shutil.which(CURSOR_APP_BINARY)
     if binary:
