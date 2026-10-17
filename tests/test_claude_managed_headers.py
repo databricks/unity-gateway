@@ -11,6 +11,7 @@ from ucode.agents import claude
         ("x-mode: true", "x-mode: true\nUser-Agent: ug/new"),
         ("x-mode: true\nUser-Agent: isaac", "User-Agent: ug/new\nx-mode: true"),
         ("x-mode: true", "x-mode: true\nDatabricks-Smart-Router-Recipe: recipe"),
+        ("x-mode: true", "x-mode: true\nDatabricks-Custom-Coding-Agent: custom"),
         ("X-Mode: true\nX-Tags: source=isaac", "x-tags: source=isaac\nx-mode:\ttrue "),
         ("X-Mode: true\r\n", "x-mode: true\n\n"),
     ],

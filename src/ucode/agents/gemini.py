@@ -20,6 +20,7 @@ from ucode.config_io import (
     write_dotenv,
     write_json_file,
 )
+from ucode.constants import UNITY_GATEWAY_CUSTOM_CODING_AGENT_ENV_VAR
 from ucode.databricks import (
     TOKEN_REFRESH_INTERVAL_SECONDS,
     build_tool_base_url,
@@ -33,8 +34,10 @@ from ucode.state import (
     set_provider_service,
 )
 from ucode.telemetry import agent_version, ug_version
+from ucode.ui import print_warning_err
 
 from .args import LaunchOptions
+from .coding_agent import custom_coding_agent_headers
 
 GEMINI_CONFIG_DIR = Path.home() / ".gemini"
 GEMINI_ENV_PATH = GEMINI_CONFIG_DIR / "ucode.env"
@@ -142,6 +145,14 @@ def render_env_overlay(
     # so a key named `User-Agent` overrides the default. Resolved via
     # upstream issue google-gemini/gemini-cli#10088.
     custom_headers = f"User-Agent:ucode/{ug_version()} gemini/{agent_version('gemini')}"
+    for name, value in custom_coding_agent_headers().items():
+        if "," in value:
+            print_warning_err(
+                f"Ignoring {UNITY_GATEWAY_CUSTOM_CODING_AGENT_ENV_VAR}: "
+                "Gemini CLI cannot send a custom agent name containing commas."
+            )
+        else:
+            custom_headers += f",{name}:{value}"
     if provider:
         # A Model Provider Service routes by this header; the request still names
         # the service's target model in `GEMINI_MODEL` (pinned by the launch path).

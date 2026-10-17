@@ -6,6 +6,7 @@ import os
 import re
 import sys
 
+from ucode.agents.coding_agent import custom_coding_agent_headers
 from ucode.agents.desktop.claude import (
     claude_desktop_directory,
     revert_claude_desktop,
@@ -76,6 +77,7 @@ def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
         )
 
     headers = {"x-databricks-use-coding-agent-mode": "true"}
+    headers.update(custom_coding_agent_headers())
     if provider:
         headers[MODEL_PROVIDER_SERVICE_HEADER] = provider
     elif parent_schema:
