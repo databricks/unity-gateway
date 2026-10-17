@@ -29,6 +29,7 @@ from ucode.state import mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
 
 from .args import LaunchOptions, explicit_model_arg_value, has_explicit_model_arg
+from .coding_agent import custom_coding_agent_headers
 from .request_tags import request_tags_header_value
 
 OPENCODE_XDG_CONFIG_HOME = APP_DIR / "opencode-xdg"
@@ -306,6 +307,7 @@ def render_overlay(
     ua_header = {
         "User-Agent": f"ucode/{ug_version()} opencode/{agent_version('opencode')}",
     }
+    ua_header.update(custom_coding_agent_headers())
     request_tags = request_tags_header_value()
     if request_tags:
         ua_header[AI_GATEWAY_REQUEST_TAGS_HEADER] = request_tags

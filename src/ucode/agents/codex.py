@@ -94,6 +94,7 @@ from ucode.ui import print_warning_err
 
 from .args import LaunchOptions
 from .codex_catalog import prepare_codex_catalog, validate_codex_catalog
+from .coding_agent import custom_coding_agent_headers
 from .request_tags import request_tags_header_value
 
 CODEX_CONFIG_DIR = Path.home() / ".codex"
@@ -218,6 +219,7 @@ def _provider_block(
     http_headers = {
         "User-Agent": f"ucode/{ug_version()} codex/{agent_version('codex')}",
     }
+    http_headers.update(custom_coding_agent_headers())
     if provider:
         http_headers[MODEL_PROVIDER_SERVICE_HEADER] = provider
     elif parent_schema:

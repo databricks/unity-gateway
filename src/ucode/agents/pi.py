@@ -42,7 +42,11 @@ from ucode.config_io import (
     read_json_safe,
     write_json_file,
 )
-from ucode.constants import AI_GATEWAY_REQUEST_TAGS_HEADER
+from ucode.constants import (
+    AI_GATEWAY_REQUEST_TAGS_HEADER,
+    CUSTOM_CODING_AGENT_HEADER,
+    UNITY_GATEWAY_CUSTOM_CODING_AGENT_ENV_VAR,
+)
 from ucode.databricks import (
     ANTHROPIC_FAMILIES,
     build_auth_token_argv,
@@ -55,6 +59,7 @@ from ucode.state import mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
 
 from .args import LaunchOptions
+from .coding_agent import custom_coding_agent_headers
 from .request_tags import request_tags_header_value
 
 PI_UCODE_HOME = APP_DIR / "pi-home"
@@ -121,6 +126,8 @@ def render_overlay(
     # Pi expands header values that match an env var name. Our UA contains
     # `/` and a space so it can never collide — safe to pass as a literal.
     ua_headers = {"User-Agent": f"ucode/{ug_version()} pi/{agent_version('pi')}"}
+    if custom_coding_agent_headers():
+        ua_headers[CUSTOM_CODING_AGENT_HEADER] = UNITY_GATEWAY_CUSTOM_CODING_AGENT_ENV_VAR
     request_tags = request_tags_header_value()
     if request_tags:
         # Similarly to UA, request_tags is a JSON object (validated in `request_tags_header_value()`)

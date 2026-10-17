@@ -27,6 +27,7 @@ from ucode.config_io import (
 )
 from ucode.constants import (
     AI_GATEWAY_REQUEST_TAGS_HEADER,
+    CUSTOM_CODING_AGENT_HEADER,
     LOOPBACK_HOST,
     MCP_CLEANUP_SCOPES,
     MCP_USER_SCOPE,
@@ -103,6 +104,7 @@ from ucode.telemetry import agent_version, ug_version
 from ucode.ui import print_note, print_success, print_warning
 
 from .args import LaunchOptions, has_explicit_model_arg
+from .coding_agent import custom_coding_agent_headers
 from .request_tags import request_tags_header_value
 
 GATEWAY_MODEL_DISCOVERY_ENV_VAR = "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"
@@ -242,6 +244,7 @@ CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
     {
         "x-databricks-use-coding-agent-mode",
         "user-agent",
+        CUSTOM_CODING_AGENT_HEADER.casefold(),
         MODEL_PROVIDER_SERVICE_HEADER.casefold(),
         MODEL_SERVICE_PARENT_SCHEMA_HEADER.casefold(),
         SMART_ROUTER_RECIPE_HEADER.casefold(),  # Remove recipe headers written by older ug versions.
@@ -252,7 +255,7 @@ CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
 CLAUDE_OPTIONAL_CUSTOM_HEADER_NAMES = frozenset({AI_GATEWAY_REQUEST_TAGS_HEADER.casefold()})
 # These attribute inference traffic; neither selects the gateway or provider.
 CLAUDE_OPTIONAL_ATTRIBUTION_HEADER_NAMES = frozenset(
-    {"user-agent", SMART_ROUTER_RECIPE_HEADER.casefold()}
+    {"user-agent", SMART_ROUTER_RECIPE_HEADER.casefold(), CUSTOM_CODING_AGENT_HEADER.casefold()}
 )
 # Relayed drops the user scope to deliberately omit the stale apiKeyHelper. Only applied to relayed
 # launches — normal launches keep loading user settings (hooks/permissions) as before.
@@ -508,6 +511,7 @@ def render_overlay(
         "x-databricks-use-coding-agent-mode: true",
         f"User-Agent: ucode/{ug_version()} claude/{agent_version('claude')}",
     ]
+    header_lines.extend(f"{name}: {value}" for name, value in custom_coding_agent_headers().items())
     if provider:
         header_lines.append(f"{MODEL_PROVIDER_SERVICE_HEADER}: {provider}")
     elif parent_schema:

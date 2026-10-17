@@ -101,6 +101,27 @@ ug removes its shared reference on discovery/validation failure, reconfiguration
 revert, or before installing/updating Codex. After an update, run `ug codex` to refresh
 discovery or `ug configure` for a managed static list, then restart the app server.
 
+## Custom Coding-Agent Attribution
+
+A wrapper or custom agent can identify itself to AI Gateway:
+
+```bash
+UNITY_GATEWAY_CUSTOM_CODING_AGENT=my-agent ug claude
+```
+
+This sends `Databricks-Custom-Coding-Agent: my-agent` without changing authentication
+or `User-Agent`. The gateway uses this identity instead of the native agent name
+and does not record the native agent's version for the override. Leave the variable
+unset or blank to retain native agent/version detection. This does not add surface headers.
+Names containing control characters are warned about and ignored.
+
+Supported adapters: Claude Code, Codex, Gemini CLI, OpenCode, Kilo, and Pi.
+Gemini CLI additionally requires names without commas. Pi reads the identity from
+the environment rather than interpreting it as a literal config value.
+Admin-managed headers take precedence. Claude Desktop picks up the override during
+`ug configure`; rerun configure without the variable to remove it from that profile.
+Copilot CLI and MCP-only agents do not support this override.
+
 ## Configure
 
 ```bash

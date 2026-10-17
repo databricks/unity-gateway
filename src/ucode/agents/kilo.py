@@ -34,6 +34,7 @@ from ucode.state import mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
 
 from .args import LaunchOptions, explicit_model_arg_value, has_explicit_model_arg
+from .coding_agent import custom_coding_agent_headers
 
 KILO_XDG_CONFIG_HOME = APP_DIR / "kilo-xdg"
 KILO_CONFIG_DIR = KILO_XDG_CONFIG_HOME / "kilo"
@@ -258,6 +259,7 @@ def render_overlay(
     ua_header = {
         "User-Agent": f"ucode/{ug_version()} kilo/{agent_version('kilo')}",
     }
+    ua_header.update(custom_coding_agent_headers())
 
     anthropic_models = opencode_models.get("anthropic") or []
     gemini_models = opencode_models.get("gemini") or []

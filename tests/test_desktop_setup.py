@@ -61,6 +61,38 @@ def configured_profile(directory):
     return json.loads((directory / f"{metadata['appliedId']}.json").read_text())
 
 
+def test_custom_agent_header_is_removed_on_reconfigure(desktop, monkeypatch):
+    state = {"workspace": "https://workspace.example", "profile": "chosen-profile"}
+    monkeypatch.setenv("UNITY_GATEWAY_CUSTOM_CODING_AGENT", "custom-agent")
+    desktop_setup.configure_claude_desktop(state)
+    assert (
+        configured_profile(desktop)["inferenceCustomHeaders"]["Databricks-Custom-Coding-Agent"]
+        == "custom-agent"
+    )
+
+    monkeypatch.delenv("UNITY_GATEWAY_CUSTOM_CODING_AGENT")
+    desktop_setup.configure_claude_desktop(state)
+    assert (
+        "Databricks-Custom-Coding-Agent"
+        not in configured_profile(desktop)["inferenceCustomHeaders"]
+    )
+
+
+def test_admin_custom_agent_header_overrides_environment(desktop, monkeypatch):
+    monkeypatch.setenv("UNITY_GATEWAY_CUSTOM_CODING_AGENT", "session-agent")
+    desktop_setup.configure_claude_desktop(
+        {
+            "workspace": "https://workspace.example",
+            "profile": "chosen-profile",
+            "claude_http_headers": {"databricks-custom-coding-agent": "admin-agent"},
+        }
+    )
+    headers = configured_profile(desktop)["inferenceCustomHeaders"]
+    assert [
+        value for name, value in headers.items() if name.lower() == "databricks-custom-coding-agent"
+    ] == ["admin-agent"]
+
+
 def test_configure_uses_claude_catalog_and_absolute_helper(desktop, tmp_path, capsys):
     desktop_setup.configure_claude_desktop(
         {"workspace": "https://workspace.example/", "profile": "chosen-profile"}

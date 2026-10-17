@@ -28,6 +28,9 @@ SMART_ROUTER_RECIPE_HEADER = "Databricks-Smart-Router-Recipe"
 AI_GATEWAY_REQUEST_TAGS_HEADER = "Databricks-Ai-Gateway-Request-Tags"
 AI_GATEWAY_REQUEST_TAGS_ENV_VAR = "AI_GATEWAY_REQUEST_TAGS"
 
+CUSTOM_CODING_AGENT_HEADER = "Databricks-Custom-Coding-Agent"
+UNITY_GATEWAY_CUSTOM_CODING_AGENT_ENV_VAR = "UNITY_GATEWAY_CUSTOM_CODING_AGENT"
+
 
 # MCP server registration scopes. Claude Code supports local/project/user; the
 # other CLIs only take the user-scope name. Kept here (a leaf module) so both

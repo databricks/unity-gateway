@@ -12,6 +12,13 @@ mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 | Integration CUJs | `integration/test_*.py` | Public configure, TUI, script, command, protocol, and lifecycle journeys |
 | Installation | `integration/test_installation.py` | Fresh installed package, CLI, and local helpers without credentials on Linux and advisory native Windows |
 
+`test_coding_agent.py` covers `UNITY_GATEWAY_CUSTOM_CODING_AGENT` validation and
+header rendering for Claude Code, modern/legacy Codex, Gemini, OpenCode, Kilo, and Pi.
+It checks unchanged native User-Agent values, admin precedence, repeat-render cleanup,
+Claude header merging, Gemini delimiter rejection, and Pi's environment-reference transport.
+Codex config-write and Desktop setup tests also check removal on reconfiguration.
+These are component checks; no live request or backend attribution is asserted.
+
 Claude mod entry-point coverage lives in `test_claude_mod.py` (generated plugin contents),
 `test_claude_smart_routing_v2.py` (launch wiring), and the explicitly selected
 `native_claude/test_mod.py` suite. Claude 2.1.290 validates the module and runs its

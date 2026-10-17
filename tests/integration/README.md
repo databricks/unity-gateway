@@ -1,5 +1,11 @@
 # Integration tests
 
+Custom coding-agent attribution is covered by component tests in
+`../test_coding_agent.py`, `../test_agent_codex.py`, `../test_claude_managed_headers.py`,
+and `../test_desktop_setup.py`: validation, adapter headers, admin precedence,
+and removal on later renders/reconfiguration. This suite does not yet assert
+`UNITY_GATEWAY_CUSTOM_CODING_AGENT` on live inference or in gateway usage logs.
+
 The separate [dedicated-workspace CUJ](../e2e_cuj/AGENTS.md) lives in `tests/e2e_cuj/`
 and runs directly with pytest. It does not use this suite's runner or config fixtures.
 It reuses the session, terminal, file-task, and transcript helpers in `utils/`.

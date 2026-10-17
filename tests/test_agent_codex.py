@@ -234,6 +234,22 @@ class TestRenderOverlayUserAgent:
 
 
 class TestCodexWriteConfig:
+    def test_rewrite_removes_custom_agent_override(self, tmp_path, monkeypatch):
+        config_path = tmp_path / "ucode.config.toml"
+        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", config_path)
+        monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "backup.toml")
+        monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.145.0")
+        monkeypatch.setenv("UNITY_GATEWAY_CUSTOM_CODING_AGENT", "custom-agent")
+        state = {"workspace": WS, "codex_models": []}
+        codex.write_tool_config(state)
+        headers = read_toml_safe(config_path)["model_providers"]["Databricks"]["http_headers"]
+        assert headers["Databricks-Custom-Coding-Agent"] == "custom-agent"
+
+        monkeypatch.delenv("UNITY_GATEWAY_CUSTOM_CODING_AGENT")
+        codex.write_tool_config(state)
+        headers = read_toml_safe(config_path)["model_providers"]["Databricks"]["http_headers"]
+        assert "Databricks-Custom-Coding-Agent" not in headers
+
     def test_writes_ucode_profile_config_file(self, tmp_path, monkeypatch):
         config_path = tmp_path / ".codex" / "ucode.config.toml"
         backup_path = tmp_path / "codex-ucode-config.backup.toml"
