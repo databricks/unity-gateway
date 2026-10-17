@@ -5145,6 +5145,40 @@ class TestConfigureSharedStateUsePat:
         assert state["use_pat"] is True
         assert saved and saved[-1]["use_pat"] is True
 
+    def test_configure_passes_probe_claude_by_wanted_tools(self, monkeypatch):
+        cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
+        seen: list[bool] = []
+
+        def fake_ms(w, t, *, probe_claude):
+            seen.append(probe_claude)
+            return {}, [], [], [], None
+
+        monkeypatch.setattr(cli_mod, "discover_model_services", fake_ms)
+        cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["codex"])
+        cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["claude"])
+        cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
+        assert seen == [False, True, True]
+
+    def test_all_claude_denied_skips_unprobed_fallback(self, monkeypatch):
+        cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
+        monkeypatch.setattr(
+            cli_mod,
+            "discover_model_services",
+            lambda w, t, **_kw: ({}, ["gpt-5-5"], [], [], db_mod.CLAUDE_ALL_DENIED_REASON),
+        )
+
+        def boom(w, t):
+            raise AssertionError("must not list denied Claude models unprobed")
+
+        monkeypatch.setattr(cli_mod, "discover_claude_models", boom)
+        state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["claude"])
+
+        assert state["claude_models"] == {}
+        reasons = state["_discovery_reasons"]
+        assert reasons["claude"] == db_mod.CLAUDE_ALL_DENIED_REASON
+        assert "permission" in reasons["claude"]
+        assert reasons["codex"] is None
+
     def test_happy_path_prints_success_without_model_service_detail(self, monkeypatch, capsys):
         cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
 
@@ -6527,7 +6561,8 @@ class TestToolsWantClaude:
         assert not cli_mod._tools_want_claude({"codex"})
         assert not cli_mod._tools_want_claude({"gemini", "codex"})
 
-    def test_live_refresh_skips_probe_for_codex_only(self):
+    @pytest.mark.parametrize("tools", [{"codex"}, {"claude"}, {"claude", "codex"}])
+    def test_status_never_probes(self, tools):
         state = {**MINIMAL_STATE, "profile": "p"}
         with (
             patch("ucode.cli.get_databricks_token", return_value="token"),
@@ -6538,7 +6573,7 @@ class TestToolsWantClaude:
             patch("ucode.cli.discover_claude_models", return_value=({}, None)),
             patch("ucode.cli.discover_gemini_models", return_value=([], None)),
         ):
-            cli_mod._live_status_model_state(state, {"codex"})
+            cli_mod._live_status_model_state(state, tools)
         assert ms.call_args.kwargs["probe_claude"] is False
 
 

@@ -623,8 +623,22 @@ class TestUncallableClaudeModels:
     def test_all_denied_omits_families(self, monkeypatch):
         self._listing(monkeypatch, ["system.ai.claude-opus-5-5", "system.ai.claude-sonnet-4-6"])
         self._post(monkeypatch, {"system.ai.claude-opus-5-5", "system.ai.claude-sonnet-4-6"})
-        claude, *_ = db_mod.discover_model_services(WS, "token", probe_claude=True)
+        claude, *_, reason = db_mod.discover_model_services(WS, "token", probe_claude=True)
         assert claude == {}
+        assert reason == db_mod.CLAUDE_ALL_DENIED_REASON
+
+    def test_all_denied_flagged_even_when_other_families_exist(self, monkeypatch):
+        self._listing(monkeypatch, ["system.ai.claude-opus-5-5", "system.ai.gpt-5-5"])
+        self._post(monkeypatch, {"system.ai.claude-opus-5-5"})
+        claude, codex, *_, reason = db_mod.discover_model_services(WS, "token", probe_claude=True)
+        assert claude == {}
+        assert codex == ["system.ai.gpt-5-5"]
+        assert reason == db_mod.CLAUDE_ALL_DENIED_REASON
+
+    def test_unprobed_listing_never_flags_denied(self, monkeypatch):
+        self._listing(monkeypatch, ["system.ai.claude-opus-5-5"])
+        *_, reason = db_mod.discover_model_services(WS, "token")
+        assert reason is None
 
     def test_probing_is_opt_in(self, monkeypatch):
         self._listing(monkeypatch, ["system.ai.claude-opus-5-5"])

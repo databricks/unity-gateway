@@ -53,6 +53,7 @@ from ucode.custom_oauth import (
     ensure_custom_oauth_cli_token,
 )
 from ucode.databricks import (
+    CLAUDE_ALL_DENIED_REASON,
     SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION,
     apply_pat_environment,
     build_shared_base_urls,
@@ -667,9 +668,14 @@ def configure_shared_state(
             ms_claude, ms_codex, ms_gemini, ms_oss, ms_reason = discover_model_services(
                 workspace, token, probe_claude=want_claude
             )
+            claude_denied = ms_reason == CLAUDE_ALL_DENIED_REASON
+            if claude_denied:
+                ms_reason = None  # applies to Claude only
             if want_claude:
                 claude_models, claude_reason = ms_claude, ms_reason
-                if not claude_models:
+                if claude_denied:
+                    claude_reason = CLAUDE_ALL_DENIED_REASON
+                elif not claude_models:
                     claude_models, claude_reason = discover_claude_models(workspace, token)
             if want_gemini:
                 gemini_models, gemini_reason = ms_gemini, ms_reason
@@ -1228,7 +1234,7 @@ def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
                 discover_model_services(
                     workspace,
                     token,
-                    probe_claude=_tools_want_claude(tools),
+                    probe_claude=False,  # probes are billed; configure does them, not status
                 )
             )
             reasons: dict[str, str | None] = {}

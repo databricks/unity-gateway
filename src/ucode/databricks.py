@@ -2410,6 +2410,12 @@ def _drop_uncallable_claude_models(
     return {family: model for family, model in picks.items() if model}
 
 
+CLAUDE_ALL_DENIED_REASON = (
+    "you don't have permission to use any Claude model on this workspace "
+    "(EXECUTE is denied on every Claude model service)"
+)
+
+
 def discover_model_services(
     workspace: str, token: str, *, probe_claude: bool = False
 ) -> tuple[dict[str, str], list[str], list[str], list[str], str | None]:
@@ -2426,7 +2432,9 @@ def discover_model_services(
 
     ``probe_claude`` gates the billed 1-token callability probes used to skip Claude models the
     user cannot call; opt-in, pass True only when a Claude agent is wanted. A family whose candidates are all
-    denied is omitted.
+    denied is omitted. When every Claude family is denied, ``reason`` is ``CLAUDE_ALL_DENIED_REASON``
+    (even if other families were found) so callers skip the unprobed ``discover_claude_models``
+    fallback, which would list the same denied models.
 
     ``reason`` is None on success, else explains why nothing was found. Family
     bucketing is by name substring because the model-services API does not
@@ -2448,6 +2456,7 @@ def discover_model_services(
         claude_models = _drop_uncallable_claude_models(workspace, token, claude_candidates)
     else:
         claude_models = {family: models[0] for family, models in claude_candidates.items()}
+    claude_denied = bool(probe_claude and claude_candidates and not claude_models)
 
     codex_models = sorted([m for m in ids if "gpt-" in m], key=model_version_sort_key)
     gemini_models = sorted([m for m in ids if "gemini-" in m], key=model_version_sort_key)
@@ -2455,6 +2464,8 @@ def discover_model_services(
     oss_models = [m for m in ids if any(family in m for family in _OSS_MODEL_FAMILIES)]
 
     if not (claude_models or codex_models or gemini_models or oss_models):
+        if claude_denied:
+            return {}, [], [], [], CLAUDE_ALL_DENIED_REASON
         sample = ", ".join(ids[:5])
         return (
             {},
@@ -2466,7 +2477,13 @@ def discover_model_services(
                 f"claude/gpt/gemini/oss families (got: {sample})"
             ),
         )
-    return claude_models, codex_models, gemini_models, oss_models, None
+    return (
+        claude_models,
+        codex_models,
+        gemini_models,
+        oss_models,
+        CLAUDE_ALL_DENIED_REASON if claude_denied else None,
+    )
 
 
 # --- Managed coding-agent config (admin-authored, developer-read) -----------
