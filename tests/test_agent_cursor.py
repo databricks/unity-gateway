@@ -6,6 +6,8 @@ import json
 import subprocess
 from unittest.mock import MagicMock
 
+import pytest
+
 from ucode.agents import cursor
 
 WS = "https://example.databricks.com"
@@ -157,26 +159,29 @@ class TestLaunchApp:
         monkeypatch.setattr(cursor.shutil, "which", lambda name: "/usr/bin/cursor")
         monkeypatch.setattr(cursor.sys, "platform", "darwin")
         monkeypatch.setattr(cursor, "CURSOR_MACOS_APP_PATHS", (tmp_path / "missing.app", bundle))
+        monkeypatch.chdir(tmp_path)
 
-        assert cursor.find_app_launch_argv(["."]) == ["open", "-a", str(bundle), "."]
+        assert cursor.find_app_launch_argv(["."]) == ["open", "-a", str(bundle), str(tmp_path)]
 
-    def test_macos_forwards_flags_after_args_separator(self, tmp_path, monkeypatch):
+    def test_flags_prefer_cursor_cli_even_on_macos(self, tmp_path, monkeypatch):
         bundle = tmp_path / "Cursor.app"
         bundle.mkdir()
+        monkeypatch.setattr(cursor.shutil, "which", lambda name: "/usr/bin/cursor")
         monkeypatch.setattr(cursor.sys, "platform", "darwin")
         monkeypatch.setattr(cursor, "CURSOR_MACOS_APP_PATHS", (bundle,))
 
-        assert cursor.find_app_launch_argv(["--new-window"]) == [
-            "open",
-            "-a",
-            str(bundle),
-            "--args",
+        assert cursor.find_app_launch_argv(["--new-window", "."]) == [
+            "/usr/bin/cursor",
             "--new-window",
+            ".",
         ]
 
-    def test_macos_flags_and_paths_keep_order_after_args_separator(self, tmp_path, monkeypatch):
+    def test_macos_flags_without_cli_use_args_with_absolute_paths(self, tmp_path, monkeypatch):
         bundle = tmp_path / "Cursor.app"
         bundle.mkdir()
+        (tmp_path / "a.py").write_text("")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(cursor.shutil, "which", lambda name: None)
         monkeypatch.setattr(cursor.sys, "platform", "darwin")
         monkeypatch.setattr(cursor, "CURSOR_MACOS_APP_PATHS", (bundle,))
 
@@ -186,17 +191,25 @@ class TestLaunchApp:
             str(bundle),
             "--args",
             "--goto",
-            "a.py:3",
-            ".",
+            str(tmp_path / "a.py") + ":3",
+            str(tmp_path),
         ]
 
-    def test_macos_paths_only_go_straight_to_open(self, tmp_path, monkeypatch):
+    def test_macos_paths_only_are_made_absolute(self, tmp_path, monkeypatch):
         bundle = tmp_path / "Cursor.app"
         bundle.mkdir()
+        (tmp_path / "a").mkdir()
+        monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(cursor.sys, "platform", "darwin")
         monkeypatch.setattr(cursor, "CURSOR_MACOS_APP_PATHS", (bundle,))
 
-        assert cursor.find_app_launch_argv(["a", "b"]) == ["open", "-a", str(bundle), "a", "b"]
+        assert cursor.find_app_launch_argv(["a", "nonexistent"]) == [
+            "open",
+            "-a",
+            str(bundle),
+            str(tmp_path / "a"),
+            "nonexistent",
+        ]
 
     def test_macos_without_bundle_uses_cursor_command(self, tmp_path, monkeypatch):
         monkeypatch.setattr(cursor.shutil, "which", lambda name: "/usr/bin/cursor")
@@ -230,6 +243,43 @@ class TestLaunchApp:
         assert kwargs["stderr"] is subprocess.DEVNULL
         for key, value in cursor._DETACHED_POPEN_OPTIONS.items():
             assert kwargs[key] == value
+
+    def test_launch_app_open_nonzero_exit_raises_with_stderr(self, monkeypatch):
+        proc = MagicMock(returncode=1)
+        proc.communicate.return_value = (None, b"Unable to find application")
+        monkeypatch.setattr(cursor.subprocess_cross_os, "popen", lambda argv, **kw: proc)
+
+        with pytest.raises(RuntimeError, match="exited 1.*Unable to find application"):
+            cursor.launch_app(["open", "-a", "/x/Cursor.app"])
+
+    def test_launch_app_open_success_and_timeout_do_not_raise(self, monkeypatch):
+        ok = MagicMock(returncode=0)
+        ok.communicate.return_value = (None, b"")
+        slow = MagicMock(returncode=None)
+        slow.communicate.side_effect = subprocess.TimeoutExpired("open", 10)
+        procs = iter([ok, slow])
+        monkeypatch.setattr(cursor.subprocess_cross_os, "popen", lambda argv, **kw: next(procs))
+
+        cursor.launch_app(["open", "-a", "/x/Cursor.app"])
+        cursor.launch_app(["open", "-a", "/x/Cursor.app"])
+
+    def test_launch_app_cursor_cli_is_not_waited_on(self, monkeypatch):
+        proc = MagicMock()
+        monkeypatch.setattr(cursor.subprocess_cross_os, "popen", lambda argv, **kw: proc)
+
+        cursor.launch_app(["/usr/bin/cursor", "."])
+
+        proc.communicate.assert_not_called()
+        proc.wait.assert_not_called()
+
+    def test_launch_app_propagates_oserror(self, monkeypatch):
+        def boom(argv, **kw):
+            raise OSError("exec format error")
+
+        monkeypatch.setattr(cursor.subprocess_cross_os, "popen", boom)
+
+        with pytest.raises(OSError):
+            cursor.launch_app(["/usr/bin/cursor", "."])
 
 
 class TestWriteUserMcpServers:

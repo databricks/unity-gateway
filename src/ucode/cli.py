@@ -3884,8 +3884,8 @@ def cursor_cmd(ctx: typer.Context) -> None:
                 "Cursor runs models on your Cursor account; its Databricks MCP servers "
                 "in ~/.cursor/mcp.json authenticate through `ug mcp-proxy`."
             )
-            print_success("Opening the Cursor app")
             cursor.launch_app(argv)
+            print_success("Opened the Cursor app")
             return
         if not shutil.which(cursor.CURSOR_BINARY):
             raise RuntimeError(
@@ -3899,7 +3899,7 @@ def cursor_cmd(ctx: typer.Context) -> None:
         )
         print_success("Starting Cursor Agent")
         cursor.launch(load_state(), ctx.args)
-    except RuntimeError as exc:
+    except (RuntimeError, OSError) as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
     except KeyboardInterrupt:

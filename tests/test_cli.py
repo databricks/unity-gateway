@@ -3612,6 +3612,21 @@ def test_cursor_app_reports_when_not_installed():
     launch_app.assert_not_called()
 
 
+@pytest.mark.parametrize("exc", [RuntimeError("open exited 1"), OSError("exec failed")])
+def test_cursor_app_launch_failure_reports_error_without_success(exc):
+    with (
+        patch("ucode.agents.cursor.find_app_launch_argv", return_value=["cursor", "."]),
+        patch("ucode.agents.cursor.launch_app", side_effect=exc),
+    ):
+        result = runner.invoke(app, ["cursor", "app", "."])
+
+    assert result.exit_code == 1
+    out = " ".join(result.output.split())
+    assert str(exc) in out
+    assert "Opened the Cursor app" not in out
+    assert "Traceback" not in out
+
+
 @pytest.mark.parametrize(
     "names,expected",
     [
