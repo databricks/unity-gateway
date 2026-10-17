@@ -3397,6 +3397,32 @@ class TestReconcileManagedMcpServers:
         assert seen_selector == {"unity_catalog_location": "system.ai"}
         assert [s["name"] for s in out] == ["system-ai-a"]
 
+    def test_existing_managed_file_entry_keeps_its_name_on_upgrade(self, monkeypatch):
+        url = mcp.build_mcp_service_url(WS, "system.ai.github")
+        state = {"workspace": WS, "profile": None, "managed_mcp_servers": []}
+        applied: dict = {}
+        real_resolve = mcp._resolve_managed_mcp_servers
+        self._wire(
+            monkeypatch,
+            state=state,
+            configured=["claude"],
+            resolved=[],
+            applied=applied,
+            saved={},
+            setup_calls=[],
+        )
+        monkeypatch.setattr(mcp, "_resolve_managed_mcp_servers", real_resolve)
+        monkeypatch.setattr(mcp, "_native_mcp_names", lambda: set())
+        monkeypatch.setattr(mcp.claude, "read_managed_mcp_urls", lambda: {"system-ai-github": url})
+        monkeypatch.setattr(mcp.codex, "read_managed_mcp_urls", lambda: {})
+        monkeypatch.setattr(mcp.claude, "managed_mcp_uses_managed_file", lambda *a, **k: False)
+        monkeypatch.setattr(mcp.claude, "reconcile_managed_mcp", lambda *a, **k: True)
+        monkeypatch.setattr(mcp.codex, "reconcile_managed_mcp", lambda *a, **k: True)
+        out = mcp.reconcile_managed_mcp_servers(
+            {"mcp_servers": {"names": ["system.ai.github"]}}, {"claude"}
+        )
+        assert [s["name"] for s in out] == ["system-ai-github"]
+
     def test_reconcile_removes_servers_the_admin_dropped(self, monkeypatch):
         # A config that no longer lists any MCP server clears the previously-registered managed set.
         previous = [{"name": "old", "url": "u", "auth": "proxy", "clients": ["claude"]}]
@@ -4477,6 +4503,33 @@ class TestMcpServiceEntryNames:
             {"unity_catalog_location": "main.default"}, WS, None, ["claude"], [held]
         )
         assert [s["name"] for s in working] == ["main-default-exa"]
+
+    def test_leaf_held_by_another_selection_in_the_run_gets_the_dashed_name(self, monkeypatch):
+        # An external connection named `github` and `system.ai.github` picked together: both would
+        # resolve to `github`, so the service must take the dashed name and neither is dropped.
+        _stub_location_base(monkeypatch, {**CLAUDE_STATE})
+        configured: dict[str, str] = {}
+        saved: list[dict] = []
+        monkeypatch.setattr(mcp, "ensure_databricks_auth", lambda workspace, profile=None: None)
+        monkeypatch.setattr(mcp, "discover_mcp_service_names", lambda workspace, profile=None: [])
+        monkeypatch.setattr(
+            mcp,
+            "prompt_for_mcp_server_choices",
+            lambda *a, **kw: [
+                f"{mcp.MCP_ADD_PREFIX}{mcp.EXTERNAL_MCP_SELECTION_PREFIX}github",
+                f"{mcp.MCP_ADD_PREFIX}{mcp.MCP_SERVICE_SELECTION_PREFIX}system.ai.github",
+            ],
+        )
+        monkeypatch.setattr(
+            mcp,
+            "configure_client_mcp_server",
+            lambda client, name, url, *a, **kw: configured.update({name: url}) or [],
+        )
+        monkeypatch.setattr(mcp, "remove_client_mcp_server", lambda *a, **kw: [])
+        monkeypatch.setattr(mcp, "save_state", lambda s: saved.append(s.copy()))
+        assert mcp.configure_mcp_command() == 0
+        assert sorted(configured) == ["github", "system-ai-github"]
+        assert sorted(s["name"] for s in saved[-1]["mcp_servers"]) == ["github", "system-ai-github"]
 
     def test_picker_finds_a_service_registered_under_its_short_name(self):
         urls = {"exa": self._url("main.default.exa")}

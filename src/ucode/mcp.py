@@ -1172,7 +1172,12 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
             state, "Managed MCP Servers", agents=scope, action_note="Registering for"
         )
         working = _resolve_managed_mcp_servers(
-            selector, workspace, profile, clients, [*(state.get("mcp_servers") or []), *previous]
+            selector,
+            workspace,
+            profile,
+            clients,
+            # Managed entries first (file + fallback), so an entry already there keeps its name.
+            [*managed_mcp_servers(state), *(state.get("mcp_servers") or [])],
         )
     else:
         # No MCP client configured: nothing to register, but still clear what a prior configure left.
@@ -2187,10 +2192,32 @@ def configure_mcp_command(
     available_vector_search_servers = discovered["vector_search"]
     available_uc_functions_servers = discovered["uc_functions"]
 
+    # Names other selections in this run will hold (kept entries, and new non-service adds), so a
+    # service's leaf never collides with one of them.
+    run_names: list[dict] = []
+    for selection in selections:
+        if not selection.startswith(MCP_ADD_PREFIX):
+            run_names.append({"name": selection})
+        elif not selection.removeprefix(MCP_ADD_PREFIX).startswith(MCP_SERVICE_SELECTION_PREFIX):
+            try:
+                run_names.append(
+                    {
+                        "name": _resolve_mcp_selection(
+                            selection.removeprefix(MCP_ADD_PREFIX),
+                            workspace,
+                            discovered["apps"],
+                            discovered["genie"],
+                            discovered["vector_search"],
+                            discovered["uc_functions"],
+                        )[0]
+                    }
+                )
+            except RuntimeError:
+                pass  # reported when the selection is resolved below
     service_names = _mcp_service_selection_names(
         [s.removeprefix(MCP_ADD_PREFIX) for s in selections if s.startswith(MCP_ADD_PREFIX)],
         workspace,
-        [*original_mcp_servers, *managed_servers],
+        [*original_mcp_servers, *managed_servers, *run_names],
     )
     working_mcp_servers: list[dict] = list(skills_servers)
     working_names: set[str] = set()
