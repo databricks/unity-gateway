@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+import subprocess
+from unittest.mock import MagicMock
+
+import pytest
 
 from ucode.agents import cursor
 
@@ -148,14 +152,21 @@ class TestLaunchApp:
 
         assert cursor.find_app_launch_argv(["."]) == ["/usr/bin/cursor", "."]
 
-    def test_macos_falls_back_to_open_app_bundle(self, tmp_path, monkeypatch):
+    def test_macos_prefers_open_app_bundle_over_cursor_command(self, tmp_path, monkeypatch):
         bundle = tmp_path / "Cursor.app"
         bundle.mkdir()
-        monkeypatch.setattr(cursor.shutil, "which", lambda name: None)
+        monkeypatch.setattr(cursor.shutil, "which", lambda name: "/usr/bin/cursor")
         monkeypatch.setattr(cursor.sys, "platform", "darwin")
         monkeypatch.setattr(cursor, "CURSOR_MACOS_APP_PATHS", (tmp_path / "missing.app", bundle))
 
         assert cursor.find_app_launch_argv(["."]) == ["open", "-a", str(bundle), "."]
+
+    def test_macos_without_bundle_uses_cursor_command(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cursor.shutil, "which", lambda name: "/usr/bin/cursor")
+        monkeypatch.setattr(cursor.sys, "platform", "darwin")
+        monkeypatch.setattr(cursor, "CURSOR_MACOS_APP_PATHS", (tmp_path / "missing.app",))
+
+        assert cursor.find_app_launch_argv(["."]) == ["/usr/bin/cursor", "."]
 
     def test_not_installed_returns_none(self, tmp_path, monkeypatch):
         monkeypatch.setattr(cursor.shutil, "which", lambda name: None)
@@ -164,13 +175,29 @@ class TestLaunchApp:
 
         assert cursor.find_app_launch_argv([]) is None
 
-    def test_launch_app_execs_argv(self, monkeypatch):
-        execs: list[list[str]] = []
-        monkeypatch.setattr(cursor, "exec_or_spawn", lambda argv: execs.append(argv))
+    def test_launch_app_starts_detached_without_waiting(self, monkeypatch):
+        calls: list[tuple[list[str], dict]] = []
+        proc = MagicMock()
+        monkeypatch.setattr(
+            cursor.subprocess_cross_os,
+            "popen",
+            lambda argv, **kw: (calls.append((argv, kw)), proc)[1],
+        )
+        monkeypatch.setattr(
+            cursor, "exec_or_spawn", lambda argv: pytest.fail("must not wait on the app")
+        )
 
         cursor.launch_app(["cursor", "."])
 
-        assert execs == [["cursor", "."]]
+        assert len(calls) == 1
+        argv, kwargs = calls[0]
+        assert argv == ["cursor", "."]
+        assert kwargs["stdin"] is subprocess.DEVNULL
+        assert kwargs["stdout"] is subprocess.DEVNULL
+        assert kwargs["stderr"] is subprocess.DEVNULL
+        for key, value in cursor._DETACHED_POPEN_OPTIONS.items():
+            assert kwargs[key] == value
+        proc.wait.assert_not_called()
 
 
 class TestWriteUserMcpServers:

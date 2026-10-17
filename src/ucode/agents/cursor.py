@@ -18,11 +18,20 @@ whole-file backup.
 from __future__ import annotations
 
 import shutil
+import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 from ucode.config_io import apply_json_mcp_diff, read_json_safe, write_json_file
 from ucode.launcher import exec_or_spawn
+from ucode.os_compatibility import subprocess_cross_os
+
+_DETACHED_POPEN_OPTIONS: dict[str, Any] = (
+    {"creationflags": subprocess.CREATE_NO_WINDOW}
+    if sys.platform == "win32"
+    else {"start_new_session": True}
+)
 
 CURSOR_BINARY = "cursor-agent"
 CURSOR_APP_BINARY = "cursor"
@@ -115,22 +124,30 @@ def launch(state: dict, tool_args: list[str]) -> None:
 def find_app_launch_argv(tool_args: list[str]) -> list[str] | None:
     """Return the argv that opens the Cursor desktop app, or None if it isn't installed.
 
-    Prefers the `cursor` shell command (installed by Cursor on every platform), and
-    falls back to `open -a` on the macOS app bundle when that command isn't on PATH."""
-    binary = shutil.which(CURSOR_APP_BINARY)
-    if binary:
-        return [binary, *tool_args]
+    On macOS prefers `open -a` on the app bundle, which returns as soon as the app is
+    launched. Otherwise uses the `cursor` shell command (installed by Cursor on every
+    platform); `launch_app` starts it detached so it can't hold the terminal."""
     if sys.platform == "darwin":
         for bundle in CURSOR_MACOS_APP_PATHS:
             if bundle.exists():
                 return ["open", "-a", str(bundle), *tool_args]
+    binary = shutil.which(CURSOR_APP_BINARY)
+    if binary:
+        return [binary, *tool_args]
     return None
 
 
 def launch_app(argv: list[str]) -> None:
-    """Open the Cursor desktop app.
+    """Open the Cursor desktop app and return without waiting for it.
 
     The desktop app reads the same ~/.cursor/mcp.json as `cursor-agent`, and the
     Databricks MCP servers in it run `ug mcp-proxy`, so no env or token wiring is
-    needed here."""
-    exec_or_spawn(argv)
+    needed here. The process is detached (own session, no stdio) because the `cursor`
+    shell command can stay attached for as long as the app runs."""
+    subprocess_cross_os.popen(
+        argv,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        **_DETACHED_POPEN_OPTIONS,
+    )
