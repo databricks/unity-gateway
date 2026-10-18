@@ -167,7 +167,9 @@ def validate_codex_catalog(binary: str, catalog: dict) -> None:
         ) from None
 
 
-def prepare_codex_catalog(binary: str, names: list[str]) -> dict:
+def prepare_codex_catalog(
+    binary: str, names: list[str], *, warn_missing_metadata: bool = True
+) -> dict:
     """Extract and validate with the launch binary; never fetch or reuse stale metadata.
 
     --bundled bypasses discovery. Validation reads an explicit local catalog.
@@ -198,6 +200,7 @@ def prepare_codex_catalog(binary: str, names: list[str]) -> dict:
             "`codex debug models --bundled` works, then retry configuration. "
             "Gateway discovery was not used."
         ) from None
-    for message in fallback_warnings:
-        print_warning(message)
+    if warn_missing_metadata:
+        for message in fallback_warnings:
+            print_warning(message)
     return catalog
