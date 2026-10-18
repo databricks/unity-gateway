@@ -23,11 +23,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ucode import config_io
 from ucode.smart_routing.rationale import format_rationale
 
 ROUTER_NAME = "task_v3"
 ROUTER_NAME_ENV_VAR = "SMART_ROUTER_NAME"
 ROUTING_PATH = "/ai-gateway/routing/v1/routes:select"
+ROUTING_REQUEST_LOG_NAME = "routing-requests.jsonl"
 REQUEST_TIMEOUT_S = 30.0
 SUBAGENT_ROUTING_DISCLAIMER = (
     "Spawned subagents are routed independently based on their own complexity."
@@ -234,8 +236,14 @@ def select_route(
         "task": {"prompt": task},
         "route_selector": {"router_name": router_name},
     }
+    url = workspace.rstrip("/") + ROUTING_PATH
+    # Written to a file because stdout belongs to the TUI or the hook protocol.
+    _append_jsonl(
+        config_io.APP_DIR / ROUTING_REQUEST_LOG_NAME,
+        {"at": time.time(), "url": url, "body": body},
+    )
     request = urllib.request.Request(
-        workspace.rstrip("/") + ROUTING_PATH,
+        url,
         data=json.dumps(body).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {token}",
