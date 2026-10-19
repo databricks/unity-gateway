@@ -261,6 +261,52 @@ def test_managed_static_catalog_does_not_fetch_discovery(desktop, monkeypatch):
     assert profile["inferenceCustomHeaders"]["X-Admin"] == "configured"
 
 
+def test_configure_refreshes_model_labels_from_discovery(desktop, monkeypatch):
+    sonnet = "system.ai.claude-sonnet-5"
+    opus = "system.ai.claude-opus-5"
+    haiku = "system.ai.claude-haiku-4-5"
+    gpt = "system.ai.gpt-5-6-sol"
+    model_ids = [sonnet, gpt, opus, haiku, sonnet]
+    display_names = {sonnet: "Claude Sonnet 5", opus: "", gpt: "GPT"}
+    original_ids = list(model_ids)
+    original_names = dict(display_names)
+    monkeypatch.setattr(
+        desktop_setup,
+        "list_anthropic_model_catalog",
+        lambda *args, **kwargs: AnthropicModelCatalog(model_ids, display_names),
+    )
+    state = {"workspace": "https://workspace.example", "profile": "chosen-profile"}
+
+    desktop_setup.configure_claude_desktop(state)
+
+    assert configured_profile(desktop)["inferenceModels"] == [
+        {"name": sonnet, "labelOverride": "Claude Sonnet 5"},
+        {"name": opus},
+        {"name": haiku},
+        {"name": sonnet, "labelOverride": "Claude Sonnet 5"},
+    ]
+    assert model_ids == original_ids
+    assert display_names == original_names
+
+    display_names[sonnet] = "Sonnet — Updated label"
+    display_names[opus] = "Claude Opus 5"
+    desktop_setup.configure_claude_desktop(state)
+    assert configured_profile(desktop)["inferenceModels"] == [
+        {"name": sonnet, "labelOverride": "Sonnet — Updated label"},
+        {"name": opus, "labelOverride": "Claude Opus 5"},
+        {"name": haiku},
+        {"name": sonnet, "labelOverride": "Sonnet — Updated label"},
+    ]
+
+    del display_names[sonnet]
+    display_names[opus] = ""
+    desktop_setup.configure_claude_desktop(state)
+    assert configured_profile(desktop)["inferenceModels"] == [
+        {"name": model_id} for model_id in [sonnet, opus, haiku, sonnet]
+    ]
+    assert model_ids == original_ids
+
+
 @pytest.mark.parametrize("parent", [None, "main.models"])
 def test_discovery_and_native_headers_use_same_source(desktop, monkeypatch, parent):
     calls = []
@@ -269,7 +315,7 @@ def test_discovery_and_native_headers_use_same_source(desktop, monkeypatch, pare
         calls.append((workspace, token, kwargs))
         return AnthropicModelCatalog(
             model_ids=["us.anthropic.claude-sonnet-4-5-v1:0", "provider-model"],
-            model_id_to_display_name={},
+            model_id_to_display_name={"us.anthropic.claude-sonnet-4-5-v1:0": "Claude Sonnet 4.5"},
         )
 
     monkeypatch.setattr(desktop_setup, "list_anthropic_model_catalog", catalog)
@@ -297,7 +343,7 @@ def test_discovery_and_native_headers_use_same_source(desktop, monkeypatch, pare
     else:
         assert headers[MODEL_PROVIDER_SERVICE_HEADER] == expected_provider
     assert configured_profile(desktop)["inferenceModels"] == [
-        {"name": "us.anthropic.claude-sonnet-4-5-v1:0"}
+        {"name": "us.anthropic.claude-sonnet-4-5-v1:0", "labelOverride": "Claude Sonnet 4.5"}
     ]
 
 

@@ -323,6 +323,7 @@ class TestV2Launch:
             "claude-sonnet-5": "system.ai.claude-sonnet-5",
         }
         assert captured["settings"]["env"][v2.ENABLE_SMART_ROUTING_ENV_VAR] == "1"
+        assert "PreToolUse" not in captured["settings"]["hooks"]
         for key in (v2.SESSION_ENV_VAR, v2.SESSION_PYTHON_ENV_VAR):
             assert captured["settings"]["env"][key] == os.environ[key]
         assert claude_hooks.FIRST_PROMPT_SOCKET_ENV in captured["settings"]["env"]
@@ -330,16 +331,20 @@ class TestV2Launch:
             "command"
         ]
         assert first_prompt_command == "/bin/ug claude-router-hook route-first-prompt"
-        route_commands = [
-            hook["command"]
-            for group in captured["settings"]["hooks"]["PreToolUse"]
-            for hook in group["hooks"]
-            if "route-subagent" in hook["command"]
+        command = captured["settings"]["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"][
+            "routeCommand"
         ]
-        assert len(route_commands) == 1
-        assert route_commands[0].startswith("/bin/ug claude-router-hook route-subagent ")
-        assert "--model system.ai.claude-opus-4-8" in route_commands[0]
-        assert "--model system.ai.claude-sonnet-5" in route_commands[0]
+        assert command == [
+            "/bin/ug",
+            "claude-router-hook",
+            "route-subagent-mod",
+            "--host",
+            "https://example.com",
+            "--model",
+            "system.ai.claude-opus-4-8",
+            "--model",
+            "system.ai.claude-sonnet-5",
+        ]
         assert "modelPicker" not in captured["settings"]
         assert captured["restored_during_run"] == {
             "model": "haiku",
@@ -431,6 +436,7 @@ class TestV2Launch:
         }
 
     def test_subagent_only_launch_skips_first_prompt_routing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/bin/ug")
         user_settings = tmp_path / "settings.json"
         user_settings.write_text(json.dumps({"model": "opus"}))
         monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
@@ -501,7 +507,18 @@ class TestV2Launch:
         assert exc.value.code == 4
         settings = captured["settings"]
         assert settings["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME] == {
-            "options": v2._claude_mod_launch_options({**os.environ, **settings["env"]})
+            "options": {
+                **v2._claude_mod_launch_options({**os.environ, **settings["env"]}),
+                "routeCommand": [
+                    "/bin/ug",
+                    "claude-router-hook",
+                    "route-subagent-mod",
+                    "--host",
+                    "https://example.com",
+                    "--model",
+                    "system.ai.claude-opus-4-8",
+                ],
+            }
         }
         env = settings["env"]
         assert env[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
@@ -511,7 +528,7 @@ class TestV2Launch:
         assert claude_hooks.FIRST_PROMPT_SOCKET_ENV not in env
         # Subagent routing is fully wired; only the first-prompt machinery is absent.
         assert "UserPromptSubmit" not in settings["hooks"]
-        assert "route-subagent" in str(settings["hooks"]["PreToolUse"])
+        assert "PreToolUse" not in settings["hooks"]
         assert settings["modelOverrides"] == {"claude-opus-4-8": "system.ai.claude-opus-4-8"}
         assert captured["plugin_models"] == {"system.ai.claude-opus-4-8"}
         assert captured["argv"][3:5] == ["--model", "opus"]
@@ -666,7 +683,7 @@ class TestSubagentRouting:
             )
 
         monkeypatch.setattr(routing, "select_route", fake_select)
-        output = v2.route_claude_pre_tool_use(
+        output = v2.route_claude_subagent(
             {
                 "tool_name": "Agent",
                 "tool_input": {
@@ -693,25 +710,67 @@ class TestSubagentRouting:
                 ("claude-sonnet-5", "claude"),
             ],
         }
-        updated_input = output["hookSpecificOutput"]["updatedInput"]
+        updated_input = output["updatedInput"]
         assert "model" not in updated_input
         assert updated_input["subagent_type"] == v2._routed_claude_agent_name(
             "system.ai.claude-opus-4-8"
         )
-        expected_message = (
-            "\n┌───────────────────────────────────────────────────────────────────────────┐\n"
-            "│ Using Unity Gateway Smart Router - Subagent                               │\n"
-            "│ Subagent : ug-smart-router:ucode-route-claude-opus-4-8-3ec612f4           │\n"
-            "│ Selected Model : system.ai.claude-opus-4-8                                │\n"
-            "└───────────────────────────────────────────────────────────────────────────┘"
-        )
-        assert output["systemMessage"] == expected_message
-        assert output["hookSpecificOutput"]["permissionDecisionReason"] == expected_message
         decision_record = json.loads(decisions_path.read_text())
         assert decision_record["requested_model"] == "system.ai.claude-opus-4-8"
 
+    def test_returns_routing_details_to_mod_without_writing_files(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(v2.SESSION_ENV_VAR, str(tmp_path / "env.json"))
+        monkeypatch.setattr(
+            routing,
+            "select_route",
+            lambda *a, **k: (
+                routing.RoutingDecision(
+                    model="system.ai.claude-opus-4-8",
+                    raw_model="claude-opus-4-8",
+                    rationale="A focused task with an explicit target",
+                ),
+                None,
+            ),
+        )
+
+        output = v2.route_claude_subagent(
+            {
+                "tool_name": "Agent",
+                "tool_input": {"prompt": "inspect the parser", "model": "sonnet"},
+            },
+            workspace="https://example.com",
+            token="token",
+            available_models=["system.ai.claude-opus-4-8", "databricks-claude-sonnet-5"],
+        )
+
+        assert output == {
+            "model": "system.ai.claude-opus-4-8",
+            "rationale": "A focused task with an explicit target",
+            "updatedInput": {
+                "prompt": "inspect the parser",
+                "subagent_type": v2._routed_claude_agent_name("system.ai.claude-opus-4-8"),
+            },
+        }
+        assert not any(path.is_file() for path in tmp_path.rglob("*"))
+
+    def test_mod_replaces_legacy_pretooluse_hook_and_preserves_user_hooks(self):
+        settings = {
+            "hooks": {
+                "PreToolUse": [
+                    {"hooks": [{"command": "user-policy"}]},
+                    {"hooks": [{"command": "ug claude-router-hook route-subagent"}]},
+                ]
+            }
+        }
+
+        claude_hooks.sync_smart_routing_hooks(settings, {"workspace": "https://x"}, enabled=True)
+
+        assert settings["hooks"]["PreToolUse"] == [{"hooks": [{"command": "user-policy"}]}]
+        assert "session-start" in str(settings["hooks"]["SessionStart"])
+        assert "record-subagent" in str(settings["hooks"]["SubagentStart"])
+
     @pytest.mark.parametrize("orchestrator_enabled", ["0", "1"])
-    def test_routed_agent_notice_matches_executed_agent(
+    def test_routed_agent_details_match_executed_agent(
         self, tmp_path, monkeypatch, orchestrator_enabled
     ):
         session_file = tmp_path / "env.json"
@@ -723,7 +782,7 @@ class TestSubagentRouting:
         selected_model = "system.ai.claude-haiku-5-5"
         requested_agent = v2._routed_claude_agent_name("system.ai.glm-5-3-flash")
         routed_agent = v2._routed_claude_agent_name(selected_model)
-        # Control only the remote router response; exercise the hook and notice together.
+        # Control only the remote router response; exercise routing and the mod details together.
         monkeypatch.setattr(
             v2,
             "_request_claude_routing_decision",
@@ -732,23 +791,35 @@ class TestSubagentRouting:
                 None,
             ),
         )
-        output = v2.route_claude_pre_tool_use(
-            {
-                "tool_name": "Agent",
-                "tool_input": {
-                    "description": "Create a proof file",
-                    "subagent_type": requested_agent,
-                    "prompt": "Write a small proof file.",
-                },
+        payload = {
+            "tool_name": "Agent",
+            "tool_input": {
+                "description": "Create a proof file",
+                "subagent_type": requested_agent,
+                "prompt": "Write a small proof file.",
             },
-            workspace="https://example.com",
-            token="token",
-            available_models=[selected_model, "system.ai.glm-5-3-flash"],
-        )
+        }
 
-        hook = output["hookSpecificOutput"]
-        assert hook["updatedInput"]["subagent_type"] == routed_agent
-        for notice in (output["systemMessage"], hook["permissionDecisionReason"]):
+        def route(**kwargs):
+            return v2.route_claude_subagent(
+                payload,
+                workspace="https://example.com",
+                token="token",
+                available_models=[selected_model, "system.ai.glm-5-3-flash"],
+                **kwargs,
+            )
+
+        # The mod labels the row from updatedInput, so it names the dispatched agent.
+        output = route()
+        assert output["updatedInput"]["subagent_type"] == routed_agent
+        assert requested_agent not in json.dumps(output)
+
+        # Hooks persisted by earlier UG versions keep their PreToolUse response and notice.
+        legacy = route(hook_output=True)
+        hook = legacy["hookSpecificOutput"]
+        assert hook["permissionDecision"] == "allow"
+        assert hook["updatedInput"] == output["updatedInput"]
+        for notice in (legacy["systemMessage"], hook["permissionDecisionReason"]):
             assert f"Subagent:{routed_agent}" in "".join(notice.split())
             assert requested_agent not in notice
             assert ("[orchestrator on]" in notice) == (orchestrator_enabled == "1")

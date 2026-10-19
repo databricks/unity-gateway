@@ -108,6 +108,35 @@ def test_render_profile_accepts_custom_headers(tmp_path: Path) -> None:
     assert profile["inferenceModels"] == [{"name": "system.ai.claude-opus-5-5"}]
 
 
+def test_render_profile_uses_catalog_labels_without_changing_routing_ids(tmp_path):
+    model_ids = ["system.ai.claude-sonnet-5", "custom/claude-opus-5", "claude-haiku-4-5"]
+    model_ids.append(model_ids[0])
+    display_names = {
+        model_ids[0]: "Claude Sonnet 5 — Fast",
+        model_ids[1]: "",
+        "not-in-catalog": "Unused label",
+    }
+    original_names = dict(display_names)
+
+    profile = desktop.render_profile(
+        model_ids=model_ids,
+        model_id_to_display_name=display_names,
+        base_url="https://workspace.example/ai-gateway/anthropic",
+        helper_command=tmp_path / "ug",
+        helper_args=("auth-helper",),
+    )
+
+    assert profile["inferenceModels"] == [
+        {"name": model_ids[0], "labelOverride": "Claude Sonnet 5 — Fast"},
+        {"name": model_ids[1]},
+        {"name": model_ids[2]},
+        {"name": model_ids[0], "labelOverride": "Claude Sonnet 5 — Fast"},
+    ]
+    assert display_names == original_names
+    display_names[model_ids[0]] = "Changed later"
+    assert profile["inferenceModels"][0]["labelOverride"] == "Claude Sonnet 5 — Fast"
+
+
 def test_render_profile_preserves_model_order_duplicates_and_literal_helper_args(tmp_path):
     model_ids = ["model-b", "model-a", "model-b"]
     helper_args = ["auth-helper", "--profile", "profile with spaces"]

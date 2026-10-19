@@ -276,6 +276,17 @@ The routing notice names the generated agent selected for launch and its model.
 Claude Code's own task header can still show the agent type the parent originally
 requested. That name may contain a different model; it is not the routing result.
 
+The local `~/.ucode/<agent>-smart-routing-decisions.jsonl` logs also retain the
+candidate models, their harnesses, and the router name sent with each recorded
+decision. Feedback investigations can compare the selection with that original
+menu without querying the router again.
+
+Claude and Codex routing reasons summarize the task profile in plain language, such as
+"This task has a clear target and limited scope." A separate sentence explains when
+model availability requires a higher tier. Custom gateway notices are retained, and
+older or unrecognized responses keep their original wording. Diagnostic records keep
+the displayed reason in `rationale` and the gateway's full explanation in `raw_rationale`.
+
 On Windows, Claude smart routing uses subagent hooks only. If first-prompt routing
 is enabled, ug warns and falls back to subagent routing because the first-prompt
 wrapper requires a Unix terminal.
