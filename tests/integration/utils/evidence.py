@@ -215,6 +215,15 @@ class FileTask:
                 if row.get("type") == "text"
             )
             assert self.value in answer, result.stdout
+        elif agent == "copilot":
+            assert result.returncode == 0, result.stdout
+            assert any(row.get("type") == "assistant.turn_end" for row in payloads), result.stdout
+            answers = [
+                (row.get("data") or {}).get("content", "")
+                for row in payloads
+                if row.get("type") == "assistant.message"
+            ]
+            assert any(self.value in answer for answer in answers), result.stdout
         else:
             raise AssertionError(f"Unknown agent: {agent}")
 

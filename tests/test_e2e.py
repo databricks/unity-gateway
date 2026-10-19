@@ -13,10 +13,12 @@ from __future__ import annotations
 import atexit
 import json
 import os
+import secrets
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from urllib import error as urllib_error
 from urllib import request as urllib_request
@@ -1098,27 +1100,41 @@ class TestCopilotLaunch:
         monkeypatch.setattr(copilot, "COPILOT_ENV_PATH", env_path)
         monkeypatch.setattr(copilot, "COPILOT_BACKUP_PATH", backup_path)
 
-        failures = []
-        for family, model in models:
-            with pytest.MonkeyPatch().context() as mp:
-                mp.setattr("ucode.state.save_state", lambda s: None)
-                mp.setattr(
-                    "ucode.agents.copilot.get_databricks_token",
-                    lambda ws, profile=None, **kwargs: e2e_token,
-                )
-                copilot.write_tool_config(
-                    {**e2e_state, "workspace": e2e_workspace}, model, token=e2e_token
-                )
+        from ucode import gateway_proxy
 
-            env = copilot.build_runtime_env(e2e_workspace, model, e2e_token)
-            cmd = copilot.validate_cmd("copilot")
-            result = _run_agent(cmd, env=env, timeout=120)
-            combined = (result.stdout + result.stderr).strip()
-            if result.returncode != 0 or not combined:
-                failures.append(
-                    f"family={family} model={model} rc={result.returncode} "
-                    f"stdout={result.stdout[:300]!r} stderr={result.stderr[:300]!r}"
-                )
+        # Copilot only ever sees the loopback proxy and a session secret; the proxy
+        # forwards to the real gateway with the e2e token.
+        session_secret = secrets.token_urlsafe(32)
+        server, cache, client = gateway_proxy.start_gateway_auth_proxy(
+            e2e_workspace,
+            lambda force_refresh: e2e_token,
+            session_secret=session_secret,
+            added_headers=copilot.proxy_headers({}),
+            sign_in_hint="Check the e2e token.",
+        )
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        proxy_base_url = f"http://127.0.0.1:{server.server_address[1]}"
+
+        failures = []
+        try:
+            for family, model in models:
+                with pytest.MonkeyPatch().context() as mp:
+                    mp.setattr("ucode.agents.copilot.save_state", lambda s: None)
+                    copilot.write_tool_config({**e2e_state, "workspace": e2e_workspace}, model)
+
+                env = copilot.build_runtime_env(proxy_base_url, model, session_secret)
+                cmd = copilot.validate_cmd("copilot")
+                result = _run_agent(cmd, env=env, timeout=120)
+                combined = (result.stdout + result.stderr).strip()
+                if result.returncode != 0 or not combined:
+                    failures.append(
+                        f"family={family} model={model} rc={result.returncode} "
+                        f"stdout={result.stdout[:300]!r} stderr={result.stderr[:300]!r}"
+                    )
+        finally:
+            cache.stop()
+            server.shutdown()
+            client.close()
 
         assert not failures, "Copilot launch failures:\n" + "\n".join(failures)
 
