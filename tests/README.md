@@ -12,7 +12,7 @@ mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 | Integration CUJs | `integration/test_*.py` | Public configure, TUI, script, command, protocol, and lifecycle journeys |
 | Installation | `integration/test_installation.py` | Fresh installed package, CLI, and local helpers without credentials on Linux and advisory native Windows |
 
-`test_databricks.py` covers the workspace-authenticated spend-status client in
+`test_budget.py` covers the workspace-authenticated spend-status client in
 `src/ucode/budget.py`:
 workspace URL/token reuse without account discovery or account CLI authentication,
 personal/shared decimal parsing, optional percentages, pagination through empty pages,

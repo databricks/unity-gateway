@@ -2,7 +2,7 @@
 
 The spend-status client's workspace authentication, optional percentage handling,
 pagination, validation, and failure propagation are covered by component tests in
-`../test_databricks.py`, importing the client from `src/ucode/budget.py`.
+`../test_budget.py`, importing the client from `src/ucode/budget.py`.
 Account-authentication checks are replaced by assertions that
 the client reuses the workspace token without starting CLI auth. These checks do not
 establish live workspace, sign-in, or CLI output coverage.
