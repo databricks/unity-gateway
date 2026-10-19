@@ -49,12 +49,14 @@ Codex has no admin-only config layer on Windows, so the same elevated runs write
 user's config and `-c`. It takes only requirement keys: UG writes `model_provider` and the
 `Databricks` provider entry, but not `model` or `mcp_servers` (managed MCP servers stay in user
 scope there). A required provider entry replaces the configured one instead of merging, so the
-launch-scoped routing headers reach Codex through `env_http_headers` and the
-`UG_CODEX_MODEL_PROVIDER_SERVICE`, `UG_CODEX_MODEL_SERVICE_PARENT_SCHEMA`, and
-`UG_CODEX_SMART_ROUTER_RECIPE` variables that `ug codex` sets at launch. Standard users can create
-folders under ProgramData, so UG refuses to write through a linked `OpenAI` or `Codex` folder. A
-standard user who creates those folders before an administrator runs UG keeps control of them; UG
-doesn't check or change their ownership, and Codex itself doesn't either.
+launch-scoped headers reach Codex through `env_http_headers` and the
+`UG_CODEX_MODEL_PROVIDER_SERVICE`, `UG_CODEX_MODEL_SERVICE_PARENT_SCHEMA`,
+`UG_CODEX_SMART_ROUTER_RECIPE`, and `UG_CODEX_REQUEST_TAGS` variables that `ug codex` sets at
+launch. Standard users can create folders under ProgramData and keep control of the ones they
+create, so before each write UG makes Administrators the owner of `OpenAI` and `Codex`, resets
+`OpenAI` to its inherited permissions, and lets standard users only read `Codex`, like the
+root-owned 0755 folders on Linux and macOS. It changes only those two folders, not files already in
+them, and refuses to write through a linked `OpenAI` or `Codex` folder.
 
 This is a new shared ucode distinction. The previous implementation inferred interactivity from
 command shape in some flows and did not guard managed-file writes consistently.

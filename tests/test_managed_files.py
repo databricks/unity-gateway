@@ -23,6 +23,7 @@ _REAL_SUDO_REPLACE = managed_files._sudo_replace
 # Captured before the autouse ``_supported`` fixture pins the module attribute to True.
 _REAL_MANAGED_FILES_SUPPORTED = managed_files.managed_files_supported
 _REAL_WINDOWS_REPLACE = managed_files._windows_replace
+_REAL_SUBPROCESS_RUN = managed_files.subprocess_cross_os.run
 
 
 @pytest.fixture(autouse=True)
@@ -858,13 +859,81 @@ class TestWindowsManagedWrites:
             managed_files.windows_codex_managed_settings_path()
         )
 
+    def _record_icacls(self, monkeypatch, returncode=0):
+        calls = []
+
+        def run(args, **kwargs):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, returncode, "Access is denied.", "")
+
+        monkeypatch.setattr(managed_files.subprocess_cross_os, "run", run)
+        return calls
+
     def test_elevated_run_writes_codex_requirements(self, windows, tmp_path, monkeypatch):
         monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
+        monkeypatch.setenv("SystemRoot", str(tmp_path / "Windows"))
+        calls = self._record_icacls(monkeypatch)
         path = managed_files.windows_codex_managed_settings_path()
 
         assert path == tmp_path / "ProgramData" / "OpenAI" / "Codex" / "requirements.toml"
         assert self._reconcile_codex(path, 'model_provider = "Databricks"\n') == "created"
         assert path.read_text(encoding="utf-8") == 'model_provider = "Databricks"\n'
+        # A standard user may have created these folders; both end up owned by Administrators.
+        icacls = str(tmp_path / "Windows" / "System32" / "icacls.exe")
+        codex, openai = str(path.parent), str(path.parent.parent)
+        assert calls == [
+            [icacls, openai, "/setowner", "*S-1-5-32-544", "/L"],
+            [icacls, openai, "/reset", "/L"],
+            [icacls, codex, "/setowner", "*S-1-5-32-544", "/L"],
+            [
+                icacls,
+                codex,
+                "/inheritance:r",
+                "/grant:r",
+                "*S-1-5-18:(OI)(CI)F",
+                "*S-1-5-32-544:(OI)(CI)F",
+                "*S-1-5-32-545:(OI)(CI)RX",
+                "/L",
+            ],
+        ]
+
+    def test_unsecured_codex_folder_blocks_the_write(self, windows, monkeypatch):
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
+        self._record_icacls(monkeypatch, returncode=5)
+        path = managed_files.windows_codex_managed_settings_path()
+
+        with pytest.raises(RuntimeError, match="could not secure .*Access is denied"):
+            self._reconcile_codex(path, 'model_provider = "Databricks"\n')
+
+        assert not path.exists()
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="needs the real icacls")
+    def test_standard_users_can_only_read_secured_codex_folder(self, windows, monkeypatch):
+        # The Windows CI lane is elevated, so this runs the real icacls on a temporary ProgramData.
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
+        monkeypatch.setattr(managed_files.subprocess_cross_os, "run", _REAL_SUBPROCESS_RUN)
+        path = managed_files.windows_codex_managed_settings_path()
+
+        assert self._reconcile_codex(path, 'model_provider = "Databricks"\n') == "created"
+
+        for folder in (path.parent.parent, path.parent):
+            owner = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    f"(Get-Acl -LiteralPath '{folder}').Owner",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            assert owner == "BUILTIN\\Administrators"
+        acl = subprocess.run(
+            ["icacls", str(path)], capture_output=True, text=True, check=True
+        ).stdout
+        assert "BUILTIN\\Users:(I)(RX)" in acl
+        assert not re.search(r"\\Users:.*\((F|M|W)\)", acl)
 
     def test_refuses_linked_codex_folder(self, windows, tmp_path, monkeypatch):
         # Standard users can create folders under ProgramData, including links elsewhere.

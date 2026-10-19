@@ -111,12 +111,13 @@ LEGACY_CODEX_MODEL_PROVIDER_NAME = "ucode-databricks"
 _PROVIDER_HTTP_HEADERS_KEY_PATHS = [
     ["model_providers", CODEX_MODEL_PROVIDER_NAME, "http_headers"],
 ]
-# Windows requirements.toml replaces the whole provider entry, so launch-scoped routing headers set
-# with `-c` would be dropped; Codex reads them from these variables instead.
+# Windows requirements.toml replaces the whole provider entry, so launch-scoped headers set with
+# `-c` would be dropped; Codex reads them from these variables instead.
 _LAUNCH_ROUTING_HEADER_ENV_VARS = {
     MODEL_PROVIDER_SERVICE_HEADER: "UG_CODEX_MODEL_PROVIDER_SERVICE",
     MODEL_SERVICE_PARENT_SCHEMA_HEADER: "UG_CODEX_MODEL_SERVICE_PARENT_SCHEMA",
     SMART_ROUTER_RECIPE_HEADER: "UG_CODEX_SMART_ROUTER_RECIPE",
+    AI_GATEWAY_REQUEST_TAGS_HEADER: "UG_CODEX_REQUEST_TAGS",
 }
 MINIMUM_CODEX_VERSION = (0, 145, 0)
 MINIMUM_CODEX_VERSION_TEXT = "0.145.0"

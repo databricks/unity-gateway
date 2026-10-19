@@ -1022,6 +1022,7 @@ class TestCodexLaunch:
         monkeypatch.setenv("UG_CODEX_MODEL_PROVIDER_SERVICE", "stale")
         monkeypatch.setenv("UG_CODEX_MODEL_SERVICE_PARENT_SCHEMA", "stale")
         monkeypatch.setenv("UG_CODEX_SMART_ROUTER_RECIPE", "stale")
+        monkeypatch.setenv("UG_CODEX_REQUEST_TAGS", "stale")
         monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "app-catalog.json")
         monkeypatch.setattr(
             codex, "_model_catalog_path", lambda workspace, scope: tmp_path / "m.json"
@@ -1035,10 +1036,16 @@ class TestCodexLaunch:
         assert os.environ.get("UG_CODEX_MODEL_PROVIDER_SERVICE") == provider_env
         assert os.environ.get("UG_CODEX_MODEL_SERVICE_PARENT_SCHEMA") == parent_env
         assert "UG_CODEX_SMART_ROUTER_RECIPE" not in os.environ
+        assert "UG_CODEX_REQUEST_TAGS" not in os.environ
 
-    def test_smart_routing_overlay_exports_router_recipe(self, monkeypatch):
+    def test_smart_routing_overlay_exports_launch_headers(self, monkeypatch):
         monkeypatch.setenv("UG_CODEX_SMART_ROUTER_RECIPE", "stale")
-        headers = {codex.SMART_ROUTER_RECIPE_HEADER: "task_v3"}
+        monkeypatch.setenv("UG_CODEX_REQUEST_TAGS", "stale")
+        tags = '{"team": "data"}'
+        headers = {
+            codex.SMART_ROUTER_RECIPE_HEADER: "task_v3",
+            codex.AI_GATEWAY_REQUEST_TAGS_HEADER: tags,
+        }
         monkeypatch.setattr(
             codex,
             "render_overlay",
@@ -1048,6 +1055,7 @@ class TestCodexLaunch:
         codex._render_launch_overlay(WS)
 
         assert os.environ["UG_CODEX_SMART_ROUTER_RECIPE"] == "task_v3"
+        assert os.environ["UG_CODEX_REQUEST_TAGS"] == tags
 
     def test_sets_oauth_token(self, tmp_path, monkeypatch):
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
@@ -1724,12 +1732,13 @@ class TestCodexManagedConfig:
         doc = read_toml_safe(managed_path)
         assert doc["model_provider"] == "Databricks"
         # requirements.toml ignores `model` and replaces the provider entry wholesale, so
-        # launch-scoped routing headers must come from the environment instead of `-c`.
+        # launch-scoped headers must come from the environment instead of `-c`.
         assert "model" not in doc
         assert doc["model_providers"]["Databricks"]["env_http_headers"] == {
             codex.MODEL_PROVIDER_SERVICE_HEADER: "UG_CODEX_MODEL_PROVIDER_SERVICE",
             codex.MODEL_SERVICE_PARENT_SCHEMA_HEADER: "UG_CODEX_MODEL_SERVICE_PARENT_SCHEMA",
             codex.SMART_ROUTER_RECIPE_HEADER: "UG_CODEX_SMART_ROUTER_RECIPE",
+            codex.AI_GATEWAY_REQUEST_TAGS_HEADER: "UG_CODEX_REQUEST_TAGS",
         }
         profile = read_toml_safe(config_path)
         assert profile["model"] == "gpt-5"

@@ -1334,16 +1334,57 @@ def _validate_windows_target(path: Path) -> None:
                 raise RuntimeError(f"Refusing to write managed settings through link {folder}")
 
 
+# Well-known SIDs, because Windows translates the group names.
+_WINDOWS_SYSTEM_SID = "*S-1-5-18"
+_WINDOWS_ADMINISTRATORS_SID = "*S-1-5-32-544"
+_WINDOWS_USERS_SID = "*S-1-5-32-545"
+
+
+def _secure_windows_codex_folders(path: Path) -> None:
+    """Give the ``OpenAI`` and ``Codex`` folders to Administrators and let standard users only read
+    ``Codex``, like the root-owned 0755 folders on Linux and macOS. A standard user may have created
+    them first and would otherwise keep control.
+
+    Only the folders change, never their contents, so a planted hard link can't redirect the change
+    onto another file. ``/L`` changes a link itself rather than its target, and the caller checks
+    for links again afterwards."""
+    icacls = str(system_cross_os.windows_system32_dir() / "icacls.exe")
+    codex, openai = path.parent, path.parent.parent
+    # Set the owner before resetting: the inherited CREATOR OWNER entry maps to the current owner.
+    for folder, *change in (
+        (openai, "/setowner", _WINDOWS_ADMINISTRATORS_SID),
+        (openai, "/reset"),
+        (codex, "/setowner", _WINDOWS_ADMINISTRATORS_SID),
+        (
+            codex,
+            "/inheritance:r",
+            "/grant:r",
+            f"{_WINDOWS_SYSTEM_SID}:(OI)(CI)F",
+            f"{_WINDOWS_ADMINISTRATORS_SID}:(OI)(CI)F",
+            f"{_WINDOWS_USERS_SID}:(OI)(CI)RX",
+        ),
+    ):
+        result = subprocess_cross_os.run(
+            [icacls, str(folder), *change, "/L"], capture_output=True, text=True, check=False
+        )
+        if result.returncode:
+            output = f"{result.stdout}{result.stderr}".strip()
+            raise PermissionError(f"could not secure {folder}: {output}")
+
+
 def _windows_replace(path: Path, desired_text: str) -> None:
     """Atomically replace ``path`` from this elevated process.
 
     The temp file is created beside the target so the rename stays on one volume and the new file
-    inherits the folder's ACL, which under Program Files lets standard users read but not write."""
+    inherits the folder's ACL, which lets standard users read but not write: Program Files comes
+    that way, and the Codex folders under ProgramData are secured first."""
     _validate_windows_target(path)
     if not system_cross_os.is_admin():
         raise PermissionError("administrator rights are required")
     path.parent.mkdir(parents=True, exist_ok=True)
-    _validate_windows_target(path)  # a missing folder may have been created as a link meanwhile
+    if path == windows_codex_managed_settings_path():
+        _secure_windows_codex_folders(path)
+    _validate_windows_target(path)  # a folder may have been created or swapped for a link meanwhile
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as tmp:

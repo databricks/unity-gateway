@@ -65,3 +65,16 @@ def test_windows_program_data_dir(monkeypatch, program_data, expected):
         monkeypatch.setenv("ProgramData", program_data)
 
     assert system_cross_os.windows_program_data_dir() == expected
+
+
+@pytest.mark.parametrize(
+    ("system_root", "expected"),
+    [(r"D:\Windows", Path(r"D:\Windows") / "System32"), (None, Path(r"C:\Windows") / "System32")],
+)
+def test_windows_system32_dir(monkeypatch, system_root, expected):
+    if system_root is None:
+        monkeypatch.delenv("SystemRoot", raising=False)
+    else:
+        monkeypatch.setenv("SystemRoot", system_root)
+
+    assert system_cross_os.windows_system32_dir() == expected
