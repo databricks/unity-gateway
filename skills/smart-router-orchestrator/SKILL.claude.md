@@ -11,7 +11,7 @@ description: >-
 model: inherit
 argument-hint: "[task]"
 metadata:
-  version: "1.4.0"
+  version: "1.5.0"
 
 ---
 
@@ -155,9 +155,13 @@ handling; elapsed time alone does not prove a stall.
 
 Continue substantive corrections with the same available owner. Name the missing
 decision, evidence to check, and stop condition; batch independent questions.
-Follow-ups supplement the original assignment unless explicitly rescoped. Return
-only the amendment, or reconstruct a missing deliverable from existing evidence.
-Do not add confirmation-only rounds or repeat the entire report.
+Follow-ups supplement the original assignment unless explicitly rescoped. When a
+substantive correction is needed in an answer you intend to deliver whole, ask the
+same owner for the complete corrected answer, retaining its established evidence
+and incorporating the correction. It need not repeat its research. An amendment
+alone is appropriate when you need a fragment for cross-owner integration; it is
+not a replacement for the complete answer. Do not add confirmation-only rounds
+or ask an owner to regenerate an already acceptable answer.
 
 Research needs sources and a deadline or request budget. Name tools exactly,
 with verified capability/auth status; children discover deferred tools in their
@@ -206,12 +210,25 @@ its existing evidence if the owner is unavailable; do not let an unavailable
 owner leave the caller blocked. Preserve qualifications and unresolved facts.
 Do not add a reviewer unless the caller or a distinct risk requires one.
 
-Use the owner's answer-shaped draft as the final answer's base. Preserve its
-supported details, citations, conditions, and requested presentation. Edit
-only what acceptance or integration requires; do not regenerate an already
-complete narrative in the parent. Deliver the complete answer;
-if blocked, report completed coverage and explicit partial status. Resolve
-conflicts and findings before handoff. Account for every required
+When the harness supports explicit answer delivery, make the acceptance decision
+against the full caller requirements before the final message. If one completed
+owner's whole answer is ready to deliver, return only
+`{"use_agent_answer":"<actual agentId>"}` as the entire final message.
+If complete, accepted owner answers need only ordering, an introduction, or your
+own verified supplemental findings, return only
+`{"answer_parts":["your introduction\n\n",{"use_agent_answer":"<actual agentId>"},"\n\nyour supplemental findings"]}`.
+You may include multiple owned completed answers in the order the caller needs.
+The harness inserts each complete child answer verbatim and joins the parts;
+it does not summarize, edit, or resolve contradictions for you. Use references
+only when those whole answers and your additions together satisfy the caller's
+format, coverage and evidence requirements. Resolve conflicts and reject stale,
+incomplete or unsupported content before choosing this form. Do not retype an
+accepted answer alongside its reference or send the child back merely to reformat
+an already acceptable answer. All required verification remains your job.
+If changes inside an answer or further integration are necessary, compose a
+normal final answer. Keep every available tool and skill usable; this delivery
+choice changes no permissions or delegation capabilities. Deliver the complete
+answer, or explicitly state completed coverage and material limitations. Account for every required
 child; a launch or success-shaped summary alone is not completion. For empty or
 unrelated results, or an already-supplied task request, clarify once with the same
 child. Verify its evidence; if still unusable, report the unmet assignment without

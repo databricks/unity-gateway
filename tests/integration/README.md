@@ -1,5 +1,9 @@
 # Integration tests
 
+Claude answer delivery has offline transcript and subprocess coverage in
+`../test_claude_answer_delivery.py`. Live model/gateway selection and capability-hook
+activation are not covered here; interactive selection is unsupported.
+
 The separate [dedicated-workspace CUJ](../e2e_cuj/AGENTS.md) lives in `tests/e2e_cuj/`
 and runs directly with pytest. It does not use this suite's runner or config fixtures.
 It reuses the session, terminal, file-task, and transcript helpers in `utils/`.
@@ -332,7 +336,7 @@ unacquired handles. Paths use temporary homes across simulated macOS, Windows, a
 including relocated/default Windows Local AppData, missing apps, invalid paths, creation
 failures, and parent-metadata preservation.
 
-Rendering tests cover the valid JSON generated-file notice, complete model IDs,
+Rendering tests cover the exact profile fields without `_comment`, complete model IDs,
 order/duplicates, literal helper arguments, and copied headers. Omitted optional fields
 are removed on replacement. Shared managed-header parsing retains its pre-Desktop behavior;
 the extra header-validation tests were removed with that out-of-scope parser change.
@@ -340,9 +344,11 @@ The default-model warning assertion was removed because that limitation is docum
 instead of returned as a runtime warning.
 Obsolete baseline restoration, edit preservation, ownership/migration, and workspace
 canonicalization tests are replaced by reserved-file replacement/deletion coverage.
-Existing CLI URL normalization is unchanged. Native Desktop activation, acceptance of
-the `_comment` notice field, GUI/helper/browser behavior, and inference remain untested;
-these component checks do not establish native Windows or Linux support.
+Reconfigure tests remove the legacy `_comment` field while preserving unrelated profiles,
+metadata, and previous-selection state, and verify subsequent configure is a no-op.
+Existing CLI URL normalization is unchanged. Native Desktop activation,
+GUI/helper/browser behavior, and inference remain untested by these component checks;
+they do not establish native Windows or Linux support.
 
 `../test_file_lock_cross_os.py` tests the shared timeout mechanism used by Desktop:
 real contention, preserving the holder on timeout, and successful acquisition after
@@ -378,6 +384,22 @@ routing IDs, order/duplicates, and ID-only entries for missing/empty names or st
 lists. Scoped discovery uses the same response for IDs and labels without extra calls.
 Repeat configure refreshes or removes labels. Source lists/maps remain unchanged.
 These checks use temporary files on simulated platforms, not the native model picker.
+
+Desktop OTEL coverage remains in `../test_claude_desktop.py` and
+`../test_desktop_setup.py`: native settings follow Claude's tracing flag for both
+model sources on simulated macOS, Windows, and Linux. Component checks cover the
+collector base URL, protobuf protocol, refreshing `.sh`/`.cmd` helpers without
+persisted tokens, quoting, repeated native helper execution with rotated bearer
+overrides, Unicode and trailing-backslash arguments, Windows UTF-8 selection,
+JSON-only stdout/failures, repeat configure, workspace changes,
+disable/re-enable, helper-byte/permission rollback, and revert preserving unrelated
+telemetry. Revert cleanup also covers a removed native library or application-data
+root without recreating Desktop directories, plus rollback and retry after cleanup
+failure. Byte-writer component cases check explicit permissions independent of
+contents, unchanged JSON formatting, helper execute-permission repair, and
+atomic-replacement failure cleanup. This suite does not launch
+Desktop or establish native export, open-session token refresh, or trace ingestion.
+See `../../docs/claude-desktop.md` for native validation steps and auth limits.
 
 ## Test layout and format
 

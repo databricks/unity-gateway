@@ -148,6 +148,12 @@ Desktop setup is configure-only and best-effort. Writes retain atomic replacemen
 failure rollback, and the Desktop-only five-second lock timeout.
 Desktop filters both static and discovered model IDs with case-insensitive `\bclaude-`;
 shared discovery and Claude Code lists are unchanged. If no IDs match, setup warns without writes.
+When `claude_otel_tracing` is enabled, Desktop's reserved profile also owns
+`otlpEndpoint`, `otlpProtocol`, `otlpHeadersHelper`, and `otlpTracesEnabled`. A generated
+`.sh`/`.cmd` wrapper pins the configuring Python installation, workspace, and profile
+for the existing `otel-headers` command. Native sessions rerun it as tokens rotate;
+no bearer is persisted. Disable/revert removes the wrapper, with atomic writes and
+rollback shared with the profile. Disabled tracing omits these fields on replacement.
 See `docs/claude-desktop.md` for native validation limits and revert behavior.
 
 <details>

@@ -14,7 +14,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import NoReturn, TextIO
 
-from ucode import config_io
+from ucode import claude_answer_delivery, config_io
 from ucode.codex_config import (
     codex_config_args,
     custom_catalog_models,
@@ -659,7 +659,11 @@ def launch_claude(
     if route_first_prompt and _claude_print_mode(remaining):
         # Print mode has no TUI for the PTY router to drive, so route the prompt before launch.
         route_first_prompt = False
-        if not launch_model and not has_explicit_model_arg(remaining):
+        if (
+            not claude_answer_delivery.has_streaming_input(remaining)
+            and not launch_model
+            and not has_explicit_model_arg(remaining)
+        ):
             prompt, stdin_prompt = _claude_print_prompt(remaining)
             if prompt:
                 routed_model = _route_print_mode_prompt(state, token, prompt, catalog, model_name)
@@ -740,7 +744,11 @@ def launch_claude(
                 str(plugin_dir),
                 *remaining,
             ]
-            if route_first_prompt:
+            if _claude_print_mode(remaining) and orchestrator.enabled(agent=AGENT_CLAUDE):
+                returncode = claude_answer_delivery.run(
+                    argv, session_path=session_path, stdin_prompt=stdin_prompt
+                )
+            elif route_first_prompt:
                 returncode = claude_pty.run_claude_pty(
                     argv,
                     route_prompt=route_prompt,
