@@ -123,7 +123,7 @@ Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file 
 | `env.ENABLE_PROMPT_CACHING_1H` | Create/replace | Create/replace | Prompt-caching flag |
 | `env.ENABLE_TOOL_SEARCH` | Create/replace | Create/replace | Tool-search flag |
 | `env.CLAUDE_CODE_USE_GATEWAY` | Create/replace | Create/replace | Gateway-routing flag |
-| `env.ANTHROPIC_MODEL` | Ignore | Create/replace | Launch model, from the config's `default_model` or the budget recommendation when spend tiers are set; written at launch, not by `ug configure` |
+| `env.ANTHROPIC_MODEL` | Ignore | Ignore | Not written to a file. A managed launch passes the config's `default_model`, or the budget recommendation when spend tiers are set, through `--settings` for that launch only; `ug configure` removes a value an older `ug` launch wrote |
 | `env.ANTHROPIC_DEFAULT_*_MODEL` | Create/replace | Create/replace | Per-family default (opus, sonnet, haiku, fable); the config's family default wins under managed config. Without a managed config, left as the OS-managed file has them (model discovery skipped) when that file has a `modelPicker` with family defaults |
 | Model picker | Ignore | Create/replace | `availableModels`, `enforceAvailableModels`, `modelPicker`; only for a managed static model list |
 | `permissions.deny` | Merge | Merge | Add `ug`'s own `WebSearch` rule when it replaces web search; other rules left alone |

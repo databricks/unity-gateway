@@ -68,7 +68,6 @@ from ucode.managed_files import (
     check_skipped_managed_overrides,
     current_os,
     managed_file_conflicts,
-    managed_file_is_verified,
     managed_file_scope,
     managed_file_status,
     managed_files_supported,
@@ -581,14 +580,6 @@ def _managed_provider_headers(doc: dict) -> dict | None:
 def _user_agent_key(headers: dict | None) -> str | None:
     """The ``User-Agent`` key in ``headers`` under any casing, else None."""
     return next((key for key in headers or {} if str(key).casefold() == "user-agent"), None)
-
-
-def managed_config_is_current(state: dict) -> bool:
-    path = codex_managed_config_path()
-    if path is None:
-        return True
-    required_scope = "managed" if managed_writes_allowed() else None
-    return managed_file_is_verified(state, "codex", path, required_scope=required_scope)
 
 
 def managed_config_status(state: dict) -> tuple[Path | None, str, str]:

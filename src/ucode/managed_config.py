@@ -447,30 +447,6 @@ def normalize_managed_config(raw: dict) -> dict:
     return cfg.to_internal()
 
 
-def managed_update_time(managed: dict | None) -> str | None:
-    """The config's server-side ``update_time`` (RFC-3339), or None when absent.
-
-    This is the version watermark: it advances only when an admin edits the workspace config, so a
-    launch compares it against the last-applied value to decide whether to re-apply. The GET also
-    returns ``retrieved_time``, which changes on every read and must never be used for this.
-    """
-    return _str(_as_dict(managed).get("update_time"))
-
-
-def managed_config_is_newer(fetched: dict | None, applied_update_time: str | None) -> bool:
-    """True when ``fetched`` is a newer version than the last one applied locally.
-
-    A fetched config whose ``update_time`` is missing or unparseable is treated as newer, so a launch
-    re-applies it rather than trusting possibly-stale local settings; no previously-applied watermark
-    also counts as newer (the first apply).
-    """
-    fetched_ut = parse_update_time(managed_update_time(fetched))
-    applied_ut = parse_update_time(applied_update_time)
-    if fetched_ut is None or applied_ut is None:
-        return True
-    return fetched_ut > applied_ut
-
-
 def _decimal(value: object) -> float | None:
     """Parse one of the API's decimal-string money fields, or None when absent/unparseable."""
     text = _str(value)
@@ -749,10 +725,8 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
     Runs on every launch so a developer picks up an admin's edits without re-running
     ``ucode configure``. A launch reuses the last read when it is younger than
     :data:`MANAGED_CONFIG_TTL`, so back-to-back launches don't each hit the control plane;
-    ``force_refresh`` (used by ``ug configure``) skips the cache and always reads fresh. Whether the
-    fetched config is *newer* than what was last applied, and so whether the launch re-applies the
-    settings, is the caller's decision, via :func:`managed_config_is_newer` against the persisted
-    applied watermark. The manifest is None when the workspace has no managed config, the normal
+    ``force_refresh`` (used by ``ug configure``) skips the cache and always reads fresh. A launch only
+    reads it; applying it to the agent settings files is ``ug configure``'s job. The manifest is None when the workspace has no managed config, the normal
     case for a workspace whose admin hasn't published one.
 
     A failed fetch never blocks the launch: an unreachable control plane shouldn't stop someone from

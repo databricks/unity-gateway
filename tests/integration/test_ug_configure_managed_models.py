@@ -33,11 +33,12 @@ SMART_ROUTING_BANNER = "Using Unity Gateway Smart Router."
 def test_managed_claude_mps_defaults_accompany_discovery(live_session, workspace):
     """Scenario: launch Claude under an injected config with defaults and MPS discovery.
 
-    Expected: the installed ug launch writes the MPS header and every admin-authored default to
+    Expected: the installed `ug configure` writes the MPS header and every admin-authored default to
     both Claude settings files without changing the model ids, and replaces built-in picker rows
     with labeled family-default shortcuts followed by the independently fetched MPS catalog,
-    including targets also used as defaults. This settings reconciliation check does not claim
-    model inference.
+    including targets also used as defaults. The launch leaves both files alone, so neither holds
+    the per-launch `ANTHROPIC_MODEL`. This settings reconciliation check does not claim model
+    inference.
     """
     session = live_session
     defaults = {
@@ -69,7 +70,8 @@ def test_managed_claude_mps_defaults_accompany_discovery(live_session, workspace
         env = settings.get("env") or {}
         expected_header = f"Databricks-Model-Provider-Service: {MANAGED_CLAUDE_PROVIDER_SERVICE}"
         assert expected_header in env.get("ANTHROPIC_CUSTOM_HEADERS", "").splitlines(), settings
-        assert env.get("ANTHROPIC_MODEL") == defaults["default_model"], settings
+        # The starting model is passed per launch through `--settings`, never written to a file.
+        assert "ANTHROPIC_MODEL" not in env, settings
         for config_key, env_key in MANAGED_CLAUDE_DEFAULT_ENV_KEYS.items():
             assert env.get(env_key) == defaults[config_key], settings
         picker = settings["modelPicker"]
@@ -91,11 +93,12 @@ def test_managed_claude_mps_defaults_accompany_discovery(live_session, workspace
 def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session, workspace):
     """Scenario: launch Claude under an injected config with defaults and `system.ai` UC discovery.
 
-    Expected: the installed ug launch writes the parent-schema header and every admin-authored
+    Expected: the installed `ug configure` writes the parent-schema header and every admin-authored
     default to both Claude settings files, adding ``[1m]`` only to Opus and Sonnet family defaults.
     The replacement picker contains those family defaults and every model independently fetched
-    from the schema, preserving catalog labels. This settings reconciliation check does not claim
-    model inference.
+    from the schema, preserving catalog labels. The launch leaves both files alone, so neither holds
+    the per-launch `ANTHROPIC_MODEL`. This settings reconciliation check does not claim model
+    inference.
     """
     session = live_session
     parent_schema = "system.ai"
@@ -127,7 +130,8 @@ def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session,
         env = settings.get("env") or {}
         expected_header = f"Databricks-Model-Service-Parent-Schema: {parent_schema}"
         assert expected_header in env.get("ANTHROPIC_CUSTOM_HEADERS", "").splitlines(), settings
-        assert env.get("ANTHROPIC_MODEL") == defaults["default_model"], settings
+        # The starting model is passed per launch through `--settings`, never written to a file.
+        assert "ANTHROPIC_MODEL" not in env, settings
         expected_picker_models = []
         for config_key, env_key in MANAGED_CLAUDE_DEFAULT_ENV_KEYS.items():
             expected = defaults[config_key]

@@ -3244,6 +3244,71 @@ class TestClaudeLaunch:
         settings = json.loads(calls[0][2])
         assert settings["env"]["ANTHROPIC_MODEL"] == "cat.schema.model"
 
+    def test_managed_launch_model_goes_through_settings_only(self, monkeypatch, tmp_path):
+        calls: list[list[str]] = []
+        monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+        settings_path = tmp_path / "ucode-settings.json"
+        settings_path.write_text(json.dumps({"env": {"USER_SETTING": "keep"}}))
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", settings_path)
+        original_settings = settings_path.read_bytes()
+
+        claude.launch(
+            {"workspace": WS, "_claude_launch_model": "system.ai.claude-sonnet-5"},
+            ["--debug"],
+            options=LaunchOptions(),
+        )
+
+        assert os.environ["ANTHROPIC_MODEL"] == "system.ai.claude-sonnet-5"
+        assert calls[0][:2] == ["claude", "--settings"]
+        settings = json.loads(calls[0][2])
+        assert settings["env"] == {
+            "USER_SETTING": "keep",
+            "ANTHROPIC_MODEL": "system.ai.claude-sonnet-5",
+        }
+        # A managed default is not a user pin: no `--model`, so smart routing still applies.
+        assert calls[0][3:] == ["--debug"]
+        assert settings_path.read_bytes() == original_settings
+
+    def test_user_pin_outranks_managed_launch_model(self, monkeypatch):
+        calls: list[list[str]] = []
+        monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+
+        claude.launch(
+            {"workspace": WS, "_claude_launch_model": "system.ai.claude-sonnet-5"},
+            [],
+            options=LaunchOptions(user_pinned_model="system.ai.claude-opus-4-8"),
+        )
+
+        assert os.environ["ANTHROPIC_MODEL"] == "system.ai.claude-opus-4-8"
+        assert json.loads(calls[0][2])["env"]["ANTHROPIC_MODEL"] == "system.ai.claude-opus-4-8"
+
+    def test_smart_routed_launch_adds_managed_launch_model_to_settings(self, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        launch_v2 = Mock()
+        monkeypatch.setattr(v2, "launch_claude", launch_v2)
+        monkeypatch.setattr(
+            claude, "_compose_v2_settings", lambda args: ({"env": {"USER_SETTING": "keep"}}, args)
+        )
+
+        claude.launch(
+            {"workspace": WS, "_claude_launch_model": "system.ai.claude-sonnet-5"},
+            ["fix this bug"],
+            options=LaunchOptions(launch_smart_routing=True),
+        )
+
+        kwargs = launch_v2.call_args.kwargs
+        assert kwargs["launch_model"] is None
+        assert kwargs["compose_settings"](["fix this bug"]) == (
+            {"env": {"USER_SETTING": "keep", "ANTHROPIC_MODEL": "system.ai.claude-sonnet-5"}},
+            ["fix this bug"],
+        )
+        assert os.environ["ANTHROPIC_MODEL"] == "system.ai.claude-sonnet-5"
+
     def test_launch_custom_model_uses_native_model(self, monkeypatch, tmp_path):
         calls: list[list[str]] = []
         monkeypatch.setenv("ANTHROPIC_MODEL", "stale-model")

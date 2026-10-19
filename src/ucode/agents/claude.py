@@ -61,7 +61,6 @@ from ucode.managed_files import (
     check_skipped_managed_overrides,
     current_os,
     managed_file_conflicts,
-    managed_file_is_verified,
     managed_file_scope,
     managed_file_snapshots,
     managed_file_status,
@@ -357,19 +356,6 @@ def _user_agent_header_value(line: str) -> str | None:
 
 def _dump_managed_settings(settings: dict) -> str:
     return json.dumps(settings, indent=2, sort_keys=True) + "\n"
-
-
-def managed_settings_are_current(state: dict) -> bool:
-    path = _managed_settings_path()
-    if path is None:
-        return True
-    if state.get("claude_relayed"):
-        required_scope = "relay-compatible"
-    elif managed_writes_allowed():
-        required_scope = "managed"
-    else:
-        required_scope = None
-    return managed_file_is_verified(state, "claude", path, required_scope=required_scope)
 
 
 def gateway_model_discovery_setting_is_absent() -> bool:
@@ -2317,6 +2303,26 @@ def launch(
     pinned_model = (
         maybe_add_gpt_1m_suffix(options.user_pinned_model) if options.user_pinned_model else None
     )
+    # A managed config's starting model (its default or the budget recommendation) applies to this
+    # launch only, through `--settings`; the managed settings file never holds it. A user's own pin
+    # outranks it.
+    managed_launch_model = state.get("_claude_launch_model")
+    launch_model_settings = (
+        {"env": {"ANTHROPIC_MODEL": maybe_add_gpt_1m_suffix(managed_launch_model)}}
+        if isinstance(managed_launch_model, str) and managed_launch_model and not pinned_model
+        else None
+    )
+    if launch_model_settings:
+        os.environ.update(launch_model_settings["env"])
+
+    compose_settings = _compose_v2_settings
+    if launch_model_settings:
+        model_settings = launch_model_settings
+
+        def compose_settings(args: list[str]) -> tuple[dict, list[str]]:
+            settings, remaining = _compose_v2_settings(args)
+            return _merge_claude_settings(settings, model_settings), remaining
+
     routing_setup_failed = False
     if options.launch_smart_routing:
         try:
@@ -2327,7 +2333,7 @@ def launch(
                 user_settings_path=CLAUDE_USER_SETTINGS_PATH,
                 # With no user pin, let Claude resolve its starting model from its own settings.
                 launch_model=pinned_model,
-                compose_settings=_compose_v2_settings,
+                compose_settings=compose_settings,
                 launch_model_args=_launch_model_args,
                 model_name=_maybe_add_1m_suffix,
             )
@@ -2365,6 +2371,8 @@ def launch(
                 # overwriting the user's saved selection. This also prevents Claude from appending
                 # that stale built-in selection to an otherwise replaced picker.
                 settings_override = {"model": picker_models[0]}
+    if launch_model_settings:
+        settings_override = _merge_claude_settings(settings_override or {}, launch_model_settings)
     if routing_setup_failed:
         # Override inherited and saved routing flags for this launch only. Older
         # saved hooks must not route to agents whose plugin could not be written.

@@ -139,8 +139,8 @@ applies Luna. The below-tier case verifies Claude/Sonnet selection and checks th
 spend percentage when the backend supplies budget figures.
 
 The explicit `ug claude` case verifies that startup displays the backend's Codex/Luna
-recommendation while its generated `ANTHROPIC_MODEL` setting and native header select
-Sonnet, then exits. It does not verify Claude's inference model. All three cases leave
+recommendation while Claude's native header selects Sonnet, then exits. The launch passes
+that starting model through `--settings`, so `ucode-settings.json` holds no `ANTHROPIC_MODEL`. It does not verify Claude's inference model. All three cases leave
 workspace and budget configuration unchanged.
 
 Shared subprocess command resolution is covered by `../test_subprocess_cross_os.py` and

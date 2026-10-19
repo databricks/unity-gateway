@@ -17,9 +17,7 @@ from ucode.managed_config import (
     get_managed_config,
     load_managed_configuration,
     load_managed_state,
-    managed_config_is_newer,
     managed_state_workspace,
-    managed_update_time,
     normalize_managed_config,
     refresh_managed_config,
     save_managed_state,
@@ -944,67 +942,12 @@ class TestRefreshTTL:
 
 
 class TestManagedUpdateTime:
-    def test_reads_top_level_update_time(self):
-        assert managed_update_time({"update_time": "2026-09-11T16:09:31.820Z"}) == (
-            "2026-09-11T16:09:31.820Z"
-        )
-
-    def test_none_when_absent_or_not_a_dict(self):
-        assert managed_update_time({}) is None
-        assert managed_update_time(None) is None
-
     def test_normalize_captures_update_time(self):
         raw = {
             "default_agent": "CODING_AGENT_CLAUDE_CODE",
             "update_time": "2026-09-11T16:09:31.820Z",
         }
         assert normalize_managed_config(raw)["update_time"] == "2026-09-11T16:09:31.820Z"
-
-
-class TestManagedConfigIsNewer:
-    OLDER = {"update_time": "2026-09-11T16:00:00.000Z"}
-    NEWER = {"update_time": "2026-09-11T16:09:31.820Z"}
-
-    def test_true_when_fetched_is_newer(self):
-        assert managed_config_is_newer(self.NEWER, self.OLDER["update_time"]) is True
-
-    def test_false_when_equal(self):
-        assert managed_config_is_newer(self.NEWER, self.NEWER["update_time"]) is False
-
-    def test_false_when_fetched_is_older(self):
-        assert managed_config_is_newer(self.OLDER, self.NEWER["update_time"]) is False
-
-    def test_true_when_no_prior_watermark(self):
-        # First apply: nothing applied yet, so any fetched config counts as newer.
-        assert managed_config_is_newer(self.NEWER, None) is True
-
-    def test_true_when_fetched_has_no_update_time(self):
-        # A config without a parseable update_time is treated as newer so a launch re-applies it
-        # rather than trusting possibly-stale local settings.
-        assert managed_config_is_newer({}, self.NEWER["update_time"]) is True
-
-    def test_true_when_watermark_unparseable(self):
-        assert managed_config_is_newer(self.NEWER, "not-a-timestamp") is True
-
-    def test_handles_z_and_offset_suffixes_equivalently(self):
-        assert (
-            managed_config_is_newer(
-                {"update_time": "2026-09-11T16:00:00+00:00"}, "2026-09-11T16:00:00Z"
-            )
-            is False
-        )
-
-    def test_offset_less_timestamp_does_not_raise_against_utc_watermark(self):
-        # A stub value with no offset parses tz-naive; comparing it against the tz-aware persisted
-        # watermark must not raise TypeError, and must still return a sane bool.
-        result = managed_config_is_newer(
-            {"update_time": "2024-01-15T10:30:00"}, "2024-01-15T09:00:00Z"
-        )
-        assert result is True
-        assert (
-            managed_config_is_newer({"update_time": "2024-01-15T10:30:00"}, "2024-01-15T11:00:00Z")
-            is False
-        )
 
 
 class TestGetModelRecommendation:

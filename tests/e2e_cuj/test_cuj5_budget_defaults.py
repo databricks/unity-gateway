@@ -83,7 +83,8 @@ class TestCujBudgetDefaultsBelowTier(_BudgetDefaultsBase):
             tui.boot(timeout=240)
             claude_settings = session.home / ".claude" / "ucode-settings.json"
             settings = json.loads(claude_settings.read_text())
-            assert settings["env"]["ANTHROPIC_MODEL"] == self.SONNET_MODEL, settings
+            # The launch passes the starting model through `--settings`, not the settings file.
+            assert "ANTHROPIC_MODEL" not in settings["env"], settings
             tui.wait_for(
                 lambda text: re.search(r"Claude Sonnet 4\.6\s*·", text),
                 "Claude's native Sonnet model header",
@@ -225,7 +226,8 @@ class TestCujBudgetDefaultsExplicitClaude(_BudgetDefaultsBase):
             )
             claude_settings = session.home / ".claude" / "ucode-settings.json"
             settings = json.loads(claude_settings.read_text())
-            assert settings["env"]["ANTHROPIC_MODEL"] == self.SONNET_MODEL, settings
+            # The launch passes the starting model through `--settings`, not the settings file.
+            assert "ANTHROPIC_MODEL" not in settings["env"], settings
             tui.wait_for(
                 lambda text: re.search(r"Claude Sonnet 4\.6\s*·", text),
                 "Claude's native Sonnet model header",

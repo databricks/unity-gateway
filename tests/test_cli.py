@@ -986,7 +986,10 @@ class TestSubcommandRouting:
             result = runner.invoke(app, ["claude"])
 
         assert result.exit_code == 0, result.output
-        assert calls["configure"].call_args.kwargs["parent_schema"] is None
+        # A managed launch does not re-apply the config, so the saved location is never written.
+        calls["configure"].assert_not_called()
+        assert "_claude_launch_parent_schema" not in calls["launch"].call_args.args[1]
+        assert cli_mod._managed_claude_write_kwargs(managed, calls["state"]) == {}
 
     def test_codex_model_location_is_forwarded(self):
         with patch("ucode.cli._launch_tool") as mock_launch:
@@ -1305,7 +1308,9 @@ class TestManagedConfigLaunchSourceGuard:
 
         assert result.exit_code == 1
         assert "`--provider` or `--model-location` is not allowed" in _strip_ansi(result.output)
-        mock_configure.assert_called_once_with("claude", MINIMAL_STATE, provider=None)
+        mock_configure.assert_called_once_with(
+            "claude", MINIMAL_STATE, provider=None, parent_schema=None, write_kwargs={}
+        )
         calls["launch"].assert_not_called()
 
     def test_persisted_provider_is_not_mistaken_for_an_explicit_option(self):
@@ -1316,7 +1321,8 @@ class TestManagedConfigLaunchSourceGuard:
         assert calls["get_provider"].call_count == 1
         assert calls["get_provider"].call_args.args[1] == "claude"
         calls["resolve_provider"].assert_called_once()
-        calls["configure"].assert_called_once()
+        # A managed launch does not re-apply the config; `ug configure` does.
+        calls["configure"].assert_not_called()
         calls["launch"].assert_called_once()
 
 
@@ -1337,7 +1343,9 @@ class TestManagedClaudeModelDiscovery:
 
         assert result.exit_code == 0, result.output
         calls["launch"].assert_called_once()
-        assert calls["configure"].call_args.kwargs["picker_catalog"] is None
+        calls["configure"].assert_not_called()
+        resolved = cli_mod.resolve_state(managed, calls["state"], "claude")
+        assert "picker_catalog" not in cli_mod._managed_claude_write_kwargs(managed, resolved)
         assert "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY" not in os.environ
 
     MPS_CONFIG = {
@@ -1431,22 +1439,20 @@ class TestManagedClaudeModelDiscovery:
             assert calls["resolve_provider"].call_args.args[2] == expected_provider
         else:
             calls["resolve_provider"].assert_not_called()
-        assert calls["configure"].call_args.kwargs["provider"] == expected_provider
-        assert calls["configure"].call_args.kwargs["parent_schema"] == expected_parent
-        assert calls["configure"].call_args.args[1]["provider_services"]["claude"] == (
+        # A managed launch does not re-apply the config; `ug configure` writes it.
+        calls["configure"].assert_not_called()
+        assert calls["launch"].call_args.args[1]["provider_services"]["claude"] == (
             expected_provider or "main.developer.provider"
         )
+        expected_catalog_kwargs = (
+            {"provider": expected_provider}
+            if expected_provider
+            else {"parent_schema": expected_parent}
+        )
         calls["list_anthropic_model_catalog"].assert_called_once_with(
-            calls["state"]["workspace"],
-            "token",
-            **(
-                {"provider": expected_provider}
-                if expected_provider
-                else {"parent_schema": expected_parent}
-            ),
+            calls["state"]["workspace"], "token", **expected_catalog_kwargs
         )
         if expected_picker:
-            assert calls["configure"].call_args.kwargs["picker_catalog"] is calls["picker_catalog"]
             assert calls["launch"].call_args.args[1]["_claude_launch_picker_models"] == [
                 "main.default.claude-sonnet-5"
             ]
@@ -1459,11 +1465,19 @@ class TestManagedClaudeModelDiscovery:
                 "main.default.claude-sonnet-5",
             ]
             assert (
-                calls["configure"].call_args.kwargs["picker_catalog"].model_ids == expected_models
-            )
-            assert (
                 calls["launch"].call_args.args[1]["_claude_launch_picker_models"] == expected_models
             )
+
+        # The picker the launch used to write is now written by `ug configure`.
+        calls["list_anthropic_model_catalog"].reset_mock()
+        write_kwargs = cli_mod._managed_claude_write_kwargs(managed, calls["state"])
+        calls["list_anthropic_model_catalog"].assert_called_once_with(
+            calls["state"]["workspace"], "token", **expected_catalog_kwargs
+        )
+        if expected_picker:
+            assert write_kwargs["picker_catalog"] is calls["picker_catalog"]
+        else:
+            assert write_kwargs["picker_catalog"].model_ids == expected_models
         assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
 
     @pytest.mark.parametrize(
@@ -1493,11 +1507,20 @@ class TestManagedClaudeModelDiscovery:
 
         assert result.exit_code == 0, result.output
         calls["list_catalog"].assert_not_called()
-        picker = calls["configure"].call_args.kwargs["picker_catalog"]
-        assert picker.model_ids == [explicit_model or "system.ai.claude-sonnet-5[1m]"]
-        assert calls["configure"].call_args.kwargs["route_root_model"] is None
-        assert calls["launch"].call_args.args[1]["_claude_launch_picker_models"] == picker.model_ids
+        calls["configure"].assert_not_called()
+        launch_picker = [explicit_model or "system.ai.claude-sonnet-5[1m]"]
+        assert calls["launch"].call_args.args[1]["_claude_launch_picker_models"] == launch_picker
+        assert "_claude_launch_model" not in calls["launch"].call_args.args[1]
         assert calls["launch"].call_args.kwargs["options"].user_pinned_model == explicit_model
+
+        # `ug configure` writes the family-default picker; --model only extends the launch picker.
+        resolved = cli_mod.resolve_state(managed, calls["state"], "claude")
+        write_kwargs = cli_mod._managed_claude_write_kwargs(managed, resolved)
+        calls["list_catalog"].assert_not_called()
+        assert write_kwargs["picker_catalog"].model_ids == ["system.ai.claude-sonnet-5[1m]"]
+        assert write_kwargs["coding_agent_config_defaults"] == {
+            "sonnet": "system.ai.claude-sonnet-5"
+        }
 
     @pytest.mark.parametrize(
         ("with_overall_default", "with_family_default"),
@@ -1522,24 +1545,44 @@ class TestManagedClaudeModelDiscovery:
         with _launch_policy_patches(managed, picker_catalog=discovered) as calls:
             result = runner.invoke(app, ["claude"])
 
-        assert result.exit_code == 0, result.output
-        calls["list_catalog"].assert_called_once_with(
-            MINIMAL_STATE["workspace"], "token", parent_schema="ug_e2e.models"
+            assert result.exit_code == 0, result.output
+            calls["list_catalog"].assert_called_once_with(
+                MINIMAL_STATE["workspace"], "token", parent_schema="ug_e2e.models"
+            )
+            calls["configure"].assert_not_called()
+            launch_state = calls["launch"].call_args.args[1]
+            if with_overall_default:
+                assert launch_state["_claude_launch_model"] == sonnet
+            else:
+                assert "_claude_launch_model" not in launch_state
+
+            # The family defaults and the discovered picker are written by `ug configure`.
+            calls["list_catalog"].reset_mock()
+            write_kwargs = cli_mod._managed_claude_write_kwargs(managed, calls["state"])
+            calls["list_catalog"].assert_called_once_with(
+                MINIMAL_STATE["workspace"], "token", parent_schema="ug_e2e.models"
+            )
+        assert write_kwargs.get("coding_agent_config_defaults") == (
+            {"sonnet": sonnet} if with_family_default else None
         )
-        configured = calls["configure"].call_args.kwargs
-        assert configured["route_root_model"] == (sonnet if with_overall_default else None)
-        assert configured["coding_agent_config_defaults"] == (
-            {"sonnet": sonnet} if with_family_default else {}
-        )
-        assert set(configured["picker_catalog"].model_ids) == {sonnet, haiku}
+        assert set(write_kwargs["picker_catalog"].model_ids) == {sonnet, haiku}
 
     def test_relayed_managed_defaults_keep_native_picker(self, monkeypatch):
         calls = self._invoke(monkeypatch, self.MPS_CONFIG, relayed=True)
 
         assert calls["result"].exit_code == 0, calls["result"].output
         calls["list_anthropic_model_catalog"].assert_not_called()
-        assert calls["configure"].call_args.kwargs["picker_catalog"] is None
+        calls["configure"].assert_not_called()
         assert "_claude_launch_picker_models" not in calls["launch"].call_args.args[1]
+        write_kwargs = cli_mod._managed_claude_write_kwargs(self.MPS_CONFIG, calls["state"])
+        calls["list_anthropic_model_catalog"].assert_not_called()
+        assert "picker_catalog" not in write_kwargs
+        assert write_kwargs["coding_agent_config_defaults"] == {
+            "sonnet": "anthropic.claude-sonnet-4-6",
+            "opus": "anthropic.claude-opus-4-8",
+            "haiku": "anthropic.claude-haiku-4-5",
+            "fable": "anthropic.claude-fable-5-1",
+        }
 
     @pytest.mark.parametrize("managed", [MPS_WITHOUT_DEFAULTS_CONFIG, MPS_CONFIG])
     def test_managed_mps_catalog_error_blocks_launch(self, monkeypatch, managed):
@@ -1602,8 +1645,8 @@ class TestManagedCodexModelSource:
             calls["resolve_provider"].assert_called_once()
         else:
             calls["resolve_provider"].assert_not_called()
-        assert calls["configure"].call_args.kwargs["provider"] == expected_provider
-        assert calls["configure"].call_args.kwargs["parent_schema"] == expected_parent
+        # A managed Codex launch does not re-apply the config; `ug configure` writes the source.
+        calls["configure"].assert_not_called()
         launch_state = calls["launch"].call_args.args[1]
         if expected_provider:
             assert launch_state["_codex_launch_provider"] == expected_provider
@@ -1699,10 +1742,62 @@ class TestClaudeModelFlag:
             result = runner.invoke(app, ["claude", "--model", "system.ai.claude-opus-4-8"])
 
         assert result.exit_code == 0, result.output
-        assert calls["configure"].call_args.kwargs["route_root_model"] is None
+        calls["configure"].assert_not_called()
+        assert "_claude_launch_model" not in calls["launch"].call_args.args[1]
         assert (
             calls["launch"].call_args.kwargs["options"].user_pinned_model
             == "system.ai.claude-opus-4-8"
+        )
+
+    def test_managed_default_model_is_the_launch_scoped_starting_model(self):
+        managed = {
+            "enabled_agents": {
+                "claude": {"model_config": {"default_model": "system.ai.claude-sonnet-5"}}
+            }
+        }
+        with _launch_policy_patches(managed) as calls:
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        calls["configure"].assert_not_called()
+        assert calls["launch"].call_args.args[1]["_claude_launch_model"] == (
+            "system.ai.claude-sonnet-5"
+        )
+
+    @pytest.mark.parametrize(
+        ("saved_workspace", "rewrites"),
+        [
+            ("https://other.databricks.com", True),
+            ("https://target.databricks.com", False),
+        ],
+        ids=["switches-workspace", "same-workspace"],
+    )
+    def test_managed_launch_rewrites_settings_only_when_switching_workspace(
+        self, saved_workspace, rewrites
+    ):
+        managed = {
+            "enabled_agents": {
+                "claude": {"model_config": {"default_model": "system.ai.claude-sonnet-5"}}
+            }
+        }
+        with (
+            _launch_policy_patches(managed) as calls,
+            patch("ucode.cli.load_full_state", return_value={"current_workspace": saved_workspace}),
+            patch("ucode.cli.set_current_workspace"),
+        ):
+            # The real writer returns the state it was given, launch-scoped keys included.
+            calls["configure"].side_effect = lambda _tool, configured, *_a, **_k: configured
+            result = runner.invoke(app, ["claude", "--workspace", "https://target.databricks.com"])
+
+        assert result.exit_code == 0, result.output
+        if rewrites:
+            calls["configure"].assert_called_once()
+            assert calls["configure"].call_args.kwargs["route_root_model"] is None
+        else:
+            calls["configure"].assert_not_called()
+        # The starting model is launch-scoped either way.
+        assert calls["launch"].call_args.args[1]["_claude_launch_model"] == (
+            "system.ai.claude-sonnet-5"
         )
 
     @pytest.mark.parametrize(
@@ -3607,7 +3702,15 @@ class TestAutoConfigureOnFirstRun:
         ):
             cli_mod._auto_configure_tool("claude", provider="main.default.relay")
 
-        mock_configure.assert_called_once_with("claude", MINIMAL_STATE, provider=expected_provider)
+        if manifest is None:
+            mock_configure.assert_called_once_with(
+                "claude", MINIMAL_STATE, provider=expected_provider
+            )
+        else:
+            # A first launch applies the managed config here, as `ug configure` would.
+            mock_configure.assert_called_once_with(
+                "claude", MINIMAL_STATE, provider=None, parent_schema=None, write_kwargs={}
+            )
 
     def test_skipped_when_already_configured(self):
         """Auto-configure is skipped when workspace and tool are already set up."""
@@ -4410,6 +4513,14 @@ class TestConfigureAgentsSelection:
         monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
         monkeypatch.setattr(cli_mod, "_print_managed_summary", lambda *a, **k: None)
         monkeypatch.setattr(cli_mod, "_configure_managed_mcp_servers", lambda *_a: None)
+        discovered = db_mod.AnthropicModelCatalog(
+            model_ids=["main.models.claude-sonnet-5"], model_id_to_display_name={}
+        )
+        list_catalog = MagicMock(return_value=discovered)
+        monkeypatch.setattr(cli_mod, "list_anthropic_model_catalog", list_catalog)
+        monkeypatch.setattr(
+            cli_mod, "resolve_provider_models", lambda *_a, **_k: (None, None, False)
+        )
         configured: list[tuple[dict, dict]] = []
         monkeypatch.setattr(
             cli_mod,
@@ -4426,6 +4537,17 @@ class TestConfigureAgentsSelection:
         assert kwargs["parent_schemas"] == (
             {"claude": expected_parent} if expected_parent else None
         )
+        # `ug configure` now writes the managed picker, discovered from the managed source.
+        list_catalog.assert_called_once_with(
+            state["workspace"],
+            "token",
+            **(
+                {"provider": expected_provider}
+                if expected_provider
+                else {"parent_schema": expected_parent}
+            ),
+        )
+        assert kwargs["write_kwargs"] == {"claude": {"picker_catalog": discovered}}
 
     def test_single_claude_agent_passes_managed_uc_parent_directly(self, monkeypatch):
         state = {**MINIMAL_STATE, "provider_services": {"claude": "main.default.developer"}}
@@ -4439,12 +4561,25 @@ class TestConfigureAgentsSelection:
         configure = MagicMock(return_value=state)
         monkeypatch.setattr(cli_mod, "configure_single_tool", configure)
         monkeypatch.setattr(cli_mod, "install_databricks_ai_tools_for_agents", lambda *a, **k: None)
+        discovered = db_mod.AnthropicModelCatalog(
+            model_ids=["main.models.claude-sonnet-5"], model_id_to_display_name={}
+        )
+        list_catalog = MagicMock(return_value=discovered)
+        monkeypatch.setattr(cli_mod, "list_anthropic_model_catalog", list_catalog)
 
         assert (
             cli_mod.configure_workspace_command(tool="claude", workspaces=[("https://w.com", None)])
             == 0
         )
-        configure.assert_called_once_with("claude", state, parent_schema="main.models")
+        configure.assert_called_once_with(
+            "claude",
+            state,
+            parent_schema="main.models",
+            write_kwargs={"picker_catalog": discovered},
+        )
+        list_catalog.assert_called_once_with(
+            state["workspace"], "token", parent_schema="main.models"
+        )
 
     def test_managed_codex_parent_is_passed_to_generic_configure(self, monkeypatch):
         state = {
@@ -6016,9 +6151,12 @@ class TestBudgetRecommendationAtLaunch:
             patch("ucode.cli.configure_tool", return_value=state) as cfg,
             patch("ucode.cli.get_databricks_token", return_value="tok"),
             patch("ucode.cli._fetch_managed_config", return_value=(managed, False)),
-            patch("ucode.cli.launch_agent"),
+            patch("ucode.cli.launch_agent") as launch,
         ):
             result = runner.invoke(app, [tool])
+        # A managed launch leaves the agent settings to `ug configure`, so tests read the
+        # launch-scoped model from the state handed to the launcher.
+        cfg.launch = launch
         return result, calls, cfg
 
     def test_not_checked_without_a_managed_config(self, monkeypatch):
@@ -6075,7 +6213,8 @@ class TestBudgetRecommendationAtLaunch:
             managed=managed,
             recommendation={"agent": "claude", "model": "system.ai.claude-haiku-4-5"},
         )
-        assert cfg.call_args.args[2] == "system.ai.claude-haiku-4-5"
+        cfg.assert_not_called()
+        assert cfg.launch.call_args.args[1]["_claude_launch_model"] == "system.ai.claude-haiku-4-5"
 
     def test_passes_configured_claude_defaults_to_writer(self, monkeypatch):
         managed = {
@@ -6093,7 +6232,10 @@ class TestBudgetRecommendationAtLaunch:
         result, _calls, cfg = self._launch(monkeypatch, managed=managed)
 
         assert result.exit_code == 0, result.output
-        assert cfg.call_args.kwargs["coding_agent_config_defaults"] == {
+        # The launch no longer writes the managed defaults; `ug configure` does.
+        cfg.assert_not_called()
+        write_kwargs = cli_mod._managed_claude_write_kwargs(managed, MINIMAL_STATE)
+        assert write_kwargs["coding_agent_config_defaults"] == {
             "sonnet": "system.ai.claude-sonnet-4-6"
         }
 
@@ -6118,7 +6260,8 @@ class TestBudgetRecommendationAtLaunch:
             },
         )
         assert result.exit_code == 0, result.output
-        assert cfg.call_args.args[2] == "system.ai.claude-opus-4-8"
+        cfg.assert_not_called()
+        assert cfg.launch.call_args.args[1]["_claude_launch_model"] == "system.ai.claude-opus-4-8"
         assert "recommends OpenCode" in result.output
 
     def test_a_failed_read_does_not_block_the_launch(self, monkeypatch):

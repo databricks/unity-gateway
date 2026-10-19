@@ -14,7 +14,6 @@ from ucode.state import (
     add_self_managed_agent,
     build_agent_state,
     clear_state,
-    get_applied_managed_update_time,
     get_model_location,
     get_provider_service,
     hydrate_state,
@@ -25,7 +24,6 @@ from ucode.state import (
     remove_self_managed_agent,
     save_state,
     self_managed_agents,
-    set_applied_managed_update_time,
     set_current_workspace,
     set_model_location,
     set_provider_service,
@@ -216,33 +214,6 @@ class TestModelLocation:
         state = set_model_location(state, "codex", "main.b")
         state = set_model_location(state, "claude", None)
         assert get_model_location(state, "codex") == "main.b"
-
-
-class TestAppliedManagedUpdateTime:
-    def test_get_returns_none_when_unset(self):
-        assert get_applied_managed_update_time({}) is None
-        assert get_applied_managed_update_time({"applied_managed_update_time": ""}) is None
-
-    def test_set_and_get_roundtrip(self):
-        state = set_applied_managed_update_time({}, "2026-09-11T16:09:31.820Z")
-        assert get_applied_managed_update_time(state) == "2026-09-11T16:09:31.820Z"
-
-    def test_set_none_clears_the_key(self):
-        state = set_applied_managed_update_time({}, "2026-09-11T16:09:31.820Z")
-        state = set_applied_managed_update_time(state, None)
-        assert get_applied_managed_update_time(state) is None
-        assert "applied_managed_update_time" not in state
-
-    def test_survives_save_load_roundtrip(self):
-        state = {"workspace": FAKE_WS, "profile": None}
-        state = set_applied_managed_update_time(state, "2026-09-11T16:09:31.820Z")
-        save_state(state)
-        assert get_applied_managed_update_time(load_state()) == "2026-09-11T16:09:31.820Z"
-
-
-# ---------------------------------------------------------------------------
-# hydrate_state
-# ---------------------------------------------------------------------------
 
 
 class TestHydrateState:

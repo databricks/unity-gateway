@@ -15,6 +15,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Any
 
 from ucode.config_io import ToolSpec
 from ucode.constants import AGENT_CLAUDE, AGENT_CODEX
@@ -544,9 +545,18 @@ def _availability_failure_detail(tool: str, state: dict) -> str:
 
 
 def configure_single_tool(
-    tool: str, state: dict, *, parent_schema: str | None = None, provider: str | None = None
+    tool: str,
+    state: dict,
+    *,
+    parent_schema: str | None = None,
+    provider: str | None = None,
+    write_kwargs: dict | None = None,
 ) -> dict:
-    """Check availability, configure, and persist state for one tool only."""
+    """Check availability, configure, and persist state for one tool only.
+
+    ``write_kwargs`` are extra :func:`configure_tool` arguments, such as a managed config's model
+    policy (see ``cli._managed_claude_write_kwargs``).
+    """
     parent_schema = parent_schema or _persisted_model_location(tool, state, provider)
     provider = None if parent_schema else provider or get_provider_service(state, tool)
     # A Model Provider Service or parent schema routes through the same gateway and pins no
@@ -560,7 +570,9 @@ def configure_single_tool(
                 f"{TOOL_SPECS[tool]['display']} is not available on this workspace.{detail}"
             )
     with managed_write_batch(_managed_settings_displays([tool])):
-        state = _configure_one(tool, state, provider, parent_schema=parent_schema)
+        state = _configure_one(
+            tool, state, provider, parent_schema=parent_schema, write_kwargs=write_kwargs
+        )
     available_tools = list(set((state.get("available_tools") or []) + [tool]))
     state["available_tools"] = available_tools
     save_state(state)
@@ -579,11 +591,21 @@ def _persisted_model_location(tool: str, state: dict, provider: str | None) -> s
 
 
 def _configure_one(
-    tool: str, state: dict, provider: str | None, *, parent_schema: str | None = None
+    tool: str,
+    state: dict,
+    provider: str | None,
+    *,
+    parent_schema: str | None = None,
+    write_kwargs: dict | None = None,
 ) -> dict:
-    """Write one tool's config, routing through ``provider`` when set."""
+    """Write one tool's config, routing through ``provider`` when set.
+
+    ``write_kwargs`` are passed through to :func:`configure_tool` and win over the values resolved
+    here (e.g. a managed config's authored provider models).
+    """
+    write_kwargs: dict[str, Any] = dict(write_kwargs or {})
     if parent_schema:
-        return configure_tool(tool, state, parent_schema=parent_schema)
+        return configure_tool(tool, state, parent_schema=parent_schema, **write_kwargs)
     if provider:
         if tool == "gemini":
             # Gemini pins a concrete target in the URL, so configure must resolve one now —
@@ -596,13 +618,16 @@ def _configure_one(
         provider_models, error, relayed = resolve_provider_models(tool, state, provider)
         if error:
             raise RuntimeError(error)
-        return configure_tool(
-            tool, state, None, provider=provider, provider_models=provider_models, relayed=relayed
-        )
+        if relayed:
+            # A relayed subscription keeps Claude Code's own picker.
+            write_kwargs.pop("picker_catalog", None)
+        provider_kwargs: dict[str, Any] = {"provider_models": provider_models, "relayed": relayed}
+        provider_kwargs.update(write_kwargs)
+        return configure_tool(tool, state, None, provider=provider, **provider_kwargs)
     if tool == "codex":
-        return configure_tool("codex", state)
+        return configure_tool("codex", state, **write_kwargs)
     state, model = resolve_launch_model(tool, state, None)
-    return configure_tool(tool, state, model)
+    return configure_tool(tool, state, model, **write_kwargs)
 
 
 def configure_selected_tools(
@@ -611,6 +636,7 @@ def configure_selected_tools(
     *,
     install_ai_tools: bool = True,
     parent_schemas: dict[str, str] | None = None,
+    write_kwargs: dict[str, dict] | None = None,
 ) -> dict:
     """Configure the given tools. Caller is responsible for ensuring each tool
     is available on the workspace.
@@ -631,7 +657,13 @@ def configure_selected_tools(
             )
             provider = None if parent_schema else get_provider_service(state, tool)
             try:
-                state = _configure_one(tool, state, provider, parent_schema=parent_schema)
+                state = _configure_one(
+                    tool,
+                    state,
+                    provider,
+                    parent_schema=parent_schema,
+                    write_kwargs=(write_kwargs or {}).get(tool),
+                )
             except Exception as exc:  # noqa: BLE001 -- surface any harness failure as a warning
                 print_warning(
                     f"Could not configure {TOOL_SPECS[tool]['display']}: {exc}. Continuing."

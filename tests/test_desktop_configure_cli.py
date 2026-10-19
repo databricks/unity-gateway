@@ -27,6 +27,8 @@ def configuration(monkeypatch):
     monkeypatch.setattr(cli, "refresh_managed_config", lambda *a, **k: (None, False))
     monkeypatch.setattr(cli, "configure_single_tool", lambda *a, **k: state)
     monkeypatch.setattr(cli, "configure_selected_tools", lambda *a, **k: state)
+    # The managed model policy is covered in test_cli; these tests are about Desktop.
+    monkeypatch.setattr(cli, "_managed_claude_write_kwargs", lambda *a, **k: {})
     return state
 
 

@@ -760,6 +760,60 @@ def _configure_shared_workspace_states(
     return states
 
 
+def _managed_claude_write_kwargs(managed: dict, state: dict) -> dict:
+    """The managed config's Claude model policy, as :func:`configure_tool` arguments.
+
+    A launch no longer re-applies the managed config, so ``ug configure`` must write all of it: the
+    authored family defaults, an MPS's authored family models, and the replacement ``/model`` picker
+    for a managed MPS or Unity Catalog location. The starting model (the budget recommendation or
+    ``default_model``) is the exception; it changes per launch and goes through ``--settings``.
+    """
+    provider = managed_provider_service(managed, "claude")
+    parent_schema = None if provider else managed_unity_catalog_location(managed, "claude")
+    defaults = managed_claude_family_models(managed) or {}
+    kwargs: dict = {}
+    relayed = False
+    if provider:
+        # Invalid services fail in the configure call that follows, with its own message.
+        _, _, relayed = resolve_provider_models("claude", state, provider)
+        authored = managed_provider_family_models(managed)
+        if authored:
+            kwargs["provider_models"] = authored
+            defaults = authored
+    if defaults:
+        kwargs["coding_agent_config_defaults"] = defaults
+    if relayed:
+        # A relayed subscription keeps Claude Code's own picker.
+        return kwargs
+    picker_catalog = None
+    if provider or parent_schema:
+        token = get_databricks_token(state["workspace"], state.get("profile"))
+        picker_catalog = list_anthropic_model_catalog(
+            state["workspace"],
+            token,
+            **({"provider": provider} if provider else {"parent_schema": parent_schema}),
+        )
+        if picker_catalog.error_msg:
+            source = (
+                f"Model Provider Service {provider}"
+                if provider
+                else f"Unity Catalog location {parent_schema}"
+            )
+            raise RuntimeError(
+                f"Could not discover Claude models for {source}: {picker_catalog.error_msg}"
+            )
+    if defaults and not state.get("claude_static_models"):
+        picker_catalog = claude_agent.default_model_picker_catalog(
+            defaults,
+            provider=provider,
+            launch_model=managed_default_model(managed, "claude"),
+            discovered_catalog=picker_catalog,
+        )
+    if picker_catalog is not None:
+        kwargs["picker_catalog"] = picker_catalog
+    return kwargs
+
+
 def _setup_single_agent(
     workspace_entries: list[tuple[str, str | None]],
     tool: str,
@@ -788,6 +842,7 @@ def _setup_single_agent(
     state = states[0]
     parent_schema = None
     managed = None
+    write_kwargs: dict = {}
     if apply_managed and tool in ("claude", "codex"):
         managed, _ = refresh_managed_config(state, force_refresh=True)
         _reject_disabled_agent(managed, tool)
@@ -795,9 +850,16 @@ def _setup_single_agent(
             state = resolve_state(managed, state, tool)
             if not managed_provider_service(managed, tool):
                 parent_schema = managed_unity_catalog_location(managed, tool)
+            if tool == "claude":
+                write_kwargs = _managed_claude_write_kwargs(managed, state)
     elif apply_managed:
         managed, _ = refresh_managed_config(state, force_refresh=False)
-    state = configure_single_tool(tool, state, parent_schema=parent_schema)
+    state = configure_single_tool(
+        tool,
+        state,
+        parent_schema=parent_schema,
+        **({"write_kwargs": write_kwargs} if write_kwargs else {}),
+    )
     if apply_managed and not managed_enabled_tools(managed or {}):
         state = _record_unmanaged_configured_agents(state, [tool])
     if apply_managed and tool == "claude":
@@ -1026,6 +1088,11 @@ def _configure_workspace_command(
                     [tool_name],
                     install_ai_tools=not is_dry_run(),
                     parent_schemas={tool_name: parent_schema} if parent_schema else None,
+                    write_kwargs=(
+                        {tool_name: _managed_claude_write_kwargs(managed, resolved)}
+                        if tool_name == "claude"
+                        else None
+                    ),
                 )
                 # Each iteration resolves from `state` and persists a copy, so carry the
                 # accumulated available_tools forward — otherwise the last agent's save drops
@@ -2686,14 +2753,24 @@ def _auto_configure_tool(
         workspace, profile = _prompt_for_configuration(tool)
     configure_kwargs = {"custom_oauth": custom_oauth} if custom_oauth is not None else {}
     state = configure_shared_state(workspace, profile=profile, tools=[tool], **configure_kwargs)
-    # A managed config rejects --provider later in the launch; resolving it here would replace that
-    # error with a lookup failure.
-    if provider is not None:
-        managed, _ = _fetch_managed_config(state)
-        if managed is not None:
-            provider = None
+    # A launch doesn't re-apply the managed config, so a first launch applies it here, as
+    # `ug configure` would.
+    managed, _ = _fetch_managed_config(state)
+    if _launches_self_managed(managed, state, tool):
+        managed = None
+    managed_kwargs: dict = {}
+    if managed is not None:
+        # A managed config rejects --provider later in the launch; resolving it here would replace
+        # that error with a lookup failure.
+        provider = None
+        if tool in ("claude", "codex"):
+            state = resolve_state(managed, state, tool)
+            if not managed_provider_service(managed, tool):
+                managed_kwargs["parent_schema"] = managed_unity_catalog_location(managed, tool)
+            if tool == "claude":
+                managed_kwargs["write_kwargs"] = _managed_claude_write_kwargs(managed, state)
 
-    state = configure_single_tool(tool, state, provider=provider)
+    state = configure_single_tool(tool, state, provider=provider, **managed_kwargs)
 
     spec = TOOL_SPECS[tool]
     console.print(
@@ -3087,8 +3164,13 @@ def _launch_tool(
         # An explicit --workspace targets that workspace for this launch (and
         # auto-configures it if unseen), so `ug claude --provider ... --workspace ...`
         # works without a prior `ug configure`.
+        # A switch to another workspace rewrites the agent settings for it even under a managed
+        # config (see `write_agent_settings` below), so record whether this launch switches.
+        switches_workspace = False
         if workspace_url:
-            set_current_workspace(normalize_workspace_url(workspace_url))
+            target_workspace = normalize_workspace_url(workspace_url)
+            switches_workspace = load_full_state().get("current_workspace") != target_workspace
+            set_current_workspace(target_workspace)
         existing = load_state()
         # Workspaces configured with --use-pat export the profile's PAT as
         # DATABRICKS_BEARER up front so every auth check below (and the
@@ -3420,19 +3502,32 @@ def _launch_tool(
                 launch_model=model or forwarded_model or route_root_model,
                 discovered_catalog=picker_catalog,
             )
-        state = configure_tool(
-            tool,
-            state,
-            resolved_model,
-            provider=provider,
-            provider_models=provider_models,
-            picker_catalog=picker_catalog,
-            relayed=relayed,
-            route_root_model=route_root_model,
-            custom_model=None,
-            coding_agent_config_defaults=coding_agent_config_defaults,
-            parent_schema=parent_schema,
+        # `ug configure` applies a managed config to the agent settings files; a launch doesn't
+        # re-apply it, except to point them at a workspace this launch switches to.
+        write_agent_settings = (
+            managed is None or tool not in ("claude", "codex") or switches_workspace
         )
+        # The managed starting model changes per launch (budget tier), so it goes through
+        # `--settings` rather than into the managed settings file.
+        managed_start_model = None
+        if tool == "claude" and managed is not None:
+            managed_start_model, route_root_model = route_root_model, None
+        if write_agent_settings:
+            state = configure_tool(
+                tool,
+                state,
+                resolved_model,
+                provider=provider,
+                provider_models=provider_models,
+                picker_catalog=picker_catalog,
+                relayed=relayed,
+                route_root_model=route_root_model,
+                custom_model=None,
+                coding_agent_config_defaults=coding_agent_config_defaults,
+                parent_schema=parent_schema,
+            )
+        if managed_start_model:
+            state["_claude_launch_model"] = managed_start_model
         # A plain launch keeps Claude Code's own starting model, as its own picker did.
         if (
             picker_catalog

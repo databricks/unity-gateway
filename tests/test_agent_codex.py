@@ -1926,7 +1926,6 @@ class TestCodexManagedConfig:
         assert sudo_writes == []
         assert not managed_files.MANAGED_BACKUP_DIR.exists()
         assert state["managed_file_fingerprints"]["codex"]["scope"] == "local-compatible"
-        assert codex.managed_config_is_current(state)
 
     def test_noninteractive_repairs_conflicting_managed_config_without_prompting(
         self, tmp_path, monkeypatch
