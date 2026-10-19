@@ -29,7 +29,13 @@ from ucode.databricks import (
 from ucode.managed_config import refresh_managed_config
 from ucode.managed_files import managed_write_batch
 from ucode.os_compatibility import subprocess_cross_os
-from ucode.state import get_model_location, get_provider_service, load_state, save_state
+from ucode.state import (
+    get_model_location,
+    get_profile,
+    get_provider_service,
+    load_state,
+    save_state,
+)
 from ucode.telemetry import agent_version
 from ucode.ui import (
     print_err,
@@ -118,7 +124,7 @@ def install_databricks_ai_tools_for_agents(
     agents = [AITOOLS_AGENT_TOKENS[tool] for tool in tools if tool in AITOOLS_AGENT_TOKENS]
     if not agents:
         return
-    install_ai_tools(agents, state.get("profile"))
+    install_ai_tools(agents, get_profile(state))
 
 
 def normalize_tool(tool: str) -> str:
@@ -351,7 +357,7 @@ def resolve_provider_models(
     """
     if not provider:
         return None, None, False
-    token = get_databricks_token(state["workspace"], state.get("profile"))
+    token = get_databricks_token(state["workspace"], get_profile(state))
     service, error = resolve_provider_service(tool, provider, state["workspace"], token)
     if error or service is None:
         return None, error, False
@@ -387,7 +393,7 @@ def resolve_gemini_provider_model(
     control-plane lookup (the launch/configure paths hold one).
     """
     if service is None:
-        token = get_databricks_token(state["workspace"], state.get("profile"))
+        token = get_databricks_token(state["workspace"], get_profile(state))
         service, error = resolve_provider_service("gemini", provider, state["workspace"], token)
         if error or service is None:
             return None, error or f"Model provider service '{provider}' was not found."

@@ -16,7 +16,7 @@ from ucode.agents.desktop.claude import (
 from ucode.config_io import is_dry_run
 from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER, MODEL_SERVICE_PARENT_SCHEMA_HEADER
 from ucode.databricks import build_tool_base_url, get_databricks_token, list_anthropic_model_catalog
-from ucode.state import get_provider_service
+from ucode.state import get_profile, get_provider_service
 from ucode.ui import print_note, print_success, print_warning
 
 _CLAUDE_MODEL_PATTERN = re.compile(r"\bclaude-", re.IGNORECASE)
@@ -45,7 +45,7 @@ def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
     if state.get("custom_oauth") or state.get("use_pat"):
         raise RuntimeError("Desktop currently requires a Databricks CLI OAuth profile.")
     workspace = state.get("workspace")
-    profile = state.get("profile")
+    profile = get_profile(state)
     if not isinstance(workspace, str) or not workspace:
         raise RuntimeError("No Databricks workspace is configured.")
     if not isinstance(profile, str) or not profile:

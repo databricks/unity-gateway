@@ -49,7 +49,7 @@ from ucode.skills_api import (
     SkillRef,
     list_all_skills,
 )
-from ucode.state import load_full_state, load_state, save_state
+from ucode.state import get_profile, load_full_state, load_state, save_state
 from ucode.ui import (
     _BACK,
     _Back,
@@ -1091,7 +1091,7 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
         workspace = state.get("workspace")
         if not workspace:
             return []
-        profile, clients, working = state.get("profile"), [], []
+        profile, clients, working = get_profile(state), [], []
     use_pat = bool(state.get("use_pat"))
 
     eligible = set()
@@ -1819,7 +1819,7 @@ def setup_mcp_clients(
         client for client in MCP_CLIENTS if client in configured_tools and client not in clients
     ]
 
-    profile = state.get("profile")
+    profile = get_profile(state)
     if require_auth:
         apply_pat_environment(state)
         ensure_databricks_auth(workspace, profile)

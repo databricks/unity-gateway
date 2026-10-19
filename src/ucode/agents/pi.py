@@ -51,7 +51,7 @@ from ucode.databricks import (
     get_databricks_token,
 )
 from ucode.os_compatibility import subprocess_cross_os
-from ucode.state import mark_tool_managed, save_state
+from ucode.state import get_profile, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
 
 from .args import LaunchOptions
@@ -186,7 +186,7 @@ def build_pi_api_key(state: dict) -> str:
     ``C:\\...\\ug.exe`` path."""
     argv = build_auth_token_argv(
         state["workspace"],
-        state.get("profile"),
+        get_profile(state),
         use_pat=bool(state.get("use_pat")),
     )
     return "!" + shlex.join(argv)
@@ -199,7 +199,7 @@ def write_tool_config(
 ) -> tuple[dict, str]:
     backup_existing_file(PI_CONFIG_PATH, PI_BACKUP_PATH)
     if token is None:
-        token = get_databricks_token(state["workspace"], state.get("profile"))
+        token = get_databricks_token(state["workspace"], get_profile(state))
     pi_base_urls = state.get("base_urls", {}).get("pi") or build_pi_base_urls(state["workspace"])
     managed_families = _managed_model_families(state)
     claude_models, codex_models, gemini_models = managed_families or (

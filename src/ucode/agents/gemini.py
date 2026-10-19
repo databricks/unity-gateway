@@ -27,6 +27,7 @@ from ucode.databricks import (
 )
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import (
+    get_profile,
     get_provider_service,
     mark_tool_managed,
     save_state,
@@ -185,7 +186,7 @@ def write_tool_config(
     backup_existing_file(GEMINI_ENV_PATH, GEMINI_BACKUP_PATH)
     if token is None:
         token = get_databricks_token(
-            state["workspace"], state.get("profile"), force_refresh=force_refresh
+            state["workspace"], get_profile(state), force_refresh=force_refresh
         )
     overlay = render_env_overlay(state["workspace"], model, token, provider=provider)
     existing = parse_dotenv(GEMINI_ENV_PATH)

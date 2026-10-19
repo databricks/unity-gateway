@@ -52,6 +52,22 @@ def load_state() -> dict:
     return hydrate_state(ws_state)
 
 
+def get_profile(state: dict) -> str | None:
+    """The Databricks CLI profile to authenticate workspace calls with.
+
+    Custom OAuth CLI setup (e.g. Isaac) authenticates a separate CLI profile and saves it in
+    ``state["custom_oauth"]["profile"]``. Use that profile when it exists; otherwise use the
+    workspace profile.
+    """
+    custom_oauth = state.get("custom_oauth")
+    if isinstance(custom_oauth, dict):
+        custom_profile = custom_oauth.get("profile")
+        if isinstance(custom_profile, str) and custom_profile:
+            return custom_profile
+    profile = state.get("profile")
+    return profile if isinstance(profile, str) else None
+
+
 def save_state(state: dict) -> None:
     """Save workspace state back into the per-workspace structure.
 
@@ -163,7 +179,7 @@ def build_agent_state(state: dict) -> dict[str, dict]:
 
     from ucode.agents import default_model_for_tool
 
-    profile = state.get("profile") if isinstance(state.get("profile"), str) else None
+    profile = get_profile(state)
     base_urls_value = state.get("base_urls")
     base_urls = base_urls_value if isinstance(base_urls_value, dict) else {}
     use_pat = bool(state.get("use_pat"))

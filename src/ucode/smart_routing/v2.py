@@ -68,6 +68,7 @@ from ucode.smart_routing.claude_hooks import (
 from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
 from ucode.smart_routing.config import apply_config, resolve_environment
 from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
+from ucode.state import get_profile
 from ucode.ui import print_note, print_warning
 
 LEGACY_STATE_KEY = "smart_routing_enabled"
@@ -126,7 +127,7 @@ def _launch_token(state: dict, workspace: str) -> str:
             scopes=custom_oauth["scopes"],
             profile=custom_oauth.get("profile"),
         )
-    return get_databricks_token(workspace, state.get("profile"))
+    return get_databricks_token(workspace, get_profile(state))
 
 
 def _model_picker_catalog() -> AnthropicModelCatalog | None:
@@ -670,7 +671,7 @@ def launch_claude(
         )
         route_first_prompt = False
     hook_executable = build_auth_token_argv(
-        workspace, state.get("profile"), use_pat=bool(state.get("use_pat"))
+        workspace, get_profile(state), use_pat=bool(state.get("use_pat"))
     )[0]
     env = settings.setdefault("env", {})
     if not isinstance(env, dict):
@@ -816,7 +817,7 @@ def launch_codex(
     overlay = render_overlay(
         workspace,
         start_model,
-        state.get("profile"),
+        get_profile(state),
         use_pat=bool(state.get("use_pat")),
         custom_oauth=(custom_oauth if custom_oauth_cli_enabled(custom_oauth) else None),
         managed_http_headers=state.get("codex_http_headers"),

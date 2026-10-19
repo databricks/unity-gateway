@@ -15,7 +15,7 @@ from ucode.databricks import get_databricks_token
 from ucode.mcp import configured_skill_workspace_and_mcp_locations
 from ucode.skills_api import list_schema_skills
 from ucode.skills_state import list_downloaded
-from ucode.state import load_state
+from ucode.state import get_profile, load_state
 from ucode.ui import console, print_heading, print_note, print_warning
 
 _LOCAL = "local"
@@ -52,7 +52,7 @@ def _mcp_skill_agents(
     if not agents_by_schema:
         return {}, []
 
-    profile = state.get("profile") if isinstance(state.get("profile"), str) else None
+    profile = get_profile(state)
     token = get_databricks_token(workspace, profile)
     agents_by_fqn: dict[str, frozenset[str]] = {}
     unlisted_schemas: list[tuple[str, frozenset[str]]] = []
