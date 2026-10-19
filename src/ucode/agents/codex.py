@@ -88,7 +88,13 @@ from ucode.smart_routing.codex_hooks import (
 )
 from ucode.smart_routing.codex_routing import codex_model_id
 from ucode.smart_routing.routing import configured_router_name
-from ucode.state import get_provider_service, is_tool_managed, mark_tool_managed, save_state
+from ucode.state import (
+    get_profile,
+    get_provider_service,
+    is_tool_managed,
+    mark_tool_managed,
+    save_state,
+)
 from ucode.telemetry import agent_version, ug_version
 from ucode.ui import print_warning_err
 
@@ -428,7 +434,7 @@ def write_tool_config(
     # A managed default is the sole exception.
     managed_model = state.get("codex_default_model")
     chosen_model = managed_model if isinstance(managed_model, str) else None
-    databricks_profile = state.get("profile")
+    databricks_profile = get_profile(state)
     static_models = state.get("codex_static_models")
     static_models = static_models if isinstance(static_models, list) and static_models else None
 
@@ -1191,7 +1197,7 @@ def _launch_token(state: dict, workspace: str, *, force_refresh: bool = False) -
             profile=custom_oauth.get("profile"),
             force_refresh=force_refresh,
         )
-    return get_databricks_token(workspace, state.get("profile"), force_refresh=force_refresh)
+    return get_databricks_token(workspace, get_profile(state), force_refresh=force_refresh)
 
 
 def _tool_args_select_model(tool_args: list[str]) -> bool:

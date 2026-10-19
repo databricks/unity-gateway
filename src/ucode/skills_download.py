@@ -38,7 +38,7 @@ from ucode.skills_state import (
     set_last_update_check,
 )
 from ucode.skills_usage import report_skill_usage_in_background
-from ucode.state import load_state
+from ucode.state import get_profile, load_state
 from ucode.time_utils import parse_update_time
 from ucode.ui import (
     console,
@@ -433,7 +433,7 @@ def reconcile_managed_skills(managed: dict) -> tuple[list[str], list[str]]:
     if not workspace:
         raise RuntimeError("Workspace is not configured. Run `ug configure` first.")
     # An empty selector only removes prior managed skills, a local no-auth op, so skip the token.
-    token = get_databricks_token(workspace, state.get("profile")) if selector else ""
+    token = get_databricks_token(workspace, get_profile(state)) if selector else ""
     roots = skill_dir_roots(None)
     base = str(Path.home())
     refs, desired = _resolve_managed_skills(workspace, token, selector)
@@ -593,7 +593,7 @@ def refresh_downloaded_skills_on_launch(state: dict) -> None:
         forget(deleted)
         if present:
             print_note("Checking Unity Catalog for downloaded skill updates...")
-            token = get_databricks_token(workspace, state.get("profile"))
+            token = get_databricks_token(workspace, get_profile(state))
             deadline = time.monotonic() + SKILL_UPDATE_BUDGET_SECONDS
             pairs = _refs_needing_refresh(workspace, token, present, deadline)
             updated = _update_stale_skills(workspace, token, pairs, deadline)

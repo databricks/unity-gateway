@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import ast
 import json
+from collections import Counter
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -16,6 +19,7 @@ from ucode.state import (
     clear_state,
     get_applied_managed_update_time,
     get_model_location,
+    get_profile,
     get_provider_service,
     hydrate_state,
     is_self_managed,
@@ -434,3 +438,103 @@ class TestSelfManagedWorkspaceIsolation:
         save_state(state)
         assert workspace_self_managed_agents(a) == []
         assert workspace_self_managed_agents(b) == ["copilot"]
+
+
+_PROFILE_RECEIVERS = {"state", "existing"}
+
+
+def _is_profile_read(node: ast.Call | ast.Subscript) -> bool:
+    """Whether ``node`` is ``state.get("profile")`` or a ``state["profile"]`` load."""
+    if isinstance(node, ast.Call):
+        func = node.func
+        return (
+            isinstance(func, ast.Attribute)
+            and func.attr == "get"
+            and isinstance(func.value, ast.Name)
+            and func.value.id in _PROFILE_RECEIVERS
+            and bool(node.args)
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == "profile"
+        )
+    return (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.ctx, ast.Load)
+        and isinstance(node.value, ast.Name)
+        and node.value.id in _PROFILE_RECEIVERS
+        and isinstance(node.slice, ast.Constant)
+        and node.slice.value == "profile"
+    )
+
+
+def _direct_profile_reads(path: Path) -> set[tuple[str, str, int]]:
+    """``(file, enclosing function, line)`` for each direct state-profile read in ``path``."""
+    hits: set[tuple[str, str, int]] = set()
+
+    def visit(node: ast.AST, function: str) -> None:
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            function = node.name
+        if isinstance(node, ast.Call | ast.Subscript) and _is_profile_read(node):
+            hits.add((path.name, function, node.lineno))
+        for child in ast.iter_child_nodes(node):
+            visit(child, function)
+
+    visit(ast.parse(path.read_text(encoding="utf-8")), "<module>")
+    return hits
+
+
+class TestGetProfile:
+    """Workspace calls authenticate with the saved custom OAuth profile when one exists."""
+
+    CUSTOM_OAUTH = {
+        "client_id": "custom-client",
+        "redirect_url": "http://localhost:8020",
+        "scopes": ["offline_access", "all-apis"],
+    }
+
+    def test_saved_custom_profile_wins(self):
+        state = {
+            "profile": "workspace-profile",
+            "custom_oauth": {**self.CUSTOM_OAUTH, "profile": "custom-profile"},
+        }
+        assert get_profile(state) == "custom-profile"
+
+    @pytest.mark.parametrize("flag", ["0", "1"])
+    def test_custom_oauth_without_saved_profile_uses_workspace_profile(self, monkeypatch, flag):
+        # The CLI flag alone does not select custom OAuth; only a saved custom profile does.
+        monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", flag)
+        state = {"profile": "workspace-profile", "custom_oauth": dict(self.CUSTOM_OAUTH)}
+        assert get_profile(state) == "workspace-profile"
+
+    @pytest.mark.parametrize(
+        "state",
+        [{}, {"profile": None}, {"profile": 1}, {"custom_oauth": {"profile": ""}}],
+        ids=["empty", "none", "non-string", "empty-custom-profile"],
+    )
+    def test_no_usable_profile(self, state):
+        assert get_profile(state) is None
+
+    def test_source_reads_profile_through_get_profile(self):
+        """Every workspace-auth read of ``state["profile"]`` goes through ``get_profile``.
+
+        Reading it directly skips the saved custom OAuth profile. ``--use-pat`` excludes
+        custom OAuth, so PAT paths may read the workspace profile directly.
+        """
+        # Allowed direct reads per function: these persist or compare the workspace profile
+        # itself, or serve a PAT.
+        allowed = Counter(
+            {
+                ("state.py", "get_profile"): 1,
+                ("databricks.py", "apply_pat_environment"): 1,
+                ("cli.py", "agents_add"): 1,
+                ("cli.py", "_bootstrap_agents_for_mcp"): 1,
+                ("cli.py", "_auto_configure_tool"): 1,
+                ("cli.py", "_launch_tool"): 1,
+            }
+        )
+        package = Path(state_mod.__file__).parent
+        reads = [hit for path in package.rglob("*.py") for hit in _direct_profile_reads(path)]
+        counts = Counter((file, function) for file, function, _ in reads)
+        unexpected = sorted(hit for hit in reads if counts[hit[:2]] > allowed[hit[:2]])
+        assert not unexpected, (
+            f"Use get_profile(state) instead of reading state profile: {unexpected}"
+        )

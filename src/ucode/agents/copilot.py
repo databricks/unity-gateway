@@ -43,7 +43,7 @@ from ucode.databricks import (
     get_databricks_token,
 )
 from ucode.os_compatibility import subprocess_cross_os
-from ucode.state import mark_tool_managed, save_state
+from ucode.state import get_profile, mark_tool_managed, save_state
 
 from .args import LaunchOptions, explicit_model_arg_value
 
@@ -221,7 +221,7 @@ def write_tool_config(
     backup_existing_file(COPILOT_ENV_PATH, COPILOT_BACKUP_PATH)
     if token is None:
         token = get_databricks_token(
-            state["workspace"], state.get("profile"), force_refresh=force_refresh
+            state["workspace"], get_profile(state), force_refresh=force_refresh
         )
     existing = parse_dotenv(COPILOT_ENV_PATH)
     # Keep the inspectable file self-consistent without treating it as launch input.

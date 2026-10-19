@@ -98,7 +98,13 @@ from ucode.smart_routing.claude_hooks import (
     remove_smart_routing_hooks,
     sync_smart_routing_hooks,
 )
-from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
+from ucode.state import (
+    MANAGED_OVERLAY_KEY,
+    get_profile,
+    is_tool_managed,
+    mark_tool_managed,
+    save_state,
+)
 from ucode.telemetry import agent_version, ug_version
 from ucode.ui import print_note, print_success, print_warning
 
@@ -1384,7 +1390,7 @@ def write_tool_config(
         model,
         state.get("claude_models") or {},
         disable_web_search=web_search_model is not None,
-        profile=state.get("profile"),
+        profile=get_profile(state),
         use_pat=bool(state.get("use_pat")),
         custom_oauth=state.get("custom_oauth"),
         provider=provider,
@@ -1631,12 +1637,7 @@ def write_tool_config(
         passthrough_leaves=passthrough.record(),
     )
 
-    custom_oauth = state.get("custom_oauth")
-    web_search_profile = (
-        custom_oauth.get("profile")
-        if isinstance(custom_oauth, dict) and custom_oauth.get("profile")
-        else state.get("profile")
-    )
+    web_search_profile = get_profile(state)
     # Ownership describes the installed registration, even when no search model is available.
     if web_search_model and not external_search:
         web_search_entry = _web_search_mcp_entry(
@@ -2261,7 +2262,7 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     if not isinstance(port, int):
         raise RuntimeError("Relayed proxy port was not configured; re-run `ug claude`.")
 
-    profile = state.get("profile")
+    profile = get_profile(state)
 
     def token_provider(force_refresh: bool) -> str:
         return get_databricks_token(workspace, profile, force_refresh=force_refresh)
@@ -2337,7 +2338,7 @@ def launch(
         else:
             return
     if workspace and not custom_oauth_cli_enabled(state.get("custom_oauth")):
-        os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
+        os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, get_profile(state))
     settings_override = None
     launch_args = list(tool_args)
     if pinned_model:

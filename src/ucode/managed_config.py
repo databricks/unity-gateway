@@ -37,6 +37,7 @@ from ucode.databricks import (
     fetch_model_recommendation,
     get_databricks_token,
 )
+from ucode.state import get_profile
 from ucode.time_utils import parse_update_time
 from ucode.ui import console, print_warning
 
@@ -776,7 +777,7 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
         if cached is not None:
             return cached
     try:
-        token = get_databricks_token(workspace, state.get("profile"))
+        token = get_databricks_token(workspace, get_profile(state))
     except RuntimeError as exc:
         return ManagedConfigResult(_persisted_fallback(workspace, str(exc)), False)
     raw, reason = get_managed_config(workspace, token)

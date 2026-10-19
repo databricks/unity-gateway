@@ -11,7 +11,7 @@ from ucode.databricks import (
     raise_for_invalid_access_token,
     resolve_current_budget_spend,
 )
-from ucode.state import load_state
+from ucode.state import get_profile, load_state
 from ucode.ui import (
     console,
     format_meter,
@@ -43,7 +43,7 @@ def usage() -> int:
     if not workspace:
         raise RuntimeError("Workspace is not configured. Run `ug configure` first.")
 
-    profile = state.get("profile")
+    profile = get_profile(state)
     apply_pat_environment(state)
     ensure_databricks_auth(workspace, profile)
     with spinner("Retrieving Databricks access token..."):

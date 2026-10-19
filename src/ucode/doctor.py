@@ -30,7 +30,7 @@ from ucode.databricks import (
     run_databricks_login,
     upgrade_databricks_cli,
 )
-from ucode.state import load_state
+from ucode.state import get_profile, load_state
 from ucode.telemetry import ug_version
 from ucode.ui import (
     console,
@@ -196,7 +196,7 @@ def _check_databricks_auth() -> Check | None:
     workspace = state.get("workspace")
     if not workspace:
         return None
-    profile = state.get("profile")
+    profile = get_profile(state)
     with spinner("Verifying Databricks credentials..."):
         ok = check_databricks_auth(workspace, profile)
     if ok:

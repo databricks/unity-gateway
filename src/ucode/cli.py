@@ -155,6 +155,7 @@ from ucode.state import (
     add_self_managed_agent,
     clear_state,
     get_model_location,
+    get_profile,
     get_provider_service,
     is_self_managed,
     load_full_state,
@@ -866,7 +867,7 @@ def _maybe_select_provider_service(tool: str, state: dict) -> dict:
     # Probe first so we only offer the picker when it's actually usable. The
     # interactive path always reaches here, so explain any fallback rather than
     # silently dropping back to Databricks.
-    token = get_databricks_token(state["workspace"], state.get("profile"))
+    token = get_databricks_token(state["workspace"], get_profile(state))
     with spinner("Checking for model provider services..."):
         names, reason = list_tool_provider_services(tool, state["workspace"], token)
     offers_location = tool in ("claude", "codex")
@@ -1213,7 +1214,7 @@ def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
     workspace = state.get("workspace")
     if not workspace or not tools:
         return state, "cached"
-    profile = state.get("profile")
+    profile = get_profile(state)
     if not profile and not external_bearer_configured():
         print_warning("Live model discovery needs the CLI profile saved by ug configure.")
         return state, "cached"
@@ -1261,7 +1262,7 @@ def _live_status_managed_state(state: dict, cached: dict | None) -> tuple[dict |
     workspace = state.get("workspace")
     if not workspace:
         return cached, "cached"
-    profile = state.get("profile")
+    profile = get_profile(state)
     if not profile and not external_bearer_configured():
         print_warning("Live managed configuration needs the CLI profile saved by ug configure.")
         return cached, "cached"
@@ -1307,7 +1308,7 @@ def status() -> int:
     )
 
     provider_rows = [("Workspace URL", workspace or "not configured")]
-    profile = state.get("profile")
+    profile = get_profile(state)
     if profile:
         provider_rows.append(("CLI profile", profile))
     provider_rows.append(
@@ -2276,7 +2277,7 @@ def mcp_proxy_cmd(
     if not workspace:
         print_err("No workspace configured. Run `ug configure` first.")
         raise typer.Exit(1)
-    profile = profile or state.get("profile")
+    profile = profile or get_profile(state)
     serve(url, workspace, profile, use_pat=use_pat or bool(state.get("use_pat")))
 
 
@@ -2369,7 +2370,7 @@ def auth_token_cmd(
         print_err("No workspace configured. Run `ug configure` first.")
         raise typer.Exit(1)
     if profile is None and not explicit_host:
-        profile = state.get("profile")
+        profile = get_profile(state)
     if client_id is None and (use_pat or state.get("use_pat")):
         # --use-pat explicitly means "serve the profile's static PAT". Fail
         # closed if it can't be read rather than falling through to OAuth —
@@ -2456,7 +2457,7 @@ def otel_headers_cmd(
     if not workspace:
         print_err("No workspace configured. Run `ug configure` first.")
         raise typer.Exit(1)
-    profile = profile or state.get("profile")
+    profile = profile or get_profile(state)
     if use_pat or state.get("use_pat"):
         if not ensure_pat_bearer(profile):
             print_err(
@@ -2869,7 +2870,7 @@ def _fetch_budget_recommendation(state: dict, managed: dict | None) -> dict | No
         try:
             recommendation, reason = get_model_recommendation(
                 state["workspace"],
-                get_databricks_token(state["workspace"], state.get("profile")),
+                get_databricks_token(state["workspace"], get_profile(state)),
             )
         except (RuntimeError, OSError) as exc:
             # A token that lapsed since the config refresh — or a Databricks CLI that isn't
@@ -3318,7 +3319,7 @@ def _launch_tool(
             )
         )
         if should_fetch_claude_picker_catalog:
-            token = get_databricks_token(state["workspace"], state.get("profile"))
+            token = get_databricks_token(state["workspace"], get_profile(state))
             picker_catalog = list_anthropic_model_catalog(
                 state["workspace"],
                 token,
@@ -3405,7 +3406,7 @@ def _launch_tool(
         if tool == "claude" and managed is None and not provider and not parent_schema:
             discovered = list_anthropic_model_catalog(
                 state["workspace"],
-                get_databricks_token(state["workspace"], state.get("profile")),
+                get_databricks_token(state["workspace"], get_profile(state)),
             )
             if discovered.model_ids:
                 picker_catalog = claude_agent.default_model_picker_catalog(

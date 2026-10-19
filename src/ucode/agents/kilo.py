@@ -30,7 +30,7 @@ from ucode.databricks import (
     model_token_limits,
 )
 from ucode.os_compatibility import subprocess_cross_os
-from ucode.state import mark_tool_managed, save_state
+from ucode.state import get_profile, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
 
 from .args import LaunchOptions, explicit_model_arg_value, has_explicit_model_arg
@@ -163,7 +163,7 @@ def render_auth_plugin(state: dict) -> str:
     """Render the local Kilo plugin that refreshes Databricks auth on demand."""
     argv = build_auth_token_argv(
         state["workspace"],
-        state.get("profile"),
+        get_profile(state),
         use_pat=bool(state.get("use_pat")),
     )
     # A 401 must not return the same still-unexpired cached credential.
@@ -316,7 +316,7 @@ def write_tool_config(
 ) -> tuple[dict, str]:
     backup_existing_file(KILO_CONFIG_PATH, KILO_BACKUP_PATH)
     if token is None:
-        token = get_databricks_token(state["workspace"], state.get("profile"))
+        token = get_databricks_token(state["workspace"], get_profile(state))
     opencode_base_urls = state.get("base_urls", {}).get("opencode") or build_opencode_base_urls(
         state["workspace"]
     )
