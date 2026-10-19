@@ -68,6 +68,14 @@ unavailable form leave routing on. A feedback submission failure after a valid
 reason leaves routing off and reports the failure. Opening or dismissing the form
 makes no model requests; only submitting invokes the feedback command.
 
+`isaac-feedback.ts` owns this Databricks-specific policy, form, and submission.
+`register.ts` binds the routing callbacks before Isaac's command guard, then
+handles toggles the guard passes through. Claude's mod compiler requires engine
+API calls to stay in the file that receives `$`.
+`routing-state.ts` supplies the shared enabled check; launch options, live
+environment values, and resolved session overrides use the same check on their
+respective values.
+
 The CLI/skill path, including Codex, enforces the same minimum through the session
 toggle's `--smart-router-feedback` argument. The skill asks for the reason before
 retrying the toggle and submits it through `/isaac-feedback` on success. The CLI

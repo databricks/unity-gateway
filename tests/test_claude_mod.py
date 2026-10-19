@@ -19,7 +19,8 @@ def test_plugin_contains_mod_entry_point(tmp_path):
         "register.ts",
         "constants.ts",
         "extra-body.ts",
-        "feedback.ts",
+        "isaac-feedback.ts",
+        "routing-state.ts",
         "smart-routing-status.ts",
         "subagent-routing.ts",
     ):
@@ -27,9 +28,10 @@ def test_plugin_contains_mod_entry_point(tmp_path):
     assert sorted(path.name for path in (tmp_path / "hooks").iterdir()) == [
         "constants.ts",
         "extra-body.ts",
-        "feedback.ts",
         "hooks.json",
+        "isaac-feedback.ts",
         "register.ts",
+        "routing-state.ts",
         "smart-routing-status.ts",
         "subagent-routing.ts",
     ]
