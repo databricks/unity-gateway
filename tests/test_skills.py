@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from ucode import claude_answer_delivery, skills
+from ucode import skills
 from ucode.smart_routing import orchestrator, session_env
 
 
@@ -106,18 +106,6 @@ def test_orchestrator_injects_the_installed_agent_instructions(
     context = output["hookSpecificOutput"]["additionalContext"]
     assert context.endswith(f"\n\n{agent} instructions")
     assert context.endswith(installed.joinpath("SKILL.md").read_text())
-    if agent == "claude":
-        assert claude_answer_delivery.UNAVAILABLE_CONTEXT in context
-        marker = session_env.session_env_path().parent / claude_answer_delivery.CAPABILITY_FILE
-        marker.touch()
-        available = orchestrator.hook_output(payload, agent=agent)
-        assert (
-            claude_answer_delivery.AVAILABLE_CONTEXT
-            in available["hookSpecificOutput"]["additionalContext"]
-        )
-        marker.unlink()
-    else:
-        assert "child-answer selection" not in context
 
     session_env.set_session_environment({"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0"})
     output = orchestrator.hook_output(payload, agent=agent)

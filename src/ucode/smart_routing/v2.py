@@ -628,7 +628,11 @@ def launch_claude(
     if route_first_prompt and _claude_print_mode(remaining):
         # Print mode has no TUI for the PTY router to drive, so route the prompt before launch.
         route_first_prompt = False
-        if not launch_model and not has_explicit_model_arg(remaining):
+        if (
+            not claude_answer_delivery.has_streaming_input(remaining)
+            and not launch_model
+            and not has_explicit_model_arg(remaining)
+        ):
             prompt, stdin_prompt = _claude_print_prompt(remaining)
             if prompt:
                 routed_model = _route_print_mode_prompt(state, token, prompt, catalog, model_name)

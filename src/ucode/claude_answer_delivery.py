@@ -9,7 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 from tempfile import TemporaryFile
-from typing import Any, cast
+from typing import Any
 
 from ucode.config_io import atomic_write_json
 from ucode.os_compatibility import subprocess_cross_os
@@ -29,7 +29,6 @@ UNAVAILABLE_CONTEXT = (
 )
 
 _NATIVE_DELEGATION_TOOLS = frozenset({"Agent", "Task"})
-_ParentContext = tuple[list[dict[str, Any]], int, dict[str, tuple[str, int, bool]]]
 
 
 def parse_selection(final_text: str) -> tuple[object | None, str | None]:
@@ -111,359 +110,231 @@ def parse_selection(final_text: str) -> tuple[object | None, str | None]:
     return selection, None
 
 
-def _resolve_answer(
-    final_text: str,
-    stdout: str,
-    result_session_id: object,
-    *,
-    _selected_agent_id: str | None = None,
-    _parent_context: _ParentContext | None = None,
-) -> tuple[str | None, dict[str, object] | None, str | None]:
-    """Resolve a single-child selection or an ordered parent-authored composition."""
+def _content(event: dict) -> list[dict]:
+    message = event.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    return (
+        [block for block in content if isinstance(block, dict)] if isinstance(content, list) else []
+    )
 
-    def reject(reason: str) -> tuple[None, dict[str, object], str]:
-        return None, {"status": "rejected", "reason": reason}, reason
 
-    def event_text(event: dict[str, Any]) -> str | None:
-        message = event.get("message")
-        content = message.get("content") if isinstance(message, dict) else None
-        if not isinstance(content, list):
-            return None
-        blocks = [
-            block for block in content if isinstance(block, dict) and block.get("type") == "text"
-        ]
-        if not blocks or any(not isinstance(block.get("text"), str) for block in blocks):
-            return None
-        return "".join(block["text"] for block in blocks)
+def _text(event: dict) -> str | None:
+    blocks = [block for block in _content(event) if block.get("type") == "text"]
+    if not blocks or any(not isinstance(block.get("text"), str) for block in blocks):
+        return None
+    return "".join(block["text"] for block in blocks)
 
-    composition_parts: list[Any] | None = None
-    if _parent_context is None:
-        selection, selection_error = parse_selection(final_text)
-        if selection_error is not None:
-            return reject(selection_error)
-        if selection is None:
-            return None, None, None
-        if isinstance(selection, dict):
-            composition_parts = cast(list[Any], selection["answer_parts"])
-            child_ids: list[str] = [
-                part["use_agent_answer"] for part in composition_parts if isinstance(part, dict)
-            ]
-            agent_id = child_ids[0]
-        else:
-            agent_id = cast(str, selection)
-            child_ids = [agent_id]
-        if not isinstance(result_session_id, str) or not result_session_id:
-            return reject("parent terminal result has no session_id")
 
-        events: list[dict[str, Any]] = []
-        for line in stdout.splitlines():
-            if not line.strip():
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                return reject("parent transcript contains malformed JSON")
-            if not isinstance(event, dict):
-                return reject("parent transcript contains a non-object event")
-            events.append(event)
+def _is_root(event: dict, session_id: str) -> bool:
+    return (
+        event.get("type") == "assistant"
+        and event.get("session_id") == session_id
+        and event.get("parent_tool_use_id") is None
+    )
 
-        root_text = None
-        root_text_index = -1
-        for index, event in enumerate(events):
-            if (
-                event.get("type") == "assistant"
-                and event.get("parent_tool_use_id") is None
-                and event.get("session_id") == result_session_id
-            ):
-                text = event_text(event)
-                if text is not None:
-                    root_text, root_text_index = text, index
-        if root_text != final_text:
-            return reject("parent answer selection is not the latest root assistant text")
-        result_events = [
-            event for event in events[root_text_index + 1 :] if event.get("type") == "result"
-        ]
-        if (
-            not result_events
-            or result_events[-1].get("session_id") != result_session_id
-            or result_events[-1].get("result") != final_text
-        ):
-            return reject(
-                "parent answer selection is not the parent terminal result for this session"
-            )
 
-        root_calls: dict[str, tuple[str, int, bool]] = {}
-        for index, event in enumerate(events[: root_text_index + 1]):
-            if (
-                event.get("type") != "assistant"
-                or event.get("parent_tool_use_id") is not None
-                or event.get("session_id") != result_session_id
-            ):
-                continue
-            message = event.get("message")
-            content = message.get("content") if isinstance(message, dict) else None
-            if not isinstance(content, list):
-                continue
-            for block in content:
-                if not isinstance(block, dict) or block.get("type") != "tool_use":
-                    continue
-                name, tool_id = block.get("name"), block.get("id")
-                if (
-                    isinstance(name, str)
-                    and name in _NATIVE_DELEGATION_TOOLS
-                    and isinstance(tool_id, str)
-                    and tool_id
-                ):
-                    tool_input = block.get("input")
-                    root_calls[tool_id] = (
-                        name,
-                        index,
-                        isinstance(tool_input, dict)
-                        and tool_input.get("run_in_background") is True,
-                    )
-        parent_context = (events, root_text_index, root_calls)
-
-        if composition_parts is not None:
-            answers: dict[str, str] = {}
-            child_receipts: dict[str, dict[str, object]] = {}
-            for child_id in dict.fromkeys(child_ids):
-                child_answer, child_receipt, child_error = _resolve_answer(
-                    final_text,
-                    stdout,
-                    result_session_id,
-                    _selected_agent_id=child_id,
-                    _parent_context=parent_context,
-                )
-                if child_error is not None or child_answer is None or child_receipt is None:
-                    return reject(child_error or "selected child has no completed answer")
-                answers[child_id] = child_answer
-                child_receipts[child_id] = child_receipt
-            composed = "".join(
-                part if isinstance(part, str) else answers[part["use_agent_answer"]]
-                for part in composition_parts
-            )
-            receipt = {
-                "status": "selected",
-                "source": "answer_composition",
-                "source_agent_ids": child_ids,
-                "source_session_id": result_session_id,
-                "components": [
-                    {
-                        "type": "literal",
-                        "text_sha256": hashlib.sha256(part.encode("utf-8")).hexdigest(),
-                    }
-                    if isinstance(part, str)
-                    else {
-                        "type": "child_answer",
-                        "source_agent_id": part["use_agent_answer"],
-                        "source": child_receipts[part["use_agent_answer"]]["source"],
-                        "answer_sha256": child_receipts[part["use_agent_answer"]]["answer_sha256"],
-                    }
-                    for part in composition_parts
-                ],
-                "answer_sha256": hashlib.sha256(composed.encode("utf-8")).hexdigest(),
-            }
-            return composed, receipt, None
-    else:
-        if not isinstance(_selected_agent_id, str) or not _selected_agent_id:
-            return reject("selected child id is invalid")
-        agent_id = _selected_agent_id
-        events, root_text_index, root_calls = _parent_context
-
-    def owned_start(event: dict[str, Any], root_tool_id: str) -> bool:
+def _resolve_child(
+    agent_id: str, events: list[dict], calls: dict[str, dict], session_id: str
+) -> tuple[str, dict]:
+    def owned_start(event: dict, tool_id: str) -> bool:
         return (
-            event.get("session_id") == result_session_id
+            event.get("session_id") == session_id
             and type(event.get("spawn_depth")) is int
-            and event.get("spawn_depth") == 1
+            and event["spawn_depth"] == 1
             and event.get("task_type") == "local_agent"
             and event.get("owned_by_subagent") is not True
-            and event.get("parent_tool_use_id") in (None, root_tool_id)
+            and event.get("parent_tool_use_id") in (None, tool_id)
         )
 
-    starts: list[tuple[int, str, Any]] = []
-    for index, event in enumerate(events[: root_text_index + 1]):
-        tool_id = event.get("tool_use_id")
-        if (
-            event.get("type") == "system"
-            and event.get("subtype") == "task_started"
-            and event.get("task_id") == agent_id
-            and isinstance(tool_id, str)
-            and tool_id in root_calls
-        ):
-            if not owned_start(event, tool_id):
-                return reject("selected agent is not an owned direct local_agent")
-            starts.append((index, tool_id, event.get("task_id")))
+    starts = [
+        (index, event)
+        for index, event in enumerate(events)
+        if event.get("type") == "system"
+        and event.get("subtype") == "task_started"
+        and event.get("task_id") == agent_id
+        and isinstance(event.get("tool_use_id"), str)
+        and event["tool_use_id"] in calls
+    ]
     if len(starts) != 1:
-        return reject("selected agent is not a uniquely owned direct child")
-    start_index, root_tool_id, active_task_id = starts[0]
-    source_tool = root_calls[root_tool_id][0]
-    answer: str | None = None
+        raise ValueError("selected agent is not a uniquely owned direct child")
+    start_index, start = starts[0]
+    root_tool_id = start["tool_use_id"]
+    if not owned_start(start, root_tool_id):
+        raise ValueError("selected agent is not an owned direct local_agent")
+    tool_input = calls[root_tool_id].get("input")
+    background = isinstance(tool_input, dict) and tool_input.get("run_in_background") is True
+    tool_id = root_tool_id
+    pending_resume = None
+    resumed, started, failed = False, True, False
+    answer = child_text = None
     source = ""
-    current_resume = False
-    current_background = root_calls[root_tool_id][2]
-    current_started = True
-    current_tool_use_id = root_tool_id
-    pending_resume: str | None = None
-    child_final_text: str | None = None
-    failure = "selected child has no completed answer"
 
-    for _index, event in enumerate(
-        events[start_index + 1 : root_text_index + 1], start=start_index + 1
-    ):
-        if event.get("type") == "assistant" and event.get("parent_tool_use_id") is None:
-            message = event.get("message")
-            content = message.get("content") if isinstance(message, dict) else None
-            if isinstance(content, list):
-                for block in content:
-                    if (
-                        isinstance(block, dict)
-                        and block.get("type") == "tool_use"
-                        and block.get("name") == "SendMessage"
-                        and isinstance(block.get("id"), str)
-                        and isinstance(block.get("input"), dict)
-                        and event.get("session_id") == result_session_id
-                        and block["input"].get("to") == agent_id
-                    ):
-                        answer = None
-                        source = ""
-                        child_final_text = None
-                        pending_resume = block["id"]
-                        current_started = False
-                        current_resume = True
-                        current_background = True
-                        failure = "selected child resume has no completed answer"
-        if event.get("type") == "system" and event.get("subtype") == "task_started":
-            if event.get("task_id") == agent_id:
-                tool_id = event.get("tool_use_id")
+    for event in events[start_index + 1 :]:
+        if _is_root(event, session_id):
+            for block in _content(event):
                 if (
-                    tool_id != pending_resume
-                    or not isinstance(tool_id, str)
+                    block.get("type") == "tool_use"
+                    and block.get("name") == "SendMessage"
+                    and isinstance(block.get("id"), str)
+                    and isinstance(block.get("input"), dict)
+                    and block["input"].get("to") == agent_id
+                ):
+                    pending_resume = block["id"]
+                    answer = child_text = None
+                    resumed, started, background = True, False, True
+        if event.get("type") == "system" and event.get("task_id") == agent_id:
+            if event.get("subtype") == "task_started":
+                if (
+                    pending_resume is None
+                    or event.get("tool_use_id") != pending_resume
                     or not owned_start(event, root_tool_id)
                 ):
-                    return reject("selected child resume is not an owned root SendMessage")
-                answer = None
-                source = ""
-                child_final_text = None
-                pending_resume = None
-                current_started = True
-                current_resume = True
-                current_background = True
-                current_tool_use_id = tool_id
-                active_task_id = event.get("task_id")
-            continue
-        if event.get("type") == "user":
-            result = event.get("tool_use_result")
-            linked = (
-                isinstance(result, dict)
-                and event.get("session_id") == result_session_id
-                and (
-                    event.get("parent_tool_use_id") == root_tool_id
-                    or result.get("tool_use_id") == root_tool_id
-                    or (
-                        isinstance(event.get("message"), dict)
-                        and isinstance(event["message"].get("content"), list)
-                        and any(
-                            isinstance(block, dict)
-                            and block.get("type") == "tool_result"
-                            and block.get("tool_use_id") == root_tool_id
-                            for block in event["message"]["content"]
-                        )
-                    )
-                )
-            )
-            if isinstance(result, dict) and result.get("agentId") == agent_id:
-                if not linked:
-                    return reject(
-                        "selected foreground result is not linked to its root Agent/Task call"
-                    )
-                if result.get("isAsync") is True and result.get("status") == "async_launched":
-                    current_background = True
-                    continue
-                if result.get("status") != "completed":
-                    answer = None
-                    failure = "selected child did not complete successfully"
-                    continue
-                content = result.get("content")
-                if (
-                    current_resume
-                    or not current_started
-                    or not isinstance(content, list)
-                    or not content
-                    or any(
-                        not isinstance(block, dict)
-                        or block.get("type") != "text"
-                        or not isinstance(block.get("text"), str)
-                        for block in content
-                    )
-                ):
-                    return reject("selected foreground result is stale, empty, or non-text")
-                answer = "".join(block["text"] for block in content)
-                if not answer:
-                    return reject("selected foreground result is empty")
-                source = "foreground_tool_result"
-                failure = ""
-        if (
-            event.get("type") == "assistant"
-            and event.get("parent_tool_use_id") == root_tool_id
-            and event.get("session_id") == result_session_id
-            and current_background
-            and current_started
-        ):
-            child_text = event_text(event)
-            if child_text is not None:
-                child_final_text = child_text
-                answer = None
-                failure = "background child has no matching completed task_notification"
-        if event.get("type") == "system" and event.get("subtype") == "task_notification":
-            linked_notification = (
-                event.get("session_id") == result_session_id
-                and event.get("tool_use_id") == current_tool_use_id
-                and (
-                    event.get("task_id") == agent_id
-                    or (active_task_id is not None and event.get("task_id") == active_task_id)
-                )
-            )
-            if linked_notification:
+                    raise ValueError("selected child resume is not an owned root SendMessage")
+                tool_id, pending_resume = pending_resume, None
+                answer = child_text = None
+                started, failed = True, False
+            elif (
+                event.get("subtype") == "task_notification"
+                and event.get("session_id") == session_id
+                and event.get("tool_use_id") == tool_id
+            ):
                 if event.get("status") != "completed":
-                    answer = None
-                    failure = "selected child did not complete successfully"
-                elif not current_background:
-                    # Foreground completion is announced before its full tool_result arrives.
-                    failure = "selected foreground child has no full tool result"
-                else:
+                    answer, failed = None, True
+                elif background and not failed:
                     summary = event.get("summary")
                     if (
-                        not current_started
+                        not started
                         or not isinstance(summary, str)
                         or not summary
-                        or summary != child_final_text
+                        or summary != child_text
                     ):
-                        return reject(
+                        raise ValueError(
                             "task_notification summary does not match the complete child final text"
                         )
-                    answer = summary
-                    source = "background_task_notification"
-                    failure = ""
-
-    if answer is None:
-        return reject(failure)
-    receipt = {
+                    answer, source = summary, "background_task_notification"
+        if event.get("type") == "user":
+            result = event.get("tool_use_result")
+            if not isinstance(result, dict) or result.get("agentId") != agent_id:
+                continue
+            linked = event.get("session_id") == session_id and (
+                event.get("parent_tool_use_id") == root_tool_id
+                or result.get("tool_use_id") == root_tool_id
+                or any(
+                    block.get("type") == "tool_result" and block.get("tool_use_id") == root_tool_id
+                    for block in _content(event)
+                )
+            )
+            if not linked:
+                raise ValueError(
+                    "selected foreground result is not linked to its root Agent/Task call"
+                )
+            if result.get("isAsync") is True and result.get("status") == "async_launched":
+                background = True
+                continue
+            if result.get("status") != "completed":
+                answer, failed = None, True
+            # Native Claude can recover partial text with status=completed after a failed task.
+            if failed:
+                continue
+            content = result.get("content")
+            if (
+                resumed
+                or not started
+                or not isinstance(content, list)
+                or not content
+                or any(
+                    not isinstance(block, dict)
+                    or block.get("type") != "text"
+                    or not isinstance(block.get("text"), str)
+                    for block in content
+                )
+            ):
+                raise ValueError("selected foreground result is stale, empty, or non-text")
+            answer = "".join(block["text"] for block in content)
+            if not answer:
+                raise ValueError("selected foreground result is empty")
+            source = "foreground_tool_result"
+        if (
+            event.get("type") == "assistant"
+            and event.get("session_id") == session_id
+            and event.get("parent_tool_use_id") == root_tool_id
+            and background
+            and started
+        ):
+            if (text := _text(event)) is not None:
+                child_text, answer = text, None
+    if failed or not answer:
+        raise ValueError("selected child has no successfully completed answer")
+    return answer, {
         "status": "selected",
         "source": source,
         "source_agent_id": agent_id,
-        "source_tool": source_tool,
+        "source_tool": calls[root_tool_id]["name"],
         "source_tool_use_id": root_tool_id,
-        "source_session_id": result_session_id,
-        "answer_sha256": hashlib.sha256(answer.encode("utf-8")).hexdigest(),
+        "source_session_id": session_id,
+        "answer_sha256": _sha256(answer),
     }
-    return answer, receipt, None
 
 
-def resolve_answer(
-    final_text: str, stdout: str, result_session_id: object
-) -> tuple[str | None, dict[str, object] | None, str | None]:
-    """Resolve the selected answer using the complete Claude stream-json transcript."""
-    return _resolve_answer(final_text, stdout, result_session_id)
+def _sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _resolve_selection(selection: Any, events: list[dict], session_id: str) -> tuple[str, dict]:
+    calls = {
+        block["id"]: block
+        for event in events
+        if _is_root(event, session_id)
+        for block in _content(event)
+        if block.get("type") == "tool_use"
+        and isinstance(block.get("name"), str)
+        and block["name"] in _NATIVE_DELEGATION_TOOLS
+        and isinstance(block.get("id"), str)
+        and block["id"]
+    }
+    if isinstance(selection, str):
+        return _resolve_child(selection, events, calls, session_id)
+    parts = selection["answer_parts"]
+    child_ids = [part["use_agent_answer"] for part in parts if isinstance(part, dict)]
+    children = {
+        agent_id: _resolve_child(agent_id, events, calls, session_id)
+        for agent_id in dict.fromkeys(child_ids)
+    }
+    answer = "".join(
+        part if isinstance(part, str) else children[part["use_agent_answer"]][0] for part in parts
+    )
+    return answer, {
+        "status": "selected",
+        "source": "answer_composition",
+        "source_agent_ids": child_ids,
+        "source_session_id": session_id,
+        "answer_sha256": _sha256(answer),
+        "components": [
+            {"type": "literal", "text_sha256": _sha256(part)}
+            if isinstance(part, str)
+            else {
+                "type": "child_answer",
+                "source_agent_id": part["use_agent_answer"],
+                "source": children[part["use_agent_answer"]][1]["source"],
+                "answer_sha256": children[part["use_agent_answer"]][1]["answer_sha256"],
+            }
+            for part in parts
+        ],
+    }
+
+
+def has_streaming_input(arguments: list[str]) -> bool:
+    """Stream-json input needs native control responses before stdin reaches EOF."""
+    input_format = "text"
+    args = iter(arguments)
+    for arg in args:
+        if arg == "--":
+            break
+        if arg == "--input-format":
+            input_format = next(args, "")
+        elif arg.startswith("--input-format="):
+            input_format = arg.partition("=")[2]
+    return input_format == "stream-json"
 
 
 def stream_arguments(arguments: list[str]) -> tuple[list[str], str, bool]:
@@ -497,77 +368,74 @@ def stream_arguments(arguments: list[str]) -> tuple[list[str], str, bool]:
 
 
 def deliver_events(stdout: str) -> tuple[list[dict], list[dict], bool]:
-    """Resolve only the terminal parent answer, preserving earlier source events."""
-    events: list[dict] = []
-    for line in stdout.splitlines():
-        if not line.strip():
-            continue
-        event = json.loads(line)
-        if not isinstance(event, dict):
-            raise ValueError("Claude stream contains a non-object event")
-        events.append(event)
-    results = [event for event in events if event.get("type") == "result"]
-    if not results:
+    """Resolve the terminal answer from one parsed transcript, then rewrite its output."""
+    events = [json.loads(line) for line in stdout.splitlines() if line.strip()]
+    if any(not isinstance(event, dict) for event in events):
+        raise ValueError("Claude stream contains a non-object event")
+    result_index = next(
+        (i for i in reversed(range(len(events))) if events[i].get("type") == "result"), None
+    )
+    if result_index is None:
         raise ValueError("Claude emitted no terminal result")
-    terminal = results[-1]
+    terminal = events[result_index]
     if terminal.get("is_error"):
         return events, [], True
-    final_text = terminal.get("result")
+    final_text, session_id = terminal.get("result"), terminal.get("session_id")
     if not isinstance(final_text, str):
         raise ValueError("Claude terminal result is missing its answer text")
-    root_message = None
-    for message in reversed(events):
-        if (
-            message.get("type") != "assistant"
-            or message.get("session_id") != terminal.get("session_id")
-            or message.get("parent_tool_use_id") is not None
-        ):
-            continue
-        body = message.get("message")
-        content = body.get("content") if isinstance(body, dict) else None
-        if not isinstance(content, list):
-            continue
-        blocks = [
-            block for block in content if isinstance(block, dict) and block.get("type") == "text"
-        ]
-        if blocks and all(isinstance(block.get("text"), str) for block in blocks):
-            root_message = message
-            root_text = "".join(block["text"] for block in blocks)
-            selection, selection_error = parse_selection(root_text)
-            if selection is not None or selection_error is not None:
-                # Never allow an earlier result to hide a rejected terminal root selection.
-                final_text = root_text
-            break
-    answer, receipt, error = resolve_answer(final_text, stdout, terminal.get("session_id"))
-    receipts = [] if receipt is None else [receipt]
-    if receipt is not None:
-        terminal["ug_answer_delivery"] = receipt
-    if error is not None:
+    root_index = next(
+        (
+            i
+            for i in reversed(range(len(events)))
+            if _is_root(events[i], session_id) and _text(events[i]) is not None
+        ),
+        None,
+    )
+    root_text = _text(events[root_index]) if root_index is not None else None
+    try:
+        selection, error = parse_selection(root_text if root_text is not None else final_text)
+        if selection is None and error is None:
+            selection, error = parse_selection(final_text)
+        if error is not None:
+            raise ValueError(error)
+        if selection is None:
+            return events, [], False
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("parent terminal result has no session_id")
+        if root_index is None or root_index >= result_index or root_text != final_text:
+            raise ValueError(
+                "parent answer selection does not match the latest root text and terminal result"
+            )
+        answer, receipt = _resolve_selection(selection, events[:root_index], session_id)
+    except ValueError as exc:
+        error = str(exc)
+        answer, receipt = None, {"status": "rejected", "reason": error}
         terminal.update(is_error=True, subtype="error_during_execution", result="", errors=[error])
-    elif answer is not None:
+    else:
         terminal["result"] = answer
-    if root_message is not None and (answer is not None or error is not None):
-        # Complete assistant rows and results agree; partial events remain source evidence.
-        body = root_message["message"]
-        body["content"] = [
-            block
-            for block in body["content"]
-            if not isinstance(block, dict) or block.get("type") != "text"
+    terminal["ug_answer_delivery"] = receipt
+    if root_index is not None:
+        events[root_index]["message"]["content"] = [
+            block for block in _content(events[root_index]) if block.get("type") != "text"
         ] + [{"type": "text", "text": answer or f"Answer delivery rejected: {error}"}]
-    return events, receipts, error is not None
+    return events, [receipt], error is not None
 
 
 def run(argv: list[str], *, session_path: Path, stdin_prompt: bytes | None) -> int:
     """Buffer headless output, validate selection, then render the requested format."""
-    argv, output_format, verbose = stream_arguments(argv)
+    buffered = not has_streaming_input(argv)
+    output_format, verbose = "text", False
+    if buffered:
+        argv, output_format, verbose = stream_arguments(argv)
     marker = session_path.parent / CAPABILITY_FILE
-    marker.touch()
+    if buffered:
+        marker.touch()
     try:
         with TemporaryFile() as captured:
             proc = subprocess_cross_os.popen(
                 argv,
                 stdin=subprocess.PIPE if stdin_prompt is not None else None,
-                stdout=captured,
+                stdout=captured if buffered else None,
             )
             try:
                 proc.communicate(input=stdin_prompt)
@@ -575,6 +443,8 @@ def run(argv: list[str], *, session_path: Path, stdin_prompt: bytes | None) -> i
                 proc.send_signal(signal.SIGINT)
                 proc.wait()
                 return _exit_status(proc.returncode) or 130
+            if not buffered:
+                return _exit_status(proc.returncode)
             captured.seek(0)
             try:
                 events, receipts, failed = deliver_events(captured.read().decode("utf-8"))
@@ -599,7 +469,8 @@ def run(argv: list[str], *, session_path: Path, stdin_prompt: bytes | None) -> i
                 print(result.get("result", ""))
         return _exit_status(proc.returncode) or (1 if failed else 0)
     finally:
-        marker.unlink(missing_ok=True)
+        if buffered:
+            marker.unlink(missing_ok=True)
 
 
 def _exit_status(returncode: int) -> int:

@@ -1,11 +1,8 @@
 # Integration tests
 
-Claude answer delivery currently has offline component coverage in
-`../test_claude_answer_delivery.py`, `../test_skills.py` and
-`../test_claude_smart_routing_v2.py`. A production print-mode Claude/gateway journey
-and interactive answer selection are not covered here. The delivery adapter's Python
-subprocess fixtures are component tests outside this integration suite; they are not
-substitutes for real agent inference.
+Claude answer delivery has offline transcript and subprocess coverage in
+`../test_claude_answer_delivery.py`. Live model/gateway selection and capability-hook
+activation are not covered here; interactive selection is unsupported.
 
 The separate [dedicated-workspace CUJ](../e2e_cuj/AGENTS.md) lives in `tests/e2e_cuj/`
 and runs directly with pytest. It does not use this suite's runner or config fixtures.
