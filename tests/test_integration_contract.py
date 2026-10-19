@@ -99,7 +99,7 @@ def test_dedicated_cuj_ci_runs_each_discovered_file_on_its_own_runner():
 def test_latest_harness_is_scheduled_and_opt_in():
     workflow = _workflow("harness-latest.yml")
     trigger = workflow.split("\non:\n", 1)[1].split("\npermissions:\n", 1)[0]
-    assert "cron: '0 */6 * * *'" in trigger
+    assert "cron: '0 22 * * 1-5'" in trigger
     assert "workflow_dispatch:" in trigger
     assert "pull_request" not in trigger and "push:" not in trigger
     assert "harness-latest" not in _integration_jobs()
@@ -124,9 +124,9 @@ def _assert_slack_notify_wiring(notify):
     assert "run: python3 .github/scripts/slack-notify/notify.py" in notify
 
 
-def test_terminal_bench_runs_twice_daily_and_notifies_slack():
+def test_terminal_bench_runs_weekdays_and_notifies_slack():
     workflow = _workflow("terminal-bench.yml")
-    assert "cron: '0 7,19 * * *'" in workflow
+    assert "cron: '0 22 * * 1-5'" in workflow
     notify = workflow.split("\n  notify:\n", 1)[1]
     assert "needs: [harbor, native]" in notify
     assert "if: ${{ !cancelled() }}" in notify
