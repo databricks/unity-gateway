@@ -414,6 +414,7 @@ An exporter you already set is left alone. Disabling tracing or `ug revert` remo
 |----|---------|-------------|
 | Linux | systemd user service `ug-codex-otel.service` | `journalctl --user -u ug-codex-otel.service` |
 | macOS | LaunchAgent `com.databricks.ug-codex-otel` | `launchctl print gui/$(id -u)/com.databricks.ug-codex-otel` |
+| Windows | Scheduled task `com.databricks.ug-codex-otel` | `schtasks /Query /TN com.databricks.ug-codex-otel /V /FO LIST` |
 
 ## Development
 
