@@ -952,6 +952,29 @@ class TestMapClaudeFamilyModels:
         assert db_mod.map_claude_family_models(["amazon.titan-text-express-v1"]) == {}
 
 
+class TestMaybeAddGpt1mSuffix:
+    @pytest.mark.parametrize(
+        ("model", "expected"),
+        [
+            ("system.ai.gpt-5-6-sol", "system.ai.gpt-5-6-sol[1m]"),
+            ("databricks-gpt-6-astra", "databricks-gpt-6-astra[1m]"),
+            (
+                "anthropic-aigw-12e8d1ee-system.ai.gpt-5-6-sol",
+                "anthropic-aigw-12e8d1ee-system.ai.gpt-5-6-sol[1m]",
+            ),
+            ("system.ai.gpt-5-6-sol[1m]", "system.ai.gpt-5-6-sol[1m]"),
+            ("system.ai.gpt-5-6-sol[200k]", "system.ai.gpt-5-6-sol[200k]"),
+            ("system.ai.gpt-5-5", "system.ai.gpt-5-5[1m]"),
+            ("system.ai.gpt-5-4-nano", "system.ai.gpt-5-4-nano[1m]"),
+            ("gpt-4.1", "gpt-4.1[1m]"),
+            ("system.ai.gpt-oss-120b", "system.ai.gpt-oss-120b"),
+            ("system.ai.claude-opus-4-8", "system.ai.claude-opus-4-8"),
+        ],
+    )
+    def test_adds_hint_to_versioned_gpt_ids_only(self, model, expected):
+        assert db_mod.maybe_add_gpt_1m_suffix(model) == expected
+
+
 class TestResolveProviderLaunchModel:
     def test_defaults_to_sonnet_when_offered(self):
         # No --model: pin sonnet (Claude Code's own default tier) when the service allows it.
@@ -2314,6 +2337,21 @@ class TestGetDatabricksToken:
 
         assert db_mod.check_databricks_auth(WS) is False
 
+    def test_timeout_does_not_suggest_logging_out(self, tmp_path, monkeypatch):
+        env = self._fake_databricks(tmp_path, "sys.exit(0)")
+        monkeypatch.setattr("os.environ", env)
+
+        def hung(args, **kwargs):
+            if "token" in args:
+                raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
+            return subprocess.CompletedProcess(args, 1, "", "")
+
+        monkeypatch.setattr(db_mod, "run", hung)
+
+        with pytest.raises(RuntimeError, match="no access token") as exc_info:
+            get_databricks_token(WS, "my-profile")
+        assert "logout" not in str(exc_info.value)
+
     def test_reauths_and_retries_when_token_empty(self, tmp_path, monkeypatch):
         call_count = tmp_path / "calls"
         call_count.write_text("0")
@@ -2334,6 +2372,86 @@ class TestGetDatabricksToken:
         monkeypatch.setattr("os.environ", env)
         token = get_databricks_token(WS)
         assert token == "refreshed-token"
+
+    @pytest.mark.parametrize(
+        "auth_error",
+        [
+            'print(json.dumps({"message": "refresh token is invalid"}))',
+            "print('Error: cache: no cached credentials', file=sys.stderr)",
+        ],
+    )
+    def test_browser_login_signs_in_when_login_is_required(
+        self, tmp_path, monkeypatch, capfd, auth_error
+    ):
+        # A desktop app's helper has no terminal, so missing or expired credentials
+        # open a browser login, not `--no-browser`.
+        signed_in = tmp_path / "signed-in"
+        login_argv = tmp_path / "login-argv"
+        env = self._fake_databricks(
+            tmp_path,
+            "if sys.argv[1:3] == ['auth', 'login'] and '--help' not in sys.argv:\n"
+            f"    Path({str(login_argv)!r}).write_text('\\n'.join(sys.argv[1:]))\n"
+            "    print('opening browser', file=sys.stderr)\n"
+            f"    Path({str(signed_in)!r}).touch()\n"
+            "    sys.exit(0)\n"
+            f"if Path({str(signed_in)!r}).exists():\n"
+            '    print(json.dumps({"access_token": "signed-in-token"}))\n'
+            "    sys.exit(0)\n"
+            f"{auth_error}\n"
+            "sys.exit(1)",
+        )
+        monkeypatch.setattr("os.environ", env)
+        monkeypatch.setattr(db_mod, "_BROWSER_LOGIN_LOCK_PATH", tmp_path / "auth-login.lock")
+        token = get_databricks_token(WS, browser_login=True)
+        assert token == "signed-in-token"
+        assert "--no-browser" not in login_argv.read_text().splitlines()
+        # The login's output must not reach stdout, which carries the token.
+        out, err = capfd.readouterr()
+        assert "opening browser" not in out
+        assert "opening browser" in err
+
+    def test_browser_login_skips_browser_when_workspace_unreachable(self, tmp_path, monkeypatch):
+        # The CLI appends its generic `auth login` trailer to network failures
+        # too; those must fail fast instead of opening a browser.
+        login_called = tmp_path / "login-called"
+        env = self._fake_databricks(
+            tmp_path,
+            "if sys.argv[1:3] == ['auth', 'login'] and '--help' not in sys.argv:\n"
+            f"    Path({str(login_called)!r}).touch()\n"
+            "    sys.exit(0)\n"
+            "print('Error: token refresh: dial tcp: lookup example.com: no such host. "
+            "Try logging in again with `databricks auth login --profile p` before "
+            "retrying.', file=sys.stderr)\n"
+            "sys.exit(1)",
+        )
+        monkeypatch.setattr("os.environ", env)
+        monkeypatch.setattr(db_mod, "_BROWSER_LOGIN_LOCK_PATH", tmp_path / "auth-login.lock")
+        with pytest.raises(RuntimeError, match="no access token"):
+            get_databricks_token(WS, browser_login=True)
+        assert not login_called.exists()
+
+    def test_browser_login_reuses_token_from_concurrent_sign_in(self, tmp_path, monkeypatch):
+        # A helper that waited on the lock fetches first: the holder may have signed in.
+        monkeypatch.setattr(db_mod, "_BROWSER_LOGIN_LOCK_PATH", tmp_path / "auth-login.lock")
+        monkeypatch.setattr(
+            db_mod.subprocess_cross_os, "run", lambda *_a, **_k: pytest.fail("login ran")
+        )
+        assert db_mod._browser_login(WS, None, {}, lambda: ("fresh-token", None)) == (
+            "fresh-token",
+            None,
+        )
+
+    def test_browser_login_skips_login_once_lock_wait_spends_the_budget(
+        self, tmp_path, monkeypatch
+    ):
+        # A login started this late would outlive the agent's helper timeout and
+        # be orphaned holding the callback port.
+        monkeypatch.setattr(db_mod, "_BROWSER_LOGIN_LOCK_PATH", tmp_path / "auth-login.lock")
+        monkeypatch.setattr(db_mod, "_BROWSER_LOGIN_TIMEOUT_SECONDS", 0)
+        monkeypatch.setattr(
+            db_mod.subprocess_cross_os, "run", lambda *_a, **_k: pytest.fail("login ran")
+        )
+        assert db_mod._browser_login(WS, None, {}, lambda: ("", None)) == ("", None)
 
     def test_retries_on_cache_lock_contention(self, tmp_path, monkeypatch):
         # Concurrent `databricks auth token` calls racing on the shared token
@@ -4222,6 +4340,23 @@ class TestRunDatabricksCliInstaller:
 
         assert os.environ["PATH"].split(os.pathsep).count(links_dir) == 1
 
+    def test_windows_leaves_path_untouched_when_nothing_is_new(self, monkeypatch, tmp_path):
+        links_dir = str(tmp_path / "Microsoft" / "WinGet" / "Links")
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        monkeypatch.setenv("PATH", os.pathsep.join([links_dir, "/windows/system32"]))
+        monkeypatch.setattr(db_mod, "_windows_user_path", lambda: links_dir)
+        writes = []
+        real_setitem = type(os.environ).__setitem__
+        monkeypatch.setattr(
+            type(os.environ),
+            "__setitem__",
+            lambda env, key, value: (writes.append(key), real_setitem(env, key, value)),
+        )
+
+        db_mod._refresh_windows_path()
+
+        assert writes == []
+
     def test_windows_without_winget_is_actionable(self, monkeypatch):
         monkeypatch.setattr(db_mod.platform, "system", lambda: "Windows")
         monkeypatch.setattr(db_mod.shutil, "which", lambda cmd: None)
@@ -5453,3 +5588,38 @@ class TestRunDecodesUtf8:
         script = r"import sys; sys.stdout.buffer.write(b'\xff')"
         result = db_mod.run([sys.executable, "-c", script], capture_output=True)
         assert result.stdout == b"\xff"
+
+
+class TestRunStdin:
+    def _capture_kwargs(self, monkeypatch) -> dict:
+        seen: dict = {}
+
+        def fake_run(args, **kwargs):
+            seen.update(kwargs)
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        monkeypatch.setattr(db_mod.subprocess_cross_os, "run", fake_run)
+        return seen
+
+    def test_captured_commands_do_not_inherit_stdin(self, monkeypatch):
+        # A child sharing a stdin pipe that another thread is reading hangs on Windows.
+        seen = self._capture_kwargs(monkeypatch)
+        db_mod.run(["databricks", "auth", "token"], capture_output=True, text=True)
+        assert seen["stdin"] is subprocess.DEVNULL
+
+    def test_interactive_commands_keep_stdin(self, monkeypatch):
+        seen = self._capture_kwargs(monkeypatch)
+        db_mod.run(["databricks", "auth", "login"])
+        assert "stdin" not in seen
+
+
+def test_importing_the_cli_does_not_load_the_databricks_sdk():
+    # The SDK costs ~1 s to import, and every `ug` command (including each auth-token refresh)
+    # imports the CLI.
+    result = subprocess.run(
+        [sys.executable, "-c", "import sys, ucode.cli; print('databricks.sdk' in sys.modules)"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip() == "False"

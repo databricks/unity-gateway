@@ -11,7 +11,7 @@ description: >-
 model: inherit
 argument-hint: "[task]"
 metadata:
-  version: "1.2.0"
+  version: "1.4.0"
 
 ---
 
@@ -52,22 +52,30 @@ before using a different role map.
 
 ## Delegation gate
 
-Start with the smallest plan that can deliver the caller's complete request.
-The skill being available does not itself require a child. Keep a connected
-investigation in the root when it already has the necessary context or when
-briefing plus review would repeat the same work. Delegate when a child can own
-an independently useful deliverable and replace enough root work to justify
-its execution and acceptance. Name that displaced work before spawning; broad
-scope, many files, or a cheaper model alone is insufficient. A natural zero-child
-outcome is valid. An explicit no-delegation request takes precedence.
+Choose ownership before gathering source evidence. When the caller's request
+needs investigation, implementation, debugging, or verification beyond the
+facts already in context and a bounded lookup, assign that complete outcome to
+a native owner first. A connected investigation is one complete assignment,
+even when it has no independent parallel branch. Knowing the topic, filenames,
+or entrypoints is not having the evidence needed to answer. Do not investigate
+the request in the parent in order to decide whether to delegate it.
 
-Choose ownership before solving the task. Do not split by numbered questions,
-files, or languages alone, and do not reserve a connected branch merely to keep
-the parent busy. Launch ready independent assignments together. Keep required
-independent checks, but do not add an automatic reviewer or manager stage.
-If spawning is unavailable or prohibited, continue locally within the caller's
-instructions. Reuse complete instructions already received; recover only missing
-or truncated portions instead of rereading them as a setup ritual.
+Finish directly when retained evidence already supports the answer, a bounded
+lookup completes a small request, or delegation is prohibited or unavailable.
+Do not force a child for these cases. Follow explicit caller ownership choices.
+For delegated work, the owner acquires the evidence and produces the requested
+answer or change, including its checks. The parent owns acceptance and
+cross-owner decisions; it does not retain a duplicate investigation.
+
+Use one owner for a connected outcome. Add independent owners only when the
+caller requires independent checks or when their non-overlapping outputs are
+needed to complete the request. Do not split by numbered questions, languages,
+or files alone. Launch ready independent assignments together. While an owner
+works, perform only distinct necessary work; when none exists, wait for the
+owner instead of repeating its searches or creating an extra reviewer.
+
+Reuse complete instructions already received. Recover only missing or
+truncated portions instead of rereading them as a setup ritual.
 
 | Role | Scope | Claude default |
 | --- | --- | --- |
@@ -82,7 +90,9 @@ or truncated portions instead of rereading them as a setup ritual.
 Brief each owner on the outcome, context, scope, constraints, authority,
 acceptance criteria, evidence, and delivery rule below. Pass established findings,
 decisions, relevant locations, and known validation commands so the child need
-not rediscover solved work. Include role constraints and these research rules so
+not rediscover solved work. Repeat the existing no-recursive-teams and
+return-to-named-owner boundary in every child brief; inherited policy text is
+insufficient. Include role constraints and these research rules so
 they survive routing.
 
 Tie each investigation step to an unresolved caller requirement. Start at the
@@ -104,15 +114,17 @@ Assign common prerequisites to one discovery owner and share its concise cited
 findings with dependent owners. Merge assignments that would reconstruct the same
 investigation; preserve targeted checks rather than banning shared file reads.
 
-Keep the assigned research or edit/test/fix loop with its owner. Return the
-integration-ready answer or change, decisive evidence, validation results, and
-unresolved issues, not routine logs or search dumps unless needed for verification
-or requested. Cover every assigned caller requirement and material qualification
-without speculative scope expansion, arbitrary caps, or a duplicate checklist.
-Check coverage and important claims before returning. A terminal reply delivers
-the result, not a progress update; if blocked, state completed coverage, the
-dependency, and explicit partial status. Preserve the requested presentation and
-all required checks; do not make the parent reconstruct the answer from raw facts.
+Keep the assigned research or edit/test/fix loop with its owner. Return a
+single answer-shaped handoff mapping every assigned caller requirement to
+decisive evidence, validation results, unresolved issues, and the requested
+presentation. Before acceptance, every caller-required evidence item must be cited. If one is missing, the same owner must make a focused amendment to obtain it or state the concrete unavailable dependency before returning partial status; do not restart the whole investigation. Do not restate the parent's plan, assignment, or source narrative
+when it does not substantiate a caller requirement. Preserve every material
+qualification and required check; do not add a duplicate checklist or speculative
+scope. Check coverage and important claims before returning. A terminal reply
+delivers the result, not a progress update; if blocked, state completed coverage,
+the dependency, and explicit partial status. The root may assemble the final
+cross-owner response from these handoffs without reconstructing the answer from
+raw facts.
 
 Keep private inter-agent source references lossless but compact. When parent and
 child share an unambiguous workspace root, declare it once and cite relative paths
@@ -180,16 +192,24 @@ takes precedence; report conflicts without clearing it.
 
 ## Integrate and verify
 
-Parent acceptance is the default review. Add a reviewer only for a distinct risk,
-an explicit request, or a required independent check, not as an automatic stage.
-Inspect actual changes and verify important claims against cited evidence and the
-caller contract; a completion message alone is not proof. Reopen a named gap,
-contradiction, changed input, or required check from the smallest useful source
-window instead of repeating broad discovery. Preserve substantive correctness
-checks, conditions, exceptions, limitations, citations, and requested presentation.
+Accept against the caller's requirements using the owner's complete answer,
+cited evidence, and check results. A completion claim without this evidence is
+insufficient. Inspect the actual diff for edit tasks. For research, check
+coverage and whether the supplied evidence supports the important claims.
+Perform a focused independent source check when a concrete unsupported claim,
+contradiction, changed input, or required validation calls for it; do not repeat
+the owner's discovery to manufacture a second copy of the evidence.
 
-Integrate the owner's draft and narrow amendments without restarting the
-investigation or regenerating the full narrative. Deliver the complete answer;
+Return a missing requirement or correction to the same available owner with
+the exact gap and needed evidence. Let it make the amendment. Take over from
+its existing evidence if the owner is unavailable; do not let an unavailable
+owner leave the caller blocked. Preserve qualifications and unresolved facts.
+Do not add a reviewer unless the caller or a distinct risk requires one.
+
+Use the owner's answer-shaped draft as the final answer's base. Preserve its
+supported details, citations, conditions, and requested presentation. Edit
+only what acceptance or integration requires; do not regenerate an already
+complete narrative in the parent. Deliver the complete answer;
 if blocked, report completed coverage and explicit partial status. Resolve
 conflicts and findings before handoff. Account for every required
 child; a launch or success-shaped summary alone is not completion. For empty or

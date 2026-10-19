@@ -1,0 +1,326 @@
+"""Bound Desktop browser recovery while the Databricks CLI owns token caching/refresh."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import Literal
+
+from ucode.config_io import APP_DIR
+from ucode.databricks import (
+    build_databricks_cli_env,
+    databricks_cli_path,
+)
+from ucode.os_compatibility import subprocess_cross_os
+from ucode.os_compatibility.file_lock_cross_os import (
+    acquire_exclusive_file_lock,
+    release_file_lock,
+)
+
+# Claude Desktop's helper cache is intentionally shorter than a typical OAuth
+# access-token lifetime.  These constants are also used by the CLI when it
+# writes the desktop helper configuration.
+CLAUDE_DESKTOP_AUTH_TTL_SECONDS = 900
+CLAUDE_DESKTOP_AUTH_TTL_MS = CLAUDE_DESKTOP_AUTH_TTL_SECONDS * 1000
+CLAUDE_DESKTOP_AUTH_TIMEOUT_SECONDS = 300
+CLAUDE_DESKTOP_AUTH_TIMEOUT_MS = CLAUDE_DESKTOP_AUTH_TIMEOUT_SECONDS * 1000
+CLAUDE_DESKTOP_AUTH_SILENT_REFRESH = True
+CLAUDE_HELPER_CONTEXT_ENV = "CLAUDE_HELPER_CONTEXT"
+CLAUDE_HELPER_INTERACTIVE_CONTEXT = "interactive"
+
+_TOKEN_TIMEOUT_SECONDS = 15
+_HELPER_BUDGET_SECONDS = 270
+_AUTH_LOCK_PATH = APP_DIR / "claude-desktop-auth.lock"
+_NETWORK_MARKERS = (
+    "network",
+    "timed out",
+    "timeout",
+    "connection refused",
+    "connection reset",
+    "connection aborted",
+    "could not resolve",
+    "no such host",
+    "temporary failure",
+    "temporarily unavailable",
+    "dns",
+    "proxy",
+    "tls",
+    "certificate",
+    "http 5",
+    "status code 5",
+)
+
+TokenFailureKind = Literal["auth", "network", "cli"]
+_FAILURE_MESSAGES = {
+    "auth": "Databricks authentication expired. Start a new Cowork task to sign in, then retry.",
+    "network": (
+        "Could not reach Databricks while refreshing credentials. Check your network and "
+        "retry the Cowork task."
+    ),
+    "cli": "Databricks CLI could not be run. Install or repair it, then start a new Cowork task.",
+}
+
+
+class ClaudeDesktopAuthError(RuntimeError):
+    """Actionable failure returned by the Claude Desktop credential helper."""
+
+    def __init__(self, message: str | None = None, *, kind: TokenFailureKind = "auth") -> None:
+        super().__init__(_FAILURE_MESSAGES[kind] if message is None else message)
+        self.kind = kind
+
+
+def _as_text(value: object) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if isinstance(value, str):
+        return value
+    return "" if value is None else str(value)
+
+
+def _is_network_detail(value: object) -> bool:
+    words = _as_text(value).split()
+    # Preserve classification without matching credential values as diagnostics.
+    for index, word in enumerate(words[:-1]):
+        if word.rstrip(":=").lower() in {
+            "token",
+            "access_token",
+            "access-token",
+            "bearer",
+        }:
+            words[index + 1] = "<redacted>"
+    detail = " ".join(words)[:240].lower()
+    return any(marker in detail for marker in _NETWORK_MARKERS)
+
+
+def _subprocess_error(exc: OSError | subprocess.TimeoutExpired) -> ClaudeDesktopAuthError:
+    if isinstance(exc, (FileNotFoundError, PermissionError)):
+        return ClaudeDesktopAuthError(kind="cli")
+    if isinstance(exc, subprocess.TimeoutExpired) or _is_network_detail(exc):
+        return ClaudeDesktopAuthError(kind="network")
+    return ClaudeDesktopAuthError(kind="cli")
+
+
+def _profile_args(profile: str | None) -> list[str]:
+    # Do not discover a profile from the host.  Desktop state chooses the
+    # profile; an omitted profile means the CLI's configured default profile.
+    return ["--profile", profile] if profile else []
+
+
+def _read_token(result: subprocess.CompletedProcess[str]) -> str:
+    stdout = _as_text(result.stdout)
+    if result.returncode != 0:
+        raise ClaudeDesktopAuthError(
+            kind="network" if _is_network_detail(result.stderr or stdout) else "auth"
+        )
+
+    try:
+        payload = json.loads(stdout or "")
+    except (TypeError, ValueError):
+        raise ClaudeDesktopAuthError() from None
+    if not isinstance(payload, dict):
+        raise ClaudeDesktopAuthError()
+
+    raw_token = payload.get("access_token")
+    if not isinstance(raw_token, str):
+        raise ClaudeDesktopAuthError()
+    token = raw_token.strip()
+    if not token or any(character.isspace() or ord(character) < 0x20 for character in token):
+        raise ClaudeDesktopAuthError()
+    return token
+
+
+def _fetch_token(
+    cli_path: str,
+    host: str,
+    profile: str | None,
+    *,
+    force_refresh: bool,
+    timeout: float,
+) -> str:
+    command = [
+        cli_path,
+        "auth",
+        "token",
+        "--host",
+        host,
+        *_profile_args(profile),
+        "--output",
+        "json",
+    ]
+    if force_refresh:
+        command.append("--force-refresh")
+    try:
+        result = subprocess_cross_os.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            env=build_databricks_cli_env(host, profile),
+            timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise _subprocess_error(exc) from None
+    return _read_token(result)
+
+
+def _run_login(
+    cli_path: str,
+    host: str,
+    profile: str | None,
+    *,
+    timeout: float,
+) -> None:
+    """Run login with all CLI output routed to stderr, never helper stdout."""
+    try:
+        result = subprocess_cross_os.run(
+            [cli_path, "auth", "login", "--host", host, *_profile_args(profile)],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=sys.stderr,
+            stderr=sys.stderr,
+            env=build_databricks_cli_env(host, profile),
+            timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise _subprocess_error(exc) from None
+
+    if result.returncode != 0:
+        raise ClaudeDesktopAuthError()
+
+
+@contextmanager
+def _interactive_login_lock(deadline: float) -> Iterator[None]:
+    try:
+        _AUTH_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _AUTH_LOCK_PATH.open("a+b") as lock_file:
+            try:
+                acquire_exclusive_file_lock(
+                    lock_file,
+                    timeout=_remaining_budget(deadline, _HELPER_BUDGET_SECONDS),
+                )
+            except TimeoutError as exc:
+                raise ClaudeDesktopAuthError(
+                    "Timed out waiting for another Databricks sign-in. Start a new Cowork task and try again.",
+                    kind="network",
+                ) from exc
+            try:
+                yield
+            finally:
+                release_file_lock(lock_file)
+    except OSError as exc:
+        raise ClaudeDesktopAuthError(
+            "Could not coordinate Databricks sign-in. Start a new Cowork task and try again.",
+            kind="cli",
+        ) from exc
+
+
+def _interactive_context() -> bool:
+    return os.environ.get(CLAUDE_HELPER_CONTEXT_ENV, "").strip().lower() == (
+        CLAUDE_HELPER_INTERACTIVE_CONTEXT
+    )
+
+
+def _remaining_budget(deadline: float, requested: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise ClaudeDesktopAuthError(
+            "Databricks sign-in timed out. Start a new Cowork task and try again.",
+            kind="network",
+        )
+    return min(requested, remaining)
+
+
+def get_claude_desktop_token(
+    host: str,
+    profile: str | None = None,
+    *,
+    force_refresh: bool = False,
+) -> str:
+    """Return one access token for Claude Desktop's ``apiKeyHelper``.
+
+    ``profile`` comes from configured ucode state and is passed explicitly when
+    present.  This function never searches for a profile by host.  It first
+    attempts the Databricks CLI's cached/silent-refresh path.  Browser login is
+    allowed only when ``CLAUDE_HELPER_CONTEXT=interactive``; all other callers
+    receive a message directing them to start a new Cowork task.
+    """
+    if not isinstance(host, str) or not host.strip() or any(c in host for c in "\r\n"):
+        raise ClaudeDesktopAuthError("A valid Databricks workspace host is required.")
+    host = host.strip()
+    if profile is not None:
+        if not isinstance(profile, str) or not profile.strip() or any(c in profile for c in "\r\n"):
+            raise ClaudeDesktopAuthError("The configured Databricks profile is invalid.")
+        profile = profile.strip()
+
+    cli_path = databricks_cli_path()
+    if not os.path.isabs(cli_path):
+        raise ClaudeDesktopAuthError(
+            "Databricks CLI was not found. Install it, then start a new Cowork task and try again.",
+            kind="cli",
+        )
+    deadline = time.monotonic() + _HELPER_BUDGET_SECONDS
+    try:
+        return _fetch_token(
+            cli_path,
+            host,
+            profile,
+            force_refresh=force_refresh,
+            timeout=_remaining_budget(deadline, _TOKEN_TIMEOUT_SECONDS),
+        )
+    except ClaudeDesktopAuthError as exc:
+        if exc.kind != "auth" or not _interactive_context():
+            raise
+
+    with _interactive_login_lock(deadline):
+        # Another helper may have completed sign-in while we waited for the lock.
+        try:
+            return _fetch_token(
+                cli_path,
+                host,
+                profile,
+                force_refresh=force_refresh,
+                timeout=_remaining_budget(deadline, _TOKEN_TIMEOUT_SECONDS),
+            )
+        except ClaudeDesktopAuthError as exc:
+            if exc.kind != "auth":
+                raise
+
+        try:
+            _run_login(
+                cli_path,
+                host,
+                profile,
+                timeout=_remaining_budget(deadline, CLAUDE_DESKTOP_AUTH_TIMEOUT_SECONDS),
+            )
+            return _fetch_token(
+                cli_path,
+                host,
+                profile,
+                force_refresh=force_refresh,
+                timeout=_remaining_budget(deadline, _TOKEN_TIMEOUT_SECONDS),
+            )
+        except ClaudeDesktopAuthError as exc:
+            if exc.kind != "auth":
+                raise
+            raise ClaudeDesktopAuthError(
+                "Databricks sign-in did not complete. Start a new Cowork task and sign in again."
+            ) from None
+
+
+__all__ = [
+    "CLAUDE_DESKTOP_AUTH_SILENT_REFRESH",
+    "CLAUDE_DESKTOP_AUTH_TIMEOUT_MS",
+    "CLAUDE_DESKTOP_AUTH_TIMEOUT_SECONDS",
+    "CLAUDE_DESKTOP_AUTH_TTL_MS",
+    "CLAUDE_DESKTOP_AUTH_TTL_SECONDS",
+    "CLAUDE_HELPER_CONTEXT_ENV",
+    "CLAUDE_HELPER_INTERACTIVE_CONTEXT",
+    "ClaudeDesktopAuthError",
+    "get_claude_desktop_token",
+]

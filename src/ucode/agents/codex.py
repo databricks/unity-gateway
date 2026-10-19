@@ -7,10 +7,12 @@ import hashlib
 import os
 import re
 import signal
+import socket
 import tempfile
 import threading
 from collections.abc import Callable
 from pathlib import Path
+from subprocess import CalledProcessError
 
 import tomlkit
 from tomlkit.exceptions import ParseError
@@ -32,6 +34,7 @@ from ucode.config_io import (
     read_json_safe,
     read_toml_safe,
     write_json_file,
+    write_text_file,
     write_toml_file,
 )
 from ucode.constants import (
@@ -43,6 +46,7 @@ from ucode.constants import (
     SMART_ROUTER_RECIPE_HEADER,
 )
 from ucode.custom_oauth import (
+    CUSTOM_OAUTH_CLI_ENV_VAR,
     CUSTOM_OAUTH_TIMEOUT_MS,
     CustomOAuthConfig,
     build_custom_auth_token_argv,
@@ -55,15 +59,20 @@ from ucode.databricks import (
     build_auth_token_argv,
     build_tool_base_url,
     get_databricks_token,
+    ug_binary,
 )
 from ucode.launcher import exec_or_spawn
 from ucode.managed_files import (
+    OS,
     ManagedFileWriteUnavailable,
+    check_skipped_managed_overrides,
+    current_os,
     managed_file_conflicts,
     managed_file_is_verified,
     managed_file_scope,
     managed_file_status,
     managed_files_supported,
+    managed_settings_skipped,
     managed_writes_allowed,
     mark_managed_file_verified,
     read_managed_file,
@@ -124,6 +133,8 @@ MANAGED_KEYS: list[list[str]] = [
     ["model_providers", CODEX_MODEL_PROVIDER_NAME],
     ["model_providers", CODEX_MODEL_PROVIDER_NAME, "http_headers"],
 ]
+CODEX_OTEL_SERVICE_NAME = "ug-codex-otel.service"
+_CODEX_OTEL_UNIT_MARKER = "# Managed by unity-gateway; do not edit."
 
 LEGACY_MANAGED_KEYS: list[list[str]] = [
     ["profile"],
@@ -200,6 +211,9 @@ def _provider_block(
         auth_argv = build_custom_auth_token_argv(workspace, custom_oauth)
     else:
         auth_argv = build_auth_token_argv(workspace, databricks_profile, use_pat=use_pat)
+        if not use_pat:
+            # Desktop helpers have no terminal for interactive sign-in.
+            auth_argv.append("--browser-login")
     base_url = build_tool_base_url("codex", workspace)
     http_headers = {
         "User-Agent": f"ucode/{ug_version()} codex/{agent_version('codex')}",
@@ -224,7 +238,7 @@ def _provider_block(
         "auth": {
             "command": auth_argv[0],
             "args": auth_argv[1:],
-            "timeout_ms": CUSTOM_OAUTH_TIMEOUT_MS if custom_oauth else 5000,
+            "timeout_ms": CUSTOM_OAUTH_TIMEOUT_MS if custom_oauth or not use_pat else 5000,
             "refresh_interval_ms": 900000,
         },
     }
@@ -375,14 +389,15 @@ def revert_legacy_shared_config() -> bool:
     through the workspace gateway. ``ucode revert`` only restored the
     per-profile file, leaving those edits in place. Surgically strip them here.
 
-    Also remove the shared app catalog reference installed by modern ucode.
-    Returns True if anything was removed.
+    Also remove the shared app catalog reference and desktop trace exporter installed by modern
+    ucode. Returns True if anything was removed.
     """
     legacy_changed = _strip_legacy_ucode_entries(_legacy_config_path())
     app_catalog_changed = detach_app_model_catalog()
     if app_catalog_changed and CODEX_MODEL_CATALOG_PATH.exists():
         CODEX_MODEL_CATALOG_PATH.unlink()
-    return legacy_changed or app_catalog_changed
+    desktop_tracing_changed = _sync_desktop_tracing(None)
+    return legacy_changed or app_catalog_changed or desktop_tracing_changed
 
 
 def configured_paths(state: dict) -> list[str]:
@@ -521,6 +536,8 @@ def write_tool_config(
     _reconcile_managed_config(state, lambda base: compose(base, include_catalog=False))
     state = mark_tool_managed(state, "codex", MANAGED_KEYS)
     save_state(state)
+    # The desktop proxy reads authentication from the saved workspace.
+    _sync_desktop_tracing(workspace if state.get("codex_otel_tracing") else None)
     return state
 
 
@@ -589,8 +606,159 @@ def revert_managed_config() -> str:
     )
 
 
+def _otel_service_path() -> Path:
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    return config_home.expanduser() / "systemd" / "user" / CODEX_OTEL_SERVICE_NAME
+
+
+def _run_systemctl(args: list[str]) -> None:
+    try:
+        subprocess_cross_os.run(
+            ["systemctl", "--user", *args], check=True, capture_output=True, text=True
+        )
+    except (OSError, CalledProcessError) as exc:
+        detail = exc.stderr if isinstance(exc, CalledProcessError) else str(exc)
+        raise RuntimeError(f"systemctl --user {' '.join(args)} failed: {detail}") from exc
+
+
+def _systemd_quote(value: str, *, exec_start: bool = False) -> str:
+    if any(char in value for char in "\r\n"):
+        raise ValueError("systemd unit values cannot contain newlines")
+    escaped = value.replace("%", "%%")
+    if exec_start:
+        escaped = escaped.replace("$", "$$")
+    escaped = escaped.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _allocate_otel_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind((LOOPBACK_HOST, 0))
+        return int(sock.getsockname()[1])
+
+
+def _owned_otel_service(path: Path) -> bool:
+    return path.is_file() and _CODEX_OTEL_UNIT_MARKER in path.read_text(encoding="utf-8")
+
+
+def _ensure_otel_service(workspace: str, port: int) -> None:
+    path = _otel_service_path()
+    if path.is_symlink():
+        raise RuntimeError(f"Refusing to replace a symlinked systemd unit: {path}")
+    if path.exists() and not _owned_otel_service(path):
+        raise RuntimeError(f"Refusing to replace an unmanaged systemd unit: {path}")
+    ug_path = ug_binary()
+    if not os.path.isabs(ug_path):
+        raise RuntimeError(
+            "Could not resolve an absolute ug executable for the Codex OTEL service."
+        )
+    lines = [
+        _CODEX_OTEL_UNIT_MARKER,
+        "[Service]",
+        # systemd expands `$` in ExecStart arguments but never in the executable path.
+        f"ExecStart={_systemd_quote(ug_path)} otel-proxy --host "
+        f"{_systemd_quote(workspace, exec_start=True)} --port {port}",
+        "Restart=on-failure",
+        "RestartSec=1s",
+    ]
+    for name in (
+        "PATH",
+        "DATABRICKS_CONFIG_FILE",
+        "DATABRICKS_AUTH_STORAGE",
+        CUSTOM_OAUTH_CLI_ENV_VAR,
+    ):
+        value = os.environ.get(name)
+        if name == "DATABRICKS_CONFIG_FILE" and value:
+            value = str(Path(value).expanduser().absolute())
+        if value:
+            lines.append(f"Environment={_systemd_quote(f'{name}={value}')}")
+    lines.extend(["", "[Install]", "WantedBy=default.target", ""])
+    text = "\n".join(lines)
+    if path.is_file() and path.read_text(encoding="utf-8") == text:
+        # Every launch: start a stopped proxy without restarting a running one mid-export.
+        # shortcut: a profile switch on one workspace waits for a service restart; restart if hit.
+        _run_systemctl(["enable", "--now", CODEX_OTEL_SERVICE_NAME])
+        return
+    write_text_file(path, text)
+    _run_systemctl(["daemon-reload"])
+    _run_systemctl(["enable", CODEX_OTEL_SERVICE_NAME])
+    _run_systemctl(["restart", CODEX_OTEL_SERVICE_NAME])
+
+
+def _remove_otel_service() -> None:
+    path = _otel_service_path()
+    if path.is_symlink():
+        raise RuntimeError(f"Refusing to remove a symlinked systemd unit: {path}")
+    if not _owned_otel_service(path):
+        return
+    _run_systemctl(["disable", "--now", CODEX_OTEL_SERVICE_NAME])
+    path.unlink(missing_ok=True)
+    _run_systemctl(["daemon-reload"])
+
+
+def _desktop_trace_exporter(port: int) -> dict:
+    return _otel_proxy_overlay(f"http://{LOOPBACK_HOST}:{port}/v1/traces")["otel"]["trace_exporter"]
+
+
+def _sync_desktop_tracing(workspace: str | None) -> bool:
+    """Point Codex desktop's trace exporter at ug's login service on Linux; None removes both.
+
+    It goes in the Codex App settings, which a ``ug codex`` session's own ``-c`` exporter outranks.
+    Returns whether that file changed; setup problems only warn.
+    """
+    if current_os() != OS.LINUX or is_dry_run():
+        return False
+    try:
+        doc = _read_app_config()
+        otel = doc.setdefault("otel", {})
+        if not isinstance(otel, dict):
+            raise RuntimeError(f"otel in {_legacy_config_path()} is not a table")
+        # ug's own unit records the port, so only an exporter at that port is ug's.
+        unit = _otel_service_path()
+        unit_text = unit.read_text(encoding="utf-8") if _owned_otel_service(unit) else ""
+        match = re.search(r" --port (\d+)$", unit_text, re.MULTILINE)
+        port = int(match[1]) if match else None
+        ours = port is not None and otel.get("trace_exporter") == _desktop_trace_exporter(port)
+        if workspace is None:
+            _remove_otel_service()
+            if ours:
+                del otel["trace_exporter"]
+                if not otel:
+                    del doc["otel"]
+                write_toml_file(_legacy_config_path(), doc)
+            return ours
+        # shortcut: a managed-file exporter still outranks this one, check it if admins set one.
+        if "trace_exporter" in otel and not ours:
+            print_warning_err(
+                f"{_legacy_config_path()} already sets otel.trace_exporter; "
+                "skipped desktop tracing."
+            )
+            return False
+        port = port or _allocate_otel_port()
+        # Before the exporter, so a missing systemd user manager leaves Codex settings untouched.
+        _ensure_otel_service(workspace, port)
+        if ours:
+            return False
+        otel["trace_exporter"] = _desktop_trace_exporter(port)
+        write_toml_file(_legacy_config_path(), doc)
+        print_warning_err("Restart the Codex app server once to start exporting desktop traces.")
+        return True
+    except (OSError, RuntimeError, ValueError) as exc:
+        print_warning_err(f"Could not update Codex desktop tracing: {exc}")
+        return False
+
+
 def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> None:
     """Reconcile Codex's highest-precedence config while preserving unrelated policy."""
+    if managed_settings_skipped():
+        check_skipped_managed_overrides(
+            codex_managed_config_path(),
+            parser=_parse_managed_config,
+            compose=compose,
+            owned_paths=MANAGED_KEYS,
+            display="Codex",
+        )
+        return
     path = codex_managed_config_path()
     if path is None:
         print_warning_err(
@@ -653,7 +821,11 @@ def managed_mcp_uses_managed_file() -> bool:
     with the developer's own ``~/.codex/config.toml`` servers, so a managed entry never hides a
     personal one. It fits whenever the platform supports the sudo reconcile and the run is
     interactive; otherwise the caller falls back to the user-scope registration."""
-    return managed_files_supported() and managed_writes_allowed()
+    return (
+        codex_managed_config_path() is not None
+        and managed_files_supported()
+        and managed_writes_allowed()
+    )
 
 
 def managed_mcp_entry(argv: list[str]) -> dict:
@@ -1177,7 +1349,7 @@ def launch(
     if not profile_doc:
         raise RuntimeError(
             f"Cannot launch Codex with the ucode profile because {CODEX_CONFIG_PATH} "
-            "is missing or empty. Run `ucode configure --agents codex` first."
+            "is missing or empty. Run `ug configure --agents codex` first."
         )
     _set_provider_header(profile_doc, provider)
     _set_parent_schema_header(profile_doc, parent_schema if not provider else None)

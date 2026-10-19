@@ -10,11 +10,11 @@ import shutil
 import tempfile
 import urllib.error
 import urllib.request
-import uuid
 from pathlib import Path
 from urllib.parse import urlparse
 
 import pytest
+from utils.evidence import fresh_id
 from utils.harness import UserSession
 from utils.managed import MANAGED_CONFIGS_PATH, assert_no_managed_config
 
@@ -97,7 +97,7 @@ def case_directory(prefix: str, parent: Path | None):
             yield path
         return
     # mkdtemp's 0o700 becomes an owner-only ACL on Windows, which Codex's sandbox can't read.
-    path = Path(parent or tempfile.gettempdir()) / f"{prefix}{uuid.uuid4().hex[:8]}"
+    path = Path(parent or tempfile.gettempdir()) / f"{prefix}{fresh_id()}"
     path.mkdir()
     try:
         yield str(path)

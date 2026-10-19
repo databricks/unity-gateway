@@ -1,0 +1,5 @@
+fix: Retry gateway calls on HTTP 429
+feature: Add a Codex model catalog
+fix: Keep custom headers on reconfigure
+docs: Document managed settings
+feature: Smart routing for subagents

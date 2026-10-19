@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -48,6 +50,8 @@ def _seed_user_owned_native_codex_settings(session) -> tuple[Path, bytes, bytes]
         "print('{}')\n"
     )
     config = codex_home / "config.toml"
+    command = [sys.executable, str(observer)]
+    command_line = subprocess.list2cmdline(command) if os.name == "nt" else shlex.join(command)
     config.write_text(
         f"model = {json.dumps(CODEX_NATIVE_START_MODEL)}\n"
         f"model_catalog_json = {json.dumps(str(catalog))}\n"
@@ -55,7 +59,7 @@ def _seed_user_owned_native_codex_settings(session) -> tuple[Path, bytes, bytes]
         'matcher = "Agent|.*spawn_agent$"\n'
         "[[hooks.PreToolUse.hooks]]\n"
         'type = "command"\n'
-        f"command = {json.dumps(shlex.join([sys.executable, str(observer)]))}\n"
+        f"command = {json.dumps(command_line)}\n"
     )
     return catalog, config.read_bytes(), catalog.read_bytes()
 
@@ -66,8 +70,9 @@ def test_ug_codex_native_v2_plain_assignment_routing(live_session, workspace):
 
     Expected: the native call, actual hook input, and router decision contain the exact
     assignment. One native child completes on the selected model; the parent stays on
-    its original model. The session provider works under managed Databricks settings
-    and preserves the user's config. This case proves the fixed behavior, not the baseline.
+    its original model. The session provider overrides the configured Databricks default
+    (machine-managed on POSIX) and preserves the user's config. This case proves the
+    fixed behavior, not the baseline.
     """
     session = live_session
     task = FileTask(session)
@@ -100,11 +105,7 @@ def test_ug_codex_native_v2_plain_assignment_routing(live_session, workspace):
     ) as tui:
         tui.boot()
         tui.submit(prompt)
-        tui.wait_for(
-            lambda _: task.completed(session, "codex"),
-            "the parent to relay the child file value",
-            timeout=300,
-        )
+        tui.wait_for_task(task, timeout=300)
         tui.exit_normally()
 
     # Native trust records may be added; user settings must remain intact.
@@ -120,8 +121,12 @@ def test_ug_codex_native_v2_plain_assignment_routing(live_session, workspace):
     parent_meta = next(r["payload"] for r in parent if r.get("type") == "session_meta")
     child_meta = next(r["payload"] for r in child if r.get("type") == "session_meta")
     assert child_meta["source"]["subagent"]["thread_spawn"]["parent_thread_id"] == parent_meta["id"]
-    managed = tomllib.loads(Path("/etc/codex/managed_config.toml").read_text())
-    assert managed["model_provider"] == "Databricks"
+    provider_config = (
+        session.home / ".codex/ucode.config.toml"
+        if os.name == "nt"
+        else Path("/etc/codex/managed_config.toml")
+    )
+    assert tomllib.loads(provider_config.read_text())["model_provider"] == "Databricks"
     assert parent_meta["model_provider"].startswith("Databricks-ug-")
     assert child_meta["model_provider"] == parent_meta["model_provider"]
 

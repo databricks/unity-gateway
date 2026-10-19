@@ -1,12 +1,16 @@
 """Keep the black-box suite independent of application internals and test doubles."""
 
 import ast
+import io
 import json
 import os
 import re
+import runpy
 import subprocess
 import sys
 import textwrap
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -90,6 +94,138 @@ def test_dedicated_cuj_ci_runs_each_discovered_file_on_its_own_runner():
     assert 'UV_HTTP_TIMEOUT: "120"' in job and 'UV_HTTP_RETRIES: "6"' in job
     assert "UG_CUJ1_WORKSPACE: ${{ secrets.UG_CUJ1_WORKSPACE }}" in job
     assert "test_cuj" not in job
+
+
+def test_latest_harness_is_scheduled_and_opt_in():
+    workflow = _workflow("harness-latest.yml")
+    trigger = workflow.split("\non:\n", 1)[1].split("\npermissions:\n", 1)[0]
+    assert "cron: '0 22 * * 1-5'" in trigger
+    assert "workflow_dispatch:" in trigger
+    assert "pull_request" not in trigger and "push:" not in trigger
+    assert "harness-latest" not in _integration_jobs()
+
+    for package in ("@anthropic-ai/claude-code", "@openai/codex"):
+        assert f"npm view {package}@latest version" in workflow
+    assert "-m harness_latest" in workflow
+    assert "harness_latest and managed_fixture" in workflow
+    assert "harness_latest and not managed_fixture" in workflow
+    assert '-m "$TEST_MARKER"' in workflow
+    assert "-k " not in workflow
+    assert "continue-on-error:" not in workflow
+
+
+SLACK_NOTIFY = Path(__file__).parent.parent / ".github/scripts/slack-notify/notify.py"
+
+
+def _assert_slack_notify_wiring(notify):
+    assert "actions: read" in notify and "contents: read" in notify
+    assert "sparse-checkout: .github/scripts/slack-notify/notify.py" in notify
+    assert "secrets.SLACK_WEBHOOK_UG_CODING_AGENTS_POD" in notify
+    assert "run: python3 .github/scripts/slack-notify/notify.py" in notify
+
+
+def test_terminal_bench_runs_twice_daily_and_notifies_slack():
+    workflow = _workflow("terminal-bench.yml")
+    assert "cron: '0 7,19 * * *'" in workflow
+    notify = workflow.split("\n  notify:\n", 1)[1]
+    assert "needs: [harbor, native]" in notify
+    assert "if: ${{ !cancelled() }}" in notify
+    assert "NOTIFY_NAME: Terminal Bench" in notify
+    assert (
+        "NOTIFY_RESULT: ${{ contains(needs.*.result, 'failure') && 'failure' || 'success' }}"
+        in notify
+    )
+    _assert_slack_notify_wiring(notify)
+
+
+@pytest.mark.parametrize(
+    ("result", "claude_version", "job_conclusion", "api_error", "slack_error"),
+    [
+        ("success", "2.1.290", "success", False, False),
+        ("failure", "2.1.290", "failure", False, False),
+        ("failure", "2.1.290", "timed_out", False, False),
+        ("skipped", "", "failure", False, False),
+        ("failure", "2.1.290", "failure", True, False),
+        ("success", "2.1.290", "success", False, True),
+    ],
+)
+def test_latest_harness_slack_notification(
+    monkeypatch, capsys, result, claude_version, job_conclusion, api_error, slack_error
+):
+    workflow = _workflow("harness-latest.yml")
+    resolver, harness = workflow.split("\n  harness-latest:\n", 1)
+    harness, notify = harness.split("\n  notify:\n", 1)
+    assert "outputs:" in resolver
+    assert "needs: resolve-versions" in harness
+    for agent in ("claude", "codex"):
+        assert f"needs.resolve-versions.outputs.{agent}" in harness
+    assert "needs: [resolve-versions, harness-latest]" in notify
+    assert "always()" in notify
+    assert "needs.harness-latest.result == 'success'" in notify
+    assert "needs.harness-latest.result == 'failure'" in notify
+    assert "needs.resolve-versions.result == 'failure'" in notify
+    assert "NOTIFY_NAME: Latest harness test" in notify
+    assert "NOTIFY_RESULT: ${{ needs.harness-latest.result }}" in notify
+    _assert_slack_notify_wiring(notify)
+
+    env = {
+        "NOTIFY_NAME": "Latest harness test",
+        "NOTIFY_RESULT": result,
+        "CLAUDE_VERSION": claude_version,
+        "CODEX_VERSION": "0.154.0",
+        "GITHUB_REPOSITORY": "databricks/unity-gateway",
+        "GITHUB_RUN_ID": "123",
+        "GITHUB_API_URL": "https://api.github.com",
+        "GITHUB_SERVER_URL": "https://github.com",
+        "GH_TOKEN": "test-token",
+        "SLACK_WEBHOOK": "https://example.invalid/slack",
+    }
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    job_url = "https://github.com/databricks/unity-gateway/actions/runs/123/job/456"
+    posted = []
+
+    def urlopen(request, timeout):
+        assert timeout == 30
+        if request.full_url == env["SLACK_WEBHOOK"]:
+            assert request.method == "POST"
+            assert request.get_header("Content-type") == "application/json"
+            if slack_error:
+                raise urllib.error.URLError("Slack unavailable")
+            posted.append(json.loads(request.data))
+            return io.BytesIO(b"ok")
+        assert request.full_url == (
+            "https://api.github.com/repos/databricks/unity-gateway/actions/runs/123/jobs"
+            "?filter=latest&per_page=100"
+        )
+        assert request.get_header("Authorization") == "Bearer test-token"
+        if api_error:
+            raise urllib.error.URLError("GitHub unavailable")
+        jobs = [
+            {"conclusion": "success", "html_url": "other-job"},
+            {"conclusion": job_conclusion, "html_url": job_url},
+        ]
+        return io.BytesIO(json.dumps({"jobs": jobs}).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    if slack_error:
+        with pytest.raises(urllib.error.URLError, match="Slack unavailable"):
+            runpy.run_path(str(SLACK_NOTIFY), run_name="__main__")
+        assert not posted
+        return
+    runpy.run_path(str(SLACK_NOTIFY), run_name="__main__")
+    versions = f"Versions used: Claude Code {claude_version or 'unknown'}, Codex: 0.154.0"
+    run_url = f"{env['GITHUB_SERVER_URL']}/{env['GITHUB_REPOSITORY']}/actions/runs/123"
+    if result == "success":
+        expected = f"✅ Latest harness test succeeded. {versions}. Link to run {run_url}"
+    else:
+        link = job_url if not api_error else run_url
+        expected = (
+            f"❌ ALERT! Latest harness test failed. {versions}. Link to failed job: {link} "
+            "<@U09DPGC3DFY> <@U09EFHFRT24>"
+        )
+    assert posted == [{"text": expected}]
+    assert expected in capsys.readouterr().out
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="dedicated-cuj-plan runs on Linux")
@@ -313,15 +449,23 @@ def test_user_journey_fork_report_uses_the_evaluated_commit():
     assert "/pulls/" not in report and ".head.sha" not in report
 
 
-def test_ug_review_runs_only_on_member_command_from_the_default_branch():
+def test_ug_review_accepts_member_comments_and_in_repo_labels_with_trusted_checkout():
     workflow = _workflow("ug-review.yml")
 
-    assert re.search(r"(?m)^on:\n  issue_comment:\n    types: \[created\]\n", workflow)
+    assert re.search(r"(?m)^  issue_comment:\n    types: \[created\]\n", workflow)
+    assert re.search(r"(?m)^on:\n  pull_request:\n    types: \[labeled\]\n", workflow)
+    assert (
+        'contains(fromJSON(\'["ug-review", "code-review"]\'), github.event.label.name)' in workflow
+    )
+    assert "github.event.pull_request.head.repo.full_name == github.repository" in workflow
     assert "pull_request_target" not in workflow
     assert "github.event.comment.body == '/ug-review'" in workflow
     assert MEMBER_ONLY in workflow
     assert "ref: ${{ github.event.repository.default_branch }}" in workflow
-    assert "PR_NUMBER: ${{ github.event.issue.number }}" in workflow
+    assert (
+        "PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}"
+        in workflow
+    )
     assert "concurrency:" not in workflow.split("\njobs:\n", 1)[0]
 
 
@@ -556,3 +700,15 @@ def test_integration_tests_describe_the_scenario_and_expected_result():
             if any(arg.arg == "configured" for arg in node.args.args):
                 violations.append(f"{path.name}:{node.lineno}: setup must be visible in the test")
     assert not violations, "\n".join(violations)
+
+
+def test_live_suites_use_fresh_id_for_random_ids():
+    root = Path(__file__).parent
+    helper = root / "integration/utils/evidence.py"
+    offenders = [
+        str(path.relative_to(root))
+        for suite in ("integration", "e2e_cuj")
+        for path in (root / suite).rglob("*.py")
+        if path != helper and "uuid4(" in path.read_text(encoding="utf-8")
+    ]
+    assert not offenders, f"Use fresh_id() from integration/utils/evidence.py: {offenders}"

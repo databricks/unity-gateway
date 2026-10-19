@@ -613,13 +613,13 @@ def _start_proxy(
     token_header: str,
     handler_type: type[_ProxyHandler],
     force_refresh_near_expiry: bool,
+    fallback_on_bind_error: bool = True,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     """Start the loopback refresh proxy + its background token refresher.
 
-    Binds ``port``, falling back to a fresh OS-assigned port when it is already
-    in use (e.g. a prior session's proxy that was killed before its teardown ran
-    still holds the socket). The caller reads ``server.server_address[1]`` for the
-    actual port and points Claude Code at it.
+    Binds ``port``, optionally falling back to an OS-assigned port when occupied.
+    The caller reads ``server.server_address[1]`` for the actual port. Desktop
+    disables fallback because its exporter keeps the configured port.
 
     ``token_provider(force_refresh)`` mints the token from the same source the
     client agent authenticates with.
@@ -649,6 +649,10 @@ def _start_proxy(
     try:
         server = _LoopbackHTTPServer(("127.0.0.1", port), handler)
     except OSError:
+        if not fallback_on_bind_error:
+            cache.stop()
+            client.close()
+            raise
         # Cached port is occupied (stale proxy from a killed session). Port 0 lets
         # the OS pick any free port; the caller reconciles the base URL to it.
         server = _LoopbackHTTPServer(("127.0.0.1", 0), handler)
@@ -678,16 +682,19 @@ def start_relay_proxy(
 def start_otel_proxy(
     workspace: str,
     token_provider: Callable[[bool], str],
+    *,
+    port: int = 0,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
-    """Start the Codex OTLP proxy on an OS-assigned port."""
+    """Start the Codex OTLP proxy, optionally on desktop's persistent port."""
     return _start_proxy(
         workspace,
         token_provider,
-        0,
+        port,
         upstream_path="ai-gateway/otel/",
         token_header=AUTHORIZATION_HEADER,
         handler_type=_ProxyHandler,
         force_refresh_near_expiry=True,
+        fallback_on_bind_error=False,
     )
 
 

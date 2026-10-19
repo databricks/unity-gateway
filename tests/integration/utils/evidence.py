@@ -132,18 +132,32 @@ def assistant_answer_contains(session, agent: str, value: str, *, child: bool = 
     )
 
 
+def fresh_id():
+    """Return a 12-hex-char id; models drop characters when copying longer ones."""
+    return uuid.uuid4().hex[:12]
+
+
+def fresh_session_id():
+    """Return a full UUID for Claude's `--session-id`, which rejects shorter ids."""
+    return str(uuid.uuid4())
+
+
 class FileTask:
     """Ordinary project input; the expected answer is never included in the prompt."""
 
     def __init__(self, session):
-        self.value = uuid.uuid4().hex
-        self.filename = "input-" + uuid.uuid4().hex[:8] + ".txt"
+        self.value = fresh_id()
+        self.filename = "input-" + fresh_id() + ".txt"
         (session.cwd / self.filename).write_text(self.value + "\n")
-        self.prompt = f"Read {self.filename} using a tool. Reply with only its contents."
+        # Say "local file" so agents with MCP fixture tools (read_fixture) don't pick those.
+        self.prompt = (
+            f"Read the local file {self.filename} in the current directory using a tool. "
+            "Reply with only its contents."
+        )
         self.delegate_prompt = (
-            f"Delegate this task to one subagent: read {self.filename} using a tool and return "
-            "its contents. Do not read the file yourself. Wait for the subagent and reply "
-            "with only the value it returned."
+            f"Delegate this task to one subagent: read the local file {self.filename} in the "
+            "current directory using a tool and return its contents. Do not read the file "
+            "yourself. Wait for the subagent and reply with only the value it returned."
         )
 
     def completed(self, session, agent: str, *, child: bool = False) -> bool:
@@ -211,7 +225,7 @@ class SubagentCalculation:
     def __init__(self, expression: str, expected: str):
         # Codex exposes task_name, rather than the child message, to its routing hook.
         # Keep the correlation marker valid as a native task name for both agents.
-        self.marker = "ug_subagent_" + uuid.uuid4().hex[:12]
+        self.marker = "ug_subagent_" + fresh_id()
         self.value = f"{self.marker}={expected}"
         self.prompt = (
             f'Please spawn exactly one subagent with task name "{self.marker}" '

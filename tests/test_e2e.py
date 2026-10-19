@@ -434,6 +434,7 @@ E2E_MODEL_SKIP_HARNESSES: dict[str, frozenset[str]] = {
     "grok": frozenset({"codex", "copilot", "pi"}),
     # These Gemini endpoints hang OpenCode well past its E2E timeout.
     "databricks-gemini-3-1-flash-lite": frozenset({"opencode"}),
+    "databricks-gemini-3-7-flash": frozenset({"opencode"}),
     # Image-only Gemini endpoints reject function calling, which Pi's launch smoke requires.
     "flash-lite-image": frozenset({"pi"}),
     # These endpoints do not support Copilot's MLflow chat route.
