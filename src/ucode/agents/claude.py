@@ -997,7 +997,7 @@ def reconcile_managed_mcp(
     user-scope fallback), so an admin's ``agent_native_settings`` MCP allowlist keeps admitting them.
     """
     path = _managed_settings_path()
-    if path is None or not managed_writes_allowed():
+    if path is None or managed_settings_skipped() or not managed_writes_allowed():
         return False
     if path.is_symlink():
         raise RuntimeError(

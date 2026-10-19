@@ -419,9 +419,9 @@ test_ug_claude_commands.py              # command help forwarding
 test_ug_codex_commands.py               # command help and parser error forwarding
 test_ug_codex_app_server.py             # actual client/server initialize exchange
 test_ug_smart_routing_hooks.py           # live hook contract plus skill-driven subagent toggles
-test_ug_configure_claude_lifecycle.py   # repeat setup, revert, rejected credentials
+test_ug_configure_claude_lifecycle.py   # repeat setup, revert, `--user` scope, rejected credentials
 test_ug_configure_claude_workspace_switch.py # real skills MCP cleanup across two workspaces
-test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
+test_ug_configure_codex_lifecycle.py    # repeat setup, revert, `--user` scope, rejected credentials
 test_ug_claude_managed_model_discovery.py # Claude MPS policy cases (claude_mps.json)
 test_ug_codex_managed_model_discovery.py  # Codex MPS policy cases (codex_mps.json)
 test_ug_claude_model_discovery.py       # unmanaged scenarios 9, 11, 13

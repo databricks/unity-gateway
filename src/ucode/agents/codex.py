@@ -917,7 +917,7 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
     platform or a non-interactive run), so the caller routes those servers to the user-scope
     registration instead."""
     path = codex_managed_config_path()
-    if path is None or not managed_writes_allowed():
+    if path is None or managed_settings_skipped() or not managed_writes_allowed():
         return False
     if path.is_symlink():
         raise RuntimeError(

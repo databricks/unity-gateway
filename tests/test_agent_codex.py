@@ -1709,6 +1709,18 @@ class TestCodexManagedConfig:
         assert "stale" in message
         assert "ug revert" in message
 
+    def test_user_scope_bypasses_managed_config(self, tmp_path, monkeypatch):
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+        managed_files.set_config_scope("user")
+        monkeypatch.setattr(
+            codex, "reconcile_managed_file", lambda *a, **kw: pytest.fail("must not write managed")
+        )
+
+        codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+
+        assert read_toml_safe(config_path)["model_provider"] == "Databricks"
+        assert not managed_path.exists()
+
     def test_skip_env_no_error_without_stale_override(self, tmp_path, monkeypatch):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)
         monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
@@ -2208,6 +2220,20 @@ class TestCodexReconcileManagedMcp:
         monkeypatch.setattr(
             codex, "reconcile_managed_file", lambda *a, **k: pytest.fail("must not write")
         )
+        assert codex.reconcile_managed_mcp({}, {"s": codex.managed_mcp_entry(self.ARGV)}) is False
+
+    def test_user_scope_returns_false_without_touching_managed_file(self, monkeypatch):
+        monkeypatch.setattr(
+            codex, "codex_managed_config_path", lambda: Path("/etc/codex/managed_config.toml")
+        )
+        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(
+            codex, "read_managed_file", lambda path: pytest.fail("must not read managed")
+        )
+        monkeypatch.setattr(
+            codex, "reconcile_managed_file", lambda *a, **k: pytest.fail("must not write")
+        )
+        managed_files.set_config_scope("user")
         assert codex.reconcile_managed_mcp({}, {"s": codex.managed_mcp_entry(self.ARGV)}) is False
 
     def test_preserves_prior_verification_scope(self, monkeypatch):

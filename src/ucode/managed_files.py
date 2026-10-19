@@ -27,7 +27,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, cast
 
-from ucode.config_io import APP_DIR, is_dry_run
+from ucode.config_io import APP_DIR, atomic_write_text, is_dry_run
 from ucode.os_compatibility import subprocess_cross_os, system_cross_os
 from ucode.ui import console, print_note, print_success, print_warning
 
@@ -36,10 +36,14 @@ _SUDO = "/usr/bin/sudo"
 # Opt out of all OS-managed settings work (read, conflict check, and the privileged sudo write).
 SKIP_OS_SETTINGS_ENV = "UG_SKIP_OS_SETTINGS"
 _TRUE_VALUES = {"1", "true", "yes", "on"}
+CONFIG_SCOPES = ("global", "user")
+DEFAULT_CONFIG_SCOPE = "global"
+_config_scope = DEFAULT_CONFIG_SCOPE
 MANAGED_BACKUP_DIR = APP_DIR / "managed-backups"
 MANAGED_BACKUP_MANIFEST_PATH = MANAGED_BACKUP_DIR / "manifest.json"
 MANAGED_FINGERPRINT_VERSION = 1
 _MISSING = object()
+_NOT_UG_WRITTEN = "\0not-written-by-ug"
 _managed_write_batch: tuple[str, ...] = ()
 _managed_write_notice_shown = False
 _managed_write_session_depth = 0
@@ -92,8 +96,19 @@ def current_os() -> OS:
     return OS.OTHER
 
 
+def set_config_scope(scope: str) -> None:
+    global _config_scope
+    if scope not in CONFIG_SCOPES:
+        raise ValueError(f"Unknown config scope {scope!r}; expected one of {CONFIG_SCOPES}.")
+    _config_scope = scope
+
+
+def config_scope() -> str:
+    return _config_scope
+
+
 def managed_settings_skipped() -> bool:
-    """Whether the developer opted out of OS-managed settings via ``UG_SKIP_OS_SETTINGS``.
+    """Whether OS-managed settings are opted out via ``UG_SKIP_OS_SETTINGS`` or the ``user`` scope.
 
     Set the variable to ``1``/``true``/``yes``/``on`` to make ucode neither read nor update the
     root-owned managed files (Claude Code ``managed-settings.json``, Codex ``managed_config.toml``).
@@ -101,9 +116,12 @@ def managed_settings_skipped() -> bool:
     always launches through ``ug`` and never needs a bare ``claude``/``codex`` to reach the gateway.
     Skips the privileged ``sudo`` step entirely, so an interactive run is never prompted for a
     password and never hits the "OS-managed settings could not be updated" failure on hosts where
-    that write is blocked.
+    that write is blocked. ``ug configure --user`` has the same effect.
     """
-    return os.environ.get(SKIP_OS_SETTINGS_ENV, "").strip().lower() in _TRUE_VALUES
+    return (
+        os.environ.get(SKIP_OS_SETTINGS_ENV, "").strip().lower() in _TRUE_VALUES
+        or _config_scope == "user"
+    )
 
 
 def managed_files_supported() -> bool:
@@ -577,14 +595,19 @@ def reconcile_managed_file(
     display: str,
     owned_paths: list[list[str]],
     parser: ManagedParser,
+    user_scope: bool = False,
 ) -> str:
     """Back up, atomically write, and verify one OS-managed settings file.
 
     The first pre-ucode contents are retained until ``ucode revert``. Subsequent writes update only
     the last-applied snapshot used for drift-safe three-way restoration. A difference only in ug's
-    User-Agent versions counts as unchanged (see ``mask_user_agent_versions``).
+    User-Agent versions counts as unchanged (see ``mask_user_agent_versions``). ``user_scope`` writes
+    a per-user file without sudo and records it under :func:`user_manifest_key`.
     """
-    if not managed_files_supported():
+    key = user_manifest_key(tool) if user_scope else tool
+    if user_scope:
+        path = path.resolve()
+    if not user_scope and not managed_files_supported():
         print_warning(
             f"{display}: OS-managed settings aren't supported on this platform; skipped {path}."
         )
@@ -595,7 +618,11 @@ def reconcile_managed_file(
             "Replace it with a regular file or contact your administrator."
         )
     current_text = read_managed_file(path)
-    if not managed_writes_allowed(repair_existing=current_text is not None) and not is_dry_run():
+    if (
+        not user_scope
+        and not managed_writes_allowed(repair_existing=current_text is not None)
+        and not is_dry_run()
+    ):
         if current_os() is not OS.WINDOWS:
             raise RuntimeError(
                 f"Refusing to update {display} managed settings at {path} non-interactively. "
@@ -615,13 +642,15 @@ def reconcile_managed_file(
         if semantically_unchanged:
             return "unchanged"
     if is_dry_run():
-        via = "as administrator" if current_os() is OS.WINDOWS else "via sudo"
-        console.print(f"\n[bold]\\[dry run] {path} ({via})[/bold]\n{desired_text}")
+        via = ""
+        if not user_scope:
+            via = " (as administrator)" if current_os() is OS.WINDOWS else " (via sudo)"
+        console.print(f"\n[bold]\\[dry run] {path}{via}[/bold]\n{desired_text}")
         return "written"
 
     created = current_text is None
-    _ensure_backup(tool, path, current_text)
-    if _sudo_may_prompt():
+    _ensure_backup(key, path, current_text)
+    if not user_scope and _sudo_may_prompt():
         _print_managed_write_permission(display)
     if read_managed_file(path) != current_text:
         raise RuntimeError(
@@ -630,7 +659,10 @@ def reconcile_managed_file(
         )
     for attempt in range(2):
         try:
-            _privileged_replace(path, desired_text)
+            if user_scope:
+                atomic_write_text(path, desired_text, preserve_mode=True)
+            else:
+                _privileged_replace(path, desired_text)
         except PermissionError as exc:
             if current_os() is not OS.WINDOWS:
                 raise ManagedFileWriteUnavailable(
@@ -662,7 +694,7 @@ def reconcile_managed_file(
             f"{display} managed settings changed concurrently at {path}. ucode will not overwrite "
             "the newer policy; run the command again or contact your administrator."
         )
-    _record_last_applied(tool, path, desired_text, owned_paths)
+    _record_last_applied(key, path, desired_text, owned_paths)
     if not _managed_write_batch:
         print_success(f"Settings configured for {display}")
     return "created" if created else "written"
@@ -674,10 +706,17 @@ def revert_managed_file(
     display: str,
     parser: ManagedParser,
     dumper: ManagedDumper,
+    user_scope: bool = False,
+    ug_written: Mapping[tuple[str, ...], object] | None = None,
 ) -> str:
-    """Restore one managed file from its baseline while preserving later external edits."""
+    """Restore one managed file from its baseline while preserving later external edits.
+
+    With ``user_scope``, a ``ug_written`` path is withdrawn only while its current value equals the
+    mapped value (``None`` when ug never wrote it); any other value there is the user's and is kept.
+    """
+    key = user_manifest_key(tool) if user_scope else tool
     manifest = _load_manifest()
-    entry = _manifest_files(manifest).get(tool)
+    entry = _manifest_files(manifest).get(key)
     if not isinstance(entry, dict):
         return "unchanged"
     path = Path(str(entry.get("path") or ""))
@@ -691,7 +730,7 @@ def revert_managed_file(
     original_text = _original_text(entry)
     last_text = _snapshot_text(entry, "last_applied_file")
 
-    if current_text == last_text:
+    if current_text == last_text and not user_scope:
         desired_text = original_text
     elif current_text is None or last_text is None:
         desired_text = current_text
@@ -706,13 +745,20 @@ def revert_managed_file(
             ) from exc
         owned_paths = entry.get("owned_paths")
         paths = owned_paths if isinstance(owned_paths, list) else []
+        for leaf, written in (ug_written or {}).items():
+            current_value = _path_value(current_doc, list(leaf))
+            if current_value is not _MISSING and current_value != written:
+                _set_path_value(last_doc, list(leaf), _NOT_UG_WRITTEN)
         reverted = _three_way_revert(current_doc, original_doc, last_doc, paths)
         desired_text = (
             current_text if is_semantically_equal(reverted, current_doc) else dumper(reverted)
         )
+        if user_scope and original_text is None and not reverted:
+            desired_text = None
 
     if desired_text != current_text:
-        if not managed_writes_allowed():
+        user_errors = (OSError, RuntimeError) if user_scope else ()
+        if not user_scope and not managed_writes_allowed():
             if current_os() is not OS.WINDOWS:
                 raise RuntimeError(
                     f"Cannot restore {display} managed settings non-interactively. Run "
@@ -721,10 +767,15 @@ def revert_managed_file(
             raise RuntimeError(_windows_admin_required_message(display, path, "ug revert"))
         try:
             if desired_text is None:
-                _privileged_remove(path)
+                if user_scope:
+                    path.unlink(missing_ok=True)
+                else:
+                    _privileged_remove(path)
+            elif user_scope:
+                atomic_write_text(path, desired_text, preserve_mode=True)
             else:
                 _privileged_replace(path, desired_text)
-        except (PermissionError, subprocess.CalledProcessError) as exc:
+        except (PermissionError, subprocess.CalledProcessError, *user_errors) as exc:
             raise RuntimeError(
                 f"Could not restore {display} managed settings at {path}. The backup was retained "
                 f"under {MANAGED_BACKUP_DIR}. Resolve the permission issue and run `ug revert` "
@@ -736,12 +787,17 @@ def revert_managed_file(
                 f"retained under {MANAGED_BACKUP_DIR}."
             )
 
-    _delete_backup(tool, manifest, entry)
+    _delete_backup(key, manifest, entry)
     if original_text is None and desired_text is None:
         return "removed"
     if current_text != last_text:
         return "ucode entries removed; external changes preserved"
     return "restored"
+
+
+def user_manifest_key(tool: str) -> str:
+    """Manifest key for ``tool``'s per-user file, kept apart from its machine-wide record."""
+    return f"{tool}-user"
 
 
 def _sha256(text: str) -> str:

@@ -2,6 +2,7 @@
 
 import os
 import tomllib
+from pathlib import Path
 
 import pytest
 from utils.constants import CODEX_TEST_MODEL
@@ -9,6 +10,13 @@ from utils.evidence import FileTask
 from utils.terminal import TerminalProcess
 
 pytestmark = [pytest.mark.live, pytest.mark.codex]
+
+CODEX_MANAGED_CONFIG_PATH = "/etc/codex/managed_config.toml"
+
+
+def _read_bytes(path: str) -> bytes | None:
+    file = Path(path)
+    return file.read_bytes() if file.exists() else None
 
 
 def test_ug_configure_codex_repeat_and_revert(live_session, workspace):
@@ -84,6 +92,38 @@ def test_ug_configure_codex_repeat_and_revert(live_session, workspace):
         session, "ug", [str(session.binary), "revert"], "repeat-revert"
     ) as terminal:
         terminal.finish()
+
+
+def test_ug_configure_codex_user_scope_leaves_managed_config(live_session, unmanaged_workspace):
+    """Scenario: configure codex with `--user` against a workspace verified to publish no
+    CodingAgentConfig, then revert.
+
+    Expected: ug's per-user config is written, the OS-managed config is neither created nor
+    changed (no sudo is involved), the scope is saved, and revert clears it.
+    """
+    session = live_session
+    before = _read_bytes(CODEX_MANAGED_CONFIG_PATH)
+
+    session.run(
+        "configure",
+        "--agents",
+        "codex",
+        "--workspace",
+        unmanaged_workspace,
+        "--user",
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+        timeout=240,
+    )
+
+    assert _read_bytes(CODEX_MANAGED_CONFIG_PATH) == before
+    assert (session.home / ".codex/ucode.config.toml").is_file()
+    assert not (session.home / ".ucode/managed-backups/manifest.json").exists()
+    assert session.state()["config_scope"] == "user"
+
+    session.run("revert")
+    assert "config_scope" not in session.state()
+    assert not (session.home / ".codex/ucode.config.toml").exists()
 
 
 def test_ug_configure_codex_rejects_invalid_credentials(live_session, workspace):

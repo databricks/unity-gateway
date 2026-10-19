@@ -93,7 +93,7 @@ from ucode.managed_config import (
     normalize_managed_config,
     refresh_managed_config,
 )
-from ucode.managed_files import managed_write_session
+from ucode.managed_files import managed_write_session, set_config_scope
 from ucode.managed_resolve import (
     managed_claude_family_models,
     managed_default_model,
@@ -157,9 +157,11 @@ from ucode.state import (
     get_model_location,
     get_provider_service,
     is_self_managed,
+    load_config_scope,
     load_full_state,
     load_state,
     remove_self_managed_agent,
+    save_config_scope,
     save_state,
     set_current_workspace,
     set_model_location,
@@ -3637,6 +3639,8 @@ def default(
     workspace: WorkspaceOption = None,
 ) -> None:
     """Configure and launch coding agents through Databricks AI Gateway."""
+    if ctx.invoked_subcommand != "revert":
+        set_config_scope(load_config_scope())
     if ctx.invoked_subcommand is not None:
         return
     set_dry_run(dry_run)
@@ -4161,6 +4165,22 @@ def configure(
             "compatibility. Accepted for backward compatibility.",
         ),
     ] = False,
+    global_scope: Annotated[
+        bool,
+        typer.Option(
+            "--global",
+            help="Write machine-wide Claude Code and Codex managed settings with sudo (default). "
+            "The choice is saved for later commands.",
+        ),
+    ] = False,
+    user_scope: Annotated[
+        bool,
+        typer.Option(
+            "--user",
+            help="Write only per-user Claude Code and Codex settings, without sudo. "
+            "The choice is saved for later commands.",
+        ),
+    ] = False,
     verbose: Annotated[
         str,
         typer.Option(
@@ -4179,6 +4199,11 @@ def configure(
     set_dry_run(dry_run)
     set_verbosity(verbose)
     try:
+        if global_scope and user_scope:
+            raise RuntimeError("Use either --global or --user, not both.")
+        scope = "user" if user_scope else "global"
+        if global_scope or user_scope:
+            set_config_scope(scope)
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
         if custom_oauth is not None and use_pat:
             raise RuntimeError("--client-id cannot be combined with --use-pat.")
@@ -4328,6 +4353,8 @@ def configure(
             and prompt_yes_no("Configure MCP servers now?")
         ):
             configure_mcp_command()
+        if global_scope or user_scope:
+            save_config_scope(scope)
     except typer.Exit:
         # `typer.Exit` subclasses RuntimeError, so it has to be re-raised ahead of the handler
         # below. Otherwise a clean exit (e.g. `_reject_configure_under_managed_config` under a

@@ -734,6 +734,17 @@ class TestManagedSettingsSkipped:
         assert "stale" in message
         assert "ug revert" in message
 
+    def test_user_scope_skips_managed_settings_and_files(self, monkeypatch):
+        monkeypatch.delenv(managed_files.SKIP_OS_SETTINGS_ENV, raising=False)
+        monkeypatch.setattr(managed_files, "_config_scope", "user")
+        assert managed_files.managed_settings_skipped() is True
+        monkeypatch.setattr(managed_files, "managed_files_supported", _REAL_MANAGED_FILES_SUPPORTED)
+        assert managed_files.managed_files_supported() is False
+
+    def test_set_config_scope_rejects_unknown_scope(self):
+        with pytest.raises(ValueError, match="Unknown config scope"):
+            managed_files.set_config_scope("system")
+
     def test_raise_on_skipped_managed_overrides_silent_without_conflicts(self):
         # No conflicts means nothing stale overrides the user config, so this must not raise.
         managed_files.raise_on_skipped_managed_overrides(
@@ -1487,3 +1498,246 @@ def test_sudo_command_derives_prompt_policy(monkeypatch, interactive):
 
     expected = ["/usr/bin/sudo", *([] if interactive else ["-n"]), "cp", "a", "b"]
     assert managed_files._sudo_command("cp", "a", "b") == expected
+
+
+class TestUserScopeManagedFile:
+    """``user_scope=True`` writes a per-user file as the current user, never through sudo."""
+
+    @pytest.fixture(autouse=True)
+    def _no_privileged_writes(self, monkeypatch):
+        def fail(*args, **kwargs):
+            pytest.fail("user scope must not use the privileged writer")
+
+        for name in ("_sudo_replace", "_sudo_remove", "_windows_replace"):
+            monkeypatch.setattr(managed_files, name, fail)
+        monkeypatch.setattr(managed_files, "managed_writes_allowed", fail)
+        monkeypatch.setattr(managed_files, "managed_files_supported", fail)
+
+    @staticmethod
+    def _reconcile(path, text, tool="claude", **kwargs):
+        return managed_files.reconcile_managed_file(
+            path,
+            text,
+            tool=tool,
+            display="Claude Code",
+            owned_paths=[["ucode"]],
+            parser=json.loads,
+            user_scope=True,
+            **kwargs,
+        )
+
+    @staticmethod
+    def _revert(tool="claude", **kwargs):
+        return managed_files.revert_managed_file(
+            tool,
+            display="Claude Code",
+            parser=json.loads,
+            dumper=lambda doc: json.dumps(doc, sort_keys=True) + "\n",
+            user_scope=True,
+            **kwargs,
+        )
+
+    def test_creates_file_and_parent_directory_and_revert_removes_it(self, tmp_path, backup_dir):
+        path = tmp_path / "home" / ".claude" / "settings.json"
+
+        assert self._reconcile(path, '{"ucode": true}\n') == "created"
+        assert path.read_text() == '{"ucode": true}\n'
+        assert self._revert() == "removed"
+        assert not path.exists()
+
+    def test_symlink_target_is_written_and_reverted_through_the_link(self, tmp_path, backup_dir):
+        target = tmp_path / "dotfiles" / "settings.json"
+        target.parent.mkdir()
+        target.write_text('{"mine": 1}\n', encoding="utf-8")
+        link = tmp_path / "settings.json"
+        link.symlink_to(target)
+
+        assert self._reconcile(link, '{"mine": 1, "ucode": true}\n') == "written"
+
+        assert link.is_symlink()
+        assert json.loads(target.read_text()) == {"mine": 1, "ucode": True}
+        assert self._revert() == "restored"
+        assert link.is_symlink()
+        assert target.read_text() == '{"mine": 1}\n'
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+    def test_modes_existing_file_preserved_and_new_file_uses_umask(self, tmp_path, backup_dir):
+        path = tmp_path / "settings.json"
+        path.write_text('{"mine": 1}\n', encoding="utf-8")
+        path.chmod(0o640)
+
+        self._reconcile(path, '{"mine": 1, "ucode": true}\n')
+        assert path.stat().st_mode & 0o777 == 0o640
+        self._revert()
+        assert path.stat().st_mode & 0o777 == 0o640
+
+        fresh = tmp_path / "fresh.json"
+        old = os.umask(0o022)
+        try:
+            self._reconcile(fresh, '{"ucode": true}\n', tool="other")
+        finally:
+            os.umask(old)
+        assert fresh.stat().st_mode & 0o777 == 0o644
+
+    def test_preserves_unrelated_keys_via_desired_text(self, tmp_path, backup_dir):
+        path = tmp_path / "settings.json"
+        path.write_text('{"mine": 1}\n', encoding="utf-8")
+
+        assert self._reconcile(path, '{"mine": 1, "ucode": true}\n') == "written"
+
+        assert json.loads(path.read_text()) == {"mine": 1, "ucode": True}
+
+    def test_unchanged_when_semantically_equal(self, tmp_path, backup_dir):
+        path = tmp_path / "settings.json"
+        path.write_text('{"ucode":true}', encoding="utf-8")
+
+        assert self._reconcile(path, '{"ucode": true}\n') == "unchanged"
+        assert not backup_dir.exists()
+
+    def test_detects_concurrent_change(self, tmp_path, backup_dir, monkeypatch):
+        path = tmp_path / "settings.json"
+        path.write_text('{"mine": "old"}\n', encoding="utf-8")
+
+        def external_update(target, text, **kwargs):
+            target.write_text('{"mine": "new"}\n', encoding="utf-8")
+
+        monkeypatch.setattr(managed_files, "atomic_write_text", external_update)
+
+        with pytest.raises(RuntimeError, match="changed concurrently"):
+            self._reconcile(path, '{"mine": "old", "ucode": true}\n')
+
+        assert json.loads(path.read_text()) == {"mine": "new"}
+
+    def test_dry_run_writes_nothing_and_omits_sudo_label(self, tmp_path, backup_dir, capsys):
+        path = tmp_path / "settings.json"
+        config_io.set_dry_run(True)
+
+        assert self._reconcile(path, '{"ucode": true}\n') == "written"
+
+        assert not path.exists()
+        assert not backup_dir.exists()
+        out = capsys.readouterr().out
+        assert "dry run" in out
+        assert "via sudo" not in out
+
+    def test_revert_restores_original(self, tmp_path, backup_dir):
+        path = tmp_path / "settings.json"
+        path.write_text('{"mine": 1}\n', encoding="utf-8")
+        self._reconcile(path, '{"mine": 1, "ucode": true}\n')
+
+        assert self._revert() == "restored"
+
+        assert path.read_text() == '{"mine": 1}\n'
+        assert json.loads((backup_dir / "manifest.json").read_text())["files"] == {}
+
+    @pytest.mark.parametrize("existed", [True, False])
+    def test_revert_keeps_unowned_edits_made_between_configures(
+        self, tmp_path, backup_dir, existed
+    ):
+        path = tmp_path / "settings.json"
+        base = {"mine": 1} if existed else {}
+        if existed:
+            path.write_text(json.dumps(base), encoding="utf-8")
+        self._reconcile(path, json.dumps({**base, "ucode": True}))
+        path.write_text(json.dumps({**base, "ucode": True, "theme": "dark"}), encoding="utf-8")
+        self._reconcile(path, json.dumps({**base, "ucode": True, "theme": "dark"}))
+
+        self._revert()
+
+        assert json.loads(path.read_text()) == {**base, "theme": "dark"}
+
+    @pytest.mark.parametrize("current,kept", [("mine", True), ("ug", False)])
+    def test_revert_keeps_user_value_on_a_ug_written_path(
+        self, tmp_path, backup_dir, current, kept
+    ):
+        path = tmp_path / "settings.json"
+        self._reconcile(path, '{"ucode": "ug"}')
+        path.write_text(json.dumps({"ucode": current}), encoding="utf-8")
+        self._reconcile(path, json.dumps({"ucode": current}))
+
+        self._revert(ug_written={("ucode",): "ug"})
+
+        assert path.exists() is kept
+        if kept:
+            assert json.loads(path.read_text()) == {"ucode": "mine"}
+
+    def test_revert_preserves_external_changes(self, tmp_path, backup_dir):
+        path = tmp_path / "settings.json"
+        path.write_text('{"mine": 1}\n', encoding="utf-8")
+        self._reconcile(path, '{"mine": 1, "ucode": true}\n')
+        path.write_text('{"mine": 2, "ucode": true, "new": 1}\n', encoding="utf-8")
+
+        assert self._revert() == "ucode entries removed; external changes preserved"
+
+        assert json.loads(path.read_text()) == {"mine": 2, "new": 1}
+
+    @pytest.mark.parametrize("failure", ["write", "unlink"])
+    def test_revert_failure_keeps_file_and_manifest_entry(
+        self, tmp_path, backup_dir, monkeypatch, failure
+    ):
+        path = tmp_path / "settings.json"
+        if failure == "write":
+            path.write_text('{"mine": 1}\n', encoding="utf-8")
+            ug_text = '{"mine": 1, "ucode": true}\n'
+        else:
+            ug_text = '{"ucode": true}\n'
+        self._reconcile(path, ug_text)
+
+        def boom(*args, **kwargs):
+            raise OSError("denied")
+
+        if failure == "write":
+            monkeypatch.setattr(managed_files, "atomic_write_text", boom)
+        else:
+            monkeypatch.setattr(Path, "unlink", boom)
+
+        with pytest.raises(RuntimeError, match="Could not restore"):
+            self._revert()
+
+        assert path.read_text() == ug_text
+        files = json.loads((backup_dir / "manifest.json").read_text())["files"]
+        assert managed_files.user_manifest_key("claude") in files
+
+    def test_manifest_entries_coexist_with_machine_wide_record(
+        self, tmp_path, backup_dir, monkeypatch
+    ):
+        monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda **kw: True)
+        monkeypatch.setattr(managed_files, "managed_files_supported", lambda: True)
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(
+            managed_files, "_sudo_replace", lambda t, text: t.write_text(text, encoding="utf-8")
+        )
+        monkeypatch.setattr(managed_files, "_sudo_remove", lambda t: t.unlink())
+        global_path = tmp_path / "managed.json"
+        user_path = tmp_path / "settings.json"
+        managed_files.reconcile_managed_file(
+            global_path,
+            '{"ucode": true}\n',
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[["ucode"]],
+            parser=json.loads,
+        )
+        self._reconcile(user_path, '{"ucode": true}\n')
+
+        files = json.loads((backup_dir / "manifest.json").read_text())["files"]
+        assert set(files) == {"claude", managed_files.user_manifest_key("claude")}
+        assert files["claude"]["path"] == str(global_path)
+        assert files[managed_files.user_manifest_key("claude")]["path"] == str(user_path)
+
+        assert self._revert() == "removed"
+        assert not user_path.exists()
+        assert global_path.exists()
+        assert set(json.loads((backup_dir / "manifest.json").read_text())["files"]) == {"claude"}
+
+    def test_snapshots_use_user_manifest_key(self, tmp_path, backup_dir):
+        path = tmp_path / "settings.json"
+        path.write_text('{"mine": 1}\n', encoding="utf-8")
+        self._reconcile(path, '{"mine": 1, "ucode": true}\n')
+
+        user = managed_files.managed_file_snapshots(
+            managed_files.user_manifest_key("claude"), json.loads
+        )
+        assert user.original_before_ug == {"mine": 1}
+        assert user.last_applied_by_ug == {"mine": 1, "ucode": True}
+        assert managed_files.managed_file_snapshots("claude", json.loads).original_before_ug is None

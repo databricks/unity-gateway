@@ -1,6 +1,7 @@
 """CUJs for changing and undoing claude's ug setup."""
 
 import json
+from pathlib import Path
 
 import pytest
 from utils.evidence import FileTask
@@ -15,6 +16,11 @@ PREEXISTING_FAMILY_DEFAULTS = {
     "ANTHROPIC_DEFAULT_SONNET_MODEL": "preexisting-sonnet",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL": "preexisting-haiku",
 }
+
+
+def _read_bytes(path: str) -> bytes | None:
+    file = Path(path)
+    return file.read_bytes() if file.exists() else None
 
 
 def test_unmanaged_claude_preserves_preexisting_family_defaults(live_session, unmanaged_workspace):
@@ -134,6 +140,38 @@ def test_ug_configure_claude_repeat_and_revert(live_session, workspace):
         session, "ug", [str(session.binary), "revert"], "repeat-revert"
     ) as terminal:
         terminal.finish()
+
+
+def test_ug_configure_claude_user_scope_leaves_managed_settings(live_session, unmanaged_workspace):
+    """Scenario: configure claude with `--user` against a workspace verified to publish no
+    CodingAgentConfig, then revert.
+
+    Expected: ug's per-user settings are written, the OS-managed settings file is neither created
+    nor changed (no sudo is involved), the scope is saved, and revert clears it.
+    """
+    session = live_session
+    before = _read_bytes(MANAGED_SETTINGS_PATH)
+
+    session.run(
+        "configure",
+        "--agents",
+        "claude",
+        "--workspace",
+        unmanaged_workspace,
+        "--user",
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+        timeout=240,
+    )
+
+    assert _read_bytes(MANAGED_SETTINGS_PATH) == before
+    assert (session.home / ".claude/ucode-settings.json").is_file()
+    assert not (session.home / ".ucode/managed-backups/manifest.json").exists()
+    assert session.state()["config_scope"] == "user"
+
+    session.run("revert")
+    assert "config_scope" not in session.state()
+    assert not (session.home / ".claude/ucode-settings.json").exists()
 
 
 def test_ug_configure_claude_rejects_invalid_credentials(live_session, workspace):

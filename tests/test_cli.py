@@ -5138,6 +5138,93 @@ class TestConfigureProfilesFlag:
         mock_cfg.assert_not_called()
 
 
+class TestConfigureScopeFlags:
+    """`ug configure --global/--user` picks, saves, and reapplies the managed-settings scope."""
+
+    ARGS = ["configure", "--agents", "claude,codex", "--workspace", "https://first.databricks.com"]
+
+    @staticmethod
+    def _configure(extra=(), *, args=None):
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.install_tool_binary"),
+            patch("ucode.cli.configure_workspace_command") as mock_cfg,
+        ):
+            result = runner.invoke(app, [*(args or TestConfigureScopeFlags.ARGS), *extra])
+        return result, mock_cfg
+
+    def test_default_is_global_and_not_persisted(self):
+        result, _ = self._configure()
+        assert result.exit_code == 0, result.output
+        assert managed_files.config_scope() == "global"
+        assert "config_scope" not in cli_mod.load_full_state()
+
+    def test_user_flag_sets_and_persists_scope(self):
+        result, mock_cfg = self._configure(["--user"])
+        assert result.exit_code == 0, result.output
+        assert managed_files.config_scope() == "user"
+        assert cli_mod.load_full_state()["config_scope"] == "user"
+        assert "user_scope" not in mock_cfg.call_args.kwargs
+
+    def test_global_flag_overrides_saved_user_scope(self):
+        self._configure(["--user"])
+        result, _ = self._configure(["--global"])
+        assert result.exit_code == 0, result.output
+        assert managed_files.config_scope() == "global"
+        assert cli_mod.load_full_state()["config_scope"] == "global"
+
+    def test_saved_scope_is_reused_without_flag(self):
+        self._configure(["--user"])
+        managed_files.set_config_scope("global")
+        result, _ = self._configure()
+        assert result.exit_code == 0, result.output
+        assert managed_files.config_scope() == "user"
+        assert cli_mod.load_full_state()["config_scope"] == "user"
+
+    def test_failed_configure_does_not_persist_scope(self):
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.install_tool_binary"),
+            patch("ucode.cli.configure_workspace_command", side_effect=RuntimeError("refused")),
+        ):
+            result = runner.invoke(app, [*self.ARGS, "--user"])
+        assert result.exit_code == 1
+        assert managed_files.config_scope() == "user"
+        assert "config_scope" not in cli_mod.load_full_state()
+
+    def test_flags_are_mutually_exclusive(self):
+        result, mock_cfg = self._configure(["--global", "--user"])
+        assert result.exit_code == 1
+        assert "Use either --global or --user, not both." in _strip_ansi(result.output)
+        mock_cfg.assert_not_called()
+        assert "config_scope" not in cli_mod.load_full_state()
+
+    def test_dry_run_applies_but_does_not_persist(self):
+        result, _ = self._configure(["--user", "--dry-run"])
+        assert result.exit_code == 0, result.output
+        assert managed_files.config_scope() == "user"
+        assert "config_scope" not in cli_mod.load_full_state()
+
+    def test_saved_scope_applies_to_other_commands(self):
+        self._configure(["--user"])
+        managed_files.set_config_scope("global")
+        runner.invoke(app, ["agents", "--help"])
+        assert managed_files.config_scope() == "user"
+
+    def test_revert_does_not_apply_saved_user_scope(self):
+        self._configure(["--user"])
+        managed_files.set_config_scope("global")
+        with patch("ucode.cli.revert", return_value=0):
+            runner.invoke(app, ["revert"])
+        assert managed_files.config_scope() == "global"
+
+    def test_clear_state_resets_scope_to_default(self):
+        self._configure(["--user"])
+        cli_mod.clear_state()
+        assert "config_scope" not in cli_mod.load_full_state()
+        assert cli_mod.load_config_scope() == "global"
+
+
 class TestConfigureSharedStateUsePat:
     """--use-pat reads the profile's PAT from ~/.databrickscfg, exports it as
     DATABRICKS_BEARER, persists the mode, and never opens a browser."""
