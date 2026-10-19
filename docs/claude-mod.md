@@ -62,11 +62,11 @@ trimming surrounding whitespace. Isaac sets this flag from its
 rollout setting or the user's explicit `1`/`0` override. It controls Isaac feedback
 availability, so UG's routing presets and on/off toggles leave it unchanged.
 The native form keeps routing on until Enter accepts a valid reason, then disables
-routing and sends the exact text through `/isaac-feedback --category smart-routing`.
-Cancel or Escape leaves routing on and sends nothing. Missing commands or an
-unavailable form leave routing on. A feedback submission failure after a valid
-reason leaves routing off and reports the failure. Opening or dismissing the form
-makes no model requests; only submitting invokes the feedback command.
+routing and uploads the exact text in the background with `isaac feedback`. The
+transcript shows the feedback ID the mod passes with `--feedback-id`; a toast reports
+the result. Cancel or Escape leaves routing on and sends nothing. A missing
+`isaac` CLI or an unavailable form leaves routing on. A feedback submission failure after a valid
+reason leaves routing off and reports the failure in the transcript. The form makes no model requests.
 
 `isaac-feedback.ts` owns this Databricks-specific policy, form, and submission.
 `register.ts` binds the routing callbacks before Isaac's command guard, then
