@@ -519,7 +519,8 @@ The complete integration suite collects 129 executions (126 with Claude and Code
 See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
-The native v2 CUJ uses a bundled v2 catalog and a user-owned observer hook to verify
+The native v2 CUJ covers subagent-only launch behavior with a bundled v2 catalog and
+a user-owned observer hook to verify
 the exact assignment at the native call, PreToolUse, and router decision. It checks
 managed-provider selection and completion on the selected child model; it does not
 exercise compaction. The proxy component test checks that retained calls, results, and

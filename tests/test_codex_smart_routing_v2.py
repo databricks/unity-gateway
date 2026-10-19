@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-from types import SimpleNamespace
 
 import pytest
 
@@ -358,69 +357,6 @@ class TestLaunchCodex:
         )
         assert "x-databricks-workspace" in provider_arg
         assert "eng-ml-inference" in provider_arg
-
-    def test_subagent_only_launch_selects_transport_without_parent_routing(
-        self, tmp_path, monkeypatch
-    ):
-        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
-        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
-        monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
-        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
-        monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
-        interposer_args = {}
-
-        def start_interposer(*_args, **kwargs):
-            interposer_args.update(kwargs)
-            return 41002, lambda: None
-
-        monkeypatch.setattr(codex_interposer, "start_interposer_thread", start_interposer)
-        monkeypatch.setattr(v2, "_free_port", lambda: 41001)
-        monkeypatch.setattr(v2, "_wait_for_app_server", lambda *_args, **_kwargs: True)
-        spawned = []
-
-        def fake_spawn(argv, **_kwargs):
-            spawned.append(argv)
-            return SimpleNamespace(wait=lambda timeout=None: 0, terminate=lambda: None)
-
-        monkeypatch.setattr(v2.subprocess_cross_os, "popen", fake_spawn)
-
-        with pytest.raises(SystemExit) as exc:
-            v2.launch_codex(
-                {"workspace": WS, "codex_models": ["system.ai.gpt-5-6-sol"]},
-                ["--search"],
-                binary="codex",
-                start_model="gpt-start",
-                render_overlay=codex.render_overlay,
-            )
-
-        assert exc.value.code == 0
-        argv, tui_argv = spawned
-        assert argv[:2] == ["codex", "app-server"]
-        assert tui_argv[-5:] == [
-            "--remote",
-            "ws://127.0.0.1:41002",
-            "--model",
-            "gpt-start",
-            "--search",
-        ]
-        assert interposer_args["workspace"] is None
-        provider_name = interposer_args["model_provider"]
-        assert f'model_provider="{provider_name}"' in argv
-        assert 'model="gpt-start"' in argv
-        hook_override = next(arg for arg in argv if arg.startswith("hooks.PreToolUse="))
-        assert "codex-router-hook route-subagent" in hook_override
-        assert "--model system.ai.gpt-5-6-sol" in hook_override
-        assert (
-            "shell_environment_policy.set.UCODE_SESSION_ENV_FILE="
-            + json.dumps(os.environ["UCODE_SESSION_ENV_FILE"])
-        ) in argv
-        assert (
-            "shell_environment_policy.set.UCODE_SMART_ROUTER_PYTHON="
-            + json.dumps(os.environ["UCODE_SMART_ROUTER_PYTHON"])
-        ) in argv
-        # The hook subprocesses inherit the launch environment and pass the routing gate.
-        assert os.environ[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
-        assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "token"
 
     def test_v2_pre_tool_hook_leaves_saved_hooks_to_codex(self, tmp_path, monkeypatch):
         codex_home = tmp_path / ".codex"

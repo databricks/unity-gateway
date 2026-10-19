@@ -163,7 +163,8 @@ without tier rules, applying recommendations when tiers exist, and serializing t
 API field. These are unit/component checks; live request-count coverage is not included.
 
 The existing `test_codex_smart_routing_v2.py` launcher cases cover session-provider
-selection and both routing modes. `test_codex_v2_transport.py` checks readable
+selection during first-prompt routing. The native v2 journey covers subagent-only
+routing. `test_codex_v2_transport.py` checks readable
 assignments and encrypted-history replay. `test_gateway_proxy.py` checks gzip
 JSON/SSE decoding and unchanged compaction requests and responses retaining completed
 calls, results, and an opaque summary. These component checks do not cover live
