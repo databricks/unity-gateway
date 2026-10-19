@@ -357,6 +357,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
     finally:
         cache.stop()
         server.shutdown()
+        server.server_close()
         client.close()
     raise SystemExit(returncode)
 

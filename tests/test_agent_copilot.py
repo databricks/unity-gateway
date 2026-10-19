@@ -632,8 +632,9 @@ class TestLaunch:
                 {"workspace": WS}, [], options=copilot.LaunchOptions(user_pinned_model="gpt-5")
             )
 
+        # Windows retries a refused loopback connect for about 2s before failing.
         with pytest.raises(httpx.ConnectError):
-            httpx.post(f"{seen['base']}/responses", content=b"{}", timeout=2)
+            httpx.post(f"{seen['base']}/responses", content=b"{}", timeout=10)
 
     def test_no_model_is_a_launch_error(self, tmp_path, monkeypatch):
         isolate_copilot_config_paths(monkeypatch, tmp_path)
