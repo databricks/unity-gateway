@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from collections.abc import Mapping, Sequence
@@ -66,6 +67,7 @@ class _Paths:
     metadata: Path
     state: Path
     lock: Path
+    otel_helper: Path
 
 
 def claude_desktop_root_directory(
@@ -104,11 +106,14 @@ def configure_claude_desktop(
     helper_args: Sequence[str],
     model_id_to_display_name: Mapping[str, str] | None = None,
     custom_headers: Mapping[str, str] | None = None,
+    otel_endpoint: str | None = None,
+    otel_headers_command: Sequence[str] = (),
     state_path: Path | str | None = None,
     profile_key: str | None = None,
 ) -> ConfigureResult:
     """Replace UG's reserved profile, register it, and select it."""
 
+    paths = _resolve_paths(state_path=state_path)
     rendered = render_profile(
         model_ids=model_ids,
         model_id_to_display_name=model_id_to_display_name,
@@ -116,8 +121,16 @@ def configure_claude_desktop(
         helper_command=helper_command,
         helper_args=helper_args,
         custom_headers=custom_headers,
+        otel_endpoint=otel_endpoint,
+        otel_headers_helper=paths.otel_helper,
     )
-    paths = _resolve_paths(state_path=state_path)
+    otel_helper = (
+        desktop_config.render_otel_helper(
+            otel_headers_command, windows=sys.platform == "win32"
+        ).encode("utf-8")
+        if otel_endpoint
+        else None
+    )
     profile_path = paths.directory / f"{PROFILE_ID}.json"
     with desktop_config.locked(paths.lock):
         profile_before = desktop_config.read_optional_bytes(profile_path)
@@ -136,13 +149,28 @@ def configure_claude_desktop(
         )
         changed = desktop_config.write_configuration(
             [
-                (profile_path, profile_before, rendered),
+                (
+                    paths.otel_helper,
+                    desktop_config.read_optional_bytes(paths.otel_helper),
+                    otel_helper,
+                    0o700,
+                ),
+                (profile_path, profile_before, _serialize_json(rendered, profile_before), 0o600),
                 (
                     paths.metadata,
                     metadata_before,
-                    desktop_state.apply_metadata(metadata, profile_key=profile_key),
+                    _serialize_json(
+                        desktop_state.apply_metadata(metadata, profile_key=profile_key),
+                        metadata_before,
+                    ),
+                    0o600,
                 ),
-                (paths.state, state_before, {"prior_applied": prior_applied}),
+                (
+                    paths.state,
+                    state_before,
+                    _serialize_json({"prior_applied": prior_applied}, state_before),
+                    0o600,
+                ),
             ]
         )
         return ConfigureResult(
@@ -157,9 +185,11 @@ def revert_claude_desktop(*, state_path: Path | str | None = None) -> RevertResu
     """Delete UG's reserved profile and registration, preserving unrelated profiles."""
 
     directory = claude_desktop_directory()
-    if directory is None or not directory.exists():
+    if directory is None:
         return RevertResult(profile_id=None, changed=False)
-    paths = _resolve_paths(state_path=state_path)
+    paths = _resolve_paths(state_path=state_path, initialize=False)
+    if not any(path.exists() for path in (paths.directory, paths.state, paths.otel_helper)):
+        return RevertResult(profile_id=None, changed=False)
     profile_path = paths.directory / f"{PROFILE_ID}.json"
     with desktop_config.locked(paths.lock):
         profile_before = desktop_config.read_optional_bytes(profile_path)
@@ -180,21 +210,44 @@ def revert_claude_desktop(*, state_path: Path | str | None = None) -> RevertResu
             )
         changed = desktop_config.write_configuration(
             [
-                (profile_path, profile_before, None),
-                (paths.metadata, metadata_before, metadata_after),
-                (paths.state, state_before, None),
+                (profile_path, profile_before, None, 0o600),
+                (
+                    paths.metadata,
+                    metadata_before,
+                    _serialize_json(metadata_after, metadata_before),
+                    0o600,
+                ),
+                (paths.state, state_before, None, 0o600),
+                (
+                    paths.otel_helper,
+                    desktop_config.read_optional_bytes(paths.otel_helper),
+                    None,
+                    0o700,
+                ),
             ]
         )
         return RevertResult(profile_id=PROFILE_ID if changed else None, changed=changed)
 
 
-def _resolve_paths(*, state_path: Path | str | None) -> _Paths:
+def _serialize_json(payload: Mapping[str, object] | None, before: bytes | None) -> bytes | None:
+    if payload is None:
+        return None
+    if before is not None:
+        try:
+            if json.loads(before) == payload:
+                return before
+        except (UnicodeError, json.JSONDecodeError):
+            pass
+    return json.dumps(payload, indent=2).encode("utf-8")
+
+
+def _resolve_paths(*, state_path: Path | str | None, initialize: bool = True) -> _Paths:
     resolved_directory = claude_desktop_directory()
     if resolved_directory is None:
         raise ClaudeDesktopUnsupportedError(
             "Claude Desktop profile configuration is unavailable on this platform."
         )
-    if not resolved_directory.exists():
+    if initialize and not resolved_directory.exists():
         can_initialize = resolved_directory.parent.is_dir()
         if sys.platform == "darwin":
             can_initialize = _claude_desktop_installed()
@@ -210,7 +263,7 @@ def _resolve_paths(*, state_path: Path | str | None) -> _Paths:
             raise ClaudeDesktopUnavailableError(
                 f"Could not initialize Claude Desktop profile directory at {resolved_directory}."
             ) from exc
-    if not resolved_directory.is_dir():
+    if resolved_directory.exists() and not resolved_directory.is_dir():
         raise ClaudeDesktopUnavailableError(
             f"Claude Desktop profile path is not a directory: {resolved_directory}."
         )
@@ -220,6 +273,9 @@ def _resolve_paths(*, state_path: Path | str | None) -> _Paths:
         metadata=resolved_directory / META_FILENAME,
         state=resolved_state,
         lock=resolved_state.with_name(f".{resolved_state.name}.lock"),
+        otel_helper=resolved_state.with_name(
+            "claude-desktop-otel-headers" + (".cmd" if sys.platform == "win32" else ".sh")
+        ),
     )
 
 

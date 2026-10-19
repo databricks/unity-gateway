@@ -34,6 +34,15 @@ TypeScript event-forwarding and launch-option tests in CI. The existing Claude
 skill-toggle integration journey checks the live recipe payload field across on/off/on.
 See [the mod guide](../docs/claude-mod.md).
 
+The required Isaac feedback form needs manual validation of the 16-character minimum,
+cancellation, repeated toggles, and submission failures. The existing routing-toggle
+journeys do not cover this form or a live Isaac evidence upload.
+
+`test_claude_answer_delivery.py` covers Claude answer selection, composition, ownership,
+failed tasks and resumed revisions using transcript inputs, plus real subprocess I/O,
+stream-input bypass and capability lifetime. Live model/gateway selection and hook
+activation remain uncovered.
+
 The **harness-latest** workflow runs every six hours on `main` and currently covers
 smart routing only.
 It resolves npm's `claude-code@latest`
@@ -174,7 +183,7 @@ unacquired handles. Paths use temporary homes across simulated macOS, Windows, a
 including relocated/default Windows Local AppData, missing apps, invalid paths, creation
 failures, and parent-metadata preservation.
 
-Rendering tests cover the valid JSON generated-file notice, complete model IDs,
+Rendering tests cover the exact profile fields without `_comment`, complete model IDs,
 order/duplicates, literal helper arguments, and copied headers. Omitted optional fields
 are removed on replacement. Shared managed-header parsing retains its pre-Desktop behavior;
 the extra header-validation tests were removed with that out-of-scope parser change.
@@ -182,9 +191,11 @@ The default-model warning assertion was removed because that limitation is docum
 instead of returned as a runtime warning.
 Obsolete baseline restoration, edit preservation, ownership/migration, and workspace
 canonicalization tests are replaced by reserved-file replacement/deletion coverage.
-Existing CLI URL normalization is unchanged. Native Desktop activation, acceptance of
-the `_comment` notice field, GUI/helper/browser behavior, and inference remain untested;
-these component checks do not establish native Windows or Linux support.
+Reconfigure tests remove the legacy `_comment` field while preserving unrelated profiles,
+metadata, and previous-selection state, and verify subsequent configure is a no-op.
+Existing CLI URL normalization is unchanged. Native Desktop activation,
+GUI/helper/browser behavior, and inference remain untested by these component checks;
+they do not establish native Windows or Linux support.
 
 `test_desktop_setup.py` exercises configure, refresh, deleted-profile recovery,
 successful setup without the default-model warning, recoverable setup failures that still warn,
@@ -214,6 +225,22 @@ lists. Scoped discovery uses the same response for IDs and labels without extra 
 Repeat configure refreshes or removes labels. Source lists/maps remain unchanged.
 These checks use temporary files on simulated platforms, not the native model picker.
 
+Desktop OTEL component tests cover native trace settings gated by `claude_otel_tracing`
+for static and discovered models on simulated macOS, Windows, and Linux. They verify
+the collector base URL, protobuf protocol, refreshing `.sh`/`.cmd` headers helpers
+without persisted tokens, literal argument quoting, repeated native helper execution
+with rotated bearer overrides, Unicode and trailing-backslash arguments, and
+JSON-only stdout/failure output. Windows wrappers select UTF-8 before the command.
+Lifecycle checks cover repeat configure, workspace changes, disable/re-enable, rollback of helper bytes
+and permissions at each write boundary, and revert preserving unrelated telemetry.
+Revert also cleans up the helper and selection state after the Desktop library or
+application-data root is removed, without recreating either directory; failed cleanup
+restores helper bytes, permissions, and selection state for a later retry.
+Byte-writer checks cover explicit permissions independent of contents, unchanged
+JSON formatting, helper execute-permission repair, and failed atomic replacement
+without leftover temporary files.
+These checks do not prove native export, token refresh in open sessions, or ingestion.
+
 `TestChildStdoutLaunch` in `test_cli.py` checks Claude `-p`/`--print` and Codex `exec`
 (plain and `--json`) and `app-server` status/error output on stderr, argument forwarding with
 and without ug's `--`, and an unchanged stdout descriptor. Detection checks exact tokens before
@@ -231,6 +258,10 @@ parse as JSON/JSONL without stripping UG messages; those assertions still requir
 Codex browser-login component tests cover invalid refresh tokens, token-only stdout,
 network errors, and reuse of a concurrent sign-in within the timeout. Codex config
 tests cover the helper flag; real browser consent and desktop behavior are not covered.
+
+Claude catalog selection with a custom OAuth CLI profile needs a live Isaac check,
+including default discovery, model locations, and providers when the ordinary profile
+has expired. The automated suite does not cover this combination.
 
 `test_mcp_web_search.py` and `test_agent_claude.py` cover custom OAuth search
 registration, stale registration repair, SDK cache reuse/refresh, CLI profile
@@ -447,6 +478,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_configure_managed_codex_catalog_fallback` | Configure from an injected managed response containing a GPT model absent from Codex's bundled catalog, then inspect the picker with legacy smart routing off/on | Actionable metadata warning; conservative catalog entry for the unknown model; real Codex picker lists the custom catalog model |
 | `test_managed_fixture_codex_http_headers_in_managed_file` | Interactive PTY configure with injected managed `http_headers` for Codex | The specified header (`x-databricks-workspace`) lands in `model_providers.Databricks.http_headers` in `/etc/codex/managed_config.toml` with the exact admin value |
 | `test_managed_claude_mps_defaults_accompany_discovery`, `test_managed_claude_parent_schema_defaults_accompany_discovery` | Configure from a stubbed config and launch Claude with MPS discovery (`main.default.ci_e2e_anthropic_mps`) and with `system.ai` Unity Catalog discovery, respectively, both on the managed workspace | Both generated settings files retain every admin-authored default alongside the source header and every independently fetched catalog model with its label; MPS pickers keep family shortcut rows separate from catalog entries; only UC Opus/Sonnet family ids gain `[1m]` |
+| `test_launcher_sessions_prompt_at_most_once` (CUJ8) | Three launcher sessions: a second writer applies a launcher's OS-managed field set on drift, then a real smart-routed `ug claude` TUI with the launcher's args and env opens `/model` and runs a task | At most two privileged writes in the first session and none after; no ug password notice after the first session, warnings, or errors; writer's picker shown; every writer field unchanged except ug-owned ones; no discovered defaults in either settings file; orchestrator on; inference served on the writer's Haiku default; `ug revert` restores the writer's file exactly |
 | `test_unmanaged_claude_preserves_preexisting_family_defaults` | Seed Claude's OS-managed family defaults, then configure against one real workspace verified to have no managed config | Every pre-existing Claude family default remains unchanged in the OS-managed settings file |
 | `test_managed_fixture_claude_model_lifecycle`, `test_managed_fixture_codex_model_lifecycle` | Configure across no config -> static A -> static B -> MPS -> no config (stub-injected, `null` for no-config; MPS via a real provider service) | Each agent's model files reconcile to each static config (removed models pruned); switching to an MPS and a workspace with no managed config clears ug's static picker/catalog so no stale list is enforced |
 | `test_ug_installed_wheel_exposes_help_and_version` | Invoke freshly installed console command | Package version matches; public help works |
@@ -549,6 +581,28 @@ does not establish a successful live task.
 The `All integration tests` check requires every selected integration job to pass, including
 both managed-config lanes for full/live runs; full coverage does not depend on a label or
 a manual request.
+
+CUJ8's one journey (`tests/e2e_cuj/test_cuj8_second_managed_settings_writer.py`, shard
+`E2E CUJs · CUJ 8 · Second managed-settings writer`) reproduces a launcher's workflow so ug
+changes cannot regress launchers that also write managed settings: each of three sessions
+applies a second writer's OS-managed
+Claude settings (a launcher's full field set with neutral values, its own `modelPicker` and
+opus/sonnet/haiku defaults, OTEL pointed at the CUJ workspace, rewritten only on drift through
+`sudo mkdir`/`chattr`/`cp`/`chmod`, leaving `apiKeyHelper`, its TTL, and foreign header lines to
+ug), then runs `ug claude --workspace <ws> -- <launcher's Claude args>` in a real TUI with the launcher's
+launch environment, including its `subagent_orch_v0_claude_only` routing preset, opens
+`/model`, and completes a file task. It requires at most two privileged writes in the first
+session and none after, no ug password notice after the first session, no ug warnings or
+errors, the writer's picker in `/model`, every writer field unchanged except the ones ug owns,
+no discovered defaults in either settings file, the orchestrator context on the task request,
+recorded inference served on the writer's Haiku default, and `ug revert` restoring the writer's
+file exactly. Deviations: prompts are counted as
+privileged writes because CI sudo is passwordless; auth uses the CUJ bearer instead of a
+custom OAuth app; ug's default router recipe replaces a server-side one; and
+`ANTHROPIC_MODEL=haiku` avoids the gateway's rejection of Claude's Opus 5.5 effort field. The
+class pins `WORKSPACE_URL` to `https://dbc-6a91dc96-859b.cloud.databricks.com`, which must
+publish no `CodingAgentConfig` and serve `system.ai` Claude models; it serves no Fable model,
+so the fable ping-pong itself is covered by unit tests.
 
 The existing e2e workflow runs seven parallel shards: gateway checks plus one for
 each of Claude, Codex, Gemini, OpenCode, Copilot, and Pi. Each agent shard installs
