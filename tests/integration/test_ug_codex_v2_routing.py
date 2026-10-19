@@ -29,7 +29,7 @@ CODEX_NATIVE_CATALOG_MODELS = ["gpt-5.6-sol", "gpt-5.6-terra"]
 
 def _seed_user_owned_native_codex_settings(session) -> tuple[Path, bytes, bytes]:
     # The workspace catalog includes older models; this user-owned catalog forces v2.
-    result = session.run("debug", "models", "--bundled", binary="codex", timeout=60)
+    result = session.run("debug", "models", "--bundled", binary=session.which("codex"), timeout=60)
     models = json.loads(result.stdout)["models"]
     selected = [model for model in models if model["slug"] in CODEX_NATIVE_CATALOG_MODELS]
     assert {model["slug"] for model in selected} == set(CODEX_NATIVE_CATALOG_MODELS)
