@@ -139,7 +139,11 @@ from ucode.skills_download import (
 from ucode.skills_list import configured_skill_counts_by_agent, list_configured_skills_command
 from ucode.skills_state import records_for_scope
 from ucode.smart_routing import v2 as smart_routing_v2
-from ucode.smart_routing.claude_hooks import FIRST_PROMPT_SOCKET_ENV, ROUTE_FIRST_PROMPT_EVENT
+from ucode.smart_routing.claude_hooks import (
+    FIRST_PROMPT_SOCKET_ENV,
+    ROUTE_FIRST_PROMPT_EVENT,
+    ROUTE_SUBAGENT_MOD_EVENT,
+)
 from ucode.smart_routing.session_env import (
     effective_environment,
     session_env_path,
@@ -2641,9 +2645,9 @@ def claude_router_hook_cmd(
                 )
             )
         # When matched is None the harness didn't report the subagent model —
-        # the PreToolUse hook already injected the routed model, so emit nothing.
+        # routing already injected the selected model, so emit nothing.
         return
-    if event != "route-subagent" or not host:
+    if event not in {"route-subagent", ROUTE_SUBAGENT_MOD_EVENT} or not host:
         return
     token = os.environ.get("OAUTH_TOKEN") or os.environ.get("DATABRICKS_BEARER")
     if not token:
@@ -2653,12 +2657,15 @@ def claude_router_hook_cmd(
             token = get_databricks_token(host, profile)
         except RuntimeError:
             return
-    output = smart_routing_v2.route_claude_pre_tool_use(
+    output = smart_routing_v2.route_claude_subagent(
         payload,
         workspace=host,
         token=token,
         available_models=model or [],
         audit_decision=True,
+        # Hooks persisted by earlier UG versions still call route-subagent and expect a
+        # PreToolUse response; the mod's route-subagent-mod event takes the plain details.
+        hook_output=event == "route-subagent",
     )
     if output is not None:
         sys.stdout.write(json.dumps(output))
@@ -3044,6 +3051,21 @@ def _skip_model_discovery(
     )
 
 
+def _get_catalog_profile(state: dict) -> str | None:
+    """The Databricks CLI profile used to fetch the Claude model catalog.
+
+    Custom OAuth CLI setup (e.g. Isaac) authenticates a separate CLI profile and saves it in
+    ``state["custom_oauth"]["profile"]``. Use that profile when it exists; otherwise use the
+    workspace profile.
+    """
+    custom_oauth_config = state.get("custom_oauth")
+    if isinstance(custom_oauth_config, dict):
+        custom_profile = custom_oauth_config.get("profile")
+        if custom_profile:
+            return custom_profile
+    return state.get("profile")
+
+
 def _launch_tool(
     tool_name: str,
     ctx: typer.Context,
@@ -3275,6 +3297,7 @@ def _launch_tool(
         # lookup via resolve_gemini_provider_model (below), and uses no family model map.
         provider_models = None
         picker_catalog = None
+        catalog_profile = _get_catalog_profile(state)
         relayed = False
         coding_agent_config_defaults = (
             managed_claude_family_models(managed) or {}
@@ -3315,7 +3338,7 @@ def _launch_tool(
             )
         )
         if should_fetch_claude_picker_catalog:
-            token = get_databricks_token(state["workspace"], state.get("profile"))
+            token = get_databricks_token(state["workspace"], catalog_profile)
             picker_catalog = list_anthropic_model_catalog(
                 state["workspace"],
                 token,
@@ -3408,7 +3431,7 @@ def _launch_tool(
         ):
             discovered = list_anthropic_model_catalog(
                 state["workspace"],
-                get_databricks_token(state["workspace"], state.get("profile")),
+                get_databricks_token(state["workspace"], catalog_profile),
             )
             if discovered.model_ids:
                 picker_catalog = claude_agent.default_model_picker_catalog(

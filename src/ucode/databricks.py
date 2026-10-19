@@ -3047,7 +3047,9 @@ def map_claude_family_models(targets: list[str]) -> dict[str, str]:
 
 
 # Claude Code sizes its context window from a `[1m]` id hint; gpt-oss's window is far below 1M.
-_GPT_1M_MODEL_RE = re.compile(r"^(?:system\.ai\.)?(?:databricks-)?gpt-\d[a-z0-9.-]*$")
+_GPT_1M_MODEL_RE = re.compile(
+    r"^(?:anthropic-aigw-[0-9a-fA-F]{8}-)?(?:system\.ai\.)?(?:databricks-)?gpt-\d[a-z0-9.-]*$"
+)
 
 
 def maybe_add_gpt_1m_suffix(model: str) -> str:
