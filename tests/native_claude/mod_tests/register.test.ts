@@ -9,6 +9,7 @@ const ROUTED = {
   ENABLE_SMART_ROUTING_V2: '0',
   ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1',
   ENABLE_SMART_ROUTER_ORCHESTRATOR: '1',
+  ENABLE_CODEX_ORCHESTRATOR_RUNTIME: '0',
   unset: [],
   recipe: RECIPE,
 };
@@ -16,7 +17,7 @@ const start = { surface: 'terminal', isInteractive: true, cwd: '/work' } as cons
 
 // A pinned environment variable is the policy refusal the managed security default
 // raises; only the extra body may carry the recipe.
-function setup(on: On, { body = CALLER_BODY, pinned = '', launched = true } = {}) {
+function setup(on: On, { body = CALLER_BODY, pinned = '', launched = true, runtime = '0' } = {}) {
   // A routed launch puts its flags in the environment; session.start reads them back
   // so a reload keeps the toggle the session last applied.
   const env: Record<string, string | undefined> = {
@@ -24,6 +25,7 @@ function setup(on: On, { body = CALLER_BODY, pinned = '', launched = true } = {}
     ENABLE_SMART_ROUTING_V2: launched ? ROUTED.ENABLE_SMART_ROUTING_V2 : '0',
     ENABLE_SMART_ROUTING_SUBAGENT_ONLY: launched ? ROUTED.ENABLE_SMART_ROUTING_SUBAGENT_ONLY : '0',
     ENABLE_SMART_ROUTER_ORCHESTRATOR: launched ? ROUTED.ENABLE_SMART_ROUTER_ORCHESTRATOR : '0',
+    ENABLE_CODEX_ORCHESTRATOR_RUNTIME: runtime,
   };
   const writes: string[] = [];
   on('env.get', ($, e) => ({ value: env[e.name] }));
@@ -49,12 +51,14 @@ test('session start carries the launch recipe and forwards the event and result'
   expect(calls).toBe(1);
   expect(result).toEqual({ cwd: '/resolved-work' });
   expect(JSON.parse(env.CLAUDE_CODE_EXTRA_BODY!)).toEqual({ caller_field: 'keep', [RECIPE_FIELD]: RECIPE });
+  expect(env.ENABLE_CODEX_ORCHESTRATOR_RUNTIME).toBe('0');
+  expect(writes).toContain('ENABLE_CODEX_ORCHESTRATOR_RUNTIME');
   // The recipe left ANTHROPIC_CUSTOM_HEADERS, which a managed config pins.
   expect(writes).not.toContain('ANTHROPIC_CUSTOM_HEADERS');
 });
 
 test('a denied extra-body write restores the environment and reports failure', { options: ROUTED }, async ($, on) => {
-  const { env } = setup(on, { pinned: 'CLAUDE_CODE_EXTRA_BODY' });
+  const { env } = setup(on, { pinned: 'CLAUDE_CODE_EXTRA_BODY', runtime: '1' });
 
   const reply = await $.command.run({ command: 'smart-router', args: 'off' });
 
@@ -62,6 +66,7 @@ test('a denied extra-body write restores the environment and reports failure', {
   expect(env.CLAUDE_CODE_EXTRA_BODY).toBe(CALLER_BODY);
   // The rollback puts the flags the launch set back, so routing stays as it was.
   expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');
+  expect(env.ENABLE_CODEX_ORCHESTRATOR_RUNTIME).toBe('1');
 });
 
 test('a caller body that is not a JSON object is left alone', { options: ROUTED }, async ($, on) => {
