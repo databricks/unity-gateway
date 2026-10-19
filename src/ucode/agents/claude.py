@@ -54,7 +54,6 @@ from ucode.launcher import exec_or_spawn
 from ucode.managed_config import refresh_managed_config
 from ucode.managed_files import (
     OS,
-    SKIP_OS_SETTINGS_ENV,
     ManagedFileSnapshots,
     ManagedFileWriteUnavailable,
     SettingsPassthrough,
@@ -1669,19 +1668,6 @@ def write_tool_config(
         ),
         passthrough_leaves=passthrough.record(),
     )
-    # Claude would take the managed file's ANTHROPIC_CUSTOM_HEADERS and drop `ug --header`.
-    managed_path = _managed_settings_path()
-    if (
-        ug_headers()
-        and managed_path is not None
-        and f"env.{ANTHROPIC_CUSTOM_HEADERS_ENV_KEY}" in _managed_relayed_conflicts(managed_path)
-    ):
-        raise RuntimeError(
-            f"`ug --header` can't reach Claude Code: its managed settings at {managed_path} set "
-            f"{ANTHROPIC_CUSTOM_HEADERS_ENV_KEY}, which Claude uses instead of ug's headers. Run "
-            f"`ug revert`, then launch with {SKIP_OS_SETTINGS_ENV}=1 so ug doesn't write it back. "
-            "If it's still set, ask your administrator to remove it."
-        )
 
     custom_oauth = state.get("custom_oauth")
     web_search_profile = (
