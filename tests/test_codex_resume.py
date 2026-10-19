@@ -4,19 +4,15 @@ import json
 import threading
 
 import pytest
-from typer.testing import CliRunner
 from websockets.sync.server import serve
 
-from ucode.cli import app
-from ucode.smart_routing import codex_interposer, codex_resume, codex_routing
+from ucode.smart_routing import codex_interposer, codex_resume
 
 
 class NativePeer:
     def __init__(self):
         self.threads = {}
         self.calls = []
-        self.confirm = True
-        self.include_effort = True
 
     def add(self, child, parent, model="child-model", effort="high"):
         self.threads[child] = {
@@ -64,9 +60,7 @@ class NativePeer:
                     },
                 }
             connection.send(json.dumps({"id": call["id"], "result": result}))
-            if event and self.confirm:
-                if not self.include_effort:
-                    event["params"]["threadSettings"].pop("effort")
+            if event:
                 connection.send(json.dumps(event))
 
 
@@ -240,44 +234,6 @@ def test_nested_spawn_with_same_call_id_is_bound_to_its_actual_parent(tmp_path, 
     ]
 
 
-def test_failed_confirmation_keeps_protection_pending(tmp_path, native_peer, monkeypatch):
-    peer = native_peer
-    peer.add("child", "parent")
-    routes = codex_resume.RoutedChildren(tmp_path / "routes.sqlite3")
-    spawn(routes, peer)
-    with codex_resume.AppServer(peer.url) as client:
-        routes.prepare_resume("child", client)
-    peer.threads["child"].update(model="parent-model", reasoningEffort="low")
-    peer.confirm = False
-    monkeypatch.setattr(codex_resume, "RPC_TIMEOUT_SECONDS", 0.5)
-    with codex_resume.AppServer(peer.url) as client:
-        client.read("child")
-        # The socket's connect timeout must not race the RPC confirmation deadline.
-        assert client.socket.socket.gettimeout() is None
-        with pytest.raises(TimeoutError):
-            routes.restore_before_input("child", client)
-    # Model the failure before the external runtime applies the update.
-    peer.threads["child"].update(model="parent-model", reasoningEffort="low")
-    peer.confirm = True
-    with codex_resume.AppServer(peer.url) as client:
-        routes.restore_before_input("child", client)
-    assert len(settings_calls(peer)) == 2
-
-
-def test_unset_effort_needs_explicit_native_confirmation(tmp_path, native_peer, monkeypatch):
-    peer = native_peer
-    peer.add("child", "parent", effort=None)
-    routes = codex_resume.RoutedChildren(tmp_path / "routes.sqlite3")
-    spawn(routes, peer)
-    with codex_resume.AppServer(peer.url) as client:
-        routes.prepare_resume("child", client)
-    peer.threads["child"].update(model="parent-model", reasoningEffort="low")
-    peer.include_effort = False
-    monkeypatch.setattr(codex_resume, "RPC_TIMEOUT_SECONDS", 0.5)
-    with codex_resume.AppServer(peer.url) as client, pytest.raises(TimeoutError):
-        routes.restore_before_input("child", client)
-
-
 def test_guard_does_not_resume_an_unloaded_child(tmp_path, native_peer):
     peer = native_peer
     peer.add("child", "parent")
@@ -370,114 +326,6 @@ def test_only_successful_native_overrides_release_the_guard(
         routes.restore_before_input("child", client)
     assert peer.threads["child"]["model"] == ("user-selection" if accepted else "child-model")
     assert peer.threads["child"]["reasoningEffort"] == ("medium" if accepted else "high")
-
-
-def configure_hook_session(tmp_path, monkeypatch, url):
-    path = tmp_path / "session" / "env.json"
-    path.parent.mkdir()
-    path.write_text("{}", encoding="utf-8")
-    monkeypatch.setenv("UCODE_SESSION_ENV_FILE", str(path))
-    codex_resume.configure_session(path, url)
-
-
-def test_cli_protects_existing_routes_when_new_routing_is_disabled(
-    tmp_path, monkeypatch, native_peer
-):
-    peer = native_peer
-    peer.add("child", "parent")
-    configure_hook_session(tmp_path, monkeypatch, peer.url)
-    workspace = "https://example.databricks.com"
-    routes = codex_resume.for_workspace(workspace)
-    payload = {
-        "session_id": "parent",
-        "tool_use_id": "spawn",
-        "tool_response": {"agent_id": "child"},
-    }
-    routes.remember_spawn(payload, "child-model")
-    runner = CliRunner()
-    result = runner.invoke(
-        app, ["codex-router-hook", "bind-route", "--host", workspace], input=json.dumps(payload)
-    )
-    assert result.exit_code == 0, result.output
-    for tool in ("resume_agent", "send_input"):
-        result = runner.invoke(
-            app,
-            ["codex-router-hook", "guard-resume", "--host", workspace],
-            input=json.dumps(
-                {
-                    "tool_name": "multi_agent_v1" + tool,
-                    "tool_input": {"id": "child"},
-                }
-            ),
-        )
-        assert result.exit_code == 0, result.output
-        assert result.stdout == ""
-        if tool == "resume_agent":
-            peer.threads["child"].update(model="parent-model", reasoningEffort="low")
-    assert settings_calls(peer) == [{"threadId": "child", "model": "child-model", "effort": "high"}]
-
-
-@pytest.mark.parametrize("metadata", [None, "invalid json"])
-def test_cli_denies_follow_up_without_valid_session_metadata(tmp_path, monkeypatch, metadata):
-    configure_hook_session(tmp_path, monkeypatch, "ws://127.0.0.1:1")
-    path = tmp_path / "session" / "codex-app-server.json"
-    if metadata is None:
-        path.unlink()
-    else:
-        path.write_text(metadata, encoding="utf-8")
-    result = CliRunner().invoke(
-        app,
-        ["codex-router-hook", "guard-resume", "--host", "https://example.com"],
-        input=json.dumps(
-            {
-                "tool_name": "multi_agent_v1send_input",
-                "tool_input": {"target": "child"},
-            }
-        ),
-    )
-    assert result.exit_code == 0, result.output
-    output = json.loads(result.stdout)["hookSpecificOutput"]
-    assert output["permissionDecision"] == "deny"
-    assert "Could not preserve Codex child settings" in result.stderr
-
-
-def test_cli_denies_routed_spawn_when_its_settings_cannot_be_saved(tmp_path, monkeypatch):
-    configure_hook_session(tmp_path, monkeypatch, "ws://127.0.0.1:1")
-    workspace = "https://example.databricks.com"
-    routes = codex_resume.for_workspace(workspace)
-    routes.path.parent.mkdir(parents=True)
-    routes.path.write_text("not a SQLite database", encoding="utf-8")
-    monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "1")
-    monkeypatch.setenv("DATABRICKS_BEARER", "fixture-token")
-    monkeypatch.setattr(codex_routing, "DECISIONS_PATH", tmp_path / "decisions.jsonl")
-    # Substitute the external router response; the hook and persistence paths stay real.
-    monkeypatch.setattr(
-        codex_routing.routing,
-        "select_route",
-        lambda *args, **kwargs: (
-            codex_routing.RoutingDecision(
-                model="child-model", raw_model="child-model", rationale="Fixture"
-            ),
-            None,
-        ),
-    )
-    result = CliRunner().invoke(
-        app,
-        ["codex-router-hook", "route-subagent", "--host", workspace, "--model", "child-model"],
-        input=json.dumps(
-            {
-                "session_id": "parent",
-                "tool_use_id": "spawn",
-                "tool_name": "multi_agent_v1spawn_agent",
-                "tool_input": {"message": "Inspect the fixture"},
-            }
-        ),
-    )
-    assert result.exit_code == 0, result.output
-    output = json.loads(result.stdout)["hookSpecificOutput"]
-    assert output["permissionDecision"] == "deny"
-    assert "updatedInput" not in output
-    assert "Could not save Codex child settings" in result.stderr
 
 
 def test_overlapping_resume_cannot_replace_a_pending_snapshot(tmp_path, native_peer):

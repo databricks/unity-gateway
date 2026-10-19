@@ -279,26 +279,19 @@ Managed smart defaults are covered by `test_managed_config.py`, `test_cli.py`,
 without tier rules, applying recommendations when tiers exist, and serializing the current
 API field. These are unit/component checks; live request-count coverage is not included.
 
-`test_codex_smart_routing_v2.py` checks that the remote Codex TUI receives the
-gateway provider on Windows and an explicit working directory for native trust
-onboarding on all platforms. The launch-argument cases run with both POSIX and
-Windows settings. Caller-supplied `--cd`/`-C` forms, permission options, and prompts
-after `--` are preserved. Routing hooks stay with the app-server.
-Initial thread creation defers an implicit read-only sandbox to Codex's current server
-configuration, including after a rejected startup request. Explicit sandbox/profile
-selections, named permission selections, resumed/forked sessions, and later thread starts
-remain unchanged. This is component coverage, not a live Windows sign-in or TUI test.
+`test_codex_smart_routing_v2.py` checks initial sandbox resolution through Codex's
+current server configuration, including after a rejected startup request. Explicit
+sandbox/profile selections, resumed/forked sessions, and later thread starts remain
+unchanged. Cross-platform launch arguments and cleanup after app-server startup
+failure need separate validation.
 
 `test_codex_resume.py` covers SQLite persistence across guard restarts, saved model/effort
 restoration (including unset effort), nested callers sharing the root session ID,
 descendant traversal through unrouted parents, live follow-ups, deliberate overrides,
-native-v2 exclusion, identity mismatches, repeated/overlapping resumes, and denial when
-metadata, persistence, or native confirmation fails. Its loopback WebSocket peer substitutes
-the external Codex service. Missing confirmation must reach the RPC deadline without
-a competing socket timeout closing the connection, and a later retry must still restore
-the saved settings. The CLI and route store run unchanged.
-`test_codex_smart_routing_v2.py` also checks the app-server lifecycle in both routing modes,
-session-endpoint cleanup, and hooks bound to the launching Python executable.
+native-v2 exclusion, identity mismatches, and repeated/overlapping resumes. Its loopback
+WebSocket peer substitutes the external Codex service. Metadata/persistence failures
+and missing native confirmation are not covered. The live subagent toggle journey
+checks that the parent retains its configured model.
 
 Claude picker composition is checked directly through the catalog and renderer functions in
 `test_agent_claude.py`; focused CLI cases cover source selection and launch precedence.
