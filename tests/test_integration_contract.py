@@ -124,9 +124,9 @@ def _assert_slack_notify_wiring(notify):
     assert "run: python3 .github/scripts/slack-notify/notify.py" in notify
 
 
-def test_terminal_bench_runs_weekdays_and_notifies_slack():
+def test_terminal_bench_runs_twice_daily_and_notifies_slack():
     workflow = _workflow("terminal-bench.yml")
-    assert "cron: '0 22 * * 1-5'" in workflow
+    assert "cron: '0 7,19 * * *'" in workflow
     notify = workflow.split("\n  notify:\n", 1)[1]
     assert "needs: [harbor, native]" in notify
     assert "if: ${{ !cancelled() }}" in notify
