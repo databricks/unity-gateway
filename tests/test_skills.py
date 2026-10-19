@@ -1,12 +1,15 @@
 """Tests for skills shipped with Unity Gateway."""
 
+import io
+import json
 import shlex
+import sys
 from pathlib import Path
 
 import pytest
 
 from ucode import skills
-from ucode.smart_routing import orchestrator, session_env
+from ucode.smart_routing import orchestrator, orchestrator_hook, session_env, v2
 
 
 def _write_skill(root: Path, name: str, content: str = "version one") -> Path:
@@ -104,7 +107,7 @@ def test_orchestrator_injects_the_installed_agent_instructions(
     )
 
     settings = {}
-    orchestrator.sync_hooks(settings, agent=agent)
+    orchestrator.sync_hooks(settings, agent=agent, enabled=True)
     hook = settings["hooks"][payload["hook_event_name"]][0]["hooks"][0]
     assert shlex.split(hook["command"])[-2:] == ["--agent", agent]
     output = orchestrator.hook_output(payload, agent=agent)
@@ -122,12 +125,34 @@ def test_orchestrator_injects_the_installed_agent_instructions(
     assert output["hookSpecificOutput"]["additionalContext"] == context
 
 
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_on_demand_orchestrator_waits_for_the_first_on(bundled_skill, monkeypatch, capsys, agent):
+    source_skill, _ = bundled_skill
+    source = _write_skill(source_skill.parent, skills.SMART_ROUTER_ORCHESTRATOR_SKILL)
+    source.joinpath("SKILL.md").unlink()
+    source.joinpath(f"SKILL.{agent}.md").write_text(f"{agent} instructions")
+    monkeypatch.delenv("ISAAC_LAUNCH_MODE", raising=False)
+    session_env.start_session(enabled=False, when_on=v2.ON_DEMAND_WHEN_ON)
+
+    def prompt_context() -> str | None:
+        monkeypatch.setattr(sys, "argv", ["orchestrator_hook", "--agent", agent])
+        monkeypatch.setattr(sys, "stdin", io.StringIO('{"hook_event_name": "UserPromptSubmit"}'))
+        orchestrator_hook.main()
+        output = capsys.readouterr().out
+        return json.loads(output)["hookSpecificOutput"]["additionalContext"] if output else None
+
+    assert prompt_context() is None
+    session_env.set_session_enabled(True)
+    assert prompt_context().endswith(f"\n\n{agent} instructions")
+    session_env.set_session_enabled(False)
+    assert prompt_context() == orchestrator_hook.DISABLED_CONTEXT
+
+
 def test_orchestrator_hooks_replace_those_from_earlier_releases(monkeypatch):
-    monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", "1")
     earlier = "/usr/bin/python3 -m ucode.smart_routing.orchestrator --agent claude"
     settings = {"hooks": {"UserPromptSubmit": [{"hooks": [{"command": earlier}]}]}}
 
-    orchestrator.sync_hooks(settings, agent="claude")
+    orchestrator.sync_hooks(settings, agent="claude", enabled=True)
 
     (group,) = settings["hooks"]["UserPromptSubmit"]
     (hook,) = group["hooks"]

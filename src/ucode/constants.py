@@ -18,6 +18,9 @@ SMART_ROUTING_ENV_KEYS = (
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
 )
+# Temporary test gate: eligible launches that start without routing still get the setup that
+# `/smart-router on` needs. It isn't a routing flag, so it stays out of SMART_ROUTING_ENV_KEYS.
+ENABLE_SMART_ROUTER_ON_DEMAND_ENV_VAR = "ENABLE_SMART_ROUTER_ON_DEMAND"
 
 MODEL_PROVIDER_SERVICE_HEADER = "Databricks-Model-Provider-Service"
 MODEL_SERVICE_PARENT_SCHEMA_HEADER = "Databricks-Model-Service-Parent-Schema"

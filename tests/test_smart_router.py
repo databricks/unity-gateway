@@ -29,7 +29,7 @@ def test_smart_routed_session_installs_skill(tmp_path, monkeypatch, agent):
     monkeypatch.delenv(session_env.SESSION_ENV_VAR, raising=False)
     monkeypatch.setenv("UCODE_SMART_ROUTER_PYTHON", "/older/install/python")
 
-    session_path = v2._prepare_smart_router_session(agent, {})
+    session_path = v2._prepare_smart_router_session(agent, {}, starts_on=True)
 
     home = config_io.APP_DIR.parent
     assert home.joinpath(f".{agent}/skills/{SMART_ROUTER_SKILL}/SKILL.md").is_file()
@@ -53,7 +53,7 @@ def test_skill_toggles_with_launch_installation_despite_shadowed_path(tmp_path, 
     other_ug.chmod(0o755)
     monkeypatch.setenv("PATH", str(shadow) + os.pathsep + os.environ.get("PATH", ""))
 
-    session_path = v2._prepare_smart_router_session(agent, {})
+    session_path = v2._prepare_smart_router_session(agent, {}, starts_on=True)
     skill = config_io.APP_DIR.parent / f".{agent}/skills/{SMART_ROUTER_SKILL}/SKILL.md"
     commands = re.findall(r"`([^`\n]*--(?:enable|disable)-smart-routing)`", skill.read_text())
 

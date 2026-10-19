@@ -48,6 +48,10 @@ Managed routing defaults must not rewrite already-resolved version flags.
 
 Every new `smart_routing` or `smart_router` environment variable must be registered in
 `SMART_ROUTING_ENV_KEYS` in the same change, including orchestration controls.
+The one exception is `ENABLE_SMART_ROUTER_ON_DEMAND`, a temporary test gate that gives eligible
+launches without routing the setup `/smart-router on` needs. It doesn't say how routing starts,
+so it stays out of `SMART_ROUTING_ENV_KEYS` and the presets; delete it when on-demand becomes
+the default.
 Pass Claude's resolved launch baseline through native `pluginConfigs` options in the existing
 launch settings. Keep the TypeScript static; toggles must not write configuration files. An explicit toggle
 may delegate the session-control write to UG's CLI, which validates and replaces that file

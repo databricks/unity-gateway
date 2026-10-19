@@ -37,8 +37,6 @@ def enabled(env: Mapping[str, str] | None = None, *, agent: str) -> bool:
     from ucode.smart_routing.v2 import smart_routing_enabled
 
     source = os.environ if env is None else env
-    if not feature_enabled(source, agent=agent):
-        return False
     if source.get("ISAAC_LAUNCH_MODE", "").strip().lower() == "omni":
         return False
     try:
@@ -47,8 +45,9 @@ def enabled(env: Mapping[str, str] | None = None, *, agent: str) -> bool:
             return False
     except (RuntimeError, OSError):
         return False
-    return smart_routing_enabled(
-        effective_environment(source, agent=agent), default=False, agent=agent
+    effective = effective_environment(source, agent=agent)
+    return feature_enabled(effective, agent=agent) and smart_routing_enabled(
+        effective, default=False, agent=agent
     )
 
 
@@ -58,13 +57,12 @@ def skill_directory() -> Path:
 
 def add_claude_agents(plugin_dir: Path) -> None:
     """Load roles alongside the router's exact-model agents, only for this launch."""
-    if feature_enabled(agent=AGENT_CLAUDE):
-        shutil.copytree(skill_directory() / "agents", plugin_dir / "agents", dirs_exist_ok=True)
+    shutil.copytree(skill_directory() / "agents", plugin_dir / "agents", dirs_exist_ok=True)
 
 
-def sync_hooks(doc: dict, *, agent: str) -> None:
+def sync_hooks(doc: dict, *, agent: str, enabled: bool) -> None:
     groups = {}
-    if feature_enabled(agent=agent):
+    if enabled:
         argv = [sys.executable, "-m", HOOK_MODULE, "--agent", agent]
         hook = {
             "type": "command",

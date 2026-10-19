@@ -1632,6 +1632,28 @@ class TestCodexLaunch:
         for key in (v2.SESSION_ENV_VAR, v2.SESSION_PYTHON_ENV_VAR):
             assert f"shell_environment_policy.set.{key}={json.dumps(os.environ[key])}" in argv
 
+    def test_on_demand_launch_starts_off_without_a_recipe(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+
+        codex.launch(
+            {"workspace": WS, "codex_models": ["system.ai.gpt-5-6-sol"]},
+            [],
+            options=LaunchOptions(smart_router=SmartRouterLaunch(starts_on=False)),
+        )
+
+        (argv,) = launches
+        assert any(arg.startswith("hooks.PreToolUse=") for arg in argv)
+        prompt_hook = next(arg for arg in argv if arg.startswith("hooks.UserPromptSubmit="))
+        assert "ucode.smart_routing.orchestrator_hook" in prompt_hook
+        provider_arg = next(arg for arg in argv if arg.startswith("model_providers.Databricks="))
+        assert "Databricks-Smart-Router-Recipe" not in provider_arg
+        assert json.loads(Path(os.environ[v2.SESSION_ENV_VAR]).read_text()) == {
+            "enabled": False,
+            "when_on": v2.ON_DEMAND_WHEN_ON,
+            "ever_enabled": False,
+        }
+
     def test_subagent_routing_keeps_the_tracing_proxy(self, tmp_path, monkeypatch):
         self._patch(tmp_path, monkeypatch)
         monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))

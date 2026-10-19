@@ -92,6 +92,12 @@ CLAUDE_ROUTE_SELECTION_TIMEOUT_S = 20.0
 CLAUDE_ROUTED_AGENT_PREFIX = "ucode-route-"
 CLAUDE_ROUTING_PLUGIN_NAME = "ug-smart-router"
 CLAUDE_ROUTING_PLUGIN_DIRNAME = "claude-routing-plugin"
+# What `/smart-router on` turns on in a session that started without routing.
+ON_DEMAND_WHEN_ON = {
+    ENABLE_SMART_ROUTING_ENV_VAR: "0",
+    ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
+    ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+}
 CLAUDE_ROUTED_AGENT_PROMPT = (
     "Complete the delegated task exactly as requested. Follow the parent agent's instructions and "
     "return a concise report of your findings or changes."
@@ -102,17 +108,28 @@ class ClaudeRoutingSetupError(RuntimeError):
     """Routing files could not be written; the caller can launch Claude normally."""
 
 
-def _prepare_smart_router_session(agent: str, launch_env: Mapping[str, str]) -> Path:
+def _offers_orchestrator(agent: str, *, starts_on: bool) -> bool:
+    return not starts_on or orchestrator.feature_enabled(agent=agent)
+
+
+def _prepare_smart_router_session(
+    agent: str, launch_env: Mapping[str, str], *, starts_on: bool
+) -> Path:
     skills = [SMART_ROUTER_SKILL]
-    if orchestrator.feature_enabled(agent=agent):
+    # On demand, the orchestrator hook injects the workflow from ug's package without the skill.
+    if starts_on and orchestrator.feature_enabled(agent=agent):
         skills.append(SMART_ROUTER_ORCHESTRATOR_SKILL)
     for skill in skills:
         try:
             install_skill(skill, agent, config_io.APP_DIR.parent)
         except (OSError, RuntimeError) as exc:
             print_warning(f"Could not install the {skill} skill: {exc}")
-    when_on = {key: launch_env.get(key, "0") for key in SMART_ROUTING_ENV_KEYS}
-    return start_session(enabled=True, when_on=when_on)
+    when_on = (
+        {key: launch_env.get(key, "0") for key in SMART_ROUTING_ENV_KEYS}
+        if starts_on
+        else ON_DEMAND_WHEN_ON
+    )
+    return start_session(enabled=starts_on, when_on=when_on)
 
 
 def remove_smart_router_session_skills(agent: str) -> None:
@@ -365,7 +382,7 @@ def _directory_digest(directory: Path) -> str:
     return digest.hexdigest()[:16]
 
 
-def _routed_claude_plugin_dir(model_ids: list[str]) -> Path:
+def _routed_claude_plugin_dir(model_ids: list[str], *, role_agents: bool) -> Path:
     """Return a plugin folder named after its contents, which outlives the ug process.
 
     The folder is staged and renamed into place, so concurrent launches never load a partial one.
@@ -374,7 +391,7 @@ def _routed_claude_plugin_dir(model_ids: list[str]) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=".staging-", dir=root))
     try:
-        _write_routed_claude_plugin(staging, model_ids)
+        _write_routed_claude_plugin(staging, model_ids, role_agents=role_agents)
         plugin_dir = root / _directory_digest(staging)
         if not plugin_dir.is_dir():
             try:
@@ -387,7 +404,9 @@ def _routed_claude_plugin_dir(model_ids: list[str]) -> Path:
         shutil.rmtree(staging, ignore_errors=True)
 
 
-def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
+def _write_routed_claude_plugin(
+    plugin_dir: Path, model_ids: list[str], *, role_agents: bool = False
+) -> None:
     """Write exact-model agents for launch-scoped loading through --plugin-dir."""
     write_json_file(
         plugin_dir / ".claude-plugin" / "plugin.json",
@@ -441,7 +460,8 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
                 ]
             ),
         )
-    orchestrator.add_claude_agents(plugin_dir)
+    if role_agents:
+        orchestrator.add_claude_agents(plugin_dir)
     mods = Path(__file__).parents[1] / "agents" / "claude_mods"
     # These are imported by the entry point, so they ship beside it rather than as modules.
     for name in (
@@ -685,7 +705,7 @@ def _claude_routing_catalog(state: dict, token: str) -> AnthropicModelCatalog:
 
 
 def _add_claude_routing(
-    state: dict, settings: dict, model_ids: list[str], *, first_prompt: bool
+    state: dict, settings: dict, model_ids: list[str], *, first_prompt: bool, starts_on: bool
 ) -> Path:
     """Add routing hooks, session controls, and mod options to launch settings.
 
@@ -695,13 +715,14 @@ def _add_claude_routing(
     if not isinstance(env, dict):
         raise RuntimeError("Claude settings 'env' must be an object for smart routing.")
     env.pop("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", None)
-    env[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] = (
-        "1" if orchestrator.feature_enabled(agent=AGENT_CLAUDE) else "0"
-    )
-    if first_prompt:
-        env[ENABLE_SMART_ROUTING_ENV_VAR] = "1"
-    else:
-        env[ENABLE_SUBAGENT_ROUTING_ENV_VAR] = "1"
+    if starts_on:
+        env[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] = (
+            "1" if orchestrator.feature_enabled(agent=AGENT_CLAUDE) else "0"
+        )
+        if first_prompt:
+            env[ENABLE_SMART_ROUTING_ENV_VAR] = "1"
+        else:
+            env[ENABLE_SUBAGENT_ROUTING_ENV_VAR] = "1"
     model_overrides = settings.setdefault("modelOverrides", {})
     if not isinstance(model_overrides, dict):
         raise RuntimeError("Claude settings 'modelOverrides' must be an object for smart routing.")
@@ -716,9 +737,12 @@ def _add_claude_routing(
             state["workspace"], state.get("profile"), use_pat=bool(state.get("use_pat"))
         )[0]
         sync_first_prompt_hook(settings, hook_executable)
-    orchestrator.sync_hooks(settings, agent="claude")
+    with_orchestrator = _offers_orchestrator(AGENT_CLAUDE, starts_on=starts_on)
+    orchestrator.sync_hooks(settings, agent="claude", enabled=with_orchestrator)
     launch_env = {**resolve_environment(agent=AGENT_CLAUDE), **env}
-    env[SESSION_ENV_VAR] = str(_prepare_smart_router_session("claude", launch_env))
+    env[SESSION_ENV_VAR] = str(
+        _prepare_smart_router_session("claude", launch_env, starts_on=starts_on)
+    )
     env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
     settings.setdefault("pluginConfigs", {}).setdefault(CLAUDE_ROUTING_PLUGIN_NAME, {})[
         "options"
@@ -727,15 +751,17 @@ def _add_claude_routing(
         "routeCommand": routing_hook_argv(routing_state, ROUTE_SUBAGENT_MOD_EVENT),
     }
     try:
-        return _routed_claude_plugin_dir(model_ids)
+        return _routed_claude_plugin_dir(model_ids, role_agents=with_orchestrator)
     except Exception as exc:  # noqa: BLE001 - optional setup must not block normal launch
         raise ClaudeRoutingSetupError("Failed to write Claude smart-routing files") from exc
 
 
-def add_claude_smart_router(state: dict, settings: dict) -> list[str]:
+def add_claude_smart_router(state: dict, settings: dict, *, starts_on: bool) -> list[str]:
     """Add subagent routing to a normal Claude launch and return its plugin arguments."""
     catalog = _claude_routing_catalog(state, _claude_routing_token(state))
-    plugin_dir = _add_claude_routing(state, settings, catalog.model_ids, first_prompt=False)
+    plugin_dir = _add_claude_routing(
+        state, settings, catalog.model_ids, first_prompt=False, starts_on=starts_on
+    )
     return ["--plugin-dir", str(plugin_dir)]
 
 
@@ -773,7 +799,9 @@ def launch_claude(
         prompt, stdin_prompt = _claude_print_prompt(remaining)
         if prompt:
             routed_model = _route_print_mode_prompt(state, token, prompt, catalog, model_name)
-    plugin_dir = _add_claude_routing(state, settings, model_ids, first_prompt=route_first_prompt)
+    plugin_dir = _add_claude_routing(
+        state, settings, model_ids, first_prompt=route_first_prompt, starts_on=True
+    )
     model_setting = _ClaudeModelSettingGuard(user_settings_path)
 
     def route_prompt(prompt: str) -> claude_pty.FirstPromptRoute:
@@ -847,18 +875,18 @@ def _cached_routing_models(state: dict) -> list[str]:
     return routing_models(state)
 
 
-def _v2_hooks(state: dict, available_models: list[str]) -> dict:
+def _v2_hooks(state: dict, available_models: list[str], *, with_orchestrator: bool) -> dict:
     # Codex combines hook sources itself; copying user hooks here would register them twice.
     doc = {
         "hooks": {
             "PreToolUse": merge_pre_tool_use_hooks([], state, available_models=available_models),
         }
     }
-    orchestrator.sync_hooks(doc, agent="codex")
+    orchestrator.sync_hooks(doc, agent="codex", enabled=with_orchestrator)
     return doc["hooks"]
 
 
-def add_codex_smart_router(state: dict, config: dict) -> list[str]:
+def add_codex_smart_router(state: dict, config: dict, *, starts_on: bool) -> list[str]:
     """Add subagent routing hooks and session controls to a Codex config layer.
 
     Returns the models subagents route between.
@@ -869,10 +897,14 @@ def add_codex_smart_router(state: dict, config: dict) -> list[str]:
             "Smart routing model metadata is unavailable; automatic model switching is unavailable. "
             "Run `ucode configure codex` to enable routing."
         )
-    config["hooks"] = _v2_hooks(state, available_models)
+    config["hooks"] = _v2_hooks(
+        state,
+        available_models,
+        with_orchestrator=_offers_orchestrator(AGENT_CODEX, starts_on=starts_on),
+    )
     config["features.hooks"] = True
     session_env_path = _prepare_smart_router_session(
-        "codex", resolve_environment(agent=AGENT_CODEX)
+        "codex", resolve_environment(agent=AGENT_CODEX), starts_on=starts_on
     )
     # Codex constructs tool subprocess environments through its shell policy.
     # Pass both the session marker and its launching interpreter through that policy.
@@ -915,7 +947,7 @@ def launch_codex(
     catalog_path = custom_catalog_path()
     if catalog_path is not None:
         overlay["model_catalog_json"] = str(catalog_path)
-    available_models = add_codex_smart_router(state, overlay)
+    available_models = add_codex_smart_router(state, overlay, starts_on=True)
     config_args = codex_config_args(overlay)
     app_port = _free_port()
     app_server_url = _loopback_websocket_url(app_port)

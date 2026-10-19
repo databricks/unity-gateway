@@ -48,7 +48,12 @@ from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
-from ucode.constants import AGENT_CLAUDE, AGENT_CODEX, ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR
+from ucode.constants import (
+    AGENT_CLAUDE,
+    AGENT_CODEX,
+    ENABLE_SMART_ROUTER_ON_DEMAND_ENV_VAR,
+    ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
+)
 from ucode.custom_oauth import (
     CUSTOM_OAUTH_CLI_ENV_VAR,
     custom_oauth_cli_enabled,
@@ -3027,12 +3032,11 @@ def _launch_options(
     explicit_prompt: bool,
     user_pinned_model: str | None,
     provider: str | None,
+    smart_routing_disabled: bool = False,
 ) -> LaunchOptions:
-    routed = (
-        # Smart routing is enabled globally.
-        smart_routing_enabled
+    supports_smart_routing = (
         # Only Claude Code and Codex currently support smart routing.
-        and tool in CAN_USE_CACHED_CONFIG_AGENTS
+        tool in CAN_USE_CACHED_CONFIG_AGENTS
         # Smart routing does not currently support Model Provider Services.
         and provider is None
         # Route a supported interactive launch shape.
@@ -3043,16 +3047,31 @@ def _launch_options(
             model=user_pinned_model,
         )
     )
+    smart_router = None
+    if supports_smart_routing and smart_routing_enabled:
+        smart_router = SmartRouterLaunch(
+            first_prompt=smart_routing_v2.first_prompt_routing_enabled(agent=tool)
+        )
+    elif supports_smart_routing and _smart_router_on_demand(
+        tool, tool_args, smart_routing_disabled=smart_routing_disabled
+    ):
+        smart_router = SmartRouterLaunch(starts_on=False)
     return LaunchOptions(
         # Pinned models for providers are resolved above through the provider-specific launch path.
         user_pinned_model=user_pinned_model if provider is None else None,
-        smart_router=(
-            SmartRouterLaunch(
-                first_prompt=smart_routing_v2.first_prompt_routing_enabled(agent=tool)
-            )
-            if routed
-            else None
-        ),
+        smart_router=smart_router,
+    )
+
+
+def _smart_router_on_demand(
+    tool: str, tool_args: list[str], *, smart_routing_disabled: bool
+) -> bool:
+    """Whether a launch without routing still gets the setup that `/smart-router on` needs."""
+    return (
+        os.environ.get(ENABLE_SMART_ROUTER_ON_DEMAND_ENV_VAR) == "1"
+        and not smart_routing_disabled
+        # A print-mode session ends before anyone can turn Smart Router on.
+        and not (tool == "claude" and smart_routing_v2.claude_print_mode(tool_args))
     )
 
 
@@ -3113,6 +3132,7 @@ def _launch_tool(
     model: str | None = None,
     parent_schema: str | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
+    smart_routing_disabled: bool = False,
 ) -> None:
     previous = {}
     try:
@@ -3564,6 +3584,7 @@ def _launch_tool(
                 # initial/fallback model and still participates in a routed session.
                 user_pinned_model=model or forwarded_model,
                 provider=provider,
+                smart_routing_disabled=smart_routing_disabled,
             )
             launch_agent(tool, state, ctx.args, options=launch_options)
     except RuntimeError as exc:
@@ -3816,6 +3837,7 @@ def codex_cmd(
                 workspace_url=workspace,
                 parent_schema=model_location,
                 custom_oauth=custom_oauth,
+                smart_routing_disabled=enable_smart_routing_flag is False,
             )
 
 
@@ -3911,6 +3933,7 @@ def claude_cmd(
                 workspace_url=workspace,
                 parent_schema=model_location,
                 custom_oauth=custom_oauth,
+                smart_routing_disabled=enable_smart_routing_flag is False,
             )
 
 

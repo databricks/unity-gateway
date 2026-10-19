@@ -2392,7 +2392,9 @@ def launch(
     if smart_router is not None and not smart_router.first_prompt:
         routing_settings: dict = {}
         try:
-            plugin_args = smart_routing_v2.add_claude_smart_router(state, routing_settings)
+            plugin_args = smart_routing_v2.add_claude_smart_router(
+                state, routing_settings, starts_on=smart_router.starts_on
+            )
         except smart_routing_v2.ClaudeRoutingSetupError:
             _debug("Claude smart-routing setup failed; launching normally", traceback.format_exc())
             routing_setup_failed = True

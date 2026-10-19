@@ -3194,7 +3194,9 @@ class TestClaudeLaunch:
         monkeypatch.setattr(claude.shutil, "which", lambda _binary: str(shim))
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
         monkeypatch.setattr(
-            claude.smart_routing_v2, "add_claude_smart_router", lambda _state, _settings: []
+            claude.smart_routing_v2,
+            "add_claude_smart_router",
+            lambda _state, _settings, *, starts_on: [],
         )
         launches: list[list[str]] = []
         monkeypatch.setattr(claude, "exec_or_spawn", launches.append)
