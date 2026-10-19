@@ -22,7 +22,6 @@ from ucode.codex_config import (
     codex_config_args,
     codex_config_precedence_paths,
     codex_managed_config_path,
-    codex_managed_file_is_requirements,
     custom_catalog_models,
 )
 from ucode.config_io import (
@@ -64,6 +63,7 @@ from ucode.databricks import (
 )
 from ucode.launcher import exec_or_spawn
 from ucode.managed_files import (
+    CODEX_REQUIREMENTS_FILE,
     OS,
     ManagedFileWriteUnavailable,
     check_skipped_managed_overrides,
@@ -758,18 +758,18 @@ def _sync_desktop_tracing(workspace: str | None) -> bool:
 
 def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> None:
     """Reconcile Codex's highest-precedence config while preserving unrelated policy."""
-    if codex_managed_file_is_requirements():
+    path = codex_managed_config_path()
+    if path is not None and path.name == CODEX_REQUIREMENTS_FILE:
         compose = _as_requirements(compose)
     if managed_settings_skipped():
         check_skipped_managed_overrides(
-            codex_managed_config_path(),
+            path,
             parser=_parse_managed_config,
             compose=compose,
             owned_paths=MANAGED_KEYS,
             display="Codex",
         )
         return
-    path = codex_managed_config_path()
     if path is None:
         print_warning_err(
             "Machine-wide Codex settings aren't supported on this platform; skipped the managed "
@@ -845,9 +845,11 @@ def managed_mcp_uses_managed_file() -> bool:
     with the developer's own ``~/.codex/config.toml`` servers, so a managed entry never hides a
     personal one. It fits whenever the platform supports the sudo reconcile and the run is
     interactive; otherwise the caller falls back to the user-scope registration."""
+    path = codex_managed_config_path()
+    # requirements.toml's [mcp_servers] is an allowlist, not server definitions.
     return (
-        codex_managed_config_path() is not None
-        and not codex_managed_file_is_requirements()
+        path is not None
+        and path.name != CODEX_REQUIREMENTS_FILE
         and managed_files_supported()
         and managed_writes_allowed()
     )
@@ -942,7 +944,7 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
     platform or a non-interactive run), so the caller routes those servers to the user-scope
     registration instead."""
     path = codex_managed_config_path()
-    if path is None or codex_managed_file_is_requirements() or not managed_writes_allowed():
+    if path is None or path.name == CODEX_REQUIREMENTS_FILE or not managed_writes_allowed():
         return False
     if path.is_symlink():
         raise RuntimeError(
@@ -994,7 +996,7 @@ def read_managed_mcp_urls() -> dict[str, str]:
     Read-only, for ``ug mcp list`` to tag managed servers now that the managed file is their source
     of truth rather than ug state. The gateway URL is the ``--url`` argument of the proxy command."""
     path = codex_managed_config_path()
-    if path is None or codex_managed_file_is_requirements():
+    if path is None or path.name == CODEX_REQUIREMENTS_FILE:
         return {}
     try:
         text = read_managed_file(path)

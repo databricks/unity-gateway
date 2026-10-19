@@ -1713,8 +1713,9 @@ class TestCodexManagedConfig:
         assert read_toml_safe(config_path)["model_provider"] == "Databricks"
 
     def test_windows_writes_requirements_shaped_config(self, tmp_path, monkeypatch):
-        config_path, managed_path = self._patch(tmp_path, monkeypatch)
-        monkeypatch.setattr(codex, "codex_managed_file_is_requirements", lambda: True)
+        config_path, _ = self._patch(tmp_path, monkeypatch)
+        managed_path = tmp_path / "ProgramData" / "requirements.toml"
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: managed_path)
 
         codex.write_tool_config(
             {"workspace": WS, "codex_models": ["gpt-5"], "codex_default_model": "gpt-5"}
@@ -2203,8 +2204,9 @@ class TestCodexManagedMcpUsesManagedFile:
 
     def test_false_for_windows_requirements(self, monkeypatch, tmp_path):
         # requirements.toml's [mcp_servers] is an allowlist, not server definitions.
-        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: tmp_path / "req.toml")
-        monkeypatch.setattr(codex, "codex_managed_file_is_requirements", lambda: True)
+        monkeypatch.setattr(
+            codex, "codex_managed_config_path", lambda: tmp_path / "requirements.toml"
+        )
         monkeypatch.setattr(codex, "managed_files_supported", lambda: True)
         monkeypatch.setattr(codex, "managed_writes_allowed", lambda: True)
 

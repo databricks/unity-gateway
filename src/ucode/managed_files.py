@@ -124,9 +124,13 @@ def windows_claude_managed_settings_path() -> Path:
     return system_cross_os.windows_program_files_dir() / "ClaudeCode" / "managed-settings.json"
 
 
-def windows_codex_requirements_path() -> Path:
-    """Codex's admin-enforced settings on Windows, which outrank the user's config and ``-c``."""
-    return system_cross_os.windows_program_data_dir() / "OpenAI" / "Codex" / "requirements.toml"
+CODEX_REQUIREMENTS_FILE = "requirements.toml"
+
+
+def windows_codex_managed_settings_path() -> Path:
+    """Codex's machine-wide settings on Windows: ``requirements.toml``, its admin-enforced file that
+    outranks the user's config and ``-c``. Codex has no admin-only config layer there."""
+    return system_cross_os.windows_program_data_dir() / "OpenAI" / "Codex" / CODEX_REQUIREMENTS_FILE
 
 
 def read_managed_file(path: Path) -> str | None:
@@ -1319,11 +1323,11 @@ def _privileged_remove(path: Path) -> None:
 
 
 def _validate_windows_target(path: Path) -> None:
-    if path not in (windows_claude_managed_settings_path(), windows_codex_requirements_path()):
+    if path not in (windows_claude_managed_settings_path(), windows_codex_managed_settings_path()):
         raise RuntimeError(f"Refusing unexpected managed-settings target: {path}")
     if path.is_symlink():
         raise RuntimeError(f"Refusing to replace symlinked managed settings: {path}")
-    if path == windows_codex_requirements_path():
+    if path == windows_codex_managed_settings_path():
         # Standard users can create folders under ProgramData; a linked one would redirect us.
         for folder in (path.parent, path.parent.parent):
             if folder.is_symlink() or folder.is_junction():

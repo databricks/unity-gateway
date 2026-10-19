@@ -855,13 +855,12 @@ class TestWindowsManagedWrites:
 
         assert claude_agent._managed_settings_path() == windows
         assert codex_config.codex_managed_config_path() == (
-            managed_files.windows_codex_requirements_path()
+            managed_files.windows_codex_managed_settings_path()
         )
-        assert codex_config.codex_managed_file_is_requirements() is True
 
     def test_elevated_run_writes_codex_requirements(self, windows, tmp_path, monkeypatch):
         monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
-        path = managed_files.windows_codex_requirements_path()
+        path = managed_files.windows_codex_managed_settings_path()
 
         assert path == tmp_path / "ProgramData" / "OpenAI" / "Codex" / "requirements.toml"
         assert self._reconcile_codex(path, 'model_provider = "Databricks"\n') == "created"
@@ -870,7 +869,7 @@ class TestWindowsManagedWrites:
     def test_refuses_linked_codex_folder(self, windows, tmp_path, monkeypatch):
         # Standard users can create folders under ProgramData, including links elsewhere.
         monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
-        path = managed_files.windows_codex_requirements_path()
+        path = managed_files.windows_codex_managed_settings_path()
         elsewhere = tmp_path / "user-folder"
         elsewhere.mkdir()
         path.parent.parent.parent.mkdir()
