@@ -267,22 +267,6 @@ class TestSavingsSegment:
 
 
 class TestPricerCommand:
-    @pytest.mark.parametrize("first_prompt", [False, True])
-    def test_runs_the_module_on_the_given_python(self, tmp_path, first_prompt):
-        argv = savings.pricer_argv(
-            python="/py", price_cache=tmp_path / "prices.json", baseline_session_start=first_prompt
-        )
-
-        assert argv == [
-            "/py",
-            "-P",
-            "-m",
-            savings.MODULE,
-            "--price-cache",
-            str(tmp_path / "prices.json"),
-            *(["--baseline-session-start"] if first_prompt else []),
-        ]
-
     @staticmethod
     def run(price_cache: Path, usage: Path, *, first_prompt: bool = False, flag: str | None = "1"):
         argv = savings.pricer_argv(

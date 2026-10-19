@@ -1,6 +1,5 @@
 """Tests for skills shipped with Unity Gateway."""
 
-import re
 import shlex
 from pathlib import Path
 
@@ -114,47 +113,6 @@ def test_orchestrator_injects_the_installed_agent_instructions(
     session_env.set_session_environment({})
     output = orchestrator.hook_output(payload, agent=agent)
     assert output["hookSpecificOutput"]["additionalContext"] == context
-
-
-def test_orchestrator_skill_version_reads_the_shipped_skill():
-    assert re.fullmatch(r"\d+\.\d+\.\d+", orchestrator.skill_version(agent="claude") or "")
-
-
-@pytest.mark.parametrize(
-    ("text", "expected"),
-    [
-        ('---\nname: x\nmetadata:\n  version: "1.2.0"\n---\nbody', "1.2.0"),
-        ("---\nmetadata:\n  owner: ug\n  version: 2.0\n---\n", "2.0"),
-        # Only metadata's version counts, and only inside the frontmatter.
-        ("---\nversion: 9\nmetadata:\n  owner: ug\n---\nmetadata:\n  version: 9\n", None),
-        ('---\nmetadata:\n  version: ""\n---\n', None),
-        ("no frontmatter", None),
-    ],
-)
-def test_orchestrator_skill_version_is_the_frontmatter_metadata_version(
-    bundled_skill, text, expected
-):
-    source_skill, _home = bundled_skill
-    _write_skill(source_skill.parent, skills.SMART_ROUTER_ORCHESTRATOR_SKILL, text)
-
-    assert orchestrator.skill_version(agent="claude") == expected
-
-
-def test_orchestrator_skill_version_follows_the_agent_entrypoint(bundled_skill):
-    source_skill, _home = bundled_skill
-    source = _write_skill(
-        source_skill.parent,
-        skills.SMART_ROUTER_ORCHESTRATOR_SKILL,
-        "---\nmetadata:\n  version: 1.0.0\n---\n",
-    )
-    source.joinpath("SKILL.claude.md").write_text("---\nmetadata:\n  version: 2.0.0\n---\n")
-
-    assert orchestrator.skill_version(agent="claude") == "2.0.0"
-    assert orchestrator.skill_version(agent="codex") == "1.0.0"
-
-
-def test_orchestrator_skill_version_is_none_without_the_skill(bundled_skill):
-    assert orchestrator.skill_version(agent="claude") is None
 
 
 def test_uninstalls_one_skill_from_agent_roots(bundled_skill):

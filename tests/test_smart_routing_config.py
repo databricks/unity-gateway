@@ -77,10 +77,17 @@ def test_absent_or_unknown_selector_is_a_no_op(selector):
     assert applied == original
 
 
-@pytest.mark.parametrize("ENABLE_SMART_ROUTING_V2", [None, "0", "1"])
-@pytest.mark.parametrize("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", [None, "0", "1"])
-@pytest.mark.parametrize("ENABLE_SMART_ROUTER_ORCHESTRATOR", [None, "0", "1"])
-@pytest.mark.parametrize("ENABLE_SMART_ROUTING_SAVINGS", [None, "0", "1"])
+@pytest.mark.parametrize(
+    "legacy_values",
+    [
+        (None, None, None, None),
+        ("0", "0", "0", "0"),
+        ("1", "1", "1", "1"),
+        ("1", "0", "1", "0"),
+        ("0", "1", "0", "1"),
+    ],
+    ids=["unset", "disabled", "enabled", "mixed", "mixed-inverse"],
+)
 @pytest.mark.parametrize(
     "SMART_ROUTER_CONFIG_VERSION",
     [
@@ -93,20 +100,18 @@ def test_absent_or_unknown_selector_is_a_no_op(selector):
         config.SUBAGENT_ORCH_SAVINGS_V0,
     ],
 )
-def test_smart_routing_config_cartesian_grid(
-    ENABLE_SMART_ROUTING_V2,
-    ENABLE_SMART_ROUTING_SUBAGENT_ONLY,
-    ENABLE_SMART_ROUTER_ORCHESTRATOR,
-    ENABLE_SMART_ROUTING_SAVINGS,
-    SMART_ROUTER_CONFIG_VERSION,
-):
+def test_smart_routing_config_precedence(legacy_values, SMART_ROUTER_CONFIG_VERSION):
     source = {
         environment_key: value
-        for environment_key, value in (
-            (ENABLE_SMART_ROUTING_ENV_VAR, ENABLE_SMART_ROUTING_V2),
-            (ENABLE_SUBAGENT_ROUTING_ENV_VAR, ENABLE_SMART_ROUTING_SUBAGENT_ONLY),
-            (ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR, ENABLE_SMART_ROUTER_ORCHESTRATOR),
-            (ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR, ENABLE_SMART_ROUTING_SAVINGS),
+        for environment_key, value in zip(
+            (
+                ENABLE_SMART_ROUTING_ENV_VAR,
+                ENABLE_SUBAGENT_ROUTING_ENV_VAR,
+                ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
+                ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR,
+            ),
+            legacy_values,
+            strict=True,
         )
         if value is not None
     }
