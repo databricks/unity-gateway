@@ -7,7 +7,7 @@
  \__\___|_| |_|_|_|_|_||_\__,_|_| |_.__/\___|_||_\__|_||_|
 ```
 
-This directory runs Terminal Bench tasks through `ug claude` and `ug codex`. It checks that an agent keeps working when ug configures and launches it. The `Terminal Bench` workflow in `.github/workflows/terminal-bench.yml` runs every night at 07:00 UTC and on manual dispatch.
+This directory runs Terminal Bench tasks through `ug claude` and `ug codex`. It checks that an agent keeps working when ug configures and launches it. The `Terminal Bench` workflow in `.github/workflows/terminal-bench.yml` runs twice a day at 07:00 and 19:00 UTC and on manual dispatch. Each run posts a success or failure message to Slack through `SLACK_WEBHOOK_UG_CODING_AGENTS_POD`.
 
 The workflow runs tasks in two lanes. The Harbor lane runs a [Terminal Bench 2](https://www.tbench.ai/) subset and the tasks in `tasks/` in Docker containers on Linux. The native lane runs the tasks in `tasks/` directly on Linux and Windows runners.
 

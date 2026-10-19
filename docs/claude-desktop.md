@@ -31,6 +31,14 @@ disabled. It refreshes when `ug configure` runs again, not when the app opens or
 on a timer. If no Claude-named models remain, setup warns without changing Desktop
 files. Shared discovery and Claude Code's model list are unchanged.
 
+When the catalog provides a display name, UG writes it as
+[`labelOverride`](https://claude.com/docs/third-party/claude-desktop/configuration#models).
+For example, `system.ai.claude-sonnet-5` can appear as `Claude Sonnet 5` in the
+picker. The `name` field remains the exact model ID sent to the gateway. Missing
+or empty display names, and admin static lists, keep ID-only entries. Labels use
+the existing discovery response, with no extra requests, and refresh on
+`ug configure` alongside the model list.
+
 The profile uses a credential helper bound to the Python installation running UG.
 It stores only the workspace/profile name and command arguments, never a bearer
 token. The helper asks the Databricks CLI for a cached or silently refreshed token.

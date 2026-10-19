@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ucode.smart_routing.rationale import format_rationale
 from ucode.ug_headers import ug_headers
 
 ROUTER_NAME = "task_v3"
@@ -94,6 +95,9 @@ class RoutingDecision:
     model: str
     raw_model: str
     rationale: str = ""
+    route_options: tuple[tuple[str, str | None], ...] = ()
+    router_name: str = ""
+    raw_rationale: str | None = None
 
     def display_message(
         self,
@@ -223,8 +227,11 @@ def select_route(
     None when the arm is unservable. Returns ``(decision, error)``; a failed
     call yields ``(None, reason)`` so callers can fail open.
     """
+    offered_routes = tuple(route_options)
     body = {
-        "route_options": [{"model": model, "harness": harness} for model, harness in route_options],
+        "route_options": [
+            {"model": model, "harness": harness} for model, harness in offered_routes
+        ],
         "task": {"prompt": task},
         "route_selector": {"router_name": router_name},
     }
@@ -260,12 +267,17 @@ def select_route(
     model = resolve(raw_model)
     if model is None:
         return None, f"router selected unsupported model {raw_model!r}"
-    rationale = payload.get("rationale") if isinstance(payload, dict) else None
+    raw_rationale = payload.get("rationale")
+    raw_rationale = raw_rationale if isinstance(raw_rationale, str) else ""
+    rationale = format_rationale(payload["route_selection"][0], raw_rationale)
     return (
         RoutingDecision(
             model=model,
             raw_model=raw_model,
-            rationale=rationale if isinstance(rationale, str) else "",
+            rationale=rationale,
+            route_options=offered_routes,
+            router_name=router_name,
+            raw_rationale=raw_rationale if rationale != raw_rationale else None,
         ),
         None,
     )
@@ -413,9 +425,16 @@ def write_decision_record(
             "task_name": task_name,
             "router_model": decision.raw_model,
             "requested_model": requested_model,
+            "route_options": [
+                {"model": model, "harness": harness} for model, harness in decision.route_options
+            ],
+            "router_name": decision.router_name,
             # Persisted for diagnosis: an empty value means the gateway returned
             # no rationale (vs. a placement bug in how we surface it).
             "rationale": decision.rationale,
+            "raw_rationale": decision.raw_rationale
+            if decision.raw_rationale is not None
+            else decision.rationale,
             "at": time.time(),
         },
     )
