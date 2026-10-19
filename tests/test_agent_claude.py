@@ -13,8 +13,8 @@ from unittest.mock import MagicMock, Mock
 
 import pytest
 
+from ucode import config_io, gateway_proxy, managed_files
 from ucode import databricks as db_mod
-from ucode import gateway_proxy, managed_files
 from ucode.agents import LaunchOptions, claude
 from ucode.smart_routing import claude_routing, v2
 from ucode.state import MANAGED_OVERLAY_KEY
@@ -1130,18 +1130,22 @@ class TestWriteToolConfigManagedSettings:
         assert "stale" in message
         assert "ug revert" in message
 
-    def test_user_scope_bypasses_managed_file(self, monkeypatch):
+    def test_user_scope_bypasses_managed_file(self, monkeypatch, tmp_path):
         private_writes: list = []
         managed_writes: list = []
         self._patch(monkeypatch, private_writes, managed_writes)
         managed_files.set_config_scope("user")
+        user_path = tmp_path / "settings.json"
+        monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", user_path)
+        calls: list = []
         monkeypatch.setattr(
-            claude, "reconcile_managed_file", lambda *a, **kw: pytest.fail("must not write managed")
+            claude, "reconcile_managed_file", lambda path, *a, **kw: calls.append((path, kw))
         )
         state = {"workspace": WS, "codex_models": []}
         claude.write_tool_config(state, "databricks-claude-sonnet-4")
         assert str(claude.CLAUDE_SETTINGS_PATH) in [p for p, _ in private_writes]
         assert managed_writes == []
+        assert [(path, kw["user_scope"]) for path, kw in calls] == [(user_path.resolve(), True)]
 
     def test_skip_env_no_error_without_stale_override(self, monkeypatch):
         private_writes: list = []
@@ -2757,6 +2761,383 @@ class TestWriteToolConfigManagedSettings:
         assert "allowManagedMcpServersOnly" not in managed
         assert managed["cleanupPeriodDays"] == 30
         assert recorded == [[]]
+
+
+class TestWriteToolConfigUserScope:
+    """`ug configure --user` mirrors the managed settings into the user's settings.json."""
+
+    @pytest.fixture(autouse=True)
+    def _env(self, tmp_path, monkeypatch):
+        self.managed_path = tmp_path / "managed-settings.json"
+        self.user_path = tmp_path / "home" / ".claude" / "settings.json"
+        self.user_path.parent.mkdir(parents=True)
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        monkeypatch.setattr(managed_files, "managed_files_supported", lambda: True)
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: self.managed_path)
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
+        monkeypatch.setattr(claude, "save_state", lambda state: None)
+        monkeypatch.setattr(claude, "_register_web_search_mcp", lambda *a, **kw: True)
+        monkeypatch.setattr(claude, "ug_version", lambda: "1.0")
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.0")
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", tmp_path / "ucode-settings.json")
+        monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", self.user_path)
+        monkeypatch.setattr(
+            claude,
+            "refresh_managed_config",
+            lambda *a, **kw: _managed_config_result({"claude": {}}),
+        )
+        managed_files.set_config_scope("user")
+
+    def _write(self, state=None, **kwargs):
+        state = state if state is not None else {"workspace": WS, "codex_models": []}
+        claude.write_tool_config(state, "databricks-claude-sonnet-4", **kwargs)
+        return state
+
+    def _user(self) -> dict:
+        return json.loads(self.user_path.read_text())
+
+    def test_writes_gateway_keys_and_keeps_unrelated_user_keys(self):
+        self.user_path.write_text(
+            json.dumps({"theme": "dark", "env": {"FOO": "1"}, "permissions": {"allow": ["Bash"]}}),
+            encoding="utf-8",
+        )
+        self._write()
+        written = self._user()
+        assert written["apiKeyHelper"]
+        assert written["env"]["ANTHROPIC_BASE_URL"].startswith(WS)
+        assert written["env"]["FOO"] == "1"
+        assert written["theme"] == "dark"
+        assert written["permissions"] == {"allow": ["Bash"]}
+        assert not self.managed_path.exists()
+
+    def test_creates_missing_file_and_revert_removes_it(self):
+        self._write()
+        assert self._user()["apiKeyHelper"]
+        assert not self.managed_path.exists()
+        assert claude.revert_managed_settings() == "removed (user settings)"
+        assert not self.user_path.exists()
+
+    def test_revert_restores_original_user_settings(self):
+        original = {"theme": "dark", "env": {"FOO": "1"}}
+        self.user_path.write_text(json.dumps(original), encoding="utf-8")
+        self._write()
+        claude.revert_managed_settings()
+        assert self._user() == original
+
+    def test_reapply_unchanged_is_a_fixed_point(self):
+        state = self._write()
+        first = self.user_path.read_bytes()
+        self._write(state)
+        assert self.user_path.read_bytes() == first
+
+    def test_never_uses_privileges(self, monkeypatch):
+        monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda **kw: False)
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: False)
+        self._write()
+        assert self._user()["apiKeyHelper"]
+
+    def test_claude_config_dir_is_honored(self, tmp_path, monkeypatch):
+        config_dir = tmp_path / "custom"
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+        self._write()
+        assert json.loads((config_dir / "settings.json").read_text())["apiKeyHelper"]
+        assert not self.user_path.exists()
+
+    def test_picker_is_written_and_later_removed_via_ug_picker(self):
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            "claude_static_models": ["system.ai.claude-opus-4-8"],
+        }
+        self.user_path.write_text(json.dumps({"theme": "dark"}), encoding="utf-8")
+        self._write(state)
+        written = self._user()
+        assert written["availableModels"]
+        assert "modelPicker" in written
+        key = managed_files.user_manifest_key("claude")
+        assert managed_files.managed_file_snapshots(key, json.loads).ug_picker == {
+            k: written[k] for k in claude.CLAUDE_MANAGED_PICKER_KEYS if k in written
+        }
+
+        del state["claude_static_models"]
+        self._write(state)
+        written = self._user()
+        for picker_key in claude.CLAUDE_MANAGED_PICKER_KEYS:
+            assert picker_key not in written
+        assert written["theme"] == "dark"
+
+    def test_family_defaults_still_read_the_os_managed_file(self):
+        self.user_path.write_text(
+            json.dumps({"modelPicker": {}, "env": {"ANTHROPIC_DEFAULT_OPUS_MODEL": "user-opus"}}),
+            encoding="utf-8",
+        )
+        assert (
+            claude.get_family_defaults({}, managed_config=False, provider=None, parent_schema=None)
+            is None
+        )
+        self.managed_path.write_text(
+            json.dumps({"modelPicker": {}, "env": {"ANTHROPIC_DEFAULT_OPUS_MODEL": "os-opus"}}),
+            encoding="utf-8",
+        )
+        assert claude.get_family_defaults(
+            {}, managed_config=False, provider=None, parent_schema=None
+        ) == {"opus": "os-opus"}
+
+    def test_managed_user_agent_reads_the_user_file(self):
+        self._write()
+        user_agent = claude.managed_user_agent()
+        assert user_agent
+        assert not self.managed_path.exists()
+
+    def test_passthrough_skips_managed_only_keys_and_warns_once(self, capsys):
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            claude.SETTINGS_PASSTHROUGH_STATE_KEY: {
+                "cleanupPeriodDays": 30,
+                "allowManagedHooksOnly": True,
+                "forceLoginOrgUUID": "org",
+                "permissions": {"deny": ["mcp__gdrive"]},
+            },
+        }
+        self._write(state)
+        written = self._user()
+        assert written["cleanupPeriodDays"] == 30
+        assert written["permissions"]["deny"] == ["mcp__gdrive"]
+        assert "allowManagedHooksOnly" not in written
+        assert "forceLoginOrgUUID" not in written
+        out = " ".join(capsys.readouterr().out.split())
+        assert "allowManagedHooksOnly, forceLoginOrgUUID" in out
+
+        self._write(state)
+        assert "allowManagedHooksOnly" not in capsys.readouterr().out
+        key = managed_files.user_manifest_key("claude")
+        recorded = managed_files.managed_file_snapshots(key, json.loads).settings_passthrough
+        assert ["cleanupPeriodDays"] in [path for path, _ in recorded]
+        assert ["allowManagedHooksOnly"] not in [path for path, _ in recorded]
+
+    def test_passthrough_allowed_mcp_servers_appends_ug_servers(self):
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            "managed_mcp_servers": [],
+            claude.SETTINGS_PASSTHROUGH_STATE_KEY: {
+                "allowedMcpServers": [{"serverName": "jira-internal"}]
+            },
+        }
+        self._write(state)
+        assert self._user()["allowedMcpServers"][0] == {"serverName": "jira-internal"}
+
+    def test_relayed_writes_nothing_and_reverts_prior_record(self):
+        original = {"theme": "dark"}
+        self.user_path.write_text(json.dumps(original), encoding="utf-8")
+        state = self._write()
+        assert self._user()["apiKeyHelper"]
+
+        self._write(state, relayed=True)
+        assert self._user() == original
+
+        self.user_path.unlink()
+        self._write(state, relayed=True)
+        assert not self.user_path.exists()
+
+    def test_switching_to_global_reverts_the_user_record(self, monkeypatch):
+        original = {"theme": "dark"}
+        self.user_path.write_text(json.dumps(original), encoding="utf-8")
+        self._write()
+        managed_files.set_config_scope("global")
+        monkeypatch.setattr(managed_files, "_sudo_replace", lambda p, t: p.write_text(t))
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: True)
+        self._write()
+        assert self._user() == original
+        assert json.loads(self.managed_path.read_text())["apiKeyHelper"]
+
+    @pytest.mark.parametrize("case", ["refused", "unavailable", "unsupported", "skip_env"])
+    def test_switching_to_global_keeps_user_record_unless_managed_file_is_good(
+        self, monkeypatch, case
+    ):
+        self._write()
+        written = self._user()
+        managed_files.set_config_scope("global")
+        raises = case == "refused"
+        if case == "skip_env":
+            monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        elif case == "unsupported":
+            monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
+        else:
+
+            def fail(*args, **kwargs):
+                raise (
+                    RuntimeError("refused")
+                    if raises
+                    else managed_files.ManagedFileWriteUnavailable()
+                )
+
+            monkeypatch.setattr(claude, "reconcile_managed_file", fail)
+        if raises:
+            with pytest.raises(RuntimeError, match="refused"):
+                self._write()
+        else:
+            self._write()
+        assert self._user() == written
+
+    def test_user_env_values_ug_did_not_write_survive_configure_and_revert(self):
+        original = {
+            "env": {
+                "ANTHROPIC_MODEL": "my-model",
+                "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "0",
+                "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
+                "ANTHROPIC_CUSTOM_HEADERS": "X-Mine: 1",
+            }
+        }
+        self.user_path.write_text(json.dumps(original), encoding="utf-8")
+        self._write()
+        env = self._user()["env"]
+        assert env["ANTHROPIC_MODEL"] == "my-model"
+        assert env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "0"
+        assert env["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] == "1"
+        assert "X-Mine: 1" in env["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
+        assert len(env["ANTHROPIC_CUSTOM_HEADERS"].splitlines()) > 1
+
+        claude.revert_managed_settings()
+        assert self._user() == original
+
+    def test_kept_user_model_survives_repeat_configures_and_later_edits(self):
+        self.user_path.write_text('{"env": {"ANTHROPIC_MODEL": "mine"}}', encoding="utf-8")
+        state = self._write()
+        self._write(state)
+        assert self._user()["env"]["ANTHROPIC_MODEL"] == "mine"
+
+        doc = self._user()
+        doc["env"]["ANTHROPIC_MODEL"] = "edited"
+        self.user_path.write_text(json.dumps(doc), encoding="utf-8")
+        self._write(state)
+        self._write(state)
+        assert self._user()["env"]["ANTHROPIC_MODEL"] == "edited"
+
+    def test_user_model_added_after_first_configure_survives_later_runs(self):
+        state = self._write()
+        doc = self._user()
+        doc["env"]["ANTHROPIC_MODEL"] = "added"
+        self.user_path.write_text(json.dumps(doc), encoding="utf-8")
+        self._write(state)
+        self._write(state)
+        assert self._user()["env"]["ANTHROPIC_MODEL"] == "added"
+
+    @pytest.mark.parametrize("managed_file", ["matching", "absent"])
+    def test_non_interactive_global_switch_reverts_user_record_only_if_managed_file_holds_it(
+        self, monkeypatch, managed_file
+    ):
+        state = self._write()
+        if managed_file == "matching":
+            self.managed_path.write_text(self.user_path.read_text(), encoding="utf-8")
+        written = self._user()
+        managed_files.set_config_scope("global")
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: False)
+
+        self._write(state)
+
+        assert managed_files.managed_file_scope(state, "claude") == "local-compatible"
+        if managed_file == "matching":
+            assert not self.user_path.exists()
+        else:
+            assert self._user() == written
+
+    @pytest.mark.parametrize("original", [None, "x"])
+    def test_repeated_ug_model_is_withdrawn_or_restored(self, original):
+        if original:
+            self.user_path.write_text(
+                json.dumps({"env": {"ANTHROPIC_MODEL": original}}), encoding="utf-8"
+            )
+        state = self._write(route_root_model="databricks-gpt-5")
+        self._write(state, route_root_model="databricks-gpt-5")
+        assert self._user()["env"]["ANTHROPIC_MODEL"] != original
+
+        self._write(state)
+
+        assert self._user()["env"].get("ANTHROPIC_MODEL") == original
+
+    def test_model_key_ug_wrote_is_removed_when_the_overlay_drops_it(self):
+        state = self._write(route_root_model="databricks-gpt-5")
+        assert self._user()["env"]["ANTHROPIC_MODEL"]
+        self._write(state)
+        assert "ANTHROPIC_MODEL" not in self._user()["env"]
+
+    def test_global_relayed_withdraws_prior_user_record(self):
+        original = {"theme": "dark"}
+        self.user_path.write_text(json.dumps(original), encoding="utf-8")
+        state = self._write()
+        managed_files.set_config_scope("global")
+        self._write(state, relayed=True)
+        assert self._user() == original
+        assert managed_files.managed_file_scope(state, "claude") == "relay-compatible"
+
+    def test_admin_default_over_user_model_is_withdrawn_back_to_the_user_value(self):
+        self.user_path.write_text('{"env": {"ANTHROPIC_MODEL": "x"}}', encoding="utf-8")
+        state = self._write(route_root_model="databricks-gpt-5")
+        assert self._user()["env"]["ANTHROPIC_MODEL"] != "x"
+        self._write(state)
+        assert self._user()["env"]["ANTHROPIC_MODEL"] == "x"
+
+    def test_revert_runs_the_os_managed_revert_even_if_the_user_revert_fails(self, monkeypatch):
+        managed_files.set_config_scope("global")
+        monkeypatch.setattr(managed_files, "_sudo_replace", lambda p, t: p.write_text(t))
+        monkeypatch.setattr(managed_files, "_sudo_remove", lambda p: p.unlink())
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: True)
+        self._write()
+        assert self.managed_path.exists()
+
+        def fail():
+            raise RuntimeError("user revert failed")
+
+        monkeypatch.setattr(claude, "_revert_user_settings", fail)
+        with pytest.raises(RuntimeError, match="user revert failed"):
+            claude.revert_managed_settings()
+        assert not self.managed_path.exists()
+
+    def test_user_model_set_between_configures_survives_global_switch_and_revert(self, monkeypatch):
+        for via_revert in (False, True):
+            self.user_path.unlink(missing_ok=True)
+            managed_files.set_config_scope("user")
+            state = self._write()
+            doc = self._user()
+            doc["env"]["ANTHROPIC_MODEL"] = "my-own-model"
+            self.user_path.write_text(json.dumps(doc), encoding="utf-8")
+            state["claude_static_models"] = ["system.ai.claude-opus-4-8"]
+            self._write(state)
+            assert self._user()["env"]["ANTHROPIC_MODEL"] == "my-own-model"
+
+            if via_revert:
+                claude.revert_managed_settings()
+            else:
+                managed_files.set_config_scope("global")
+                monkeypatch.setattr(managed_files, "_sudo_replace", lambda p, t: p.write_text(t))
+                monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: True)
+                self._write(state)
+            assert self._user() == {"env": {"ANTHROPIC_MODEL": "my-own-model"}}
+
+    def test_dry_run_switching_to_global_keeps_the_user_record(self, monkeypatch):
+        self._write()
+        written = self._user()
+        managed_files.set_config_scope("global")
+        monkeypatch.setattr(config_io, "_dry_run", True)
+        self._write()
+        assert self._user() == written
+
+    def test_skip_env_alone_does_not_write_user_file(self, monkeypatch):
+        managed_files.set_config_scope("global")
+        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        self._write()
+        assert not self.user_path.exists()
+        assert not self.managed_path.exists()
+
+    def test_invalid_user_settings_json_is_not_overwritten(self):
+        self.user_path.write_text("{not json", encoding="utf-8")
+        with pytest.raises(RuntimeError, match="Cannot safely update Claude Code user settings"):
+            self._write()
+        assert self.user_path.read_text() == "{not json"
 
 
 class TestAddClaudeMcpServer:

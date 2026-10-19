@@ -116,6 +116,11 @@ ug configure --user
 managed file for the agent exists, since managed settings take precedence. The choice is saved
 after a successful configure, until `ug revert` or the next `--global`/`--user`.
 
+With Claude Code, `--user` writes ug's settings (including the model picker) into
+`~/.claude/settings.json` (`$CLAUDE_CONFIG_DIR/settings.json` when set), so a bare `claude` and IDE
+extensions reach the gateway. Other keys are kept and `ug revert` restores the file. Settings
+Claude Code honors only from managed settings are skipped with a warning; `--global` applies them.
+
 Available coding agents are `codex`, `claude`, `gemini`, `opencode`,
 `copilot`, and `pi`. `cursor` can be included in `--agents` for MCP-only setup;
 Cursor models still run through your Cursor account.
@@ -393,7 +398,7 @@ preferences are ignored and their files are left untouched. See the bundled
 | Tool | Managed files |
 |------|---------------|
 | Codex | `~/.codex/ucode.config.toml`, shared catalog reference in `~/.codex/config.toml`, `~/.ucode/codex-model-catalog.json`, `/etc/codex/managed_config.toml` (Linux and macOS; skipped with `--user`) |
-| Claude Code | `~/.claude/ucode-settings.json`, `~/.claude.json`, `/etc/claude-code/managed-settings.json` (Linux), `/Library/Application Support/ClaudeCode/managed-settings.json` (macOS), `C:\Program Files\ClaudeCode\managed-settings.json` (Windows, written only from an elevated terminal); the OS-managed files are skipped with `--user` |
+| Claude Code | `~/.claude/ucode-settings.json`, `~/.claude.json`, `/etc/claude-code/managed-settings.json` (Linux), `/Library/Application Support/ClaudeCode/managed-settings.json` (macOS), `C:\Program Files\ClaudeCode\managed-settings.json` (Windows, written only from an elevated terminal); with `--user`, `~/.claude/settings.json` replaces the OS-managed files |
 | Gemini CLI | `~/.gemini/ucode.env`, `~/.ucode/.gemini-home/.gemini/settings.json` |
 | OpenCode | `~/.ucode/opencode-xdg/opencode/opencode.json`, `~/.ucode/opencode-xdg/opencode/plugin/ucode-auth.js` |
 | GitHub Copilot CLI | `~/.copilot/ucode.env`, `~/.copilot/ucode-mcp-config.json` |

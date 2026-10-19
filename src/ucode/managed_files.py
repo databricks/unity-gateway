@@ -320,6 +320,8 @@ class ManagedFileSnapshots:
     ug_picker: dict | None = None
     # ``[path, value]`` leaves ug last delivered here from the admin's agent_native_settings.
     settings_passthrough: list | None = None
+    # Env values ug itself emitted into a per-user file; only these may later be removed from it.
+    ug_env: dict | None = None
 
 
 def managed_file_snapshots(tool: str, parser: ManagedParser) -> ManagedFileSnapshots:
@@ -347,11 +349,13 @@ def managed_file_snapshots(tool: str, parser: ManagedParser) -> ManagedFileSnaps
             return ManagedFileSnapshots(None, None)
         ug_picker = entry.get("ug_picker")
         passthrough = entry.get("settings_passthrough")
+        ug_env = entry.get("ug_env")
         return ManagedFileSnapshots(
             _parse(_snapshot_text(entry, "backup_file")),
             _parse(_snapshot_text(entry, "last_applied_file")),
             ug_picker if isinstance(ug_picker, dict) else None,
             passthrough if isinstance(passthrough, list) else None,
+            ug_env if isinstance(ug_env, dict) else None,
         )
     except RuntimeError:
         return ManagedFileSnapshots(None, None)
@@ -375,6 +379,24 @@ def record_ug_picker(tool: str, picker: dict) -> None:
         entry["ug_picker"] = picker
     else:
         entry.pop("ug_picker", None)
+    _write_manifest(manifest)
+
+
+def record_ug_env(tool: str, env: dict) -> None:
+    """Record the env values ug just emitted into ``tool``'s per-user file; empty clears it."""
+    if is_dry_run():
+        return
+    try:
+        manifest = _load_manifest()
+    except RuntimeError:
+        return
+    entry = _manifest_files(manifest).get(tool)
+    if not isinstance(entry, dict) or entry.get("ug_env", {}) == env:
+        return
+    if env:
+        entry["ug_env"] = env
+    else:
+        entry.pop("ug_env", None)
     _write_manifest(manifest)
 
 
@@ -413,6 +435,15 @@ def managed_file_conflicts(
         if existing_value != _path_value(desired, path):
             conflicts.append(".".join(path))
     return conflicts
+
+
+def managed_file_missing(existing: dict, desired: dict, owned_paths: list[list[str]]) -> list[str]:
+    """Return owned leaves ucode would write that ``existing`` lacks."""
+    return [
+        ".".join(path)
+        for path in owned_paths
+        if _path_value(desired, path) is not _MISSING and _path_value(existing, path) is _MISSING
+    ]
 
 
 def raise_on_skipped_managed_overrides(
@@ -793,6 +824,26 @@ def revert_managed_file(
     if current_text != last_text:
         return "ucode entries removed; external changes preserved"
     return "restored"
+
+
+def revert_both_scopes(revert_user: Callable[[], str], revert_global: Callable[[], str]) -> str:
+    """Revert the per-user record, then the machine-wide one even if the first failed."""
+    user_error = None
+    try:
+        user_result = revert_user()
+    except RuntimeError as exc:
+        user_error, user_result = exc, "unchanged"
+    try:
+        result = revert_global()
+    except RuntimeError as exc:
+        if user_error:
+            raise RuntimeError(f"{user_error}\n{exc}") from exc
+        raise
+    if user_error:
+        raise user_error
+    if result == "unchanged" and user_result != "unchanged":
+        return f"{user_result} (user settings)"
+    return result
 
 
 def user_manifest_key(tool: str) -> str:

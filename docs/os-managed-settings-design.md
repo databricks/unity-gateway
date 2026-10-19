@@ -35,6 +35,14 @@ register in user scope. Because OS-managed settings take precedence over user se
 fails for Claude Code or Codex while their OS-managed file exists, whoever wrote it; `ug revert`,
 removal, or `--global` resolves it. `ug revert` resets the scope to `global`.
 
+For Claude Code, `--user` writes the settings it would put in the managed file into
+`~/.claude/settings.json` (`$CLAUDE_CONFIG_DIR/settings.json` when set), recorded under the
+`claude-user` manifest key with drift-safe restore. Claude Code honors `managedMcpServers`,
+`allowManaged*Only`, `deniedModels`, `strictKnownMarketplaces`, and `forceLoginOrgUUID` only in
+managed settings, so UG skips them with a warning (MCP servers register in `~/.claude.json`).
+Subscription relay writes nothing and withdraws an earlier write. `--global` or `ug revert`
+restores the file.
+
 ## Interactive Detection
 
 Standard input determines whether UG may request administrator permission interactively. Standard

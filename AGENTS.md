@@ -112,7 +112,7 @@ This is the intended behavior; we are still working to make the code match it in
 <details>
 <summary>Claude Code</summary>
 
-Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file (`/etc/claude-code/managed-settings.json` on Linux, `/Library/Application Support/ClaudeCode/managed-settings.json` on macOS, `C:\Program Files\ClaudeCode\managed-settings.json` on Windows), which takes precedence.
+Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file (`/etc/claude-code/managed-settings.json` on Linux, `/Library/Application Support/ClaudeCode/managed-settings.json` on macOS, `C:\Program Files\ClaudeCode\managed-settings.json` on Windows), which takes precedence. Under `ug configure --user`, `ug` writes the same fields (including the picker keys and admin `agent_native_settings`) into `~/.claude/settings.json` (`$CLAUDE_CONFIG_DIR/settings.json` when set) instead, keeping other keys and any model env or custom header value it did not write. Subscription relay writes nothing there, and settings Claude Code honors only from managed settings (`allowManagedMcpServersOnly`, `allowManagedHooksOnly`, `allowManagedPermissionRulesOnly`, `deniedModels`, `strictKnownMarketplaces`, `forceLoginOrgUUID`) are skipped with a warning. `managedMcpServers` entries go to `~/.claude.json`.
 
 | Field | Without managed config | With managed config | Notes |
 |-------|------------------------|---------------------|-------|

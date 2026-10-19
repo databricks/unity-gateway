@@ -21,6 +21,7 @@ from ucode.config_io import (
     ToolSpec,
     backup_existing_file,
     deep_merge_dict,
+    is_dry_run,
     prune_key_paths,
     read_json_safe,
     write_json_file,
@@ -59,9 +60,11 @@ from ucode.managed_files import (
     SettingsPassthrough,
     apply_settings_passthrough,
     check_skipped_managed_overrides,
+    config_scope,
     current_os,
     managed_file_conflicts,
     managed_file_is_verified,
+    managed_file_missing,
     managed_file_scope,
     managed_file_snapshots,
     managed_file_status,
@@ -73,8 +76,11 @@ from ucode.managed_files import (
     read_managed_file,
     reconcile_managed_file,
     record_settings_passthrough,
+    record_ug_env,
     record_ug_picker,
+    revert_both_scopes,
     revert_managed_file,
+    user_manifest_key,
     warn_skipped_settings_passthrough,
     windows_claude_managed_settings_path,
     withdrawn_list_items,
@@ -237,6 +243,15 @@ SETTINGS_PASSTHROUGH_IGNORED_STATE_KEY = "claude_settings_passthrough_ignored"
 # Settings that stop Claude Code from running hooks outside the managed file, which is where smart
 # routing installs its per-launch hooks.
 CLAUDE_HOOK_LOCKDOWN_KEYS = ("allowManagedHooksOnly", "disableAllHooks")
+# Settings Claude Code honors only from machine-wide managed settings.
+CLAUDE_MANAGED_ONLY_SETTINGS_KEYS = (
+    "allowManagedMcpServersOnly",
+    "allowManagedHooksOnly",
+    "allowManagedPermissionRulesOnly",
+    "deniedModels",
+    "strictKnownMarketplaces",
+    "forceLoginOrgUUID",
+)
 ANTHROPIC_CUSTOM_HEADERS_ENV_KEY = "ANTHROPIC_CUSTOM_HEADERS"
 CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
     {
@@ -301,6 +316,11 @@ def _parse_managed_settings(text: str) -> dict:
     return settings
 
 
+def _user_settings_path() -> Path:
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(config_dir) / "settings.json" if config_dir else CLAUDE_USER_SETTINGS_PATH
+
+
 def get_family_defaults(
     state: dict, *, managed_config: bool, provider: str | None, parent_schema: str | None
 ) -> dict[str, str] | None:
@@ -315,7 +335,7 @@ def get_family_defaults(
     if managed_config or state.get("claude_static_models") or provider or parent_schema:
         return None
     path = _managed_settings_path()
-    if path is None or managed_settings_skipped():
+    if path is None or (managed_settings_skipped() and config_scope() != "user"):
         return None
     try:
         text = read_managed_file(path)
@@ -335,7 +355,7 @@ def get_family_defaults(
 
 def managed_user_agent() -> str | None:
     """The User-Agent value in Claude Code's OS-managed custom headers, if one is there."""
-    path = _managed_settings_path()
+    path = _user_settings_path() if config_scope() == "user" else _managed_settings_path()
     try:
         text = read_managed_file(path) if path else None
         settings = _parse_managed_settings(text) if text else {}
@@ -388,11 +408,40 @@ def managed_settings_status(state: dict) -> tuple[Path | None, str, str]:
 
 
 def revert_managed_settings() -> str:
+    return revert_both_scopes(
+        _revert_user_settings,
+        lambda: revert_managed_file(
+            "claude",
+            display="Claude Code",
+            parser=_parse_managed_settings,
+            dumper=_dump_managed_settings,
+        ),
+    )
+
+
+def _revert_user_settings() -> str:
+    if is_dry_run():
+        return "unchanged"
+    snapshots = managed_file_snapshots(user_manifest_key("claude"), _parse_managed_settings)
+    ug_env = snapshots.ug_env or {}
+    ug_picker = snapshots.ug_picker or {}
     return revert_managed_file(
         "claude",
-        display="Claude Code",
+        display="Claude Code user settings",
         parser=_parse_managed_settings,
         dumper=_dump_managed_settings,
+        user_scope=True,
+        ug_written={
+            **{
+                ("env", key): ug_env.get(key)
+                for key in (
+                    *CLAUDE_MANAGED_MODEL_ENV_KEYS,
+                    *CLAUDE_CONDITIONAL_ENV_KEYS,
+                    *CLAUDE_REMOVED_ENV_KEYS,
+                )
+            },
+            **{(key,): ug_picker.get(key) for key in CLAUDE_MANAGED_PICKER_KEYS},
+        },
     )
 
 
@@ -1057,7 +1106,7 @@ def read_managed_mcp_urls() -> dict[str, str]:
     Read-only, for ``ug mcp list`` to tag managed servers now that the managed file is their source
     of truth rather than ug state."""
     path = _managed_settings_path()
-    if path is None:
+    if path is None or config_scope() == "user":
         return {}
     try:
         text = read_managed_file(path)
@@ -1244,12 +1293,7 @@ def _prepare_external_web_search_args(state: dict, tool_args: list[str]) -> list
         raise _external_search_conflict("managed MCP scope cannot be inspected on this platform")
     if managed_path.with_name("managed-mcp.json").exists():
         raise _external_search_conflict("managed-mcp.json has exclusive control over MCP servers")
-    user_settings = (
-        Path(os.environ["CLAUDE_CONFIG_DIR"]) / "settings.json"
-        if os.environ.get("CLAUDE_CONFIG_DIR")
-        else CLAUDE_USER_SETTINGS_PATH
-    )
-    settings_paths = [managed_path, user_settings, CLAUDE_SETTINGS_PATH]
+    settings_paths = [managed_path, _user_settings_path(), CLAUDE_SETTINGS_PATH]
     settings_paths.extend(sorted(managed_path.with_name("managed-settings.d").glob("*.json")))
     for directory in directories:
         settings_paths.extend(
@@ -1430,6 +1474,8 @@ def write_tool_config(
         if path not in managed_file_keys:
             managed_file_keys.append(path)
 
+    ug_env_emitted: dict = {}
+
     # V2 installs routing hooks in a transient per-launch settings file. Persistent settings must
     # contain no ucode routing hooks; surgically strip legacy ones while preserving user hooks.
     def _compose(
@@ -1439,6 +1485,8 @@ def write_tool_config(
         managed_settings_snapshots: ManagedFileSnapshots | None,
     ) -> dict:
         base_env = base.get("env")
+        user_file = managed_settings_snapshots is not None and config_scope() == "user"
+        user_env = dict(base_env) if user_file and isinstance(base_env, dict) else {}
         existing_custom_headers = (
             base_env.get(ANTHROPIC_CUSTOM_HEADERS_ENV_KEY) if isinstance(base_env, dict) else None
         )
@@ -1516,7 +1564,7 @@ def write_tool_config(
         for key in stale_picker_keys:
             merged.pop(key, None)
         overlay_custom_headers = overlay_for_merge["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY]
-        if managed_config_present:
+        if managed_config_present and not user_file:
             # ug owns the whole value under a managed config: overwrite wholesale so a header ug no
             # longer emits is dropped and no stale or foreign header lingers.
             merged["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = overlay_custom_headers
@@ -1535,15 +1583,27 @@ def write_tool_config(
         overlay_env = overlay_for_merge.get("env", {})
         merged_env = merged.get("env")
         if isinstance(merged_env, dict):
-            for key in CLAUDE_MANAGED_MODEL_ENV_KEYS:
+            # The user's own settings.json keeps any value ug did not emit.
+            previous_env = (managed_settings_snapshots.ug_env or {}) if user_file else {}
+            original_env = (
+                ((managed_settings_snapshots.original_before_ug or {}).get("env") or {})
+                if user_file
+                else {}
+            )
+            ug_env_emitted.clear()
+            for key in CLAUDE_MANAGED_MODEL_ENV_KEYS + CLAUDE_CONDITIONAL_ENV_KEYS:
                 if key not in overlay_env:
-                    merged_env.pop(key, None)
-            for key in CLAUDE_CONDITIONAL_ENV_KEYS:
-                if key not in overlay_env:
-                    merged_env.pop(key, None)
+                    if not user_file or merged_env.get(key) == previous_env.get(key):
+                        if merged_env.pop(key, None) is not None and key in original_env:
+                            merged_env[key] = original_env[key]
+                elif user_file and (
+                    overlay_env[key] != user_env.get(key)
+                    or overlay_env[key] == previous_env.get(key)
+                ):
+                    ug_env_emitted[key] = overlay_env[key]
             # deep_merge_dict keeps keys already in the file, so drop the ones ucode no
             # longer writes.
-            for key in CLAUDE_REMOVED_ENV_KEYS:
+            for key in () if user_file else CLAUDE_REMOVED_ENV_KEYS:
                 merged_env.pop(key, None)
         if managed_settings_snapshots is None and not should_write_tracing_settings:
             prune_key_paths(merged, [list(path) for path in CLAUDE_OTEL_TRACE_PATHS])
@@ -1567,7 +1627,10 @@ def write_tool_config(
         sync_smart_routing_hooks(merged, state, enabled=False)
         return merged
 
-    managed_snapshots = managed_file_snapshots("claude", _parse_managed_settings)
+    managed_snapshots = managed_file_snapshots(
+        user_manifest_key("claude") if config_scope() == "user" else "claude",
+        _parse_managed_settings,
+    )
     write_json_file(
         CLAUDE_SETTINGS_PATH,
         _compose(
@@ -1589,6 +1652,7 @@ def write_tool_config(
             ),
             *([key] for key in CLAUDE_MANAGED_PICKER_KEYS),
             [MANAGED_MCP_SETTINGS_KEY],
+            *([key] for key in CLAUDE_MANAGED_ONLY_SETTINGS_KEYS if config_scope() == "user"),
         ],
     )
     warn_skipped_settings_passthrough(
@@ -1630,6 +1694,8 @@ def write_tool_config(
         ),
         passthrough_leaves=passthrough.record(),
     )
+    if config_scope() == "user":
+        record_ug_env(user_manifest_key("claude"), ug_env_emitted)
 
     custom_oauth = state.get("custom_oauth")
     web_search_profile = (
@@ -1872,6 +1938,11 @@ def _reconcile_managed_settings(
     Relayed launches are skipped: they depend on a per-session loopback refresh proxy that only runs
     during `ucode claude`, so a bare `claude` could not reach the gateway anyway.
     """
+    if config_scope() == "user":
+        _reconcile_user_settings(
+            compose, owned_paths, relayed, picker_keys, withdrawn_denies, passthrough_leaves
+        )
+        return
     if managed_settings_skipped():
         check_skipped_managed_overrides(
             _managed_settings_path(),
@@ -1903,6 +1974,7 @@ def _reconcile_managed_settings(
                 "created them, run `ug revert` first."
             )
         mark_managed_file_verified(state, "claude", path, scope="relay-compatible")
+        _revert_user_settings()
         return
 
     current_text = read_managed_file(path)
@@ -1919,6 +1991,8 @@ def _reconcile_managed_settings(
     conflicts = _managed_settings_conflicts(managed_before, desired_settings, owned_paths)
     if not managed_writes_allowed() and not conflicts:
         mark_managed_file_verified(state, "claude", path, scope="local-compatible")
+        if not managed_file_missing(managed_before, desired_settings, owned_paths):
+            _revert_user_settings()
         return
     try:
         reconcile_managed_file(
@@ -1941,6 +2015,49 @@ def _reconcile_managed_settings(
     mark_managed_file_verified(state, "claude", path)
     record_ug_picker("claude", {key: desired_settings[key] for key in picker_keys})
     record_settings_passthrough("claude", passthrough_leaves or [])
+    _revert_user_settings()
+
+
+def _reconcile_user_settings(
+    compose: Callable[[dict], dict],
+    owned_paths: list[list[str]],
+    relayed: bool,
+    picker_keys: list[str],
+    withdrawn_denies: list | None,
+    passthrough_leaves: list | None,
+) -> None:
+    """Write what the managed file would hold into the user's ``settings.json`` (``--user`` scope).
+
+    Relayed launches write nothing and withdraw an earlier write: a bare ``claude`` must stay on the
+    subscription.
+    """
+    if relayed:
+        _revert_user_settings()
+        return
+    path = _user_settings_path().resolve()
+    current_text = read_managed_file(path)
+    try:
+        existing = _parse_managed_settings(current_text) if current_text is not None else {}
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"Cannot safely update Claude Code user settings at {path}: {exc}. "
+            "ucode did not modify the file. Repair it and run the command again."
+        ) from exc
+    user_before = copy.deepcopy(existing)
+    desired_settings = compose(existing)
+    _preserve_permission_denies(user_before, desired_settings, withdrawn=withdrawn_denies or [])
+    reconcile_managed_file(
+        path,
+        _dump_managed_settings(desired_settings),
+        tool="claude",
+        display="Claude Code user settings",
+        owned_paths=owned_paths,
+        parser=_parse_managed_settings,
+        user_scope=True,
+    )
+    key = user_manifest_key("claude")
+    record_ug_picker(key, {k: desired_settings[k] for k in picker_keys})
+    record_settings_passthrough(key, passthrough_leaves or [])
 
 
 def _preserve_permission_denies(

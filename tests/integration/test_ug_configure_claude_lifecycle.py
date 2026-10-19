@@ -146,8 +146,9 @@ def test_ug_configure_claude_user_scope_leaves_managed_settings(live_session, un
     """Scenario: configure claude with `--user` against a workspace verified to publish no
     CodingAgentConfig, then revert.
 
-    Expected: ug's per-user settings are written, the OS-managed settings file is neither created
-    nor changed (no sudo is involved), the scope is saved, and revert clears it.
+    Expected: ug's per-user settings are written, including the gateway keys in
+    ~/.claude/settings.json, the OS-managed settings file is neither created nor changed (no sudo
+    is involved), the scope is saved, and revert clears it all.
     """
     session = live_session
     before = _read_bytes(MANAGED_SETTINGS_PATH)
@@ -166,10 +167,15 @@ def test_ug_configure_claude_user_scope_leaves_managed_settings(live_session, un
 
     assert _read_bytes(MANAGED_SETTINGS_PATH) == before
     assert (session.home / ".claude/ucode-settings.json").is_file()
-    assert not (session.home / ".ucode/managed-backups/manifest.json").exists()
+    user_settings = session.home / ".claude/settings.json"
+    written = json.loads(user_settings.read_text())
+    assert written["apiKeyHelper"]
+    assert written["env"]["ANTHROPIC_BASE_URL"]
     assert session.state()["config_scope"] == "user"
 
     session.run("revert")
+    assert not user_settings.exists() or "apiKeyHelper" not in json.loads(user_settings.read_text())
+    assert _read_bytes(MANAGED_SETTINGS_PATH) == before
     assert "config_scope" not in session.state()
     assert not (session.home / ".claude/ucode-settings.json").exists()
 
