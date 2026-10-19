@@ -1367,6 +1367,19 @@ class TestWriteToolConfigManagedSettings:
         lines = json.loads(managed_writes[0][1])["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
         assert not any(line.startswith("x-team:") for line in lines)
 
+    def test_ug_headers_reach_both_settings_files(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+        monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: abc")
+        state = {"workspace": WS, "codex_models": []}
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        for settings in (private_writes[-1][1], json.loads(managed_writes[-1][1])):
+            lines = settings["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
+            assert "x-databricks-traffic-id: abc" in lines
+
     def test_unmanaged_preserves_foreign_header_and_replaces_ucode_headers_in_place(
         self, monkeypatch
     ):
