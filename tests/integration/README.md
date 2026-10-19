@@ -2,12 +2,15 @@
 
 The spend-status client's workspace authentication, optional percentage handling,
 pagination, validation, and failure propagation are covered by component tests in
-`../test_databricks.py`. Account-authentication checks are replaced by assertions that
+`../test_databricks.py`, importing the client from `src/ucode/budget.py`.
+Account-authentication checks are replaced by assertions that
 the client reuses the workspace token without starting CLI auth. These checks do not
 establish live workspace, sign-in, or CLI output coverage.
 Client component tests also preserve unknown nonempty scope/period strings without
 losing known limits, and reject malformed enum types and invalid/negative/nonfinite
-amounts. Zero and fractional decimal strings remain valid. Redundant client error
+amounts. Zero and fractional decimal strings remain valid. Explicit nulls in
+percent consumed, spend, and threshold are treated like missing optional fields,
+individually or together, without discarding valid statuses. Redundant client error
 variants are reduced to one opaque passthrough case; later-page failure checks remain.
 
 The separate [dedicated-workspace CUJ](../e2e_cuj/AGENTS.md) lives in `tests/e2e_cuj/`

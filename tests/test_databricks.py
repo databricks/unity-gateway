@@ -16,9 +16,9 @@ import pytest
 
 import ucode.custom_oauth as custom_oauth_mod
 import ucode.databricks as db_mod
+from ucode.budget import BudgetLimitStatus, list_current_user_budget_spend_statuses
 from ucode.databricks import (
     CODING_AGENT_RECOMMEND_MODEL_PATH,
-    BudgetLimitStatus,
     _format_subprocess_result,
     _parse_databricks_cli_version,
     _run_databricks_cli_installer,
@@ -46,7 +46,6 @@ from ucode.databricks import (
     get_databricks_token,
     install_ai_tools,
     install_databricks_cli,
-    list_current_user_budget_spend_statuses,
     list_databricks_apps,
     list_workspace_budgets,
     resolve_current_budget_spend,
@@ -5270,6 +5269,61 @@ class TestListCurrentUserBudgetSpendStatuses:
             BudgetLimitStatus("budget-1", scope_type, "MONTH", None, spend, threshold)
         ]
 
+    @pytest.mark.parametrize(
+        "null_fields",
+        [
+            ("percent_consumed",),
+            ("spend",),
+            ("threshold",),
+            ("percent_consumed", "spend", "threshold"),
+        ],
+    )
+    def test_accepts_null_optional_fields_like_missing_fields(self, monkeypatch, null_fields):
+        complete = {
+            "scope_type": "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER",
+            "time_period": "MONTH",
+            "percent_consumed": "85.25",
+            "spend": "43.50",
+            "threshold": "50",
+        }
+        missing = {key: value for key, value in complete.items() if key not in null_fields}
+        explicit_nulls = {**complete, **dict.fromkeys(null_fields)}
+        payload = {
+            "budget_spend_statuses": [
+                {
+                    "budget_id": "budget-1",
+                    "alert_spend_statuses": [complete, missing, explicit_nulls],
+                }
+            ]
+        }
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args, **kwargs: (payload, None))
+
+        statuses, reason = list_current_user_budget_spend_statuses(WS, "workspace-token")
+
+        expected_optional = {
+            key: None if key in null_fields else Decimal(complete[key])
+            for key in ("percent_consumed", "spend", "threshold")
+        }
+        expected = BudgetLimitStatus(
+            "budget-1",
+            "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER",
+            "MONTH",
+            **expected_optional,
+        )
+        assert reason is None
+        assert statuses == [
+            BudgetLimitStatus(
+                "budget-1",
+                "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER",
+                "MONTH",
+                Decimal("85.25"),
+                Decimal("43.50"),
+                Decimal("50"),
+            ),
+            expected,
+            expected,
+        ]
+
     @pytest.mark.parametrize("include_known", [False, True])
     @pytest.mark.parametrize(
         ("scope_type", "time_period"),
@@ -5340,7 +5394,7 @@ class TestListCurrentUserBudgetSpendStatuses:
 
     @pytest.mark.parametrize("field", ["percent_consumed", "spend", "threshold"])
     @pytest.mark.parametrize(
-        "invalid_value", ["-1", "-0.01", "NaN", "Infinity", "-Infinity", "invalid", None]
+        "invalid_value", ["-1", "-0.01", "NaN", "Infinity", "-Infinity", "invalid"]
     )
     def test_rejects_invalid_decimals_even_alongside_valid_statuses(
         self, monkeypatch, field, invalid_value
@@ -5419,11 +5473,6 @@ class TestListCurrentUserBudgetSpendStatuses:
                 "scope_type": "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER",
                 "time_period": "DAY",
                 "percent_consumed": "NaN",
-            },
-            {
-                "scope_type": "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER",
-                "time_period": "DAY",
-                "percent_consumed": None,
             },
             {
                 "scope_type": "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER",
