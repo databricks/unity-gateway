@@ -280,6 +280,25 @@ def test_missing_gpt_warning_is_printed_after_validation(monkeypatch, bundled):
     ]
 
 
+def test_missing_gpt_warning_can_be_silenced(monkeypatch, bundled):
+    warnings = []
+    monkeypatch.setattr(
+        catalog.subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(
+            argv, 0, json.dumps({"models": bundled})
+        ),
+    )
+    monkeypatch.setattr(catalog, "print_warning", warnings.append)
+
+    result = catalog.prepare_codex_catalog(
+        "codex", ["system.ai.gpt-99"], warn_missing_metadata=False
+    )
+
+    assert result["models"][0]["slug"] == "system.ai.gpt-99"
+    assert warnings == []
+
+
 @pytest.mark.parametrize(
     "stdout",
     [

@@ -101,6 +101,12 @@ ug removes its shared reference on discovery/validation failure, reconfiguration
 revert, or before installing/updating Codex. After an update, run `ug codex` to refresh
 discovery or `ug configure` for a managed static list, then restart the app server.
 
+With smart routing on, `ug codex` offers the router only the models listed in the catalog
+Codex loads, so every routed model is one Codex can start. Without a configured catalog,
+ug discovers the `system.ai` models Codex can use at launch and gives them to that session
+as its catalog; Codex App is unchanged. If discovery is unavailable, the session starts
+without automatic model switching.
+
 ## Configure
 
 ```bash

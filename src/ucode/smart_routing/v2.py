@@ -15,11 +15,7 @@ from tempfile import TemporaryDirectory
 from typing import NoReturn, TextIO
 
 from ucode import config_io
-from ucode.codex_config import (
-    codex_config_args,
-    custom_catalog_models,
-    custom_catalog_path,
-)
+from ucode.codex_config import codex_config_args, listed_catalog_models
 from ucode.config_io import (
     APP_DIR,
     read_json_safe,
@@ -65,7 +61,7 @@ from ucode.smart_routing.claude_hooks import (
     sync_first_prompt_hook,
     sync_smart_routing_hooks,
 )
-from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
+from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks
 from ucode.smart_routing.config import apply_config, resolve_environment
 from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
 from ucode.ui import print_note, print_warning
@@ -769,12 +765,6 @@ def launch_claude(
     sys.exit(returncode)
 
 
-# TODO: Replace with /codex/v1/models once /codex/v1/models can send GPT models as well.
-def _cached_routing_models(state: dict) -> list[str]:
-    """Return the persisted UC model-service ids usable by Codex routing."""
-    return routing_models(state)
-
-
 def _v2_hooks(state: dict, available_models: list[str]) -> dict:
     # Codex combines hook sources itself; copying user hooks here would register them twice.
     doc = {
@@ -792,6 +782,7 @@ def launch_codex(
     *,
     binary: str,
     start_model: str | None,
+    catalog_path: Path | None,
     render_overlay: Callable[..., dict],
 ) -> NoReturn:
     workspace = state.get("workspace")
@@ -805,12 +796,11 @@ def launch_codex(
         )
 
     os.environ[OAUTH_TOKEN_ENV_VAR] = _launch_token(state, workspace)
-    catalog_models = custom_catalog_models()
-    available_models = catalog_models or _cached_routing_models(state)
+    available_models = listed_catalog_models(catalog_path) if catalog_path else []
     if not available_models:
         print_warning(
-            "Smart routing model metadata is unavailable; automatic model switching is unavailable. "
-            "Run `ucode configure codex` to enable routing."
+            "Smart routing has no Codex models to route between; "
+            "automatic model switching is unavailable."
         )
     custom_oauth = state.get("custom_oauth")
     overlay = render_overlay(
@@ -821,7 +811,6 @@ def launch_codex(
         custom_oauth=(custom_oauth if custom_oauth_cli_enabled(custom_oauth) else None),
         managed_http_headers=state.get("codex_http_headers"),
     )
-    catalog_path = custom_catalog_path()
     if catalog_path is not None:
         overlay["model_catalog_json"] = str(catalog_path)
     overlay["hooks"] = _v2_hooks(state, available_models)

@@ -22,7 +22,8 @@ from ucode.codex_config import (
     codex_config_args,
     codex_config_precedence_paths,
     codex_managed_config_path,
-    custom_catalog_models,
+    custom_catalog_path,
+    listed_catalog_models,
 )
 from ucode.config_io import (
     APP_DIR,
@@ -59,6 +60,7 @@ from ucode.databricks import (
     build_auth_token_argv,
     build_tool_base_url,
     get_databricks_token,
+    model_version_sort_key,
     ug_binary,
 )
 from ucode.launcher import exec_or_spawn
@@ -83,7 +85,6 @@ from ucode.os_compatibility import subprocess_cross_os
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.codex_hooks import (
     remove_smart_routing_hooks,
-    routing_models,
     sync_smart_routing_hooks,
 )
 from ucode.smart_routing.codex_routing import codex_model_id
@@ -118,6 +119,8 @@ LEGACY_LAYOUT_CODEX_VERSION_TEXT = "0.134.0"
 # Retained only to identify and remove state written by the legacy persisted opt-in.
 SMART_ROUTING_STATE_KEY = smart_routing_v2.LEGACY_STATE_KEY
 APP_SERVER_SMART_ROUTING_STARTING_MODEL = "gpt-5.6-luna"
+SMART_ROUTING_MODEL_SCHEMA = "system.ai"
+SMART_ROUTING_CATALOG_SCOPE = "smart-routing"
 
 SPEC: ToolSpec = {
     "binary": "codex",
@@ -1409,8 +1412,8 @@ def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
     binary = SPEC["binary"]
 
     configured_model = _smart_routing_config_model(state)
-    # Prefer the custom catalog if it exists.
-    models = custom_catalog_models() or routing_models(state)
+    catalog_path = custom_catalog_path() or _write_smart_routing_catalog(state, binary)
+    models = listed_catalog_models(catalog_path) if catalog_path else []
     start_model = (
         configured_model
         or (codex_model_id(models[0]) if models else None)
@@ -1421,8 +1424,35 @@ def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
         tool_args,
         binary=binary,
         start_model=start_model,
+        catalog_path=catalog_path,
         render_overlay=render_overlay,
     )
+
+
+def _write_smart_routing_catalog(state: dict, binary: str) -> Path | None:
+    """Write the workspace's system.ai Codex models to a catalog file; None when that fails."""
+    workspace = state.get("workspace")
+    if not workspace:
+        return None
+    try:
+        gateway_catalog = _fetch_codex_model_catalog(
+            workspace,
+            _launch_token(state, workspace),
+            source=CodexCatalogSource.PARENT_SCHEMA,
+            identifier=SMART_ROUTING_MODEL_SCHEMA,
+        )
+        # Newest GPT first: the first listed model starts the session when none is configured.
+        model_names = sorted(
+            catalog_slugs(gateway_catalog),
+            key=lambda model: (not _is_gpt_family(model), model_version_sort_key(model)),
+        )
+        catalog = prepare_codex_catalog(binary, model_names, warn_missing_metadata=False)
+        catalog_path = _model_catalog_path(workspace, SMART_ROUTING_CATALOG_SCOPE)
+        _write_model_catalog(catalog_path, catalog)
+    except RuntimeError as exc:
+        print_warning_err(str(exc))
+        return None
+    return catalog_path
 
 
 def disable_smart_routing(state: dict) -> bool:

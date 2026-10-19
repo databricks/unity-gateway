@@ -12,7 +12,6 @@ from tomlkit.items import Item
 
 from ucode.config_io import read_json_safe, read_toml_safe
 from ucode.managed_files import OS, current_os
-from ucode.ui import print_warning
 
 CODEX_PROFILE_NAME = "ucode"
 DEFAULT_CODEX_CONFIG_PATH = Path.home() / ".codex" / f"{CODEX_PROFILE_NAME}.config.toml"
@@ -70,19 +69,9 @@ def custom_catalog_path() -> Path | None:
     return None
 
 
-def custom_catalog_models() -> list[str] | None:
-    """Read model slugs from the configured model_catalog_json, if present."""
-    catalog_path = custom_catalog_path()
-    if catalog_path is None:
-        return None
-    slugs = catalog_slugs(read_json_safe(catalog_path), required_visibility=ModelVisibility.LIST)
-    if slugs:
-        return slugs
-    print_warning(
-        f"Codex smart routing could not read models from the custom catalog {catalog_path}; "
-        "falling back to the cached model services."
-    )
-    return None
+def listed_catalog_models(catalog_path: Path) -> list[str]:
+    """Read the model slugs a Codex catalog file shows in the model picker."""
+    return catalog_slugs(read_json_safe(catalog_path), required_visibility=ModelVisibility.LIST)
 
 
 def catalog_slugs(
