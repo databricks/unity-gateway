@@ -23,6 +23,7 @@ from ucode import custom_oauth
 from ucode.agents import (
     TOOL_SPECS,
     LaunchOptions,
+    SmartRouterLaunch,
     check_gateway_endpoint,
     configure_selected_tools,
     configure_single_tool,
@@ -3021,23 +3022,30 @@ def _launch_options(
     user_pinned_model: str | None,
     provider: str | None,
 ) -> LaunchOptions:
+    routed = (
+        # Smart routing is enabled globally.
+        smart_routing_enabled
+        # Only Claude Code and Codex currently support smart routing.
+        and tool in CAN_USE_CACHED_CONFIG_AGENTS
+        # Smart routing does not currently support Model Provider Services.
+        and provider is None
+        # Route a supported interactive launch shape.
+        and _should_launch_smart_routing(
+            tool,
+            tool_args,
+            explicit_prompt=explicit_prompt,
+            model=user_pinned_model,
+        )
+    )
     return LaunchOptions(
         # Pinned models for providers are resolved above through the provider-specific launch path.
         user_pinned_model=user_pinned_model if provider is None else None,
-        launch_smart_routing=(
-            # Smart routing is enabled globally.
-            smart_routing_enabled
-            # Only Claude Code and Codex currently support smart routing.
-            and tool in CAN_USE_CACHED_CONFIG_AGENTS
-            # Smart routing does not currently support Model Provider Services.
-            and provider is None
-            # Route a supported interactive launch shape.
-            and _should_launch_smart_routing(
-                tool,
-                tool_args,
-                explicit_prompt=explicit_prompt,
-                model=user_pinned_model,
+        smart_router=(
+            SmartRouterLaunch(
+                first_prompt=smart_routing_v2.first_prompt_routing_enabled(agent=tool)
             )
+            if routed
+            else None
         ),
     )
 
@@ -3535,16 +3543,6 @@ def _launch_tool(
                 state["_codex_launch_provider"] = provider
             elif parent_schema:
                 state["_codex_launch_parent_schema"] = parent_schema
-        launch_options = _launch_options(
-            tool,
-            ctx.args,
-            smart_routing_enabled=smart_routing_enabled,
-            explicit_prompt=explicit_prompt,
-            # Only a developer's explicit model disables routing. A managed default is the
-            # initial/fallback model and still participates in a routed session.
-            user_pinned_model=model or forwarded_model,
-            provider=provider,
-        )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
         with _smart_routing_v2_flag(
             True
@@ -3554,6 +3552,16 @@ def _launch_tool(
             else None,
             agent=tool,
         ):
+            launch_options = _launch_options(
+                tool,
+                ctx.args,
+                smart_routing_enabled=smart_routing_enabled,
+                explicit_prompt=explicit_prompt,
+                # Only a developer's explicit model disables routing. A managed default is the
+                # initial/fallback model and still participates in a routed session.
+                user_pinned_model=model or forwarded_model,
+                provider=provider,
+            )
             launch_agent(tool, state, ctx.args, options=launch_options)
     except RuntimeError as exc:
         print_err(str(exc))

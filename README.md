@@ -276,10 +276,14 @@ with `ug configure` to control installation.
 ## Claude Routing Plugin
 
 Smart routing passes generated agents through a per-launch `--plugin-dir`,
-alongside `--settings`, without persistent plugin registration. One temporary
-directory holds the settings, socket, and plugin and is removed when the launch
-finishes or fails. Existing hook configuration and disable/revert behavior are
-unchanged. Native daemon/background propagation of the plugin remains unverified.
+alongside `--settings`, without persistent plugin registration. Subagent-only
+routing adds them to the normal launch, which hands the terminal to the agent, so
+the plugin lives in `~/.ucode/claude-routing-plugin/<digest>/`, named after its
+contents and reused by later launches with the same models and ug version.
+First-prompt routing keeps its own launcher; a temporary directory holds its
+settings and socket and is removed when the launch finishes or fails. Existing hook
+configuration and disable/revert behavior are unchanged. Native daemon/background
+propagation of the plugin remains unverified.
 
 The routing notice names the generated agent selected for launch and its model.
 Claude Code's own task header can still show the agent type the parent originally

@@ -45,6 +45,7 @@ from ucode.ui import (
 
 from . import claude, codex, copilot, gemini, kilo, opencode, pi
 from .args import LaunchOptions as LaunchOptions
+from .args import SmartRouterLaunch as SmartRouterLaunch
 from .args import explicit_model_arg_value as explicit_model_arg_value
 
 _MODULES = {

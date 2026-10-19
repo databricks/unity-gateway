@@ -11,7 +11,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from ucode.agents import LaunchOptions, claude
+from ucode import config_io
+from ucode.agents import LaunchOptions, SmartRouterLaunch, claude
 from ucode.constants import AGENT_CLAUDE
 from ucode.databricks import AnthropicModelCatalog
 from ucode.smart_routing import claude_hooks, routing, v2
@@ -229,7 +230,9 @@ class TestV2Launch:
         monkeypatch.setattr(claude, "exec_or_spawn", Mock())
 
         with pytest.raises(RuntimeError, match="process failed"):
-            claude.launch({}, [], options=LaunchOptions(launch_smart_routing=True))
+            claude.launch(
+                {}, [], options=LaunchOptions(smart_router=SmartRouterLaunch(first_prompt=True))
+            )
 
         claude.exec_or_spawn.assert_not_called()
 
@@ -435,18 +438,19 @@ class TestV2Launch:
             "theme": "dark",
         }
 
-    def test_subagent_only_launch_skips_first_prompt_routing(self, tmp_path, monkeypatch):
+
+class TestSubagentRoutedLaunch:
+    """Subagent-only routing adds its setup to Claude's normal launch."""
+
+    @staticmethod
+    def _launch(monkeypatch, tmp_path, caller_args):
         monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/bin/ug")
-        user_settings = tmp_path / "settings.json"
-        user_settings.write_text(json.dumps({"model": "opus"}))
         monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
         monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
-        monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "")
-        monkeypatch.setenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "")
-        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", tmp_path / "ucode-settings.json")
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
         monkeypatch.setattr(v2, "_model_picker_catalog", lambda: None)
         monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
-        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
         monkeypatch.setattr(
             v2,
             "list_anthropic_model_catalog",
@@ -454,12 +458,23 @@ class TestV2Launch:
                 model_ids=["system.ai.claude-opus-4-8"], model_id_to_display_name={}
             ),
         )
-        if sys.platform != "win32":
-            monkeypatch.setattr(
-                claude_pty,
-                "run_claude_pty",
-                lambda *_args, **_kwargs: pytest.fail("subagent-only routing must not use the PTY"),
-            )
+        monkeypatch.setattr(
+            v2, "launch_claude", Mock(side_effect=AssertionError("used the first-prompt launcher"))
+        )
+        monkeypatch.setattr(claude.shutil, "which", lambda binary: binary)
+        launches: list[list[str]] = []
+        monkeypatch.setattr(claude, "exec_or_spawn", launches.append)
+
+        claude.launch(
+            {"workspace": "https://example.com"},
+            caller_args,
+            options=LaunchOptions(smart_router=SmartRouterLaunch()),
+        )
+
+        (argv,) = launches
+        return argv, json.loads(argv[argv.index("--settings") + 1])
+
+    def test_adds_routing_to_the_normal_launch(self, tmp_path, monkeypatch):
         caller_args = [
             "--agents",
             json.dumps({"reviewer": {"description": "Review code", "prompt": "Review it."}}),
@@ -468,44 +483,9 @@ class TestV2Launch:
             "--",
             "prompt",
         ]
-        captured: dict = {}
 
-        class FakeProcess:
-            def __init__(self, argv, **_kwargs):
-                captured["argv"] = argv
-                settings_path = Path(argv[argv.index("--settings") + 1])
-                captured["settings_path"] = settings_path
-                captured["settings"] = json.loads(settings_path.read_text())
-                plugin_dir = Path(argv[argv.index("--plugin-dir") + 1])
-                captured["plugin_dir"] = plugin_dir
-                captured["plugin_models"] = _plugin_agent_models(plugin_dir)
-                assert json.loads((plugin_dir / "hooks/hooks.json").read_text()) == {
-                    "modules": ["./register.ts"]
-                }
-                assert (plugin_dir / "hooks/register.ts").is_file()
+        argv, settings = self._launch(monkeypatch, tmp_path, caller_args)
 
-            def wait(self):
-                return 4
-
-            def send_signal(self, _signal):
-                raise AssertionError("test does not interrupt Claude")
-
-        monkeypatch.setattr(v2.subprocess, "Popen", FakeProcess)
-
-        with pytest.raises(SystemExit) as exc:
-            v2.launch_claude(
-                {"workspace": "https://example.com"},
-                caller_args,
-                binary="claude",
-                user_settings_path=user_settings,
-                launch_model="opus",
-                compose_settings=lambda args: ({}, args),
-                launch_model_args=claude._launch_model_args,
-                model_name=claude._maybe_add_1m_suffix,
-            )
-
-        assert exc.value.code == 4
-        settings = captured["settings"]
         assert settings["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME] == {
             "options": {
                 **v2._claude_mod_launch_options({**os.environ, **settings["env"]}),
@@ -530,83 +510,98 @@ class TestV2Launch:
         assert "UserPromptSubmit" not in settings["hooks"]
         assert "PreToolUse" not in settings["hooks"]
         assert settings["modelOverrides"] == {"claude-opus-4-8": "system.ai.claude-opus-4-8"}
-        assert captured["plugin_models"] == {"system.ai.claude-opus-4-8"}
-        assert captured["argv"][3:5] == ["--model", "opus"]
-        assert captured["argv"].count("--agents") == 1
-        assert captured["argv"].count("--plugin-dir") == 2
-        assert captured["argv"][-len(caller_args) :] == caller_args
-        assert not captured["settings_path"].exists()
-        assert not captured["plugin_dir"].exists()
-        # The model-setting guard is a first-prompt concern; user settings stay untouched.
-        assert json.loads(user_settings.read_text()) == {"model": "opus"}
+        plugin_dir = Path(argv[argv.index("--plugin-dir") + 1])
+        assert plugin_dir.parent == config_io.APP_DIR / v2.CLAUDE_ROUTING_PLUGIN_DIRNAME
+        assert json.loads((plugin_dir / "hooks/hooks.json").read_text()) == {
+            "modules": ["./register.ts"]
+        }
+        assert _plugin_agent_models(plugin_dir) == {"system.ai.claude-opus-4-8"}
+        assert "--model" not in argv
+        assert argv.count("--agents") == 1
+        assert argv.count("--plugin-dir") == 2
+        assert argv[-len(caller_args) :] == caller_args
+
+    def test_plugin_failure_launches_without_routing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            v2, "_routed_claude_plugin_dir", Mock(side_effect=OSError("read-only home"))
+        )
+
+        argv, settings = self._launch(monkeypatch, tmp_path, [])
+
+        assert "--plugin-dir" not in argv
+        assert "pluginConfigs" not in settings
+        assert "hooks" not in settings
+        assert settings["env"][v2.ENABLE_SMART_ROUTING_ENV_VAR] == "0"
+        assert settings["env"][v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "0"
+
+    def test_orchestrated_print_mode_delivers_child_answers(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR, "1")
+        monkeypatch.delenv("ISAAC_LAUNCH_MODE", raising=False)
+        deliver = Mock(return_value=3)
+        monkeypatch.setattr(claude.claude_answer_delivery, "run", deliver)
+
+        with pytest.raises(SystemExit) as exc:
+            self._launch(monkeypatch, tmp_path, ["-p", "fix this bug"])
+
+        assert exc.value.code == 3
+        argv = deliver.call_args.args[0]
+        assert "--plugin-dir" in argv
+        assert argv[-2:] == ["-p", "fix this bug"]
+        assert deliver.call_args.kwargs == {
+            "session_path": Path(os.environ[v2.SESSION_ENV_VAR]),
+            "stdin_prompt": None,
+        }
+
+    def test_plugin_folder_is_reused_for_identical_contents(self):
+        first = v2._routed_claude_plugin_dir(["system.ai.claude-opus-4-8"])
+        again = v2._routed_claude_plugin_dir(["system.ai.claude-opus-4-8"])
+        other = v2._routed_claude_plugin_dir(["system.ai.claude-sonnet-5"])
+
+        assert again == first
+        assert other != first
+        assert sorted(first.parent.iterdir()) == sorted([first, other])
 
 
-class TestV2ModelPickerDiscovery:
+class TestRoutingCatalog:
     """modelPicker takes priority over gateway model discovery for smart routing."""
 
     @staticmethod
-    def _launch(monkeypatch, tmp_path, *, picker_catalog):
-        user_settings = tmp_path / "settings.json"
-        user_settings.write_text(json.dumps({"model": "opus"}))
-        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
-        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
-        monkeypatch.setattr(v2, "CLAUDE_PTY_LOG", tmp_path / "v2.log")
-        monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
-        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
+    def _catalog(monkeypatch, *, picker_catalog):
         monkeypatch.setattr(v2, "_model_picker_catalog", lambda: picker_catalog)
+        discovery_calls = []
 
-        discovery_calls = 0
-
-        def fake_discovery(*_args):
-            nonlocal discovery_calls
-            discovery_calls += 1
+        def fake_discovery(*args):
+            discovery_calls.append(args)
             return AnthropicModelCatalog(
                 model_ids=["system.ai.claude-opus-4-8"], model_id_to_display_name={}
             )
 
         monkeypatch.setattr(v2, "list_anthropic_model_catalog", fake_discovery)
-        if sys.platform == "win32":
-            # Windows launches Claude directly instead of through the PTY wrapper.
-            monkeypatch.setattr(
-                v2.subprocess, "Popen", lambda *_args, **_kwargs: Mock(wait=lambda: 0)
-            )
-        else:
-            monkeypatch.setattr(claude_pty, "run_claude_pty", lambda _argv, **_kwargs: 0)
+        catalog = v2._claude_routing_catalog({"workspace": "https://example.com"}, "token")
+        return catalog, discovery_calls
 
-        with pytest.raises(SystemExit) as exc:
-            v2.launch_claude(
-                {"workspace": "https://example.com"},
-                [],
-                binary="claude",
-                user_settings_path=user_settings,
-                launch_model="opus",
-                compose_settings=lambda _args: ({}, []),
-                launch_model_args=claude._launch_model_args,
-                model_name=claude._maybe_add_1m_suffix,
-            )
-        assert exc.value.code == 0
-        return discovery_calls
-
-    def test_model_picker_disables_model_discovery(self, tmp_path, monkeypatch):
-        discovery_calls = self._launch(
-            monkeypatch,
-            tmp_path,
-            picker_catalog=AnthropicModelCatalog(
-                model_ids=["system.ai.claude-opus-4-8", "system.ai.claude-sonnet-5"],
-                model_id_to_display_name={},
-            ),
+    def test_model_picker_disables_model_discovery(self, monkeypatch):
+        picker_catalog = AnthropicModelCatalog(
+            model_ids=["system.ai.claude-opus-4-8", "system.ai.claude-sonnet-5"],
+            model_id_to_display_name={},
         )
+
+        catalog, discovery_calls = self._catalog(monkeypatch, picker_catalog=picker_catalog)
+
         # The picker supplied the models, so discovery never ran and the launch left
         # gateway model discovery disabled instead of enabling it alongside the picker.
-        assert discovery_calls == 0
+        assert catalog is picker_catalog
+        assert discovery_calls == []
         assert "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY" not in os.environ
         assert "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY" not in os.environ
 
-    def test_no_model_picker_enables_model_discovery(self, tmp_path, monkeypatch):
-        discovery_calls = self._launch(monkeypatch, tmp_path, picker_catalog=None)
+    def test_no_model_picker_enables_model_discovery(self, monkeypatch):
+        catalog, discovery_calls = self._catalog(monkeypatch, picker_catalog=None)
+
         # Without a picker the router falls back to gateway discovery and enables Claude
         # Code's model-discovery feature for the launch.
-        assert discovery_calls == 1
+        assert discovery_calls == [("https://example.com", "token")]
+        assert catalog.model_ids == ["system.ai.claude-opus-4-8"]
         assert os.environ.get("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY") == "1"
         assert os.environ.get("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY") == "1"
 

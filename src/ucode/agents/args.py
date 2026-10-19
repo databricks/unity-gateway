@@ -6,10 +6,17 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
+class SmartRouterLaunch:
+    """How a launch is smart-routed. Only first-prompt routing needs a dedicated launcher."""
+
+    first_prompt: bool = False
+
+
+@dataclass(frozen=True)
 class LaunchOptions:
     """Invocation-scoped options shared by agent launchers."""
 
-    launch_smart_routing: bool = False
+    smart_router: SmartRouterLaunch | None = None
     user_pinned_model: str | None = None
 
 

@@ -3,10 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 from collections.abc import Callable, Mapping, MutableMapping
@@ -28,7 +30,6 @@ from ucode.config_io import (
 )
 from ucode.constants import (
     AGENT_CLAUDE,
-    AGENT_CODEX,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
@@ -45,7 +46,6 @@ from ucode.databricks import (
     list_anthropic_models,
     maybe_add_gpt_1m_suffix,
 )
-from ucode.launcher import exec_or_spawn
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
@@ -67,7 +67,12 @@ from ucode.smart_routing.claude_hooks import (
 )
 from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
 from ucode.smart_routing.config import apply_config, resolve_environment
-from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
+from ucode.smart_routing.session_env import (
+    SESSION_ENV_VAR,
+    SESSION_PYTHON_ENV_VAR,
+    session_env_path,
+    start_session,
+)
 from ucode.ui import print_note, print_warning
 
 LEGACY_STATE_KEY = "smart_routing_enabled"
@@ -85,6 +90,7 @@ HEALTH_POLL_INTERVAL_SECONDS = 0.25
 CLAUDE_ROUTE_SELECTION_TIMEOUT_S = 20.0
 CLAUDE_ROUTED_AGENT_PREFIX = "ucode-route-"
 CLAUDE_ROUTING_PLUGIN_NAME = "ug-smart-router"
+CLAUDE_ROUTING_PLUGIN_DIRNAME = "claude-routing-plugin"
 CLAUDE_ROUTED_AGENT_PROMPT = (
     "Complete the delegated task exactly as requested. Follow the parent agent's instructions and "
     "return a concise report of your findings or changes."
@@ -349,6 +355,36 @@ def _claude_mod_launch_options(env: Mapping[str, str] | None = None) -> dict:
     }
 
 
+def _directory_digest(directory: Path) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(path for path in directory.rglob("*") if path.is_file()):
+        digest.update(path.relative_to(directory).as_posix().encode() + b"\0")
+        digest.update(path.read_bytes() + b"\0")
+    return digest.hexdigest()[:16]
+
+
+def _routed_claude_plugin_dir(model_ids: list[str]) -> Path:
+    """Return a plugin folder named after its contents, which outlives the ug process.
+
+    The folder is staged and renamed into place, so concurrent launches never load a partial one.
+    """
+    root = config_io.APP_DIR / CLAUDE_ROUTING_PLUGIN_DIRNAME
+    root.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".staging-", dir=root))
+    try:
+        _write_routed_claude_plugin(staging, model_ids)
+        plugin_dir = root / _directory_digest(staging)
+        if not plugin_dir.is_dir():
+            try:
+                staging.rename(plugin_dir)
+            except OSError:
+                if not plugin_dir.is_dir():
+                    raise
+        return plugin_dir
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
 def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
     """Write exact-model agents for launch-scoped loading through --plugin-dir."""
     write_json_file(
@@ -550,11 +586,16 @@ def _is_claude_target_model(value: object) -> bool:
     return value.removesuffix("[1m]") == CLAUDE_TARGET_MODEL.removesuffix("[1m]")
 
 
-def _claude_print_mode(tool_args: list[str]) -> bool:
+def claude_print_mode(tool_args: list[str]) -> bool:
     """Whether Claude runs headless with ``-p``/``--print``, judged before Claude's ``--``."""
     if "--" in tool_args:
         tool_args = tool_args[: tool_args.index("--")]
     return any(arg in {"-p", "--print"} for arg in tool_args)
+
+
+def delivers_claude_child_answers(tool_args: list[str]) -> bool:
+    """Whether an orchestrated print-mode launch runs Claude through accepted-answer delivery."""
+    return claude_print_mode(tool_args) and orchestrator.enabled(agent=AGENT_CLAUDE)
 
 
 def _claude_print_prompt(tool_args: list[str]) -> tuple[str | None, bytes | None]:
@@ -613,24 +654,7 @@ class _ClaudeModelSettingGuard:
                 self._lock = None
 
 
-def launch_claude(
-    state: dict,
-    tool_args: list[str],
-    *,
-    binary: str,
-    user_settings_path: Path,
-    launch_model: str | None,
-    compose_settings: Callable[[list[str]], tuple[dict, list[str]]],
-    launch_model_args: Callable[[list[str], str | None], list[str]],
-    model_name: Callable[[str], str],
-) -> NoReturn:
-    """Launch Claude in the first-prompt routing PTY wrapper."""
-    from ucode.agents.args import has_explicit_model_arg
-    from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR
-
-    if os.name != "nt":
-        from ucode.smart_routing import claude_pty
-
+def _claude_routing_token(state: dict) -> str:
     workspace = state.get("workspace")
     if not workspace:
         raise RuntimeError(
@@ -638,46 +662,32 @@ def launch_claude(
         )
     token = _launch_token(state, workspace)
     os.environ[OAUTH_TOKEN_ENV_VAR] = token
-    # if modelPicker is defined, then skip model discovery.
-    picker_catalog = _model_picker_catalog()
-    if picker_catalog is None:
+    return token
+
+
+def _claude_routing_catalog(state: dict, token: str) -> AnthropicModelCatalog:
+    """Return the models subagents route between: the model picker's, else the gateway's."""
+    from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR
+
+    catalog = _model_picker_catalog()
+    if catalog is None:
         os.environ[GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
         os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
-        catalog = list_anthropic_model_catalog(workspace, token)
-    else:
-        catalog = picker_catalog
+        catalog = list_anthropic_model_catalog(state["workspace"], token)
     if not catalog.model_ids:
         raise RuntimeError(
             catalog.error_msg or "Anthropic models endpoint returned no Claude models"
         )
-    model_ids = catalog.model_ids
+    return catalog
 
-    route_first_prompt = first_prompt_routing_enabled(agent=AGENT_CLAUDE)
-    settings, remaining = compose_settings(tool_args)
-    routed_model: str | None = None
-    stdin_prompt: bytes | None = None
-    if route_first_prompt and _claude_print_mode(remaining):
-        # Print mode has no TUI for the PTY router to drive, so route the prompt before launch.
-        route_first_prompt = False
-        if (
-            not claude_answer_delivery.has_streaming_input(remaining)
-            and not launch_model
-            and not has_explicit_model_arg(remaining)
-        ):
-            prompt, stdin_prompt = _claude_print_prompt(remaining)
-            if prompt:
-                routed_model = _route_print_mode_prompt(state, token, prompt, catalog, model_name)
-    # TODO: Restore first-prompt routing on Windows after replacing the Unix-only PTY wrapper:
-    # https://databricks.atlassian.net/browse/AIGTWY-4385
-    elif route_first_prompt and os.name == "nt":
-        print_warning(
-            "Claude first-prompt smart routing is unavailable on Windows; using subagent-only "
-            "routing."
-        )
-        route_first_prompt = False
-    hook_executable = build_auth_token_argv(
-        workspace, state.get("profile"), use_pat=bool(state.get("use_pat"))
-    )[0]
+
+def _add_claude_routing(
+    state: dict, settings: dict, model_ids: list[str], *, first_prompt: bool
+) -> Path:
+    """Add routing hooks, session controls, and mod options to launch settings.
+
+    Returns the plugin folder holding the routed agents and the mod.
+    """
     env = settings.setdefault("env", {})
     if not isinstance(env, dict):
         raise RuntimeError("Claude settings 'env' must be an object for smart routing.")
@@ -685,7 +695,7 @@ def launch_claude(
     env[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] = (
         "1" if orchestrator.feature_enabled(agent=AGENT_CLAUDE) else "0"
     )
-    if route_first_prompt:
+    if first_prompt:
         env[ENABLE_SMART_ROUTING_ENV_VAR] = "1"
     else:
         env[ENABLE_SUBAGENT_ROUTING_ENV_VAR] = "1"
@@ -698,9 +708,68 @@ def launch_claude(
         "claude_models": {str(index): model for index, model in enumerate(model_ids)},
     }
     sync_smart_routing_hooks(settings, routing_state, enabled=True)
-    if route_first_prompt:
+    if first_prompt:
+        hook_executable = build_auth_token_argv(
+            state["workspace"], state.get("profile"), use_pat=bool(state.get("use_pat"))
+        )[0]
         sync_first_prompt_hook(settings, hook_executable)
     orchestrator.sync_hooks(settings, agent="claude")
+    env[SESSION_ENV_VAR] = str(_prepare_smart_router_session("claude"))
+    env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
+    settings.setdefault("pluginConfigs", {}).setdefault(CLAUDE_ROUTING_PLUGIN_NAME, {})[
+        "options"
+    ] = {
+        **_claude_mod_launch_options({**resolve_environment(agent=AGENT_CLAUDE), **env}),
+        "routeCommand": routing_hook_argv(routing_state, ROUTE_SUBAGENT_MOD_EVENT),
+    }
+    try:
+        return _routed_claude_plugin_dir(model_ids)
+    except Exception as exc:  # noqa: BLE001 - optional setup must not block normal launch
+        raise ClaudeRoutingSetupError("Failed to write Claude smart-routing files") from exc
+
+
+def add_claude_smart_router(state: dict, settings: dict) -> list[str]:
+    """Add subagent routing to a normal Claude launch and return its plugin arguments."""
+    catalog = _claude_routing_catalog(state, _claude_routing_token(state))
+    plugin_dir = _add_claude_routing(state, settings, catalog.model_ids, first_prompt=False)
+    return ["--plugin-dir", str(plugin_dir)]
+
+
+def launch_claude(
+    state: dict,
+    tool_args: list[str],
+    *,
+    binary: str,
+    user_settings_path: Path,
+    launch_model: str | None,
+    compose_settings: Callable[[list[str]], tuple[dict, list[str]]],
+    launch_model_args: Callable[[list[str], str | None], list[str]],
+    model_name: Callable[[str], str],
+) -> NoReturn:
+    """Launch Claude with first-prompt routing; interactive sessions use the Unix-only PTY."""
+    from ucode.agents.args import has_explicit_model_arg
+
+    if os.name != "nt":
+        from ucode.smart_routing import claude_pty
+
+    token = _claude_routing_token(state)
+    catalog = _claude_routing_catalog(state, token)
+    model_ids = catalog.model_ids
+    settings, remaining = compose_settings(tool_args)
+    route_first_prompt = not claude_print_mode(remaining)
+    routed_model: str | None = None
+    stdin_prompt: bytes | None = None
+    if (
+        not route_first_prompt
+        and not claude_answer_delivery.has_streaming_input(remaining)
+        and not launch_model
+        and not has_explicit_model_arg(remaining)
+    ):
+        # Print mode has no TUI for the PTY router to drive, so route the prompt before launch.
+        prompt, stdin_prompt = _claude_print_prompt(remaining)
+        if prompt:
+            routed_model = _route_print_mode_prompt(state, token, prompt, catalog, model_name)
+    plugin_dir = _add_claude_routing(state, settings, model_ids, first_prompt=route_first_prompt)
     model_setting = _ClaudeModelSettingGuard(user_settings_path)
 
     def route_prompt(prompt: str) -> claude_pty.FirstPromptRoute:
@@ -717,21 +786,10 @@ def launch_claude(
             launch_dir = Path(directory)
             settings_path = launch_dir / "settings.json"
             socket_path = launch_dir / "first.sock"
-            plugin_dir = launch_dir / "plugin"
             if route_first_prompt:
-                env[FIRST_PROMPT_SOCKET_ENV] = str(socket_path)
-            session_path = _prepare_smart_router_session("claude")
-            env[SESSION_ENV_VAR] = str(session_path)
-            env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
-            settings.setdefault("pluginConfigs", {}).setdefault(CLAUDE_ROUTING_PLUGIN_NAME, {})[
-                "options"
-            ] = {
-                **_claude_mod_launch_options({**resolve_environment(agent=AGENT_CLAUDE), **env}),
-                "routeCommand": routing_hook_argv(routing_state, ROUTE_SUBAGENT_MOD_EVENT),
-            }
+                settings["env"][FIRST_PROMPT_SOCKET_ENV] = str(socket_path)
             try:
                 write_json_file(settings_path, settings)
-                _write_routed_claude_plugin(plugin_dir, model_ids)
             except Exception as exc:  # noqa: BLE001 - optional setup must not block normal launch
                 raise ClaudeRoutingSetupError("Failed to write Claude smart-routing files") from exc
             model_args = launch_model_args(remaining, routed_model or launch_model)
@@ -744,9 +802,9 @@ def launch_claude(
                 str(plugin_dir),
                 *remaining,
             ]
-            if _claude_print_mode(remaining) and orchestrator.enabled(agent=AGENT_CLAUDE):
+            if delivers_claude_child_answers(remaining):
                 returncode = claude_answer_delivery.run(
-                    argv, session_path=session_path, stdin_prompt=stdin_prompt
+                    argv, session_path=session_env_path(), stdin_prompt=stdin_prompt
                 )
             elif route_first_prompt:
                 returncode = claude_pty.run_claude_pty(
@@ -796,6 +854,29 @@ def _v2_hooks(state: dict, available_models: list[str]) -> dict:
     return doc["hooks"]
 
 
+def add_codex_smart_router(state: dict, config: dict) -> list[str]:
+    """Add subagent routing hooks and session controls to a Codex config layer.
+
+    Returns the models subagents route between.
+    """
+    available_models = custom_catalog_models() or _cached_routing_models(state)
+    if not available_models:
+        print_warning(
+            "Smart routing model metadata is unavailable; automatic model switching is unavailable. "
+            "Run `ucode configure codex` to enable routing."
+        )
+    config["hooks"] = _v2_hooks(state, available_models)
+    config["features.hooks"] = True
+    session_env_path = _prepare_smart_router_session("codex")
+    # Codex constructs tool subprocess environments through its shell policy.
+    # Pass both the session marker and its launching interpreter through that policy.
+    config[f"shell_environment_policy.set.{SESSION_ENV_VAR}"] = str(session_env_path)
+    config[f"shell_environment_policy.set.{SESSION_PYTHON_ENV_VAR}"] = os.environ[
+        SESSION_PYTHON_ENV_VAR
+    ]
+    return available_models
+
+
 def launch_codex(
     state: dict,
     tool_args: list[str],
@@ -804,6 +885,7 @@ def launch_codex(
     start_model: str | None,
     render_overlay: Callable[..., dict],
 ) -> NoReturn:
+    """Launch Codex with first-prompt routing through the app-server interposer."""
     workspace = state.get("workspace")
     if not workspace:
         raise RuntimeError(
@@ -815,13 +897,6 @@ def launch_codex(
         )
 
     os.environ[OAUTH_TOKEN_ENV_VAR] = _launch_token(state, workspace)
-    catalog_models = custom_catalog_models()
-    available_models = catalog_models or _cached_routing_models(state)
-    if not available_models:
-        print_warning(
-            "Smart routing model metadata is unavailable; automatic model switching is unavailable. "
-            "Run `ucode configure codex` to enable routing."
-        )
     custom_oauth = state.get("custom_oauth")
     overlay = render_overlay(
         workspace,
@@ -834,20 +909,8 @@ def launch_codex(
     catalog_path = custom_catalog_path()
     if catalog_path is not None:
         overlay["model_catalog_json"] = str(catalog_path)
-    overlay["hooks"] = _v2_hooks(state, available_models)
-    overlay["features.hooks"] = True
-    session_env_path = _prepare_smart_router_session("codex")
-    # Codex constructs tool subprocess environments through its shell policy.
-    # Pass both the session marker and its launching interpreter through that policy.
-    overlay[f"shell_environment_policy.set.{SESSION_ENV_VAR}"] = str(session_env_path)
-    overlay[f"shell_environment_policy.set.{SESSION_PYTHON_ENV_VAR}"] = os.environ[
-        SESSION_PYTHON_ENV_VAR
-    ]
+    available_models = add_codex_smart_router(state, overlay)
     config_args = codex_config_args(overlay)
-    if not first_prompt_routing_enabled(agent=AGENT_CODEX):
-        # Subagent-only routing needs neither the app-server nor the interposer:
-        # the hooks ride in the CLI config, so launch the TUI directly.
-        exec_or_spawn([binary, *config_args, *tool_args])
     app_port = _free_port()
     app_server_url = _loopback_websocket_url(app_port)
 

@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
-from ucode.agents import LaunchOptions, claude
+from ucode.agents import LaunchOptions, SmartRouterLaunch, claude
 from ucode.config_io import write_json_file
 from ucode.mcp_web_search import AUTOMATIC_PROVIDER, MANAGED_ENTRY_FLAG, PROVIDER_ENV
 from ucode.state import load_state, save_state
@@ -248,7 +248,11 @@ def test_launch_paths_receive_external_override(search_config, monkeypatch, rout
         claude.launch(
             search_config.state,
             ["-p", "hello"],
-            options=LaunchOptions(launch_smart_routing=routing in ("on", "fallback")),
+            options=LaunchOptions(
+                smart_router=SmartRouterLaunch(first_prompt=True)
+                if routing in ("on", "fallback")
+                else None
+            ),
         )
     assert len(calls) == 1
     assert _override(calls[0])["env"][PROVIDER_ENV] == "external"
