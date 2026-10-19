@@ -1,10 +1,8 @@
 """Claude Code hook configuration for smart subagent routing.
 
 Written into ``~/.claude/ucode-settings.json`` under Claude Code's hook events.
-The ``PreToolUse`` hook matches the subagent-spawn tool (``Agent``, formerly
-``Task``) and rewrites its ``model`` input to the router's pick; ``SessionStart``
-and ``SubagentStart`` drive the canary/audit trail. Mirrors ``codex_hooks`` but
-emits Claude Code's settings.json hook shape.
+The native Claude mod routes subagent calls. ``SessionStart`` and
+``SubagentStart`` hooks drive the canary/audit trail.
 """
 
 from __future__ import annotations
@@ -16,12 +14,13 @@ from ucode.smart_routing import hooks
 
 ROUTING_HOOK_COMMAND_MARKER = "claude-router-hook"
 ROUTE_FIRST_PROMPT_EVENT = "route-first-prompt"
+ROUTE_SUBAGENT_MOD_EVENT = "route-subagent-mod"
 FIRST_PROMPT_HOOK_MARKER = f"{ROUTING_HOOK_COMMAND_MARKER} {ROUTE_FIRST_PROMPT_EVENT}"
 FIRST_PROMPT_SOCKET_ENV = "UCODE_CLAUDE_V2_SOCKET"
 
 
 def sync_smart_routing_hooks(doc: dict, state: dict, *, enabled: bool) -> None:
-    """Synchronize ucode-managed routing hooks in a Claude settings document."""
+    """Synchronize ucode-managed lifecycle hooks, removing legacy routing hooks."""
     groups = _routing_hook_groups(state) if enabled else {}
     hooks.sync_managed_hooks(doc, ROUTING_HOOK_COMMAND_MARKER, groups)
 
@@ -49,16 +48,9 @@ def sync_first_prompt_hook(doc: dict, executable: str) -> None:
 
 
 def _routing_hook_groups(state: dict) -> dict[str, list[dict]]:
-    route_argv = _routing_hook_argv(state, "route-subagent")
-    session_argv = _routing_hook_argv(state, "session-start")
-    subagent_argv = _routing_hook_argv(state, "record-subagent")
+    session_argv = routing_hook_argv(state, "session-start")
+    subagent_argv = routing_hook_argv(state, "record-subagent")
     return {
-        "PreToolUse": [
-            {
-                "matcher": "Agent|Task",
-                "hooks": [_routing_command_hook(route_argv, status="Routing subagent model")],
-            }
-        ],
         "SessionStart": [
             {
                 "matcher": "startup|resume|clear",
@@ -73,7 +65,8 @@ def _routing_hook_groups(state: dict) -> dict[str, list[dict]]:
     }
 
 
-def _routing_hook_argv(state: dict, event: str) -> list[str]:
+def routing_hook_argv(state: dict, event: str) -> list[str]:
+    """Build the shared CLI command for a lifecycle hook or native mod request."""
     workspace = str(state.get("workspace") or "")
     argv = [
         build_auth_token_argv(workspace, state.get("profile"), use_pat=bool(state.get("use_pat")))[
@@ -82,7 +75,7 @@ def _routing_hook_argv(state: dict, event: str) -> list[str]:
         ROUTING_HOOK_COMMAND_MARKER,
         event,
     ]
-    if event != "route-subagent":
+    if event != ROUTE_SUBAGENT_MOD_EVENT:
         return argv
     argv += ["--host", workspace]
     profile = state.get("profile")

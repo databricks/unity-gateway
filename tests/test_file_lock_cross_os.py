@@ -12,6 +12,23 @@ import ucode.os_compatibility.file_lock_cross_os as file_lock_cross_os
 from ucode.os_compatibility.file_lock_cross_os import _acquire_windows_exclusive_file_lock
 
 
+@pytest.mark.parametrize("timeout", [0, 0.02])
+def test_real_contention_times_out_without_releasing_holder(tmp_path, timeout):
+    lock_path = tmp_path / "lock"
+    with lock_path.open("a+b") as holder, lock_path.open("a+b") as waiter:
+        file_lock_cross_os.acquire_exclusive_file_lock(holder, timeout=0)
+        try:
+            with pytest.raises(TimeoutError):
+                file_lock_cross_os.acquire_exclusive_file_lock(waiter, timeout=timeout)
+            with pytest.raises(TimeoutError):
+                file_lock_cross_os.acquire_exclusive_file_lock(waiter, timeout=0)
+        finally:
+            file_lock_cross_os.release_file_lock(holder)
+
+        file_lock_cross_os.acquire_exclusive_file_lock(waiter, timeout=0)
+        file_lock_cross_os.release_file_lock(waiter)
+
+
 def test_public_api_uses_windows_byte_range_lock(tmp_path, monkeypatch):
     locking = Mock()
     msvcrt = SimpleNamespace(locking=locking, LK_NBLCK=19, LK_UNLCK=20)
