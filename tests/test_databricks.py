@@ -958,6 +958,10 @@ class TestMaybeAddGpt1mSuffix:
         [
             ("system.ai.gpt-5-6-sol", "system.ai.gpt-5-6-sol[1m]"),
             ("databricks-gpt-6-astra", "databricks-gpt-6-astra[1m]"),
+            (
+                "anthropic-aigw-12e8d1ee-system.ai.gpt-5-6-sol",
+                "anthropic-aigw-12e8d1ee-system.ai.gpt-5-6-sol[1m]",
+            ),
             ("system.ai.gpt-5-6-sol[1m]", "system.ai.gpt-5-6-sol[1m]"),
             ("system.ai.gpt-5-6-sol[200k]", "system.ai.gpt-5-6-sol[200k]"),
             ("system.ai.gpt-5-5", "system.ai.gpt-5-5[1m]"),

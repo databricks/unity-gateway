@@ -57,3 +57,23 @@ Use a small deliberate logic bug on a disposable PR to test positive findings,
 and remove it afterward. Remove and re-add a label, or post a new comment, to rerun.
 Existing labels, label removal, label edits, and ordinary pushes do not request
 another review.
+
+## Polly review
+
+The same triggers (`ug-review` or `code-review` label on an in-repo PR, or a member
+`/ug-review` comment) also start **Polly AI Review** (`.github/workflows/polly-review.yml`),
+ported from Omnigent's `polly-review.yml`. It runs Omnigent's `examples/polly` reviewer from
+a pinned Omnigent commit against a frozen PR diff and posts one summary comment, skipping a
+head commit that already has a Polly review. The runner, service principal, and gateway
+token are the same as above; Omnigent's providers point at the gateway's
+`/ai-gateway/anthropic` and `/ai-gateway/codex/v1` routes. Omnigent's Python
+dependencies and the `@anthropic-ai/claude-code` and `@openai/codex` CLIs (pinned to the
+`integration.yml` versions) install through the Databricks JFrog proxies, authenticated with
+GitHub OIDC. Polly reads the trusted default-branch `AGENTS.md` and UG rubric as policy and
+treats the PR as untrusted data. Set the repository variables `UG_POLLY_HARNESS` and
+`UG_POLLY_MODEL` to override the defaults (`codex`, `system.ai.gpt-6-1-sol`, the model main's old reviewer used through `UG_CI_REVIEW_MODEL`).
+
+`.github/scripts/polly-review/summary.py` is adapted from Omnigent (Apache-2.0).
+`tests/test_polly_review.py` covers the workflow contract and the summary helper, not live
+inference. Disposable smoke runs on the protected runner verified the apt tmux install,
+the frozen-lockfile Omnigent install through JFrog, and a posted review.
