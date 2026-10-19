@@ -3813,6 +3813,14 @@ def claude_cmd(
         str | None,
         typer.Option("--scopes", hidden=True, help="Comma-separated custom OAuth scopes."),
     ] = None,
+    header: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--header",
+            hidden=True,
+            help="Extra `Name: value` header for Claude's gateway requests (repeatable).",
+        ),
+    ] = None,
     enable_smart_routing_flag: Annotated[
         bool | None,
         typer.Option(
@@ -3829,6 +3837,13 @@ def claude_cmd(
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from exc
+    for line in header or []:
+        name, separator, _value = line.partition(":")
+        if not separator or not name.strip() or line.splitlines() != [line]:
+            print_err(f"--header expects one `Name: value` line, got {line!r}.")
+            raise typer.Exit(1)
+    if header:
+        os.environ[claude_agent.CUSTOM_HEADERS_ENV_VAR] = "\n".join(header)
     with _smart_routing_v2_flag(enable_smart_routing_flag, agent=AGENT_CLAUDE):
         with _disable_smart_routing_for_subcommand("claude", ctx):
             _launch_tool(
