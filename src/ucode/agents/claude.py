@@ -522,6 +522,7 @@ def render_overlay(
     request_tags = request_tags_header_value()
     if request_tags:
         header_lines.append(f"{AI_GATEWAY_REQUEST_TAGS_HEADER}: {request_tags}")
+    header_lines += [f"{name}: {value}" for name, value in ug_headers().items()]
     # Relayed: the X-Databricks-AI-Gateway-Token swap header is added per request
     # by the refresh proxy, not here — a static value would go stale mid-session.
     custom_headers = "\n".join(_apply_managed_header_lines(header_lines, managed_http_headers))
@@ -1453,17 +1454,6 @@ def write_tool_config(
         state["claude_header_names"] = header_names
     else:
         state.pop("claude_header_names", None)
-    # Only ug's own file gets `ug --header` lines. Claude takes ANTHROPIC_CUSTOM_HEADERS from the
-    # OS-managed file whole whenever it sets one, so those lines are dropped then.
-    local_custom_headers = "\n".join(
-        _apply_managed_header_lines(
-            [
-                *overlay["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY].splitlines(),
-                *(f"{name}: {value}" for name, value in ug_headers().items()),
-            ],
-            state.get("claude_http_headers"),  # the admin's headers still win
-        )
-    )
 
     # V2 installs routing hooks in a transient per-launch settings file. Persistent settings must
     # contain no ucode routing hooks; surgically strip legacy ones while preserving user hooks.
@@ -1551,9 +1541,6 @@ def write_tool_config(
         for key in stale_picker_keys:
             merged.pop(key, None)
         overlay_custom_headers = overlay_for_merge["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY]
-        owned_names: Collection[str] = ()
-        if managed_settings_snapshots is None:  # ug's own file, not the OS-managed one
-            overlay_custom_headers, owned_names = local_custom_headers, owned_header_names
         if managed_config_present:
             # ug owns the whole value under a managed config: overwrite wholesale so a header ug no
             # longer emits is dropped and no stale or foreign header lingers.
@@ -1562,7 +1549,7 @@ def write_tool_config(
             # No managed config: preserve the developer's own pre-existing headers, replacing only
             # the header names ug manages.
             merged["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = _merge_anthropic_custom_headers(
-                existing_custom_headers, overlay_custom_headers, owned_names
+                existing_custom_headers, overlay_custom_headers, owned_header_names
             )
         # Drop any apiKeyHelper a prior non-relayed launch left in the file; relayed
         # must not carry one (it would outrank the subscription OAuth).
