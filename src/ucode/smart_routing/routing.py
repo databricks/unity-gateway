@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ucode.smart_routing.rationale import format_rationale
+
 ROUTER_NAME = "task_v3"
 ROUTER_NAME_ENV_VAR = "SMART_ROUTER_NAME"
 ROUTING_PATH = "/ai-gateway/routing/v1/routes:select"
@@ -94,6 +96,7 @@ class RoutingDecision:
     rationale: str = ""
     route_options: tuple[tuple[str, str | None], ...] = ()
     router_name: str = ""
+    raw_rationale: str | None = None
 
     def display_message(
         self,
@@ -262,14 +265,17 @@ def select_route(
     model = resolve(raw_model)
     if model is None:
         return None, f"router selected unsupported model {raw_model!r}"
-    rationale = payload.get("rationale") if isinstance(payload, dict) else None
+    raw_rationale = payload.get("rationale")
+    raw_rationale = raw_rationale if isinstance(raw_rationale, str) else ""
+    rationale = format_rationale(payload["route_selection"][0], raw_rationale)
     return (
         RoutingDecision(
             model=model,
             raw_model=raw_model,
-            rationale=rationale if isinstance(rationale, str) else "",
+            rationale=rationale,
             route_options=offered_routes,
             router_name=router_name,
+            raw_rationale=raw_rationale if rationale != raw_rationale else None,
         ),
         None,
     )
@@ -424,6 +430,9 @@ def write_decision_record(
             # Persisted for diagnosis: an empty value means the gateway returned
             # no rationale (vs. a placement bug in how we surface it).
             "rationale": decision.rationale,
+            "raw_rationale": decision.raw_rationale
+            if decision.raw_rationale is not None
+            else decision.rationale,
             "at": time.time(),
         },
     )
