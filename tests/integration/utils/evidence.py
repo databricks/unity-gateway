@@ -132,6 +132,22 @@ def assistant_answer_contains(session, agent: str, value: str, *, child: bool = 
     )
 
 
+def assert_no_bearer_on_disk(session) -> None:
+    """No file ug or Copilot wrote under the session home holds the Databricks bearer."""
+    bearer = session.env.get("DATABRICKS_BEARER")
+    assert bearer, "The live suite authenticates with DATABRICKS_BEARER."
+    for root in (session.home / ".copilot", session.home / ".ucode"):
+        for path in root.rglob("*") if root.exists() else ():
+            if path.is_file():
+                text = path.read_text(encoding="utf-8", errors="replace")
+                assert bearer not in text, f"{path} holds the Databricks credential"
+    env_file = session.home / ".copilot/ucode.env"
+    if env_file.exists():
+        text = env_file.read_text(encoding="utf-8")
+        assert "COPILOT_PROVIDER_BEARER_TOKEN" not in text
+        assert "OAUTH_TOKEN" not in text
+
+
 def fresh_id():
     """Return a 12-hex-char id; models drop characters when copying longer ones."""
     return uuid.uuid4().hex[:12]
