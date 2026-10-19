@@ -6490,6 +6490,9 @@ class TestLaunchWithManagedFilePicker:
 
         assert result.exit_code == 0, result.output
         assert calls["shared"].call_args.kwargs["skip_model_discovery"] is True
+        calls["list_catalog"].assert_not_called()
+        assert calls["configure"].call_args.kwargs["picker_catalog"] is None
+        assert "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY" not in os.environ
         launch_state = calls["configure"].call_args.args[1]
         assert launch_state["claude_models"] == self.PICKER_MODELS
         # The picker's models are launch-only; state.json keeps the discovered cache.
