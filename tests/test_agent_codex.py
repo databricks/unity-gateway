@@ -1642,6 +1642,8 @@ class TestCodexManagedConfig:
         config_path = tmp_path / ".codex" / "ucode.config.toml"
         managed_path = tmp_path / "etc-codex" / "managed_config.toml"
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", config_path)
+        monkeypatch.setattr(codex, "LEGACY_CODEX_CONFIG_PATH", config_path.parent / "config.toml")
+        monkeypatch.delenv("CODEX_HOME", raising=False)
         monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "codex-ucode-config.backup.toml")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.134.0")
         monkeypatch.setattr(codex, "save_state", lambda state: None)
@@ -1713,13 +1715,343 @@ class TestCodexManagedConfig:
         config_path, managed_path = self._patch(tmp_path, monkeypatch)
         managed_files.set_config_scope("user")
         monkeypatch.setattr(
-            codex, "reconcile_managed_file", lambda *a, **kw: pytest.fail("must not write managed")
+            codex,
+            "reconcile_managed_file",
+            lambda *a, user_scope=False, **kw: (
+                pytest.fail("must not write managed") if not user_scope else "written"
+            ),
         )
 
         codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
 
         assert read_toml_safe(config_path)["model_provider"] == "Databricks"
         assert not managed_path.exists()
+
+    def _user_scope(self, tmp_path, monkeypatch):
+        """User scope with the real reconcile; any privileged write fails the test."""
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+        user_path = config_path.parent / "config.toml"
+        monkeypatch.setattr(codex, "reconcile_managed_file", managed_files.reconcile_managed_file)
+        for name in ("_sudo_replace", "_windows_replace", "_sudo_remove"):
+            monkeypatch.setattr(
+                managed_files, name, lambda *a, **k: pytest.fail("privileged write")
+            )
+        managed_files.set_config_scope("user")
+        return config_path, managed_path, user_path
+
+    STATE = {"workspace": WS, "codex_models": ["gpt-5"]}
+
+    def test_user_scope_writes_provider_to_user_config_and_preserves_content(
+        self, tmp_path, monkeypatch
+    ):
+        _, managed_path, user_path = self._user_scope(tmp_path, monkeypatch)
+        user_path.parent.mkdir(parents=True, exist_ok=True)
+        user_path.write_text(
+            '# my notes\nmodel_provider = "mine"\nmodel = "my-model"\n'
+            '[model_providers.mine]\nbase_url = "https://x"\n'
+            '[mcp_servers.s]\ncommand = "s"\n',
+            encoding="utf-8",
+        )
+        codex.write_tool_config(dict(self.STATE))
+
+        doc = read_toml_safe(user_path)
+        assert doc["model_provider"] == "Databricks"
+        assert doc["model"] == "my-model"
+        assert doc["model_providers"]["mine"]["base_url"] == "https://x"
+        assert doc["model_providers"]["Databricks"]["http_headers"]["User-Agent"]
+        assert doc["mcp_servers"]["s"]["command"] == "s"
+        assert "# my notes" in user_path.read_text(encoding="utf-8")
+        assert not managed_path.exists()
+
+    def test_user_scope_works_without_a_managed_path(self, tmp_path, monkeypatch):
+        _, _, user_path = self._user_scope(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: None)
+        monkeypatch.setattr(managed_files, "managed_files_supported", lambda: False)
+
+        codex.write_tool_config(dict(self.STATE))
+
+        assert read_toml_safe(user_path)["model_provider"] == "Databricks"
+
+    def test_user_scope_honors_codex_home(self, tmp_path, monkeypatch):
+        self._user_scope(tmp_path, monkeypatch)
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path / "home"))
+
+        codex.write_tool_config(dict(self.STATE))
+
+        assert read_toml_safe(tmp_path / "home" / "config.toml")["model_provider"] == "Databricks"
+
+    def test_user_scope_static_catalog_is_referenced_with_databricks_provider(
+        self, tmp_path, monkeypatch
+    ):
+        _, _, user_path = self._user_scope(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "catalog.json")
+        monkeypatch.setattr(codex, "prepare_codex_catalog", lambda binary, models: {"models": []})
+        state = {**self.STATE, "codex_static_models": ["gpt-5"]}
+
+        codex.write_tool_config(dict(state))
+        codex.write_tool_config(dict(state))
+
+        doc = read_toml_safe(user_path)
+        assert doc["model_provider"] == "Databricks"
+        assert doc["model_catalog_json"] == str(tmp_path / "catalog.json")
+
+    def test_user_scope_reconcile_interleaved_with_mcp_write(self, tmp_path, monkeypatch):
+        _, _, user_path = self._user_scope(tmp_path, monkeypatch)
+        codex.write_tool_config(dict(self.STATE))
+        codex.write_user_mcp_servers({"s": {"command": "s"}}, set())
+        codex.write_tool_config(dict(self.STATE))
+        codex.write_user_mcp_servers({"t": {"command": "t"}}, {"s"})
+
+        doc = read_toml_safe(user_path)
+        assert doc["model_provider"] == "Databricks"
+        assert list(doc["mcp_servers"]) == ["t"]
+
+        assert codex.revert_managed_config() != "unchanged"
+        assert "model_provider" not in read_toml_safe(user_path)
+
+    def test_legacy_strip_helpers_keep_user_scope_keys(self, tmp_path, monkeypatch):
+        _, _, user_path = self._user_scope(tmp_path, monkeypatch)
+        codex.write_tool_config(dict(self.STATE))
+        before = read_toml_safe(user_path)
+
+        codex._remove_legacy_ucode_profile()
+        codex._strip_legacy_ucode_entries(user_path)
+        codex.clear_model_preferences({})
+
+        assert read_toml_safe(user_path) == before
+
+    def test_user_scope_replaces_user_model_only_with_admin_default(self, tmp_path, monkeypatch):
+        _, _, user_path = self._user_scope(tmp_path, monkeypatch)
+        user_path.parent.mkdir(parents=True, exist_ok=True)
+        user_path.write_text('model = "mine"\n', encoding="utf-8")
+
+        codex.write_tool_config(dict(self.STATE))
+        codex.write_tool_config(dict(self.STATE))
+        assert read_toml_safe(user_path)["model"] == "mine"
+
+        codex.write_tool_config({**self.STATE, "codex_default_model": "gpt-9"})
+        assert read_toml_safe(user_path)["model"] == "gpt-9"
+        codex.write_tool_config(dict(self.STATE))
+        assert read_toml_safe(user_path)["model"] == "mine"
+
+    def test_user_model_set_after_configure_survives_later_runs(self, tmp_path, monkeypatch):
+        _, _, user_path = self._user_scope(tmp_path, monkeypatch)
+        codex.write_tool_config(dict(self.STATE))
+        doc = codex.tomlkit.parse(user_path.read_text(encoding="utf-8"))
+        doc["model"] = "added"
+        user_path.write_text(codex.tomlkit.dumps(doc), encoding="utf-8")
+        codex.write_tool_config(dict(self.STATE))
+        codex.write_tool_config(dict(self.STATE))
+        assert read_toml_safe(user_path)["model"] == "added"
+
+        codex.write_tool_config({**self.STATE, "codex_default_model": "gpt-9"})
+        user_path.write_text(user_path.read_text().replace("gpt-9", "mine"), encoding="utf-8")
+        codex.write_tool_config(dict(self.STATE))
+        assert read_toml_safe(user_path)["model"] == "mine"
+
+    @pytest.mark.parametrize("managed_file", ["matching", "absent"])
+    def test_non_interactive_global_switch_reverts_user_record_only_if_managed_file_holds_it(
+        self, tmp_path, monkeypatch, managed_file
+    ):
+        _, managed_path, user_path = self._user_scope(tmp_path, monkeypatch)
+        state = dict(self.STATE)
+        codex.write_tool_config(state)
+        written = user_path.read_text(encoding="utf-8")
+        if managed_file == "matching":
+            managed_path.parent.mkdir(parents=True)
+            managed_path.write_text(written, encoding="utf-8")
+
+        managed_files.set_config_scope("global")
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: managed_path)
+        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: False)
+        codex.write_tool_config(state)
+
+        assert managed_files.managed_file_scope(state, "codex") == "local-compatible"
+        if managed_file == "matching":
+            assert not user_path.exists()
+        else:
+            assert user_path.read_text(encoding="utf-8") == written
+
+    def test_revert_runs_the_os_managed_revert_even_if_the_user_revert_fails(
+        self, tmp_path, monkeypatch
+    ):
+        _, managed_path, _ = self._user_scope(tmp_path, monkeypatch)
+        managed_files.set_config_scope("global")
+        managed_path.parent.mkdir(parents=True)
+        monkeypatch.setattr(managed_files, "_sudo_replace", lambda p, t: p.write_text(t))
+        monkeypatch.setattr(managed_files, "_sudo_remove", lambda p: p.unlink())
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(managed_files, "managed_files_supported", lambda: True)
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: managed_path)
+        codex.write_tool_config(dict(self.STATE))
+        assert managed_path.exists()
+
+        def fail():
+            raise RuntimeError("user revert failed")
+
+        monkeypatch.setattr(codex, "_revert_user_config", fail)
+        with pytest.raises(RuntimeError, match="user revert failed"):
+            codex.revert_managed_config()
+        assert not managed_path.exists()
+
+    def test_user_scope_merges_provider_headers_by_name(self, tmp_path, monkeypatch):
+        _, _, user_path = self._user_scope(tmp_path, monkeypatch)
+        user_path.parent.mkdir(parents=True, exist_ok=True)
+        original = (
+            '[model_providers.Databricks]\nname = "mine"\nhttp_headers = { "Request-Tags" = "t" }\n'
+        )
+        user_path.write_text(original, encoding="utf-8")
+
+        state = {**self.STATE, "codex_http_headers": {"X-Admin": "1"}}
+        codex.write_tool_config(dict(state))
+        headers = read_toml_safe(user_path)["model_providers"]["Databricks"]["http_headers"]
+        assert headers["Request-Tags"] == "t"
+        assert headers["X-Admin"] == "1"
+        assert headers["User-Agent"]
+
+        codex.write_tool_config(dict(self.STATE))
+        headers = read_toml_safe(user_path)["model_providers"]["Databricks"]["http_headers"]
+        assert headers["Request-Tags"] == "t"
+        assert "X-Admin" not in headers
+
+        codex.revert_managed_config()
+        restored = read_toml_safe(user_path)["model_providers"]["Databricks"]
+        assert restored["http_headers"] == {"Request-Tags": "t"}
+        assert restored["name"] == "mine"
+
+    @pytest.mark.parametrize("via_revert", [False, True])
+    def test_user_model_set_between_configures_survives_global_switch_and_revert(
+        self, tmp_path, monkeypatch, via_revert
+    ):
+        _, managed_path, user_path = self._user_scope(tmp_path, monkeypatch)
+        codex.write_tool_config(dict(self.STATE))
+        doc = codex.tomlkit.parse(user_path.read_text(encoding="utf-8"))
+        doc["model"] = "mine"
+        user_path.write_text(codex.tomlkit.dumps(doc), encoding="utf-8")
+        codex.write_tool_config({**self.STATE, "codex_http_headers": {"X-Admin": "1"}})
+        assert read_toml_safe(user_path)["model"] == "mine"
+
+        if via_revert:
+            codex.revert_managed_config()
+        else:
+            managed_files.set_config_scope("global")
+            managed_path.parent.mkdir(parents=True)
+            monkeypatch.setattr(
+                codex, "reconcile_managed_file", lambda *a, **kw: Path(a[0]).write_text(a[1])
+            )
+            codex.write_tool_config(dict(self.STATE))
+        assert read_toml_safe(user_path) == {"model": "mine"}
+
+    @pytest.mark.parametrize("original", [None, "x"])
+    def test_repeated_admin_model_and_headers_are_withdrawn(self, tmp_path, monkeypatch, original):
+        _, _, user_path = self._user_scope(tmp_path, monkeypatch)
+        if original:
+            user_path.parent.mkdir(parents=True, exist_ok=True)
+            user_path.write_text(f'model = "{original}"\n', encoding="utf-8")
+        admin = {
+            **self.STATE,
+            "codex_default_model": "gpt-9",
+            "codex_http_headers": {"X-Admin": "1"},
+        }
+        codex.write_tool_config(dict(admin))
+        codex.write_tool_config(dict(admin))
+        assert read_toml_safe(user_path)["model"] == "gpt-9"
+
+        codex.write_tool_config(dict(self.STATE))
+
+        doc = read_toml_safe(user_path)
+        assert doc.get("model") == original
+        assert "X-Admin" not in doc["model_providers"]["Databricks"]["http_headers"]
+
+    def test_revert_restores_user_originals(self, tmp_path, monkeypatch):
+        _, _, user_path = self._user_scope(tmp_path, monkeypatch)
+        user_path.parent.mkdir(parents=True, exist_ok=True)
+        user_path.write_text('model_provider = "mine"\nmodel = "m"\n', encoding="utf-8")
+        codex.write_tool_config({**self.STATE, "codex_default_model": "gpt-9"})
+
+        assert codex.revert_managed_config() == "restored (user settings)"
+
+        assert read_toml_safe(user_path) == {"model_provider": "mine", "model": "m"}
+
+    def test_revert_removes_created_user_config(self, tmp_path, monkeypatch):
+        _, _, user_path = self._user_scope(tmp_path, monkeypatch)
+        codex.write_tool_config(dict(self.STATE))
+        assert user_path.exists()
+
+        assert codex.revert_managed_config() == "removed (user settings)"
+
+        assert not user_path.exists()
+
+    def test_switching_to_global_reverts_user_config(self, tmp_path, monkeypatch):
+        config_path, managed_path, user_path = self._user_scope(tmp_path, monkeypatch)
+        user_path.parent.mkdir(parents=True, exist_ok=True)
+        user_path.write_text('theme = "dark"\n', encoding="utf-8")
+        codex.write_tool_config(dict(self.STATE))
+        assert "model_provider" in read_toml_safe(user_path)
+
+        managed_files.set_config_scope("global")
+        managed_path.parent.mkdir(parents=True)
+        monkeypatch.setattr(
+            codex, "reconcile_managed_file", lambda *a, **kw: Path(a[0]).write_text(a[1])
+        )
+        codex.write_tool_config(dict(self.STATE))
+
+        doc = read_toml_safe(user_path)
+        assert "model_provider" not in doc
+        assert doc["theme"] == "dark"
+        assert read_toml_safe(managed_path)["model_provider"] == "Databricks"
+
+    @pytest.mark.parametrize("case", ["refused", "unavailable", "unsupported", "skip_env"])
+    def test_switching_to_global_keeps_user_record_unless_managed_file_is_good(
+        self, tmp_path, monkeypatch, case
+    ):
+        _, managed_path, user_path = self._user_scope(tmp_path, monkeypatch)
+        codex.write_tool_config(dict(self.STATE))
+        written = user_path.read_text(encoding="utf-8")
+
+        managed_files.set_config_scope("global")
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: managed_path)
+        monkeypatch.setattr(managed_files, "managed_files_supported", lambda: True)
+        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: True)
+        raises = case == "refused"
+        if case == "skip_env":
+            monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        elif case == "unsupported":
+            monkeypatch.setattr(codex, "codex_managed_config_path", lambda: None)
+        else:
+
+            def fail(*args, **kwargs):
+                raise (
+                    RuntimeError("refused")
+                    if raises
+                    else managed_files.ManagedFileWriteUnavailable()
+                )
+
+            monkeypatch.setattr(codex, "reconcile_managed_file", fail)
+        if raises:
+            with pytest.raises(RuntimeError, match="refused"):
+                codex.write_tool_config(dict(self.STATE))
+        else:
+            codex.write_tool_config(dict(self.STATE))
+
+        assert user_path.read_text(encoding="utf-8") == written
+
+    def test_user_scope_refuses_unparseable_user_config(self, tmp_path, monkeypatch):
+        _, _, user_path = self._user_scope(tmp_path, monkeypatch)
+        user_path.parent.mkdir(parents=True, exist_ok=True)
+        user_path.write_text("not = [valid", encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match="Cannot .*settings"):
+            codex.write_tool_config(dict(self.STATE))
+
+        assert user_path.read_text(encoding="utf-8") == "not = [valid"
+
+    def test_user_scope_managed_user_agent_reads_user_config(self, tmp_path, monkeypatch):
+        self._user_scope(tmp_path, monkeypatch)
+        codex.write_tool_config(dict(self.STATE))
+
+        assert codex.managed_user_agent().startswith("ucode/")
 
     def test_skip_env_no_error_without_stale_override(self, tmp_path, monkeypatch):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)

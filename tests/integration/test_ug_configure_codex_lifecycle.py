@@ -98,8 +98,9 @@ def test_ug_configure_codex_user_scope_leaves_managed_config(live_session, unman
     """Scenario: configure codex with `--user` against a workspace verified to publish no
     CodingAgentConfig, then revert.
 
-    Expected: ug's per-user config is written, the OS-managed config is neither created nor
-    changed (no sudo is involved), the scope is saved, and revert clears it.
+    Expected: ug's per-user config and the Databricks provider in `~/.codex/config.toml` are
+    written, the OS-managed config is neither created nor changed (no sudo is involved), the scope
+    is saved, and revert clears all of it.
     """
     session = live_session
     before = _read_bytes(CODEX_MANAGED_CONFIG_PATH)
@@ -118,12 +119,18 @@ def test_ug_configure_codex_user_scope_leaves_managed_config(live_session, unman
 
     assert _read_bytes(CODEX_MANAGED_CONFIG_PATH) == before
     assert (session.home / ".codex/ucode.config.toml").is_file()
-    assert not (session.home / ".ucode/managed-backups/manifest.json").exists()
+    user_config = session.home / ".codex/config.toml"
+    doc = tomllib.loads(user_config.read_text())
+    assert doc["model_provider"] == "Databricks"
+    assert "Databricks" in doc["model_providers"]
     assert session.state()["config_scope"] == "user"
 
     session.run("revert")
     assert "config_scope" not in session.state()
     assert not (session.home / ".codex/ucode.config.toml").exists()
+    assert "model_provider" not in (
+        tomllib.loads(user_config.read_text()) if user_config.exists() else {}
+    )
 
 
 def test_ug_configure_codex_rejects_invalid_credentials(live_session, workspace):

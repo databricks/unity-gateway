@@ -43,6 +43,12 @@ managed settings, so UG skips them with a warning (MCP servers register in `~/.c
 Subscription relay writes nothing and withdraws an earlier write. `--global` or `ug revert`
 restores the file.
 
+For Codex, `--user` writes the keys it would put in `managed_config.toml` (`model_provider`, `model`,
+`model_providers.Databricks` and its `http_headers`) into `$CODEX_HOME/config.toml` on every
+platform, recorded under the `codex-user` manifest key. Codex ranks that file below the managed
+layer, which is why `--user` refuses while that file exists. A user's own `model` is replaced only by an
+admin default. `--global` or `ug revert` restores the original values.
+
 ## Interactive Detection
 
 Standard input determines whether UG may request administrator permission interactively. Standard

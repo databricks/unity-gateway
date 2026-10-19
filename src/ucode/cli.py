@@ -1420,7 +1420,7 @@ def revert() -> int:
         print_kv("Codex shared config", "ucode entries removed")
     print_kv("Claude Code managed settings", claude_managed_result)
     print_kv("Claude Desktop profile", desktop_result)
-    print_kv("Codex OS-managed settings", codex_managed_result)
+    print_kv("Codex managed settings", codex_managed_result)
     print_kv("Pi settings", "restored" if pi_settings_restored else "unchanged")
     for client, spec in MCP_CLIENTS.items():
         print_kv(

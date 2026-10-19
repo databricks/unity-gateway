@@ -64,12 +64,16 @@ from ucode.databricks import (
 from ucode.launcher import exec_or_spawn
 from ucode.managed_files import (
     OS,
+    ManagedFileSnapshots,
     ManagedFileWriteUnavailable,
     check_skipped_managed_overrides,
+    config_scope,
     current_os,
     managed_file_conflicts,
     managed_file_is_verified,
+    managed_file_missing,
     managed_file_scope,
+    managed_file_snapshots,
     managed_file_status,
     managed_files_supported,
     managed_settings_skipped,
@@ -77,7 +81,11 @@ from ucode.managed_files import (
     mark_managed_file_verified,
     read_managed_file,
     reconcile_managed_file,
+    record_ug_env,
+    record_ug_picker,
+    revert_both_scopes,
     revert_managed_file,
+    user_manifest_key,
 )
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.smart_routing import v2 as smart_routing_v2
@@ -501,21 +509,55 @@ def write_tool_config(
         managed_http_headers=state.get("codex_http_headers"),
     )
 
-    def compose(base: dict, *, include_catalog: bool = True) -> dict:
+    ug_model: dict = {}
+    ug_headers: dict = {}
+
+    def compose(base: dict, *, include_catalog: bool = True, user_config: bool = False) -> dict:
+        if user_config:
+            snapshots = managed_file_snapshots(user_manifest_key("codex"), _parse_managed_config)
+            ug_model.clear()
+            if chosen_model and (
+                chosen_model != base.get("model")
+                or chosen_model == (snapshots.ug_picker or {}).get("model")
+            ):
+                ug_model["model"] = chosen_model
+            existing_headers = dict(
+                ((base.get("model_providers") or {}).get(CODEX_MODEL_PROVIDER_NAME) or {}).get(
+                    "http_headers"
+                )
+                or {}
+            )
+            recorded_headers = snapshots.ug_env or {}
         prune_key_paths(base, _PROVIDER_HTTP_HEADERS_KEY_PATHS)
         deep_merge_dict(base, copy.deepcopy(overlay))
         # deep_merge can't drop keys, so clear model preferences from an earlier run.
         if chosen_model is None and not smart_routing_v2.smart_routing_enabled(
             None, default=False, agent=AGENT_CODEX
         ):
-            for key in ("model", "model_reasoning_effort"):
-                base.pop(key, None)
+            if user_config:
+                _clear_recorded_user_model(base, snapshots)
+            else:
+                for key in ("model", "model_reasoning_effort"):
+                    base.pop(key, None)
         if include_catalog:
             if catalog_path:
                 base["model_catalog_json"] = catalog_path
             else:
                 base.pop("model_catalog_json", None)
         _set_provider_header(base, None)
+        if user_config:
+            headers = base["model_providers"][CODEX_MODEL_PROVIDER_NAME]["http_headers"]
+            ug_headers.clear()
+            ug_headers.update(
+                {
+                    name: value
+                    for name, value in headers.items()
+                    if value != existing_headers.get(name) or value == recorded_headers.get(name)
+                }
+            )
+            for name, value in existing_headers.items():
+                if name not in headers and recorded_headers.get(name) != value:
+                    headers[name] = value
         return base
 
     if catalog is not None:
@@ -533,7 +575,14 @@ def write_tool_config(
         enabled=False,
     )
     write_toml_file(CODEX_CONFIG_PATH, doc)
-    _reconcile_managed_config(state, lambda base: compose(base, include_catalog=False))
+    _reconcile_managed_config(
+        state,
+        lambda base: compose(base, include_catalog=False),
+        user_compose=lambda base: compose(base, include_catalog=False, user_config=True),
+    )
+    if config_scope() == "user":
+        record_ug_picker(user_manifest_key("codex"), ug_model)
+        record_ug_env(user_manifest_key("codex"), ug_headers)
     state = mark_tool_managed(state, "codex", MANAGED_KEYS)
     save_state(state)
     # The desktop proxy reads authentication from the saved workspace.
@@ -558,7 +607,7 @@ def _parse_managed_config(text: str) -> dict:
 
 def managed_user_agent() -> str | None:
     """The User-Agent value in Codex's OS-managed Databricks provider headers, if one is there."""
-    path = codex_managed_config_path()
+    path = user_mcp_config_path() if config_scope() == "user" else codex_managed_config_path()
     try:
         text = read_managed_file(path) if path else None
         doc = _parse_managed_config(text) if text else {}
@@ -598,11 +647,32 @@ def managed_config_status(state: dict) -> tuple[Path | None, str, str]:
 
 
 def revert_managed_config() -> str:
+    return revert_both_scopes(
+        _revert_user_config,
+        lambda: revert_managed_file(
+            "codex",
+            display="Codex",
+            parser=_parse_managed_config,
+            dumper=tomlkit.dumps,
+        ),
+    )
+
+
+def _revert_user_config() -> str:
+    if is_dry_run():
+        return "unchanged"
     return revert_managed_file(
         "codex",
         display="Codex",
         parser=_parse_managed_config,
         dumper=tomlkit.dumps,
+        user_scope=True,
+        ug_written={
+            ("model",): (
+                managed_file_snapshots(user_manifest_key("codex"), _parse_managed_config).ug_picker
+                or {}
+            ).get("model")
+        },
     )
 
 
@@ -748,8 +818,48 @@ def _sync_desktop_tracing(workspace: str | None) -> bool:
         return False
 
 
-def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> None:
+def _clear_recorded_user_model(base: dict, snapshots: ManagedFileSnapshots) -> None:
+    """Withdraw ``model`` only when ug wrote it, restoring the user's own if it had one."""
+    recorded = (snapshots.ug_picker or {}).get("model")
+    if recorded is not None and base.get("model") == recorded:
+        original = (snapshots.original_before_ug or {}).get("model")
+        if original is None:
+            base.pop("model", None)
+        else:
+            base["model"] = original
+
+
+def _reconcile_user_config(user_compose: Callable[[dict], dict]) -> None:
+    """Write the managed keys into the user's ``config.toml`` (``ug configure --user``)."""
+    path = user_mcp_config_path().resolve()
+    try:
+        current_text = read_managed_file(path)
+        existing = _parse_managed_config(current_text) if current_text is not None else {}
+    except (RuntimeError, ValueError) as exc:
+        raise RuntimeError(
+            f"Cannot safely update Codex settings at {path}: {exc}. ucode did not modify the "
+            "file. Repair it and retry."
+        ) from exc
+    reconcile_managed_file(
+        path,
+        tomlkit.dumps(user_compose(existing)),
+        tool="codex",
+        display="Codex",
+        owned_paths=MANAGED_KEYS,
+        parser=_parse_managed_config,
+        user_scope=True,
+    )
+
+
+def _reconcile_managed_config(
+    state: dict,
+    compose: Callable[[dict], dict],
+    user_compose: Callable[[dict], dict] | None = None,
+) -> None:
     """Reconcile Codex's highest-precedence config while preserving unrelated policy."""
+    if config_scope() == "user":
+        _reconcile_user_config(user_compose or compose)
+        return
     if managed_settings_skipped():
         check_skipped_managed_overrides(
             codex_managed_config_path(),
@@ -784,6 +894,8 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
     conflicts = managed_file_conflicts(managed_before, desired_doc, MANAGED_KEYS)
     if not managed_writes_allowed() and not conflicts:
         mark_managed_file_verified(state, "codex", path, scope="local-compatible")
+        if not managed_file_missing(managed_before, desired_doc, MANAGED_KEYS):
+            _revert_user_config()
         return
     try:
         reconcile_managed_file(
@@ -804,6 +916,7 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
         mark_managed_file_verified(state, "codex", path, scope="local-compatible")
         return
     mark_managed_file_verified(state, "codex", path)
+    _revert_user_config()
 
 
 MANAGED_MCP_CONFIG_KEY = "mcp_servers"

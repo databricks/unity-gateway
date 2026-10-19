@@ -172,4 +172,6 @@ Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`
 | `mcp_servers` | Ignore | Merge | Managed file; add/update the config's MCP server entries, other entries left alone |
 | Smart Router and Smart Router Orchestrator hooks | Merge | Merge | Launch-only `PreToolUse`, plus `UserPromptSubmit` and compact `SessionStart` with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`; Codex combines them with its native hook sources and applies project trust; `features.hooks` is enabled for a smart-routed launch |
 
+Under `ug configure --user`, the managed-config column goes to `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`) instead, without sudo: `model_provider`, `model` (only the config's default; a user's own `model` is kept otherwise), `model_providers.Databricks`, and its `http_headers`. `mcp_servers` use the user-scope registration in the same file. `ug revert` or `--global` restores the original values.
+
 </details>
