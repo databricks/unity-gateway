@@ -1384,7 +1384,7 @@ class TestWriteToolConfigManagedSettings:
         self._patch(monkeypatch, [], [], existing)
         monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: abc")
 
-        with pytest.raises(RuntimeError, match="can't apply to Claude Code"):
+        with pytest.raises(RuntimeError, match="can't reach Claude Code"):
             claude.write_tool_config(
                 {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
             )
