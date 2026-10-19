@@ -29,7 +29,7 @@ def test_smart_routed_session_installs_skill(tmp_path, monkeypatch, agent):
     monkeypatch.delenv(session_env.SESSION_ENV_VAR, raising=False)
     monkeypatch.setenv("UCODE_SMART_ROUTER_PYTHON", "/older/install/python")
 
-    session_path = v2._prepare_smart_router_session(agent)
+    session_path = v2._prepare_smart_router_session(agent, {})
 
     home = config_io.APP_DIR.parent
     assert home.joinpath(f".{agent}/skills/{SMART_ROUTER_SKILL}/SKILL.md").is_file()
@@ -53,7 +53,7 @@ def test_skill_toggles_with_launch_installation_despite_shadowed_path(tmp_path, 
     other_ug.chmod(0o755)
     monkeypatch.setenv("PATH", str(shadow) + os.pathsep + os.environ.get("PATH", ""))
 
-    session_path = v2._prepare_smart_router_session(agent)
+    session_path = v2._prepare_smart_router_session(agent, {})
     skill = config_io.APP_DIR.parent / f".{agent}/skills/{SMART_ROUTER_SKILL}/SKILL.md"
     commands = re.findall(r"`([^`\n]*--(?:enable|disable)-smart-routing)`", skill.read_text())
 
@@ -70,16 +70,9 @@ def test_skill_toggles_with_launch_installation_despite_shadowed_path(tmp_path, 
         )
         assert result.returncode == 0, result.stdout + result.stderr
         assert f"Smart Router is {'off' if action == 'disable' else 'on'}" in result.stdout
-        expected = (
-            {
-                v2.ENABLE_SMART_ROUTING_ENV_VAR: "0",
-                v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
-                v2.ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
-            }
-            if action == "disable"
-            else {}
-        )
-        assert json.loads(session_path.read_text()) == expected
+        controls = json.loads(session_path.read_text())
+        assert controls["enabled"] is (action == "enable")
+        assert controls["ever_enabled"] is True
 
 
 def test_launcher_flags_control_routing_hook(tmp_path, monkeypatch):
@@ -110,3 +103,17 @@ def test_launcher_flags_control_routing_hook(tmp_path, monkeypatch):
     assert runner.invoke(cli.app, ["codex", "--enable-smart-routing"], env=env).exit_code == 0
     assert runner.invoke(cli.app, hook_args, input=payload, env=env).exit_code == 0
     route.assert_called_once()
+
+
+def test_first_on_asks_to_review_the_hooks():
+    path = session_env.start_session({}, enabled=False, when_on={})
+    env = {session_env.SESSION_ENV_VAR: str(path), "NO_COLOR": "1"}
+
+    def toggle(action: str) -> str:
+        result = runner.invoke(cli.app, ["codex", f"--{action}-smart-routing"], env=env)
+        assert result.exit_code == 0, result.output
+        return " ".join(result.output.split())
+
+    assert "trust the ug routing hooks" in toggle("enable")
+    assert "trust the ug routing hooks" not in toggle("disable")
+    assert "trust the ug routing hooks" not in toggle("enable")

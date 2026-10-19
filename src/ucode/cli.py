@@ -48,12 +48,7 @@ from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
-from ucode.constants import (
-    AGENT_CLAUDE,
-    AGENT_CODEX,
-    ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
-    SMART_ROUTING_ENV_KEYS,
-)
+from ucode.constants import AGENT_CLAUDE, AGENT_CODEX, ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR
 from ucode.custom_oauth import (
     CUSTOM_OAUTH_CLI_ENV_VAR,
     custom_oauth_cli_enabled,
@@ -155,7 +150,7 @@ from ucode.smart_routing.claude_hooks import (
 from ucode.smart_routing.session_env import (
     effective_environment,
     session_env_path,
-    set_session_environment,
+    set_session_enabled,
 )
 from ucode.state import (
     MANAGED_OVERLAY_KEY,
@@ -2736,7 +2731,16 @@ def _smart_routing_v2_flag(enabled: bool | None, *, agent: str) -> Iterator[None
         smart_routing_v2.restore_smart_routing_env(previous)
 
 
-def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | None = None) -> bool:
+def _print_hook_review_note(tool: str) -> None:
+    print_note(
+        f"{TOOL_SPECS[tool]['display']} may require one-time hook review. Open "
+        "`/hooks` and trust the ug routing hooks if prompted."
+    )
+
+
+def _toggle_current_smart_routing_session(
+    enabled: bool | None, *, tool: str, reason: str | None = None
+) -> bool:
     if enabled is None:
         return False
     try:
@@ -2755,11 +2759,13 @@ def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | No
         )
         raise typer.Exit(2)
     try:
-        set_session_environment(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0") if not enabled else {})
+        first_on = set_session_enabled(enabled)
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
     print_success(f"Smart Router is {'on' if enabled else 'off'} for this session")
+    if first_on:
+        _print_hook_review_note(tool)
     return True
 
 
@@ -3522,10 +3528,7 @@ def _launch_tool(
         if provider:
             print_kv("Provider", provider)
         if tool in CAN_USE_CACHED_CONFIG_AGENTS and smart_routing_enabled and not provider:
-            print_note(
-                f"{TOOL_SPECS[tool]['display']} may require one-time hook review. Open "
-                "`/hooks` and trust the ug routing hooks if prompted."
-            )
+            _print_hook_review_note(tool)
         if tool in ("gemini", "opencode", "kilo", "pi"):
             print_note(
                 f"{TOOL_SPECS[tool]['display']} token refresh is managed automatically "
@@ -3793,7 +3796,9 @@ def codex_cmd(
     ] = None,
 ) -> None:
     """Launch Codex via Databricks."""
-    if _toggle_current_smart_routing_session(enable_smart_routing_flag, smart_router_feedback):
+    if _toggle_current_smart_routing_session(
+        enable_smart_routing_flag, tool=AGENT_CODEX, reason=smart_router_feedback
+    ):
         return
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
@@ -3885,7 +3890,9 @@ def claude_cmd(
     ] = None,
 ) -> None:
     """Launch Claude Code via Databricks."""
-    if _toggle_current_smart_routing_session(enable_smart_routing_flag, smart_router_feedback):
+    if _toggle_current_smart_routing_session(
+        enable_smart_routing_flag, tool=AGENT_CLAUDE, reason=smart_router_feedback
+    ):
         return
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)

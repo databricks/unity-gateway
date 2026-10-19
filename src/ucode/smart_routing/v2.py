@@ -30,6 +30,7 @@ from ucode.config_io import (
 )
 from ucode.constants import (
     AGENT_CLAUDE,
+    AGENT_CODEX,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
@@ -101,7 +102,7 @@ class ClaudeRoutingSetupError(RuntimeError):
     """Routing files could not be written; the caller can launch Claude normally."""
 
 
-def _prepare_smart_router_session(agent: str) -> Path:
+def _prepare_smart_router_session(agent: str, launch_env: Mapping[str, str]) -> Path:
     skills = [SMART_ROUTER_SKILL]
     if orchestrator.feature_enabled(agent=agent):
         skills.append(SMART_ROUTER_ORCHESTRATOR_SKILL)
@@ -110,7 +111,8 @@ def _prepare_smart_router_session(agent: str) -> Path:
             install_skill(skill, agent, config_io.APP_DIR.parent)
         except (OSError, RuntimeError) as exc:
             print_warning(f"Could not install the {skill} skill: {exc}")
-    return start_session()
+    when_on = {key: launch_env.get(key, "0") for key in SMART_ROUTING_ENV_KEYS}
+    return start_session(enabled=True, when_on=when_on)
 
 
 def remove_smart_router_session_skills(agent: str) -> None:
@@ -714,12 +716,13 @@ def _add_claude_routing(
         )[0]
         sync_first_prompt_hook(settings, hook_executable)
     orchestrator.sync_hooks(settings, agent="claude")
-    env[SESSION_ENV_VAR] = str(_prepare_smart_router_session("claude"))
+    launch_env = {**resolve_environment(agent=AGENT_CLAUDE), **env}
+    env[SESSION_ENV_VAR] = str(_prepare_smart_router_session("claude", launch_env))
     env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
     settings.setdefault("pluginConfigs", {}).setdefault(CLAUDE_ROUTING_PLUGIN_NAME, {})[
         "options"
     ] = {
-        **_claude_mod_launch_options({**resolve_environment(agent=AGENT_CLAUDE), **env}),
+        **_claude_mod_launch_options(launch_env),
         "routeCommand": routing_hook_argv(routing_state, ROUTE_SUBAGENT_MOD_EVENT),
     }
     try:
@@ -867,7 +870,9 @@ def add_codex_smart_router(state: dict, config: dict) -> list[str]:
         )
     config["hooks"] = _v2_hooks(state, available_models)
     config["features.hooks"] = True
-    session_env_path = _prepare_smart_router_session("codex")
+    session_env_path = _prepare_smart_router_session(
+        "codex", resolve_environment(agent=AGENT_CODEX)
+    )
     # Codex constructs tool subprocess environments through its shell policy.
     # Pass both the session marker and its launching interpreter through that policy.
     config[f"shell_environment_policy.set.{SESSION_ENV_VAR}"] = str(session_env_path)

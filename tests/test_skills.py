@@ -94,7 +94,14 @@ def test_orchestrator_injects_the_installed_agent_instructions(
     installed = skills.install_skill(skills.SMART_ROUTER_ORCHESTRATOR_SKILL, agent, home)
     monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", "1")
     monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "1")
-    session_env.start_session()
+    session_env.start_session(
+        enabled=True,
+        when_on={
+            "ENABLE_SMART_ROUTING_V2": "0",
+            "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1",
+            "ENABLE_SMART_ROUTER_ORCHESTRATOR": "1",
+        },
+    )
 
     settings = {}
     orchestrator.sync_hooks(settings, agent=agent)
@@ -107,10 +114,10 @@ def test_orchestrator_injects_the_installed_agent_instructions(
     assert context.endswith(f"\n\n{agent} instructions")
     assert context.endswith(installed.joinpath("SKILL.md").read_text())
 
-    session_env.set_session_environment({"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0"})
+    session_env.set_session_enabled(False)
     output = orchestrator.hook_output(payload, agent=agent)
     assert output["hookSpecificOutput"]["additionalContext"] == orchestrator.DISABLED_CONTEXT
-    session_env.set_session_environment({})
+    session_env.set_session_enabled(True)
     output = orchestrator.hook_output(payload, agent=agent)
     assert output["hookSpecificOutput"]["additionalContext"] == context
 

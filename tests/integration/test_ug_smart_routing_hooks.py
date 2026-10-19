@@ -202,16 +202,7 @@ def _toggle_with_skill(
 
     controls = list(Path(session.env["TMPDIR"]).glob("ug-session-env-*/env.json"))
     assert len(controls) == 1, controls
-    expected = (
-        {}
-        if enabled
-        else {
-            "ENABLE_SMART_ROUTING_V2": "0",
-            "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0",
-            "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
-        }
-    )
-    assert json.loads(controls[0].read_text()) != expected
+    assert json.loads(controls[0].read_text())["enabled"] is not enabled
 
     def completion_counts():
         answers = confirmations = 0
@@ -235,7 +226,8 @@ def _toggle_with_skill(
             return False
         answers, confirmations = completion_counts()
         return (
-            controls_now == expected
+            controls_now["enabled"] is enabled
+            and controls_now["ever_enabled"] is True
             and confirmations > before_confirmations
             and answers > before_answers
         )
