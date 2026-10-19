@@ -21,6 +21,7 @@ def test_plugin_contains_mod_entry_point(tmp_path):
         "extra-body.ts",
         "isaac-feedback.ts",
         "routing-state.ts",
+        "session-file.ts",
         "smart-routing-status.ts",
         "subagent-routing.ts",
     ):
@@ -32,6 +33,7 @@ def test_plugin_contains_mod_entry_point(tmp_path):
         "isaac-feedback.ts",
         "register.ts",
         "routing-state.ts",
+        "session-file.ts",
         "smart-routing-status.ts",
         "subagent-routing.ts",
     ]

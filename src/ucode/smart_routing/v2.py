@@ -450,6 +450,7 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
         "extra-body.ts",
         "isaac-feedback.ts",
         "routing-state.ts",
+        "session-file.ts",
         "smart-routing-status.ts",
         "subagent-routing.ts",
     ):

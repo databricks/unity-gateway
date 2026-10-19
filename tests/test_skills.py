@@ -122,6 +122,18 @@ def test_orchestrator_injects_the_installed_agent_instructions(
     assert output["hookSpecificOutput"]["additionalContext"] == context
 
 
+def test_orchestrator_hooks_replace_those_from_earlier_releases(monkeypatch):
+    monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", "1")
+    earlier = "/usr/bin/python3 -m ucode.smart_routing.orchestrator --agent claude"
+    settings = {"hooks": {"UserPromptSubmit": [{"hooks": [{"command": earlier}]}]}}
+
+    orchestrator.sync_hooks(settings, agent="claude")
+
+    (group,) = settings["hooks"]["UserPromptSubmit"]
+    (hook,) = group["hooks"]
+    assert shlex.split(hook["command"])[1:3] == ["-m", "ucode.smart_routing.orchestrator_hook"]
+
+
 def test_uninstalls_one_skill_from_agent_roots(bundled_skill):
     source_skill, home = bundled_skill
     _write_skill(source_skill.parent, "second-skill")

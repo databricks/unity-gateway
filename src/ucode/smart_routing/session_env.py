@@ -18,11 +18,10 @@ from pathlib import Path
 from ucode.config_io import atomic_write_json
 from ucode.constants import SMART_ROUTING_ENV_KEYS
 from ucode.smart_routing.config import resolve_environment
+from ucode.smart_routing.session_state import SESSION_ENV_VAR, is_switch
 
-SESSION_ENV_VAR = "UCODE_SESSION_ENV_FILE"
 SESSION_PYTHON_ENV_VAR = "UCODE_SMART_ROUTER_PYTHON"
 _ALLOWED_KEYS = frozenset(SMART_ROUTING_ENV_KEYS)
-_SWITCH_KEYS = frozenset({"enabled", "when_on", "ever_enabled"})
 _ROUTING_OFF = dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
 
 
@@ -53,10 +52,6 @@ def session_env_path(env: Mapping[str, str] | None = None) -> Path:
     )
 
 
-def _is_switch(controls: Mapping) -> bool:
-    return controls.keys() == _SWITCH_KEYS
-
-
 def _validate_overrides(values: object) -> dict[str, str]:
     if not isinstance(values, dict) or any(
         key not in _ALLOWED_KEYS or not isinstance(value, str) for key, value in values.items()
@@ -66,7 +61,7 @@ def _validate_overrides(values: object) -> dict[str, str]:
 
 
 def _validate(controls: object) -> dict:
-    if not isinstance(controls, dict) or not _is_switch(controls):
+    if not isinstance(controls, dict) or not is_switch(controls):
         return _validate_overrides(controls)
     if not isinstance(controls["enabled"], bool) or not isinstance(controls["ever_enabled"], bool):
         raise ValueError("invalid session environment")
@@ -79,7 +74,7 @@ def _read(path: Path) -> dict:
 
 
 def _overrides(controls: dict) -> dict[str, str]:
-    if not _is_switch(controls):
+    if not is_switch(controls):
         return controls
     return controls["when_on"] if controls["enabled"] else _ROUTING_OFF
 
@@ -112,7 +107,7 @@ def set_session_enabled(enabled: bool) -> bool:
         controls = _read(path)
     except (OSError, UnicodeError, ValueError) as exc:
         raise RuntimeError(f"Smart Router session controls at {path} are invalid.") from exc
-    if not _is_switch(controls):
+    if not is_switch(controls):
         atomic_write_json(path, {} if enabled else _ROUTING_OFF)
         return False
     atomic_write_json(

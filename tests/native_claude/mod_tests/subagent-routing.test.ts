@@ -129,3 +129,30 @@ test('a call waiting on the router shows a spinner until its model is selected',
   expect(await done.find({ type: 'Text', text: ' (routed in 3.2s)' })).toBeDefined();
   await done.unmount();
 });
+
+for (const [name, controls, routerRuns] of [
+  ['an off session', { enabled: false, when_on: {}, ever_enabled: true }, 0],
+  ['an on session', { enabled: true, when_on: {}, ever_enabled: true }, 1],
+  ['an earlier session format', {}, 1],
+] as const) {
+  test(`${name} ${routerRuns ? 'asks' : 'skips'} the router`, async ($, on) => {
+    const calls: any[] = [];
+    let runs = 0;
+    on('session.id', () => ({ value: 'session-1' }));
+    on('env.get', ($, e) => ({ value: e.name === 'UCODE_SESSION_ENV_FILE' ? '/session/env.json' : undefined }));
+    on('fs.read', ($, e) => {
+      expect(e.path).toBe('/session/env.json');
+      return { value: JSON.stringify(controls) };
+    });
+    on('process.run', () => {
+      runs += 1;
+      return { value: { exitCode: 0, stdout: '', stderr: '' } };
+    });
+    on('tool.call', ($, e) => { calls.push(e); return { result: 'ok' }; });
+
+    await $.tool.call({ tool: 'Agent', tool_use_id: 'call-a', ...originalInput });
+    expect(runs).toBe(routerRuns);
+    expect(calls.length).toBe(1);
+    expect(calls[0].subagent_type).toBe(originalInput.subagent_type);
+  });
+}

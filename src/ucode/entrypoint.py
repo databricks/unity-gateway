@@ -2,7 +2,9 @@
 
 Launchers such as isaac run ``ug --version`` on every start. Importing ``ucode.cli`` (Typer, Rich,
 questionary, every subcommand module) costs far more than printing the version, so a bare version
-request is answered here without importing it. Every other invocation goes to ``ucode.cli.main``.
+request is answered here without importing it. Routing hooks run on every subagent start, so a
+hook in a session whose Smart Router is off also exits here. Every other invocation goes to
+``ucode.cli.main``.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ import sys
 
 _DISTRIBUTION = "unity_gateway"
 _VERSION_ARGV = (["--version"], ["-V"])
+_ROUTING_HOOK_COMMANDS = frozenset({"claude-router-hook", "codex-router-hook"})
 
 
 def _read_installed_version() -> str | None:
@@ -66,6 +69,11 @@ def main() -> None:
             version = ug_version()
         print(version)
         return
+    if sys.argv[1:2] and sys.argv[1] in _ROUTING_HOOK_COMMANDS:
+        from ucode.smart_routing import session_state
+
+        if session_state.is_off():
+            return
 
     from ucode.cli import main as cli_main
 

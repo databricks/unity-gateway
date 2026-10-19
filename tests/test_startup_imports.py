@@ -8,6 +8,7 @@ import sys
 import zipfile
 from importlib.metadata import version
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -107,6 +108,69 @@ def test_cli_import_defers_subcommand_specific_modules() -> None:
     _, loaded = _modules_loaded_after("import ucode.cli\nimport ucode.agents.claude", _LAZY_MODULES)
 
     assert loaded == []
+
+
+def _write_session_switch(path: Path, *, enabled: bool, ever_enabled: bool) -> Path:
+    when_on = {
+        "ENABLE_SMART_ROUTING_V2": "0",
+        "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1",
+        "ENABLE_SMART_ROUTER_ORCHESTRATOR": "1",
+    }
+    path.write_text(
+        json.dumps({"enabled": enabled, "when_on": when_on, "ever_enabled": ever_enabled}),
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.mark.parametrize("command", ["claude-router-hook", "codex-router-hook"])
+def test_routing_hook_skips_cli_imports_while_smart_router_is_off(
+    tmp_path: Path, command: str
+) -> None:
+    session = _write_session_switch(tmp_path / "env.json", enabled=False, ever_enabled=True)
+    _, loaded = _modules_loaded_after(
+        f"import os, sys\nos.environ['UCODE_SESSION_ENV_FILE'] = {str(session)!r}\n"
+        f"sys.argv = ['ug', {command!r}, 'probe']\n"
+        "from ucode.entrypoint import main\nmain()",
+        ("ucode.cli", "rich"),
+    )
+
+    assert loaded == []
+
+
+@pytest.mark.parametrize("command", ["claude-router-hook", "codex-router-hook"])
+def test_routing_hook_reaches_the_cli_while_smart_router_is_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    session = _write_session_switch(tmp_path / "env.json", enabled=True, ever_enabled=True)
+    monkeypatch.setenv("UCODE_SESSION_ENV_FILE", str(session))
+    monkeypatch.setattr(sys, "argv", ["ug", command, "probe"])
+    cli_main = Mock()
+    monkeypatch.setattr("ucode.cli.main", cli_main)
+
+    entrypoint.main()
+
+    cli_main.assert_called_once_with()
+
+
+@pytest.mark.parametrize("ever_enabled", [False, True])
+def test_orchestrator_hook_answers_an_off_session_without_ug_imports(
+    tmp_path: Path, ever_enabled: bool
+) -> None:
+    session = _write_session_switch(tmp_path / "env.json", enabled=False, ever_enabled=ever_enabled)
+    output, loaded = _modules_loaded_after(
+        f"import io, os, sys\nos.environ['UCODE_SESSION_ENV_FILE'] = {str(session)!r}\n"
+        'sys.stdin = io.StringIO(\'{"hook_event_name": "UserPromptSubmit"}\')\n'
+        "from ucode.smart_routing.orchestrator_hook import main\nmain()",
+        ("ucode.cli", "ucode.skills", "ucode.smart_routing.orchestrator", "rich"),
+    )
+
+    assert loaded == []
+    if ever_enabled:
+        context = json.loads(output)["hookSpecificOutput"]["additionalContext"]
+        assert context.startswith("Smart Router Orchestrator is off for this session.")
+    else:
+        assert output == ""
 
 
 @pytest.mark.parametrize("reported_version", ["1.2.3", "1.2.3.post4", "1.2.3+abc123"])
