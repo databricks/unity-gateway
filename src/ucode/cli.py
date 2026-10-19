@@ -3051,6 +3051,21 @@ def _skip_model_discovery(
     )
 
 
+def _get_catalog_profile(state: dict) -> str | None:
+    """The Databricks CLI profile used to fetch the Claude model catalog.
+
+    Custom OAuth CLI setup (e.g. Isaac) authenticates a separate CLI profile and saves it in
+    ``state["custom_oauth"]["profile"]``. Use that profile when it exists; otherwise use the
+    workspace profile.
+    """
+    custom_oauth_config = state.get("custom_oauth")
+    if isinstance(custom_oauth_config, dict):
+        custom_profile = custom_oauth_config.get("profile")
+        if custom_profile:
+            return custom_profile
+    return state.get("profile")
+
+
 def _launch_tool(
     tool_name: str,
     ctx: typer.Context,
@@ -3278,12 +3293,7 @@ def _launch_tool(
         # lookup via resolve_gemini_provider_model (below), and uses no family model map.
         provider_models = None
         picker_catalog = None
-        # Custom OAuth setup (e.g. Isaac) authenticates a separate CLI profile.
-        catalog_profile = (
-            state["custom_oauth"].get("profile")
-            if custom_oauth_cli_enabled(state.get("custom_oauth"))
-            else state.get("profile")
-        )
+        catalog_profile = _get_catalog_profile(state)
         relayed = False
         coding_agent_config_defaults = (
             managed_claude_family_models(managed) or {}
