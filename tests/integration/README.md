@@ -91,6 +91,10 @@ absent; use `--help` for the startup-import probe.
 Agent-specific bundled instruction selection and prompt/compaction hook content
 are covered in `../test_skills.py`; those component checks do not run live agents.
 
+Custom OAuth startup with an expired ordinary profile has no automated integration
+coverage. Validate Claude's default, model-location, and provider catalogs in Isaac
+with the custom OAuth profile.
+
 `TestChildStdoutLaunch` in `../test_cli.py` covers clean Claude print-mode and
 Codex exec/app-server stdout, early launch errors, and forwarding through ug's `--`.
 Token membership before the agent's `--` intentionally also matches option values and prompt

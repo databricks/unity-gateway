@@ -3051,6 +3051,21 @@ def _skip_model_discovery(
     )
 
 
+def _get_catalog_profile(state: dict) -> str | None:
+    """The Databricks CLI profile used to fetch the Claude model catalog.
+
+    Custom OAuth CLI setup (e.g. Isaac) authenticates a separate CLI profile and saves it in
+    ``state["custom_oauth"]["profile"]``. Use that profile when it exists; otherwise use the
+    workspace profile.
+    """
+    custom_oauth_config = state.get("custom_oauth")
+    if isinstance(custom_oauth_config, dict):
+        custom_profile = custom_oauth_config.get("profile")
+        if custom_profile:
+            return custom_profile
+    return state.get("profile")
+
+
 def _launch_tool(
     tool_name: str,
     ctx: typer.Context,
@@ -3191,11 +3206,6 @@ def _launch_tool(
             # rewriting it; the admin's location exists only for this launch.
             provider = None
             parent_schema = managed_parent_schema
-        # Unmanaged Claude launches discover gateway models automatically; with no
-        # provider or parent header the gateway defaults to system.ai. Managed
-        # configs opt into discovery by selecting an MPS or Unity Catalog location.
-        if tool == "claude" and (managed is None or managed_provider or managed_parent_schema):
-            os.environ[claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
         # The environment switch remains a developer override; managed config is the workspace
         # policy equivalent and must take effect before launch options are computed.
         managed_smart_routing_enabled = _managed_smart_routing_enabled(managed, tool)
@@ -3218,6 +3228,15 @@ def _launch_tool(
             if tool == "claude"
             else None
         )
+        # Unmanaged Claude launches discover gateway models automatically unless another writer's
+        # managed picker already supplies the launch's models. A managed MPS or Unity Catalog
+        # location opts into discovery for its own source.
+        if (
+            tool == "claude"
+            and family_defaults is None
+            and (managed is None or managed_provider or managed_parent_schema)
+        ):
+            os.environ[claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
         state = configure_shared_state(
             state["workspace"],
             profile=state.get("profile"),
@@ -3278,6 +3297,7 @@ def _launch_tool(
         # lookup via resolve_gemini_provider_model (below), and uses no family model map.
         provider_models = None
         picker_catalog = None
+        catalog_profile = _get_catalog_profile(state)
         relayed = False
         coding_agent_config_defaults = (
             managed_claude_family_models(managed) or {}
@@ -3318,7 +3338,7 @@ def _launch_tool(
             )
         )
         if should_fetch_claude_picker_catalog:
-            token = get_databricks_token(state["workspace"], state.get("profile"))
+            token = get_databricks_token(state["workspace"], catalog_profile)
             picker_catalog = list_anthropic_model_catalog(
                 state["workspace"],
                 token,
@@ -3402,10 +3422,16 @@ def _launch_tool(
             route_root_model = None
         # List the gateway's models in ug's own /model picker so GPT rows get the `[1m]` hint.
         # Claude Code's own discovery lists them without it, so they would run at 200K.
-        if tool == "claude" and managed is None and not provider and not parent_schema:
+        if (
+            tool == "claude"
+            and managed is None
+            and not provider
+            and not parent_schema
+            and family_defaults is None
+        ):
             discovered = list_anthropic_model_catalog(
                 state["workspace"],
-                get_databricks_token(state["workspace"], state.get("profile")),
+                get_databricks_token(state["workspace"], catalog_profile),
             )
             if discovered.model_ids:
                 picker_catalog = claude_agent.default_model_picker_catalog(
