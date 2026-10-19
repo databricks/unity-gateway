@@ -8,6 +8,11 @@ for both agents. Fixtures are provisioned separately; this suite does not modify
 | `ug_e2e.tools.fixture_reader` | `read_fixture(run_id)` |
 | `ug_e2e.tools.fixture_metadata` | `describe_fixture(run_id)` |
 
+Each journey first calls both services directly through the gateway with the service
+principal's bearer (`initialize`, then `tools/list`) and fails with the HTTP status and body
+if a fixture is unreachable. Agents report only a generic `failed` status for a server that
+`ug mcp-proxy` cannot reach.
+
 The two TUI journeys configure installed UG, open the real agent MCP inventory, and require
 connected servers with their tools loaded. Claude opens each server's details and tools
 view; Codex uses `/mcp verbose`. Both then call the two tools with a fresh run ID and return

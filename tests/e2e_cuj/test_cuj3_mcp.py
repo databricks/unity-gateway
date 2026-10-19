@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 
+import httpx
 import pytest
 
 from tests.integration.utils.evidence import (
@@ -14,7 +15,7 @@ from tests.integration.utils.evidence import (
 )
 from tests.integration.utils.mcp import open_claude_mcp_inventory, open_codex_mcp_inventory
 
-from .base import BaseCujTest
+from .base import BaseCujTest, bearer
 from .helpers.constants import CLAUDE, CODEX
 from .helpers.mcp import registered_name
 from .helpers.poll import poll
@@ -156,6 +157,69 @@ def _wait_for_mcp_task(tui, task):
         raise AssertionError(f"{error}\nNative assistant answers: {answers!r}") from None
 
 
+def _mcp_post(client, url, headers, message):
+    """POST one JSON-RPC message; return the response and its JSON-RPC reply, if any."""
+    response = client.post(url, headers=headers, json=message)
+    if response.status_code != 200 or "id" not in message:
+        return response, None
+    if response.headers.get("content-type", "").startswith("text/event-stream"):
+        for line in response.text.splitlines():
+            if line.startswith("data:"):
+                reply = json.loads(line.removeprefix("data:"))
+                if reply.get("id") == message["id"]:
+                    return response, reply
+        return response, None
+    return response, response.json()
+
+
+def _assert_fixture_services_serve_tools(workspace):
+    """Call each fixture service through the gateway before driving an agent TUI.
+
+    Both agents reach these services through `ug mcp-proxy`, which hides the gateway's reply
+    behind a generic "failed" status. Probing directly reports the HTTP status and body.
+    """
+    token = bearer(workspace.client)
+    base_headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json, text/event-stream",
+    }
+    with httpx.Client(timeout=60) as client:
+        for service, tool in SERVICES.items():
+            url = f"{workspace.url}/ai-gateway/mcp-services/{service}"
+            headers = dict(base_headers)
+            steps = [
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-06-18",
+                        "capabilities": {},
+                        "clientInfo": {"name": "ug-cuj3-probe", "version": "0"},
+                    },
+                },
+                {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+            ]
+            reply = None
+            for message in steps:
+                response, reply = _mcp_post(client, url, headers, message)
+                body = response.text[:1000].replace(token, "<redacted>")
+                assert response.status_code in (200, 202), (
+                    f"{service} {message['method']} returned HTTP {response.status_code} "
+                    f"({response.headers.get('content-type')}): {body}"
+                )
+                if session_id := response.headers.get("mcp-session-id"):
+                    headers["mcp-session-id"] = session_id
+                if "id" in message:
+                    assert reply and "result" in reply, (
+                        f"{service} {message['method']} returned no JSON-RPC result: {body}"
+                    )
+            assert reply is not None
+            tools = [entry.get("name") for entry in reply["result"].get("tools", [])]
+            assert tool in tools, f"{service} tools/list omitted {tool}: {tools}"
+
+
 def _fixture_server_rows(output):
     return {
         service: [
@@ -212,6 +276,7 @@ class TestMcpRegistration(BaseCujTest):
         no `ug_e2e.other_tools` server appears. Codex connectivity is verified by its TUI journey.
         """
         session, workspace, _recorder = cuj
+        _assert_fixture_services_serve_tools(workspace)
         session.configure(
             [
                 "configure",
@@ -237,6 +302,7 @@ class TestMcpRegistration(BaseCujTest):
         a parent assistant answer contains the correct receipts for a fresh run ID.
         """
         session, workspace, _recorder = cuj
+        _assert_fixture_services_serve_tools(workspace)
         session.configure(["configure", "--workspace", workspace.url, "--skip-upgrade"])
         task = McpFixtureTask()
         allowed_tools = ",".join(
@@ -267,6 +333,7 @@ class TestMcpRegistration(BaseCujTest):
         a completed parent turn returns the correct receipts for a fresh run ID.
         """
         session, workspace, _recorder = cuj
+        _assert_fixture_services_serve_tools(workspace)
         session.configure(["configure", "--workspace", workspace.url, "--skip-upgrade"])
         task = McpFixtureTask()
         with Terminal(session, "mcp-registration-codex", [CODEX]) as tui:
