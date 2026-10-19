@@ -16,6 +16,11 @@ from utils.terminal import TerminalProcess
 pytestmark = [pytest.mark.live, pytest.mark.copilot]
 
 PAT_BEARER = Path(__file__).parent / "utils" / "pat_bearer.py"
+# v0.2.0, the last release that saved the Databricks token in ~/.copilot/ucode.env.
+TOKEN_SAVING_UG = (
+    "unity-gateway @ git+https://github.com/databricks/unity-gateway"
+    "@cb7bd8c54800ac59b9701ea0ac9f561c83d07bf7"
+)
 
 
 def _configure(session, workspace):
@@ -61,6 +66,25 @@ def _delete_minted(session, workspace, state):
         timeout=120,
         check=False,
     )
+
+
+def _install_token_saving_ug(session) -> Path:
+    uv = shutil.which("uv", path=session.env["PATH"])
+    assert uv, "Installing the older ug release needs uv."
+    venv = session.home.parent / "ug-0.2.0"
+    for command in (
+        [uv, "venv", "--python", "3.12", str(venv)],
+        [uv, "pip", "install", "--python", str(venv), TOKEN_SAVING_UG],
+    ):
+        subprocess.run(
+            command,
+            env=session.env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=300,
+            check=True,
+        )
+    return venv / ("Scripts/ug.exe" if os.name == "nt" else "bin/ug")
 
 
 def _minted_count(state):
@@ -151,9 +175,7 @@ def test_ug_configure_copilot_repeat_and_revert(live_session, workspace):
 
     Expected: repeat setup stays usable, a headless GPT task completes, no file under the
     session home holds the bearer, revert removes ug's generated Copilot env file and leaves
-    the user's file byte-identical, and a repeated revert succeeds. Limits: tokens written
-    by older ug versions are scrubbed by `configure`/`revert`, but this suite has no older ug
-    to produce them; unit tests cover that path.
+    the user's file byte-identical, and a repeated revert succeeds.
     """
     session = live_session
     task = FileTask(session)
@@ -193,3 +215,50 @@ def test_ug_configure_copilot_repeat_and_revert(live_session, workspace):
         session, "ug", [str(session.binary), "revert"], "repeat-revert"
     ) as terminal:
         terminal.finish()
+
+
+def test_ug_copilot_upgrade_scrubs_token_saved_by_older_ug(live_session, workspace):
+    """Scenario: configure Copilot with ug v0.2.0, upgrade to this ug, configure, use, revert.
+
+    Expected: v0.2.0 leaves the bearer in ~/.copilot/ucode.env (the scenario's input);
+    this ug's configure removes it so no file under the session home holds the bearer,
+    a headless GPT task completes, and revert leaves no token and no generated env file.
+    """
+    session = live_session
+    task = FileTask(session)
+    token_saving_ug = _install_token_saving_ug(session)
+    env_file = session.home / ".copilot/ucode.env"
+
+    session.run(
+        "configure",
+        "--agents",
+        "copilot",
+        "--workspace",
+        workspace,
+        "--skip-validate",
+        "--skip-upgrade",
+        binary=token_saving_ug,
+    )
+    assert session.env["DATABRICKS_BEARER"] in env_file.read_text(encoding="utf-8"), (
+        "ug v0.2.0 no longer saves the bearer, so this journey has no legacy token to scrub"
+    )
+
+    _configure(session, workspace)
+    assert_no_bearer_on_disk(session)
+    session.record("copilot-model.json", {"model": CODEX_TEST_MODEL})
+    result = session.run(
+        "copilot",
+        "--model",
+        CODEX_TEST_MODEL,
+        "-p",
+        task.prompt,
+        *COPILOT_HEADLESS_FLAGS,
+        timeout=180,
+    )
+    task.assert_headless_answer("copilot", result)
+
+    with TerminalProcess(session, "ug", [str(session.binary), "revert"], "revert") as terminal:
+        terminal.finish()
+    assert not env_file.exists()
+    assert "Not Configured" in session.run("status").stdout
+    assert_no_bearer_on_disk(session)
