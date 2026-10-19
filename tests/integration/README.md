@@ -92,9 +92,10 @@ or construct ug state files. The normal test suite checks these boundaries.
 The Claude mod entry point has separate native component checks in
 `../native_claude/test_mod.py`. Claude 2.1.290 validates the module and runs its
 TypeScript event-forwarding and launch-option tests in a dedicated CI job. The
-existing Claude skill-toggle journey checks the live recipe payload field across on/off/on.
+existing Claude skill-toggle journey checks the live recipe payload field across on/off/on, and
+the on-demand journey checks it across off (no recipe), on, and off in a session that starts off.
 The required Isaac feedback form and evidence submission need a separate manual
-Isaac check. The gateway toggle journey does not cover the form.
+Isaac check. The gateway toggle journeys do not cover the form.
 
 The existing unit tests keep their fixtures. Integration has an independent
 pytest configuration and uses `--confcutdir` so those fixtures cannot leak in.

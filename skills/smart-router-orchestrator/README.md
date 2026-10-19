@@ -8,26 +8,30 @@ enables both V2 and subagent-only routing flags alongside orchestration; subagen
 takes precedence, so the first prompt is not routed.
 The existing `ENABLE_SMART_ROUTER_ORCHESTRATOR=1` opt-in remains supported when
 `SMART_ROUTER_CONFIG_VERSION` is unset; `subagent_only_v0` explicitly leaves orchestration off.
-The feature is off by default; routing alone installs only `smart-router`.
+The feature is off by default; routing alone installs only `smart-router`. A session that
+starts with Smart Router off on demand (`ENABLE_SMART_ROUTER_ON_DEMAND=1`) gets the hooks and
+roles without installing this skill, and `/smart-router on` turns the workflow on with routing.
 
 `SKILL.claude.md` and `SKILL.codex.md` hold each agent's instructions. UG installs
 the selected file as `SKILL.md` and injects that same version through the hooks.
 Role definitions and other bundle resources remain shared.
 
 The workflow is injected before root prompts and after compaction. The hook checks
-the feature flag, UG session, and current routing controls. The skill uses that
+the UG session file, which holds the orchestration flag and the current routing controls.
+While Smart Router is off, it answers without loading UG and adds nothing until the session
+has been on. The skill uses that
 activation context without running a separate check before delegation.
 Turning Smart Router off through its skill stops new automatic delegation and
-supersedes the previous workflow. Turning it on restores orchestration only in
-opted-in sessions. A change made outside the conversation is observed at the next
+supersedes the previous workflow. Turning it on restores orchestration in opted-in
+sessions and in sessions that started off on demand. A change made outside the conversation is observed at the next
 prompt or compaction; model routing still checks the controls for each subagent.
 An installed skill or saved model preference cannot enable orchestration.
 Explicit user requests for subagents still use native harness behavior while routing
 is off, without the Smart Router Orchestrator workflow.
 User instructions take precedence, and easy tasks remain in the root.
 
-Claude loads the bundled roles as `ug-smart-router:<role>` in its temporary
-routing plugin. Claude omits model overrides; its bundled roles default to Sonnet.
+Claude loads the bundled roles as `ug-smart-router:<role>` in its routing plugin; their
+descriptions say to use them only while Smart Router is on. Claude omits model overrides; its bundled roles default to Sonnet.
 Codex requests Luna without a reasoning effort override. The routing hook can
 replace the requested model.
 Role instructions belong in each task prompt because routing may replace the

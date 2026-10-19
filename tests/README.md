@@ -141,7 +141,9 @@ preconfigured workspace is assigned.
 `test_entry_points.py` also runs both installed console scripts (`ug` and `ucode`)
 and checks their version output against the `unity-gateway` distribution metadata.
 `test_startup_imports.py` guards the bare `--version` / `-V` fast path and deferred
-command-specific imports in fresh interpreters. Component tests cover metadata lookup,
+command-specific imports in fresh interpreters. It also checks that routing hooks in a session
+whose Smart Router is off exit before importing the CLI, that they reach the CLI while it's on,
+and that the orchestrator hook answers an off session without loading ug. Component tests cover metadata lookup,
 version suffixes, fallback, and unchanged dispatch for other arguments; they do not
 claim a live agent launch or end-to-end startup timing. An isolated interpreter
 without site packages also proves that intact metadata can produce version output
@@ -383,13 +385,16 @@ version is not executed here.
 
 `test_smart_router.py` executes the installed skill's shell commands with another `ug`
 first in PATH and a launching interpreter path containing spaces. Both agents' toggles
-must update the session controls through the launching installation. Launch tests check
+must update the session controls through the launching installation, and only a session's
+first `on` asks the user to review the hooks. Launch tests check
 that Claude settings and Codex's shell policy carry the interpreter and session marker.
 These are component checks; they do not establish native skill permission matching or
 PowerShell execution.
 
 `test_skills.py` checks agent-specific instruction installation, bundle updates,
-and matching prompt/compaction hook content for Claude and Codex. It also covers
+and matching prompt/compaction hook content for Claude and Codex. An on-demand session's
+orchestrator hook adds nothing before the first `on`, the workflow after it, and the off note
+after `off`; hooks written for the old orchestrator module are replaced. It also covers
 shared `SKILL.md` bundles. These are component checks, not live agent execution.
 
 `test_smart_routing_config.py` includes a 162-case Cartesian component oracle: all three legacy
@@ -487,6 +492,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_codex_app_server_client_initializes` | Connect a stdio client, direct/`--` separator, with legacy smart routing off/on | Actual JSON-RPC initialize response; no non-JSON stdout; no routing |
 | `test_smart_routing_claude_route_subagent_hook`, `test_smart_routing_codex_route_subagent_hook` | Pipe a native spawn payload to the installed Claude mod command or Codex PreToolUse hook with legacy subagent routing or each supported routing preset | Claude returns model/rationale/updatedInput JSON naming the routed agent the mod labels; Codex returns an allow-hook decision; requested model replaced by a routed agent definition (Claude) or bundled catalog slug (Codex) from the offered models; one audited decision matching the session and task |
 | `test_smart_router_skill_toggles_claude_subagent_routing`, `test_smart_router_skill_toggles_codex_subagent_routing` | Configure, launch a real subagent-only TUI with legacy routing-only/orchestration flags or the three subagent-only presets, then spawn tagged children while invoking the installed Smart Router skill to switch routing on -> off -> on in the same session | Routing-only cases install `smart-router`; orchestration cases also install `smart-router-orchestrator`; all three native children complete; only routing-enabled phases show a native model/rationale row (Claude) or subagent banner (Codex) and produce a live routing decision correlated with the child; Claude's recorded task inference payloads carry `smart_router_recipe_name` as launch recipe -> DISABLED -> launch recipe, omit the recipe header, and receive successful gateway responses; opted-in Codex banners include `[orchestrator on]`; no first-prompt routing wrapper; the customer full-mode preset is intentionally outside this journey; normal exit |
+| `test_smart_router_skill_turns_claude_routing_on_demand`, `test_smart_router_skill_turns_codex_routing_on_demand` | Configure, launch a real TUI with `ENABLE_SMART_ROUTER_ON_DEMAND=1` and routing flags `0`, then spawn tagged children while invoking the installed Smart Router skill to switch off -> on -> off | Only `smart-router` is installed; only the phase after `on` shows a native model/rationale row (Claude) or a subagent banner with `[orchestrator on]` (Codex) and produces a live routing decision; Claude's recorded task inferences carry no recipe, then the router's recipe, then DISABLED, and carry the orchestrator workflow only after `on` and the off note only after `off`; no first-prompt routing wrapper; normal exit |
 | `test_ug_configure_claude_repeat_and_revert`, `test_ug_configure_codex_repeat_and_revert` | Configure twice over user settings; complete a task; revert twice | Settings preserved; no bearer in ug state; generated config removed; status unconfigured |
 | `test_ug_configure_claude_cleans_stale_skills_mcp_on_workspace_switch` | Configure the first workspace, register its skills MCP, switch to a second real workspace, and use Claude | Old registration removed from Claude and the new workspace state; old workspace bucket preserved; repeat configure stays clean; real file task completes on the second workspace |
 | `test_ug_configure_claude_rejects_invalid_credentials`, `test_ug_configure_codex_rejects_invalid_credentials` | Configure with a rejected bearer against the real workspace | Authentication failure; no successful saved setup |
@@ -708,7 +714,7 @@ desktop GUI, a real `launchctl` or `schtasks` run, or a login/reboot pass.
 | Fresh provider/parent validation and mixed Bedrock filtering | Not covered after removing the duplicate model-discovery suites |
 | TUI initial prompt supplied on the launch command line | Not yet covered; headless prompt arguments are covered |
 | Follow-up turns and conversation resume | Not covered; reopen proves startup, not conversation resume |
-| Claude/Codex interactive smart routing | First-prompt routing is covered by the `managed_fixture` banner journeys and CUJ4. The live subagent-only journeys spawn native children and invoke the installed Smart Router skill to verify routing on -> off -> on within one Claude/Codex session. The scheduled harness-latest workflow repeats CUJ4, routing hooks, skill toggles, and banners with both latest agents. Plugin-refresh survival and native daemon/background dispatch remain deferred. |
+| Claude/Codex interactive smart routing | First-prompt routing is covered by the `managed_fixture` banner journeys and CUJ4. The live subagent-only journeys spawn native children and invoke the installed Smart Router skill to verify routing on -> off -> on within one Claude/Codex session, and the on-demand journeys verify off -> on -> off in a session that starts off. The scheduled harness-latest workflow repeats CUJ4, routing hooks, skill toggles, and banners with both latest agents. Plugin-refresh survival and native daemon/background dispatch remain deferred. |
 | Full allow/deny tool-permission matrix | Not covered; onboarding/trust uses actual TUI choices |
 | Desktop Codex app, Isaac itself, auto-upgrades | Not covered by command forwarding or pinned-version tests |
 | Native macOS/Windows live TUI, managed settings, resize/signals | Windows fresh-install, CLI, local helpers, and the Claude headless gateway journey are advisory; Codex Windows CI is blocked on npm proxy access. Live PTY/TUI, managed settings, and signal behavior still need separate platform implementation and coverage |
@@ -728,8 +734,10 @@ The real session-control process call is covered by the live skill-toggle journe
 native component tests stub the subagent routing process protocol. No component
 check asserts that the launch paths withdraw the skills.
 The TypeScript launch test also checks event/result forwarding. Separate cases cover
-denied-write rollback, invalid request bodies, disabled launches, and body-merge validation;
-no simulated subprocess success is used to claim toggle coverage.
+denied-write and failed-switch rollback, invalid request bodies, a session that starts off (no
+recipe, band, or hint until the first `on`), body-merge validation, and subagent calls that skip
+the router while the session file says off; no simulated subprocess success is used to claim
+toggle coverage.
 
 `integration/test_ug_smart_routing_hooks.py` checks `smart_router_recipe_name` in its existing
 Claude skill-toggle journey. The recorder forwards to the real workspace, configured

@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Independently inspect the resulting implementation for correctness, regressions, security, and missing tests.
+description: Independently inspect the resulting implementation for correctness, regressions, security, and missing tests. Use only when Smart Router is on.
 model: sonnet
 ---
 

@@ -135,7 +135,7 @@ Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file 
 | `managedMcpServers` | Ignore | Merge | Add/update the config's MCP server entries; other entries left alone |
 | Smart-routing hooks | Merge | Merge | `PreToolUse`, `SessionStart`, `SubagentStart`; only `ug`'s own marked handlers, other hooks left alone |
 | Admin `agent_native_settings` | Ignore | Create/replace | Managed file only; copied as-is. Keys `ug` owns are skipped, `permissions.deny` and hooks are merged, and `ug`'s MCP servers are added to an admin `allowedMcpServers`. Removed when the admin drops them, unless edited by hand |
-| Smart Router Orchestrator hooks | Merge | Merge | Launch-only `UserPromptSubmit` and compact `SessionStart` handlers for smart-routed sessions with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`; read the same session controls as routing |
+| Smart Router Orchestrator hooks | Merge | Merge | Launch-only `UserPromptSubmit` and compact `SessionStart` handlers for smart-routed sessions with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`, and for sessions that start off on demand; read the same session controls as routing |
 
 </details>
 
@@ -174,6 +174,6 @@ Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`
 | `model_catalog_json` | Create/replace | Create/replace | In `~/.codex/config.toml`; `ug`'s own catalog reference, for a static model list |
 | `otel.trace_exporter` | Ignore | Create/replace | In `~/.codex/config.toml` when the config enables tracing, for Codex desktop; another exporter and other telemetry settings left alone |
 | `mcp_servers` | Ignore | Merge | Managed file; add/update the config's MCP server entries, other entries left alone |
-| Smart Router and Smart Router Orchestrator hooks | Merge | Merge | Launch-only `PreToolUse`, plus `UserPromptSubmit` and compact `SessionStart` with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`; Codex combines them with its native hook sources and applies project trust; `features.hooks` is enabled for a smart-routed launch |
+| Smart Router and Smart Router Orchestrator hooks | Merge | Merge | Launch-only `PreToolUse`, plus `UserPromptSubmit` and compact `SessionStart` with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1` or when the session starts off on demand; Codex combines them with its native hook sources and applies project trust; `features.hooks` is enabled for a smart-routed or on-demand launch |
 
 </details>

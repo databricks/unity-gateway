@@ -173,7 +173,7 @@ def _run_calculation(
 
 
 def _toggle_with_skill(
-    tui, session, agent: str, enabled: bool, orchestration_enabled: bool
+    tui, session, agent: str, enabled: bool, orchestrator_installed: bool
 ) -> None:
     skill_root = session.home / SKILL_ROOTS[agent]
     ignored_skills = {".system"} if agent == "codex" else set()
@@ -183,7 +183,9 @@ def _toggle_with_skill(
         if path.is_dir() and path.name not in ignored_skills
     )
     expected_skills = (
-        ["smart-router", "smart-router-orchestrator"] if orchestration_enabled else ["smart-router"]
+        ["smart-router", "smart-router-orchestrator"]
+        if orchestrator_installed
+        else ["smart-router"]
     )
     assert installed_skills == expected_skills, installed_skills
 
@@ -237,6 +239,157 @@ def _toggle_with_skill(
         f"the installed Smart Router skill to turn routing {state}",
         timeout=120,
     )
+
+
+ORCHESTRATOR_ON_CONTEXT = "Smart Router Orchestrator is on for this session."
+ORCHESTRATOR_OFF_CONTEXT = "Smart Router Orchestrator is off for this session."
+
+
+def _prompt_turn(messages: list[dict], marker: str) -> str:
+    """The user turn that sent `marker`, without hook context left in earlier turns."""
+    start = next(i for i, message in enumerate(messages) if marker in json.dumps(message))
+    end = start
+    while start > 0 and messages[start - 1].get("role") == "user":
+        start -= 1
+    while end < len(messages) and messages[end].get("role") == "user":
+        end += 1
+    return json.dumps(messages[start:end])
+
+
+def _start_off_on_demand(session, fixture: str) -> None:
+    session.env["ENABLE_SMART_ROUTER_ON_DEMAND"] = "1"
+    # The fixture's managed default would start routing on; explicit flags start it off.
+    session.env["ENABLE_SMART_ROUTING_V2"] = "0"
+    session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "0"
+    use_managed_config_fixture(session, fixture)
+
+
+@pytest.mark.live
+@pytest.mark.claude
+@pytest.mark.managed_fixture
+def test_smart_router_skill_turns_claude_routing_on_demand(live_session, workspace, tmp_path):
+    """Scenario: launch Claude with ENABLE_SMART_ROUTER_ON_DEMAND=1 and routing off, spawn a
+    child, turn Smart Router on through the installed skill, spawn another child, turn it off,
+    and spawn a third child in the same real TUI session.
+
+    Expected: only Smart Router is installed. Before the first on, the child isn't routed, the
+    prompt carries no orchestrator context, and requests carry no smart_router_recipe_name.
+    After on, the prompt carries the orchestrator workflow, the child is routed, and requests
+    carry the router's recipe. After off, the prompt carries the orchestrator's off note, the
+    child isn't routed, and requests carry DISABLED. Every phase gets HTTP 200 responses.
+    """
+    session = live_session
+    session.env["TMPDIR"] = str(tmp_path)
+    _start_off_on_demand(session, "claude_smart_routing")
+    with TuiRequestRecorder(workspace) as recorder:
+        session.run(
+            "configure",
+            "--workspace",
+            recorder.url,
+            "--skip-validate",
+            "--skip-upgrade",
+            "--disable-databricks-ai-tools",
+        )
+        with AgentTerminal(
+            session, "claude", [str(session.binary), "claude"], "smart-router-on-demand"
+        ) as tui:
+            tui.boot()
+            for expression, result, state in [
+                ("1+1", "2", None),
+                ("1+2", "3", "on"),
+                ("2+2", "4", "off"),
+            ]:
+                if state is not None:
+                    _toggle_with_skill(
+                        tui, session, "claude", enabled=state == "on", orchestrator_installed=False
+                    )
+                routed = state == "on"
+                checkpoint = recorder.checkpoint()
+                task = _run_calculation(
+                    tui, session, "claude", expression, result, routed, routed=routed
+                )
+                requests = recorder.requests_after(checkpoint)
+                inferences = [
+                    request
+                    for request in requests
+                    if request.method == "POST"
+                    and request.path == "/ai-gateway/anthropic/v1/messages"
+                    and request.payload.get("tools")
+                    and task.marker in json.dumps(request.payload.get("messages", []))
+                ]
+                assert inferences, f"No recorded inference for {task.marker}"
+                turns = [
+                    _prompt_turn(request.payload.get("messages", []), task.marker)
+                    for request in inferences
+                ]
+                expected_context = {
+                    None: None,
+                    "on": ORCHESTRATOR_ON_CONTEXT,
+                    "off": ORCHESTRATOR_OFF_CONTEXT,
+                }[state]
+                for context in (ORCHESTRATOR_ON_CONTEXT, ORCHESTRATOR_OFF_CONTEXT):
+                    shown = any(context in turn for turn in turns)
+                    assert shown is (context == expected_context), (task.marker, context)
+                if routed:
+                    routes = [
+                        request
+                        for request in requests
+                        if request.method == "POST"
+                        and request.path == "/ai-gateway/routing/v1/routes:select"
+                        and task.marker in request.payload.get("task", {}).get("prompt", "")
+                    ]
+                    assert len(routes) == 1, (task.marker, routes)
+                    recipe = routes[0].payload.get("route_selector", {}).get("router_name")
+                    assert isinstance(recipe, str) and recipe.strip() and recipe != "DISABLED"
+                else:
+                    recipe = None if state is None else "DISABLED"
+                for request in inferences:
+                    assert request.payload.get("smart_router_recipe_name") == recipe, (
+                        task.marker,
+                        request.sequence,
+                        request.payload.get("smart_router_recipe_name"),
+                        recipe,
+                    )
+                    served_inference_request(recorder, requests, request, "claude")
+            tui.wait_for_background_tasks()
+            tui.exit_normally()
+    session.assert_not_routed()
+
+
+@pytest.mark.live
+@pytest.mark.codex
+@pytest.mark.managed_fixture
+def test_smart_router_skill_turns_codex_routing_on_demand(live_session, workspace, tmp_path):
+    """Scenario: launch Codex with ENABLE_SMART_ROUTER_ON_DEMAND=1 and routing off, spawn a
+    child, turn Smart Router on through the installed skill, spawn another child, turn it off,
+    and spawn a third child in the same real TUI session.
+
+    Expected: only Smart Router is installed, and each invocation flips the session file's
+    switch. Only the second child shows the subagent-routing banner, with [orchestrator on],
+    and produces a live gateway decision. No first-prompt interposer starts.
+    """
+    session = live_session
+    session.env["TMPDIR"] = str(tmp_path)
+    _start_off_on_demand(session, "codex_smart_routing")
+    session.run(
+        "configure",
+        "--workspace",
+        workspace,
+        "--skip-validate",
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+    )
+    with AgentTerminal(
+        session, "codex", [str(session.binary), "codex"], "smart-router-on-demand"
+    ) as tui:
+        tui.boot()
+        _run_calculation(tui, session, "codex", "1+1", "2", False, routed=False)
+        _toggle_with_skill(tui, session, "codex", enabled=True, orchestrator_installed=False)
+        _run_calculation(tui, session, "codex", "1+2", "3", True, routed=True)
+        _toggle_with_skill(tui, session, "codex", enabled=False, orchestrator_installed=False)
+        _run_calculation(tui, session, "codex", "2+2", "4", False, routed=False)
+        tui.exit_normally()
+    session.assert_not_routed()
 
 
 @pytest.mark.live
@@ -465,7 +618,7 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
                         session,
                         "claude",
                         enabled=routed,
-                        orchestration_enabled=orchestration_enabled,
+                        orchestrator_installed=orchestration_enabled,
                     )
                 checkpoint = recorder.checkpoint()
                 task = _run_calculation(
@@ -592,7 +745,7 @@ def test_smart_router_skill_toggles_codex_subagent_routing(
             session,
             "codex",
             enabled=False,
-            orchestration_enabled=orchestration_enabled,
+            orchestrator_installed=orchestration_enabled,
         )
         _run_calculation(tui, session, "codex", "1+2", "3", False, routed=False)
         _toggle_with_skill(
@@ -600,7 +753,7 @@ def test_smart_router_skill_toggles_codex_subagent_routing(
             session,
             "codex",
             enabled=True,
-            orchestration_enabled=orchestration_enabled,
+            orchestrator_installed=orchestration_enabled,
         )
         _run_calculation(tui, session, "codex", "2+2", "4", orchestration_enabled, routed=True)
         tui.exit_normally()

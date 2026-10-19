@@ -40,6 +40,7 @@ WINDOWS_UNSUPPORTED_NODES = {
     "test_ug_configure_claude_lifecycle.py::test_unmanaged_claude_preserves_preexisting_family_defaults",
     # Codex's Windows sandbox can't read ug's owner-only session-env dir yet.
     "test_ug_smart_routing_hooks.py::test_smart_router_skill_toggles_codex_subagent_routing",
+    "test_ug_smart_routing_hooks.py::test_smart_router_skill_turns_codex_routing_on_demand",
 }
 HEADLESS_TEST_NODES = {
     "claude": "test_ug_claude_headless.py::test_ug_claude_headless_prompt_argument",

@@ -1,6 +1,6 @@
 ---
 name: researcher
-description: Verify external documentation and API facts against primary sources without editing files.
+description: Verify external documentation and API facts against primary sources without editing files. Use only when Smart Router is on.
 model: sonnet
 ---
 

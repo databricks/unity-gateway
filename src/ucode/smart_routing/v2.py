@@ -355,7 +355,9 @@ def _routed_claude_agent_name(model: str) -> str:
 def _routed_claude_agent_definitions(model_ids: list[str]) -> dict[str, dict[str, str]]:
     return {
         _routed_claude_agent_name(model): {
-            "description": f"Smart-routed coding agent using {model}",
+            "description": (
+                f"Smart-routed coding agent using {model}. Use only when Smart Router is on."
+            ),
             "prompt": CLAUDE_ROUTED_AGENT_PROMPT,
             "model": maybe_add_gpt_1m_suffix(model),
         }
@@ -469,7 +471,6 @@ def _write_routed_claude_plugin(
         "constants.ts",
         "extra-body.ts",
         "isaac-feedback.ts",
-        "routing-state.ts",
         "session-file.ts",
         "smart-routing-status.ts",
         "subagent-routing.ts",

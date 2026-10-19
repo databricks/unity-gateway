@@ -305,6 +305,20 @@ is enabled, ug warns and falls back to subagent routing because the first-prompt
 wrapper requires a Unix terminal.
 The generated shell hooks expect Git Bash; PowerShell-only setups are not covered.
 
+### On-demand Smart Router
+
+`ENABLE_SMART_ROUTER_ON_DEMAND=1` is a temporary test gate. With it, an interactive
+`ug claude` or `ug codex` launch that starts without smart routing still gets the routing
+setup, switched off, so `/smart-router on` (Codex: `$smart-router on`) turns on subagent
+routing and Smart Router Orchestrator for the rest of the session, and `off` turns both off
+again. Launches with `--provider`, a pinned model, `--disable-smart-routing`, or Claude's
+`-p`/`--print` don't get it; `ENABLE_SMART_ROUTING_V2=0` doesn't remove it.
+
+Until the first `on`, the session behaves like one without Smart Router: Claude shows no
+status band or hint, requests carry no recipe, the hooks exit before loading ug, and the
+orchestrator adds nothing to prompts. Codex sessions turned on later route subagents without
+a recipe header, because Codex reads its headers at startup.
+
 ### Smart Router Orchestrator
 
 Use `SMART_ROUTER_CONFIG_VERSION` at launch to select a smart-routing configuration.
@@ -376,7 +390,8 @@ delegation came from the workflow or an explicit user request.
 
 Once opted in, orchestration follows the existing smart-routing launch eligibility
 and session controls. Turning Smart Router off through its skill stops new automatic delegation;
-turning it on restores orchestration only in opted-in sessions. Explicit user
+turning it on restores orchestration in opted-in sessions and in sessions that started off on
+demand. Explicit user
 requests for subagents still use normal harness behavior while routing is off.
 Stored skill files do not activate orchestration without an opted-in configuration,
 or in non-routed sessions. Existing Isaac pilot gating

@@ -1,6 +1,6 @@
 ---
 name: explorer
-description: Map code, callers, existing patterns, and tests for a bounded investigation without editing files.
+description: Map code, callers, existing patterns, and tests for a bounded investigation without editing files. Use only when Smart Router is on.
 model: sonnet
 ---
 
