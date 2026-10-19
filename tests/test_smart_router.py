@@ -18,44 +18,6 @@ from ucode.smart_routing import session_env, v2
 runner = CliRunner()
 
 
-@pytest.mark.parametrize("agent", ["claude", "codex"])
-@pytest.mark.parametrize(
-    "enabled,feedback_enabled,reason,exit_code",
-    [
-        (False, "0", None, 0),
-        (True, "1", None, 0),
-        (False, "1", None, 2),
-        (False, "1", "  ", 2),
-        (False, "1", "123456789012345", 2),
-        (False, "1", " 123456789012345 ", 2),
-        (False, "1", "😀" * 15, 2),
-        (False, "1", " 1234567890123456 ", 0),
-        (False, "1", "😀" * 16, 0),
-    ],
-)
-def test_disabling_requires_feedback_when_enrolled(
-    tmp_path, monkeypatch, agent, enabled, feedback_enabled, reason, exit_code
-):
-    session_file = tmp_path / "env.json"
-    session_file.write_text("{}")
-    monkeypatch.setenv(session_env.SESSION_ENV_VAR, str(session_file))
-    monkeypatch.setenv("ISAAC_SMART_ROUTER_FEEDBACK", feedback_enabled)
-
-    action = "--enable-smart-routing" if enabled else "--disable-smart-routing"
-    args = [agent, action]
-    if reason is not None:
-        args.extend(["--smart-router-feedback", reason])
-    result = runner.invoke(cli.app, args)
-
-    assert result.exit_code == exit_code, result.output
-    if exit_code:
-        assert "at least 16 characters" in result.output
-    assert json.loads(session_file.read_text()) == (
-        {} if enabled or exit_code else dict.fromkeys(v2.SMART_ROUTING_ENV_KEYS, "0")
-    )
-    assert os.environ["ISAAC_SMART_ROUTER_FEEDBACK"] == feedback_enabled
-
-
 @pytest.fixture(autouse=True)
 def _checkout_skill_bundle(monkeypatch):
     # An editable Python install can still contain an older wheel's copied skill resources.

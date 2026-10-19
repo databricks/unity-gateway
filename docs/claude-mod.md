@@ -73,10 +73,9 @@ toggle's `--smart-router-feedback` argument. The skill asks for the reason befor
 retrying the toggle and submits it through `/isaac-feedback` on success. The CLI
 validates the reason; the skill or native form owns submission.
 
-The native component suite exercises the registered toggle and form handlers
-with engine boundaries replaced where Claude 2.1.290's test host lacks APIs.
-It checks validation before disabling, exact reason submission, cancellation,
-repeated toggles and failures. These checks do not establish a live evidence upload.
+Validate the form in Isaac, including the 16-character minimum, exact reason
+submission, cancellation, repeated toggles and failures. These scenarios and a live
+evidence upload are not covered by the automated suite.
 
 The existing Claude skill-toggle integration journey checks recorded inference
 payloads during its three calculation phases: launch recipe, `DISABLED` after off,
