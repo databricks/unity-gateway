@@ -45,6 +45,48 @@ def test_ug_claude_headless_prompt_argument(live_session, workspace):
     session.assert_not_routed()
 
 
+def test_ug_claude_headless_ignores_shell_anthropic_credentials(live_session, workspace):
+    """Scenario: the user's shell still exports another LLM gateway's Anthropic credentials,
+    then they submit a headless prompt through ug.
+
+    Expected: ug reports on stderr that it ignores both variables, and the real agent still
+    authenticates through the gateway and returns the file value in its structured completed
+    answer, with exit code zero and JSON-only stdout. Claude Code ranks both variables above
+    ug's apiKeyHelper, so before this was handled every request failed with 401.
+    """
+    session = live_session
+    task = FileTask(session)
+    session.run(
+        "configure",
+        "--agents",
+        "claude",
+        "--workspace",
+        workspace,
+        "--skip-validate",
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+    )
+    # Scenario input: credentials left in the user's shell by another LLM gateway setup.
+    session.env["ANTHROPIC_AUTH_TOKEN"] = "sk-other-gateway-placeholder"
+    session.env["ANTHROPIC_API_KEY"] = "sk-other-gateway-placeholder"
+
+    result = session.run(
+        "claude",
+        "--",
+        "-p",
+        task.prompt,
+        "--output-format",
+        "json",
+        "--allowedTools",
+        "Read",
+        timeout=180,
+    )
+    assert json.loads(result.stdout)["type"] == "result"
+    task.assert_headless_answer("claude", result)
+    assert "ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY" in result.stderr
+    session.assert_not_routed()
+
+
 def test_ug_claude_headless_prompt_stdin(live_session, workspace):
     """Scenario: configure claude and submit a headless prompt via stdin.
 

@@ -100,7 +100,7 @@ from ucode.smart_routing.claude_hooks import (
 )
 from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
-from ucode.ui import print_note, print_success, print_warning
+from ucode.ui import print_note, print_success, print_warning, print_warning_err
 
 from .args import LaunchOptions, has_explicit_model_arg
 from .request_tags import request_tags_header_value
@@ -108,6 +108,10 @@ from .request_tags import request_tags_header_value
 GATEWAY_MODEL_DISCOVERY_ENV_VAR = "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"
 # If set, Claude Code launches in headless mode instead of the interactive login flow.
 CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR = "CLAUDE_CODE_OAUTH_TOKEN"
+# Claude Code ranks these above `apiKeyHelper` and the subscription login. A value inherited from
+# the user's shell, such as another LLM gateway's key, would replace ug's credential and every
+# gateway request would fail with 401 "Credential was not sent or was of an unsupported type".
+SHADOWING_CREDENTIAL_ENV_VARS = ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY")
 CLAUDE_CONFIG_DIR = Path.home() / ".claude"
 CLAUDE_SETTINGS_PATH = CLAUDE_CONFIG_DIR / "ucode-settings.json"
 CLAUDE_MCP_CONFIG_PATH = Path.home() / ".claude.json"
@@ -2293,12 +2297,31 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     raise SystemExit(returncode)
 
 
+def _drop_shadowing_credentials() -> None:
+    """Keep inherited Anthropic credentials out of the Claude Code process ug launches.
+
+    ug owns Claude Code's authentication on every launch path (the gateway `apiKeyHelper`, or the
+    subscription login behind the relayed proxy); see ``SHADOWING_CREDENTIAL_ENV_VARS``.
+    """
+    dropped: list[str] = []
+    for name in SHADOWING_CREDENTIAL_ENV_VARS:
+        if os.environ.pop(name, "").strip():
+            dropped.append(name)
+    if dropped:
+        # stderr: headless launches keep stdout machine-readable.
+        print_warning_err(
+            f"Ignoring {' and '.join(dropped)} from your environment for this session, "
+            "so Claude Code uses ug's credentials."
+        )
+
+
 def launch(
     state: dict,
     tool_args: list[str],
     *,
     options: LaunchOptions,
 ) -> None:
+    _drop_shadowing_credentials()
     tool_args = _external_web_search_args(state, tool_args)
     binary = SPEC["binary"]
     workspace = state.get("workspace")

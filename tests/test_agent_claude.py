@@ -3201,6 +3201,55 @@ class TestClaudeLaunch:
         assert "ANTHROPIC_DEFAULT_MODEL" not in os.environ
         assert calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), "--debug"]]
 
+    def test_launch_drops_shadowing_shell_credentials(self, monkeypatch, capsys):
+        # Claude Code would send these instead of the gateway apiKeyHelper token (401).
+        launched: list[dict[str, str | None]] = []
+        monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
+        monkeypatch.delenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, raising=False)
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "sk-other-gateway")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-other-gateway")
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(
+            claude,
+            "exec_or_spawn",
+            lambda _argv: launched.append(
+                {name: os.environ.get(name) for name in claude.SHADOWING_CREDENTIAL_ENV_VARS}
+            ),
+        )
+
+        claude.launch({"workspace": WS, "profile": "test"}, ["-p", "hi"], options=LaunchOptions())
+
+        assert launched == [{"ANTHROPIC_AUTH_TOKEN": None, "ANTHROPIC_API_KEY": None}]
+        captured = capsys.readouterr()
+        assert "ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY" in captured.err
+        assert "ANTHROPIC" not in captured.out
+
+    def test_relayed_launch_drops_shadowing_shell_credentials(self, monkeypatch):
+        launched: list[dict[str, str | None]] = []
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "sk-other-gateway")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setattr(
+            claude,
+            "_launch_relayed",
+            lambda _state, _binary, _tool_args: launched.append(
+                {name: os.environ.get(name) for name in claude.SHADOWING_CREDENTIAL_ENV_VARS}
+            ),
+        )
+
+        claude.launch({"workspace": WS, "claude_relayed": True}, [], options=LaunchOptions())
+
+        assert launched == [{"ANTHROPIC_AUTH_TOKEN": None, "ANTHROPIC_API_KEY": None}]
+
+    def test_launch_ignores_empty_credentials_without_warning(self, monkeypatch, capsys):
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setattr(claude, "_launch_relayed", lambda *_args: None)
+
+        claude.launch({"workspace": WS, "claude_relayed": True}, [], options=LaunchOptions())
+
+        assert "ANTHROPIC_AUTH_TOKEN" not in os.environ
+        assert "Ignoring" not in capsys.readouterr().err
+
     def test_windows_launch_preserves_prompt_as_literal_argv(self, monkeypatch, tmp_path):
         native_binary = tmp_path / "Claude Code" / "claude.exe"
         prompt = 'keep "quotes" & pipes | and %PATH% literal'
