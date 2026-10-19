@@ -137,6 +137,11 @@ def fresh_id():
     return uuid.uuid4().hex[:12]
 
 
+def fresh_session_id():
+    """Return a full UUID for Claude's `--session-id`, which rejects shorter ids."""
+    return str(uuid.uuid4())
+
+
 class FileTask:
     """Ordinary project input; the expected answer is never included in the prompt."""
 
