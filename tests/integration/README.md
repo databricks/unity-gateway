@@ -93,6 +93,10 @@ absent; use `--help` for the startup-import probe.
 Agent-specific bundled instruction selection and prompt/compaction hook content
 are covered in `../test_skills.py`; those component checks do not run live agents.
 
+Custom OAuth startup with an expired ordinary profile has no automated integration
+coverage. Validate Claude's default, model-location, and provider catalogs in Isaac
+with the custom OAuth profile.
+
 `TestChildStdoutLaunch` in `../test_cli.py` covers clean Claude print-mode and
 Codex exec/app-server stdout, early launch errors, and forwarding through ug's `--`.
 Token membership before the agent's `--` intentionally also matches option values and prompt
@@ -444,6 +448,9 @@ daemon/background dispatch remain deferred. CUJ4 covers interactive explicit-mod
 bypass. Plugin generation and launch arguments are covered
 by component tests in `../test_claude_smart_routing_v2.py`, not by a live registration journey.
 
+Exact candidate-model and router-name preservation in decision logs has component
+coverage in `../test_claude_routing.py`; this suite does not assert those fields.
+
 PATH conflicts for the Smart Router skill have subprocess/component coverage in
 `../test_smart_router.py`: the skill uses the launching interpreter despite a different
 `ug` first in PATH. The live journeys above do not inject a second installation or
@@ -757,6 +764,28 @@ clean-runner preflight, verifies Sonnet inference and unchanged defaults, then r
 and removes that input. Recording stops before guarded revert; fixture teardown keeps
 cleanup failures separate from task failures. An accidental Opus fallback cannot satisfy
 the Sonnet assertion.
+
+CUJ8's one journey (`tests/e2e_cuj/test_cuj8_second_managed_settings_writer.py`, shard
+`E2E CUJs · CUJ 8 · Second managed-settings writer`) reproduces a launcher's workflow so ug
+changes cannot regress launchers that also write managed settings: each of three sessions
+applies a second writer's OS-managed
+Claude settings (a launcher's full field set with neutral values, its own `modelPicker` and
+opus/sonnet/haiku defaults, OTEL pointed at the CUJ workspace, rewritten only on drift through
+`sudo mkdir`/`chattr`/`cp`/`chmod`, leaving `apiKeyHelper`, its TTL, and foreign header lines to
+ug), then runs `ug claude --workspace <ws> -- <launcher's Claude args>` in a real TUI with the launcher's
+launch environment, including its `subagent_orch_v0_claude_only` routing preset, opens
+`/model`, and completes a file task. It requires at most two privileged writes in the first
+session and none after, no ug password notice after the first session, no ug warnings or
+errors, the writer's picker in `/model`, every writer field unchanged except the ones ug owns,
+no discovered defaults in either settings file, the orchestrator context on the task request,
+recorded inference served on the writer's Haiku default, and `ug revert` restoring the writer's
+file exactly. Deviations: prompts are counted as
+privileged writes because CI sudo is passwordless; auth uses the CUJ bearer instead of a
+custom OAuth app; ug's default router recipe replaces a server-side one; and
+`ANTHROPIC_MODEL=haiku` avoids the gateway's rejection of Claude's Opus 5.5 effort field. The
+class pins `WORKSPACE_URL` to `https://dbc-6a91dc96-859b.cloud.databricks.com`, which must
+publish no `CodingAgentConfig` and serve `system.ai` Claude models; it serves no Fable model,
+so the fable ping-pong itself is covered by unit tests.
 
 The workspace check requires the secret to match
 `https://eng-ml-inference-team-us-east-1.cloud.databricks.com` (a trailing slash

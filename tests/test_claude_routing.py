@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import urllib.error
 
-from ucode.smart_routing import claude_routing
+from ucode.smart_routing import claude_routing, routing
 
 WS = "https://example.databricks.com"
 
@@ -24,7 +24,7 @@ class _Response:
         return json.dumps(self.payload).encode("utf-8")
 
 
-def test_routes_with_default_claude_menu(monkeypatch):
+def test_routes_with_default_claude_menu(monkeypatch, tmp_path):
     monkeypatch.delenv("SMART_ROUTER_NAME", raising=False)
     captured = {}
 
@@ -56,6 +56,8 @@ def test_routes_with_default_claude_menu(monkeypatch):
         model="system.ai.claude-opus-4-8",
         raw_model="claude-opus-4-8",
         rationale="Cross-cutting change needs the strongest model.",
+        route_options=(("claude-opus-4-8", "claude"), ("claude-sonnet-5", "claude")),
+        router_name=claude_routing.ROUTER_NAME,
     )
     assert captured["url"] == f"{WS}/ai-gateway/routing/v1/routes:select"
     assert captured["headers"]["Authorization"] == "Bearer token"
@@ -68,6 +70,13 @@ def test_routes_with_default_claude_menu(monkeypatch):
         "task": {"prompt": "Refactor the parser"},
         "route_selector": {"router_name": claude_routing.ROUTER_NAME},
     }
+    decisions_path = tmp_path / "decisions.jsonl"
+    routing.write_decision_record(
+        decisions_path, {"session_id": "session"}, "explore", decision, decision.model
+    )
+    recorded = json.loads(decisions_path.read_text())
+    assert recorded["route_options"] == captured["body"]["route_options"]
+    assert recorded["router_name"] == captured["body"]["route_selector"]["router_name"]
 
 
 def test_missing_arm_short_circuits_without_calling_router(monkeypatch):

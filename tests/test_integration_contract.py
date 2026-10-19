@@ -99,7 +99,7 @@ def test_dedicated_cuj_ci_runs_each_discovered_file_on_its_own_runner():
 def test_latest_harness_is_scheduled_and_opt_in():
     workflow = _workflow("harness-latest.yml")
     trigger = workflow.split("\non:\n", 1)[1].split("\npermissions:\n", 1)[0]
-    assert "cron: '0 */6 * * *'" in trigger
+    assert "cron: '0 22 * * 1-5'" in trigger
     assert "workflow_dispatch:" in trigger
     assert "pull_request" not in trigger and "push:" not in trigger
     assert "harness-latest" not in _integration_jobs()
