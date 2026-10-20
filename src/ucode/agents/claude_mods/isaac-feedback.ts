@@ -1,6 +1,7 @@
 import type { On } from 'claude-code';
 
 const FEEDBACK_PANE = 'smart-router-feedback';
+const TOGGLE_ERROR = 'Could not update Smart Router. Retry /smart-router off or restart through UG.';
 
 type FeedbackState = {
   submitted: boolean;
@@ -26,10 +27,10 @@ export function registerIsaacFeedback(on: On, state: FeedbackState): void {
       // Start the toggle before opening feedback; dismissing the pane must not cancel it.
       void state.disableRouting().then(
         () => $.ui.log('Smart Router is off'),
-        () => $.ui.log('Could not update Smart Router. Retry /smart-router off or restart through UG.'),
+        () => $.ui.log(TOGGLE_ERROR),
       );
     } catch {
-      return {text: 'Could not update Smart Router. Retry /smart-router off or restart through UG.'};
+      return {text: TOGGLE_ERROR};
     }
     try {
       state.submitted = false;
