@@ -1,4 +1,5 @@
 import type { On } from 'claude-code';
+import { TRUE_ENV_VALUES } from './constants.ts';
 
 const FEEDBACK_PANE = 'smart-router-feedback';
 
@@ -16,7 +17,7 @@ export function createIsaacFeedbackState(): FeedbackState {
 export function registerIsaacFeedback(on: On, state: FeedbackState): void {
   on('command.run', {command: 'smart-router'}, async ($, e, next) => {
     if (e.args.trim() !== 'off'
-      || !['1', 'true'].includes((await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK') ?? '').trim().toLowerCase())) {
+      || !TRUE_ENV_VALUES.includes((await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK') ?? '').trim().toLowerCase())) {
       return next(e);
     }
     try {

@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from ucode.config_io import APP_DIR, is_dry_run
+from ucode.env import env_bool
 from ucode.os_compatibility import subprocess_cross_os, system_cross_os
 from ucode.ui import console, print_note, print_success, print_warning
 
@@ -35,7 +36,6 @@ from ucode.ui import console, print_note, print_success, print_warning
 _SUDO = "/usr/bin/sudo"
 # Opt out of all OS-managed settings work (read, conflict check, and the privileged sudo write).
 SKIP_OS_SETTINGS_ENV = "UG_SKIP_OS_SETTINGS"
-_TRUE_VALUES = {"1", "true", "yes", "on"}
 MANAGED_BACKUP_DIR = APP_DIR / "managed-backups"
 MANAGED_BACKUP_MANIFEST_PATH = MANAGED_BACKUP_DIR / "manifest.json"
 MANAGED_FINGERPRINT_VERSION = 1
@@ -104,7 +104,7 @@ def managed_settings_skipped() -> bool:
     password and never hits the "OS-managed settings could not be updated" failure on hosts where
     that write is blocked.
     """
-    return os.environ.get(SKIP_OS_SETTINGS_ENV, "").strip().lower() in _TRUE_VALUES
+    return env_bool(SKIP_OS_SETTINGS_ENV)
 
 
 def managed_files_supported() -> bool:

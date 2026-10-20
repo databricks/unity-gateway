@@ -1,5 +1,7 @@
 """Shared UCode constants."""
 
+TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+
 LOCALHOST = "localhost"
 LOOPBACK_HOST = "127.0.0.1"
 

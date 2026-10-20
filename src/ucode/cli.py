@@ -84,6 +84,7 @@ from ucode.databricks import (
     resolve_provider_launch_model,
     run_databricks_login,
 )
+from ucode.env import env_bool
 from ucode.managed_budget import (
     budget_usage_percent,
     recommendation_line,
@@ -2740,7 +2741,7 @@ def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | No
         return False
     if (
         not enabled
-        and os.environ.get(ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR, "").strip().lower() in {"1", "true"}
+        and env_bool(ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR)
         and len((reason or "").strip()) < 16
     ):
         print_err(
