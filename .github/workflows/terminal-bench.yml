@@ -23,7 +23,7 @@ on:
         required: true
       codex_version:
         description: Exact Codex version
-        default: 0.154.0
+        default: 0.160.0
         required: true
 
 permissions:
@@ -39,7 +39,7 @@ env:
   TB2_DATASET: ${{ inputs.tb2_dataset || 'terminal-bench@2.0' }}
   MODEL: ${{ inputs.model }}
   CLAUDE_VERSION: ${{ inputs.claude_version || '2.1.290' }}
-  CODEX_VERSION: ${{ inputs.codex_version || '0.154.0' }}
+  CODEX_VERSION: ${{ inputs.codex_version || '0.160.0' }}
   HARBOR_VERSION: 0.23.0
   WINDOWS_PACKAGE_INDEX: https://databricks.jfrog.io/artifactory/api/pypi/db-pypi/simple
   WINDOWS_NPM_REGISTRY: https://databricks.jfrog.io/artifactory/api/npm/db-npm/
