@@ -56,36 +56,44 @@ that file atomically. Session start restores only the launch baseline, so an ove
 before `/clear` still survives it. The live skill-toggle journey covers the real CLI write;
 native component tests stub the process calls.
 
-Before each on-to-off change, Isaac sessions with
-`ISAAC_SMART_ROUTER_FEEDBACK=1` or `true` require a reason of at least 16 characters after
-trimming surrounding whitespace. Isaac sets this flag from its
-rollout setting or the user's explicit `1`/`0` or `true`/`false` override. As with UG's other
-boolean environment flags, `1`, `true`, `yes`, and `on` enable it (case-insensitive,
-with surrounding whitespace ignored); other values disable it. It controls Isaac feedback
+On each on-to-off change, Isaac sessions with
+`ISAAC_SMART_ROUTER_FEEDBACK=1` or `true` start disabling routing in the background and
+immediately open a dismissible feedback form. Isaac sets this flag from its
+rollout setting or the user's explicit `1`/`0` or `true`/`false` override. It controls Isaac feedback
 availability, so UG's routing presets and on/off toggles leave it unchanged.
-The native form keeps routing on until Enter accepts a valid reason, then disables
-routing and uploads the exact text in the background with `isaac feedback`. The
+The command entry point in `register.ts` invokes feedback only when the flag is
+enabled. As with UG's other boolean environment flags, `1`, `true`, `yes`, and `on`
+enable it (case-insensitive, with surrounding whitespace ignored); unset, `0`, and all
+other values use the ordinary toggle path.
+The feedback module does not read the flag; its renderer stays synchronous.
+The form does not wait for the toggle or an Isaac CLI availability check. The
+transcript confirms when routing is off, or reports a toggle failure. Enter accepts
+a reason of at least 16 characters after trimming surrounding whitespace and uploads
+the exact text in the background with `isaac feedback`. The
 transcript shows the feedback ID the mod passes with `--feedback-id`; a toast reports
-the result. Cancel or Escape leaves routing on and sends nothing. A missing
-`isaac` CLI or an unavailable form leaves routing on. A feedback submission failure after a valid
-reason leaves routing off and reports the failure in the transcript. The form makes no model requests.
+the result. Cancel or Escape sends nothing and does not cancel the toggle. An unavailable
+form, a missing `isaac` CLI, or a feedback submission failure also does not cancel
+the toggle or re-enable routing. Submission failures are reported in the transcript.
+The form makes no model requests.
 
 `isaac-feedback.ts` owns this Databricks-specific policy, form, and submission.
-`register.ts` binds the routing callbacks before Isaac's command guard, then
-handles toggles the guard passes through. Claude's mod compiler requires engine
+`register.ts` checks the flag and binds routing callbacks before forwarding eligible
+off commands to feedback; it handles other toggles directly. Claude's mod compiler requires engine
 API calls to stay in the file that receives `$`.
 `routing-state.ts` supplies the shared enabled check; launch options, live
 environment values, and resolved session overrides use the same check on their
 respective values.
 
-The CLI/skill path, including Codex, enforces the same minimum through the session
-toggle's `--smart-router-feedback` argument. The skill asks for the reason before
-retrying the toggle and submits it through `/isaac-feedback` on success. The CLI
-validates the reason; the skill or native form owns submission.
+The CLI accepts off commands without a reason even when feedback is enabled. The
+hidden `--smart-router-feedback` option remains accepted for older mods. The
+CLI/skill path, including Codex, only toggles routing and never asks for feedback.
+Automatic feedback is owned by the native Claude handler, rather than skill instructions.
 
 Validate the form in Isaac, including the 16-character minimum, exact reason
-submission, cancellation, repeated toggles and failures. These scenarios and a live
-evidence upload are not covered by the automated suite.
+submission, cancellation, repeated toggles and failures. One native component test
+checks that the form opens before off completes and cancellation does not stop it.
+Another checks that the entry point invokes feedback only for the exact value `1`.
+Live Isaac UI and evidence uploads still require manual validation.
 
 The existing Claude skill-toggle integration journey checks recorded inference
 payloads during its three calculation phases: launch recipe, `DISABLED` after off,

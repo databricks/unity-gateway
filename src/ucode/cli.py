@@ -46,12 +46,7 @@ from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
-from ucode.constants import (
-    AGENT_CLAUDE,
-    AGENT_CODEX,
-    ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
-    SMART_ROUTING_ENV_KEYS,
-)
+from ucode.constants import AGENT_CLAUDE, AGENT_CODEX, SMART_ROUTING_ENV_KEYS
 from ucode.custom_oauth import (
     CUSTOM_OAUTH_CLI_ENV_VAR,
     custom_oauth_cli_enabled,
@@ -84,7 +79,6 @@ from ucode.databricks import (
     resolve_provider_launch_model,
     run_databricks_login,
 )
-from ucode.env import env_bool
 from ucode.managed_budget import (
     budget_usage_percent,
     recommendation_line,
@@ -2732,24 +2726,13 @@ def _smart_routing_v2_flag(enabled: bool | None, *, agent: str) -> Iterator[None
         smart_routing_v2.restore_smart_routing_env(previous)
 
 
-def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | None = None) -> bool:
+def _toggle_current_smart_routing_session(enabled: bool | None) -> bool:
     if enabled is None:
         return False
     try:
         session_env_path()
     except RuntimeError:
         return False
-    if (
-        not enabled
-        and env_bool(ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR)
-        and len((reason or "").strip()) < 16
-    ):
-        print_err(
-            "Turning Smart Router off requires a reason of at least 16 characters, excluding "
-            "surrounding whitespace. Ask the user why, then pass their reason with "
-            "--smart-router-feedback and submit it through /isaac-feedback --category smart-routing."
-        )
-        raise typer.Exit(2)
     try:
         set_session_environment(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0") if not enabled else {})
     except RuntimeError as exc:
@@ -3782,7 +3765,7 @@ def codex_cmd(
     ] = None,
 ) -> None:
     """Launch Codex via Databricks."""
-    if _toggle_current_smart_routing_session(enable_smart_routing_flag, smart_router_feedback):
+    if _toggle_current_smart_routing_session(enable_smart_routing_flag):
         return
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
@@ -3874,7 +3857,7 @@ def claude_cmd(
     ] = None,
 ) -> None:
     """Launch Claude Code via Databricks."""
-    if _toggle_current_smart_routing_session(enable_smart_routing_flag, smart_router_feedback):
+    if _toggle_current_smart_routing_session(enable_smart_routing_flag):
         return
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
