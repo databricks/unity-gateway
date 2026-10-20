@@ -972,7 +972,7 @@ class TestManagedWriteSkippedWarning:
             "Claude Code and Codex machine-wide settings weren't updated because this terminal "
             "isn't elevated. Launching through `ug` still uses the gateway, but Claude Code or "
             "Codex run directly or from an IDE extension won't. To set them up, run `ug configure` "
-            "from an elevated terminal (Run as administrator), or ask your administrator to."
+            "from an elevated terminal (Run as administrator), or ask your administrator to run it."
         ]
 
     def test_headless_unix_configure_asks_for_a_terminal(self, warnings, monkeypatch):
@@ -984,6 +984,14 @@ class TestManagedWriteSkippedWarning:
         assert len(warnings) == 1
         assert "because there's no terminal to approve sudo" in warnings[0]
         assert "run `ug configure` from an interactive terminal." in warnings[0]
+
+    def test_dry_run_stays_quiet(self, warnings, monkeypatch):
+        monkeypatch.setattr(managed_files, "is_dry_run", lambda: True)
+
+        with managed_files.managed_write_batch(["Codex"]):
+            managed_files.note_managed_write_skipped("Codex", {}, {"model_provider": "Databricks"})
+
+        assert warnings == []
 
     def test_launches_stay_quiet(self, warnings):
         # Launches reconfigure on every run, outside configure's batch.

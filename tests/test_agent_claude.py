@@ -2448,7 +2448,7 @@ class TestWriteToolConfigManagedSettings:
             "Claude Code machine-wide settings weren't updated because this terminal isn't "
             "elevated. Launching through `ug` still uses the gateway, but Claude Code run directly "
             "or from an IDE extension won't. To set them up, run `ug configure` from an elevated "
-            "terminal (Run as administrator), or ask your administrator to."
+            "terminal (Run as administrator), or ask your administrator to run it."
         ]
 
     def test_noninteractive_repairs_conflicting_managed_settings_without_prompting(

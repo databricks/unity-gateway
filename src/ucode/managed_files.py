@@ -259,7 +259,7 @@ def note_managed_write_skipped(display: str, current: dict, desired: dict) -> No
     settings, so configure can say why the agent run directly won't use the gateway.
 
     Only configure warns: launches reconfigure on every run and would repeat it each time."""
-    if not _managed_write_batch or display in _managed_write_skipped:
+    if not _managed_write_batch or is_dry_run() or display in _managed_write_skipped:
         return
     if is_semantically_equal(mask_user_agent_versions(current), mask_user_agent_versions(desired)):
         return
@@ -271,7 +271,7 @@ def _managed_write_skipped_message(displays: list[str]) -> str:
         reason = "this terminal isn't elevated"
         fix = (
             "run `ug configure` from an elevated terminal (Run as administrator), or ask your "
-            "administrator to"
+            "administrator to run it"
         )
     else:
         reason = "there's no terminal to approve sudo"
