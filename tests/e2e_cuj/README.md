@@ -75,7 +75,8 @@ They do not launch Desktop or execute the credential helper.
 It runs the managed-default and explicit-model journeys and six
 `SMART_ROUTER_CONFIG_VERSION` cases using the shared version constants; each launches Claude
 and Codex once. With no selector, managed smart routing leaves the first prompt unrouted: the
-admin's default model completes the file task and no `routes:select` request is sent.
+admin's default model completes the file task, no `routes:select` request is sent, and the
+Smart Router Orchestrator context reaches that inference request.
 The CUJ derives routing and orchestration assertions from each agent's resolved preset flags.
 Component tests independently verify the preset values. The resulting expectations are:
 

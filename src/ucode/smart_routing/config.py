@@ -34,7 +34,7 @@ SUBAGENT_ORCH_V1 = "subagent_orch_v1"
 SUBAGENT_ORCH_V0_CLAUDE_ONLY = "subagent_orch_v0_claude_only"
 
 # Selected by --enable-smart-routing and managed smart routing when no known version is set.
-DEFAULT_ENABLED_VERSION = SUBAGENT_ONLY_V0
+DEFAULT_ENABLED_VERSION = SUBAGENT_ORCH_V0
 
 _BASE_VERSIONS = {
     FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0: {

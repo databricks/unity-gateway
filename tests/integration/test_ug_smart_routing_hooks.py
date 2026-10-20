@@ -393,7 +393,7 @@ def test_smart_routing_codex_route_subagent_hook(
     [
         (False, None),
         (True, None),
-        (False, MANAGED_DEFAULT),
+        (True, MANAGED_DEFAULT),
         (False, "subagent_only_v0"),
         (False, "subagent_only_v1"),
         (True, "subagent_orch_v0"),
@@ -536,7 +536,7 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
     [
         (False, None),
         (True, None),
-        (False, MANAGED_DEFAULT),
+        (True, MANAGED_DEFAULT),
         (False, "subagent_only_v0"),
         (False, "subagent_only_v1"),
         (True, "subagent_orch_v0"),

@@ -173,11 +173,11 @@ def test_codex_uses_existing_presets():
 
 @pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
 @pytest.mark.parametrize("selector", [None, "", "   ", "unsupported_version"])
-def test_enabled_version_selects_subagent_only_over_legacy_flags(agent, selector):
+def test_enabled_version_selects_subagent_orch_v0_over_legacy_flags(agent, selector):
     inherited = {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
-        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
         "INHERITED_SETTING": "preserved",
     }
     if selector is not None:
@@ -187,7 +187,7 @@ def test_enabled_version_selects_subagent_only_over_legacy_flags(agent, selector
     previous = config.apply_enabled_version(applied, agent=agent)
 
     assert applied == {
-        **_EXPECTED_PRESETS[config.SUBAGENT_ONLY_V0],
+        **_EXPECTED_PRESETS[config.SUBAGENT_ORCH_V0],
         "INHERITED_SETTING": "preserved",
     }
     v2.restore_smart_routing_env(previous, applied)

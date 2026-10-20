@@ -3872,7 +3872,8 @@ def codex_cmd(
         bool | None,
         typer.Option(
             "--enable-smart-routing/--disable-smart-routing",
-            help="Enable or disable AI Gateway subagent model routing for this Codex launch or session.",
+            help="Enable or disable AI Gateway subagent model routing and Smart Router "
+            "Orchestrator for this Codex launch or session.",
         ),
     ] = None,
     smart_router_feedback: Annotated[
@@ -3967,7 +3968,8 @@ def claude_cmd(
         bool | None,
         typer.Option(
             "--enable-smart-routing/--disable-smart-routing",
-            help="Enable or disable AI Gateway subagent model routing for this Claude Code launch or session.",
+            help="Enable or disable AI Gateway subagent model routing and Smart Router "
+            "Orchestrator for this Claude Code launch or session.",
         ),
     ] = None,
     smart_router_feedback: Annotated[

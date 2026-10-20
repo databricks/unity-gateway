@@ -634,19 +634,19 @@ class TestSubcommandRouting:
     @pytest.mark.parametrize(
         ("launch_env", "expected_version"),
         [
-            ({}, smart_routing_config.SUBAGENT_ONLY_V0),
-            ({"ENABLE_SMART_ROUTING_V2": "1"}, smart_routing_config.SUBAGENT_ONLY_V0),
-            ({"ENABLE_SMART_ROUTING_V2": "0"}, smart_routing_config.SUBAGENT_ONLY_V0),
-            ({"ENABLE_SMART_ROUTER_ORCHESTRATOR": "1"}, smart_routing_config.SUBAGENT_ONLY_V0),
+            ({}, smart_routing_config.SUBAGENT_ORCH_V0),
+            ({"ENABLE_SMART_ROUTING_V2": "1"}, smart_routing_config.SUBAGENT_ORCH_V0),
+            ({"ENABLE_SMART_ROUTING_V2": "0"}, smart_routing_config.SUBAGENT_ORCH_V0),
+            ({"ENABLE_SMART_ROUTER_ORCHESTRATOR": "1"}, smart_routing_config.SUBAGENT_ORCH_V0),
             (
                 {"SMART_ROUTER_CONFIG_VERSION": "unknown_version"},
-                smart_routing_config.SUBAGENT_ONLY_V0,
+                smart_routing_config.SUBAGENT_ORCH_V0,
             ),
             *(
                 ({"SMART_ROUTER_CONFIG_VERSION": version}, version)
                 for version in (
                     smart_routing_config.FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
-                    smart_routing_config.SUBAGENT_ORCH_V0,
+                    smart_routing_config.SUBAGENT_ONLY_V0,
                     smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
                 )
             ),
@@ -658,11 +658,11 @@ class TestSubcommandRouting:
             "orchestrator-on",
             "unknown-version",
             "first-prompt-version",
-            "orchestrator-version",
+            "subagent-only-version",
             "claude-only-version",
         ],
     )
-    def test_enable_smart_routing_keeps_a_known_version_or_selects_subagent_only(
+    def test_enable_smart_routing_keeps_a_known_version_or_selects_subagent_orch_v0(
         self, monkeypatch, tool, launch_env, expected_version
     ):
         for name, value in launch_env.items():
@@ -828,27 +828,27 @@ class TestSubcommandRouting:
     @pytest.mark.parametrize(
         ("launch_args", "launch_env", "expected_version"),
         [
-            ([], {}, smart_routing_config.SUBAGENT_ONLY_V0),
-            ([], {"ENABLE_SMART_ROUTING_V2": "1"}, smart_routing_config.SUBAGENT_ONLY_V0),
-            ([], {"ENABLE_SMART_ROUTING_V2": "0"}, smart_routing_config.SUBAGENT_ONLY_V0),
+            ([], {}, smart_routing_config.SUBAGENT_ORCH_V0),
+            ([], {"ENABLE_SMART_ROUTING_V2": "1"}, smart_routing_config.SUBAGENT_ORCH_V0),
+            ([], {"ENABLE_SMART_ROUTING_V2": "0"}, smart_routing_config.SUBAGENT_ORCH_V0),
             (
                 [],
                 {"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0"},
-                smart_routing_config.SUBAGENT_ONLY_V0,
+                smart_routing_config.SUBAGENT_ORCH_V0,
             ),
-            ([], {"ENABLE_SMART_ROUTER_ORCHESTRATOR": "1"}, smart_routing_config.SUBAGENT_ONLY_V0),
+            ([], {"ENABLE_SMART_ROUTER_ORCHESTRATOR": "1"}, smart_routing_config.SUBAGENT_ORCH_V0),
             *(
                 ([], {"SMART_ROUTER_CONFIG_VERSION": version}, version)
                 for version in (
                     smart_routing_config.FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
-                    smart_routing_config.SUBAGENT_ORCH_V0,
+                    smart_routing_config.SUBAGENT_ONLY_V0,
                     smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
                 )
             ),
             (
                 ["--enable-smart-routing"],
                 {"ENABLE_SMART_ROUTING_V2": "1"},
-                smart_routing_config.SUBAGENT_ONLY_V0,
+                smart_routing_config.SUBAGENT_ORCH_V0,
             ),
             (["--disable-smart-routing"], {}, None),
         ],
@@ -859,7 +859,7 @@ class TestSubcommandRouting:
             "subagent-only-off",
             "orchestrator-on",
             "first-prompt-version",
-            "orchestrator-version",
+            "subagent-only-version",
             "claude-only-version",
             "enable-flag",
             "disable-flag",
@@ -895,7 +895,7 @@ class TestSubcommandRouting:
         assert _routing_env() == env_before
 
     def test_bare_launch_keeps_a_known_version_over_managed_smart_routing(self, monkeypatch):
-        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", smart_routing_config.SUBAGENT_ORCH_V0)
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", smart_routing_config.SUBAGENT_ONLY_V0)
         managed = {"enabled_agents": {"claude": {"smart_routing_enabled": True}}}
         monkeypatch.setattr("ucode.cli.install_databricks_cli", lambda *a, **k: None)
         monkeypatch.setattr("ucode.cli.refresh_managed_config", lambda state: (managed, False))
@@ -906,7 +906,7 @@ class TestSubcommandRouting:
             result = runner.invoke(app, [])
 
         assert result.exit_code == 0, result.output
-        assert observed == [_version_routing_env(smart_routing_config.SUBAGENT_ORCH_V0, "claude")]
+        assert observed == [_version_routing_env(smart_routing_config.SUBAGENT_ONLY_V0, "claude")]
 
     def test_codex_refresh_is_consumed_by_ucode(self):
         with patch("ucode.cli._launch_tool") as mock_launch:
