@@ -2726,24 +2726,13 @@ def _smart_routing_v2_flag(enabled: bool | None, *, agent: str) -> Iterator[None
         smart_routing_v2.restore_smart_routing_env(previous)
 
 
-def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | None = None) -> bool:
+def _toggle_current_smart_routing_session(enabled: bool | None) -> bool:
     if enabled is None:
         return False
     try:
         session_env_path()
     except RuntimeError:
         return False
-    if (
-        not enabled
-        and os.environ.get("ISAAC_SMART_ROUTER_FEEDBACK") == "1"
-        and len((reason or "").strip()) < 16
-    ):
-        print_err(
-            "Turning Smart Router off requires a reason of at least 16 characters, excluding "
-            "surrounding whitespace. Ask the user why, then pass their reason with "
-            "--smart-router-feedback and submit it through /isaac-feedback --category smart-routing."
-        )
-        raise typer.Exit(2)
     try:
         set_session_environment(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0") if not enabled else {})
     except RuntimeError as exc:
@@ -3776,7 +3765,7 @@ def codex_cmd(
     ] = None,
 ) -> None:
     """Launch Codex via Databricks."""
-    if _toggle_current_smart_routing_session(enable_smart_routing_flag, smart_router_feedback):
+    if _toggle_current_smart_routing_session(enable_smart_routing_flag):
         return
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
@@ -3868,7 +3857,7 @@ def claude_cmd(
     ] = None,
 ) -> None:
     """Launch Claude Code via Databricks."""
-    if _toggle_current_smart_routing_session(enable_smart_routing_flag, smart_router_feedback):
+    if _toggle_current_smart_routing_session(enable_smart_routing_flag):
         return
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)

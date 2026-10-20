@@ -19,9 +19,10 @@ TypeScript event-forwarding and launch-option tests in CI. The existing Claude
 skill-toggle integration journey checks the live recipe payload field across on/off/on.
 See [the mod guide](../docs/claude-mod.md).
 
-The required Isaac feedback form needs manual validation of the 16-character minimum,
-cancellation, repeated toggles, and submission failures. The existing routing-toggle
-journeys do not cover this form or a live Isaac evidence upload.
+`native_claude/mod_tests/isaac-feedback.test.ts` checks that feedback opens while off
+is pending and Cancel does not stop it. `test_smart_router.py` verifies the real CLI
+turns off without a reason with feedback enabled. Live Isaac UI, validation, failure
+handling, and evidence uploads still need manual checks.
 
 `test_claude_answer_delivery.py` covers Claude answer selection, composition, ownership,
 failed tasks and resumed revisions using transcript inputs, plus real subprocess I/O,

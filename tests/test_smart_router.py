@@ -42,6 +42,8 @@ def test_smart_routed_session_installs_skill(tmp_path, monkeypatch, agent):
 @pytest.mark.skipif(os.name == "nt", reason="Exercises the skill's POSIX shell commands")
 @pytest.mark.parametrize("agent", ["claude", "codex"])
 def test_skill_toggles_with_launch_installation_despite_shadowed_path(tmp_path, monkeypatch, agent):
+    # Even with Isaac feedback enabled, the real CLI must turn off without a reason.
+    monkeypatch.setenv("ISAAC_SMART_ROUTER_FEEDBACK", "1")
     # Keep the venv path (including spaces), not its resolved system Python symlink.
     installation = tmp_path / "launch installation"
     installation.symlink_to(sys.prefix, target_is_directory=True)
