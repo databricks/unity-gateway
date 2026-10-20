@@ -349,6 +349,12 @@ class TestCujSmartRouting(BaseCujTest):
                         selections = response.payload["route_selection"]
                         assert len(selections) == 1
                         expected_model = selections[0]["route_option"]["model"]
+                        options = routes[0].payload["route_options"]
+                        offered = {canonical_model(option["model"]) for option in options}
+                        assert options and all(option["harness"] == agent for option in options)
+                        assert offered <= {canonical_model(model) for model in supported}
+                        selected = canonical_model(expected_model)
+                        assert selected in offered and selected.startswith("system.ai."), selected
                     inference = _task_inference_request(requests, agent, task.prompt)
                     inference = served_inference_request(recorder, requests, inference, agent)
                     assert canonical_model(inference.payload["model"]) == canonical_model(
