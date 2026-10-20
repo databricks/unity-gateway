@@ -77,6 +77,9 @@ Offline PTY checks verify that the Claude background-task wait observes "No task
 running" or a native task menu containing only completed rows before sending `/exit`, without
 stopping tasks or confirming an exit dialog. Running/scheduled sections, incomplete row counts,
 and completed-task text outside the native menu cannot satisfy the wait.
+If `/exit` reveals pending work absent from `/tasks`, cleanup cancels the exit request with
+Escape and waits before checking again, for up to 180 seconds. Each exit attempt retains its
+30-second timeout. Offline PTY cases cover a scheduled check finishing and stuck work failing.
 The live Claude subagent skill-toggle journey uses this wait after its final calculation.
 CUJ4's Claude preset sessions also use it after verifying delegated file tasks: a completed
 answer does not prove that a resumed child has stopped running.

@@ -85,8 +85,10 @@ completed task rows before submitting `/exit`. Claude 2.1.290 retains finished c
 checkmarked `done` rows and no running or scheduled section. The helper observes menu dismissal
 after Escape before typing `/exit`. Offline PTY checks reject active/scheduled tasks, partial
 lists, and completed-task text outside the native menu.
-It neither stops tasks nor confirms an exit dialog. Process exit retains its 30-second
-timeout. Offline PTY checks cover this ordering.
+Scheduled wakeups can be absent from `/tasks` but appear in the exit dialog. Cleanup cancels
+that exit request with Escape and waits before checking again, for up to 180 seconds. It
+neither stops tasks nor confirms the dialog. Each exit attempt retains its 30-second timeout.
+Offline PTY cases cover this ordering, a scheduled check finishing, and stuck work failing.
 The shared wait also runs before CUJ4's Claude preset sessions exit, after delegated-task
 evidence is checked, because Claude can resume a child after its first completed answer.
 
