@@ -826,31 +826,62 @@ class TestSubcommandRouting:
 
     @pytest.mark.parametrize("tool", ["claude", "codex"])
     @pytest.mark.parametrize(
-        ("launch_args", "launch_env", "expected_version"),
+        ("launch_args", "launch_env", "expected_version", "routed_tools"),
         [
-            ([], {}, smart_routing_config.SUBAGENT_ORCH_V0),
-            ([], {"ENABLE_SMART_ROUTING_V2": "1"}, smart_routing_config.SUBAGENT_ORCH_V0),
-            ([], {"ENABLE_SMART_ROUTING_V2": "0"}, smart_routing_config.SUBAGENT_ORCH_V0),
+            ([], {}, smart_routing_config.SUBAGENT_ORCH_V0, {"claude", "codex"}),
+            (
+                [],
+                {"ENABLE_SMART_ROUTING_V2": "1"},
+                smart_routing_config.SUBAGENT_ORCH_V0,
+                {"claude", "codex"},
+            ),
+            (
+                [],
+                {"ENABLE_SMART_ROUTING_V2": "0"},
+                smart_routing_config.SUBAGENT_ORCH_V0,
+                {"claude", "codex"},
+            ),
             (
                 [],
                 {"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0"},
                 smart_routing_config.SUBAGENT_ORCH_V0,
+                {"claude", "codex"},
             ),
-            ([], {"ENABLE_SMART_ROUTER_ORCHESTRATOR": "1"}, smart_routing_config.SUBAGENT_ORCH_V0),
-            *(
-                ([], {"SMART_ROUTER_CONFIG_VERSION": version}, version)
-                for version in (
-                    smart_routing_config.FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
-                    smart_routing_config.SUBAGENT_ONLY_V0,
-                    smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
-                )
+            (
+                [],
+                {"ENABLE_SMART_ROUTER_ORCHESTRATOR": "1"},
+                smart_routing_config.SUBAGENT_ORCH_V0,
+                {"claude", "codex"},
+            ),
+            (
+                [],
+                {
+                    "SMART_ROUTER_CONFIG_VERSION": (
+                        smart_routing_config.FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0
+                    )
+                },
+                smart_routing_config.FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
+                {"claude", "codex"},
+            ),
+            (
+                [],
+                {"SMART_ROUTER_CONFIG_VERSION": smart_routing_config.SUBAGENT_ONLY_V0},
+                smart_routing_config.SUBAGENT_ONLY_V0,
+                {"claude", "codex"},
+            ),
+            (
+                [],
+                {"SMART_ROUTER_CONFIG_VERSION": smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY},
+                smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+                {"claude"},
             ),
             (
                 ["--enable-smart-routing"],
                 {"ENABLE_SMART_ROUTING_V2": "1"},
                 smart_routing_config.SUBAGENT_ORCH_V0,
+                {"claude", "codex"},
             ),
-            (["--disable-smart-routing"], {}, None),
+            (["--disable-smart-routing"], {}, None, set()),
         ],
         ids=[
             "managed-default",
@@ -866,7 +897,7 @@ class TestSubcommandRouting:
         ],
     )
     def test_managed_smart_routing_overrides_env_vars_but_not_the_flag_or_a_version(
-        self, monkeypatch, tool, launch_args, launch_env, expected_version
+        self, monkeypatch, tool, launch_args, launch_env, expected_version, routed_tools
     ):
         for name, value in launch_env.items():
             monkeypatch.setenv(name, value)
@@ -886,12 +917,7 @@ class TestSubcommandRouting:
             result = runner.invoke(app, [tool, *launch_args])
 
         assert result.exit_code == 0, result.output
-        routed = cli_mod.smart_routing_v2.smart_routing_enabled(
-            {key: value for key, value in expected_env.items() if value is not None},
-            default=False,
-            agent=tool,
-        )
-        assert observed == [(routed, expected_env)]
+        assert observed == [(tool in routed_tools, expected_env)]
         assert _routing_env() == env_before
 
     def test_bare_launch_keeps_a_known_version_over_managed_smart_routing(self, monkeypatch):
