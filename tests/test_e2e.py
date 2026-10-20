@@ -1095,7 +1095,7 @@ class TestCopilotLaunch:
             pytest.skip("No Copilot-compatible models available on this workspace")
 
         monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
-        monkeypatch.setattr(copilot, "COPILOT_RUN_DIR", tmp_path / "run")
+        monkeypatch.setattr(copilot, "COPILOT_CONFIG_DIR", tmp_path / ".copilot")
         catalog = copilot.build_copilot_catalog([model for _, model in models])
 
         from ucode import gateway_proxy

@@ -1,7 +1,8 @@
 """GitHub Copilot CLI agent: runs Copilot against a per-session Databricks model registry.
 
 Copilot reads its BYOK models from a providers.json registry (`COPILOT_PROVIDERS_CONFIG`). Each
-`ug copilot` launch writes one under ~/.ucode/run/ listing every Databricks model Copilot can use,
+`ug copilot` launch writes one (~/.copilot/ucode-providers-<id>.json) listing every Databricks
+model Copilot can use,
 so `/model` switches between them mid-session, across wire APIs. Each family keeps its native
 wire: Claude on the gateway's Anthropic endpoint (with Copilot's catalog id as `modelId`, so
 Copilot sends Claude request settings), GPT 5+ on Responses (Copilot sends `temperature: 0` on Chat
@@ -22,8 +23,6 @@ import json
 import os
 import re
 import secrets
-import shutil
-import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterable, Iterator
@@ -31,7 +30,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import IO, Any, Protocol
+from typing import Any, Protocol
 
 from ucode.config_io import (
     APP_DIR,
@@ -70,11 +69,8 @@ COPILOT_MCP_CONFIG_PATH = COPILOT_CONFIG_DIR / "ucode-mcp-config.json"
 COPILOT_BACKUP_PATH = APP_DIR / "copilot-ucode-env.backup"
 COPILOT_MCP_BACKUP_PATH = APP_DIR / "copilot-ucode-mcp-config.backup.json"
 COPILOT_PROXY_LOG_PATH = APP_DIR / "logs" / "copilot-proxy.log"
-COPILOT_RUN_DIR = APP_DIR / "run"
-_SESSION_DIR_PREFIX = "copilot-"
-_SESSION_LOCK_NAME = "session.lock"
-_RUN_DIR_LOCK_NAME = ".copilot.lock"
-_REGISTRY_NAME = "providers.json"
+_REGISTRY_PREFIX = "ucode-providers-"
+_REGISTRY_LOCK_NAME = "ucode-providers.lock"
 
 MINIMUM_COPILOT_VERSION = (1, 0, 91)
 
@@ -480,9 +476,9 @@ def build_runtime_env(registry_path: Path, model: CopilotModel) -> dict[str, str
 
 
 @contextmanager
-def _run_dir_lock() -> Iterator[None]:
-    COPILOT_RUN_DIR.mkdir(parents=True, exist_ok=True)
-    with (COPILOT_RUN_DIR / _RUN_DIR_LOCK_NAME).open("a+b") as lock_file:
+def _registries_lock() -> Iterator[None]:
+    COPILOT_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    with (COPILOT_CONFIG_DIR / _REGISTRY_LOCK_NAME).open("a+b") as lock_file:
         acquire_exclusive_file_lock(lock_file)
         try:
             yield
@@ -490,9 +486,9 @@ def _run_dir_lock() -> Iterator[None]:
             release_file_lock(lock_file)
 
 
-def _sweep_dead_sessions() -> None:
-    for session_dir in COPILOT_RUN_DIR.glob(f"{_SESSION_DIR_PREFIX}*"):
-        lock_path = session_dir / _SESSION_LOCK_NAME
+def _sweep_dead_registries() -> None:
+    for registry in COPILOT_CONFIG_DIR.glob(f"{_REGISTRY_PREFIX}*.json"):
+        lock_path = registry.with_suffix(".lock")
         if lock_path.exists():
             with lock_path.open("a+b") as lock_file:
                 try:
@@ -500,44 +496,46 @@ def _sweep_dead_sessions() -> None:
                 except (TimeoutError, OSError):
                     continue
                 release_file_lock(lock_file)
-        shutil.rmtree(session_dir, ignore_errors=True)
+        registry.unlink(missing_ok=True)
+        lock_path.unlink(missing_ok=True)
 
 
-def sweep_session_dirs() -> None:
+def sweep_session_registries() -> None:
     """Delete registries left by sessions that ended without cleaning up (e.g. a killed terminal)."""
-    if not COPILOT_RUN_DIR.exists():
+    if not COPILOT_CONFIG_DIR.exists():
         return
-    with _run_dir_lock():
-        _sweep_dead_sessions()
+    with _registries_lock():
+        _sweep_dead_registries()
 
 
 @contextmanager
 def session_registry(config: dict) -> Iterator[Path]:
     """Write ``config`` to a private per-session providers.json, removed when the session ends.
 
-    The session holds a lock on its directory so a concurrent sweep leaves it alone."""
-    lock_file: IO[Any] | None = None
-    with _run_dir_lock():
-        _sweep_dead_sessions()
-        session_dir = Path(tempfile.mkdtemp(prefix=_SESSION_DIR_PREFIX, dir=COPILOT_RUN_DIR))
+    The session holds a lock on a sibling ``.lock`` file so a concurrent sweep leaves it alone;
+    locking the registry itself would block Copilot from reading it on Windows."""
+    with _registries_lock():
+        _sweep_dead_registries()
+        path = COPILOT_CONFIG_DIR / f"{_REGISTRY_PREFIX}{secrets.token_hex(8)}.json"
+        lock_path = path.with_suffix(".lock")
+        lock_file = lock_path.open("a+b")
         try:
-            lock_file = (session_dir / _SESSION_LOCK_NAME).open("a+b")
             acquire_exclusive_file_lock(lock_file, timeout=0)
-            path = session_dir / _REGISTRY_NAME
             descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(descriptor, "w", encoding="utf-8") as registry:
                 json.dump(config, registry, indent=2)
         except BaseException:
-            if lock_file is not None:
-                lock_file.close()
-            shutil.rmtree(session_dir, ignore_errors=True)
+            lock_file.close()
+            path.unlink(missing_ok=True)
+            lock_path.unlink(missing_ok=True)
             raise
     try:
         yield path
     finally:
         release_file_lock(lock_file)
         lock_file.close()
-        shutil.rmtree(session_dir, ignore_errors=True)
+        path.unlink(missing_ok=True)
+        lock_path.unlink(missing_ok=True)
 
 
 def _parse_version(value: str) -> tuple[int, int, int] | None:

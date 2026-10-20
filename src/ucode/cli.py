@@ -1421,7 +1421,7 @@ def revert() -> int:
     mcp_results = revert_mcp_configs(state)
     # Before restoring backups: one written by an earlier ug may hold a token.
     copilot_agent.scrub_stored_credentials()
-    copilot_agent.sweep_session_dirs()
+    copilot_agent.sweep_session_registries()
     claude_managed_result = claude_agent.revert_managed_settings()
     codex_managed_result = codex_agent.revert_managed_config()
 

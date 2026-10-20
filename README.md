@@ -82,8 +82,8 @@ global choice is saved for plain `copilot` too, where the Databricks models don'
 exist. Requires Copilot CLI 1.0.91 or newer.
 
 `ug copilot` runs Copilot against a loopback proxy for the session. Copilot holds only
-a random session secret, kept in the session registry under `~/.ucode/run/` (readable
-only by you, deleted when the session ends); the proxy adds a fresh Databricks token to
+a random session secret, kept in the session's `~/.copilot/ucode-providers-<id>.json`
+registry (readable only by you, deleted when the session ends); the proxy adds a fresh Databricks token to
 each gateway request, so OAuth sessions keep working past token expiry without a
 restart, and no Databricks token is written to disk. If the Databricks sign-in itself expires,
 Copilot shows a "Databricks sign-in expired" error; run `databricks auth login` and
