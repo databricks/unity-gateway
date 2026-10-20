@@ -25,8 +25,9 @@ journeys do not cover this form or a live Isaac evidence upload.
 
 `test_claude_answer_delivery.py` covers Claude answer selection, composition, ownership,
 failed tasks and resumed revisions using transcript inputs, plus real subprocess I/O,
-stream-input bypass and capability lifetime. Live model/gateway selection and hook
-activation remain uncovered.
+stream-input bypass and capability lifetime. Text, JSON and streaming JSON results
+stay on stdout when UG redirects its diagnostics to stderr. Live model/gateway
+selection and hook activation remain uncovered.
 
 The **harness-latest** workflow runs every six hours on `main` and currently covers
 smart routing only.
