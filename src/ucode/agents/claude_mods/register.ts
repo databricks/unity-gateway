@@ -104,20 +104,16 @@ export function register(on: On, options: PluginOptions): void {
     const action = e.args.trim();
     if (action !== 'on' && action !== 'off') return {text: 'Usage: /smart-router on|off'};
     if (!launchedEnabled) return {text: 'Smart Router was not enabled for this session.'};
-    if (action === 'off') {
-      // The mod compiler keeps $ within one file, so bind these before Isaac's guard.
+    if (action === 'off' && await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK') === '1') {
+      // The mod compiler keeps $ within one file, so bind the routing controls here.
       feedback.readRoutingEnabled = async () => isRoutingEnabled(await readEnvironment($));
       feedback.disableRouting = async () => {
         await setRouting($, options, false, true);
         showStatusBand();
         $.ui.invalidate('ui.render');
       };
+      return next(e);
     }
-    return next(e);
-  });
-  registerIsaacFeedback(on, feedback);
-  on('command.run', {command: 'smart-router'}, async ($, e) => {
-    const action = e.args.trim();
     try {
       await setRouting($, options, action === 'on', true);
       showStatusBand();
@@ -127,6 +123,7 @@ export function register(on: On, options: PluginOptions): void {
     }
     return {text: `Smart Router is ${action}`};
   });
+  registerIsaacFeedback(on, feedback);
   registerStatusBand(on);
   registerSubagentRouting(on, options);
 }

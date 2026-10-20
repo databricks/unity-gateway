@@ -15,10 +15,7 @@ export function createIsaacFeedbackState(): FeedbackState {
 }
 
 export function registerIsaacFeedback(on: On, state: FeedbackState): void {
-  on('command.run', {command: 'smart-router'}, async ($, e, next) => {
-    if (e.args.trim() !== 'off' || await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK') !== '1') {
-      return next(e);
-    }
+  on('command.run', {command: 'smart-router'}, async ($) => {
     try {
       if (!state.readRoutingEnabled || !state.disableRouting) {
         throw new Error('Smart Router controls are unavailable.');
@@ -48,9 +45,8 @@ export function registerIsaacFeedback(on: On, state: FeedbackState): void {
     return {text: 'Turning Smart Router off in the background. Could not open the feedback form.'};
   });
 
-  on('ui.render', { component: 'Pane' }, async ($, e, next) => {
+  on('ui.render', { component: 'Pane' }, ($, e, next) => {
     if (e.requestId !== FEEDBACK_PANE || e.surface === 'mobile') return next(e);
-    if (await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK') !== '1') return next(e);
     const { Box, Text, Input, Button } = $.ui.resolve(e);
     return Box({
       flexDirection: 'column',
@@ -65,7 +61,7 @@ export function registerIsaacFeedback(on: On, state: FeedbackState): void {
           submitLabel: 'Send feedback',
           onInput: (value) => { state.reason = value; },
           onSubmit: async (value) => {
-            if (state.submitted || await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK') !== '1') return;
+            if (state.submitted) return;
             if (Array.from(value.trim()).length < 16) {
               $.ui.toast('Enter at least 16 characters, excluding surrounding whitespace.');
               return;

@@ -61,8 +61,9 @@ On each on-to-off change, Isaac sessions with
 immediately open a dismissible feedback form. Isaac sets this flag from its
 rollout setting or the user's explicit `1`/`0` override. It controls Isaac feedback
 availability, so UG's routing presets and on/off toggles leave it unchanged.
-The native command, form rendering, and submission each check that the flag is
-exactly `1`; unset, `0`, and all other values disable this feedback flow.
+The command entry point in `register.ts` invokes feedback only when the flag is
+exactly `1`; unset, `0`, and all other values use the ordinary toggle path.
+The feedback module does not read the flag; its renderer stays synchronous.
 The form does not wait for the toggle or an Isaac CLI availability check. The
 transcript confirms when routing is off, or reports a toggle failure. Enter accepts
 a reason of at least 16 characters after trimming surrounding whitespace and uploads
@@ -74,8 +75,8 @@ the toggle or re-enable routing. Submission failures are reported in the transcr
 The form makes no model requests.
 
 `isaac-feedback.ts` owns this Databricks-specific policy, form, and submission.
-`register.ts` binds the routing callbacks before Isaac's command guard, then
-handles toggles the guard passes through. Claude's mod compiler requires engine
+`register.ts` checks the flag and binds routing callbacks before forwarding eligible
+off commands to feedback; it handles other toggles directly. Claude's mod compiler requires engine
 API calls to stay in the file that receives `$`.
 `routing-state.ts` supplies the shared enabled check; launch options, live
 environment values, and resolved session overrides use the same check on their
@@ -89,8 +90,7 @@ Automatic feedback is owned by the native Claude handler, rather than skill inst
 Validate the form in Isaac, including the 16-character minimum, exact reason
 submission, cancellation, repeated toggles and failures. One native component test
 checks that the form opens before off completes and cancellation does not stop it.
-Another checks that commands and rendering pass through for every tested flag value
-other than `1`.
+Another checks that the entry point invokes feedback only for the exact value `1`.
 Live Isaac UI and evidence uploads still require manual validation.
 
 The existing Claude skill-toggle integration journey checks recorded inference

@@ -20,8 +20,8 @@ skill-toggle integration journey checks the live recipe payload field across on/
 See [the mod guide](../docs/claude-mod.md).
 
 `native_claude/mod_tests/isaac-feedback.test.ts` checks that feedback opens while off
-is pending and Cancel does not stop it, plus command/render bypass for unset and
-non-`1` flag values. `test_smart_router.py` verifies the real CLI
+is pending and Cancel does not stop it, plus the command entry point invoking feedback
+only for the exact flag value `1`. `test_smart_router.py` verifies the real CLI
 turns off without a reason with feedback enabled. Live Isaac UI, validation, failure
 handling, and evidence uploads still need manual checks.
 
