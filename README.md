@@ -137,9 +137,15 @@ OTLP trace export with a refreshing headers helper; no background service is nee
 Register Databricks MCP servers for configured MCP-capable agents. Cursor Agent
 is MCP-only and is included when `cursor-agent` is installed:
 
-Run `ug mcp add` without selectors to browse available services. Highlight a service to
-see its description, creator, and creation/update dates. Type to filter names, use Space
-to select, and Enter to save. Page Up/Down scrolls the detail pane on small terminals.
+Run `ug mcp add` without selectors to browse a table of services by name, UC location,
+and status. ✓ means configured (or managed by the workspace); ✗ means not configured.
+Configured and managed services stay visible as read-only rows. `[ ]`/`[x]` indicate
+what you select for this operation; `[-]` marks a read-only row.
+
+Highlight a service to see its description, creator, and creation/update dates. Type
+to filter names or UC locations, use Space to select, and Enter to save. Page Up/Down
+scrolls the detail pane. Narrow terminals shorten cells and show status symbols;
+the detail pane retains the full location and status.
 
 Use `ug mcp add` to add servers without removing existing registrations:
 
@@ -223,7 +229,12 @@ this contract does not make shared setup transactional.
 
 Unity Catalog Skills can be registered as MCP tools or downloaded into local
 agent skill directories. Run `ug skills add` without selectors to browse individual
-skills with the same metadata pane as the MCP browser, plus the bundle name.
+skills in the same table and metadata pane as the MCP browser, plus the bundle name.
+✓ Installed requires a recorded download of that exact UC skill with `SKILL.md` still
+present at every target agent directory (`--path`, or your home directory). A matching
+bundle name from another schema or metastore does not qualify. Unattributed local
+bundles and incomplete installations show ✗ Not installed, with an explanation in the
+detail pane. Installed skills remain selectable for updates.
 Missing metadata is shown explicitly. `Created by` is the UC creator, which may
 differ from the author of the bundle.
 

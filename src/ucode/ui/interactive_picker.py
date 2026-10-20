@@ -16,7 +16,7 @@ from datetime import UTC
 from typing import Any
 
 import questionary
-from prompt_toolkit.application import Application
+from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.data_structures import Point
 from prompt_toolkit.filters import Condition, IsDone
 from prompt_toolkit.key_binding import KeyBindings
@@ -25,6 +25,7 @@ from prompt_toolkit.layout import ConditionalContainer, HSplit, Layout, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.shortcuts import PromptSession
+from prompt_toolkit.utils import get_cwidth
 from questionary.prompts.common import InquirerControl
 from questionary.question import Question
 from questionary.styles import merge_styles_default
@@ -125,6 +126,60 @@ def picker_style() -> questionary.Style:
     )
 
 
+class CatalogChoice(questionary.Choice):
+    """A searchable choice whose table cells are independent of its selection state."""
+
+    def __init__(
+        self,
+        title: str,
+        value: str,
+        *,
+        name: str,
+        location: str,
+        status: str,
+        checked: bool = False,
+        disabled: str | None = None,
+        description: str | None = None,
+    ):
+        super().__init__(
+            title, value=value, checked=checked, disabled=disabled, description=description
+        )
+        self.name = name
+        self.location = location
+        self.status = status
+
+
+def _table_cell(value: str, width: int) -> str:
+    value = " ".join(value.split())
+    if get_cwidth(value) > width:
+        clipped = ""
+        for char in value:
+            if get_cwidth(clipped + char) > width - 1:
+                break
+            clipped += char
+        value = clipped + "…"
+    return value + " " * max(0, width - get_cwidth(value))
+
+
+def _table_columns(width: int) -> tuple[int, int, int]:
+    status = 16 if width >= 60 else 6
+    remaining = max(2, width - 9 - 4 - status)
+    return remaining // 2, remaining - remaining // 2, status
+
+
+def _table_cells(name: str, location: str, status: str, width: int) -> str:
+    name_width, location_width, status_width = _table_columns(width)
+    if width < 60 and status.startswith(("✓", "✗")):
+        status = status[0]
+    return "  ".join(
+        [
+            _table_cell(name, name_width),
+            _table_cell(location, location_width),
+            _table_cell(status, status_width),
+        ]
+    )
+
+
 class StreamingInquirerControl(InquirerControl):
     """`InquirerControl` that tolerates an empty or all-disabled choice list.
 
@@ -135,6 +190,10 @@ class StreamingInquirerControl(InquirerControl):
     and fills it in via the background loader, and `ug mcp add` can legitimately show only
     already-configured (disabled) rows. Default the cursor and treat "nothing selectable" as valid
     so construction, rendering, and navigation don't crash."""
+
+    def __init__(self, choices, *, table: bool = False, **kwargs):
+        self.table = table
+        super().__init__(choices, **kwargs)
 
     def is_selection_valid(self) -> bool:
         if getattr(self, "pointed_at", None) is None:
@@ -148,6 +207,10 @@ class StreamingInquirerControl(InquirerControl):
             return True
         if self.pointed_at >= len(self.choices):
             return False
+        if self.table and isinstance(self.get_pointed_at(), CatalogChoice):
+            # Configured/managed rows stay browsable for their details; Space and
+            # select-all still exclude their disabled choices.
+            return True
         return super().is_selection_valid()
 
     def _get_choice_tokens(self):
@@ -155,7 +218,36 @@ class StreamingInquirerControl(InquirerControl):
         # empty list. Render nothing when there are no rows (the picker is still streaming them in).
         if not self.filtered_choices:
             return []
-        return super()._get_choice_tokens()
+        if not self.table:
+            return super()._get_choice_tokens()
+        tokens = []
+        width = get_app().output.get_size().columns
+        for index, choice in enumerate(self.filtered_choices):
+            if index:
+                tokens.append(("", "\n"))
+            pointed = index == self.pointed_at
+            tokens.append(("class:pointer", "› " if pointed else "  "))
+            if pointed:
+                tokens.append(("[SetCursorPosition]", ""))
+            selected = choice.value in self.selected_options
+            checkbox = "[-]" if choice.disabled else "[x]" if selected else "[ ]"
+            tokens.append(("class:text", checkbox + "    "))
+            if isinstance(choice, CatalogChoice):
+                name, location, status = choice.name, choice.location, choice.status
+            else:
+                # Legacy MCP registrations have no UC location, but remain removable.
+                name = str(choice.title)
+                location = "—"
+                status = "✓ Configured" if choice.checked else "✗ Not configured"
+            style = (
+                "class:disabled"
+                if choice.disabled
+                else "class:highlighted"
+                if pointed
+                else "class:text"
+            )
+            tokens.append((style, _table_cells(name, location, status, width)))
+        return tokens
 
 
 def merge_new_choices(
@@ -180,6 +272,7 @@ def scrolling_checkbox(
     | None = None,
     loading_noun: str = "MCP services",
     show_description: bool = False,
+    table: bool = False,
 ) -> Question:
     """Multi-select checkbox picker.
 
@@ -205,6 +298,7 @@ def scrolling_checkbox(
         choices,
         pointer="›",
         show_description=False,
+        table=table,
     )
     # Live loading state for the background-loader footer (see below).
     loading: dict[str, Any] = {"active": background_loader is not None, "found": 0, "message": None}
@@ -232,7 +326,7 @@ def scrolling_checkbox(
     def visible_choice_rows() -> int:
         # Reserve the prompt and optional loading/search/scroll footers. Re-evaluate
         # on resize so the detail pane cannot push the choices out of a short terminal.
-        reserved = 5 + (detail_height() + 1 if show_description else 0)
+        reserved = 5 + int(table) + (detail_height() + 1 if show_description else 0)
         return min(PICKER_VISIBLE_ROWS, max(1, app.output.get_size().rows - reserved))
 
     @Condition
@@ -291,6 +385,26 @@ def scrolling_checkbox(
                 Window(
                     height=Dimension.exact(1),
                     content=FormattedTextControl(get_prompt_tokens),
+                ),
+                ConditionalContainer(
+                    Window(
+                        height=Dimension.exact(1),
+                        content=FormattedTextControl(
+                            lambda: [
+                                (
+                                    "bold",
+                                    "  Select "
+                                    + _table_cells(
+                                        "Name",
+                                        "UC location",
+                                        "Status",
+                                        app.output.get_size().columns,
+                                    ),
+                                )
+                            ]
+                        ),
+                    ),
+                    filter=Condition(lambda: table) & ~IsDone(),
                 ),
                 ConditionalContainer(
                     # Height tracks the live choice count (capped at the visible max) so the

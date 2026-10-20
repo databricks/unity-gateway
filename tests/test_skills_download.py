@@ -1000,12 +1000,12 @@ class _FakePrompt:
 
 
 class TestSkillDownloadPicker:
-    def test_choice_value_is_fqn_flags_on_disk_and_carries_description(self, tmp_path):
+    def test_choice_value_is_fqn_and_unattributed_bundle_is_not_installed(self, tmp_path):
         roots = skill_dir_roots(str(tmp_path))
 
         fresh = sd._skill_download_choice(ref("triage", description="Routes tickets."), roots)
         assert fresh.value == "main.default.triage"
-        assert "(on disk)" not in fresh.title
+        assert fresh.status == "✗ Not installed"
         assert "Location: main.default.triage" in fresh.description
         assert "Bundle: triage" in fresh.description
         assert "Description: Routes tickets." in fresh.description
@@ -1013,7 +1013,8 @@ class TestSkillDownloadPicker:
         write_skill(roots, ref("triage"), {"SKILL.md": b"x"})
         existing = sd._skill_download_choice(ref("triage"), roots)
         assert existing.value == "main.default.triage"
-        assert "(on disk)" in existing.title
+        assert existing.status == "✗ Not installed"
+        assert "Local bundle: Already on disk" in existing.description
 
     def test_choice_description_labels_by_bundle_name_not_securable(self, tmp_path):
         roots = skill_dir_roots(str(tmp_path))

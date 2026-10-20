@@ -63,7 +63,7 @@ from ucode.ui import (
     scrolling_checkbox,
     spinner,
 )
-from ucode.ui.interactive_picker import picker_details
+from ucode.ui.interactive_picker import CatalogChoice, picker_details
 
 # Workspace-relative path fragments for the V2 AI Gateway MCP endpoints, shared by the URL-shape
 # checks (`_is_app_mcp_server`, `_mcp_server_location`) so the set stays in one place.
@@ -661,32 +661,44 @@ def _mcp_service_choice(
     additive: bool,
     managed_names: set[str] | None = None,
     metadata: dict | None = None,
-) -> questionary.Choice | None:
-    """Picker choice for one MCP-service full name (`<catalog>.<schema>.<id>`), or None to hide it.
+) -> CatalogChoice:
+    """Picker choice for one MCP-service full name (`<catalog>.<schema>.<id>`).
 
-    Shared by the initial `build_mcp_picker_choices` render and the background walk that streams
-    more services in, so a streamed row is built identically to an up-front one. The picker only
-    shows rows you can act on, so two kinds are hidden: a managed service (never ug's to add or
-    remove) and, under `mcp add`, an already-configured one (nothing to add). Replace mode still
-    lists ug's own as a removable toggle; an unregistered service is an add-choice."""
+    Shared by initial and streamed rows. Configured services stay visible with their
+    status. In add mode they are read-only; managed services are always read-only.
+    Replace mode keeps ug's own registrations checked so they can still be removed."""
     registered_as = name.replace(".", "-")
-    display_title = f"MCP: {name}"
-    if registered_as in (managed_names or set()):
-        return None
-    if registered_as in known_names:
-        choice = None if additive else _server_choice(registered_as, True, display_title)
-    else:
-        choice = _add_choice(f"{MCP_SERVICE_SELECTION_PREFIX}{name}", display_title)
-    if choice is not None:
-        details = metadata or {}
-        choice.description = picker_details(
+    managed = registered_as in (managed_names or set())
+    configured = registered_as in known_names or managed
+    status = "✓ Managed" if managed else "✓ Configured" if configured else "✗ Not configured"
+    details = metadata or {}
+    description = (
+        picker_details(
             name,
             details.get("comment"),
             created_by=details.get("created_by"),
             create_time=details.get("create_time"),
             update_time=details.get("update_time"),
         )
-    return choice
+        + f"\nStatus: {status}"
+    )
+    location, _, leaf = name.rpartition(".")
+    return CatalogChoice(
+        title=f"MCP: {name}",
+        value=registered_as
+        if configured
+        else f"{MCP_ADD_PREFIX}{MCP_SERVICE_SELECTION_PREFIX}{name}",
+        name=leaf,
+        location=location,
+        status=status,
+        checked=configured and not additive and not managed,
+        disabled="Managed by workspace"
+        if managed
+        else "Already configured"
+        if configured and additive
+        else None,
+        description=description,
+    )
 
 
 def build_mcp_picker_choices(
@@ -840,8 +852,8 @@ def prompt_for_mcp_server_choices(
     if cancelled (Ctrl-C), or `_BACK` if `allow_back` and the user pressed Left
     to return to the previous wizard step.
 
-    ``additive`` (``ucode mcp add``) shows already-configured servers as
-    non-toggleable notes instead of pre-checked, removable boxes.
+    ``additive`` (``ug mcp add``) shows configured services as read-only table rows
+    instead of pre-checked, removable boxes.
 
     ``managed_names`` are servers managed configuration already provides; they show as
     non-toggleable in either mode, since there is nothing to add and ug can't remove them here.
@@ -871,6 +883,7 @@ def prompt_for_mcp_server_choices(
         allow_back=allow_back,
         background_loader=background_loader,
         show_description=True,
+        table=True,
     ).ask()
     if selection is None:
         return None
@@ -1356,20 +1369,14 @@ def _mcp_services_background_loader(
         append: Callable[[list[questionary.Choice]], None], cancel_event: threading.Event
     ) -> None:
         def on_services(new_names: list[str]) -> None:
-            # A streamed service can be hidden (managed, or already configured under `mcp add`),
-            # in which case its choice is None — drop those so only real rows reach the picker.
-            new_choices = [
-                choice
-                for name in new_names
-                if (
-                    choice := _mcp_service_choice(
+            append(
+                [
+                    _mcp_service_choice(
                         name, known_names, additive, managed_names, metadata.get(name)
                     )
-                )
-                is not None
-            ]
-            if new_choices:
-                append(new_choices)
+                    for name in new_names
+                ]
+            )
 
         discover_all_mcp_service_names(
             workspace,
