@@ -46,7 +46,12 @@ from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
-from ucode.constants import AGENT_CLAUDE, AGENT_CODEX, SMART_ROUTING_ENV_KEYS
+from ucode.constants import (
+    AGENT_CLAUDE,
+    AGENT_CODEX,
+    ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
+    SMART_ROUTING_ENV_KEYS,
+)
 from ucode.custom_oauth import (
     CUSTOM_OAUTH_CLI_ENV_VAR,
     custom_oauth_cli_enabled,
@@ -79,6 +84,7 @@ from ucode.databricks import (
     resolve_provider_launch_model,
     run_databricks_login,
 )
+from ucode.env import env_bool
 from ucode.managed_budget import (
     budget_usage_percent,
     recommendation_line,
@@ -2467,7 +2473,8 @@ def otel_headers_cmd(
             )
             raise typer.Exit(1)
     try:
-        token = get_databricks_token(workspace, profile, force_refresh=force_refresh)
+        with redirect_stdout(sys.stderr):
+            token = get_databricks_token(workspace, profile, force_refresh=force_refresh)
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
@@ -2725,13 +2732,24 @@ def _smart_routing_v2_flag(enabled: bool | None, *, agent: str) -> Iterator[None
         smart_routing_v2.restore_smart_routing_env(previous)
 
 
-def _toggle_current_smart_routing_session(enabled: bool | None) -> bool:
+def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | None = None) -> bool:
     if enabled is None:
         return False
     try:
         session_env_path()
     except RuntimeError:
         return False
+    if (
+        not enabled
+        and env_bool(ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR)
+        and len((reason or "").strip()) < 16
+    ):
+        print_err(
+            "Turning Smart Router off requires a reason of at least 16 characters, excluding "
+            "surrounding whitespace. Ask the user why, then pass their reason with "
+            "--smart-router-feedback and submit it through /isaac-feedback --category smart-routing."
+        )
+        raise typer.Exit(2)
     try:
         set_session_environment(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0") if not enabled else {})
     except RuntimeError as exc:
@@ -3206,11 +3224,6 @@ def _launch_tool(
             # rewriting it; the admin's location exists only for this launch.
             provider = None
             parent_schema = managed_parent_schema
-        # Unmanaged Claude launches discover gateway models automatically; with no
-        # provider or parent header the gateway defaults to system.ai. Managed
-        # configs opt into discovery by selecting an MPS or Unity Catalog location.
-        if tool == "claude" and (managed is None or managed_provider or managed_parent_schema):
-            os.environ[claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
         # The environment switch remains a developer override; managed config is the workspace
         # policy equivalent and must take effect before launch options are computed.
         managed_smart_routing_enabled = _managed_smart_routing_enabled(managed, tool)
@@ -3233,6 +3246,15 @@ def _launch_tool(
             if tool == "claude"
             else None
         )
+        # Unmanaged Claude launches discover gateway models automatically unless another writer's
+        # managed picker already supplies the launch's models. A managed MPS or Unity Catalog
+        # location opts into discovery for its own source.
+        if (
+            tool == "claude"
+            and family_defaults is None
+            and (managed is None or managed_provider or managed_parent_schema)
+        ):
+            os.environ[claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
         state = configure_shared_state(
             state["workspace"],
             profile=state.get("profile"),
@@ -3418,7 +3440,13 @@ def _launch_tool(
             route_root_model = None
         # List the gateway's models in ug's own /model picker so GPT rows get the `[1m]` hint.
         # Claude Code's own discovery lists them without it, so they would run at 200K.
-        if tool == "claude" and managed is None and not provider and not parent_schema:
+        if (
+            tool == "claude"
+            and managed is None
+            and not provider
+            and not parent_schema
+            and family_defaults is None
+        ):
             discovered = list_anthropic_model_catalog(
                 state["workspace"],
                 get_databricks_token(state["workspace"], catalog_profile),
@@ -3748,9 +3776,13 @@ def codex_cmd(
             help="Enable or disable AI Gateway model routing for this Codex launch or session.",
         ),
     ] = None,
+    smart_router_feedback: Annotated[
+        str | None,
+        typer.Option("--smart-router-feedback", hidden=True),
+    ] = None,
 ) -> None:
     """Launch Codex via Databricks."""
-    if _toggle_current_smart_routing_session(enable_smart_routing_flag):
+    if _toggle_current_smart_routing_session(enable_smart_routing_flag, smart_router_feedback):
         return
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
@@ -3836,9 +3868,13 @@ def claude_cmd(
             help="Enable or disable AI Gateway model routing for this Claude Code launch or session.",
         ),
     ] = None,
+    smart_router_feedback: Annotated[
+        str | None,
+        typer.Option("--smart-router-feedback", hidden=True),
+    ] = None,
 ) -> None:
     """Launch Claude Code via Databricks."""
-    if _toggle_current_smart_routing_session(enable_smart_routing_flag):
+    if _toggle_current_smart_routing_session(enable_smart_routing_flag, smart_router_feedback):
         return
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)

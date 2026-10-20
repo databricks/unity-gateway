@@ -25,7 +25,7 @@ Tests live in `tests/`.
 - Prefer existing helpers for config file writes, state persistence, UI messages, and Databricks authentication.
 - Use `ucode.os_compatibility.subprocess_cross_os.run` / `ucode.os_compatibility.subprocess_cross_os.popen` for subprocesses; they resolve Windows npm wrappers automatically and default text streams to UTF-8 with replacement for invalid bytes. Keep commands as argument lists. Do not repeat these encoding defaults at callsites; explicit encoding/error overrides and binary mode remain supported. Ruff rejects direct `subprocess.run` / `subprocess.Popen` calls outside `os_compatibility/subprocess_cross_os.py` and tests.
 - Use `acquire_exclusive_file_lock` / `release_file_lock` from `ucode.os_compatibility.file_lock_cross_os` instead of calling `fcntl.flock`, `fcntl.lockf`, or `msvcrt.locking` directly. Ruff enforces this outside the compatibility module and tests.
-- Use `is_admin` and `windows_program_files_dir` from `ucode.os_compatibility.system_cross_os` instead of calling `IsUserAnAdmin` or reading `ProgramFiles` directly.
+- Use `is_admin`, `windows_program_files_dir`, `windows_program_data_dir`, and `windows_system32_dir` from `ucode.os_compatibility.system_cross_os` instead of calling `IsUserAnAdmin` or reading `ProgramFiles`/`ProgramData`/`SystemRoot` directly.
 - Use `launcher.exec_or_spawn` when handing the terminal to an agent. Shell strings and explicit executable overrides keep their existing subprocess semantics.
 - Add or update focused tests for behavior changes.
 - Never trigger a workflow with `pull_request_target`; `tests/test_integration_contract.py` rejects it. Use `pull_request` for checks that need no secrets, and a member-only `issue_comment` command that checks out the default branch (as in `fork-integration.yml`) for checks that need secrets on fork PRs.
@@ -148,12 +148,18 @@ Desktop setup is configure-only and best-effort. Writes retain atomic replacemen
 failure rollback, and the Desktop-only five-second lock timeout.
 Desktop filters both static and discovered model IDs with case-insensitive `\bclaude-`;
 shared discovery and Claude Code lists are unchanged. If no IDs match, setup warns without writes.
+When `claude_otel_tracing` is enabled, Desktop's reserved profile also owns
+`otlpEndpoint`, `otlpProtocol`, `otlpHeadersHelper`, and `otlpTracesEnabled`. A generated
+`.sh`/`.cmd` wrapper pins the configuring Python installation, workspace, and profile
+for the existing `otel-headers` command. Native sessions rerun it as tokens rotate;
+no bearer is persisted. Disable/revert removes the wrapper, with atomic writes and
+rollback shared with the profile. Disabled tracing omits these fields on replacement.
 See `docs/claude-desktop.md` for native validation limits and revert behavior.
 
 <details>
 <summary>Codex</summary>
 
-Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`.
+Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`. On Windows the managed file is `C:\ProgramData\OpenAI\Codex\requirements.toml`, which omits `model` and `mcp_servers` and adds `env_http_headers` for the launch-scoped headers.
 
 | Field | Without managed config | With managed config | Notes |
 |-------|------------------------|---------------------|-------|

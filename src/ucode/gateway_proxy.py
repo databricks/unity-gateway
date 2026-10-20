@@ -37,6 +37,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from ucode.env import env_bool
 from ucode.smart_routing.codex_v2_transport import (
     prepare_request,
     transform_response_event,
@@ -81,12 +82,11 @@ _DEFAULT_TTL_S = 3600
 # contain locally-generated request ids, timings, status codes, byte counts,
 # and exception class names — never headers, bodies, or credentials.
 _DIAGNOSTICS_ENV = "UCODE_RELAYED_PROXY_DIAGNOSTICS"
-_DIAGNOSTICS_TRUE = frozenset({"1", "true", "yes", "on"})
 _CODEX_V2_MAX_SSE_EVENT_BYTES = 16 * 1024 * 1024
 
 
 def _diagnostics_enabled() -> bool:
-    return os.environ.get(_DIAGNOSTICS_ENV, "").strip().lower() in _DIAGNOSTICS_TRUE
+    return env_bool(_DIAGNOSTICS_ENV)
 
 
 def log_proxy_diagnostic(event: str, **fields: object) -> None:

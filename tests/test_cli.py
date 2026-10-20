@@ -2168,6 +2168,61 @@ class TestAuthTokenCommand:
 
 
 class TestOtelHeadersCommand:
+    def test_explicit_profile_refreshes_headers_and_keeps_diagnostics_off_stdout(self):
+        def token(workspace, profile, *, force_refresh):
+            assert (workspace, profile, force_refresh) == (
+                "https://desktop.example",
+                "desktop-profile",
+                False,
+            )
+            print("Authentication diagnostic")
+            return next(tokens)
+
+        tokens = iter(["first-token", "refreshed-token"])
+        with (
+            patch(
+                "ucode.cli.load_state",
+                return_value={"workspace": "https://other.example", "profile": "other"},
+            ),
+            patch("ucode.cli.get_databricks_token", side_effect=token),
+        ):
+            for expected in ("first-token", "refreshed-token"):
+                result = runner.invoke(
+                    app,
+                    [
+                        "otel-headers",
+                        "--host",
+                        "https://desktop.example",
+                        "--profile",
+                        "desktop-profile",
+                    ],
+                )
+                assert result.exit_code == 0
+                assert json.loads(result.stdout) == {"Authorization": f"Bearer {expected}"}
+                assert "Authentication diagnostic" in result.stderr
+
+    def test_failed_refresh_emits_no_header_or_token(self):
+        with (
+            patch("ucode.cli.load_state", return_value={}),
+            patch(
+                "ucode.cli.get_databricks_token",
+                side_effect=RuntimeError("Reauthenticate with Databricks CLI"),
+            ),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "otel-headers",
+                    "--host",
+                    "https://desktop.example",
+                    "--profile",
+                    "desktop-profile",
+                ],
+            )
+        assert result.exit_code == 1
+        assert result.stdout == ""
+        assert "Reauthenticate with Databricks CLI" in result.stderr
+
     def test_prints_only_the_authorization_header_json(self):
         with (
             patch("ucode.cli.load_state", return_value={"workspace": "https://ws"}),
@@ -6544,6 +6599,9 @@ class TestLaunchWithManagedFilePicker:
 
         assert result.exit_code == 0, result.output
         assert calls["shared"].call_args.kwargs["skip_model_discovery"] is True
+        calls["list_catalog"].assert_not_called()
+        assert calls["configure"].call_args.kwargs["picker_catalog"] is None
+        assert "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY" not in os.environ
         launch_state = calls["configure"].call_args.args[1]
         assert launch_state["claude_models"] == self.PICKER_MODELS
         # The picker's models are launch-only; state.json keeps the discovered cache.

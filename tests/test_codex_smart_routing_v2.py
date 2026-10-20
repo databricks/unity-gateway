@@ -71,7 +71,7 @@ class TestLaunchCodex:
                 {
                     "binary": "codex",
                     "start_model": "gpt-start",
-                    "render_overlay": codex.render_overlay,
+                    "render_overlay": codex._render_launch_overlay,
                 },
             )
         ]
