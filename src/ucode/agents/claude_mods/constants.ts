@@ -7,3 +7,7 @@ export const DISABLE_ROUTING_FLAG = '--disable-smart-routing';
 export const SMART_ROUTING_KEY = 'ENABLE_SMART_ROUTING_V2';
 export const SUBAGENT_ONLY_KEY = 'ENABLE_SMART_ROUTING_SUBAGENT_ONLY';
 export const TRUE_ENV_VALUES: readonly string[] = ['1', 'true', 'yes', 'on'];
+
+export function envBool(value: string | undefined): boolean {
+  return TRUE_ENV_VALUES.includes((value ?? '').trim().toLowerCase());
+}

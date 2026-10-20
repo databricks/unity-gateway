@@ -1,5 +1,5 @@
 import type { On } from 'claude-code';
-import { envBool } from './routing-state.ts';
+import { envBool } from './constants.ts';
 
 const FEEDBACK_PANE = 'smart-router-feedback';
 
