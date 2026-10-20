@@ -17,7 +17,8 @@ Independent gateway catalogs, Codex's native model/list, and exact TUI picker in
 Claude's built-in Default action is not a catalog entry; banners use catalog display names,
 while gateway inference checks require the exact service/alias.
 Compatible `ug_e2e.other_models.claude_decoy` and `codex_decoy` must be discoverable in their
-own schema but absent from the scoped picker. Claude discovery aliases must be enabled;
+own schema but absent from the scoped picker. Claude's decoy catalog includes both decoys.
+Claude discovery aliases must be enabled;
 Kimi and GPT Luna use `anthropic-aigw-<8-character SHA-256 prefix>-<service FQN>`.
 
 Eleven independently configured cases cover picker discovery, default launches, and explicit models.

@@ -94,8 +94,8 @@ def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session,
     Expected: the installed ug launch writes the parent-schema header and every admin-authored
     default to both Claude settings files, adding ``[1m]`` only to Opus and Sonnet family defaults.
     The replacement picker contains those family defaults and every model independently fetched
-    from the schema, preserving catalog labels. This settings reconciliation check does not claim
-    model inference.
+    from the schema, adding ``[1m]`` to GPT-5.6 Sol's Claude alias and preserving catalog labels.
+    This settings reconciliation check does not claim model inference.
     """
     session = live_session
     parent_schema = "system.ai"
@@ -113,6 +113,12 @@ def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session,
     catalog = fetch_anthropic_parent_catalog(
         workspace, session.env["DATABRICKS_BEARER"], parent_schema
     )
+    catalog_picker_labels = {
+        f"{model}[1m]"
+        if model == "anthropic-aigw-12e8d1ee-system.ai.gpt-5-6-sol"
+        else model: catalog.display_names.get(model)
+        for model in catalog.model_ids
+    }
     command = [str(session.binary), "claude", "--", "--version"]
     with TerminalProcess(session, "claude", command, "managed-defaults-parent-schema") as terminal:
         terminal.finish(timeout=240)
@@ -141,12 +147,12 @@ def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session,
             )
         picker = settings["modelPicker"]
         assert picker["replaceBuiltInOptions"] is True, picker
-        expected_picker_models = set(expected_picker_models) | set(catalog.model_ids)
+        expected_picker_models = set(expected_picker_models) | set(catalog_picker_labels)
         assert sorted(option["model"] for option in picker["options"]) == sorted(
             expected_picker_models
         ), picker
         for option in picker["options"]:
-            if display_name := catalog.display_names.get(option["model"]):
+            if display_name := catalog_picker_labels.get(option["model"]):
                 assert option["label"] == display_name, option
 
 
