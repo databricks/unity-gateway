@@ -2003,7 +2003,7 @@ class TestCodexManagedConfig:
         assert state["managed_file_fingerprints"]["codex"]["scope"] == "local-compatible"
         assert codex.managed_config_is_current(state)
 
-    def test_headless_configure_warns_that_bare_codex_skips_the_gateway(
+    def test_headless_configure_warns_that_the_machine_file_was_not_updated(
         self, tmp_path, monkeypatch
     ):
         managed_path, sudo_writes = self._sudo_counting_env(
@@ -2017,11 +2017,9 @@ class TestCodexManagedConfig:
 
         assert sudo_writes == []
         assert not managed_path.exists()
-        assert [warning for warning in warnings if "machine-wide" in warning] == [
-            "Codex machine-wide settings weren't updated because there's no terminal to approve "
-            "sudo. Launching through `ug` still uses the gateway, but Codex run directly or from an "
-            "IDE extension won't. To set them up, run `ug configure` from an interactive terminal."
-        ]
+        assert f"{managed_path} wasn't updated because no admin privileges were detected." in (
+            warnings
+        )
 
     def test_noninteractive_repairs_conflicting_managed_config_without_prompting(
         self, tmp_path, monkeypatch

@@ -2430,11 +2430,10 @@ class TestWriteToolConfigManagedSettings:
 
         assert managed_writes == []
 
-    def test_unelevated_configure_warns_that_bare_claude_skips_the_gateway(self, monkeypatch):
+    def test_unelevated_configure_warns_that_the_machine_file_was_not_updated(self, monkeypatch):
         managed_writes: list = []
         self._patch(monkeypatch, [], managed_writes)
         monkeypatch.setattr(claude, "managed_writes_allowed", lambda: False)
-        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.WINDOWS)
         warnings: list[str] = []
         monkeypatch.setattr(managed_files, "print_warning", warnings.append)
 
@@ -2444,12 +2443,9 @@ class TestWriteToolConfigManagedSettings:
             )
 
         assert managed_writes == []
-        assert [warning for warning in warnings if "machine-wide" in warning] == [
-            "Claude Code machine-wide settings weren't updated because this terminal isn't "
-            "elevated. Launching through `ug` still uses the gateway, but Claude Code run directly "
-            "or from an IDE extension won't. To set them up, run `ug configure` from an elevated "
-            "terminal (Run as administrator), or ask your administrator to run it."
-        ]
+        assert f"{FAKE_MANAGED_PATH} wasn't updated because no admin privileges were detected." in (
+            warnings
+        )
 
     def test_noninteractive_repairs_conflicting_managed_settings_without_prompting(
         self, monkeypatch
