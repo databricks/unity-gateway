@@ -100,7 +100,9 @@ class TestCatalogDiscovery(BaseCujTest):
         assert set(parent_catalog) == {
             claude.discovery_model_id(model) for model in CLAUDE_MODELS
         }, parent_catalog
-        assert set(decoy_catalog) == {claude.discovery_model_id(CLAUDE_DECOY)}, decoy_catalog
+        assert set(decoy_catalog) == {
+            claude.discovery_model_id(model) for model in (CLAUDE_DECOY, CODEX_DECOY)
+        }, decoy_catalog
         default_display_name = parent_catalog[claude.discovery_model_id(CLAUDE_DEFAULT)]
 
         task = claude_file_task(session)
