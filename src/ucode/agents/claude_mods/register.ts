@@ -8,6 +8,7 @@ import {
   DISABLED_RECIPE,
   ENABLE_ROUTING_FLAG,
   FAST_SPEED,
+  LUNA_FAST_KEY,
   RECIPE_FIELD,
   SPEED_FIELD,
 } from './constants.ts';
@@ -73,7 +74,7 @@ async function setRouting(
   }
   // A Luna Fast launch owns the speed field: on sets it, off removes it (JSON drops undefined).
   // Other launches leave any caller-supplied speed alone.
-  const speed = original('ENABLE_LUNA_FAST') === '1'
+  const speed = original(LUNA_FAST_KEY) === '1'
     ? { [SPEED_FIELD]: enabled ? FAST_SPEED : undefined }
     : {};
   const environment = {
