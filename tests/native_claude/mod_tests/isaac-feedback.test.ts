@@ -42,12 +42,12 @@ test('feedback opens before off finishes, and Cancel does not stop it', async ()
   ]);
 });
 
-test('the command entry point invokes feedback only when the flag is exactly 1', async () => {
+test('the command entry point invokes feedback only when the flag is truthy', async () => {
   const commands: any[] = [];
   register(((event: string, _filter: unknown, handler: unknown) => {
     if (event === 'command.run') commands.push(handler);
   }) as On, { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1', unset: [], recipe: 'task_v3' });
-  for (const flag of [undefined, '', '0', 'true', 'yes', '2', ' 1', '1 ', '1']) {
+  for (const flag of [undefined, '', '0', 'false', '2', '1', ' 1 ', 'true', 'TRUE', 'yes', 'on']) {
     const env: Record<string, string | undefined> = {
       ISAAC_SMART_ROUTER_FEEDBACK: flag,
       UCODE_SMART_ROUTER_PYTHON: '/ug/python',
@@ -60,6 +60,6 @@ test('the command entry point invokes feedback only when the flag is exactly 1',
     };
     const next = () => ({ text: 'feedback invoked' });
     const reply = await commands[0]($, { args: 'off' }, next);
-    expect(reply.text).toBe(flag === '1' ? 'feedback invoked' : 'Smart Router is off');
+    expect(reply.text).toBe(['1', ' 1 ', 'true', 'TRUE', 'yes', 'on'].includes(flag ?? '') ? 'feedback invoked' : 'Smart Router is off');
   }
 });

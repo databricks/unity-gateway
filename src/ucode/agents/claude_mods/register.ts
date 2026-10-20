@@ -7,6 +7,7 @@ import {
   DISABLE_ROUTING_FLAG,
   DISABLED_RECIPE,
   ENABLE_ROUTING_FLAG,
+  envBool,
   RECIPE_FIELD,
 } from './constants.ts';
 import { mergeExtraBody } from './extra-body.ts';
@@ -104,7 +105,7 @@ export function register(on: On, options: PluginOptions): void {
     const action = e.args.trim();
     if (action !== 'on' && action !== 'off') return {text: 'Usage: /smart-router on|off'};
     if (!launchedEnabled) return {text: 'Smart Router was not enabled for this session.'};
-    if (action === 'off' && await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK') === '1') {
+    if (action === 'off' && envBool(await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK'))) {
       // The mod compiler keeps $ within one file, so bind the routing controls here.
       feedback.readRoutingEnabled = async () => isRoutingEnabled(await readEnvironment($));
       feedback.disableRouting = async () => {

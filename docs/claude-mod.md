@@ -57,12 +57,14 @@ before `/clear` still survives it. The live skill-toggle journey covers the real
 native component tests stub the process calls.
 
 On each on-to-off change, Isaac sessions with
-`ISAAC_SMART_ROUTER_FEEDBACK=1` start disabling routing in the background and
+`ISAAC_SMART_ROUTER_FEEDBACK=1` or `true` start disabling routing in the background and
 immediately open a dismissible feedback form. Isaac sets this flag from its
-rollout setting or the user's explicit `1`/`0` override. It controls Isaac feedback
+rollout setting or the user's explicit `1`/`0` or `true`/`false` override. It controls Isaac feedback
 availability, so UG's routing presets and on/off toggles leave it unchanged.
 The command entry point in `register.ts` invokes feedback only when the flag is
-exactly `1`; unset, `0`, and all other values use the ordinary toggle path.
+enabled. As with UG's other boolean environment flags, `1`, `true`, `yes`, and `on`
+enable it (case-insensitive, with surrounding whitespace ignored); unset, `0`, and all
+other values use the ordinary toggle path.
 The feedback module does not read the flag; its renderer stays synchronous.
 The form does not wait for the toggle or an Isaac CLI availability check. The
 transcript confirms when routing is off, or reports a toggle failure. Enter accepts
