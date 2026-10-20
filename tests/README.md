@@ -514,7 +514,10 @@ it again during teardown. The TUI cases forward agent requests through the share
 loopback recorder to the real workspace and assert the provider-service header, model,
 paired HTTP 200 response, and final answer. The configuration case verifies sandbox MCP
 selection and generated client listings; live sandbox execution remains deferred because
-MAS cannot downscope the CI service principal. Failed TUI runs
+MAS cannot downscope the CI service principal. CUJ1 and CUJ2 also initialize Claude Desktop's
+Linux profile path and verify that its profile uses, respectively, the published Databricks-hosted
+Claude models or Anthropic provider service and model. This is installed-CLI coverage of real
+published managed configs, not Desktop GUI or helper execution. Failed TUI runs
 retain terminal output/actions/screen and best-effort agent transcript snapshots under the
 runner artifact directory before the temporary homes are deleted. The suite requires
 `UG_CUJ_SP_CLIENT_ID` and `UG_CUJ_SP_CLIENT_SECRET`, with `ug`, `claude`, `codex`, and
