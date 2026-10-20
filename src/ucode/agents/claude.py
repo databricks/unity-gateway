@@ -13,7 +13,7 @@ import subprocess
 import sys
 import threading
 import traceback
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Sequence
 from pathlib import Path
 
 from ucode.config_io import (
@@ -98,8 +98,15 @@ from ucode.smart_routing.claude_hooks import (
     remove_smart_routing_hooks,
     sync_smart_routing_hooks,
 )
-from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
+from ucode.state import (
+    MANAGED_OVERLAY_KEY,
+    is_tool_managed,
+    load_full_state,
+    mark_tool_managed,
+    save_state,
+)
 from ucode.telemetry import agent_version, ug_version
+from ucode.ug_headers import ug_headers
 from ucode.ui import print_note, print_success, print_warning
 
 from .args import LaunchOptions, has_explicit_model_arg
@@ -515,6 +522,7 @@ def render_overlay(
     request_tags = request_tags_header_value()
     if request_tags:
         header_lines.append(f"{AI_GATEWAY_REQUEST_TAGS_HEADER}: {request_tags}")
+    header_lines += [f"{name}: {value}" for name, value in ug_headers().items()]
     # Relayed: the X-Databricks-AI-Gateway-Token swap header is added per request
     # by the refresh proxy, not here — a static value would go stale mid-session.
     custom_headers = "\n".join(_apply_managed_header_lines(header_lines, managed_http_headers))
@@ -1430,6 +1438,23 @@ def write_tool_config(
         if path not in managed_file_keys:
             managed_file_keys.append(path)
 
+    # Remember the `ug --header` names written, so a later launch without them removes them.
+    header_names = sorted(name.casefold() for name in ug_headers())
+    # The settings file is shared by every workspace, so also own names saved under other ones.
+    owned_header_names = {
+        *header_names,
+        *(state.get("claude_header_names") or []),
+        *(
+            name
+            for ws_state in load_full_state()["workspaces"].values()
+            for name in ws_state.get("claude_header_names") or []
+        ),
+    }
+    if header_names:
+        state["claude_header_names"] = header_names
+    else:
+        state.pop("claude_header_names", None)
+
     # V2 installs routing hooks in a transient per-launch settings file. Persistent settings must
     # contain no ucode routing hooks; surgically strip legacy ones while preserving user hooks.
     def _compose(
@@ -1524,7 +1549,7 @@ def write_tool_config(
             # No managed config: preserve the developer's own pre-existing headers, replacing only
             # the header names ug manages.
             merged["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = _merge_anthropic_custom_headers(
-                existing_custom_headers, overlay_custom_headers
+                existing_custom_headers, overlay_custom_headers, owned_header_names
             )
         # Drop any apiKeyHelper a prior non-relayed launch left in the file; relayed
         # must not carry one (it would outrank the subscription OAuth).
@@ -1667,7 +1692,9 @@ def write_tool_config(
     return state
 
 
-def _merge_anthropic_custom_headers(existing: object, ucode_headers: str) -> str:
+def _merge_anthropic_custom_headers(
+    existing: object, ucode_headers: str, owned_names: Collection[str] = ()
+) -> str:
     """Preserve user headers while replacing the header names managed by ucode.
 
     Claude's ``ANTHROPIC_CUSTOM_HEADERS`` value is a newline-delimited string. To merge it, we:
@@ -1703,6 +1730,7 @@ def _merge_anthropic_custom_headers(existing: object, ucode_headers: str) -> str
         normalized_name = name.strip().casefold()
         if separator and (
             normalized_name in CLAUDE_MANAGED_CUSTOM_HEADER_NAMES
+            or normalized_name in owned_names
             or (
                 normalized_name in CLAUDE_OPTIONAL_CUSTOM_HEADER_NAMES
                 and normalized_name in ucode_lines_by_name

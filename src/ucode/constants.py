@@ -28,6 +28,9 @@ SMART_ROUTER_RECIPE_HEADER = "Databricks-Smart-Router-Recipe"
 AI_GATEWAY_REQUEST_TAGS_HEADER = "Databricks-Ai-Gateway-Request-Tags"
 AI_GATEWAY_REQUEST_TAGS_ENV_VAR = "AI_GATEWAY_REQUEST_TAGS"
 
+# Extra gateway headers, one `Name: value` per line; `ug --header` sets it for a launch.
+UG_HEADERS_ENV_VAR = "UG_HEADERS"
+
 
 # MCP server registration scopes. Claude Code supports local/project/user; the
 # other CLIs only take the user-scope name. Kept here (a leaf module) so both

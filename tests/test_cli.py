@@ -6624,3 +6624,17 @@ class TestLaunchWithManagedFilePicker:
         assert result.exit_code == 0, result.output
         # The launch's own source supplies the models, so the picker neither seeds nor skips.
         assert calls["configure"].call_args.args[1]["claude_models"] == discovered
+
+
+def test_invalid_header_flag_exits(monkeypatch):
+    monkeypatch.setenv("UG_HEADERS", "")  # restored after the CLI overwrites it
+    result = runner.invoke(app, ["--header", "bad", "status"])
+    assert result.exit_code == 1
+    assert "expected `Name: value`" in _strip_ansi(result.output)
+
+
+def test_invalid_ug_headers_env_exits(monkeypatch):
+    monkeypatch.setenv("UG_HEADERS", "bad")
+    result = runner.invoke(app, ["status"])
+    assert result.exit_code == 1
+    assert "expected `Name: value`" in _strip_ansi(result.output)

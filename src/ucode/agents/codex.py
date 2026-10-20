@@ -91,6 +91,7 @@ from ucode.smart_routing.codex_routing import codex_model_id
 from ucode.smart_routing.routing import configured_router_name
 from ucode.state import get_provider_service, is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
+from ucode.ug_headers import ug_headers
 from ucode.ui import print_warning_err
 
 from .args import LaunchOptions
@@ -236,6 +237,7 @@ def _provider_block(
     request_tags = request_tags_header_value()
     if request_tags:
         http_headers[AI_GATEWAY_REQUEST_TAGS_HEADER] = request_tags
+    _apply_managed_headers(http_headers, ug_headers())
     _apply_managed_headers(http_headers, managed_http_headers)
     return {
         "name": "Databricks AI Gateway",

@@ -275,6 +275,12 @@ class TestRenderOverlay:
             "Databricks-Ai-Gateway-Request-Tags" not in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
         )
 
+    def test_ug_headers_added(self, monkeypatch):
+        monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: testenv://liteswap/abc")
+        overlay, _ = claude.render_overlay(WS, "s4")
+        headers = overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
+        assert "x-databricks-traffic-id: testenv://liteswap/abc" in headers
+
     def test_does_not_disable_experimental_betas(self):
         # Would suppress the beta header 1h prompt caching needs.
         overlay, _ = claude.render_overlay(WS, "s4")
@@ -877,6 +883,73 @@ class TestClaudeValidateCmd:
         assert cmd[idx + 1] == "1"
 
 
+class TestWriteToolConfigUgHeaders:
+    def test_header_removed_by_next_launch_without_it(self, monkeypatch):
+        files = {
+            str(claude.CLAUDE_SETTINGS_PATH): {"env": {"ANTHROPIC_CUSTOM_HEADERS": "X-User: keep"}}
+        }
+        monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
+        monkeypatch.setattr(claude, "read_json_safe", lambda path: files.get(str(path), {}))
+        monkeypatch.setattr(
+            claude, "write_json_file", lambda path, payload: files.__setitem__(str(path), payload)
+        )
+        monkeypatch.setattr(claude, "save_state", lambda state: None)
+        monkeypatch.setattr(claude, "_register_web_search_mcp", lambda *a, **kw: None)
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
+        # Without a workspace managed config ug keeps foreign header lines, so it must
+        # remember which names it wrote.
+        monkeypatch.setattr(
+            claude, "refresh_managed_config", lambda *a, **kw: _managed_config_result(None)
+        )
+        state = {"workspace": WS}
+
+        def header_lines():
+            return files[str(claude.CLAUDE_SETTINGS_PATH)]["env"][
+                "ANTHROPIC_CUSTOM_HEADERS"
+            ].splitlines()
+
+        monkeypatch.setenv("UG_HEADERS", "X-Route: a")
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        assert "X-Route: a" in header_lines()
+
+        monkeypatch.delenv("UG_HEADERS")
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        assert not any(line.startswith("X-Route") for line in header_lines())
+        assert "X-User: keep" in header_lines()
+        assert "claude_header_names" not in state
+
+    def test_header_from_another_workspace_removed(self, monkeypatch):
+        files = {
+            str(claude.CLAUDE_SETTINGS_PATH): {
+                "env": {"ANTHROPIC_CUSTOM_HEADERS": "X-User: keep\nX-Route: a"}
+            }
+        }
+        monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
+        monkeypatch.setattr(claude, "read_json_safe", lambda path: files.get(str(path), {}))
+        monkeypatch.setattr(
+            claude, "write_json_file", lambda path, payload: files.__setitem__(str(path), payload)
+        )
+        monkeypatch.setattr(claude, "save_state", lambda state: None)
+        monkeypatch.setattr(claude, "_register_web_search_mcp", lambda *a, **kw: None)
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
+        monkeypatch.setattr(
+            claude, "refresh_managed_config", lambda *a, **kw: _managed_config_result(None)
+        )
+        # A launch on another workspace wrote X-Route into the shared settings file.
+        monkeypatch.setattr(
+            claude,
+            "load_full_state",
+            lambda: {
+                "workspaces": {"https://other.example.com": {"claude_header_names": ["x-route"]}}
+            },
+        )
+
+        claude.write_tool_config({"workspace": WS}, "databricks-claude-sonnet-4")
+        lines = files[str(claude.CLAUDE_SETTINGS_PATH)]["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        assert "X-Route" not in lines
+        assert "X-User: keep" in lines.splitlines()
+
+
 class TestWriteToolConfigMcpRegistration:
     def _common_patches(self, monkeypatch, calls):
         monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
@@ -1293,6 +1366,19 @@ class TestWriteToolConfigManagedSettings:
 
         lines = json.loads(managed_writes[0][1])["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
         assert not any(line.startswith("x-team:") for line in lines)
+
+    def test_ug_headers_reach_both_settings_files(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+        monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: abc")
+        state = {"workspace": WS, "codex_models": []}
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        for settings in (private_writes[-1][1], json.loads(managed_writes[-1][1])):
+            lines = settings["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
+            assert "x-databricks-traffic-id: abc" in lines
 
     def test_unmanaged_preserves_foreign_header_and_replaces_ucode_headers_in_place(
         self, monkeypatch

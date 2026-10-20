@@ -22,6 +22,7 @@ import urllib.request
 from urllib.parse import urlencode
 
 from ucode.config_io import APP_DIR, read_json_safe, write_json_file
+from ucode.ug_headers import ug_headers
 
 # Published public OAuth client Claude Code authenticates with. Any loopback
 # callback port works — `/oidc` strips the port when matching loopback redirects
@@ -81,7 +82,7 @@ def _probe_oauth_client(workspace: str, client_id: str) -> bool | None:
         f"{workspace.rstrip('/')}/oidc/v1/token",
         data=body,
         method="POST",
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers={"Content-Type": "application/x-www-form-urlencoded", **ug_headers()},
     )
     try:
         urllib.request.urlopen(request, timeout=10)  # noqa: S310 - fixed https workspace URL

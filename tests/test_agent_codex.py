@@ -190,6 +190,14 @@ class TestRenderOverlay:
         headers = overlay["model_providers"]["Databricks"]["http_headers"]
         assert "Databricks-Ai-Gateway-Request-Tags" not in headers
 
+    def test_ug_headers_follow_env(self, monkeypatch):
+        monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: testenv://liteswap/abc")
+        headers = codex.render_overlay(WS)["model_providers"]["Databricks"]["http_headers"]
+        assert headers["x-databricks-traffic-id"] == "testenv://liteswap/abc"
+        monkeypatch.delenv("UG_HEADERS")
+        headers = codex.render_overlay(WS)["model_providers"]["Databricks"]["http_headers"]
+        assert "x-databricks-traffic-id" not in headers
+
     def test_parent_adds_discovery_header(self):
         overlay = codex.render_overlay(WS, parent_schema="main.default")
         headers = overlay["model_providers"]["Databricks"]["http_headers"]
