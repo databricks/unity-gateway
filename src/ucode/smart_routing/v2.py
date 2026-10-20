@@ -203,16 +203,17 @@ def override_smart_routing(
 ) -> dict[str, str | None]:
     """Set an explicit launch-scoped routing choice and return the prior values.
 
-    Turning routing on routes subagents only.
+    Turning routing on routes subagents with Smart Router Orchestrator.
     """
     target = os.environ if env is None else env
     previous = {var: target.get(var) for var in SMART_ROUTING_ENV_KEYS}
     previous.update(apply_config(target, agent=agent))
     if not enabled:
         target.update(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
-    # Keep first prompt routing when ENABLE_SMART_ROUTING_V2=1 is set manually or by a preset.
-    elif target.get(ENABLE_SMART_ROUTING_ENV_VAR) != "1":
+    # Keep first prompt routing, without the orchestrator, when set manually or by a preset.
+    elif not first_prompt_routing_enabled(target, agent=agent):
         target[ENABLE_SUBAGENT_ROUTING_ENV_VAR] = "1"
+        target[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] = "1"
     return previous
 
 

@@ -292,7 +292,7 @@ the displayed reason in `rationale` and the gateway's full explanation in `raw_r
 On Windows, the generated shell hooks expect Git Bash; PowerShell-only setups are not covered.
 
 `--enable-smart-routing` and a workspace config with `smart_routing.enabled` route
-subagents; the main session stays on its default model.
+subagents and turn on Smart Router Orchestrator; the main session stays on its default model.
 
 ### Smart Router Orchestrator
 
@@ -332,7 +332,8 @@ UG expands its mapping into
 `ENABLE_SMART_ROUTER_ORCHESTRATOR` for the launched session. When the version is
 unset or empty, these legacy flags retain their existing behavior. Unknown versions are ignored:
 no preset is applied, the inherited environment is unchanged, and commands continue normally.
-Explicit launch/session on/off controls apply after expansion. Orchestration remains off by default.
+Explicit launch/session on/off controls apply after expansion. Orchestration is off by default;
+`--enable-smart-routing` and the workspace smart-routing default turn it on with subagent routing.
 Workspace smart-routing defaults do not rewrite the selected version's flags.
 
 Version names require an explicit suffix. Future revisions use new `_v1`, `_v2`,

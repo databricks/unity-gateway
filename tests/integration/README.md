@@ -490,8 +490,8 @@ a new CLI confirmation in native tool-result records, and a new assistant answer
 skill invocation.
 Collapsed terminal output is allowed; the answer need not repeat the CLI's exact wording.
 Each following child still verifies whether a routing decision occurred.
-With orchestration enabled through legacy flags or a preset, both routed Codex children
-must show `[orchestrator on]` in their own subagent banner. Claude shows the selected
+With orchestration enabled through legacy flags, a preset, or the managed default, both routed
+Codex children must show `[orchestrator on]` in their own subagent banner. Claude shows the selected
 model and rationale from each child's audited decision.
 Their off-phase child is an explicit user-requested delegation;
 these journeys do not establish automatic orchestration behavior. Root-only
@@ -502,7 +502,8 @@ and execution of pre-existing hooks are not exercised by this integration suite.
 
 Preset parameterization augments only routing hooks, skill toggles, and first-prompt routing;
 their original legacy-env cases remain, and the skill toggles add a managed-default case in
-which `smart_routing.enabled` alone routes subagents and no first-prompt wrapper starts.
+which `smart_routing.enabled` alone routes subagents with Smart Router Orchestrator and no
+first-prompt wrapper starts.
 Explicit-model selection, command forwarding, app-server initialization, and catalog fallback
 retain their original legacy flags and on/off coverage; preset-specific behavior there is not
 covered.
@@ -945,8 +946,8 @@ The smart-routing banner journeys inject static Claude and Codex model lists wit
 `smart_routing` enabled in the agent config, run `ug configure`, then launch the real TUI with
 `first_prompt_and_subagent_no_orch_v0` and submit one small file task, asserting the
 "Using Unity Gateway Smart Router." banner naming the selected model, a routed answer completing
-the file task, and normal exit. The managed default alone routes only subagents; the
-managed-default skill-toggle cases cover it.
+the file task, and normal exit. The managed default alone routes only subagents, with the
+orchestrator; the managed-default skill-toggle cases cover it.
 
 That workspace authenticates as a service principal, so CI mints a short-lived token per run from
 these same-repository secrets rather than storing a long-lived bearer:

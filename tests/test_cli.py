@@ -27,6 +27,7 @@ import ucode.managed_files as managed_files
 from ucode.cli import app
 from ucode.databricks import GatewayProbe
 from ucode.managed_config import ManagedConfigResult, normalize_managed_config
+from ucode.smart_routing import orchestrator
 from ucode.state import save_state as real_save_state
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -599,10 +600,12 @@ class TestSubcommandRouting:
             ({"ENABLE_SMART_ROUTING_V2": "0"}, False),
             ({"ENABLE_SMART_ROUTING_V2": "1"}, True),
             ({"SMART_ROUTER_CONFIG_VERSION": "first_prompt_and_subagent_no_orch_v0"}, True),
+            ({"SMART_ROUTER_CONFIG_VERSION": "subagent_only_v1"}, False),
+            ({"ENABLE_SMART_ROUTER_ORCHESTRATOR": "0"}, False),
         ],
-        ids=["unset", "v2-off", "v2-on", "first-prompt-preset"],
+        ids=["unset", "v2-off", "v2-on", "first-prompt-preset", "subagent-preset", "orch-off"],
     )
-    def test_enable_smart_routing_routes_first_prompt_only_when_opted_in(
+    def test_enable_smart_routing_orchestrates_unless_first_prompt_is_routed(
         self, monkeypatch, tool, launch_env, first_prompt
     ):
         for name, value in launch_env.items():
@@ -620,13 +623,14 @@ class TestSubcommandRouting:
                 (
                     cli_mod.smart_routing_v2.smart_routing_enabled(None, default=False, agent=tool),
                     cli_mod.smart_routing_v2.first_prompt_routing_enabled(agent=tool),
+                    orchestrator.feature_enabled(agent=tool),
                 )
             ),
         ) as mock_launch:
             result = runner.invoke(app, [tool, "--enable-smart-routing"])
 
         assert result.exit_code == 0, result.output
-        assert observed == [(True, first_prompt)]
+        assert observed == [(True, first_prompt, not first_prompt)]
         assert mock_launch.call_args.args[1].args == []
         assert {key: os.environ.get(key) for key in routing_keys} == env_before
 
@@ -775,14 +779,21 @@ class TestSubcommandRouting:
     @pytest.mark.parametrize("tool", ["claude", "codex"])
     @pytest.mark.parametrize(
         ("launch_env", "first_prompt"),
-        [({}, False), ({"ENABLE_SMART_ROUTING_V2": "1"}, True)],
-        ids=["managed-default", "v2-on"],
+        [
+            ({}, False),
+            ({"ENABLE_SMART_ROUTING_V2": "1"}, True),
+            ({"ENABLE_SMART_ROUTER_ORCHESTRATOR": "0"}, False),
+        ],
+        ids=["managed-default", "v2-on", "orch-off"],
     )
-    def test_managed_smart_routing_routes_first_prompt_only_when_opted_in(
+    def test_managed_smart_routing_orchestrates_unless_first_prompt_is_routed(
         self, monkeypatch, tool, launch_env, first_prompt
     ):
         for name, value in launch_env.items():
             monkeypatch.setenv(name, value)
+        env_before = {
+            key: os.environ.get(key) for key in cli_mod.smart_routing_v2.SMART_ROUTING_ENV_KEYS
+        }
         managed = {"enabled_agents": {tool: {"smart_routing_enabled": True}}}
         observed = []
 
@@ -791,13 +802,16 @@ class TestSubcommandRouting:
                 (
                     options.launch_smart_routing,
                     cli_mod.smart_routing_v2.first_prompt_routing_enabled(agent=tool),
+                    orchestrator.feature_enabled(agent=tool),
                 )
             )
             result = runner.invoke(app, [tool])
 
         assert result.exit_code == 0, result.output
-        assert observed == [(True, first_prompt)]
-        assert cli_mod.smart_routing_v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR not in os.environ
+        assert observed == [(True, first_prompt, not first_prompt)]
+        assert {
+            key: os.environ.get(key) for key in cli_mod.smart_routing_v2.SMART_ROUTING_ENV_KEYS
+        } == env_before
 
     def test_codex_refresh_is_consumed_by_ucode(self):
         with patch("ucode.cli._launch_tool") as mock_launch:
