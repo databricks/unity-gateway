@@ -114,13 +114,13 @@ export function register(on: On, options: PluginOptions): void {
       return {text: 'Could not update Smart Router. Check the recipe, CLAUDE_CODE_EXTRA_BODY, and environment permissions; retry or restart through UG.'};
     }
   });
-  registerStatusBand(on);
+  registerStatusBand(on, () => savingsShown);
   registerSubagentRouting(on, options);
 }
 
-// Smart-routing savings estimate, drawn above the prompt (under the status band while
-// it shows), with the orchestrator skill version labeled as the Unity Gateway Smart
-// Router's. Per turn request (main agent and subagents) it sums token usage by
+// Smart-routing savings estimate, drawn above the prompt in place of the status band,
+// with the orchestrator skill version labeled as the Unity Gateway Smart Router's.
+// Per turn request (main agent and subagents) it sums token usage by
 // (agent, baseline, served, before_user_switch), where served is
 // the model the request named (the model service billed; the id the API reports
 // back is a gateway deployment's, which drifts) and baseline is what the request
@@ -181,6 +181,8 @@ let firstMainModel: string | null = null;
 let userSwitched = false;
 let seeding: Promise<void> | undefined;
 let estimate: Estimate | null = null;
+// Whether the current render draws the row, which hides the status band.
+let savingsShown = false;
 let dirty = false;
 let running = false;
 let rerun = false;
@@ -398,13 +400,15 @@ function registerSavings(on: On, options: PluginOptions): void {
   });
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    // Decided before the inner handlers run, so the status band sees it whichever
+    // handler Claude Code runs first.
+    savingsShown =
+      enabled && estimate !== null && (await $.env.get('ENABLE_SMART_ROUTING_SAVINGS')) === '1';
     const theirs = await next(e);
-    if (!enabled || await $.env.get('ENABLE_SMART_ROUTING_SAVINGS') !== '1') return theirs;
+    if (!savingsShown) return theirs;
     const ui = $.ui.resolve(e);
     const row = savingsRow(ui);
     if (row === null) return theirs;
-    // Going after the inner handlers' output puts the row under the status band
-    // whichever handler Claude Code runs first.
     return theirs ? ui.Box({ flexDirection: 'column', children: [theirs, row] }) : row;
   });
 }

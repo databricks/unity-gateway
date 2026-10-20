@@ -83,12 +83,13 @@ The source remains static; no additional launch snapshot file is created.
 estimated savings from smart routing, with the amount in a pill (green for a saving,
 yellow when routing cost more), and, when the launch activates Smart Router Orchestrator,
 the skill's `metadata.version` from `SKILL.claude.md`, labeled
-`Unity Gateway Smart Router v<version>`. The row appears only once there is an estimate;
-the band and the prompt hint row already show the routing state. It goes after the other
-`AbovePrompt` handlers' output, so while the band shows it stays under it whichever order
-Claude runs them in. For each turn request, main agent and
-subagents, the mod sums token usage by the model that served it and its baseline. Main
-is its own baseline, and a subagent's baseline is the main model in effect when it ran.
+`Unity Gateway Smart Router v<version>`. The row appears only once there is an estimate,
+and then takes the status band's place, so the two never stack; the prompt hint row still
+shows the routing state. Its handler decides before running the other `AbovePrompt`
+handlers, so the band steps aside whichever order Claude runs them in. For each turn
+request, main agent and subagents, the mod sums token usage by the model that served it
+and its baseline. Main is its own baseline, and a subagent's baseline is the main model
+in effect when it ran.
 Under first-prompt routing, requests before the user changes the main model are priced
 against the model the session started on.
 
