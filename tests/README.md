@@ -19,6 +19,15 @@ TypeScript event-forwarding and launch-option tests in CI. The existing Claude
 skill-toggle integration journey checks the live recipe payload field across on/off/on.
 See [the mod guide](../docs/claude-mod.md).
 
+The required Isaac feedback form needs manual validation of the 16-character minimum,
+cancellation, repeated toggles, and submission failures. The existing routing-toggle
+journeys do not cover this form or a live Isaac evidence upload.
+
+`test_claude_answer_delivery.py` covers Claude answer selection, composition, ownership,
+failed tasks and resumed revisions using transcript inputs, plus real subprocess I/O,
+stream-input bypass and capability lifetime. Live model/gateway selection and hook
+activation remain uncovered.
+
 The **harness-latest** workflow runs every six hours on `main` and currently covers
 smart routing only.
 It resolves npm's `claude-code@latest`
@@ -173,7 +182,7 @@ unacquired handles. Paths use temporary homes across simulated macOS, Windows, a
 including relocated/default Windows Local AppData, missing apps, invalid paths, creation
 failures, and parent-metadata preservation.
 
-Rendering tests cover the valid JSON generated-file notice, complete model IDs,
+Rendering tests cover the exact profile fields without `_comment`, complete model IDs,
 order/duplicates, literal helper arguments, and copied headers. Omitted optional fields
 are removed on replacement. Shared managed-header parsing retains its pre-Desktop behavior;
 the extra header-validation tests were removed with that out-of-scope parser change.
@@ -181,9 +190,11 @@ The default-model warning assertion was removed because that limitation is docum
 instead of returned as a runtime warning.
 Obsolete baseline restoration, edit preservation, ownership/migration, and workspace
 canonicalization tests are replaced by reserved-file replacement/deletion coverage.
-Existing CLI URL normalization is unchanged. Native Desktop activation, acceptance of
-the `_comment` notice field, GUI/helper/browser behavior, and inference remain untested;
-these component checks do not establish native Windows or Linux support.
+Reconfigure tests remove the legacy `_comment` field while preserving unrelated profiles,
+metadata, and previous-selection state, and verify subsequent configure is a no-op.
+Existing CLI URL normalization is unchanged. Native Desktop activation,
+GUI/helper/browser behavior, and inference remain untested by these component checks;
+they do not establish native Windows or Linux support.
 
 `test_desktop_setup.py` exercises configure, refresh, deleted-profile recovery,
 successful setup without the default-model warning, recoverable setup failures that still warn,
@@ -212,6 +223,22 @@ routing IDs, order/duplicates, and ID-only entries for missing/empty names or st
 lists. Scoped discovery uses the same response for IDs and labels without extra calls.
 Repeat configure refreshes or removes labels. Source lists/maps remain unchanged.
 These checks use temporary files on simulated platforms, not the native model picker.
+
+Desktop OTEL component tests cover native trace settings gated by `claude_otel_tracing`
+for static and discovered models on simulated macOS, Windows, and Linux. They verify
+the collector base URL, protobuf protocol, refreshing `.sh`/`.cmd` headers helpers
+without persisted tokens, literal argument quoting, repeated native helper execution
+with rotated bearer overrides, Unicode and trailing-backslash arguments, and
+JSON-only stdout/failure output. Windows wrappers select UTF-8 before the command.
+Lifecycle checks cover repeat configure, workspace changes, disable/re-enable, rollback of helper bytes
+and permissions at each write boundary, and revert preserving unrelated telemetry.
+Revert also cleans up the helper and selection state after the Desktop library or
+application-data root is removed, without recreating either directory; failed cleanup
+restores helper bytes, permissions, and selection state for a later retry.
+Byte-writer checks cover explicit permissions independent of contents, unchanged
+JSON formatting, helper execute-permission repair, and failed atomic replacement
+without leftover temporary files.
+These checks do not prove native export, token refresh in open sessions, or ingestion.
 
 `TestChildStdoutLaunch` in `test_cli.py` checks Claude `-p`/`--print` and Codex `exec`
 (plain and `--json`) and `app-server` status/error output on stderr, argument forwarding with

@@ -12,7 +12,7 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
-from ucode import skills
+from ucode import claude_answer_delivery, skills
 from ucode.constants import (
     AGENT_CLAUDE,
     AGENT_CODEX,
@@ -124,6 +124,14 @@ def hook_output(payload: object, *, agent: str) -> dict | None:
             "Smart Router Orchestrator is on for this session. Apply the workflow below.\n"
             f"Skill directory: {directory}\n\n{workflow}"
         )
+        if agent == AGENT_CLAUDE:
+            marker = session_env_path().parent / claude_answer_delivery.CAPABILITY_FILE
+            delivery = (
+                claude_answer_delivery.AVAILABLE_CONTEXT
+                if marker.is_file()
+                else claude_answer_delivery.UNAVAILABLE_CONTEXT
+            )
+            context = f"{delivery}\n\n{context}"
     return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": context}}
 
 

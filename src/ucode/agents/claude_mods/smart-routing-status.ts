@@ -1,5 +1,6 @@
 import type { On } from 'claude-code'
 import { SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY } from './constants.ts'
+import { isRoutingEnabled } from './routing-state.ts'
 
 const BANNER = 'unity gateway smart router'
 
@@ -38,7 +39,7 @@ async function readRoutingState($: any): Promise<RoutingState> {
     } catch {}
   }
   return {
-    enabled: full === '1' || subagentOnly === '1',
+    enabled: isRoutingEnabled({ [SMART_ROUTING_KEY]: full, [SUBAGENT_ONLY_KEY]: subagentOnly }),
     firstPrompt: full === '1' && subagentOnly !== '1',
   }
 }

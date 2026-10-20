@@ -1,9 +1,9 @@
 ---
 name: smart-router
 description: Enable or disable Unity Gateway subagent model routing for the current smart-routed Claude or Codex session, along with Smart Router Orchestrator when opted in.
-allowed-tools: Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing)
+allowed-tools: Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing --smart-router-feedback *), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing --smart-router-feedback *)
 metadata:
-  version: "1.2.0"
+  version: "1.4.0"
 ---
 
 # Smart Router
@@ -20,6 +20,16 @@ In PowerShell, use `& "$env:UCODE_SMART_ROUTER_PYTHON"` in place of
 `"$UCODE_SMART_ROUTER_PYTHON"`; keep the remaining arguments the same.
 If `UCODE_SMART_ROUTER_PYTHON` or `UCODE_SESSION_ENV_FILE` is unset, ask the user
 to restart through an updated Unity Gateway with smart routing enabled.
+
+If the off command requires feedback, routing is still on. Ask why the user is
+turning Smart Router off. Require at least 16 characters after trimming surrounding
+whitespace; ask again if the reason is shorter. Never invent or pad their reason.
+If they cancel, stop without disabling routing. Once they provide a valid reason,
+repeat the off command with `--smart-router-feedback '<reason>'` appended, quoting
+the exact text as one shell argument. After a successful toggle, submit that text
+through `/isaac-feedback --category smart-routing <reason>`. Report a submission
+failure without re-enabling routing. This requirement applies when Isaac sets
+`ISAAC_SMART_ROUTER_FEEDBACK=1`; do not change that flag to bypass it.
 
 With no argument, explain that only `on` and `off` are accepted. Do not edit the state file.
 This affects subsequent subagent model selection in the current session, not the root model
