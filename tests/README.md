@@ -61,7 +61,7 @@ without a live agent.
 CUJ3 expects GPT Luna in both agents' catalogs and pickers, including Claude's gateway alias,
 and covers an explicit Claude headless task on that model.
 Its Claude decoy catalog includes both Claude and Codex decoys; neither belongs in the scoped picker.
-The managed Claude parent-schema journey expects GPT-5.6 Sol's alias to carry `[1m]` in the
+The managed Claude parent-schema journey expects numbered GPT models to carry `[1m]` in the
 picker while retaining the catalog's display label.
 
 Dedicated CUJs reuse `integration/utils` session/terminal mechanics and file-task

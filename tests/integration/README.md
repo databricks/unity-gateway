@@ -935,7 +935,7 @@ workspace on the valid default model `system.ai.gpt-5-6-sol`. With legacy smart 
 on, it opens the real Codex `/models` picker and requires that injected custom-catalog model
 to be listed. The fixture itself has no managed smart-routing setting.
 
-The Claude parent-schema defaults case expects the discovered GPT-5.6 Sol alias to carry
+The Claude parent-schema defaults case expects discovered numbered GPT models to carry
 `[1m]` in the picker and retain its catalog display label.
 
 The smart-routing banner journeys inject static Claude and Codex model lists with

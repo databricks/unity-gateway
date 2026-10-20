@@ -6,6 +6,7 @@ tests/AGENTS.md rule 4.
 """
 
 import json
+import re
 
 import pytest
 from utils.constants import MANAGED_CLAUDE_PROVIDER_SERVICE
@@ -94,7 +95,7 @@ def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session,
     Expected: the installed ug launch writes the parent-schema header and every admin-authored
     default to both Claude settings files, adding ``[1m]`` only to Opus and Sonnet family defaults.
     The replacement picker contains those family defaults and every model independently fetched
-    from the schema, adding ``[1m]`` to GPT-5.6 Sol's Claude alias and preserving catalog labels.
+    from the schema, adding ``[1m]`` to numbered GPT models and preserving catalog labels.
     This settings reconciliation check does not claim model inference.
     """
     session = live_session
@@ -114,9 +115,7 @@ def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session,
         workspace, session.env["DATABRICKS_BEARER"], parent_schema
     )
     catalog_picker_labels = {
-        f"{model}[1m]"
-        if model == "anthropic-aigw-12e8d1ee-system.ai.gpt-5-6-sol"
-        else model: catalog.display_names.get(model)
+        f"{model}[1m]" if re.search(r"\bgpt-\d", model) else model: catalog.display_names.get(model)
         for model in catalog.model_ids
     }
     command = [str(session.binary), "claude", "--", "--version"]
