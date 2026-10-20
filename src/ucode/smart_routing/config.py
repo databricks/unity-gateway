@@ -151,6 +151,12 @@ def apply_config(
     return previous
 
 
+def known_version(env: Mapping[str, str] | None = None) -> bool:
+    """Whether the launch selector names a version, which then decides the launch's routing."""
+    source = os.environ if env is None else env
+    return source.get(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, "").strip() in _VERSIONS
+
+
 def apply_enabled_version(
     env: MutableMapping[str, str] | None = None, *, agent: str
 ) -> dict[str, str | None]:
@@ -162,7 +168,7 @@ def apply_enabled_version(
     target = os.environ if env is None else env
     keys = (*SMART_ROUTING_ENV_KEYS, SMART_ROUTER_CONFIG_VERSION_ENV_VAR)
     previous = {key: target.get(key) for key in keys}
-    if target.get(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, "").strip() not in _VERSIONS:
+    if not known_version(target):
         target[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = DEFAULT_ENABLED_VERSION
     apply_config(target, agent=agent)
     return previous

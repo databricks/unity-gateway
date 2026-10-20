@@ -149,6 +149,7 @@ from ucode.skills_download import (
 )
 from ucode.skills_list import configured_skill_counts_by_agent, list_configured_skills_command
 from ucode.skills_state import records_for_scope
+from ucode.smart_routing import config as smart_routing_config
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
@@ -2809,13 +2810,14 @@ def _smart_routing_v2_flag(enabled: bool | None, *, agent: str) -> Iterator[bool
 
     Yields whether the flag or a known version already chose this launch's routing.
     """
+    routing_chosen = enabled is not None or smart_routing_config.known_version()
     previous = (
         smart_routing_v2.apply_config(agent=agent)
         if enabled is None
         else smart_routing_v2.override_smart_routing(enabled, agent=agent)
     )
     try:
-        yield enabled is not None or bool(previous)
+        yield routing_chosen
     finally:
         smart_routing_v2.restore_smart_routing_env(previous)
 
@@ -3199,8 +3201,8 @@ def _launch_tool(
     previous = {}
     try:
         tool = normalize_tool(tool_name)
+        routing_already_chosen = routing_already_chosen or smart_routing_config.known_version()
         previous = smart_routing_v2.apply_config(agent=tool)
-        routing_already_chosen = routing_already_chosen or bool(previous)
         if not custom_oauth_cli_enabled(custom_oauth):
             os.environ.pop(CUSTOM_OAUTH_CLI_ENV_VAR, None)
         # Before any status print: a stdio-protocol subcommand owns stdout, so

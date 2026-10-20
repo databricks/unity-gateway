@@ -171,6 +171,22 @@ def test_codex_uses_existing_presets():
         assert config.resolve_environment(source, agent=AGENT_CODEX) == expected
 
 
+@pytest.mark.parametrize(
+    ("selector", "expected"),
+    [
+        (None, False),
+        ("", False),
+        ("   ", False),
+        ("unsupported_version", False),
+        (f" {config.SUBAGENT_ONLY_V0} ", True),
+        *((version, True) for version in sorted(config._VERSIONS)),
+    ],
+)
+def test_known_version(selector, expected):
+    env = {} if selector is None else {SMART_ROUTER_CONFIG_VERSION_ENV_VAR: selector}
+    assert config.known_version(env) is expected
+
+
 @pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
 @pytest.mark.parametrize("selector", [None, "", "   ", "unsupported_version"])
 def test_enabled_version_selects_subagent_orch_v0_over_legacy_flags(agent, selector):
