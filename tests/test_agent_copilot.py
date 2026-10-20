@@ -382,12 +382,13 @@ class TestSessionRegistry:
 
         with copilot.session_registry({"models": ["x"]}) as path:
             assert json.loads(path.read_text(encoding="utf-8")) == {"models": ["x"]}
-            assert path.parent.parent == copilot.COPILOT_RUN_DIR
+            assert path.parent == copilot.COPILOT_CONFIG_DIR
+            assert path.name.startswith("ucode-providers-")
             if os.name != "nt":
                 assert path.stat().st_mode & 0o777 == 0o600
-                assert path.parent.stat().st_mode & 0o777 == 0o700
 
-        assert not path.parent.exists()
+        assert not path.exists()
+        assert not path.with_suffix(".lock").exists()
 
     def test_removed_when_the_session_fails(self, tmp_path, monkeypatch):
         isolate_copilot_config_paths(monkeypatch, tmp_path)
@@ -395,23 +396,28 @@ class TestSessionRegistry:
         with pytest.raises(OSError), copilot.session_registry({}) as path:
             raise OSError("copilot failed")
 
-        assert not path.parent.exists()
+        assert not path.exists()
 
     def test_sweep_keeps_live_sessions_and_removes_dead_ones(self, tmp_path, monkeypatch):
         isolate_copilot_config_paths(monkeypatch, tmp_path)
-        dead = copilot.COPILOT_RUN_DIR / "copilot-dead"
-        dead.mkdir(parents=True)
-        (dead / "session.lock").touch()
-        (dead / "providers.json").write_text("{}", encoding="utf-8")
-        unlocked = copilot.COPILOT_RUN_DIR / "copilot-crashed-before-lock"
-        unlocked.mkdir()
+        config_dir = copilot.COPILOT_CONFIG_DIR
+        config_dir.mkdir(parents=True)
+        dead = config_dir / "ucode-providers-dead.json"
+        dead.write_text("{}", encoding="utf-8")
+        dead.with_suffix(".lock").touch()
+        unlocked = config_dir / "ucode-providers-crashed-before-lock.json"
+        unlocked.write_text("{}", encoding="utf-8")
+        users_own = config_dir / "providers.json"
+        users_own.write_text("{}", encoding="utf-8")
 
         with copilot.session_registry({}) as live:
-            copilot.sweep_session_dirs()
+            copilot.sweep_session_registries()
             assert live.exists()
 
         assert not dead.exists()
+        assert not dead.with_suffix(".lock").exists()
         assert not unlocked.exists()
+        assert users_own.exists()
 
 
 class TestMcpServerConfig:
@@ -522,7 +528,7 @@ def isolate_copilot_config_paths(monkeypatch, tmp_path):
     monkeypatch.setattr(copilot, "COPILOT_ENV_PATH", env_path)
     monkeypatch.setattr(copilot, "COPILOT_BACKUP_PATH", app_dir / "copilot-ucode-env.backup")
     monkeypatch.setattr(copilot, "COPILOT_MCP_CONFIG_PATH", tmp_path / "missing-mcp.json")
-    monkeypatch.setattr(copilot, "COPILOT_RUN_DIR", app_dir / "run")
+    monkeypatch.setattr(copilot, "COPILOT_CONFIG_DIR", env_path.parent)
     return env_path
 
 
@@ -767,7 +773,7 @@ class TestLaunch:
             copilot.launch(dict(STATE), ["--model", "nope"], options=copilot.LaunchOptions())
 
         assert seen == {}
-        assert not copilot.COPILOT_RUN_DIR.exists()
+        assert not list(copilot.COPILOT_CONFIG_DIR.glob("ucode-providers-*"))
 
     def test_warns_about_managed_models_copilot_cannot_use(self, tmp_path, monkeypatch, capsys):
         isolate_copilot_config_paths(monkeypatch, tmp_path)
