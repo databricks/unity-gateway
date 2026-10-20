@@ -35,14 +35,14 @@ def configure_claude_desktop(state: dict, *, parent_schema: str | None = None) -
         print_warning(f"Could not configure Claude Desktop: {exc}. Claude Code setup is unchanged.")
 
 
-def configure_claude_cowork(state: dict, managed_mcp_servers: list[dict]) -> None:
+def configure_claude_cowork(state: dict, mcp_servers: list[dict]) -> None:
     if sys.platform not in ("darwin", "win32", "linux"):
         return
     if is_dry_run():
         print_note("Would configure Claude Cowork workspace skills and MCP servers.")
         return
     try:
-        configured = configure_cowork(state, managed_mcp_servers)
+        configured = configure_cowork(state, mcp_servers)
     except Exception as exc:  # noqa: BLE001 -- Cowork must not block Claude Code setup
         print_warning(f"Could not configure Claude Cowork: {exc}. Claude Code setup is unchanged.")
         return

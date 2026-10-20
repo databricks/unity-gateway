@@ -2035,6 +2035,28 @@ class TestMcpSubcommands:
         assert result.exit_code == 0, result.output
         assert calls == [{"claude", "codex"}]
 
+    def test_mcp_add_syncs_claude_cowork(self):
+        with (
+            patch("ucode.cli.add_mcp_command") as mock_add,
+            patch("ucode.cli._sync_claude_cowork_mcp_servers") as mock_sync,
+        ):
+            result = runner.invoke(app, ["mcp", "add", "--names", "system.ai.github"])
+
+        assert result.exit_code == 0, result.output
+        mock_add.assert_called_once_with(location=None, services={"system.ai.github"}, agents=None)
+        mock_sync.assert_called_once_with()
+
+    def test_mcp_remove_syncs_claude_cowork(self):
+        with (
+            patch("ucode.cli.remove_mcp_command") as mock_remove,
+            patch("ucode.cli._sync_claude_cowork_mcp_servers") as mock_sync,
+        ):
+            result = runner.invoke(app, ["mcp", "remove"])
+
+        assert result.exit_code == 0, result.output
+        mock_remove.assert_called_once_with(agents=None)
+        mock_sync.assert_called_once_with()
+
 
 class TestAuthTokenCommand:
     """`ucode auth-token` is the cross-platform apiKeyHelper (#116)."""
@@ -3787,11 +3809,23 @@ class TestConfigureAgentFlag:
         import ucode.cli as cli_mod
 
         state = {"available_tools": ["claude", "codex"]}
+        configured_state = {
+            **state,
+            "mcp_servers": [
+                {
+                    "name": "system-ai-github",
+                    "url": "https://workspace.example/api/2.0/mcp/system.ai.github",
+                    "clients": ["claude"],
+                }
+            ],
+        }
         with (
             patch("ucode.cli.prompt_yes_no", return_value=True) as mock_prompt,
             patch("ucode.cli.save_state") as mock_save,
             patch("ucode.cli.install_databricks_ai_tools_for_agents") as mock_install,
             patch("ucode.cli.configure_mcp_command") as mock_mcp,
+            patch("ucode.cli.load_state", return_value=configured_state),
+            patch("ucode.agents.desktop.setup.configure_claude_cowork") as mock_configure_cowork,
         ):
             cli_mod._configure_optional_setup(state, ["claude", "codex"])
 
@@ -3800,6 +3834,47 @@ class TestConfigureAgentFlag:
         mock_save.assert_called_once_with(state)
         mock_install.assert_called_once_with(["claude", "codex"], state)
         mock_mcp.assert_called_once_with()
+        mock_configure_cowork.assert_called_once_with(
+            configured_state, configured_state["mcp_servers"]
+        )
+
+    def test_cowork_sync_merges_user_and_managed_mcp_servers(self):
+        import ucode.cli as cli_mod
+
+        state = {
+            **MINIMAL_STATE,
+            "available_tools": ["claude"],
+            "mcp_servers": [
+                {
+                    "name": "user-server",
+                    "url": "https://workspace.example/user",
+                    "clients": ["claude"],
+                }
+            ],
+        }
+        managed = [
+            {
+                "name": "managed-server",
+                "url": "https://workspace.example/managed",
+                "clients": ["claude"],
+            }
+        ]
+        with (
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.agents.desktop.setup.configure_claude_cowork") as mock_configure,
+        ):
+            cli_mod._sync_claude_cowork_mcp_servers(state, managed_mcp_servers=managed)
+
+        mock_configure.assert_called_once_with(state, [*state["mcp_servers"], *managed])
+
+    def test_cowork_sync_skips_when_claude_is_not_configured(self):
+        import ucode.cli as cli_mod
+
+        state = {**MINIMAL_STATE, "available_tools": ["codex"]}
+        with patch("ucode.agents.desktop.setup.configure_claude_cowork") as mock_configure:
+            cli_mod._sync_claude_cowork_mcp_servers(state)
+
+        mock_configure.assert_not_called()
 
     def test_optional_setup_decline_does_nothing(self):
         import ucode.cli as cli_mod
@@ -4096,6 +4171,7 @@ class TestConfigureMcpFlag:
             patch("ucode.cli.install_tool_binary"),
             patch("ucode.cli.configure_workspace_command") as mock_cfg,
             patch("ucode.cli.configure_mcp_command") as mock_mcp,
+            patch("ucode.cli._sync_claude_cowork_mcp_servers") as mock_sync,
         ):
             result = runner.invoke(
                 app,
@@ -4106,6 +4182,7 @@ class TestConfigureMcpFlag:
             selected_tools=["claude"],
         )
         mock_mcp.assert_called_once_with(services={"system.ai.slack", "system.ai.github"})
+        mock_sync.assert_called_once_with()
 
     def test_mcp_only_configures_workspace_without_agent_picker(self):
         # `--mcp` with no --agents (e.g. Cursor): configure the workspace directly,
@@ -4115,6 +4192,7 @@ class TestConfigureMcpFlag:
             patch("ucode.cli.configure_workspace_command") as mock_cfg,
             patch("ucode.cli._configure_shared_workspace_states") as mock_shared,
             patch("ucode.cli.configure_mcp_command") as mock_mcp,
+            patch("ucode.cli._sync_claude_cowork_mcp_servers") as mock_sync,
         ):
             result = runner.invoke(
                 app,
@@ -4135,6 +4213,7 @@ class TestConfigureMcpFlag:
             mock_shared.call_args.kwargs.get("tools") == [] or mock_shared.call_args.args[1] == []
         )
         mock_mcp.assert_called_once_with(services={"system.ai.slack"})
+        mock_sync.assert_called_once_with()
 
     def test_mcp_rejects_bare_short_name(self):
         with (
@@ -4757,6 +4836,8 @@ class TestConfigureAgentsSelection:
         )
         calls: list = []
         monkeypatch.setattr(cli_mod, "_configure_managed_mcp_servers", lambda m: calls.append(m))
+        cowork_sync = MagicMock()
+        monkeypatch.setattr(cli_mod, "_sync_claude_cowork_mcp_servers", cowork_sync)
 
         assert (
             cli_mod.configure_workspace_command(
@@ -4765,6 +4846,7 @@ class TestConfigureAgentsSelection:
             == 0
         )
         assert calls == [None]
+        cowork_sync.assert_called_once()
 
     def test_configures_available_subset_by_default(self, monkeypatch):
         """A workspace with no OpenAI models still configures claude and pi."""

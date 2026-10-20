@@ -248,10 +248,19 @@ def test_managed_sync_failure_preserves_existing_cowork(configuration, monkeypat
     configure_cowork.assert_not_called()
 
 
-def test_unmanaged_configure_removes_managed_cowork(configuration, monkeypatch):
-    revert_cowork = Mock(return_value="removed")
+def test_unmanaged_configure_syncs_user_mcp_servers_to_cowork(configuration, monkeypatch):
+    user_servers = [
+        {
+            "name": "system-ai-github",
+            "url": "https://workspace.example/api/2.0/mcp/system.ai.github",
+            "clients": ["claude"],
+        }
+    ]
+    configuration["mcp_servers"] = user_servers
+    configure_cowork = Mock()
     monkeypatch.setattr(desktop_setup, "configure_claude_desktop", lambda *a, **k: None)
-    monkeypatch.setattr(desktop_setup, "revert_claude_cowork", revert_cowork)
+    monkeypatch.setattr(desktop_setup, "configure_claude_cowork", configure_cowork)
+    monkeypatch.setattr(cli, "load_state", lambda: configuration)
 
     assert (
         cli._configure_workspace_command(
@@ -260,7 +269,7 @@ def test_unmanaged_configure_removes_managed_cowork(configuration, monkeypatch):
         )
         == 0
     )
-    revert_cowork.assert_called_once_with()
+    configure_cowork.assert_called_once_with(configuration, user_servers)
 
 
 def test_managed_config_without_claude_removes_cowork(configuration, monkeypatch):

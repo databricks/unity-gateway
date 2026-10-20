@@ -27,17 +27,20 @@ launches and `ug agents add` do not configure Desktop.
 
 ## Cowork workspace skills and MCP servers
 
-When a managed workspace enables Claude, `ug configure` also installs a generated
-`unity-gateway@unity-gateway-cowork` plugin into that account's Cowork scope. Start
-one Cowork session before configuring so Desktop creates its active account/organization
-directory. If several Cowork profiles exist and UG cannot identify one active profile,
-setup warns without changing any of them.
+Whenever Claude is configured, `ug configure` also installs a generated
+`unity-gateway@unity-gateway-cowork` plugin into that account's Cowork scope. This applies
+to managed and unmanaged workspaces. Start one Cowork session before configuring so Desktop
+creates its active account/organization directory. If several Cowork profiles exist and UG
+cannot identify one active profile, setup warns without changing any of them.
 
-The plugin contains only the current workspace's managed skills and managed MCP servers
-that target Claude. User, project, and other-workspace skills are not copied. MCP entries
-run the absolute `ug mcp-proxy` executable with the selected workspace and CLI profile;
-no bearer token is stored in the plugin. Saved PAT mode is supported. Custom OAuth is not
-yet supported for Cowork MCP servers.
+The plugin contains the current workspace's Claude-targeted MCP servers. In a managed
+workspace, that includes both user-selected and managed MCP servers, plus managed skills.
+In an unmanaged workspace, it includes user-selected MCP servers. User, project, unmanaged
+Databricks AI Tools, and other-workspace skills are not copied. `ug configure --mcp`,
+`ug mcp add`, and `ug mcp remove` resync the plugin. MCP entries run the absolute
+`ug mcp-proxy` executable with the selected workspace and CLI profile; no bearer token is
+stored in the plugin. Saved PAT mode is supported. Custom OAuth is not yet supported for
+Cowork MCP servers.
 
 UG owns these local files:
 
@@ -51,9 +54,10 @@ Claude's `mcp__plugin_<plugin>_<server>__<tool>` pattern.
 
 Cowork plugin support can still be disabled by Anthropic account feature flags or managed
 Desktop policy. UG treats installation as best-effort: failure warns but does not fail Claude
-Code setup. Removing Claude from managed configuration, switching to an unmanaged workspace,
-or running `ug revert` uninstalls the UG Cowork plugin and removes UG's generated marketplace.
-The native Desktop gateway profile is separate and remains under the cleanup rules below.
+Code setup. The plugin is removed when Claude is removed or disabled, `ug revert` runs, or the
+current workspace has no Cowork MCP servers or managed skills left. Switching to an unmanaged
+workspace does not by itself remove it. The native Desktop gateway profile is separate and
+remains under the cleanup rules below.
 
 ## Models and authentication
 
@@ -190,7 +194,7 @@ does not interrupt the holder or change profile, metadata, or selection-state fi
 
 Desktop setup failures only warn: successful Claude Code configuration still returns exit 0.
 `--dry-run` performs no Desktop or Cowork discovery, writes, or plugin commands. Removing
-Claude from managed configuration removes the managed Cowork plugin but does not revoke a
+Claude from managed configuration removes the Cowork plugin but does not revoke a
 previously written native Desktop profile. Desktop does not run UG's launch-time managed-agent
 checks; gateway authorization remains the enforcement boundary.
 

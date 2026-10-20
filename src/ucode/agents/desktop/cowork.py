@@ -1,4 +1,4 @@
-"""Install Unity Gateway's managed skills and MCP servers into Claude Cowork."""
+"""Install Unity Gateway workspace skills and MCP servers into Claude Cowork."""
 
 from __future__ import annotations
 
@@ -28,8 +28,8 @@ _COWORK_MARKERS = (
 )
 
 
-def configure_cowork(state: dict, managed_mcp_servers: list[dict]) -> bool:
-    """Generate and install UG's Cowork plugin for the active managed workspace."""
+def configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
+    """Generate and install UG's Cowork plugin for the active workspace."""
 
     workspace = state.get("workspace")
     if not isinstance(workspace, str) or not workspace:
@@ -40,7 +40,7 @@ def configure_cowork(state: dict, managed_mcp_servers: list[dict]) -> bool:
 
     skill_records = _managed_skill_records(workspace)
     mcp_config = _cowork_mcp_config(
-        managed_mcp_servers,
+        mcp_servers,
         workspace,
         profile,
         use_pat=bool(state.get("use_pat")),
