@@ -344,7 +344,10 @@ model availability requires a higher tier. Custom gateway notices are retained, 
 older or unrecognized responses keep their original wording. Diagnostic records keep
 the displayed reason in `rationale` and the gateway's full explanation in `raw_rationale`.
 
-On Windows, the generated shell hooks expect Git Bash; PowerShell-only setups are not covered.
+On Windows, Claude smart routing uses subagent hooks only. If first-prompt routing
+is enabled, ug warns and falls back to subagent routing because the first-prompt
+wrapper requires a Unix terminal.
+The generated shell hooks expect Git Bash; PowerShell-only setups are not covered.
 
 `--enable-smart-routing` and a workspace config with `smart_routing.enabled` turn routing on
 through `SMART_ROUTER_CONFIG_VERSION`: they keep a known version and otherwise select
@@ -359,16 +362,19 @@ Use `SMART_ROUTER_CONFIG_VERSION` at launch to select a smart-routing configurat
 Each version defines separate Claude Code and Codex flag mappings; the existing versions
 use identical mappings for both agents. The Claude-only version disables routing for Codex:
 
-| Version | Routed agents | Orchestrator |
-| --- | --- | --- |
-| `subagent_only_v0` | Claude, Codex | Off |
-| `subagent_only_v1` | Claude, Codex | Off |
-| `subagent_orch_v0` | Claude, Codex | On |
-| `subagent_orch_v1` | Claude, Codex | On |
-| `subagent_orch_v0_claude_only` | Claude | On |
+| Version | Routed agents | Subagent routing | First-prompt routing | Orchestrator |
+| --- | --- | --- | --- | --- |
+| `first_prompt_and_subagent_no_orch_v0` | Claude, Codex | On | On | Off |
+| `subagent_only_v0` | Claude, Codex | On | Off | Off |
+| `subagent_only_v1` | Claude, Codex | On | Off | Off |
+| `subagent_orch_v0` | Claude, Codex | On | Off | On |
+| `subagent_orch_v1` | Claude, Codex | On | Off | On |
+| `subagent_orch_v0_claude_only` | Claude | On | Off | On |
 
-Each version above routes subagents only. `subagent_only_v1` and `subagent_orch_v1` route
-the same way as their `_v0` versions.
+`first_prompt_and_subagent_no_orch_v0` routes the first prompt and subagents without
+orchestration: `ENABLE_SMART_ROUTING_V2=1`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY=0`, and
+`ENABLE_SMART_ROUTER_ORCHESTRATOR=0`. Every other version routes subagents only;
+`subagent_only_v1` and `subagent_orch_v1` route the same way as their `_v0` versions.
 
 `subagent_orch_v0_claude_only` keeps Claude's `subagent_orch_v0` flags (`0`, `1`, `1`)
 and sets all three flags to `"0"` for Codex. Codex uses its ordinary launch and
@@ -390,7 +396,8 @@ The version takes precedence over conflicting legacy flags. Once the agent is se
 UG expands its mapping into
 `ENABLE_SMART_ROUTING_V2`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY`, and
 `ENABLE_SMART_ROUTER_ORCHESTRATOR` for the launched session. When the version is
-unset or empty, these legacy flags retain their existing behavior. Unknown versions are ignored:
+unset or empty, these legacy flags retain their existing behavior, including
+first-prompt routing through `ENABLE_SMART_ROUTING_V2=1`. Unknown versions are ignored:
 no preset is applied, the inherited environment is unchanged, and commands continue normally.
 `--disable-smart-routing` and session on/off controls apply after expansion;
 `--enable-smart-routing` and workspace smart routing keep a known version.
