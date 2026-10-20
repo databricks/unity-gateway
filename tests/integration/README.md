@@ -462,8 +462,8 @@ permission dialog; any broader permission request fails immediately.
 A fixture file contains an unpredictable value absent from the prompt. Success
 requires an assistant answer in the real agent transcript containing that value,
 plus normal TUI exit. Codex evidence requires its task-complete event.
-Interactive first-prompt routing is covered by the managed_fixture smart-routing
-banner journeys below for both agents. The subagent routing command journeys drive the real
+Interactive first-prompt routing through `first_prompt_and_subagent_no_orch_v0` is covered by
+the managed_fixture smart-routing banner journeys below for both agents. The subagent routing command journeys drive the real
 installed Claude mod command and Codex hook with native payloads against the live router. The
 subagent-only TUI journeys additionally spawn three native children in one real session,
 invoke the installed Smart Router skill to turn routing off and back on, and require the
@@ -501,9 +501,11 @@ lack dedicated regression coverage. Codex's native hook merging, project trust,
 and execution of pre-existing hooks are not exercised by this integration suite.
 
 Preset parameterization augments only routing hooks, skill toggles, and first-prompt routing;
-their original legacy-env or managed-default cases remain. Explicit-model selection, command
-forwarding, app-server initialization, and catalog fallback retain their original legacy flags
-and on/off coverage; preset-specific behavior there is not covered.
+their original legacy-env cases remain, and the skill toggles add a managed-default case in
+which `smart_routing.enabled` alone routes subagents and no first-prompt wrapper starts.
+Explicit-model selection, command forwarding, app-server initialization, and catalog fallback
+retain their original legacy flags and on/off coverage; preset-specific behavior there is not
+covered.
 
 The Claude route-subagent hook journey checks that both hook notices name the agent
 in `updatedInput`, rather than the originally requested type. Native task-header
@@ -511,7 +513,7 @@ rendering is outside that hook-contract check.
 
 The unit/component `../test_smart_routing_config.py` includes a 162-case Cartesian oracle over all
 three legacy routing flags (`None`, `0`, `1`) and six selector forms (`None` plus the five
-supported presets, including the customer first-prompt-and-subagent mode). It independently
+supported presets, including the internal first-prompt-and-subagent mode). It independently
 hardcodes preset values and asserts exact
 `resolve_environment` and `apply_config` settings, true-unset omission, unrelated-key and
 input preservation, valid-selector consumption, and environment restoration.
@@ -609,10 +611,10 @@ cases instead complete real file tasks through `--workspace` and `--model-locati
 `ug_e2e.models.claude_haiku` and `ug_e2e.models.gpt_luna`. The two fresh `--provider`
 journeys check setup and launch with existing services, without inference.
 
-There are **85 live cases** (including 11 marked TUI journeys) and **7 installation
+There are **87 live cases** (including 11 marked TUI journeys) and **7 installation
 checks** with Claude and Codex; selecting OpenCode adds one live headless case and two `managed_fixture` cases. One
 **`workspace_switch` case** uses two real workspaces and checks skills MCP cleanup and a completed
-Claude task. A further **43 `managed_fixture` cases** (ten of them also `live`) run on the
+Claude task. A further **43 `managed_fixture` cases** (twelve of them also `live`) run on the
 managed workspace with a checked-in JSON CodingAgentConfig from `tests/fixtures/managed_config/`
 injected through `UCODE_MANAGED_CONFIG_STUB`; there are no cases that read a published config.
 Twelve explicit configured/fresh Claude and Codex discovery and source-override journeys use the
@@ -822,7 +824,7 @@ each test; only explicit-model scenarios choose and record a discovered
 Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
-two agent jobs). Full runs all 85 live cases, including those smoke cases, in two
+two agent jobs). Full runs all 87 live cases, including those smoke cases, in two
 disjoint agent lanes:
 
 | Agent lane | Marker | Cases |
@@ -940,10 +942,11 @@ The Claude parent-schema defaults case expects discovered numbered GPT models to
 `[1m]` in the picker and retain its catalog display label.
 
 The smart-routing banner journeys inject static Claude and Codex model lists with
-`smart_routing` enabled in the agent config, run `ug configure`, then launch the real TUI and
-submit one small file task. Each runs once with the selector unset (managed default) and once
-with `first_prompt_and_subagent_no_orch_v0`, asserting the "Using Unity Gateway Smart Router."
-banner naming the selected model, a routed answer completing the file task, and normal exit.
+`smart_routing` enabled in the agent config, run `ug configure`, then launch the real TUI with
+`first_prompt_and_subagent_no_orch_v0` and submit one small file task, asserting the
+"Using Unity Gateway Smart Router." banner naming the selected model, a routed answer completing
+the file task, and normal exit. The managed default alone routes only subagents; the
+managed-default skill-toggle cases cover it.
 
 That workspace authenticates as a service principal, so CI mints a short-lived token per run from
 these same-repository secrets rather than storing a long-lived bearer:
@@ -1174,7 +1177,7 @@ uv run --no-project --python 3.12 python scripts/run_integration.py \
 unset DATABRICKS_BEARER
 ```
 
-This runs all 85 live cases. For the seven installation checks, run the same
+This runs all 87 live cases. For the seven installation checks, run the same
 runner/version/index arguments with `--installation-only` and omit `-- -m live`;
 no bearer or workspace is needed. Results remain under `.integration-runs/`.
 Each invocation needs a new output directory; an existing one is rejected.

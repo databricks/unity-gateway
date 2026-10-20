@@ -294,6 +294,11 @@ is enabled, ug warns and falls back to subagent routing because the first-prompt
 wrapper requires a Unix terminal.
 The generated shell hooks expect Git Bash; PowerShell-only setups are not covered.
 
+`--enable-smart-routing` and a workspace config with `smart_routing.enabled` route
+subagents only; the first prompt runs on the session's default model. Internal and test
+launches can still route the first prompt with `ENABLE_SMART_ROUTING_V2=1` or the
+`first_prompt_and_subagent_no_orch_v0` version.
+
 ### Smart Router Orchestrator
 
 Use `SMART_ROUTER_CONFIG_VERSION` at launch to select a smart-routing configuration.
@@ -309,8 +314,8 @@ use identical mappings for both agents. The Claude-only version disables routing
 | `subagent_orch_v1` | Claude, Codex | On | Off | On |
 | `subagent_orch_v0_claude_only` | Claude | On | Off | On |
 
-`first_prompt_and_subagent_no_orch_v0` is the customer configuration for first-prompt
-and subagent routing without orchestration: `ENABLE_SMART_ROUTING_V2=1`,
+`first_prompt_and_subagent_no_orch_v0` is the internal and test configuration for
+first-prompt and subagent routing without orchestration: `ENABLE_SMART_ROUTING_V2=1`,
 `ENABLE_SMART_ROUTING_SUBAGENT_ONLY=0`, and `ENABLE_SMART_ROUTER_ORCHESTRATOR=0`.
 
 `subagent_only_v1` sets both `ENABLE_SMART_ROUTING_V2` and

@@ -66,9 +66,10 @@ uv run pytest -c tests/e2e_cuj/pytest.ini --confcutdir=tests/e2e_cuj \
 ## Smart-routing CUJ
 
 `test_cuj4_smart_routing.py` uses its own read-only workspace with managed smart routing enabled.
-It runs the original routed/explicit-model journeys and six
+It runs the managed-default and explicit-model journeys and six
 `SMART_ROUTER_CONFIG_VERSION` cases using the shared version constants; each launches Claude
-and Codex once.
+and Codex once. With no selector, managed smart routing leaves the first prompt unrouted: the
+admin's default model completes the file task and no `routes:select` request is sent.
 The CUJ derives routing and orchestration assertions from each agent's resolved preset flags.
 Component tests independently verify the preset values. The resulting expectations are:
 

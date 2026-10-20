@@ -195,27 +195,24 @@ def first_prompt_routing_enabled(
     )
 
 
-def enable_smart_routing(
-    env: MutableMapping[str, str] | None = None, *, agent: str
-) -> dict[str, str | None]:
-    """Set the full smart-routing env var and return the prior value of every routing var."""
-    return override_smart_routing(True, env, agent=agent)
-
-
 def override_smart_routing(
     enabled: bool,
     env: MutableMapping[str, str] | None = None,
     *,
     agent: str,
 ) -> dict[str, str | None]:
-    """Set an explicit launch-scoped routing choice and return the prior values."""
+    """Set an explicit launch-scoped routing choice and return the prior values.
+
+    Turning routing on routes subagents only. First-prompt routing stays available solely
+    through an explicit ``ENABLE_SMART_ROUTING_V2=1`` or a preset that sets it.
+    """
     target = os.environ if env is None else env
     previous = {var: target.get(var) for var in SMART_ROUTING_ENV_KEYS}
     previous.update(apply_config(target, agent=agent))
-    if enabled:
-        target[ENABLE_SMART_ROUTING_ENV_VAR] = "1"
-    else:
+    if not enabled:
         target.update(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
+    elif target.get(ENABLE_SMART_ROUTING_ENV_VAR) != "1":
+        target[ENABLE_SUBAGENT_ROUTING_ENV_VAR] = "1"
     return previous
 
 

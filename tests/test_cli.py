@@ -596,15 +596,47 @@ class TestSubcommandRouting:
         with patch(
             "ucode.cli._launch_tool",
             side_effect=lambda *_args, **_kwargs: enabled_during_launch.append(
-                os.environ.get(cli_mod.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR)
+                os.environ.get(cli_mod.smart_routing_v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR)
             ),
         ) as mock_launch:
             result = runner.invoke(app, ["codex", "--enable-smart-routing"])
 
         assert result.exit_code == 0, result.output
         assert enabled_during_launch == ["1"]
-        assert cli_mod.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR not in os.environ
+        assert cli_mod.smart_routing_v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR not in os.environ
         assert mock_launch.call_args.args[1].args == []
+
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    @pytest.mark.parametrize(
+        ("launch_env", "first_prompt"),
+        [
+            ({}, False),
+            ({"ENABLE_SMART_ROUTING_V2": "0"}, False),
+            ({"ENABLE_SMART_ROUTING_V2": "1"}, True),
+            ({"SMART_ROUTER_CONFIG_VERSION": "first_prompt_and_subagent_no_orch_v0"}, True),
+        ],
+        ids=["unset", "v2-off", "v2-on", "first-prompt-preset"],
+    )
+    def test_enable_smart_routing_routes_first_prompt_only_when_opted_in(
+        self, monkeypatch, tool, launch_env, first_prompt
+    ):
+        for name, value in launch_env.items():
+            monkeypatch.setenv(name, value)
+        observed = []
+
+        with patch(
+            "ucode.cli._launch_tool",
+            side_effect=lambda *_args, **_kwargs: observed.append(
+                (
+                    cli_mod.smart_routing_v2.smart_routing_enabled(None, default=False, agent=tool),
+                    cli_mod.smart_routing_v2.first_prompt_routing_enabled(agent=tool),
+                )
+            ),
+        ):
+            result = runner.invoke(app, [tool, "--enable-smart-routing"])
+
+        assert result.exit_code == 0, result.output
+        assert observed == [(True, first_prompt)]
 
     @pytest.mark.parametrize("tool, subcommand", [("codex", "app"), ("claude", "update")])
     def test_native_subcommand_suppresses_inherited_smart_routing(
@@ -649,7 +681,10 @@ class TestSubcommandRouting:
 
         def capture(_tool, ctx, **_kwargs):
             captured.append(
-                (os.environ.get(cli_mod.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR), ctx.args)
+                (
+                    os.environ.get(cli_mod.smart_routing_v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR),
+                    ctx.args,
+                )
             )
 
         with patch("ucode.cli._launch_tool", side_effect=capture):
@@ -744,6 +779,33 @@ class TestSubcommandRouting:
 
         assert cli_mod._managed_smart_routing_enabled(managed, "claude") is True
         assert cli_mod._managed_smart_routing_enabled(managed, "codex") is True
+
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    @pytest.mark.parametrize(
+        ("launch_env", "first_prompt"),
+        [({}, False), ({"ENABLE_SMART_ROUTING_V2": "1"}, True)],
+        ids=["managed-default", "v2-on"],
+    )
+    def test_managed_smart_routing_routes_first_prompt_only_when_opted_in(
+        self, monkeypatch, tool, launch_env, first_prompt
+    ):
+        for name, value in launch_env.items():
+            monkeypatch.setenv(name, value)
+        managed = {"enabled_agents": {tool: {"smart_routing_enabled": True}}}
+        observed = []
+
+        with _launch_policy_patches(managed) as calls:
+            calls["launch"].side_effect = lambda *_args, options, **_kwargs: observed.append(
+                (
+                    options.launch_smart_routing,
+                    cli_mod.smart_routing_v2.first_prompt_routing_enabled(agent=tool),
+                )
+            )
+            result = runner.invoke(app, [tool])
+
+        assert result.exit_code == 0, result.output
+        assert observed == [(True, first_prompt)]
+        assert cli_mod.smart_routing_v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR not in os.environ
 
     def test_codex_refresh_is_consumed_by_ucode(self):
         with patch("ucode.cli._launch_tool") as mock_launch:
