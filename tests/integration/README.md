@@ -1,5 +1,9 @@
 # Integration tests
 
+Claude answer delivery has offline transcript and subprocess coverage in
+`../test_claude_answer_delivery.py`. Live model/gateway selection and capability-hook
+activation are not covered here; interactive selection is unsupported.
+
 The separate [dedicated-workspace CUJ](../e2e_cuj/AGENTS.md) lives in `tests/e2e_cuj/`
 and runs directly with pytest. It does not use this suite's runner or config fixtures.
 It reuses the session, terminal, file-task, and transcript helpers in `utils/`.
@@ -52,7 +56,9 @@ Offline CUJ cases also cover Codex delegated-turn completion and task-request ma
 see `../e2e_cuj/README.md` for the evidence requirements.
 
 The [catalog discovery journey](../e2e_cuj/README.md) uses the CUJ3 workspace to check
-agent-compatible pickers, schema exclusions, configured defaults, and real inference.
+agent-compatible pickers (including GPT Luna for both agents), schema exclusions, configured
+defaults, and real inference, including an explicit Claude headless task on GPT Luna.
+Claude's decoy catalog includes both decoys while the scoped picker excludes both.
 CI collects it through the shared `dedicated-cuj` job. Its request checks accept the known
 Claude thinking-display 400 only with a successful, otherwise identical native retry.
 
@@ -65,6 +71,8 @@ The Claude mod entry point has separate native component checks in
 `../native_claude/test_mod.py`. Claude 2.1.290 validates the module and runs its
 TypeScript event-forwarding and launch-option tests in a dedicated CI job. The
 existing Claude skill-toggle journey checks the live recipe payload field across on/off/on.
+The required Isaac feedback form and evidence submission need a separate manual
+Isaac check. The gateway toggle journey does not cover the form.
 
 The existing unit tests keep their fixtures. Integration has an independent
 pytest configuration and uses `--confcutdir` so those fixtures cannot leak in.
@@ -90,6 +98,10 @@ absent; use `--help` for the startup-import probe.
 
 Agent-specific bundled instruction selection and prompt/compaction hook content
 are covered in `../test_skills.py`; those component checks do not run live agents.
+
+Custom OAuth startup with an expired ordinary profile has no automated integration
+coverage. Validate Claude's default, model-location, and provider catalogs in Isaac
+with the custom OAuth profile.
 
 `TestChildStdoutLaunch` in `../test_cli.py` covers clean Claude print-mode and
 Codex exec/app-server stdout, early launch errors, and forwarding through ug's `--`.
@@ -326,7 +338,7 @@ unacquired handles. Paths use temporary homes across simulated macOS, Windows, a
 including relocated/default Windows Local AppData, missing apps, invalid paths, creation
 failures, and parent-metadata preservation.
 
-Rendering tests cover the valid JSON generated-file notice, complete model IDs,
+Rendering tests cover the exact profile fields without `_comment`, complete model IDs,
 order/duplicates, literal helper arguments, and copied headers. Omitted optional fields
 are removed on replacement. Shared managed-header parsing retains its pre-Desktop behavior;
 the extra header-validation tests were removed with that out-of-scope parser change.
@@ -334,9 +346,11 @@ The default-model warning assertion was removed because that limitation is docum
 instead of returned as a runtime warning.
 Obsolete baseline restoration, edit preservation, ownership/migration, and workspace
 canonicalization tests are replaced by reserved-file replacement/deletion coverage.
-Existing CLI URL normalization is unchanged. Native Desktop activation, acceptance of
-the `_comment` notice field, GUI/helper/browser behavior, and inference remain untested;
-these component checks do not establish native Windows or Linux support.
+Reconfigure tests remove the legacy `_comment` field while preserving unrelated profiles,
+metadata, and previous-selection state, and verify subsequent configure is a no-op.
+Existing CLI URL normalization is unchanged. Native Desktop activation,
+GUI/helper/browser behavior, and inference remain untested by these component checks;
+they do not establish native Windows or Linux support.
 
 `../test_file_lock_cross_os.py` tests the shared timeout mechanism used by Desktop:
 real contention, preserving the holder on timeout, and successful acquisition after
@@ -372,6 +386,22 @@ routing IDs, order/duplicates, and ID-only entries for missing/empty names or st
 lists. Scoped discovery uses the same response for IDs and labels without extra calls.
 Repeat configure refreshes or removes labels. Source lists/maps remain unchanged.
 These checks use temporary files on simulated platforms, not the native model picker.
+
+Desktop OTEL coverage remains in `../test_claude_desktop.py` and
+`../test_desktop_setup.py`: native settings follow Claude's tracing flag for both
+model sources on simulated macOS, Windows, and Linux. Component checks cover the
+collector base URL, protobuf protocol, refreshing `.sh`/`.cmd` helpers without
+persisted tokens, quoting, repeated native helper execution with rotated bearer
+overrides, Unicode and trailing-backslash arguments, Windows UTF-8 selection,
+JSON-only stdout/failures, repeat configure, workspace changes,
+disable/re-enable, helper-byte/permission rollback, and revert preserving unrelated
+telemetry. Revert cleanup also covers a removed native library or application-data
+root without recreating Desktop directories, plus rollback and retry after cleanup
+failure. Byte-writer component cases check explicit permissions independent of
+contents, unchanged JSON formatting, helper execute-permission repair, and
+atomic-replacement failure cleanup. This suite does not launch
+Desktop or establish native export, open-session token refresh, or trace ingestion.
+See `../../docs/claude-desktop.md` for native validation steps and auth limits.
 
 ## Test layout and format
 
@@ -904,6 +934,9 @@ In addition, `test_ug_configure_managed_codex_catalog_fallback` injects the inte
 workspace on the valid default model `system.ai.gpt-5-6-sol`. With legacy smart routing off and
 on, it opens the real Codex `/models` picker and requires that injected custom-catalog model
 to be listed. The fixture itself has no managed smart-routing setting.
+
+The Claude parent-schema defaults case expects discovered numbered GPT models to carry
+`[1m]` in the picker and retain its catalog display label.
 
 The smart-routing banner journeys inject static Claude and Codex model lists with
 `smart_routing` enabled in the agent config, run `ug configure`, then launch the real TUI and

@@ -122,6 +122,8 @@ selects a dedicated Claude Desktop gateway profile. Its model list includes only
 Claude-named IDs; Claude Code's catalog is unchanged. Desktop setup errors warn
 without failing Claude Code configuration. See [Claude Desktop setup](docs/claude-desktop.md)
 for authentication, profile preservation, and native validation limits.
+When managed Claude tracing is enabled, the same profile configures Desktop's native
+OTLP trace export with a refreshing headers helper; no background service is needed.
 
 ## MCP Servers
 
@@ -384,7 +386,7 @@ preferences are ignored and their files are left untouched. See the bundled
 
 | Tool | Managed files |
 |------|---------------|
-| Codex | `~/.codex/ucode.config.toml`, shared catalog reference in `~/.codex/config.toml`, `~/.ucode/codex-model-catalog.json`, `/etc/codex/managed_config.toml` (Linux and macOS) |
+| Codex | `~/.codex/ucode.config.toml`, shared catalog reference in `~/.codex/config.toml`, `~/.ucode/codex-model-catalog.json`, `/etc/codex/managed_config.toml` (Linux and macOS), `C:\ProgramData\OpenAI\Codex\requirements.toml` (Windows, written only from an elevated terminal; enforced by Codex 0.156.0 and later) |
 | Claude Code | `~/.claude/ucode-settings.json`, `~/.claude.json`, `/etc/claude-code/managed-settings.json` (Linux), `/Library/Application Support/ClaudeCode/managed-settings.json` (macOS), `C:\Program Files\ClaudeCode\managed-settings.json` (Windows, written only from an elevated terminal) |
 | Gemini CLI | `~/.gemini/ucode.env`, `~/.ucode/.gemini-home/.gemini/settings.json` |
 | OpenCode | `~/.ucode/opencode-xdg/opencode/opencode.json`, `~/.ucode/opencode-xdg/opencode/plugin/ucode-auth.js` |

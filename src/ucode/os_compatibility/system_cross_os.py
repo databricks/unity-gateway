@@ -6,7 +6,12 @@ import os
 import sys
 from pathlib import Path
 
-__all__ = ["is_admin", "windows_program_files_dir"]
+__all__ = [
+    "is_admin",
+    "windows_program_data_dir",
+    "windows_program_files_dir",
+    "windows_system32_dir",
+]
 
 
 def is_admin() -> bool:
@@ -25,3 +30,14 @@ def windows_program_files_dir() -> Path:
     return Path(
         os.environ.get("ProgramW6432") or os.environ.get("ProgramFiles") or r"C:\Program Files"
     )
+
+
+def windows_program_data_dir() -> Path:
+    """The ProgramData folder, where standard users can read and create entries but not change
+    ones an administrator created."""
+    return Path(os.environ.get("ProgramData") or r"C:\ProgramData")
+
+
+def windows_system32_dir() -> Path:
+    """The Windows system folder, for running system tools without searching ``PATH`` or the cwd."""
+    return Path(os.environ.get("SystemRoot") or r"C:\Windows") / "System32"

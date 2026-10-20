@@ -56,6 +56,35 @@ that file atomically. Session start restores only the launch baseline, so an ove
 before `/clear` still survives it. The live skill-toggle journey covers the real CLI write;
 native component tests stub the process calls.
 
+Before each on-to-off change, Isaac sessions with
+`ISAAC_SMART_ROUTER_FEEDBACK=1` require a reason of at least 16 characters after
+trimming surrounding whitespace. Isaac sets this flag from its
+rollout setting or the user's explicit `1`/`0` override. It controls Isaac feedback
+availability, so UG's routing presets and on/off toggles leave it unchanged.
+The native form keeps routing on until Enter accepts a valid reason, then disables
+routing and uploads the exact text in the background with `isaac feedback`. The
+transcript shows the feedback ID the mod passes with `--feedback-id`; a toast reports
+the result. Cancel or Escape leaves routing on and sends nothing. A missing
+`isaac` CLI or an unavailable form leaves routing on. A feedback submission failure after a valid
+reason leaves routing off and reports the failure in the transcript. The form makes no model requests.
+
+`isaac-feedback.ts` owns this Databricks-specific policy, form, and submission.
+`register.ts` binds the routing callbacks before Isaac's command guard, then
+handles toggles the guard passes through. Claude's mod compiler requires engine
+API calls to stay in the file that receives `$`.
+`routing-state.ts` supplies the shared enabled check; launch options, live
+environment values, and resolved session overrides use the same check on their
+respective values.
+
+The CLI/skill path, including Codex, enforces the same minimum through the session
+toggle's `--smart-router-feedback` argument. The skill asks for the reason before
+retrying the toggle and submits it through `/isaac-feedback` on success. The CLI
+validates the reason; the skill or native form owns submission.
+
+Validate the form in Isaac, including the 16-character minimum, exact reason
+submission, cancellation, repeated toggles and failures. These scenarios and a live
+evidence upload are not covered by the automated suite.
+
 The existing Claude skill-toggle integration journey checks recorded inference
 payloads during its three calculation phases: launch recipe, `DISABLED` after off,
 and launch recipe after on. Each phase retains completed native parent/child

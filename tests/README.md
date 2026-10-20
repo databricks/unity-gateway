@@ -19,6 +19,15 @@ TypeScript event-forwarding and launch-option tests in CI. The existing Claude
 skill-toggle integration journey checks the live recipe payload field across on/off/on.
 See [the mod guide](../docs/claude-mod.md).
 
+The required Isaac feedback form needs manual validation of the 16-character minimum,
+cancellation, repeated toggles, and submission failures. The existing routing-toggle
+journeys do not cover this form or a live Isaac evidence upload.
+
+`test_claude_answer_delivery.py` covers Claude answer selection, composition, ownership,
+failed tasks and resumed revisions using transcript inputs, plus real subprocess I/O,
+stream-input bypass and capability lifetime. Live model/gateway selection and hook
+activation remain uncovered.
+
 The **harness-latest** workflow runs every six hours on `main` and currently covers
 smart routing only.
 It resolves npm's `claude-code@latest`
@@ -48,6 +57,12 @@ trailing UI controls; offline cases reject stale states, wrong routing scope, an
 confirmations, and keep the band, the hint row, and the toggle reply apart.
 The mod's own tests (`native_claude/mod_tests`) cover the same rules for both toggles
 without a live agent.
+
+CUJ3 expects GPT Luna in both agents' catalogs and pickers, including Claude's gateway alias,
+and covers an explicit Claude headless task on that model.
+Its Claude decoy catalog includes both Claude and Codex decoys; neither belongs in the scoped picker.
+The managed Claude parent-schema journey expects numbered GPT models to carry `[1m]` in the
+picker while retaining the catalog's display label.
 
 Dedicated CUJs reuse `integration/utils` session/terminal mechanics and file-task
 and transcript readers, not its config stubs or pytest fixtures. Prompt/model
@@ -162,7 +177,7 @@ unacquired handles. Paths use temporary homes across simulated macOS, Windows, a
 including relocated/default Windows Local AppData, missing apps, invalid paths, creation
 failures, and parent-metadata preservation.
 
-Rendering tests cover the valid JSON generated-file notice, complete model IDs,
+Rendering tests cover the exact profile fields without `_comment`, complete model IDs,
 order/duplicates, literal helper arguments, and copied headers. Omitted optional fields
 are removed on replacement. Shared managed-header parsing retains its pre-Desktop behavior;
 the extra header-validation tests were removed with that out-of-scope parser change.
@@ -170,9 +185,11 @@ The default-model warning assertion was removed because that limitation is docum
 instead of returned as a runtime warning.
 Obsolete baseline restoration, edit preservation, ownership/migration, and workspace
 canonicalization tests are replaced by reserved-file replacement/deletion coverage.
-Existing CLI URL normalization is unchanged. Native Desktop activation, acceptance of
-the `_comment` notice field, GUI/helper/browser behavior, and inference remain untested;
-these component checks do not establish native Windows or Linux support.
+Reconfigure tests remove the legacy `_comment` field while preserving unrelated profiles,
+metadata, and previous-selection state, and verify subsequent configure is a no-op.
+Existing CLI URL normalization is unchanged. Native Desktop activation,
+GUI/helper/browser behavior, and inference remain untested by these component checks;
+they do not establish native Windows or Linux support.
 
 `test_desktop_setup.py` exercises configure, refresh, deleted-profile recovery,
 successful setup without the default-model warning, recoverable setup failures that still warn,
@@ -202,6 +219,22 @@ lists. Scoped discovery uses the same response for IDs and labels without extra 
 Repeat configure refreshes or removes labels. Source lists/maps remain unchanged.
 These checks use temporary files on simulated platforms, not the native model picker.
 
+Desktop OTEL component tests cover native trace settings gated by `claude_otel_tracing`
+for static and discovered models on simulated macOS, Windows, and Linux. They verify
+the collector base URL, protobuf protocol, refreshing `.sh`/`.cmd` headers helpers
+without persisted tokens, literal argument quoting, repeated native helper execution
+with rotated bearer overrides, Unicode and trailing-backslash arguments, and
+JSON-only stdout/failure output. Windows wrappers select UTF-8 before the command.
+Lifecycle checks cover repeat configure, workspace changes, disable/re-enable, rollback of helper bytes
+and permissions at each write boundary, and revert preserving unrelated telemetry.
+Revert also cleans up the helper and selection state after the Desktop library or
+application-data root is removed, without recreating either directory; failed cleanup
+restores helper bytes, permissions, and selection state for a later retry.
+Byte-writer checks cover explicit permissions independent of contents, unchanged
+JSON formatting, helper execute-permission repair, and failed atomic replacement
+without leftover temporary files.
+These checks do not prove native export, token refresh in open sessions, or ingestion.
+
 `TestChildStdoutLaunch` in `test_cli.py` checks Claude `-p`/`--print` and Codex `exec`
 (plain and `--json`) and `app-server` status/error output on stderr, argument forwarding with
 and without ug's `--`, and an unchanged stdout descriptor. Detection checks exact tokens before
@@ -219,6 +252,10 @@ parse as JSON/JSONL without stripping UG messages; those assertions still requir
 Codex browser-login component tests cover invalid refresh tokens, token-only stdout,
 network errors, and reuse of a concurrent sign-in within the timeout. Codex config
 tests cover the helper flag; real browser consent and desktop behavior are not covered.
+
+Claude catalog selection with a custom OAuth CLI profile needs a live Isaac check,
+including default discovery, model locations, and providers when the ordinary profile
+has expired. The automated suite does not cover this combination.
 
 `test_mcp_web_search.py` and `test_agent_claude.py` cover custom OAuth search
 registration, stale registration repair, SDK cache reuse/refresh, CLI profile
