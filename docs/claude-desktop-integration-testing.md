@@ -2,9 +2,10 @@
 
 Ticket: AIGTWY-5020, under epic AIGTWY-5015.
 
-This document defines future native macOS and Windows testing. This change does
-not provision a runner, install Claude Desktop, use live credentials, or add a CI
-job. Existing component tests remain the merge gate for Desktop configuration.
+This document defines future native macOS and Windows GUI testing. This change does
+not provision an interactive runner or install Claude Desktop. Existing Linux and
+Windows integration jobs now exercise the installed CLI's profile lifecycle with live
+workspace discovery, while component tests cover failure boundaries.
 
 ## Existing automated coverage
 
@@ -25,6 +26,12 @@ external authentication and model-discovery boundaries. It covers:
 These tests validate UG's file contract. They do not launch Claude Desktop or
 prove that a particular app release accepts the profile, runs Cowork, invokes the
 helper, or reaches Unity Gateway.
+
+The installed-CLI integration suite seeds an unrelated profile, runs real `ug configure`
+twice with an explicit CLI profile, then runs real `ug revert`. On Linux and Windows it
+checks the fixed UUID profile, gateway/helper/models, label and metadata, duplicate
+prevention, unrelated-profile preservation, deletion, and prior-selection restoration.
+It still does not launch Desktop or execute the generated helper.
 
 The existing `windows-latest` integration jobs install and run UG and real coding
 agent CLIs on Windows Server. They are headless and do not provide the Windows 11,

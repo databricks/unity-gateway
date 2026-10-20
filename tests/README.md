@@ -181,6 +181,10 @@ metadata, and previous-selection state, and verify subsequent configure is a no-
 Existing CLI URL normalization is unchanged. Native Desktop activation,
 GUI/helper/browser behavior, and inference remain untested by these component checks;
 they do not establish native Windows or Linux support.
+The installed-CLI integration suite also configures twice and reverts against isolated
+native Linux and Windows profile paths. It verifies the fixed profile, gateway/helper/model
+fields, metadata selection, and preservation of an unrelated profile. It does not launch
+Desktop or establish GUI, Cowork, helper execution, browser authentication, or inference.
 The [native integration plan](../docs/claude-desktop-integration-testing.md) defines the
 separate interactive macOS and Windows coverage needed for those claims.
 
