@@ -1,6 +1,6 @@
 import type { On } from 'claude-code';
 import { expect, test } from 'claude-code/testing';
-import { RECIPE_FIELD } from '../hooks/constants.ts';
+import { FAST_SPEED, RECIPE_FIELD, SPEED_FIELD } from '../hooks/constants.ts';
 import { mergeExtraBody } from '../hooks/extra-body.ts';
 
 const RECIPE = 'task_v3';
@@ -13,19 +13,20 @@ const ROUTED = {
   unset: [],
   recipe: RECIPE,
 };
+const LUNA_FAST = { ...ROUTED, ENABLE_LUNA_FAST: '1' };
 const start = { surface: 'terminal', isInteractive: true, cwd: '/work' } as const;
 
 // A pinned environment variable is the policy refusal the managed security default
 // raises; only the extra body may carry the recipe.
-function setup(on: On, { body = CALLER_BODY, pinned = '', launched = true } = {}) {
+function setup(on: On, { body = CALLER_BODY, pinned = '', launched = true, flags = ROUTED } = {}) {
   // A routed launch puts its flags in the environment; session.start reads them back
   // so a reload keeps the toggle the session last applied.
   const env: Record<string, string | undefined> = {
     CLAUDE_CODE_EXTRA_BODY: body,
-    ENABLE_SMART_ROUTING_V2: launched ? ROUTED.ENABLE_SMART_ROUTING_V2 : '0',
-    ENABLE_SMART_ROUTING_SUBAGENT_ONLY: launched ? ROUTED.ENABLE_SMART_ROUTING_SUBAGENT_ONLY : '0',
-    ENABLE_SMART_ROUTER_ORCHESTRATOR: launched ? ROUTED.ENABLE_SMART_ROUTER_ORCHESTRATOR : '0',
-    ENABLE_LUNA_FAST: launched ? ROUTED.ENABLE_LUNA_FAST : '0',
+    ENABLE_SMART_ROUTING_V2: launched ? flags.ENABLE_SMART_ROUTING_V2 : '0',
+    ENABLE_SMART_ROUTING_SUBAGENT_ONLY: launched ? flags.ENABLE_SMART_ROUTING_SUBAGENT_ONLY : '0',
+    ENABLE_SMART_ROUTER_ORCHESTRATOR: launched ? flags.ENABLE_SMART_ROUTER_ORCHESTRATOR : '0',
+    ENABLE_LUNA_FAST: launched ? flags.ENABLE_LUNA_FAST : '0',
   };
   const writes: string[] = [];
   on('env.get', ($, e) => ({ value: env[e.name] }));
@@ -53,6 +54,36 @@ test('session start carries the launch recipe and forwards the event and result'
   expect(JSON.parse(env.CLAUDE_CODE_EXTRA_BODY!)).toEqual({ caller_field: 'keep', [RECIPE_FIELD]: RECIPE });
   // The recipe left ANTHROPIC_CUSTOM_HEADERS, which a managed config pins.
   expect(writes).not.toContain('ANTHROPIC_CUSTOM_HEADERS');
+});
+
+test('a Luna Fast launch adds the fast speed beside the recipe and toggles it', { options: LUNA_FAST }, async ($, on) => {
+  const { env } = setup(on, { flags: LUNA_FAST });
+  engine(on, env);
+  on('session.start', () => ({ cwd: '/work' }));
+  await $.session.start(start);
+  const fast = { caller_field: 'keep', [RECIPE_FIELD]: RECIPE, [SPEED_FIELD]: FAST_SPEED };
+  expect(JSON.parse(env.CLAUDE_CODE_EXTRA_BODY!)).toEqual(fast);
+
+  await $.command.run({ command: 'smart-router', args: 'off' });
+  expect(JSON.parse(env.CLAUDE_CODE_EXTRA_BODY!)).toEqual({ caller_field: 'keep', [RECIPE_FIELD]: 'DISABLED' });
+  expect(env.ENABLE_LUNA_FAST).toBe('0');
+
+  await $.command.run({ command: 'smart-router', args: 'on' });
+  expect(JSON.parse(env.CLAUDE_CODE_EXTRA_BODY!)).toEqual(fast);
+  expect(env.ENABLE_LUNA_FAST).toBe('1');
+});
+
+test('a launch without Luna Fast leaves a caller speed alone through toggles', { options: ROUTED }, async ($, on) => {
+  const { env } = setup(on, { body: '{"speed":"caller"}' });
+  engine(on, env);
+  on('session.start', () => ({ cwd: '/work' }));
+  await $.session.start(start);
+  expect(JSON.parse(env.CLAUDE_CODE_EXTRA_BODY!)).toEqual({ [SPEED_FIELD]: 'caller', [RECIPE_FIELD]: RECIPE });
+
+  for (const action of ['off', 'on']) {
+    await $.command.run({ command: 'smart-router', args: action });
+    expect(JSON.parse(env.CLAUDE_CODE_EXTRA_BODY!)[SPEED_FIELD]).toBe('caller');
+  }
 });
 
 test('a denied extra-body write restores the environment and reports failure', { options: ROUTED }, async ($, on) => {

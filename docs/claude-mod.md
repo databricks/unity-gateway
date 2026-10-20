@@ -42,6 +42,10 @@ Recipe line breaks and extra bodies that are not JSON objects are rejected.
 A failed write attempts to restore prior values and reports failure; the native environment API does not provide an atomic transaction.
 
 The launch and explicit toggles replace any existing `smart_router_recipe_name` body field.
+
+When the launch sets `ENABLE_LUNA_FAST=1`, the mod also merges `"speed": "fast"` into
+`CLAUDE_CODE_EXTRA_BODY`. Off removes that field and on adds it back. Launches without
+Luna Fast leave any existing `speed` field unchanged.
 The gateway must support body-recipe parsing.
 
 The baseline comes from native plugin options and survives `/clear`, `/compact`, and
