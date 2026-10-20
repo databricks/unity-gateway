@@ -3509,6 +3509,24 @@ class TestDoctorCommand:
         assert "boom" in _strip_ansi(result.output)
 
 
+class TestCopilotLaunchModel:
+    MANAGED = {
+        "enabled_agents": {"copilot": {"model_config": {"default_model": "system.ai.gpt-5-4"}}}
+    }
+
+    def test_managed_default_is_the_launch_model(self):
+        with _launch_policy_patches(self.MANAGED) as calls:
+            result = runner.invoke(app, ["copilot"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["launch"].call_args.kwargs["options"].launch_model == "system.ai.gpt-5-4"
+
+    def test_a_managed_default_still_discovers_the_catalog(self):
+        assert not cli_mod._skip_model_discovery(
+            self.MANAGED, "copilot", provider=None, managed_parent_schema=None, family_defaults=None
+        )
+
+
 class TestOpenCodeModelFlag:
     @pytest.mark.parametrize("flag", ["--model", "-m"])
     def test_model_option_threads_to_config_and_launch(self, flag):
@@ -5935,6 +5953,56 @@ class TestConfigureSharedStateSkipDiscovery:
         assert state["claude_models"] == {"opus": "databricks-claude-opus-4-8"}
 
 
+class TestConfigureSharedStateCopilotCatalog:
+    """Copilot's catalog comes from the same listings as the other agents' models."""
+
+    WS = "https://copilot.databricks.com"
+
+    def _configure(self, monkeypatch, *, listed, saved=None):
+        import ucode.cli as cli_mod
+        import ucode.databricks as db_mod
+
+        TestConfigureSharedStateSkipDiscovery._stub(monkeypatch)
+        previous = {"workspace": self.WS}
+        if saved is not None:
+            previous["copilot_catalog"] = saved
+        monkeypatch.setattr(cli_mod, "load_state", lambda: dict(previous))
+        if listed is not None:
+            db_mod._MODEL_SERVICES_CACHE[self.WS] = [db_mod.ModelServiceEntry(m) for m in listed]
+        reason = None if listed else "HTTP 503"
+        sonnet = "system.ai.claude-sonnet-4-6"
+        monkeypatch.setattr(
+            cli_mod,
+            "discover_model_services",
+            lambda w, t: (
+                ({"sonnet": sonnet}, [], [], [], None) if listed else ({}, [], [], [], reason)
+            ),
+        )
+        monkeypatch.setattr(cli_mod, "discover_claude_models", lambda w, t: ({}, reason))
+        monkeypatch.setattr(cli_mod, "discover_codex_models", lambda w, t: ([], reason))
+        return cli_mod.configure_shared_state(self.WS, tools=["copilot"])
+
+    def test_saves_the_classified_catalog(self, monkeypatch):
+        state = self._configure(
+            monkeypatch,
+            listed=["system.ai.claude-sonnet-4-6", "system.ai.gpt-5-4", "system.ai.gemini-3-flash"],
+        )
+
+        assert state["copilot_catalog"]["models"] == [
+            "system.ai.claude-sonnet-4-6",
+            "system.ai.gpt-5-4",
+        ]
+
+    def test_failed_listing_keeps_the_saved_catalog(self, monkeypatch, capsys):
+        saved = {"models": ["system.ai.gpt-5-4"], "discovered_at": "2026-10-01T00:00:00+00:00"}
+
+        state = self._configure(monkeypatch, listed=None, saved=saved)
+
+        assert state["copilot_catalog"] == saved
+        assert state["_discovery_reasons"]["copilot"] == "HTTP 503"
+        assert "Copilot model discovery failed (HTTP 503)" in capsys.readouterr().out
+
+
 class TestConfigureSharedStateSkipPreflight:
     """With skip_preflight (--skip-preflight), a prior configure is trusted:
     no auth login, token fetch, gateway probe, or model discovery runs — but the
@@ -6751,6 +6819,19 @@ class TestChildStdoutLaunch:
     def test_other_agent_commands_keep_stdout(self):
         assert cli_mod._child_owns_stdout("claude", ["app-server"]) is False
         assert cli_mod._child_owns_stdout("gemini", []) is False
+
+    @pytest.mark.parametrize(
+        ("tool_args", "expected"),
+        [
+            (["-p", "hi"], True),
+            (["--prompt", "hi"], True),
+            (["--prompt=hi"], True),
+            ([], False),
+            (["--", "-p", "hi"], False),
+        ],
+    )
+    def test_copilot_prompt_mode_owns_stdout(self, tool_args, expected):
+        assert cli_mod._child_owns_stdout("copilot", tool_args) is expected
 
     @pytest.mark.parametrize(
         "option",

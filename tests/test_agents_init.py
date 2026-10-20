@@ -288,10 +288,11 @@ class TestCheckGatewayEndpoint:
         assert check_gateway_endpoint(state, "opencode") is True
 
     def test_copilot_available_with_claude(self):
-        assert check_gateway_endpoint({"claude_models": {"sonnet": "s4"}}, "copilot") is True
+        state = {"claude_models": {"sonnet": "system.ai.claude-sonnet-4-6"}}
+        assert check_gateway_endpoint(state, "copilot") is True
 
     def test_copilot_available_with_codex(self):
-        assert check_gateway_endpoint({"codex_models": ["m"]}, "copilot") is True
+        assert check_gateway_endpoint({"codex_models": ["system.ai.gpt-5-4"]}, "copilot") is True
 
     def test_copilot_unavailable_with_only_gemini(self):
         # Gemini is intentionally excluded from Copilot.
@@ -1091,9 +1092,9 @@ def test_fable_only_workspace_has_a_default(tool):
 def test_fable_does_not_displace_existing_default(tool):
     state = {
         "claude_models": {"fable": "system.ai.claude-fable-5"},
-        "codex_models": ["existing-gpt"],
+        "codex_models": ["system.ai.gpt-5-4"],
     }
-    assert default_model_for_tool(tool, state) == "existing-gpt"
+    assert default_model_for_tool(tool, state) == "system.ai.gpt-5-4"
 
 
 class TestConfigureSelectedTools:

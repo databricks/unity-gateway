@@ -1041,7 +1041,7 @@ class TestOpencodeLaunch:
 
 
 class TestCopilotLaunch:
-    """Run Copilot through MLflow using Responses for GPT-6+ and Chat Completions otherwise.
+    """Run Copilot on every catalog model through one session registry.
 
     Gemini is excluded by design — Databricks' Gemini translator rejects the
     `stream_options` field Copilot CLI sends. Other incompatible models are
@@ -1095,10 +1095,8 @@ class TestCopilotLaunch:
             pytest.skip("No Copilot-compatible models available on this workspace")
 
         monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
-        env_path = tmp_path / ".copilot-env"
-        backup_path = tmp_path / "copilot-env.backup"
-        monkeypatch.setattr(copilot, "COPILOT_ENV_PATH", env_path)
-        monkeypatch.setattr(copilot, "COPILOT_BACKUP_PATH", backup_path)
+        monkeypatch.setattr(copilot, "COPILOT_RUN_DIR", tmp_path / "run")
+        catalog = copilot.build_copilot_catalog([model for _, model in models])
 
         from ucode import gateway_proxy
 
@@ -1116,21 +1114,19 @@ class TestCopilotLaunch:
         proxy_base_url = f"http://127.0.0.1:{server.server_address[1]}"
 
         failures = []
+        config = copilot.render_providers_config(catalog, proxy_base_url, session_secret)
         try:
-            for family, model in models:
-                with pytest.MonkeyPatch().context() as mp:
-                    mp.setattr("ucode.agents.copilot.save_state", lambda s: None)
-                    copilot.write_tool_config({**e2e_state, "workspace": e2e_workspace}, model)
-
-                env = copilot.build_runtime_env(proxy_base_url, model, session_secret)
-                cmd = copilot.validate_cmd("copilot")
-                result = _run_agent(cmd, env=env, timeout=120)
-                combined = (result.stdout + result.stderr).strip()
-                if result.returncode != 0 or not combined:
-                    failures.append(
-                        f"family={family} model={model} rc={result.returncode} "
-                        f"stdout={result.stdout[:300]!r} stderr={result.stderr[:300]!r}"
-                    )
+            with copilot.session_registry(config) as registry_path:
+                for model in catalog:
+                    env = copilot.build_runtime_env(registry_path, model)
+                    cmd = [*copilot.validate_cmd("copilot"), "--model", model.ref]
+                    result = _run_agent(cmd, env=env, timeout=120)
+                    combined = (result.stdout + result.stderr).strip()
+                    if result.returncode != 0 or not combined:
+                        failures.append(
+                            f"model={model.ref} rc={result.returncode} "
+                            f"stdout={result.stdout[:300]!r} stderr={result.stderr[:300]!r}"
+                        )
         finally:
             cache.stop()
             server.shutdown()
