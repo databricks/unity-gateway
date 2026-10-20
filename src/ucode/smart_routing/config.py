@@ -36,6 +36,8 @@ SUBAGENT_ORCH_V0_CLAUDE_ONLY = "subagent_orch_v0_claude_only"
 # Selected by --enable-smart-routing and managed smart routing when no known version is set.
 DEFAULT_ENABLED_VERSION = SUBAGENT_ORCH_V0
 
+_RESTORE_KEYS = (*SMART_ROUTING_ENV_KEYS, SMART_ROUTER_CONFIG_VERSION_ENV_VAR)
+
 _BASE_VERSIONS = {
     FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
@@ -144,8 +146,7 @@ def apply_config(
     preset = _VERSIONS.get(version, {}).get(agent)
     if preset is None:
         return {}
-    keys = (*SMART_ROUTING_ENV_KEYS, SMART_ROUTER_CONFIG_VERSION_ENV_VAR)
-    previous = {key: target.get(key) for key in keys}
+    previous = {key: target.get(key) for key in _RESTORE_KEYS}
     target.update(preset)
     target.pop(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, None)
     return previous
@@ -166,8 +167,7 @@ def apply_enabled_version(
     way the version then overwrites every routing env var.
     """
     target = os.environ if env is None else env
-    keys = (*SMART_ROUTING_ENV_KEYS, SMART_ROUTER_CONFIG_VERSION_ENV_VAR)
-    previous = {key: target.get(key) for key in keys}
+    previous = {key: target.get(key) for key in _RESTORE_KEYS}
     if not known_version(target):
         target[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = DEFAULT_ENABLED_VERSION
     apply_config(target, agent=agent)
