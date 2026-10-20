@@ -305,7 +305,8 @@ Fake CLI subprocesses check that re-auth runs only when a successful help probe
 advertises `--no-browser`. Search component tests verify token reuse and transient
 timeout retries. `test_mcp_connection_login.py` verifies token/failure invalidation
 after successful and failed login attempts; `test_mcp_proxy.py` checks fresh tokens
-on async post-login retries. These checks do not establish live login or
+on async post-login retries and recovery when a connection-backed service returns
+the MCP authentication-required error. These checks do not establish live login or
 launch-time savings.
 
 `test_mcp_web_search_concurrency.py` drives the real stdio dispatcher with controlled
