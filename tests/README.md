@@ -73,6 +73,12 @@ confirmations, and keep the band, the hint row, and the toggle reply apart.
 The mod's own tests (`native_claude/mod_tests`) cover the same rules for both toggles
 without a live agent.
 
+CUJ3 expects GPT Luna in both agents' catalogs and pickers, including Claude's gateway alias,
+and covers an explicit Claude headless task on that model.
+Its Claude decoy catalog includes both Claude and Codex decoys; neither belongs in the scoped picker.
+The managed Claude parent-schema journey expects numbered GPT models to carry `[1m]` in the
+picker while retaining the catalog's display label.
+
 Dedicated CUJs reuse `integration/utils` session/terminal mechanics and file-task
 and transcript readers, not its config stubs or pytest fixtures. Prompt/model
 correlation remains CUJ-specific. Concurrent runs may read the same CUJ workspace.

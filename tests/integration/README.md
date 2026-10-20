@@ -69,7 +69,9 @@ Offline CUJ cases also cover Codex delegated-turn completion and task-request ma
 see `../e2e_cuj/README.md` for the evidence requirements.
 
 The [catalog discovery journey](../e2e_cuj/README.md) uses the CUJ3 workspace to check
-agent-compatible pickers, schema exclusions, configured defaults, and real inference.
+agent-compatible pickers (including GPT Luna for both agents), schema exclusions, configured
+defaults, and real inference, including an explicit Claude headless task on GPT Luna.
+Claude's decoy catalog includes both decoys while the scoped picker excludes both.
 CI collects it through the shared `dedicated-cuj` job. Its request checks accept the known
 Claude thinking-display 400 only with a successful, otherwise identical native retry.
 
@@ -945,6 +947,9 @@ In addition, `test_ug_configure_managed_codex_catalog_fallback` injects the inte
 workspace on the valid default model `system.ai.gpt-5-6-sol`. With legacy smart routing off and
 on, it opens the real Codex `/models` picker and requires that injected custom-catalog model
 to be listed. The fixture itself has no managed smart-routing setting.
+
+The Claude parent-schema defaults case expects discovered numbered GPT models to carry
+`[1m]` in the picker and retain its catalog display label.
 
 The smart-routing banner journeys inject static Claude and Codex model lists with
 `smart_routing` enabled in the agent config, run `ug configure`, then launch the real TUI and
