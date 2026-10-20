@@ -65,8 +65,15 @@ with surrounding whitespace ignored); other values disable it. It controls Isaac
 availability, so UG's routing presets and on/off toggles leave it unchanged.
 The native form keeps routing on until Enter accepts a valid reason, then disables
 routing and uploads the exact text in the background with `isaac feedback`. The
-transcript shows the feedback ID the mod passes with `--feedback-id`; a toast reports
-the result. Cancel or Escape leaves routing on and sends nothing. A missing
+transcript shows the feedback ID the mod passes with `--feedback-id`. When Isaac
+supports `--background`, it saves a bounded local snapshot and detaches the upload.
+The form passes its submission timestamp with `--target-before` so a later task
+cannot become the feedback target. A queued acknowledgement does not trigger a
+success toast: the mod checks local `--status` until delivery or for about a minute.
+Longer uploads keep running independently; `/isaac-feedback status <id>` checks
+them and `/isaac-feedback retry <id>` retries the original report. Older Isaac
+versions keep their synchronous CLI call in the mod's background task.
+Cancel or Escape leaves routing on and sends nothing. A missing
 `isaac` CLI or an unavailable form leaves routing on. A feedback submission failure after a valid
 reason leaves routing off and reports the failure in the transcript. The form makes no model requests.
 
