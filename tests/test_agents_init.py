@@ -13,6 +13,7 @@ import pytest
 
 import ucode.agents as agents_mod
 import ucode.databricks as db_mod
+from ucode import managed_files
 from ucode.agents import (
     DEFAULT_TOOL,
     TOOL_SPECS,
@@ -1211,3 +1212,39 @@ class TestConfiguredPaths:
         paths = configured_paths("codex", state)
         assert str(CODEX_CONFIG_PATH).replace(str(CODEX_CONFIG_PATH.home()), "~", 1) in paths
         assert "/etc/codex/managed_config.toml" in paths
+
+
+class TestConfigureToolUserScope:
+    @pytest.mark.parametrize(
+        "tool,path_owner,path_attr,writer",
+        [
+            ("claude", "claude", "_managed_settings_path", "write_tool_config"),
+            ("codex", "codex", "codex_managed_config_path", "write_tool_config"),
+        ],
+    )
+    @pytest.mark.parametrize("exists", [True, False])
+    def test_managed_file_blocks_user_scope(
+        self, monkeypatch, tmp_path, tool, path_owner, path_attr, writer, exists
+    ):
+        managed = tmp_path / "managed"
+        if exists:
+            managed.write_text("x", encoding="utf-8")
+        module = getattr(agents_mod, path_owner)
+        monkeypatch.setattr(module, path_attr, lambda: managed)
+        written: list = []
+        monkeypatch.setattr(module, writer, lambda state, *a, **kw: written.append(tool) or state)
+        managed_files.set_config_scope("user")
+
+        if exists:
+            with pytest.raises(RuntimeError, match=r"--user.*managed settings exist.*--global"):
+                agents_mod.configure_tool(tool, {}, "m")
+            assert written == []
+        else:
+            agents_mod.configure_tool(tool, {}, "m")
+            assert written == [tool]
+
+    def test_no_managed_path_is_not_checked(self, monkeypatch):
+        monkeypatch.setattr(agents_mod.codex, "codex_managed_config_path", lambda: None)
+        monkeypatch.setattr(agents_mod.codex, "write_tool_config", lambda state, *a, **kw: state)
+        managed_files.set_config_scope("user")
+        agents_mod.configure_tool("codex", {}, "m")

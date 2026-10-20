@@ -27,7 +27,7 @@ from ucode.databricks import (
 )
 from ucode.env import env_bool
 from ucode.managed_config import refresh_managed_config
-from ucode.managed_files import managed_write_batch
+from ucode.managed_files import config_scope, managed_write_batch
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import get_model_location, get_provider_service, load_state, save_state
 from ucode.telemetry import agent_version
@@ -414,6 +414,23 @@ def resolve_gemini_provider_model(
     )
 
 
+def _refuse_user_scope_over_managed_file(tool: str) -> None:
+    if config_scope() != "user":
+        return
+    if tool == AGENT_CLAUDE:
+        display, path = "Claude Code", claude._managed_settings_path()
+    elif tool == AGENT_CODEX:
+        display, path = "Codex", codex.codex_managed_config_path()
+    else:
+        return
+    if path is not None and path.exists():
+        raise RuntimeError(
+            f"`ug configure --user` can't be used while {display} managed settings exist at "
+            f"{path}; they take precedence over user settings. Run `ug revert` if ug wrote them, "
+            "ask your administrator to remove them, or use `ug configure --global`."
+        )
+
+
 def configure_tool(
     tool: str,
     state: dict,
@@ -427,6 +444,7 @@ def configure_tool(
     parent_schema: str | None = None,
     picker_catalog: AnthropicModelCatalog | None = None,
 ) -> dict:
+    _refuse_user_scope_over_managed_file(tool)
     result: dict | tuple[dict, str]
     if tool == AGENT_CODEX:
         result = codex.write_tool_config(
