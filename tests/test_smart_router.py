@@ -75,6 +75,7 @@ def test_skill_toggles_with_launch_installation_despite_shadowed_path(tmp_path, 
                 v2.ENABLE_SMART_ROUTING_ENV_VAR: "0",
                 v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
                 v2.ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+                "ENABLE_LUNA_FAST": "0",
             }
             if action == "disable"
             else {}

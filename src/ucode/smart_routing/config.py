@@ -8,6 +8,7 @@ from collections.abc import Mapping, MutableMapping
 from ucode.constants import (
     AGENT_CLAUDE,
     AGENT_CODEX,
+    ENABLE_LUNA_FAST_ENV_VAR,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
@@ -33,31 +34,48 @@ SUBAGENT_ORCH_V1 = "subagent_orch_v1"
 # Preserve subagent_orch_v0 for Claude, with all Codex routing flags disabled.
 SUBAGENT_ORCH_V0_CLAUDE_ONLY = "subagent_orch_v0_claude_only"
 
+# Base preset only: subagent_orch_v0 with Luna Fast enabled.
+_SUBAGENT_ORCH_V0_LUNA_FAST = "subagent_orch_v0_luna_fast"
+
+# Apply the Luna Fast subagent_orch_v0 base for Claude, with all Codex flags disabled.
+SUBAGENT_ORCH_V0_CLAUDE_ONLY_LUNA_FAST = "subagent_orch_v0_claude_only_luna_fast"
+
 _BASE_VERSIONS = {
     FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        ENABLE_LUNA_FAST_ENV_VAR: "0",
     },
     SUBAGENT_ONLY_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        ENABLE_LUNA_FAST_ENV_VAR: "0",
     },
     SUBAGENT_ONLY_V1: {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        ENABLE_LUNA_FAST_ENV_VAR: "0",
     },
     SUBAGENT_ORCH_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+        ENABLE_LUNA_FAST_ENV_VAR: "0",
     },
     SUBAGENT_ORCH_V1: {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+        ENABLE_LUNA_FAST_ENV_VAR: "0",
+    },
+    _SUBAGENT_ORCH_V0_LUNA_FAST: {
+        ENABLE_SMART_ROUTING_ENV_VAR: "0",
+        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+        ENABLE_LUNA_FAST_ENV_VAR: "1",
     },
 }
 
@@ -90,6 +108,17 @@ _VERSIONS = {
             ENABLE_SMART_ROUTING_ENV_VAR: "0",
             ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
             ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+            ENABLE_LUNA_FAST_ENV_VAR: "0",
+        },
+    },
+    # Codex opts out of routing, orchestration, and Luna Fast; Claude enables all three.
+    SUBAGENT_ORCH_V0_CLAUDE_ONLY_LUNA_FAST: {
+        AGENT_CLAUDE: _BASE_VERSIONS[_SUBAGENT_ORCH_V0_LUNA_FAST],
+        AGENT_CODEX: {
+            ENABLE_SMART_ROUTING_ENV_VAR: "0",
+            ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+            ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+            ENABLE_LUNA_FAST_ENV_VAR: "0",
         },
     },
 }

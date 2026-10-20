@@ -298,7 +298,7 @@ The generated shell hooks expect Git Bash; PowerShell-only setups are not covere
 
 Use `SMART_ROUTER_CONFIG_VERSION` at launch to select a smart-routing configuration.
 Each version defines separate Claude Code and Codex flag mappings; the existing versions
-use identical mappings for both agents. The Claude-only version disables routing for Codex:
+use identical mappings for both agents. The Claude-only versions disable routing for Codex:
 
 | Version | Routed agents | Subagent routing | First-prompt routing | Orchestrator |
 | --- | --- | --- | --- | --- |
@@ -308,6 +308,7 @@ use identical mappings for both agents. The Claude-only version disables routing
 | `subagent_orch_v0` | Claude, Codex | On | Off | On |
 | `subagent_orch_v1` | Claude, Codex | On | Off | On |
 | `subagent_orch_v0_claude_only` | Claude | On | Off | On |
+| `subagent_orch_v0_claude_only_luna_fast` | Claude | On | Off | On |
 
 `first_prompt_and_subagent_no_orch_v0` is the customer configuration for first-prompt
 and subagent routing without orchestration: `ENABLE_SMART_ROUTING_V2=1`,
@@ -325,6 +326,10 @@ and sets all three flags to `"0"` for Codex. Codex uses its ordinary launch and
 managed default model, without routing or orchestration. Explicit launch/session
 on/off controls retain their existing precedence over presets.
 
+`subagent_orch_v0_claude_only_luna_fast` uses the same Claude flags plus
+`ENABLE_LUNA_FAST=1`, and sets all four flags to `"0"` for Codex. Every other version
+sets `ENABLE_LUNA_FAST=0`. Turning Smart Router off for a session also sets it to `"0"`.
+
 `SMART_ROUTER_NAME` still selects the router independently of the preset.
 
 Smart-routed Claude and Codex sessions install `smart-router`. The `subagent_orch_v0`
@@ -337,8 +342,8 @@ SMART_ROUTER_CONFIG_VERSION=subagent_orch_v0 ug claude
 
 The version takes precedence over conflicting legacy flags. Once the agent is selected,
 UG expands its mapping into
-`ENABLE_SMART_ROUTING_V2`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY`, and
-`ENABLE_SMART_ROUTER_ORCHESTRATOR` for the launched session. When the version is
+`ENABLE_SMART_ROUTING_V2`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY`,
+`ENABLE_SMART_ROUTER_ORCHESTRATOR`, and `ENABLE_LUNA_FAST` for the launched session. When the version is
 unset or empty, these legacy flags retain their existing behavior, including
 first-prompt routing through `ENABLE_SMART_ROUTING_V2=1`. Unknown versions are ignored:
 no preset is applied, the inherited environment is unchanged, and commands continue normally.

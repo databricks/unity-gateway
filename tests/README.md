@@ -378,6 +378,9 @@ These component checks do not establish live agent, hook, or gateway behavior.
 Three additional component cases compare the legacy flags with `subagent_only_v1`,
 `subagent_orch_v1`, and `first_prompt_and_subagent_no_orch_v0`, including first-prompt,
 subagent-routing activation, orchestration, and preservation of the chosen router name.
+Further cases cover `subagent_orch_v0_claude_only_luna_fast`: Claude's flags with
+`ENABLE_LUNA_FAST=1`, all four flags off for Codex, precedence over legacy flags, restoration,
+a session override that clears Luna Fast, and `ENABLE_LUNA_FAST=0` in every other version.
 
 The toggle integration journeys retain the legacy routing-only and orchestration cases and
 add the three subagent-only `SMART_ROUTER_CONFIG_VERSION` presets. They require only

@@ -16,6 +16,7 @@ export const register: Register = (on, options) => {
       ENABLE_SMART_ROUTING_V2: await $.env.get('ENABLE_SMART_ROUTING_V2') ?? null,
       ENABLE_SMART_ROUTING_SUBAGENT_ONLY: await $.env.get('ENABLE_SMART_ROUTING_SUBAGENT_ONLY') ?? null,
       ENABLE_SMART_ROUTER_ORCHESTRATOR: await $.env.get('ENABLE_SMART_ROUTER_ORCHESTRATOR') ?? null,
+      ENABLE_LUNA_FAST: await $.env.get('ENABLE_LUNA_FAST') ?? null,
     },
     body: JSON.parse(await $.env.get('CLAUDE_CODE_EXTRA_BODY') || '{}'),
   })}));
