@@ -6575,8 +6575,8 @@ class TestChildStdoutLaunch:
 class TestHeadlessConfigureModelSource:
     """ug configure --model-location / --provider headless flags."""
 
-    def _base_patches(self, monkeypatch, tool: str):
-        state = {**MINIMAL_STATE, "available_tools": [tool]}
+    def _base_patches(self, monkeypatch, tool: str, *, saved_source: dict | None = None):
+        state = {**MINIMAL_STATE, "available_tools": [tool], **(saved_source or {})}
         monkeypatch.setattr(cli_mod, "install_databricks_cli", lambda: None)
         monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
         monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
@@ -6588,103 +6588,102 @@ class TestHeadlessConfigureModelSource:
         monkeypatch.setattr(cli_mod, "configure_single_tool", configure)
         return state, saved, configure
 
-    def test_model_location_persisted_and_forwarded_single_agent(self, monkeypatch):
-        state, saved, configure = self._base_patches(monkeypatch, "claude")
+    def _agents_patches(self, monkeypatch, state: dict, *, configured: list[str] | None = None):
+        monkeypatch.setattr(cli_mod, "install_databricks_cli", lambda: None)
+        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda *a, **k: (None, False))
+        monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
+        saved: list[dict] = []
+        monkeypatch.setattr(cli_mod, "save_state", lambda s: saved.append(dict(s)))
+        calls: list[dict] = []
 
-        result = runner.invoke(
-            app,
-            [
-                "configure",
-                "--agent",
-                "claude",
-                "--workspace",
-                "https://w.com",
-                "--model-location",
-                "main.models",
-            ],
+        def _configure_selected(s, tools, **kwargs):
+            calls.append(kwargs)
+            ok = tools if configured is None else [tool for tool in tools if tool in configured]
+            return {**s, "available_tools": ok, "last_configured_tools": ok}
+
+        monkeypatch.setattr(cli_mod, "configure_selected_tools", _configure_selected)
+        return saved, calls
+
+    def _invoke(self, *args: str):
+        return runner.invoke(app, ["configure", "--workspace", "https://w.com", *args])
+
+    def test_model_location_replaces_saved_provider_single_agent(self, monkeypatch):
+        state, saved, configure = self._base_patches(
+            monkeypatch, "claude", saved_source={"provider_services": {"claude": "old.mps.name"}}
         )
 
+        result = self._invoke("--agent", "claude", "--model-location", "main.models")
+
         assert result.exit_code == 0, result.output
-        assert saved, "set_model_location should have saved state"
         assert cli_mod.get_model_location(saved[-1], "claude") == "main.models"
         assert cli_mod.get_provider_service(saved[-1], "claude") is None
         configure.assert_called_once_with(
             "claude", state, parent_schema="main.models", provider=None
         )
 
-    def test_provider_persisted_and_forwarded_single_agent(self, monkeypatch):
-        state, saved, configure = self._base_patches(monkeypatch, "claude")
-
-        result = runner.invoke(
-            app,
-            [
-                "configure",
-                "--agent",
-                "claude",
-                "--workspace",
-                "https://w.com",
-                "--provider",
-                "main.default.anthropic",
-            ],
+    @pytest.mark.parametrize("tool", ["claude", "gemini"])
+    def test_provider_replaces_saved_model_location_single_agent(self, monkeypatch, tool):
+        state, saved, configure = self._base_patches(
+            monkeypatch, tool, saved_source={"model_locations": {tool: "old.location"}}
         )
 
+        result = self._invoke("--agent", tool, "--provider", "main.default.mps")
+
         assert result.exit_code == 0, result.output
-        assert saved
-        assert cli_mod.get_provider_service(saved[-1], "claude") == "main.default.anthropic"
-        assert cli_mod.get_model_location(saved[-1], "claude") is None
+        assert cli_mod.get_provider_service(saved[-1], tool) == "main.default.mps"
+        assert cli_mod.get_model_location(saved[-1], tool) is None
         configure.assert_called_once_with(
-            "claude", state, parent_schema=None, provider="main.default.anthropic"
+            tool, state, parent_schema=None, provider="main.default.mps"
+        )
+
+    def test_failed_provider_keeps_the_saved_source(self, monkeypatch):
+        """A provider that fails to resolve must not replace the source that works."""
+        _state, saved, configure = self._base_patches(
+            monkeypatch, "claude", saved_source={"provider_services": {"claude": "main.default.ok"}}
+        )
+        configure.side_effect = RuntimeError("Model Provider Service main.default.nope not found")
+
+        result = self._invoke("--agent", "claude", "--provider", "main.default.nope")
+
+        assert result.exit_code != 0
+        assert "main.default.nope not found" in _strip_ansi(result.output)
+        assert not any(
+            cli_mod.get_provider_service(s, "claude") == "main.default.nope" for s in saved
         )
 
     def test_model_location_and_provider_together_rejected(self):
-        result = runner.invoke(
-            app,
-            [
-                "configure",
-                "--agent",
-                "claude",
-                "--workspace",
-                "https://w.com",
-                "--model-location",
-                "main.models",
-                "--provider",
-                "main.default.anthropic",
-            ],
+        result = self._invoke(
+            "--agent", "claude", "--model-location", "main.models", "--provider", "main.default.mps"
         )
         assert result.exit_code != 0
         assert "--model-location and --provider cannot be combined" in _strip_ansi(result.output)
 
-    def test_model_location_without_agent_rejected(self):
-        result = runner.invoke(
-            app,
-            ["configure", "--workspace", "https://w.com", "--model-location", "main.models"],
-        )
+    @pytest.mark.parametrize(
+        ("flag", "value"),
+        [("--model-location", "main.models"), ("--provider", "main.default.anthropic")],
+    )
+    def test_source_flag_without_agent_rejected(self, flag, value):
+        result = self._invoke(flag, value)
         assert result.exit_code != 0
-        assert "--model-location requires --agent or --agents" in _strip_ansi(result.output)
+        assert f"{flag} requires --agent or --agents" in _strip_ansi(result.output)
 
-    def test_provider_without_agent_rejected(self):
-        result = runner.invoke(
-            app,
-            ["configure", "--workspace", "https://w.com", "--provider", "main.default.anthropic"],
-        )
-        assert result.exit_code != 0
-        assert "--provider requires --agent or --agents" in _strip_ansi(result.output)
+    @pytest.mark.parametrize(
+        ("flag", "value", "message"),
+        [
+            ("--model-location", "not-a-schema", "--model-location must be <catalog>.<schema>"),
+            ("--provider", "main.anthropic", "--provider must be <catalog>.<schema>.<name>"),
+        ],
+    )
+    def test_malformed_source_rejected(self, monkeypatch, flag, value, message):
+        install = MagicMock()
+        monkeypatch.setattr(cli_mod, "install_databricks_cli", install)
 
-    def test_invalid_model_location_format_rejected(self):
-        result = runner.invoke(
-            app,
-            [
-                "configure",
-                "--agent",
-                "claude",
-                "--workspace",
-                "https://w.com",
-                "--model-location",
-                "not-a-schema",
-            ],
-        )
+        result = self._invoke("--agent", "claude", flag, value)
+
         assert result.exit_code != 0
-        assert "--model-location must be <catalog>.<schema>" in _strip_ansi(result.output)
+        assert message in _strip_ansi(result.output)
+        install.assert_not_called()
 
     @pytest.mark.parametrize(
         ("flag", "value"),
@@ -6700,124 +6699,128 @@ class TestHeadlessConfigureModelSource:
         _state, saved, configure = self._base_patches(monkeypatch, "claude")
         monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda *a, **k: (managed, False))
 
-        result = runner.invoke(
-            app,
-            ["configure", "--agent", "claude", "--workspace", "https://w.com", flag, value],
-        )
+        result = self._invoke("--agent", "claude", flag, value)
 
         assert result.exit_code != 0
-        assert f"`{flag}` is not allowed when a managed config exists" in _strip_ansi(result.output)
+        assert "is not allowed when a managed config exists" in " ".join(
+            _strip_ansi(result.output).split()
+        )
         assert saved == []
         configure.assert_not_called()
 
     def test_agents_managed_config_rejects_source_flags(self, monkeypatch):
         managed = {"enabled_agents": {"claude": {"model_config": {}}}}
         state = {**MINIMAL_STATE, "available_tools": []}
-        monkeypatch.setattr(cli_mod, "install_databricks_cli", lambda: None)
-        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
+        _saved, calls = self._agents_patches(monkeypatch, state)
         monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda *a, **k: (managed, False))
-        monkeypatch.setattr(cli_mod, "save_state", lambda s: None)
-        configure = MagicMock(return_value=state)
-        monkeypatch.setattr(cli_mod, "configure_selected_tools", configure)
 
-        result = runner.invoke(
-            app,
-            [
-                "configure",
-                "--agents",
-                "claude",
-                "--workspace",
-                "https://w.com",
-                "--provider",
-                "main.default.anthropic",
-            ],
-        )
+        result = self._invoke("--agents", "claude", "--provider", "main.default.anthropic")
 
         assert result.exit_code != 0
-        assert "`--provider` is not allowed when a managed config exists" in _strip_ansi(
-            result.output
+        assert "is not allowed when a managed config exists" in " ".join(
+            _strip_ansi(result.output).split()
         )
-        configure.assert_not_called()
+        assert calls == []
 
-    def test_gemini_provider_is_persisted(self, monkeypatch):
-        state, saved, configure = self._base_patches(monkeypatch, "gemini")
-
-        result = runner.invoke(
-            app,
-            [
-                "configure",
-                "--agent",
-                "gemini",
-                "--workspace",
-                "https://w.com",
-                "--provider",
-                "main.default.gemini",
-            ],
+    def test_managed_config_without_agents_accepts_source_flags(self, monkeypatch):
+        """A config that enables no agents doesn't control the source, on both paths."""
+        empty_managed = {"enabled_agents": {}}
+        _state, saved, configure = self._base_patches(monkeypatch, "claude")
+        monkeypatch.setattr(
+            cli_mod, "refresh_managed_config", lambda *a, **k: (empty_managed, False)
         )
 
-        assert result.exit_code == 0, result.output
-        assert cli_mod.get_provider_service(saved[-1], "gemini") == "main.default.gemini"
-        configure.assert_called_once_with(
-            "gemini", state, parent_schema=None, provider="main.default.gemini"
+        single = self._invoke("--agent", "claude", "--model-location", "main.models")
+
+        assert single.exit_code == 0, single.output
+        assert configure.call_args.kwargs == {"parent_schema": "main.models", "provider": None}
+        assert cli_mod.get_model_location(saved[-1], "claude") == "main.models"
+
+        state = {**MINIMAL_STATE, "available_tools": []}
+        saved, calls = self._agents_patches(monkeypatch, state)
+        monkeypatch.setattr(
+            cli_mod, "refresh_managed_config", lambda *a, **k: (empty_managed, False)
         )
+        monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda *a: True)
+
+        multi = self._invoke("--agents", "claude", "--model-location", "main.models")
+
+        assert multi.exit_code == 0, multi.output
+        assert calls[0]["parent_schemas"] == {"claude": "main.models"}
+        assert cli_mod.get_model_location(saved[-1], "claude") == "main.models"
 
     @pytest.mark.parametrize(
-        ("tool", "flag", "value"),
+        ("agent_args", "flag", "value", "unsupported"),
         [
-            ("gemini", "--model-location", "main.models"),
-            ("opencode", "--provider", "main.default.anthropic"),
+            (["--agent", "gemini"], "--model-location", "main.models", "Gemini CLI"),
+            (["--agent", "opencode"], "--provider", "main.default.anthropic", "OpenCode"),
+            (["--agents", "claude,gemini"], "--model-location", "main.models", "Gemini CLI"),
+            (["--agents", "cursor"], "--model-location", "main.models", "Cursor"),
+            (["--agents", "claude,cursor"], "--provider", "main.default.anthropic", "Cursor"),
+        ],
+        ids=["gemini-location", "opencode-provider", "agents-mixed", "cursor-only", "cursor-mixed"],
+    )
+    def test_unsupported_agent_rejected_before_setup(
+        self, monkeypatch, agent_args, flag, value, unsupported
+    ):
+        install_cli = MagicMock()
+        install_tool = MagicMock()
+        workspaces = MagicMock()
+        monkeypatch.setattr(cli_mod, "install_databricks_cli", install_cli)
+        monkeypatch.setattr(cli_mod, "install_tool_binary", install_tool)
+        monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", workspaces)
+
+        result = self._invoke(*agent_args, flag, value)
+
+        output = _strip_ansi(result.output)
+        assert result.exit_code != 0
+        assert f"`{flag}` isn't supported for {unsupported}." in output
+        install_cli.assert_not_called()
+        install_tool.assert_not_called()
+        workspaces.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("flag", "value", "kwarg", "expected"),
+        [
+            ("--model-location", "main.models", "parent_schemas", "main.models"),
+            ("--provider", "main.default.mps", "providers", "main.default.mps"),
         ],
     )
-    def test_unsupported_agent_rejected(self, monkeypatch, tool, flag, value):
-        _state, saved, configure = self._base_patches(monkeypatch, tool)
-
-        result = runner.invoke(
-            app,
-            ["configure", "--agent", tool, "--workspace", "https://w.com", flag, value],
-        )
-
-        assert result.exit_code != 0
-        assert f"`{flag}` isn't supported for {cli_mod.TOOL_SPECS[tool]['display']}" in _strip_ansi(
-            result.output
-        )
-        assert saved == []
-        configure.assert_not_called()
-
-    def test_agents_flag_model_location_persisted_for_applicable_tools(self, monkeypatch):
+    def test_agents_source_flags_configure_without_system_ai_models(
+        self, monkeypatch, flag, value, kwarg, expected
+    ):
+        """A custom source must not be filtered out because system.ai has no models."""
         state = {**MINIMAL_STATE, "available_tools": []}
-        monkeypatch.setattr(cli_mod, "install_databricks_cli", lambda: None)
-        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
-        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda *a, **k: (None, False))
-        monkeypatch.setattr(
-            cli_mod, "check_gateway_endpoint", lambda s, t: t in ("claude", "codex")
-        )
-        monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
-        saved: list[dict] = []
-        monkeypatch.setattr(cli_mod, "save_state", lambda s: saved.append(dict(s)))
+        saved, calls = self._agents_patches(monkeypatch, state)
         monkeypatch.setattr(
             cli_mod,
-            "configure_selected_tools",
-            lambda s, tools, **kwargs: {**s, "available_tools": tools},
+            "check_gateway_endpoint",
+            lambda *_a: pytest.fail("a custom source skips the system.ai availability check"),
         )
 
-        result = runner.invoke(
-            app,
-            [
-                "configure",
-                "--agents",
-                "claude,codex",
-                "--workspace",
-                "https://w.com",
-                "--model-location",
-                "main.models",
-            ],
-        )
+        result = self._invoke("--agents", "claude,codex", flag, value)
 
         assert result.exit_code == 0, result.output
-        assert saved
-        last = saved[-1]
-        assert cli_mod.get_model_location(last, "claude") == "main.models"
-        assert cli_mod.get_model_location(last, "codex") == "main.models"
+        assert calls[0][kwarg] == {"claude": expected, "codex": expected}
+        for tool in ("claude", "codex"):
+            if flag == "--model-location":
+                assert cli_mod.get_model_location(saved[-1], tool) == expected
+            else:
+                assert cli_mod.get_provider_service(saved[-1], tool) == expected
+
+    def test_agents_failed_agent_keeps_its_saved_source(self, monkeypatch):
+        state = {
+            **MINIMAL_STATE,
+            "available_tools": [],
+            "provider_services": {"claude": "main.default.old", "codex": "main.default.old"},
+        }
+        saved, _calls = self._agents_patches(monkeypatch, state, configured=["claude"])
+
+        result = self._invoke("--agents", "claude,codex", "--provider", "main.default.new")
+
+        assert result.exit_code == 0, result.output
+        assert cli_mod.get_provider_service(saved[-1], "claude") == "main.default.new"
+        assert cli_mod.get_provider_service(saved[-1], "codex") == "main.default.old"
 
 
 class TestLaunchWithManagedFilePicker:

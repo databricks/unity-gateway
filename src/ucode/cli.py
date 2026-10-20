@@ -166,7 +166,7 @@ from ucode.state import (
     set_provider_service,
     workspace_self_managed_agents,
 )
-from ucode.string_utils import is_valid_catalog_schema
+from ucode.string_utils import is_valid_catalog_schema, is_valid_catalog_schema_name
 from ucode.ui import (
     console,
     heading,
@@ -764,34 +764,54 @@ _MODEL_LOCATION_TOOLS = ("claude", "codex")
 _PROVIDER_TOOLS = ("claude", "codex", "gemini")
 
 
-def _apply_headless_model_source(
-    state: dict,
-    tools: list[str],
-    managed: dict | None,
-    *,
-    model_location: str | None,
-    provider: str | None,
-) -> dict:
-    """Persist ``ug configure --model-location`` / ``--provider`` for ``tools``.
+def _reject_unsupported_model_source(
+    tools: list[str], *, model_location: str | None, provider: str | None
+) -> None:
+    """Reject ``--model-location`` / ``--provider`` for agents that can't use that source.
 
-    The headless equivalent of the interactive model-source picker: each tool's choice replaces
-    the other source, as the picker does. Rejected when a managed config is in effect, which
-    controls the model source itself, and for agents that can't use the requested source.
+    Checked before any install or login, so a bad combination fails fast.
     """
     if model_location is None and provider is None:
-        return state
+        return
     flag = "--model-location" if model_location is not None else "--provider"
-    if managed is not None:
-        raise RuntimeError(
-            f"`{flag}` is not allowed when a managed config exists for the workspace; "
-            "the managed config controls the model source."
-        )
     supported = _MODEL_LOCATION_TOOLS if model_location is not None else _PROVIDER_TOOLS
     unsupported = [tool for tool in tools if tool not in supported]
-    if unsupported:
-        names = ", ".join(TOOL_SPECS[tool]["display"] for tool in unsupported)
+    if unsupported or not tools:
+        names = ", ".join(
+            TOOL_SPECS[tool]["display"] if tool in TOOL_SPECS else tool.title()
+            for tool in unsupported
+        )
         allowed = ", ".join(TOOL_SPECS[tool]["display"] for tool in supported)
-        raise RuntimeError(f"`{flag}` isn't supported for {names}. Supported: {allowed}.")
+        raise RuntimeError(
+            f"`{flag}` isn't supported for {names or 'the selected agents'}. Supported: {allowed}."
+        )
+
+
+def _reject_managed_model_source(
+    managed: dict | None, *, model_location: str | None, provider: str | None
+) -> None:
+    """Reject source flags when the managed config enables agents, so it controls the source.
+
+    A managed config that enables no agents leaves the developer's own setup in charge, on both
+    the ``--agent`` and ``--agents`` paths.
+    """
+    _reject_managed_launch_source_options(
+        managed if managed_enabled_tools(managed or {}) else None,
+        provider=provider,
+        parent_schema=model_location,
+    )
+
+
+def _save_headless_model_source(
+    state: dict, tools: list[str], *, model_location: str | None, provider: str | None
+) -> dict:
+    """Persist ``--model-location`` / ``--provider`` for agents that just configured with it.
+
+    Saved only after a successful configure, so a source that fails to resolve never replaces
+    one that works. Each choice clears the other source, as the interactive picker does.
+    """
+    if (model_location is None and provider is None) or not tools:
+        return state
     for tool in tools:
         state = set_provider_service(state, tool, provider)
         state = set_model_location(state, tool, model_location)
@@ -819,8 +839,8 @@ def _setup_single_agent(
 
     ``model_location`` (``<catalog>.<schema>``) and ``provider`` (``<catalog>.<schema>.<name>``)
     are the headless equivalents of the interactive model-source picker. When set, the choice is
-    persisted to state for later launches; a managed config rejects them (see
-    :func:`_apply_headless_model_source`).
+    persisted to state for later launches once the agent configures; a managed config that enables
+    agents rejects them (see :func:`_reject_managed_model_source`).
     """
     states = _configure_shared_workspace_states(
         workspace_entries,
@@ -843,11 +863,13 @@ def _setup_single_agent(
                 parent_schema = managed_unity_catalog_location(managed, tool)
     elif apply_managed:
         managed, _ = refresh_managed_config(state, force_refresh=False)
-    state = _apply_headless_model_source(
-        state, [tool], managed, model_location=model_location, provider=provider
-    )
-    state = configure_single_tool(
-        tool, state, parent_schema=parent_schema or model_location, provider=provider
+    _reject_managed_model_source(managed, model_location=model_location, provider=provider)
+    if model_location is not None or provider is not None:
+        # The flag names this agent's source outright.
+        parent_schema = model_location
+    state = configure_single_tool(tool, state, parent_schema=parent_schema, provider=provider)
+    state = _save_headless_model_source(
+        state, [tool], model_location=model_location, provider=provider
     )
     if apply_managed and not managed_enabled_tools(managed or {}):
         state = _record_unmanaged_configured_agents(state, [tool])
@@ -1064,9 +1086,7 @@ def _configure_workspace_command(
     managed, _ = refresh_managed_config(state, force_refresh=True)
     managed_tools = managed_enabled_tools(managed) if managed is not None else []
     if managed is not None and managed_tools:
-        _apply_headless_model_source(
-            state, [], managed, model_location=model_location, provider=provider
-        )
+        _reject_managed_model_source(managed, model_location=model_location, provider=provider)
         configured_tools: list[str] = []
         for tool_name in managed_tools:
             resolved = resolve_state(managed, state, tool_name)
@@ -1119,7 +1139,13 @@ def _configure_workspace_command(
 
     available_on_workspace: list[str] = []
     tools_to_check = selected_tools or list(TOOL_SPECS)
+    # A model location or provider routes through the same gateway without system.ai models, so
+    # `configure_single_tool`'s availability check doesn't apply to it; skip it here as well.
+    source_flag_set = model_location is not None or provider is not None
     for tool_name in tools_to_check:
+        if source_flag_set:
+            available_on_workspace.append(tool_name)
+            continue
         with spinner(f"Checking {TOOL_SPECS[tool_name]['display']} availability..."):
             if check_gateway_endpoint(state, tool_name):
                 available_on_workspace.append(tool_name)
@@ -1157,15 +1183,27 @@ def _configure_workspace_command(
     if offer_provider:
         for tool_name in picked:
             state = _maybe_select_provider_service(tool_name, state)
-    else:
-        state = _apply_headless_model_source(
-            state, picked, None, model_location=model_location, provider=provider
-        )
 
+    source_kwargs: dict = {}
+    if model_location is not None:
+        source_kwargs["parent_schemas"] = dict.fromkeys(picked, model_location)
+    elif provider is not None:
+        source_kwargs["providers"] = dict.fromkeys(picked, provider)
     if offer_optional_setup:
-        state = configure_selected_tools(state, picked, install_ai_tools=False)
+        state = configure_selected_tools(state, picked, install_ai_tools=False, **source_kwargs)
     else:
-        state = configure_selected_tools(state, picked)
+        state = configure_selected_tools(state, picked, **source_kwargs)
+    # Only agents that configured this run keep the new source (see the summary below for why
+    # available_tools is only the fallback).
+    configured_now = state.get("last_configured_tools")
+    if configured_now is None:
+        configured_now = state.get("available_tools") or []
+    state = _save_headless_model_source(
+        state,
+        [tool_name for tool_name in picked if tool_name in configured_now],
+        model_location=model_location,
+        provider=provider,
+    )
 
     # No managed config here: undo what a prior managed workspace left behind (its MCP servers and
     # skills), so switching workspaces doesn't strand the old registry and skills.
@@ -4271,10 +4309,28 @@ def configure(
             raise RuntimeError("--model-location and --provider cannot be combined.")
         if model_location is not None and not is_valid_catalog_schema(model_location):
             raise RuntimeError("--model-location must be <catalog>.<schema>, e.g. main.default.")
+        if provider is not None and not is_valid_catalog_schema_name(provider):
+            raise RuntimeError(
+                "--provider must be <catalog>.<schema>.<name>, e.g. main.default.anthropic."
+            )
         if model_location is not None and agent is None and agents is None:
             raise RuntimeError("--model-location requires --agent or --agents.")
         if provider is not None and agent is None and agents is None:
             raise RuntimeError("--provider requires --agent or --agents.")
+        if model_location is not None or provider is not None:
+            # Cursor is MCP-only, so it can't take a model source.
+            requested = (
+                [normalize_tool(agent)]
+                if agent is not None
+                else [
+                    name if name == "cursor" else normalize_tool(name)
+                    for name in (raw.strip().lower() for raw in (agents or "").split(","))
+                    if name
+                ]
+            )
+            _reject_unsupported_model_source(
+                requested, model_location=model_location, provider=provider
+            )
         install_databricks_cli()
         if agent is not None and agents is not None:
             raise RuntimeError("Use either --agent or --agents, not both.")
