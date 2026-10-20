@@ -5,6 +5,7 @@ import io
 import json
 import os
 import re
+import runpy
 import subprocess
 import sys
 import textwrap
@@ -98,7 +99,7 @@ def test_dedicated_cuj_ci_runs_each_discovered_file_on_its_own_runner():
 def test_latest_harness_is_scheduled_and_opt_in():
     workflow = _workflow("harness-latest.yml")
     trigger = workflow.split("\non:\n", 1)[1].split("\npermissions:\n", 1)[0]
-    assert "cron: '0 */6 * * *'" in trigger
+    assert "cron: '0 22 * * 1-5'" in trigger
     assert "workflow_dispatch:" in trigger
     assert "pull_request" not in trigger and "push:" not in trigger
     assert "harness-latest" not in _integration_jobs()
@@ -111,6 +112,30 @@ def test_latest_harness_is_scheduled_and_opt_in():
     assert '-m "$TEST_MARKER"' in workflow
     assert "-k " not in workflow
     assert "continue-on-error:" not in workflow
+
+
+SLACK_NOTIFY = Path(__file__).parent.parent / ".github/scripts/slack-notify/notify.py"
+
+
+def _assert_slack_notify_wiring(notify):
+    assert "actions: read" in notify and "contents: read" in notify
+    assert "sparse-checkout: .github/scripts/slack-notify/notify.py" in notify
+    assert "secrets.SLACK_WEBHOOK_UG_CODING_AGENTS_POD" in notify
+    assert "run: python3 .github/scripts/slack-notify/notify.py" in notify
+
+
+def test_terminal_bench_runs_twice_daily_and_notifies_slack():
+    workflow = _workflow("terminal-bench.yml")
+    assert "cron: '0 7,19 * * *'" in workflow
+    notify = workflow.split("\n  notify:\n", 1)[1]
+    assert "needs: [harbor, native]" in notify
+    assert "if: ${{ !cancelled() }}" in notify
+    assert "NOTIFY_NAME: Terminal Bench" in notify
+    assert (
+        "NOTIFY_RESULT: ${{ contains(needs.*.result, 'failure') && 'failure' || 'success' }}"
+        in notify
+    )
+    _assert_slack_notify_wiring(notify)
 
 
 @pytest.mark.parametrize(
@@ -139,11 +164,13 @@ def test_latest_harness_slack_notification(
     assert "needs.harness-latest.result == 'success'" in notify
     assert "needs.harness-latest.result == 'failure'" in notify
     assert "needs.resolve-versions.result == 'failure'" in notify
-    assert "actions: read" in notify
-    assert "secrets.SLACK_WEBHOOK_UG_CODING_AGENTS_POD" in notify
+    assert "NOTIFY_NAME: Latest harness test" in notify
+    assert "NOTIFY_RESULT: ${{ needs.harness-latest.result }}" in notify
+    _assert_slack_notify_wiring(notify)
 
     env = {
-        "HARNESS_RESULT": result,
+        "NOTIFY_NAME": "Latest harness test",
+        "NOTIFY_RESULT": result,
         "CLAUDE_VERSION": claude_version,
         "CODEX_VERSION": "0.154.0",
         "GITHUB_REPOSITORY": "databricks/unity-gateway",
@@ -181,14 +208,12 @@ def test_latest_harness_slack_notification(
         return io.BytesIO(json.dumps({"jobs": jobs}).encode())
 
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
-    script = textwrap.dedent(notify.split("          python3 - <<'PY'\n", 1)[1])
-    script = script.rsplit("\nPY", 1)[0]
     if slack_error:
         with pytest.raises(urllib.error.URLError, match="Slack unavailable"):
-            exec(compile(script, "harness-latest-notify", "exec"), {})
+            runpy.run_path(str(SLACK_NOTIFY), run_name="__main__")
         assert not posted
         return
-    exec(compile(script, "harness-latest-notify", "exec"), {})
+    runpy.run_path(str(SLACK_NOTIFY), run_name="__main__")
     versions = f"Versions used: Claude Code {claude_version or 'unknown'}, Codex: 0.154.0"
     run_url = f"{env['GITHUB_SERVER_URL']}/{env['GITHUB_REPOSITORY']}/actions/runs/123"
     if result == "success":
@@ -424,15 +449,23 @@ def test_user_journey_fork_report_uses_the_evaluated_commit():
     assert "/pulls/" not in report and ".head.sha" not in report
 
 
-def test_ug_review_runs_only_on_member_command_from_the_default_branch():
+def test_ug_review_accepts_member_comments_and_in_repo_labels_with_trusted_checkout():
     workflow = _workflow("ug-review.yml")
 
-    assert re.search(r"(?m)^on:\n  issue_comment:\n    types: \[created\]\n", workflow)
+    assert re.search(r"(?m)^  issue_comment:\n    types: \[created\]\n", workflow)
+    assert re.search(r"(?m)^on:\n  pull_request:\n    types: \[labeled\]\n", workflow)
+    assert (
+        'contains(fromJSON(\'["ug-review", "code-review"]\'), github.event.label.name)' in workflow
+    )
+    assert "github.event.pull_request.head.repo.full_name == github.repository" in workflow
     assert "pull_request_target" not in workflow
     assert "github.event.comment.body == '/ug-review'" in workflow
     assert MEMBER_ONLY in workflow
     assert "ref: ${{ github.event.repository.default_branch }}" in workflow
-    assert "PR_NUMBER: ${{ github.event.issue.number }}" in workflow
+    assert (
+        "PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}"
+        in workflow
+    )
     assert "concurrency:" not in workflow.split("\njobs:\n", 1)[0]
 
 

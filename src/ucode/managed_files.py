@@ -96,7 +96,8 @@ def managed_settings_skipped() -> bool:
     """Whether the developer opted out of OS-managed settings via ``UG_SKIP_OS_SETTINGS``.
 
     Set the variable to ``1``/``true``/``yes``/``on`` to make ucode neither read nor update the
-    root-owned managed files (Claude Code ``managed-settings.json``, Codex ``managed_config.toml``).
+    root-owned managed files (Claude Code ``managed-settings.json``, Codex ``managed_config.toml``
+    or, on Windows, ``requirements.toml``).
     ucode then relies solely on its per-user settings, which is enough for a single-user setup that
     always launches through ``ug`` and never needs a bare ``claude``/``codex`` to reach the gateway.
     Skips the privileged ``sudo`` step entirely, so an interactive run is never prompted for a
@@ -121,6 +122,15 @@ def managed_files_supported() -> bool:
 def windows_claude_managed_settings_path() -> Path:
     """The only machine-wide settings file Claude Code reads on Windows."""
     return system_cross_os.windows_program_files_dir() / "ClaudeCode" / "managed-settings.json"
+
+
+CODEX_REQUIREMENTS_FILE = "requirements.toml"
+
+
+def windows_codex_managed_settings_path() -> Path:
+    """Codex's machine-wide settings on Windows: ``requirements.toml``, its admin-enforced file that
+    outranks the user's config and ``-c``. Codex has no admin-only config layer there."""
+    return system_cross_os.windows_program_data_dir() / "OpenAI" / "Codex" / CODEX_REQUIREMENTS_FILE
 
 
 def read_managed_file(path: Path) -> str | None:
@@ -716,7 +726,7 @@ def revert_managed_file(
             if current_os() is not OS.WINDOWS:
                 raise RuntimeError(
                     f"Cannot restore {display} managed settings non-interactively. Run "
-                    "`ucode revert` from an interactive terminal."
+                    "`ug revert` from an interactive terminal."
                 )
             raise RuntimeError(_windows_admin_required_message(display, path, "ug revert"))
         try:
@@ -727,7 +737,7 @@ def revert_managed_file(
         except (PermissionError, subprocess.CalledProcessError) as exc:
             raise RuntimeError(
                 f"Could not restore {display} managed settings at {path}. The backup was retained "
-                f"under {MANAGED_BACKUP_DIR}. Resolve the permission issue and run `ucode revert` "
+                f"under {MANAGED_BACKUP_DIR}. Resolve the permission issue and run `ug revert` "
                 "again."
             ) from exc
         if read_managed_file(path) != desired_text:
@@ -817,7 +827,7 @@ def _ensure_backup(tool: str, path: Path, current_text: str | None) -> bool:
         if existing.get("path") != str(path):
             raise RuntimeError(
                 f"The saved {tool} managed-settings backup targets {existing.get('path')}, not "
-                f"{path}. Run `ucode revert` before configuring this path."
+                f"{path}. Run `ug revert` before configuring this path."
             )
         if existing.get("original_existed"):
             _original_text(existing)
@@ -1313,21 +1323,68 @@ def _privileged_remove(path: Path) -> None:
 
 
 def _validate_windows_target(path: Path) -> None:
-    if path != windows_claude_managed_settings_path():
+    if path not in (windows_claude_managed_settings_path(), windows_codex_managed_settings_path()):
         raise RuntimeError(f"Refusing unexpected managed-settings target: {path}")
     if path.is_symlink():
         raise RuntimeError(f"Refusing to replace symlinked managed settings: {path}")
+    if path == windows_codex_managed_settings_path():
+        # Standard users can create folders under ProgramData; a linked one would redirect us.
+        for folder in (path.parent, path.parent.parent):
+            if folder.is_symlink() or folder.is_junction():
+                raise RuntimeError(f"Refusing to write managed settings through link {folder}")
+
+
+# Well-known SIDs, because Windows translates the group names.
+_WINDOWS_SYSTEM_SID = "*S-1-5-18"
+_WINDOWS_ADMINISTRATORS_SID = "*S-1-5-32-544"
+_WINDOWS_USERS_SID = "*S-1-5-32-545"
+
+
+def _secure_windows_codex_folders(path: Path) -> None:
+    """Give the ``OpenAI`` and ``Codex`` folders to Administrators and let standard users only read
+    ``Codex``, like the root-owned 0755 folders on Linux and macOS. A standard user may have created
+    them first and would otherwise keep control.
+
+    Only the folders change, never their contents, so a planted hard link can't redirect the change
+    onto another file. ``/L`` changes a link itself rather than its target, and the caller checks
+    for links again afterwards."""
+    icacls = str(system_cross_os.windows_system32_dir() / "icacls.exe")
+    codex, openai = path.parent, path.parent.parent
+    # Set the owner before resetting: the inherited CREATOR OWNER entry maps to the current owner.
+    for folder, *change in (
+        (openai, "/setowner", _WINDOWS_ADMINISTRATORS_SID),
+        (openai, "/reset"),
+        (codex, "/setowner", _WINDOWS_ADMINISTRATORS_SID),
+        (
+            codex,
+            "/inheritance:r",
+            "/grant:r",
+            f"{_WINDOWS_SYSTEM_SID}:(OI)(CI)F",
+            f"{_WINDOWS_ADMINISTRATORS_SID}:(OI)(CI)F",
+            f"{_WINDOWS_USERS_SID}:(OI)(CI)RX",
+        ),
+    ):
+        result = subprocess_cross_os.run(
+            [icacls, str(folder), *change, "/L"], capture_output=True, text=True, check=False
+        )
+        if result.returncode:
+            output = f"{result.stdout}{result.stderr}".strip()
+            raise PermissionError(f"could not secure {folder}: {output}")
 
 
 def _windows_replace(path: Path, desired_text: str) -> None:
     """Atomically replace ``path`` from this elevated process.
 
     The temp file is created beside the target so the rename stays on one volume and the new file
-    inherits the folder's ACL, which under Program Files lets standard users read but not write."""
+    inherits the folder's ACL, which lets standard users read but not write: Program Files comes
+    that way, and the Codex folders under ProgramData are secured first."""
     _validate_windows_target(path)
     if not system_cross_os.is_admin():
         raise PermissionError("administrator rights are required")
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path == windows_codex_managed_settings_path():
+        _secure_windows_codex_folders(path)
+    _validate_windows_target(path)  # a folder may have been created or swapped for a link meanwhile
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as tmp:

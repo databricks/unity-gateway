@@ -117,6 +117,14 @@ Cursor models still run through your Cursor account.
 `UG_WORKSPACE` can provide the default workspace. An explicit `--workspace` or
 `--profile` takes precedence.
 
+On macOS, Windows, and Linux, successful Claude Code configuration also creates and
+selects a dedicated Claude Desktop gateway profile. Its model list includes only
+Claude-named IDs; Claude Code's catalog is unchanged. Desktop setup errors warn
+without failing Claude Code configuration. See [Claude Desktop setup](docs/claude-desktop.md)
+for authentication, profile preservation, and native validation limits.
+When managed Claude tracing is enabled, the same profile configures Desktop's native
+OTLP trace export with a refreshing headers helper; no background service is needed.
+
 ## MCP Servers
 
 Register Databricks MCP servers for configured MCP-capable agents. Cursor Agent
@@ -270,6 +278,17 @@ The routing notice names the generated agent selected for launch and its model.
 Claude Code's own task header can still show the agent type the parent originally
 requested. That name may contain a different model; it is not the routing result.
 
+The local `~/.ucode/<agent>-smart-routing-decisions.jsonl` logs also retain the
+candidate models, their harnesses, and the router name sent with each recorded
+decision. Feedback investigations can compare the selection with that original
+menu without querying the router again.
+
+Claude and Codex routing reasons summarize the task profile in plain language, such as
+"This task has a clear target and limited scope." A separate sentence explains when
+model availability requires a higher tier. Custom gateway notices are retained, and
+older or unrecognized responses keep their original wording. Diagnostic records keep
+the displayed reason in `rationale` and the gateway's full explanation in `raw_rationale`.
+
 On Windows, Claude smart routing uses subagent hooks only. If first-prompt routing
 is enabled, ug warns and falls back to subagent routing because the first-prompt
 wrapper requires a Unix terminal.
@@ -367,7 +386,7 @@ preferences are ignored and their files are left untouched. See the bundled
 
 | Tool | Managed files |
 |------|---------------|
-| Codex | `~/.codex/ucode.config.toml`, shared catalog reference in `~/.codex/config.toml`, `~/.ucode/codex-model-catalog.json`, `/etc/codex/managed_config.toml` (Linux and macOS) |
+| Codex | `~/.codex/ucode.config.toml`, shared catalog reference in `~/.codex/config.toml`, `~/.ucode/codex-model-catalog.json`, `/etc/codex/managed_config.toml` (Linux and macOS), `C:\ProgramData\OpenAI\Codex\requirements.toml` (Windows, written only from an elevated terminal; enforced by Codex 0.156.0 and later) |
 | Claude Code | `~/.claude/ucode-settings.json`, `~/.claude.json`, `/etc/claude-code/managed-settings.json` (Linux), `/Library/Application Support/ClaudeCode/managed-settings.json` (macOS), `C:\Program Files\ClaudeCode\managed-settings.json` (Windows, written only from an elevated terminal) |
 | Gemini CLI | `~/.gemini/ucode.env`, `~/.ucode/.gemini-home/.gemini/settings.json` |
 | OpenCode | `~/.ucode/opencode-xdg/opencode/opencode.json`, `~/.ucode/opencode-xdg/opencode/plugin/ucode-auth.js` |
@@ -403,8 +422,27 @@ tests remain available separately:
 UCODE_TEST_WORKSPACE=<db_workspace_url> uv run pytest tests/test_e2e.py -v
 ```
 
-To add a new agent, implement `src/ucode/agents/<name>.py`, register it in
+To add a new CLI agent, implement `src/ucode/agents/<name>.py`, register it in
 `src/ucode/agents/__init__.py`, and add focused tests.
+Desktop-app adapters live separately in `src/ucode/agents/desktop/`.
+Desktop rendering consumes model IDs and headers from shared discovery/managed-config
+parsing without revalidating or deduplicating them.
+Claude Desktop profiles use Anthropic's [documented application-data locations](https://claude.com/docs/third-party/claude-desktop/data-storage#where-data-lives)
+on macOS, Windows, and Linux, with no profile-directory override. Windows and Linux require the app to have been opened once;
+their native GUI, credential-helper, and inference flows still need validation.
+Profiles are named `Unity Gateway - <CLI profile name>` and use one reserved UUID:
+`5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6`. Configure replaces that whole profile,
+updates its metadata entry, and selects it. Switching workspaces replaces the same file.
+Revert deletes that profile and entry, preserving unrelated profiles and metadata.
+Only the previous selection is recorded in `~/.ucode/claude-desktop.json`;
+no original profile contents are saved for revert. Old random-ID and workspace-derived
+profiles are left untouched. A valid JSON `_comment` field warns against manual edits;
+native Desktop acceptance of that field still needs a smoke test.
+Workspace-specific UUID normalization is removed; existing CLI URL handling is unchanged.
+
+Claude Desktop profile updates wait up to five seconds for the file lock across
+platforms. A timeout leaves the operation holding the lock undisturbed. The Desktop
+auth helper retains its existing shared deadline.
 
 ## Documentation
 

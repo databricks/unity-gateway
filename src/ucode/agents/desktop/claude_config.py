@@ -1,0 +1,267 @@
+"""Claude Desktop profile rendering and file persistence."""
+
+from __future__ import annotations
+
+import json
+import os
+import shlex
+import stat
+import tempfile
+import uuid
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from pathlib import Path
+from typing import NotRequired, TypedDict, cast
+
+from ucode.os_compatibility.file_lock_cross_os import (
+    acquire_exclusive_file_lock,
+    release_file_lock,
+)
+
+META_FILENAME = "_meta.json"
+PROFILE_NAME = "Unity Gateway"
+PROFILE_LOCK_TIMEOUT_SECONDS = 5
+
+# UG supports one workspace at a time; reserve one stable UUID so switching workspaces
+# replaces the same UG-owned profile and revert can delete it without ownership records.
+PROFILE_ID = "5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6"
+
+_MISSING = object()
+
+
+class ProfileEntry(TypedDict):
+    id: str
+    name: str
+
+
+class Metadata(TypedDict):
+    entries: list[ProfileEntry]
+    appliedId: NotRequired[str]
+
+
+class ClaudeDesktopError(RuntimeError):
+    """Base error for an unavailable or unsafe Claude Desktop update."""
+
+
+class ClaudeDesktopUnsupportedError(ClaudeDesktopError):
+    """The host has no validated native Claude Desktop profile path."""
+
+
+class ClaudeDesktopUnavailableError(ClaudeDesktopError):
+    """Claude Desktop has not initialized its profile directory or metadata."""
+
+
+class ClaudeDesktopConflictError(ClaudeDesktopError):
+    """A user or another writer changed data Unity Gateway owns."""
+
+
+def render_profile(
+    *,
+    model_ids: Sequence[str],
+    base_url: str,
+    helper_command: str | Path,
+    helper_args: Sequence[str],
+    model_id_to_display_name: Mapping[str, str] | None = None,
+    custom_headers: Mapping[str, str] | None = None,
+    otel_endpoint: str | None = None,
+    otel_headers_helper: Path | None = None,
+) -> dict[str, object]:
+    """Render resolved models, headers, and literal helper arguments in Desktop's schema."""
+
+    display_names = model_id_to_display_name or {}
+    models = []
+    for model_id in model_ids:
+        model = {"name": model_id}
+        if label := display_names.get(model_id):
+            model["labelOverride"] = label
+        models.append(model)
+
+    profile: dict[str, object] = {
+        "inferenceProvider": "gateway",
+        "inferenceGatewayBaseUrl": base_url,
+        "inferenceGatewayAuthScheme": "bearer",
+        "inferenceCredentialKind": "helper-script",
+        "inferenceCredentialHelper": os.fspath(helper_command),
+        "inferenceCredentialHelperArgs": list(helper_args),
+        "inferenceCredentialHelperTtlSec": 900,
+        "inferenceCredentialHelperTimeoutSec": 300,
+        "inferenceCredentialHelperSilentRefreshEnabled": True,
+        "modelDiscoveryEnabled": False,
+        "inferenceModels": models,
+    }
+    if custom_headers is not None:
+        profile["inferenceCustomHeaders"] = dict(custom_headers)
+    if otel_endpoint and otel_headers_helper is not None:
+        profile.update(
+            otlpEndpoint=otel_endpoint,
+            otlpProtocol="http/protobuf",
+            otlpHeadersHelper=os.fspath(otel_headers_helper),
+            otlpTracesEnabled=True,
+        )
+    return profile
+
+
+def render_otel_helper(command: Sequence[str], *, windows: bool) -> str:
+    if not command:
+        raise ClaudeDesktopError("Claude Desktop OTEL headers command is required.")
+    if not windows:
+        return f"#!/bin/sh\nexec {shlex.join(command)}\n"
+    if any(character in argument for argument in command for character in '"\r\n\0'):
+        raise ClaudeDesktopError("Claude Desktop OTEL helper arguments contain invalid characters.")
+    # cmd.exe needs every arg quoted; the child parser needs trailing backslashes doubled.
+    quoted = " ".join(
+        '"'
+        + argument.replace("%", "%%")
+        + "\\" * (len(argument) - len(argument.rstrip("\\")))
+        + '"'
+        for argument in command
+    )
+    return f"@echo off\r\nsetlocal DisableDelayedExpansion\r\nchcp 65001 >nul\r\n{quoted}\r\n"
+
+
+@contextmanager
+def locked(lock_path: Path) -> Iterator[None]:
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+b") as handle:
+            try:
+                acquire_exclusive_file_lock(handle, timeout=PROFILE_LOCK_TIMEOUT_SECONDS)
+            except TimeoutError as exc:
+                raise ClaudeDesktopError(
+                    "Timed out waiting for another Unity Gateway profile update. "
+                    "Finish that operation and retry."
+                ) from exc
+            try:
+                yield
+            finally:
+                release_file_lock(handle)
+    except OSError as exc:
+        raise ClaudeDesktopError(
+            f"Could not lock Claude Desktop profile state at {lock_path}."
+        ) from exc
+
+
+def read_optional_bytes(path: Path) -> bytes | None:
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return None
+
+
+def parse_object(contents: bytes, path: Path, label: str) -> dict[str, object]:
+    try:
+        value = json.loads(contents)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ClaudeDesktopConflictError(
+            f"{label} at {path} is malformed; refusing to overwrite it."
+        ) from exc
+    if not isinstance(value, dict):
+        raise ClaudeDesktopConflictError(f"{label} at {path} must contain a JSON object.")
+    return value
+
+
+def validate_metadata(metadata: Mapping[str, object], path: Path) -> Metadata:
+    entries = metadata.get("entries")
+    if not isinstance(entries, list):
+        raise ClaudeDesktopConflictError(
+            f"Claude Desktop metadata at {path} has no valid entries list."
+        )
+    seen: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ClaudeDesktopConflictError(
+                f"Claude Desktop metadata at {path} contains an invalid profile entry."
+            )
+        profile_id = entry.get("id")
+        if not isinstance(profile_id, str) or not is_uuid(profile_id):
+            raise ClaudeDesktopConflictError(
+                f"Claude Desktop metadata at {path} contains an invalid profile ID."
+            )
+        if profile_id in seen:
+            raise ClaudeDesktopConflictError(
+                f"Claude Desktop metadata at {path} contains duplicate profile ID {profile_id}."
+            )
+        seen.add(profile_id)
+        if not isinstance(entry.get("name"), str):
+            raise ClaudeDesktopConflictError(
+                f"Claude Desktop metadata at {path} contains an invalid profile name."
+            )
+    applied_id = metadata.get("appliedId", _MISSING)
+    if applied_id is not _MISSING and (not isinstance(applied_id, str) or not is_uuid(applied_id)):
+        raise ClaudeDesktopConflictError(
+            f"Claude Desktop metadata at {path} contains an invalid appliedId."
+        )
+    return cast(Metadata, metadata)
+
+
+def is_uuid(value: str) -> bool:
+    try:
+        uuid.UUID(value)
+    except (ValueError, AttributeError):
+        return False
+    return True
+
+
+def write_configuration(
+    changes: Sequence[tuple[Path, bytes | None, bytes | None, int]],
+) -> bool:
+    """Apply (path, before, after, mode) changes, restoring originals on failure."""
+
+    for path, before, _after, _mode in changes:
+        if read_optional_bytes(path) != before:
+            raise ClaudeDesktopConflictError(
+                "Claude Desktop configuration changed during setup. Quit Claude Desktop and retry."
+            )
+    original_modes = {
+        path: stat.S_IMODE(path.stat().st_mode)
+        for path, before, _after, _mode in changes
+        if before is not None
+    }
+    written: list[tuple[Path, bytes | None, int]] = []
+    try:
+        for path, before, after, mode in changes:
+            needs_exec_bit = (
+                after is not None
+                and mode & stat.S_IXUSR
+                and not original_modes.get(path, mode) & stat.S_IXUSR
+            )
+            if before == after and not needs_exec_bit:
+                continue
+            written.append((path, before, original_modes.get(path, mode)))
+            _write_or_remove(path, after, mode=mode)
+    except Exception as exc:  # noqa: BLE001 - preserve the original failure through rollback
+        rollback_errors: list[Exception] = []
+        for path, before, mode in reversed(written):
+            try:
+                _write_or_remove(path, before, mode=mode)
+            except Exception as rollback_exc:  # noqa: BLE001
+                rollback_errors.append(rollback_exc)
+        if rollback_errors:
+            raise ClaudeDesktopError(
+                f"Claude Desktop configuration failed: {exc}. "
+                f"Rollback also failed: {rollback_errors[0]}"
+            ) from exc
+        raise ClaudeDesktopError(
+            f"Claude Desktop configuration failed and was rolled back: {exc}."
+        ) from exc
+    return bool(written)
+
+
+def _write_or_remove(path: Path, contents: bytes | None, *, mode: int) -> None:
+    if contents is None:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise ClaudeDesktopError(f"Could not remove Claude Desktop profile {path}.") from exc
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(contents)
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)

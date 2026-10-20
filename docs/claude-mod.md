@@ -11,6 +11,18 @@ input with the permission mode) always ends with `smart router ON` or `smart rou
 routing launches use this path, and the existing temporary-directory lifecycle
 cleans up the files when Claude exits.
 
+The same entry point routes Agent/Task calls in a native `tool.call` hook. It pipes the
+call as JSON to `ug claude-router-hook route-subagent-mod`, whose argument list arrives in
+the `routeCommand` plugin option, and continues the call with the returned input. The
+matching Agent row shows a spinner and elapsed seconds while the router answers, then the
+selected model, routing time, and rationale. Results live in memory by `tool_use_id`, so a
+plugin reload drops them. Disabled routing, command failures, and invalid responses keep
+the original call; failures also log a diagnostic.
+
+The old routing PreToolUse hook is no longer written, so a call is not routed twice. A
+`route-subagent` hook that an earlier UG version persisted still gets its PreToolUse
+response and plain-text notice.
+
 `constants.ts` holds the values the mod shares with UG's CLI and the gateway: the recipe
 body field, the disabled recipe, the CLI module, agent, and routing flags, and the
 routing keys used to read session overrides. It ships
@@ -41,8 +53,37 @@ routing hooks apply over the environment, so an "off" saved earlier by the CLI o
 cannot outlast the command. The mod writes no file itself: it runs the existing
 `--enable-smart-routing`/`--disable-smart-routing` entry point, which validates and replaces
 that file atomically. Session start restores only the launch baseline, so an override saved
-before `/clear` still survives it. The plugin test host provides no process capability, so
-this path is covered by the live skill-toggle journey rather than `claude plugin test`.
+before `/clear` still survives it. The live skill-toggle journey covers the real CLI write;
+native component tests stub the process calls.
+
+Before each on-to-off change, Isaac sessions with
+`ISAAC_SMART_ROUTER_FEEDBACK=1` require a reason of at least 16 characters after
+trimming surrounding whitespace. Isaac sets this flag from its
+rollout setting or the user's explicit `1`/`0` override. It controls Isaac feedback
+availability, so UG's routing presets and on/off toggles leave it unchanged.
+The native form keeps routing on until Enter accepts a valid reason, then disables
+routing and uploads the exact text in the background with `isaac feedback`. The
+transcript shows the feedback ID the mod passes with `--feedback-id`; a toast reports
+the result. Cancel or Escape leaves routing on and sends nothing. A missing
+`isaac` CLI or an unavailable form leaves routing on. A feedback submission failure after a valid
+reason leaves routing off and reports the failure in the transcript. The form makes no model requests.
+
+`isaac-feedback.ts` owns this Databricks-specific policy, form, and submission.
+`register.ts` binds the routing callbacks before Isaac's command guard, then
+handles toggles the guard passes through. Claude's mod compiler requires engine
+API calls to stay in the file that receives `$`.
+`routing-state.ts` supplies the shared enabled check; launch options, live
+environment values, and resolved session overrides use the same check on their
+respective values.
+
+The CLI/skill path, including Codex, enforces the same minimum through the session
+toggle's `--smart-router-feedback` argument. The skill asks for the reason before
+retrying the toggle and submits it through `/isaac-feedback` on success. The CLI
+validates the reason; the skill or native form owns submission.
+
+Validate the form in Isaac, including the 16-character minimum, exact reason
+submission, cancellation, repeated toggles and failures. These scenarios and a live
+evidence upload are not covered by the automated suite.
 
 The existing Claude skill-toggle integration journey checks recorded inference
 payloads during its three calculation phases: launch recipe, `DISABLED` after off,

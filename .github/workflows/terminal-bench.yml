@@ -2,7 +2,7 @@ name: Terminal Bench
 
 on:
   schedule:
-    - cron: '0 7 * * *'
+    - cron: '0 7,19 * * *'
   workflow_dispatch:
     inputs:
       tb2_tasks:
@@ -81,10 +81,19 @@ jobs:
           includes=()
           IFS=, read -ra tasks <<< "$TB2_TASKS"
           for task in "${tasks[@]}"; do includes+=(-i "$task"); done
-          uvx --python 3.12 --from "harbor==$HARBOR_VERSION" harbor run -y \
-            -d "$TB2_DATASET" "${includes[@]}" \
-            -a "ug_agent:$AGENT_CLASS" --ak "version=$AGENT_VERSION" \
-            ${MODEL:+-m "$MODEL"} -n 3 -k 3 -o "$RUNNER_TEMP/harbor-jobs/tb2"
+          out="$RUNNER_TEMP/harbor-jobs/tb2"
+          run_harbor() {
+            uvx --python 3.12 --from "harbor==$HARBOR_VERSION" harbor run -y \
+              -d "$TB2_DATASET" "$@" \
+              -a "ug_agent:$AGENT_CLASS" --ak "version=$AGENT_VERSION" \
+              ${MODEL:+-m "$MODEL"} -n 3 -o "$out"
+          }
+          # Best 2 of 3: a third attempt runs only for tasks that split the first two.
+          run_harbor "${includes[@]}" -k 2
+          retry=()
+          while read -r task; do retry+=(-i "$task"); done \
+            < <(python3 bench/terminal_bench/summarize_harbor.py "$out" --undecided)
+          if (( ${#retry[@]} )); then run_harbor "${retry[@]}" -k 1; fi
       - name: Run ug's own tasks
         if: ${{ !cancelled() }}
         env:
@@ -93,10 +102,18 @@ jobs:
           includes=()
           while read -r task; do includes+=(-i "$task"); done \
             < <(python3 bench/terminal_bench/bench_tasks.py "${{ matrix.agent }}")
-          uvx --python 3.12 --from "harbor==$HARBOR_VERSION" harbor run -y \
-            -p bench/terminal_bench/tasks "${includes[@]}" --resume-trajectory \
-            -a "ug_agent:$AGENT_CLASS" --ak "version=$AGENT_VERSION" \
-            ${MODEL:+-m "$MODEL"} -n 3 -k 3 -o "$RUNNER_TEMP/harbor-jobs/ug"
+          out="$RUNNER_TEMP/harbor-jobs/ug"
+          run_harbor() {
+            uvx --python 3.12 --from "harbor==$HARBOR_VERSION" harbor run -y \
+              -p bench/terminal_bench/tasks "$@" --resume-trajectory \
+              -a "ug_agent:$AGENT_CLASS" --ak "version=$AGENT_VERSION" \
+              ${MODEL:+-m "$MODEL"} -n 3 -o "$out"
+          }
+          run_harbor "${includes[@]}" -k 2
+          retry=()
+          while read -r task; do retry+=(-i "$task"); done \
+            < <(python3 bench/terminal_bench/summarize_harbor.py "$out" --undecided)
+          if (( ${#retry[@]} )); then run_harbor "${retry[@]}" -k 1; fi
       - name: Summarize
         if: ${{ !cancelled() }}
         run: |
@@ -203,3 +220,26 @@ jobs:
           path: |
             ${{ runner.temp }}/tb-native/results.json
             ${{ runner.temp }}/tb-native/logs/
+
+  notify:
+    needs: [harbor, native]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Check out the Slack notifier
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          sparse-checkout: .github/scripts/slack-notify/notify.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Notify Slack of the result
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_UG_CODING_AGENTS_POD }}
+          GH_TOKEN: ${{ github.token }}
+          NOTIFY_NAME: Terminal Bench
+          NOTIFY_RESULT: ${{ contains(needs.*.result, 'failure') && 'failure' || 'success' }}
+        run: python3 .github/scripts/slack-notify/notify.py

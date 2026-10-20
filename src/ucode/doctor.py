@@ -143,7 +143,7 @@ def _check_workspace() -> Check:
     return Check(
         "Workspace",
         "warn",
-        "not configured — run `ucode configure` to set your Databricks workspace",
+        "not configured — run `ug configure` to set your Databricks workspace",
     )
 
 

@@ -1,8 +1,8 @@
 """CUJs for subagent-only routing against the live workspace router.
 
-The agent harness invokes ``ug claude-router-hook route-subagent`` /
-``ug codex-router-hook route-subagent`` on its PreToolUse event with a JSON payload on
-stdin. These journeys drive the real installed hook commands through that stdin contract,
+Claude's native mod invokes ``ug claude-router-hook route-subagent-mod``; Codex's
+PreToolUse hook invokes ``ug codex-router-hook route-subagent``. Both send JSON on
+stdin. These journeys drive the real installed commands through that stdin contract,
 so the routing decision, response shape, and audit trail are asserted without relying on
 an agent choosing to spawn a subagent. The TUI journeys additionally invoke the installed
 Smart Router skill and spawn real children before and after its session-local toggles.
@@ -63,9 +63,34 @@ def _routing_decisions(session, agent: str) -> list[dict]:
     return read_jsonl(session.home / ".ucode" / f"{agent}-smart-routing-decisions.jsonl")
 
 
-def _routing_banner_for_task(screen: str, marker: str, *, orchestrator_on: bool) -> bool:
+def _claude_routing_row_for_task(lines: list[str], marker: str) -> bool:
+    """Whether the mod's routing row follows the prompt that carries this task's marker.
+
+    The parent chooses the Agent row's description, so the marker may appear only in the
+    prompt. Each calculation is its own prompt, so the row is attributed by screen order:
+    a selected-model line after the tagged prompt and before the next one.
+    """
+    prompts = [index for index, line in enumerate(lines) if line.lstrip().startswith("❯")]
+    for position, start in enumerate(prompts):
+        end = start + 1
+        while end < len(lines) and lines[end].strip():
+            end += 1
+        # The prompt wraps across indented lines; compare without rendered whitespace.
+        if marker not in "".join("".join(lines[start:end]).split()):
+            continue
+        following = prompts[position + 1] if position + 1 < len(prompts) else len(lines)
+        if any("↳ Selected Model:" in line for line in lines[end:following]):
+            return True
+    return False
+
+
+def _routing_display_for_task(
+    screen: str, marker: str, *, agent: str, orchestrator_on: bool
+) -> bool:
     """Whether the rendered router panel belongs to this uniquely tagged task."""
     lines = screen.splitlines()
+    if agent == "claude":
+        return _claude_routing_row_for_task(lines, marker)
     for index, line in enumerate(lines):
         if SMART_ROUTING_SUBAGENT_NOTICE not in line:
             continue
@@ -98,12 +123,13 @@ def _run_calculation(
 
     if routed:
         tui.wait_for(
-            lambda screen: _routing_banner_for_task(
+            lambda screen: _routing_display_for_task(
                 screen,
                 task.marker,
+                agent=agent,
                 orchestrator_on=orchestration_enabled,
             ),
-            f"the Smart Router subagent banner for {task.marker}",
+            f"the Smart Router subagent display for {task.marker}",
             timeout=120,
         )
     tui.wait_for_task(task, timeout=180)
@@ -113,15 +139,29 @@ def _run_calculation(
     after = _routing_decisions(session, agent)
     new_decisions = after[len(before) :]
     if not routed:
-        assert not _routing_banner_for_task(tui.visible, task.marker, orchestrator_on=False), (
-            tui.visible
-        )
+        assert not _routing_display_for_task(
+            tui.visible, task.marker, agent=agent, orchestrator_on=False
+        ), tui.visible
         assert not new_decisions, new_decisions
         return task
 
     assert len(new_decisions) == 1, new_decisions
     decision = new_decisions[0]
     assert task.marker in decision.get("task_name", ""), decision
+    if agent == "claude":
+        model = decision["requested_model"].removeprefix("system.ai.").removeprefix("databricks-")
+        rationale = decision["rationale"]
+        tui.wait_for(
+            lambda screen: (
+                f"SelectedModel:{model}" in "".join(screen.split())
+                and (
+                    not rationale
+                    or "".join(f"Reason: {rationale}".split()) in "".join(screen.split())
+                )
+            ),
+            f"the selected model and rationale for {task.marker}",
+            timeout=30,
+        )
     assert_subagent_routed(
         session,
         agent,
@@ -185,10 +225,17 @@ def _toggle_with_skill(
     before_answers, before_confirmations = completion_counts()
     tui.submit(invocation)
 
-    def toggled(_screen):
+    def toggled(screen):
+        if tui.approve_windows_command(screen):
+            return False
+        try:
+            controls_now = json.loads(controls[0].read_text())
+        except PermissionError:
+            # Windows denies reads while ug replaces the controls file; try again next frame.
+            return False
         answers, confirmations = completion_counts()
         return (
-            json.loads(controls[0].read_text()) == expected
+            controls_now == expected
             and confirmations > before_confirmations
             and answers > before_answers
         )
@@ -222,13 +269,14 @@ def _toggle_with_skill(
 def test_smart_routing_claude_route_subagent_hook(
     live_session, workspace, SMART_ROUTER_CONFIG_VERSION
 ):
-    """Scenario: legacy subagent routing or each supported selector makes Claude Code fire
-    PreToolUse for an Agent spawn, piping the payload to ``ug claude-router-hook route-subagent``.
+    """Scenario: the Claude mod's routing CLI receives an Agent call under legacy
+    subagent routing or each supported selector.
 
-    Expected: the hook allows the call against the real workspace router, drops the
-    requested model in favor of a ``ucode-route-`` agent definition while preserving the
-    task text, displays the routed agent's name, and audits one decision naming an offered
-    model for the session. Only the hook contract is asserted; no agent decides to spawn.
+    Expected: the shared Python client calls the real router and returns model,
+    rationale, and an updated input naming the dispatched ``ucode-route-`` agent while
+    preserving the task, so the mod labels the row with the agent that actually runs.
+    One decision is audited for the session. This checks the mod's CLI protocol;
+    no native mod or agent decides to spawn.
     """
     session = live_session
     if SMART_ROUTER_CONFIG_VERSION is None:
@@ -247,7 +295,7 @@ def test_smart_routing_claude_route_subagent_hook(
     }
     result = session.run(
         "claude-router-hook",
-        "route-subagent",
+        "route-subagent-mod",
         "--host",
         workspace,
         *(arg for model in CLAUDE_MODELS for arg in ("--model", model)),
@@ -255,19 +303,14 @@ def test_smart_routing_claude_route_subagent_hook(
         timeout=60,
     )
     output = json.loads(result.stdout)
-    hook = output["hookSpecificOutput"]
-    assert hook["hookEventName"] == "PreToolUse", output
-    assert hook["permissionDecision"] == "allow", output
-    assert SMART_ROUTING_SUBAGENT_NOTICE in output["systemMessage"], output
-    updated = hook["updatedInput"]
+    assert output["model"] in CLAUDE_MODELS, output
+    assert isinstance(output["rationale"], str), output
+    updated = output["updatedInput"]
     assert "model" not in updated, updated
     assert updated["subagent_type"].startswith("ug-smart-router:ucode-route-"), updated
     assert updated["prompt"] == payload["tool_input"]["prompt"], updated
     assert updated["description"] == payload["tool_input"]["description"], updated
-    for notice in (output["systemMessage"], hook["permissionDecisionReason"]):
-        text = "".join(notice.replace("│", "").split())
-        assert f"Subagent:{updated['subagent_type']}" in text, output
-        assert "general-purpose" not in notice, output
+    assert "general-purpose" not in json.dumps(output), output
 
     decisions_path = session.home / ".ucode" / "claude-smart-routing-decisions.jsonl"
     assert decisions_path.is_file(), f"hook wrote no routing decision record: {decisions_path}"
@@ -278,6 +321,9 @@ def test_smart_routing_claude_route_subagent_hook(
     assert row["session_id"] == payload["session_id"], row
     assert row["task_name"] == payload["tool_input"]["prompt"], row
     assert row["requested_model"] in CLAUDE_MODELS, row
+
+    assert row["requested_model"] == output["model"], row
+    assert row["rationale"] == output["rationale"], row
 
 
 @pytest.mark.live
@@ -387,10 +433,9 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
     their recorded inference payloads carry smart_router_recipe_name with the launch
     recipe, DISABLED, then the launch recipe again, without a recipe header, and receive
     non-empty HTTP 200 responses (including verified native
-    compatibility retries). Only the first and third show the subagent-routing banner
+    compatibility retries). Only the first and third show native model/rationale rows
     and produce live gateway decisions correlated with those children. Claude's native
     task view reports no running tasks before /exit. No first-prompt routing wrapper starts.
-    With orchestration enabled, both routed banners must include [orchestrator on].
     """
     session = live_session
     session.env["TMPDIR"] = str(tmp_path)

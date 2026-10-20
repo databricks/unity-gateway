@@ -1,0 +1,186 @@
+# Claude Desktop through Unity Gateway
+
+After Claude Code is successfully configured, `ug configure` also creates and
+selects a `Unity Gateway - <CLI profile name>` profile for Claude Desktop on macOS,
+Windows, and Linux. This uses
+the same workspace, Databricks CLI OAuth profile, model source, and managed HTTP
+headers as Claude Code. There is no separate Desktop checkbox or managed field.
+
+```bash
+ug configure --profile <your-profile> --agents claude
+```
+
+Quit Claude Desktop before configuring, then reopen it normally from your app launcher.
+No terminal process needs to stay running. Claude Desktop must already be installed;
+UG does not install it or manage the customer's MDM process. On Windows and Linux,
+open Desktop once before configuring so it initializes its application-data directory.
+
+## Models and authentication
+
+UG uses an admin's static model list when supplied. Otherwise it obtains the
+Anthropic-compatible gateway catalog, scoped to the same provider service or
+Unity Catalog location when applicable. For Desktop only, either source is filtered
+with case-insensitive `\bclaude-`: IDs such as `system.ai.claude-sonnet-5`,
+`databricks-claude-opus-5`, and `us.anthropic.claude-3-7-sonnet-20250219-v1:0`
+are retained; GPT/OSS IDs and their `anthropic-aigw-*` aliases are excluded unless
+their names also match. Retained IDs and their order are unchanged. This is a name
+filter, not verification of the underlying model-service destinations.
+
+The filtered list is written into the profile with Desktop's model discovery
+disabled. It refreshes when `ug configure` runs again, not when the app opens or
+on a timer. If no Claude-named models remain, setup warns without changing Desktop
+files. Shared discovery and Claude Code's model list are unchanged.
+
+When the catalog provides a display name, UG writes it as
+[`labelOverride`](https://claude.com/docs/third-party/claude-desktop/configuration#models).
+For example, `system.ai.claude-sonnet-5` can appear as `Claude Sonnet 5` in the
+picker. The `name` field remains the exact model ID sent to the gateway. Missing
+or empty display names, and admin static lists, keep ID-only entries. Labels use
+the existing discovery response, with no extra requests, and refresh on
+`ug configure` alongside the model list.
+
+The profile uses a credential helper bound to the Python installation running UG.
+It stores only the workspace/profile name and command arguments, never a bearer
+token. The helper asks the Databricks CLI for a cached or silently refreshed token.
+If authentication is missing, it opens browser login only when Desktop supplies
+`CLAUDE_HELPER_CONTEXT=interactive`. Other contexts fail with instructions to start
+a new Cowork task. Browser login has a bounded timeout and concurrent sign-ins are
+serialized. If the original message failed during login, resend it.
+
+## OpenTelemetry tracing
+
+When the managed coding-agent configuration enables Claude tracing, `ug configure`
+also enables Desktop's [native OTLP export](https://claude.com/docs/third-party/claude-desktop/configuration#otlp).
+The profile sets:
+
+```json
+{
+  "otlpEndpoint": "https://<workspace>/ai-gateway/otel",
+  "otlpProtocol": "http/protobuf",
+  "otlpHeadersHelper": "<absolute-path-to-UG-headers-helper>",
+  "otlpTracesEnabled": true
+}
+```
+
+Desktop appends `/v1/traces` to the collector base URL. UG creates
+`~/.ucode/claude-desktop-otel-headers.sh` on macOS/Linux or
+`%USERPROFILE%\.ucode\claude-desktop-otel-headers.cmd` on Windows. This small wrapper
+runs the configuring Python installation's `ug otel-headers` implementation with
+the explicit workspace and CLI profile. It prints only a JSON `Authorization`
+header, using the existing cached-token/silent-refresh mechanism. Neither the
+profile nor wrapper stores a token. No proxy or background service is needed;
+Codex's Linux-only OTEL service is unchanged.
+The Windows wrapper selects UTF-8 and preserves literal arguments, including
+non-ASCII profile names and trailing backslashes.
+
+Requirements: Desktop must support `otlpTracesEnabled` (added in 1.22209.0) and
+`otlpHeadersHelper` (added in 1.30096.1), Claude tracing must be enabled in the managed
+configuration, and the workspace must accept OTLP trace ingestion with the user's
+credentials. Disable Claude tracing and rerun configure to remove the OTLP keys
+and helper; `ug revert` also deletes the helper and UG profile. Writes and rollback
+cover the wrapper alongside the profile and selection files. Other profiles remain
+untouched. If Desktop's application-data directory has already been removed,
+revert still deletes the helper and previous-selection state without recreating
+Desktop directories.
+
+Restart Desktop and start a new Cowork task or Code session after configuring.
+Code and Cowork sessions receive the headers helper and rerun it as tokens rotate,
+rather than retaining an inference token copied at session start. Desktop caches
+helper output for a few minutes, so rotation is not immediate. The telemetry helper
+does not open browser login; if silent refresh fails, reauthenticate through Desktop's
+inference sign-in or the Databricks CLI. Claude documents that helper failures can
+send telemetry without authentication; check Desktop's logs. UG does not enable
+raw-content capture. Desktop can also attempt logs and metrics exports to the collector base;
+the gateway currently accepts only `/v1/traces`, not `/v1/logs` or `/v1/metrics`.
+
+Component tests verify the generated configuration and lifecycle, not native export
+or ingestion. To validate natively, configure a tracing-enabled workspace, restart
+Desktop, complete a small Cowork task, then confirm that its session spans reached
+the workspace's configured trace table. Check Desktop logs for authentication or
+trace-export errors, and verify further spans from the same open Code session after
+token refresh and the helper cache interval. Do not share
+unredacted credentials or diagnostic bundles.
+
+## Existing profiles and rollback
+
+Profiles use Anthropic's [documented locations](https://claude.com/docs/third-party/claude-desktop/data-storage#where-data-lives):
+
+- macOS: `~/Library/Application Support/Claude-3p/configLibrary`
+- Windows: `%LOCALAPPDATA%\Claude-3p\configLibrary`
+- Linux: `~/.config/Claude-3p/configLibrary`
+
+Older Windows releases used `%APPDATA%\Claude-3p`; update and open Desktop to let
+the app migrate its data before configuring. UG does not move app data.
+
+UG reserves one profile UUID: `5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6`.
+UG supports one configured workspace at a time, so switching workspaces replaces
+the same profile rather than creating another one. The display name remains
+`Unity Gateway - <CLI profile name>`.
+
+Each `ug configure` replaces the entire reserved profile and updates its metadata
+entry and selection, whether or not the file or previous UG state exists.
+Unknown fields, manual edits, and omitted optional fields in that profile are not
+preserved. This profile is fully managed by UG; do not edit it manually. UG writes
+only supported Desktop configuration keys: unknown keys such as `_comment` trigger
+a Desktop warning. Reconfigure removes that field from profiles generated by older builds.
+
+`ug revert` deletes the reserved profile and its metadata entry, even without
+previous UG state. No previous version of that file is restored. Other profiles,
+their entries, and unrelated metadata are left intact. If UG is still selected,
+revert restores the previous selection only when its profile and entry still exist;
+otherwise it clears the selection. A later selection of another profile is preserved.
+Only this previous-selection ID is saved in `~/.ucode/claude-desktop.json`.
+Repeated configure retains it while UG remains selected.
+
+Old random-ID and workspace-derived profiles from earlier builds are left untouched;
+there is no automatic migration or cleanup. Workspace-specific UUID normalization
+is no longer needed; normal CLI URL handling is unchanged.
+
+Files are replaced atomically one at a time with best-effort rollback of their exact
+previous bytes on write failure. This is not a crash-atomic transaction across files.
+Workspace state is cleared even if Desktop revert fails. Desktop's separate
+previous-selection file is retained on failure, so cleanup can still be retried
+with `ug revert`.
+Profile configure/revert waits at most five seconds for its file lock. A timeout
+does not interrupt the holder or change profile, metadata, or selection-state files.
+
+Desktop failures are warnings: successful Claude Code setup still returns exit 0.
+`--dry-run` performs no Desktop discovery or writes. Removing Claude from managed
+configuration does not revoke a previously written Desktop profile. Desktop does
+not run UG's launch-time managed-agent checks; gateway authorization remains the
+enforcement boundary.
+
+## Validation limits
+
+The native profile format comes from a working macOS Claude Desktop/Cowork
+2.19675.0 export. Tests cover configuration, profile cleanup, helper behavior, and CLI
+orchestration; they do not prove GUI inference on every app version.
+
+- Windows and Linux profile paths follow the documented shared `configLibrary`
+  layout. Component tests exercise filesystem configure/refresh/revert using all
+  three platform selections; they do not establish native GUI, helper execution,
+  browser-login, or inference coverage on Windows or Linux.
+- Anthropic's [Linux Desktop beta](https://code.claude.com/docs/en/desktop-linux)
+  supports Ubuntu 22.04+ and Debian 12+. Cowork additionally requires QEMU/KVM.
+- A profile selection is not proof that a fresh ordinary installation has switched
+  to third-party inference mode. Fresh-install activation remains a native test gate.
+- UG does not configure Desktop's default-model selection.
+  Inheriting a particular Claude Code default needs further native evidence; UG
+  does not guess a field or claim that list order selects the default.
+- Inspected Desktop code rejects model IDs containing other vendors' model names,
+  including `glm` and `kimi`, before inference. Gateway protocol compatibility does
+  not remove this client restriction. UG filters Desktop's catalog to Claude-named
+  models without renaming them; that name filter does not reproduce every native
+  validation rule.
+- Anthropic subscription relay, custom OAuth/PAT profiles, Desktop Smart Routing,
+  and connector/plugin compatibility are not implemented here. Native OTEL settings
+  are generated, but native export and ingestion remain unverified; session auth
+  limits are described above.
+- Observed inference applies to Cowork. Ordinary Chat is not claimed to use the
+  same gateway path.
+
+Before native rollout on Windows and Linux, verify that the app reads the generated
+profile after restart, completes a gateway task, refreshes credentials silently,
+opens browser login when interactive recovery is needed, and preserves unrelated
+settings through repeat configure and revert. Run these checks on the supported
+app version and packaging used by your organization.
