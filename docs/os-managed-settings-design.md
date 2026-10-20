@@ -41,8 +41,10 @@ prompt mode and stdin handling itself; the predicate does not probe or grant aut
 Windows has no `sudo`, so the terminal doesn't matter there: an elevated (or SYSTEM) process may
 write `C:\Program Files\ClaudeCode\managed-settings.json` directly, which lets device provisioning
 run `ug configure` headlessly. Standard users can't write under Program Files. For them, as for a
-headless Linux/macOS run, an absent or compatible file stays local-only without a message, and a
-conflicting file stops the command with a request to rerun it elevated.
+headless Linux/macOS run, an absent or compatible file stays local-only, and a conflicting file
+stops the command with a request to rerun it elevated. When the local-only file lacks UG's
+settings, `ug configure` warns once for all agents that running them directly or from an IDE
+extension won't use the gateway; launches, which reconfigure on every run, stay quiet.
 
 Codex has no admin-only config layer on Windows, so the same elevated runs write
 `C:\ProgramData\OpenAI\Codex\requirements.toml`, which Codex 0.156.0 and later enforce over the

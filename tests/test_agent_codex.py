@@ -2003,6 +2003,26 @@ class TestCodexManagedConfig:
         assert state["managed_file_fingerprints"]["codex"]["scope"] == "local-compatible"
         assert codex.managed_config_is_current(state)
 
+    def test_headless_configure_warns_that_bare_codex_skips_the_gateway(
+        self, tmp_path, monkeypatch
+    ):
+        managed_path, sudo_writes = self._sudo_counting_env(
+            tmp_path, monkeypatch, non_interactive=True
+        )
+        warnings: list[str] = []
+        monkeypatch.setattr(managed_files, "print_warning", warnings.append)
+
+        with managed_files.managed_write_batch(["Codex"]):
+            codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+
+        assert sudo_writes == []
+        assert not managed_path.exists()
+        assert [warning for warning in warnings if "machine-wide" in warning] == [
+            "Codex machine-wide settings weren't updated because there's no terminal to approve "
+            "sudo. Launching through `ug` still uses the gateway, but Codex run directly or from an "
+            "IDE extension won't. To set them up, run `ug configure` from an interactive terminal."
+        ]
+
     def test_noninteractive_repairs_conflicting_managed_config_without_prompting(
         self, tmp_path, monkeypatch
     ):

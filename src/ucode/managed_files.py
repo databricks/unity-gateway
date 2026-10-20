@@ -42,6 +42,7 @@ MANAGED_FINGERPRINT_VERSION = 1
 _MISSING = object()
 _managed_write_batch: tuple[str, ...] = ()
 _managed_write_notice_shown = False
+_managed_write_skipped: list[str] = []
 _managed_write_session_depth = 0
 _managed_write_worker: _SudoReplaceWorker | None = None
 
@@ -233,19 +234,53 @@ def _windows_admin_required_message(display: str, path: Path, command: str) -> s
 @contextmanager
 def managed_write_batch(displays: list[str]) -> Iterator[None]:
     """Group setup messaging for agents configured in one command."""
-    global _managed_write_batch, _managed_write_notice_shown
+    global _managed_write_batch, _managed_write_notice_shown, _managed_write_skipped
 
     previous_batch = _managed_write_batch
     previous_notice = _managed_write_notice_shown
+    previous_skipped = _managed_write_skipped
     _managed_write_batch = tuple(dict.fromkeys(displays))
     _managed_write_notice_shown = False
+    _managed_write_skipped = []
     try:
         yield
         if _managed_write_notice_shown:
             print_success(f"Settings configured for {' and '.join(_managed_write_batch)}")
+        if _managed_write_skipped:
+            print_warning(_managed_write_skipped_message(_managed_write_skipped))
     finally:
         _managed_write_batch = previous_batch
         _managed_write_notice_shown = previous_notice
+        _managed_write_skipped = previous_skipped
+
+
+def note_managed_write_skipped(display: str, current: dict, desired: dict) -> None:
+    """Record that this run can't write ``display``'s machine-wide file although it lacks ug's
+    settings, so configure can say why the agent run directly won't use the gateway.
+
+    Only configure warns: launches reconfigure on every run and would repeat it each time."""
+    if not _managed_write_batch or display in _managed_write_skipped:
+        return
+    if is_semantically_equal(mask_user_agent_versions(current), mask_user_agent_versions(desired)):
+        return
+    _managed_write_skipped.append(display)
+
+
+def _managed_write_skipped_message(displays: list[str]) -> str:
+    if current_os() is OS.WINDOWS:
+        reason = "this terminal isn't elevated"
+        fix = (
+            "run `ug configure` from an elevated terminal (Run as administrator), or ask your "
+            "administrator to"
+        )
+    else:
+        reason = "there's no terminal to approve sudo"
+        fix = "run `ug configure` from an interactive terminal"
+    return (
+        f"{' and '.join(displays)} machine-wide settings weren't updated because {reason}. "
+        f"Launching through `ug` still uses the gateway, but {' or '.join(displays)} run directly "
+        f"or from an IDE extension won't. To set them up, {fix}."
+    )
 
 
 @contextmanager

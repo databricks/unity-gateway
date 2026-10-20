@@ -953,6 +953,55 @@ class TestWindowsManagedWrites:
         assert not any(elsewhere.iterdir())
 
 
+class TestManagedWriteSkippedWarning:
+    @pytest.fixture
+    def warnings(self, monkeypatch):
+        captured: list[str] = []
+        monkeypatch.setattr(managed_files, "print_warning", captured.append)
+        return captured
+
+    def test_configure_names_every_skipped_agent_once(self, warnings, monkeypatch):
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.WINDOWS)
+
+        with managed_files.managed_write_batch(["Claude Code", "Codex"]):
+            managed_files.note_managed_write_skipped("Claude Code", {}, {"apiKeyHelper": "ug"})
+            managed_files.note_managed_write_skipped("Claude Code", {}, {"apiKeyHelper": "ug"})
+            managed_files.note_managed_write_skipped("Codex", {}, {"model_provider": "Databricks"})
+
+        assert warnings == [
+            "Claude Code and Codex machine-wide settings weren't updated because this terminal "
+            "isn't elevated. Launching through `ug` still uses the gateway, but Claude Code or "
+            "Codex run directly or from an IDE extension won't. To set them up, run `ug configure` "
+            "from an elevated terminal (Run as administrator), or ask your administrator to."
+        ]
+
+    def test_headless_unix_configure_asks_for_a_terminal(self, warnings, monkeypatch):
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
+
+        with managed_files.managed_write_batch(["Codex"]):
+            managed_files.note_managed_write_skipped("Codex", {}, {"model_provider": "Databricks"})
+
+        assert len(warnings) == 1
+        assert "because there's no terminal to approve sudo" in warnings[0]
+        assert "run `ug configure` from an interactive terminal." in warnings[0]
+
+    def test_launches_stay_quiet(self, warnings):
+        # Launches reconfigure on every run, outside configure's batch.
+        managed_files.note_managed_write_skipped("Codex", {}, {"model_provider": "Databricks"})
+
+        assert warnings == []
+
+    def test_up_to_date_file_needs_no_warning(self, warnings):
+        # Only ug's own User-Agent versions differ, which doesn't change the file's meaning.
+        current = {"http_headers": {"User-Agent": "ucode/1.0 codex/0.154.0"}}
+        desired = {"http_headers": {"User-Agent": "ucode/1.1 codex/0.160.0"}}
+
+        with managed_files.managed_write_batch(["Codex"]):
+            managed_files.note_managed_write_skipped("Codex", current, desired)
+
+        assert warnings == []
+
+
 class TestManagedFileLifecycle:
     def test_noninteractive_creation_is_blocked(self, tmp_path, backup_dir, monkeypatch):
         path = tmp_path / "managed.json"

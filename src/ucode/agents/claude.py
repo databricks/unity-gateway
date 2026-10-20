@@ -69,6 +69,7 @@ from ucode.managed_files import (
     managed_settings_skipped,
     managed_writes_allowed,
     mark_managed_file_verified,
+    note_managed_write_skipped,
     plan_settings_passthrough,
     read_managed_file,
     reconcile_managed_file,
@@ -1918,6 +1919,7 @@ def _reconcile_managed_settings(
     _preserve_permission_denies(managed_before, desired_settings, withdrawn=withdrawn_denies or [])
     conflicts = _managed_settings_conflicts(managed_before, desired_settings, owned_paths)
     if not managed_writes_allowed() and not conflicts:
+        note_managed_write_skipped("Claude Code", managed_before, desired_settings)
         mark_managed_file_verified(state, "claude", path, scope="local-compatible")
         return
     try:
