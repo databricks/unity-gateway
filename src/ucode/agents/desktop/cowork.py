@@ -1,0 +1,407 @@
+"""Install Unity Gateway's managed skills and MCP servers into Claude Cowork."""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import tempfile
+from pathlib import Path
+
+from ucode import config_io
+from ucode.agents.desktop.claude import claude_desktop_root_directory
+from ucode.databricks import build_mcp_proxy_argv
+from ucode.os_compatibility import subprocess_cross_os
+from ucode.skills_state import records_for_scope
+
+MARKETPLACE_NAME = "unity-gateway-cowork"
+PLUGIN_NAME = "unity-gateway"
+PLUGIN_ID = f"{PLUGIN_NAME}@{MARKETPLACE_NAME}"
+STATE_FILENAME = "claude-cowork.json"
+MARKETPLACE_DIRECTORY_NAME = "claude-cowork-marketplace"
+
+_COWORK_MARKERS = (
+    "cowork_settings.json",
+    "cowork_plugins",
+    "cowork_plugins/known_marketplaces.json",
+    "cowork_plugins/installed_plugins.json",
+)
+
+
+def configure_cowork(state: dict, managed_mcp_servers: list[dict]) -> bool:
+    """Generate and install UG's Cowork plugin for the active managed workspace."""
+
+    workspace = state.get("workspace")
+    if not isinstance(workspace, str) or not workspace:
+        raise RuntimeError("No Databricks workspace is configured for Cowork.")
+    profile = state.get("profile")
+    if not isinstance(profile, str) or not profile:
+        raise RuntimeError("Select an explicit Databricks CLI profile for Cowork.")
+
+    skill_records = _managed_skill_records(workspace)
+    mcp_config = _cowork_mcp_config(
+        managed_mcp_servers,
+        workspace,
+        profile,
+        use_pat=bool(state.get("use_pat")),
+        custom_oauth=bool(state.get("custom_oauth")),
+    )
+    if not skill_records and not mcp_config["mcpServers"]:
+        revert_cowork()
+        return False
+
+    cowork_root = discover_cowork_root()
+    marketplace_root = _marketplace_root()
+    plugin_root = marketplace_root / "plugins" / PLUGIN_NAME
+    _write_marketplace(marketplace_root, plugin_root, skill_records, mcp_config)
+    config_io.atomic_write_json(
+        _state_path(),
+        {"version": 1, "cowork_root": str(cowork_root)},
+    )
+    _install_plugin(cowork_root, marketplace_root)
+    return True
+
+
+def revert_cowork() -> bool:
+    """Remove only UG's Cowork plugin, marketplace registration, and generated source."""
+
+    state_path = _state_path()
+    state = config_io.read_json_safe(state_path)
+    raw_root = state.get("cowork_root")
+    changed = False
+    if isinstance(raw_root, str) and raw_root:
+        cowork_root = Path(raw_root)
+        claude = _claude_binary()
+        env = os.environ.copy()
+        env["CLAUDE_CONFIG_DIR"] = str(cowork_root)
+        _run_claude_json(
+            claude,
+            ["plugin", "uninstall", PLUGIN_ID, "--cowork", "--json"],
+            env,
+            accepted_failures=("not installed", "not_installed", "not found"),
+        )
+        _run_claude_json(
+            claude,
+            [
+                "plugin",
+                "marketplace",
+                "remove",
+                MARKETPLACE_NAME,
+                "--cowork",
+                "--json",
+            ],
+            env,
+            accepted_failures=("not found", "not_found", "not registered"),
+        )
+        changed = True
+
+    marketplace_root = _marketplace_root()
+    if marketplace_root.exists() or marketplace_root.is_symlink():
+        if marketplace_root.is_symlink():
+            marketplace_root.unlink()
+        else:
+            shutil.rmtree(marketplace_root)
+        changed = True
+    if state_path.exists():
+        state_path.unlink()
+        changed = True
+    return changed
+
+
+def discover_cowork_root(*, desktop_root: Path | None = None) -> Path:
+    """Find the active account/org Cowork configuration root without guessing IDs."""
+
+    root = desktop_root or claude_desktop_root_directory()
+    if root is None:
+        raise RuntimeError("Claude Cowork configuration is unavailable on this platform.")
+    sessions_root = root / "local-agent-mode-sessions"
+    candidates = sorted(
+        grandchild for child in _directories(sessions_root) for grandchild in _directories(child)
+    )
+    if not candidates:
+        raise RuntimeError("Open and start Claude Cowork once, then run `ug configure` again.")
+    if len(candidates) == 1:
+        return candidates[0]
+
+    mtimes = {candidate: _cowork_mtime(candidate) for candidate in candidates}
+    newest = max(mtimes.values())
+    winners = [candidate for candidate, mtime in mtimes.items() if mtime == newest]
+    if len(winners) == 1:
+        return winners[0]
+    marked_winners = [candidate for candidate in winners if _has_cowork_marker(candidate)]
+    if len(marked_winners) == 1:
+        return marked_winners[0]
+    paths = ", ".join(str(candidate) for candidate in candidates)
+    raise RuntimeError(f"Could not determine the active Cowork profile; candidates: {paths}.")
+
+
+def _directories(path: Path) -> list[Path]:
+    try:
+        return [entry for entry in path.iterdir() if entry.is_dir()]
+    except OSError:
+        return []
+
+
+def _has_cowork_marker(candidate: Path) -> bool:
+    return any((candidate / marker).exists() for marker in _COWORK_MARKERS)
+
+
+def _cowork_mtime(candidate: Path) -> int:
+    mtimes: list[int] = []
+    for path in (candidate, *(candidate / marker for marker in _COWORK_MARKERS)):
+        try:
+            mtimes.append(path.stat().st_mtime_ns)
+        except OSError:
+            continue
+    return max(mtimes, default=0)
+
+
+def _managed_skill_records(workspace: str) -> list[dict]:
+    normalized_workspace = workspace.rstrip("/")
+    return [
+        record
+        for record in records_for_scope("managed", str(Path.home()))
+        if str(record.get("workspace") or "").rstrip("/") == normalized_workspace
+    ]
+
+
+def _cowork_mcp_config(
+    servers: list[dict],
+    workspace: str,
+    profile: str,
+    *,
+    use_pat: bool = False,
+    custom_oauth: bool = False,
+) -> dict:
+    entries: dict[str, dict] = {}
+    for server in servers:
+        name = server.get("name")
+        url = server.get("url")
+        clients = server.get("clients") or []
+        if not isinstance(name, str) or not name or not isinstance(url, str) or not url:
+            continue
+        if "claude" not in clients:
+            continue
+        if custom_oauth:
+            raise RuntimeError("Claude Cowork MCP servers do not support custom OAuth yet.")
+        argv = build_mcp_proxy_argv(
+            url,
+            workspace,
+            profile,
+            use_pat=use_pat,
+        )
+        executable = Path(argv[0])
+        if not executable.is_absolute():
+            raise RuntimeError(
+                "Could not resolve the absolute `ug` executable required by Claude Cowork."
+            )
+        entries[name] = {"type": "stdio", "command": str(executable), "args": argv[1:]}
+    return {"mcpServers": entries}
+
+
+def _write_marketplace(
+    marketplace_root: Path,
+    plugin_root: Path,
+    skill_records: list[dict],
+    mcp_config: dict,
+) -> None:
+    marketplace_root.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(
+        tempfile.mkdtemp(prefix=f".{marketplace_root.name}-", dir=marketplace_root.parent)
+    )
+    backup = marketplace_root.with_name(f".{marketplace_root.name}.previous")
+    try:
+        staging_plugin = staging / plugin_root.relative_to(marketplace_root)
+        (staging / ".claude-plugin").mkdir(parents=True)
+        (staging_plugin / ".claude-plugin").mkdir(parents=True)
+        marketplace: dict[str, object] = {
+            "name": MARKETPLACE_NAME,
+            "owner": {"name": "Databricks"},
+            "plugins": [
+                {
+                    "name": PLUGIN_NAME,
+                    "description": "Unity Gateway workspace skills and MCP servers for Cowork",
+                    "source": f"./plugins/{PLUGIN_NAME}",
+                }
+            ],
+        }
+        plugin: dict[str, object] = {
+            "name": PLUGIN_NAME,
+            "description": "Unity Gateway workspace skills and MCP servers for Cowork",
+            "author": {"name": "Databricks"},
+        }
+        if mcp_config["mcpServers"]:
+            plugin["mcpServers"] = "./.mcp.json"
+            _write_json(staging_plugin / ".mcp.json", mcp_config)
+        _write_json(staging / ".claude-plugin" / "marketplace.json", marketplace)
+        _write_json(staging_plugin / ".claude-plugin" / "plugin.json", plugin)
+        _copy_skills(staging_plugin / "skills", skill_records)
+
+        if backup.exists():
+            shutil.rmtree(backup)
+        if marketplace_root.exists():
+            os.replace(marketplace_root, backup)
+        try:
+            os.replace(staging, marketplace_root)
+        except OSError:
+            if backup.exists() and not marketplace_root.exists():
+                os.replace(backup, marketplace_root)
+            raise
+        if backup.exists():
+            shutil.rmtree(backup)
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+
+
+def _copy_skills(destination: Path, records: list[dict]) -> None:
+    copied: set[str] = set()
+    for record in records:
+        bundle_name = record.get("bundle_name")
+        if not isinstance(bundle_name, str) or not bundle_name or bundle_name in copied:
+            continue
+        source = _claude_skill_directory(record)
+        if source is None:
+            continue
+        destination.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source, destination / bundle_name)
+        copied.add(bundle_name)
+
+
+def _claude_skill_directory(record: dict) -> Path | None:
+    existing = [Path(raw) for raw in (record.get("dirs") or []) if Path(raw).is_dir()]
+    return next(
+        (
+            path
+            for path in existing
+            if path.parent.name == "skills" and path.parent.parent.name == ".claude"
+        ),
+        existing[0] if existing else None,
+    )
+
+
+def _install_plugin(cowork_root: Path, marketplace_root: Path) -> None:
+    claude = _claude_binary()
+    env = os.environ.copy()
+    env["CLAUDE_CONFIG_DIR"] = str(cowork_root)
+    _run_claude(
+        claude,
+        ["plugin", "validate", str(marketplace_root)],
+        env,
+    )
+    _run_claude_json(
+        claude,
+        ["plugin", "marketplace", "add", str(marketplace_root), "--cowork", "--json"],
+        env,
+        accepted_failures=("already exists", "already_exists", "already registered"),
+    )
+    _run_claude_json(
+        claude,
+        [
+            "plugin",
+            "marketplace",
+            "update",
+            MARKETPLACE_NAME,
+            "--cowork",
+            "--json",
+        ],
+        env,
+    )
+    installed = _run_claude_json(
+        claude,
+        ["plugin", "list", "--cowork", "--json"],
+        env,
+    )
+    action = "update" if _contains_plugin_id(installed) else "install"
+    _run_claude_json(
+        claude,
+        ["plugin", action, PLUGIN_ID, "--cowork", "--json"],
+        env,
+    )
+
+
+def _claude_binary() -> str:
+    executable = shutil.which("claude")
+    if not executable or not Path(executable).is_absolute():
+        raise RuntimeError("Claude CLI is required to configure Cowork plugins.")
+    return executable
+
+
+def _run_claude(claude: str, args: list[str], env: dict[str, str]) -> str:
+    result = subprocess_cross_os.run(
+        [claude, *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(
+            f"`claude {' '.join(args[:3])}` failed{f': {detail}' if detail else ''}."
+        )
+    return result.stdout or ""
+
+
+def _run_claude_json(
+    claude: str,
+    args: list[str],
+    env: dict[str, str],
+    *,
+    accepted_failures: tuple[str, ...] = (),
+) -> object:
+    result = subprocess_cross_os.run(
+        [claude, *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+    )
+    output = f"{result.stdout or ''}\n{result.stderr or ''}".strip()
+    lowered = output.lower()
+    if result.returncode != 0:
+        if any(marker in lowered for marker in accepted_failures):
+            return {}
+        raise RuntimeError(
+            f"`claude {' '.join(args[:3])}` failed{f': {output}' if output else ''}."
+        )
+    try:
+        payload = json.loads(result.stdout or "null")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"`claude {' '.join(args[:3])}` returned invalid JSON.") from exc
+    if isinstance(payload, dict) and payload.get("outcome") not in (None, "ok", "success"):
+        message = str(payload.get("message") or "Claude plugin command failed.")
+        if any(marker in message.lower() for marker in accepted_failures):
+            return {}
+        raise RuntimeError(message)
+    return payload
+
+
+def _contains_plugin_id(payload: object) -> bool:
+    if isinstance(payload, str):
+        return payload == PLUGIN_ID
+    if isinstance(payload, list):
+        return any(_contains_plugin_id(value) for value in payload)
+    if isinstance(payload, dict):
+        plugin_id = payload.get("pluginId") or payload.get("id")
+        if plugin_id == PLUGIN_ID:
+            return True
+        if payload.get("name") == PLUGIN_NAME and payload.get("marketplace") == MARKETPLACE_NAME:
+            return True
+        return any(_contains_plugin_id(value) for value in payload.values())
+    return False
+
+
+def _write_json(path: Path, payload: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def _marketplace_root() -> Path:
+    return config_io.APP_DIR / MARKETPLACE_DIRECTORY_NAME
+
+
+def _state_path() -> Path:
+    return config_io.APP_DIR / STATE_FILENAME

@@ -6,14 +6,54 @@ Windows, and Linux. This uses
 the same workspace, Databricks CLI OAuth profile, model source, and managed HTTP
 headers as Claude Code. There is no separate Desktop checkbox or managed field.
 
+## Requirements and setup
+
+- Claude Desktop installed on macOS, Windows, or Linux. On Windows/Linux, open it
+  once to initialize application data.
+- A named Databricks CLI OAuth profile with gateway/model access. A bearer token
+  alone is not enough for Desktop's credential helper.
+- At least one Claude-named model in the configured static list or gateway catalog.
+
+Quit Claude Desktop, configure Claude Code, then reopen Desktop normally:
+
 ```bash
 ug configure --profile <your-profile> --agents claude
 ```
 
-Quit Claude Desktop before configuring, then reopen it normally from your app launcher.
-No terminal process needs to stay running. Claude Desktop must already be installed;
-UG does not install it or manage the customer's MDM process. On Windows and Linux,
-open Desktop once before configuring so it initializes its application-data directory.
+No terminal process needs to stay running. UG does not install Desktop or manage
+the customer's MDM process. Explicit-agent, selected-agent, and managed configure
+flows all set up Desktop after successful Claude Code configuration. Ordinary agent
+launches and `ug agents add` do not configure Desktop.
+
+## Cowork workspace skills and MCP servers
+
+When a managed workspace enables Claude, `ug configure` also installs a generated
+`unity-gateway@unity-gateway-cowork` plugin into that account's Cowork scope. Start
+one Cowork session before configuring so Desktop creates its active account/organization
+directory. If several Cowork profiles exist and UG cannot identify one active profile,
+setup warns without changing any of them.
+
+The plugin contains only the current workspace's managed skills and managed MCP servers
+that target Claude. User, project, and other-workspace skills are not copied. MCP entries
+run the absolute `ug mcp-proxy` executable with the selected workspace and CLI profile;
+no bearer token is stored in the plugin. Saved PAT mode is supported. Custom OAuth is not
+yet supported for Cowork MCP servers.
+
+UG owns these local files:
+
+- Generated marketplace: `~/.ucode/claude-cowork-marketplace`
+- Selected Cowork root record: `~/.ucode/claude-cowork.json`
+
+Start a new Cowork session after configure. Plugin MCP servers connect asynchronously and
+may take a few seconds to appear, so a tool can be absent on the first model turn. Deferred
+tool search or a retry after another tool call should find it. The resulting tool name follows
+Claude's `mcp__plugin_<plugin>_<server>__<tool>` pattern.
+
+Cowork plugin support can still be disabled by Anthropic account feature flags or managed
+Desktop policy. UG treats installation as best-effort: failure warns but does not fail Claude
+Code setup. Removing Claude from managed configuration, switching to an unmanaged workspace,
+or running `ug revert` uninstalls the UG Cowork plugin and removes UG's generated marketplace.
+The native Desktop gateway profile is separate and remains under the cleanup rules below.
 
 ## Models and authentication
 
@@ -133,6 +173,8 @@ otherwise it clears the selection. A later selection of another profile is prese
 Only this previous-selection ID is saved in `~/.ucode/claude-desktop.json`.
 Repeated configure retains it while UG remains selected.
 
+The revert summary reports `Claude Desktop profile: removed`, `unchanged`, or `failed`.
+
 Old random-ID and workspace-derived profiles from earlier builds are left untouched;
 there is no automatic migration or cleanup. Workspace-specific UUID normalization
 is no longer needed; normal CLI URL handling is unchanged.
@@ -141,15 +183,16 @@ Files are replaced atomically one at a time with best-effort rollback of their e
 previous bytes on write failure. This is not a crash-atomic transaction across files.
 Workspace state is cleared even if Desktop revert fails. Desktop's separate
 previous-selection file is retained on failure, so cleanup can still be retried
-with `ug revert`.
+with `ug revert`. A Desktop cleanup failure produces one warning and exit code 1;
+the summary reports the failed profile cleanup and confirms workspace state was cleared.
 Profile configure/revert waits at most five seconds for its file lock. A timeout
 does not interrupt the holder or change profile, metadata, or selection-state files.
 
-Desktop failures are warnings: successful Claude Code setup still returns exit 0.
-`--dry-run` performs no Desktop discovery or writes. Removing Claude from managed
-configuration does not revoke a previously written Desktop profile. Desktop does
-not run UG's launch-time managed-agent checks; gateway authorization remains the
-enforcement boundary.
+Desktop setup failures only warn: successful Claude Code configuration still returns exit 0.
+`--dry-run` performs no Desktop or Cowork discovery, writes, or plugin commands. Removing
+Claude from managed configuration removes the managed Cowork plugin but does not revoke a
+previously written native Desktop profile. Desktop does not run UG's launch-time managed-agent
+checks; gateway authorization remains the enforcement boundary.
 
 ## Validation limits
 
@@ -174,9 +217,10 @@ orchestration; they do not prove GUI inference on every app version.
   models without renaming them; that name filter does not reproduce every native
   validation rule.
 - Anthropic subscription relay, custom OAuth/PAT profiles, Desktop Smart Routing,
-  and connector/plugin compatibility are not implemented here. Native OTEL settings
-  are generated, but native export and ingestion remain unverified; session auth
-  limits are described above.
+  and third-party connectors outside UG's generated Cowork plugin are not implemented here.
+  Cowork's MCP proxy supports saved PAT mode but not custom OAuth. Native OTEL settings are
+  generated, but native export and ingestion remain unverified; session auth limits are
+  described above.
 - Observed inference applies to Cowork. Ordinary Chat is not claimed to use the
   same gateway path.
 

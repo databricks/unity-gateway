@@ -4735,7 +4735,7 @@ class TestConfigureAgentsSelection:
 
         result = cli_mod._configure_managed_mcp_servers({"enabled_agents": {"claude": {}}})
 
-        assert result == []
+        assert result is None
         assert warned == []  # not surfaced as a failure
         assert notes and "rate-limited" in notes[0].lower() and "429" in notes[0]
 

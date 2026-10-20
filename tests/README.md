@@ -222,8 +222,19 @@ changing the UUID, and configure/revert warnings on profile-lock timeout without
 changing profile or selection-state files. An existing reserved UUID without records
 is replaced on configure and deleted on revert. Workspace changes reuse the same file.
 CLI revert clears workspace state even when Desktop cleanup fails. A lock-failure
-regression verifies that Desktop files and previous-selection state survive, then
-retry deletes the UG profile and restores the previous selection without workspace state.
+regression invokes the Typer CLI and checks exit code 1, one warning, and a failed
+Desktop summary while profile and previous-selection files survive. Retry returns
+exit code 0, deletes the UG profile, and restores the previous selection without
+workspace state; a repeated revert also returns 0.
+
+`test_cowork_plugin.py` covers active Cowork-root discovery, ambiguous-profile refusal,
+generated marketplace/plugin/MCP manifests, current-workspace managed-skill selection,
+Claude-only MCP filtering, absolute proxy executables, saved PAT mode, custom-OAuth refusal,
+install/update selection, idempotent cleanup, and saved-root removal. CLI component tests
+cover managed setup after successful skill/MCP reconciliation, preservation after transient
+reconciliation failures, and cleanup for unmanaged or non-Claude configurations. These tests
+mock the Claude plugin CLI and do not establish native Desktop policy, account-feature,
+late MCP connection, tool discovery, or inference behavior.
 
 Model-source tests require Desktop-only, case-insensitive `\bclaude-` filtering
 instead of copying every catalog entry. Mixed static/discovered lists exclude GPT/OSS

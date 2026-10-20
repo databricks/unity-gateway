@@ -402,9 +402,16 @@ configure/revert warnings that preserve profile and selection-state files on loc
 An existing reserved UUID without records is replaced on configure and deleted on revert;
 these remain filesystem component checks.
 CLI revert clears workspace state even when Desktop cleanup fails. A component
-regression verifies that a lock failure preserves Desktop files and selection state,
-then retry restores the previous selection without workspace state. This does not
-establish native Desktop coverage.
+regression invokes the Typer CLI and checks that a lock failure returns exit code 1,
+emits one warning and a failed Desktop summary, and preserves profile and selection
+files. Retry restores the previous selection without workspace state and returns 0;
+a repeated revert also returns 0. This does not establish native Desktop coverage.
+
+`../test_cowork_plugin.py` covers Cowork-root discovery, generated plugin contents,
+scoped Claude plugin commands, install/update selection, PAT/custom-OAuth behavior, and
+owned-file cleanup. `../test_desktop_configure_cli.py` covers managed orchestration and
+cleanup. Both are mocked component coverage; the integration suite does not launch Cowork,
+connect a plugin MCP server, discover its deferred tool, or run a task through it.
 
 Model-source tests require Desktop-only, case-insensitive `\bclaude-` filtering
 instead of copying every catalog entry. Mixed static/discovered lists exclude GPT/OSS

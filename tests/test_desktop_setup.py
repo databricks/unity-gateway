@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from typer.testing import CliRunner
 
 from ucode import cli
 from ucode import state as state_store
@@ -682,7 +683,7 @@ def test_profile_lock_timeout_warns_and_preserves_state(desktop, monkeypatch, ca
     assert "retry" in output
 
 
-def test_revert_failure_clears_workspace_state_and_allows_retry(desktop, monkeypatch, capsys):
+def test_revert_failure_clears_workspace_state_and_allows_retry(desktop, monkeypatch):
     previous_id = "12345678-1234-4abc-8def-123456789abc"
     (desktop / f"{previous_id}.json").write_text("{}")
     metadata_path = desktop / "_meta.json"
@@ -707,17 +708,25 @@ def test_revert_failure_clears_workspace_state_and_allows_retry(desktop, monkeyp
     def lock_timeout(handle, *, timeout):
         raise TimeoutError("Lock is held by another operation")
 
+    runner = CliRunner()
     with monkeypatch.context() as blocked:
         blocked.setattr(desktop_config, "acquire_exclusive_file_lock", lock_timeout)
-        assert cli.revert() == 1
+        failed = runner.invoke(cli.app, ["revert"])
+
+    assert failed.exit_code == 1, failed.output
+    warnings = [line for line in failed.output.splitlines() if line.startswith("! ")]
+    assert len(warnings) == 1, failed.output
+    assert "Could not revert Claude Desktop" in warnings[0]
+    assert "Claude Desktop profile: failed" in failed.output
+    assert "ug state cleared" in failed.output
 
     assert state_store.load_state() == {}
     assert state_store.load_full_state()["workspaces"] == {}
     assert selection_path.read_bytes() == selection_before
     assert {path.name: path.read_bytes() for path in desktop.glob("*.json")} == profiles_before
-    assert "ug state cleared" in capsys.readouterr().out
 
-    assert cli.revert() == 0
+    retried = runner.invoke(cli.app, ["revert"])
+    assert retried.exit_code == 0, retried.output
     assert not (desktop / f"{claude_desktop.PROFILE_ID}.json").exists()
     assert not selection_path.exists()
     assert json.loads(metadata_path.read_text()) == {
@@ -725,7 +734,8 @@ def test_revert_failure_clears_workspace_state_and_allows_retry(desktop, monkeyp
         "appliedId": previous_id,
     }
     assert (desktop / f"{previous_id}.json").read_text() == "{}"
-    assert cli.revert() == 0
+    repeated = runner.invoke(cli.app, ["revert"])
+    assert repeated.exit_code == 0, repeated.output
 
 
 def test_dry_run_does_not_discover_or_create_profiles(desktop, monkeypatch):
@@ -780,6 +790,13 @@ def test_revert_without_desktop_ownership_leaves_existing_settings_untouched(des
     assert desktop_setup.revert_desktop() == "unchanged"
 
     assert {path.name: path.read_bytes() for path in desktop.iterdir()} == before
+
+
+def test_revert_cleans_cowork_when_native_desktop_is_unavailable(monkeypatch):
+    monkeypatch.setattr(desktop_setup, "claude_desktop_directory", lambda: None)
+    monkeypatch.setattr(desktop_setup, "revert_claude_cowork", lambda: "removed")
+
+    assert desktop_setup.revert_desktop() == "removed"
 
 
 def test_reconfigure_recreates_deleted_profile_with_fixed_id(desktop, capsys):
