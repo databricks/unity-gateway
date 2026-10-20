@@ -248,6 +248,17 @@ def managed_write_batch(displays: list[str]) -> Iterator[None]:
         _managed_write_notice_shown = previous_notice
 
 
+def warn_managed_write_skipped(path: Path, current: dict, desired: dict) -> None:
+    """Tell configure that ``path`` still lacks ug's settings because this run can't write it.
+
+    Launches reconfigure on every run outside a configure batch, so they stay quiet."""
+    if not _managed_write_batch or is_dry_run():
+        return
+    if is_semantically_equal(mask_user_agent_versions(current), mask_user_agent_versions(desired)):
+        return
+    print_warning(f"{path} wasn't updated because no admin privileges were detected.")
+
+
 @contextmanager
 def managed_write_session() -> Iterator[None]:
     """Share one lazy sudo worker across managed-file replacements in a command.
