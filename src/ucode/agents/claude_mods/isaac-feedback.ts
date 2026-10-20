@@ -48,8 +48,9 @@ export function registerIsaacFeedback(on: On, state: FeedbackState): void {
     return {text: 'Turning Smart Router off in the background. Could not open the feedback form.'};
   });
 
-  on('ui.render', { component: 'Pane' }, ($, e, next) => {
+  on('ui.render', { component: 'Pane' }, async ($, e, next) => {
     if (e.requestId !== FEEDBACK_PANE || e.surface === 'mobile') return next(e);
+    if (await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK') !== '1') return next(e);
     const { Box, Text, Input, Button } = $.ui.resolve(e);
     return Box({
       flexDirection: 'column',
@@ -64,7 +65,7 @@ export function registerIsaacFeedback(on: On, state: FeedbackState): void {
           submitLabel: 'Send feedback',
           onInput: (value) => { state.reason = value; },
           onSubmit: async (value) => {
-            if (state.submitted) return;
+            if (state.submitted || await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK') !== '1') return;
             if (Array.from(value.trim()).length < 16) {
               $.ui.toast('Enter at least 16 characters, excluding surrounding whitespace.');
               return;

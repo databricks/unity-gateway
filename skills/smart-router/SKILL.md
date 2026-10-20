@@ -1,9 +1,9 @@
 ---
 name: smart-router
 description: Enable or disable Unity Gateway subagent model routing for the current smart-routed Claude or Codex session, along with Smart Router Orchestrator when opted in.
-allowed-tools: Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing --smart-router-feedback *), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing --smart-router-feedback *)
+allowed-tools: Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing)
 metadata:
-  version: "1.5.0"
+  version: "1.6.0"
 ---
 
 # Smart Router
@@ -21,14 +21,9 @@ In PowerShell, use `& "$env:UCODE_SMART_ROUTER_PYTHON"` in place of
 If `UCODE_SMART_ROUTER_PYTHON` or `UCODE_SESSION_ENV_FILE` is unset, ask the user
 to restart through an updated Unity Gateway with smart routing enabled.
 
-When `ISAAC_SMART_ROUTER_FEEDBACK=1`, start the off command in the background before
-asking for feedback. Ask why the user is turning Smart Router off while the command
-runs. Feedback is optional: cancellation must not cancel the off command or re-enable
-routing. Before submitting, require at least 16 characters after trimming surrounding
-whitespace. Never invent or pad the user's reason. Submit their exact text through
-`/isaac-feedback --category smart-routing <reason>`. Report toggle or submission
-failures separately; never re-enable routing because feedback failed. Do not change
-`ISAAC_SMART_ROUTER_FEEDBACK`. Native Claude sessions handle this with a local form.
+Only toggle routing and report the command's result. Do not ask for feedback or
+invoke a feedback command. Native Claude sessions handle optional feedback through
+their environment-gated form.
 
 With no argument, explain that only `on` and `off` are accepted. Do not edit the state file.
 This affects subsequent subagent model selection in the current session, not the root model

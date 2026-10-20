@@ -61,6 +61,8 @@ On each on-to-off change, Isaac sessions with
 immediately open a dismissible feedback form. Isaac sets this flag from its
 rollout setting or the user's explicit `1`/`0` override. It controls Isaac feedback
 availability, so UG's routing presets and on/off toggles leave it unchanged.
+The native command, form rendering, and submission each check that the flag is
+exactly `1`; unset, `0`, and all other values disable this feedback flow.
 The form does not wait for the toggle or an Isaac CLI availability check. The
 transcript confirms when routing is off, or reports a toggle failure. Enter accepts
 a reason of at least 16 characters after trimming surrounding whitespace and uploads
@@ -81,12 +83,14 @@ respective values.
 
 The CLI accepts off commands without a reason even when feedback is enabled. The
 hidden `--smart-router-feedback` option remains accepted for older mods. The
-CLI/skill path, including Codex, starts the toggle before asking for optional feedback
-and submits it through `/isaac-feedback`. The skill or native form owns submission.
+CLI/skill path, including Codex, only toggles routing and never asks for feedback.
+Automatic feedback is owned by the native Claude handler, rather than skill instructions.
 
 Validate the form in Isaac, including the 16-character minimum, exact reason
 submission, cancellation, repeated toggles and failures. One native component test
 checks that the form opens before off completes and cancellation does not stop it.
+Another checks that commands and rendering pass through for every tested flag value
+other than `1`.
 Live Isaac UI and evidence uploads still require manual validation.
 
 The existing Claude skill-toggle integration journey checks recorded inference
