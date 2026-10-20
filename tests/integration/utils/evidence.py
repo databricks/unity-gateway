@@ -5,9 +5,9 @@ import re
 import uuid
 from pathlib import Path
 
-from .agents import _evidence_id, claude, codex
+from .agents import _evidence_id, claude, codex, copilot
 
-_AGENT_HELPERS = {"claude": claude, "codex": codex}
+_AGENT_HELPERS = {"claude": claude, "codex": codex, "copilot": copilot}
 
 
 def assert_no_terminal_api_error(screen: str) -> None:
@@ -145,6 +145,21 @@ def assert_no_bearer_on_disk(session) -> None:
         text = env_file.read_text(encoding="utf-8")
         assert "COPILOT_PROVIDER_BEARER_TOKEN" not in text
         assert "OAUTH_TOKEN" not in text
+
+
+def copilot_selected_models(session) -> list[str]:
+    """Every registry ref Copilot sessions under this home started on or switched to."""
+    return [
+        ref
+        for records in agent_sessions(session, "copilot").values()
+        for ref in copilot.selected_models(records)
+    ]
+
+
+def assert_no_session_registry_left(session) -> None:
+    """`ug copilot` removes its per-session registry, which holds the proxy secret, on exit."""
+    leftovers = sorted(session.home.glob(".ucode/run/copilot-*"))
+    assert not leftovers, f"Session registries left behind: {leftovers}"
 
 
 def fresh_id():

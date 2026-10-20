@@ -68,17 +68,24 @@ model for one launch. OpenCode's `provider/model` form is also accepted.
 Unknown Databricks models produce an error; this option does not add models
 to discovery or change ug's saved default.
 
-`ug copilot` uses the Anthropic Messages API for Claude model IDs, the Responses
-API for GPT-5 and newer model IDs, and Chat Completions for other models. The
-model selected at launch (including `--model`) determines the API. An inherited `COPILOT_PROVIDER_WIRE_MODEL` takes precedence
-because it overrides the model sent to the gateway. Restart Copilot through `ug`
-to change the wire model or API; in-session model selection does not rebuild its
-provider configuration.
+`ug copilot` lists every Claude and GPT model you can use on the workspace in
+Copilot's `/model` picker, and you can switch between them mid-session. Claude
+models use the Anthropic Messages API, GPT-5 and newer use Responses, and older
+GPT models use Chat Completions. Gemini and open-source models aren't offered.
+`ug copilot --model claude-opus-5-5` (or `system.ai.claude-opus-5-5`, or Copilot's
+own `dbx-anthropic/system.ai.claude-opus-5-5`) picks the model a session starts on;
+an unknown or unsupported model fails before Copilot starts and lists the
+available ones. ug passes Copilot a per-session model registry, so your own
+`~/.copilot/providers.json` and `COPILOT_PROVIDER_*` settings apply only to plain
+`copilot`. Use plain `/model`, not `/model --global`, inside `ug copilot`: a
+global choice is saved for plain `copilot` too, where the Databricks models don't
+exist. Requires Copilot CLI 1.0.91 or newer.
 
 `ug copilot` runs Copilot against a loopback proxy for the session. Copilot holds only
-a random session secret; the proxy adds a fresh Databricks token to each gateway
-request, so OAuth sessions keep working past token expiry without a restart, and no
-token is written to `~/.copilot/ucode.env`. If the Databricks sign-in itself expires,
+a random session secret, kept in the session registry under `~/.ucode/run/` (readable
+only by you, deleted when the session ends); the proxy adds a fresh Databricks token to
+each gateway request, so OAuth sessions keep working past token expiry without a
+restart, and no Databricks token is written to disk. If the Databricks sign-in itself expires,
 Copilot shows a "Databricks sign-in expired" error; run `databricks auth login` and
 restart `ug copilot`. Proxy errors are logged to `~/.ucode/logs/copilot-proxy.log`.
 
