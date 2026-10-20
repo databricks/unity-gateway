@@ -44,7 +44,8 @@ async function readRoutingState($: any): Promise<RoutingState> {
   }
 }
 
-export const registerStatusBand = (on: On): void => {
+// isReplaced lets another above-prompt row take the band's place while it shows.
+export const registerStatusBand = (on: On, isReplaced: () => boolean = () => false): void => {
   on('prompt.submit', ($, e, next) => {
     if (band.isVisible) band.isHideArmed = true
     return next(e)
@@ -70,7 +71,7 @@ export const registerStatusBand = (on: On): void => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const theirs = await next(e)
-    if (!band.isVisible) return theirs
+    if (!band.isVisible || isReplaced()) return theirs
     const { Box, Text } = $.ui.resolve(e)
     const { enabled, firstPrompt } = await readRoutingState($)
 

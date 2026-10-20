@@ -58,6 +58,20 @@ confirmations, and keep the band, the hint row, and the toggle reply apart.
 The mod's own tests (`native_claude/mod_tests`) cover the same rules for both toggles
 without a live agent.
 
+Savings estimate coverage: `test_smart_routing_savings.py` prices the mod's token sums
+(per-entry and first-prompt baselines, unpriced or malformed entries, the pricer's single
+JSON line). `test_smart_routing_pricing.py` covers endpoint rates and the price cache.
+The pricer subprocess checks explicit opt-in; unset, empty, zero, and invalid values
+stay off. Preset coverage in
+`test_smart_routing_config.py` checks the savings flag, inherited-value precedence,
+restoration, and launch/session off controls. `test_smart_router.py` checks that the skill
+toggle writes all managed flags.
+`test_claude_mod.py` checks native literal setters against the flag registry. In the
+native suite, options reach the mod unchanged, enabled sessions record their start
+model, and disabled sessions create no usage file even with stale savings options.
+Endpoint-price refresh failures, orchestrator-version display, token accumulation in
+`turn.step`, and the above-prompt row are not covered automatically.
+
 Dedicated CUJs reuse `integration/utils` session/terminal mechanics and file-task
 and transcript readers, not its config stubs or pytest fixtures. Prompt/model
 correlation remains CUJ-specific. Concurrent runs may read the same CUJ workspace.

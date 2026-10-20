@@ -509,6 +509,7 @@ class TestV2Launch:
         assert settings["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME] == {
             "options": {
                 **v2._claude_mod_launch_options({**os.environ, **settings["env"]}),
+                **v2.CLAUDE_SAVINGS_OPTION_DEFAULTS,
                 "routeCommand": [
                     "/bin/ug",
                     "claude-router-hook",
@@ -539,6 +540,32 @@ class TestV2Launch:
         assert not captured["plugin_dir"].exists()
         # The model-setting guard is a first-prompt concern; user settings stay untouched.
         assert json.loads(user_settings.read_text()) == {"model": "opus"}
+
+
+class TestSavingsPriceRefresh:
+    def test_prices_routable_and_main_models_by_system_ai_name(self):
+        services = v2._savings_model_services(
+            [
+                "system.ai.claude-opus-4-8[1m]",
+                "anthropic-aigw-73ea02b2-system.ai.glm-5-2",
+                "databricks-claude-sonnet-5",
+                "opus",
+                None,
+            ],
+            {
+                "env": {
+                    "ANTHROPIC_DEFAULT_OPUS_MODEL": "system.ai.claude-opus-5-5",
+                    "UNRELATED": "system.ai.not-a-main-model",
+                }
+            },
+        )
+
+        assert services == [
+            "system.ai.claude-opus-4-8",
+            "system.ai.claude-opus-5-5",
+            "system.ai.claude-sonnet-5",
+            "system.ai.glm-5-2",
+        ]
 
 
 class TestV2ModelPickerDiscovery:

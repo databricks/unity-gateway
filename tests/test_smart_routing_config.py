@@ -9,6 +9,7 @@ from ucode.constants import (
     AGENT_CODEX,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
+    ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
 )
@@ -19,26 +20,37 @@ _EXPECTED_PRESETS = {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR: "0",
     },
     config.SUBAGENT_ONLY_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR: "0",
     },
     config.SUBAGENT_ONLY_V1: {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR: "0",
     },
     config.SUBAGENT_ORCH_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+        ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR: "0",
     },
     config.SUBAGENT_ORCH_V1: {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+        ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR: "0",
+    },
+    config.SUBAGENT_ORCH_SAVINGS_V0: {
+        ENABLE_SMART_ROUTING_ENV_VAR: "1",
+        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+        ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR: "1",
     },
 }
 
@@ -51,6 +63,7 @@ def test_absent_or_unknown_selector_is_a_no_op(selector):
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+        ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR: "0",
         "INHERITED_SETTING": "preserved",
     }
     expected = applied.copy()
@@ -64,9 +77,17 @@ def test_absent_or_unknown_selector_is_a_no_op(selector):
     assert applied == original
 
 
-@pytest.mark.parametrize("ENABLE_SMART_ROUTING_V2", [None, "0", "1"])
-@pytest.mark.parametrize("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", [None, "0", "1"])
-@pytest.mark.parametrize("ENABLE_SMART_ROUTER_ORCHESTRATOR", [None, "0", "1"])
+@pytest.mark.parametrize(
+    "legacy_values",
+    [
+        (None, None, None, None),
+        ("0", "0", "0", "0"),
+        ("1", "1", "1", "1"),
+        ("1", "0", "1", "0"),
+        ("0", "1", "0", "1"),
+    ],
+    ids=["unset", "disabled", "enabled", "mixed", "mixed-inverse"],
+)
 @pytest.mark.parametrize(
     "SMART_ROUTER_CONFIG_VERSION",
     [
@@ -76,20 +97,21 @@ def test_absent_or_unknown_selector_is_a_no_op(selector):
         config.SUBAGENT_ONLY_V1,
         config.SUBAGENT_ORCH_V0,
         config.SUBAGENT_ORCH_V1,
+        config.SUBAGENT_ORCH_SAVINGS_V0,
     ],
 )
-def test_smart_routing_config_cartesian_grid(
-    ENABLE_SMART_ROUTING_V2,
-    ENABLE_SMART_ROUTING_SUBAGENT_ONLY,
-    ENABLE_SMART_ROUTER_ORCHESTRATOR,
-    SMART_ROUTER_CONFIG_VERSION,
-):
+def test_smart_routing_config_precedence(legacy_values, SMART_ROUTER_CONFIG_VERSION):
     source = {
         environment_key: value
-        for environment_key, value in (
-            (ENABLE_SMART_ROUTING_ENV_VAR, ENABLE_SMART_ROUTING_V2),
-            (ENABLE_SUBAGENT_ROUTING_ENV_VAR, ENABLE_SMART_ROUTING_SUBAGENT_ONLY),
-            (ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR, ENABLE_SMART_ROUTER_ORCHESTRATOR),
+        for environment_key, value in zip(
+            (
+                ENABLE_SMART_ROUTING_ENV_VAR,
+                ENABLE_SUBAGENT_ROUTING_ENV_VAR,
+                ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
+                ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR,
+            ),
+            legacy_values,
+            strict=True,
         )
         if value is not None
     }
@@ -180,6 +202,7 @@ def test_agent_config_selection_and_session_precedence(monkeypatch, agent, enabl
             "ENABLE_SMART_ROUTING_V2": "0",
             "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0",
             "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
+            "ENABLE_SMART_ROUTING_SAVINGS": "0",
         },
     )
     source = {"SMART_ROUTER_CONFIG_VERSION": "subagent_orch_v0"}
@@ -187,6 +210,7 @@ def test_agent_config_selection_and_session_precedence(monkeypatch, agent, enabl
         "ENABLE_SMART_ROUTING_V2": "0",
         "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": enabled,
         "ENABLE_SMART_ROUTER_ORCHESTRATOR": enabled,
+        "ENABLE_SMART_ROUTING_SAVINGS": "0",
     }
     assert config.resolve_environment(source, agent=agent) == expected
     assert v2.smart_routing_enabled(source, default=True, agent=agent) == (enabled == "1")
@@ -200,3 +224,29 @@ def test_agent_config_selection_and_session_precedence(monkeypatch, agent, enabl
         session_env.SESSION_ENV_VAR: str(control),
         "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
     }
+
+
+@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
+def test_savings_preset_launch_and_session_off_restore_the_baseline(agent, tmp_path):
+    source = {
+        SMART_ROUTER_CONFIG_VERSION_ENV_VAR: config.SUBAGENT_ORCH_SAVINGS_V0,
+        ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR: "0",
+    }
+    original = source.copy()
+    previous = v2.override_smart_routing(False, source, agent=agent)
+    assert all(source[key] == "0" for key in config.SMART_ROUTING_ENV_KEYS)
+    v2.restore_smart_routing_env(previous, source)
+    assert source == original
+
+    controls = tmp_path / "session.json"
+    controls.write_text('{"ENABLE_SMART_ROUTING_SAVINGS":"0"}')
+    source[session_env.SESSION_ENV_VAR] = str(controls)
+    effective = session_env.effective_environment(source, agent=agent)
+    assert effective[ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR] == "0"
+    assert effective[ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
+
+
+def test_savings_alone_does_not_enable_routing():
+    source = {ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR: "1"}
+    assert not v2.smart_routing_enabled(source, default=False, agent=AGENT_CLAUDE)
+    assert not v2.first_prompt_routing_enabled(source, agent=AGENT_CLAUDE)

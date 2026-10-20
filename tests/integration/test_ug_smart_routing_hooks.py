@@ -209,6 +209,7 @@ def _toggle_with_skill(
             "ENABLE_SMART_ROUTING_V2": "0",
             "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0",
             "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
+            "ENABLE_SMART_ROUTING_SAVINGS": "0",
         }
     )
     assert json.loads(controls[0].read_text()) != expected
