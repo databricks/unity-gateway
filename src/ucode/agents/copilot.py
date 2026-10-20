@@ -49,6 +49,7 @@ from ucode.databricks import (
     ModelServiceEntry,
     build_copilot_base_url,
     build_tool_base_url,
+    model_display_label,
     model_version_sort_key,
 )
 from ucode.os_compatibility import subprocess_cross_os
@@ -448,7 +449,7 @@ def render_providers_config(
             "id": model.id,
             "provider": model.provider,
             "wireModel": model.id,
-            "name": model.id,
+            "name": model_display_label(model.id),
         }
         catalog_id = copilot_catalog_model_id(model.id) if model.wire == "anthropic" else None
         if catalog_id is not None:
