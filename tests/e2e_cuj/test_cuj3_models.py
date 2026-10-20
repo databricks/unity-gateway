@@ -89,7 +89,7 @@ class TestCatalogDiscovery(BaseCujTest):
     def test_catalog_discovery_claude_picker_preserves_default(self, cuj):
         """Scenario: configure, launch ug claude, inspect its picker, then submit a task.
 
-        Expected: only Sonnet/Haiku/Kimi appear; Gemini and decoys are absent.
+        Expected: only Sonnet/Haiku/Kimi/GPT Luna appear; Gemini and decoys are absent.
         Dismissing the picker without a selection preserves Sonnet for the completed task.
         """
         session, workspace, recorder = cuj
@@ -295,7 +295,7 @@ class TestCatalogDiscovery(BaseCujTest):
     def test_catalog_discovery_claude_explicit_model_completes_task(self, cuj, model):
         """Scenario: configure, then run a Claude print task with another compatible scoped model.
 
-        Expected: each Haiku/Kimi task completes with the explicitly requested model.
+        Expected: each Haiku/Kimi/GPT Luna task completes with the explicitly requested model.
         """
         session, _, recorder = cuj
         recorder.configure_session(session, ["configure", "--skip-upgrade"])

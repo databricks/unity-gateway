@@ -56,7 +56,8 @@ Offline CUJ cases also cover Codex delegated-turn completion and task-request ma
 see `../e2e_cuj/README.md` for the evidence requirements.
 
 The [catalog discovery journey](../e2e_cuj/README.md) uses the CUJ3 workspace to check
-agent-compatible pickers, schema exclusions, configured defaults, and real inference.
+agent-compatible pickers (including GPT Luna for both agents), schema exclusions, configured
+defaults, and real inference, including an explicit Claude headless task on GPT Luna.
 CI collects it through the shared `dedicated-cuj` job. Its request checks accept the known
 Claude thinking-display 400 only with a successful, otherwise identical native retry.
 
