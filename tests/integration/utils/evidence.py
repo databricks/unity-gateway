@@ -133,14 +133,13 @@ def assistant_answer_contains(session, agent: str, value: str, *, child: bool = 
 
 
 def assert_no_bearer_on_disk(session) -> None:
-    """No file ug or Copilot wrote under the session home holds the Databricks bearer."""
+    """No file under the session home holds the Databricks bearer."""
     bearer = session.env.get("DATABRICKS_BEARER")
     assert bearer, "The live suite authenticates with DATABRICKS_BEARER."
-    for root in (session.home / ".copilot", session.home / ".ucode"):
-        for path in root.rglob("*") if root.exists() else ():
-            if path.is_file():
-                text = path.read_text(encoding="utf-8", errors="replace")
-                assert bearer not in text, f"{path} holds the Databricks credential"
+    encoded = bearer.encode()
+    for path in session.home.rglob("*"):
+        if path.is_file() and not path.is_symlink():
+            assert encoded not in path.read_bytes(), f"{path} holds the Databricks credential"
     env_file = session.home / ".copilot/ucode.env"
     if env_file.exists():
         text = env_file.read_text(encoding="utf-8")

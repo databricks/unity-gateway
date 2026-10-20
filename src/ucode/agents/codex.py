@@ -50,7 +50,7 @@ from ucode.custom_oauth import (
     CUSTOM_OAUTH_TIMEOUT_MS,
     CustomOAuthConfig,
     build_custom_auth_token_argv,
-    get_custom_client_token,
+    launch_token,
 )
 from ucode.databricks import (
     CodexCatalogSource,
@@ -58,7 +58,6 @@ from ucode.databricks import (
     _fetch_codex_model_catalog,
     build_auth_token_argv,
     build_tool_base_url,
-    get_databricks_token,
     ug_binary,
 )
 from ucode.launcher import exec_or_spawn
@@ -1181,17 +1180,7 @@ def _launch_token(state: dict, workspace: str, *, force_refresh: bool = False) -
     """The token Codex authenticates with: a custom-OAuth client token when configured,
     else the CLI profile. The single auth-selection point — the OTLP proxy's token
     provider (_otel_token_provider) delegates here so both mint the same principal."""
-    custom_oauth = state.get("custom_oauth")
-    if isinstance(custom_oauth, dict):
-        return get_custom_client_token(
-            workspace,
-            custom_oauth["client_id"],
-            custom_oauth["redirect_url"],
-            scopes=custom_oauth["scopes"],
-            profile=custom_oauth.get("profile"),
-            force_refresh=force_refresh,
-        )
-    return get_databricks_token(workspace, state.get("profile"), force_refresh=force_refresh)
+    return launch_token(state, workspace, force_refresh=force_refresh)
 
 
 def _tool_args_select_model(tool_args: list[str]) -> bool:

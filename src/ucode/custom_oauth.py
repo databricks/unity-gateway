@@ -238,3 +238,19 @@ def get_custom_client_token(
             f"redirect URL ({config['redirect_url']}); ensure its local port is available and "
             "the SDK token cache is writable, then retry."
         ) from exc
+
+
+def launch_token(state: dict, workspace: str, *, force_refresh: bool = False) -> str:
+    """The token an agent launch authenticates with: the custom-OAuth client token when
+    configured, else the CLI profile's."""
+    custom_oauth = state.get("custom_oauth")
+    if isinstance(custom_oauth, dict):
+        return get_custom_client_token(
+            workspace,
+            custom_oauth["client_id"],
+            custom_oauth["redirect_url"],
+            scopes=custom_oauth["scopes"],
+            profile=custom_oauth.get("profile"),
+            force_refresh=force_refresh,
+        )
+    return get_databricks_token(workspace, state.get("profile"), force_refresh=force_refresh)

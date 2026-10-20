@@ -44,11 +44,10 @@ from ucode.config_io import (
     write_json_file,
 )
 from ucode.constants import AI_GATEWAY_REQUEST_TAGS_HEADER, LOOPBACK_HOST
-from ucode.custom_oauth import get_custom_client_token
+from ucode.custom_oauth import launch_token
 from ucode.databricks import (
     build_copilot_base_url,
     build_tool_base_url,
-    get_databricks_token,
 )
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import is_tool_managed, mark_tool_managed, save_state
@@ -268,24 +267,8 @@ def write_tool_config(state: dict, model: str) -> dict:
 
 
 def _token_provider(state: dict) -> Callable[[bool], str]:
-    """Mint from the source the rest of ug uses for this workspace: custom OAuth when configured,
-    else the CLI profile."""
     workspace = state["workspace"]
-    custom_oauth = state.get("custom_oauth")
-
-    def provider(force_refresh: bool) -> str:
-        if isinstance(custom_oauth, dict):
-            return get_custom_client_token(
-                workspace,
-                custom_oauth["client_id"],
-                custom_oauth["redirect_url"],
-                scopes=custom_oauth["scopes"],
-                profile=custom_oauth.get("profile"),
-                force_refresh=force_refresh,
-            )
-        return get_databricks_token(workspace, state.get("profile"), force_refresh=force_refresh)
-
-    return provider
+    return lambda force_refresh: launch_token(state, workspace, force_refresh=force_refresh)
 
 
 def proxy_headers(state: dict) -> dict[str, str]:

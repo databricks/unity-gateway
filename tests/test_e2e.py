@@ -1134,6 +1134,7 @@ class TestCopilotLaunch:
         finally:
             cache.stop()
             server.shutdown()
+            server.server_close()
             client.close()
 
         assert not failures, "Copilot launch failures:\n" + "\n".join(failures)

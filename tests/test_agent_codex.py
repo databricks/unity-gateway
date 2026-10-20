@@ -11,7 +11,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from ucode import gateway_proxy, managed_files
+from ucode import custom_oauth, gateway_proxy, managed_files
 from ucode.agents import LaunchOptions, codex
 from ucode.config_io import read_toml_safe
 from ucode.smart_routing import codex_routing
@@ -996,7 +996,7 @@ class TestCodexLaunch:
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.134.0")
         monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: launches.append(argv))
         monkeypatch.setattr(
-            codex,
+            custom_oauth,
             "get_databricks_token",
             lambda workspace, profile=None, force_refresh=False: "tok",
         )
@@ -1010,7 +1010,7 @@ class TestCodexLaunch:
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         launches = self._patch(tmp_path, monkeypatch)
         monkeypatch.setattr(
-            codex,
+            custom_oauth,
             "get_databricks_token",
             lambda workspace, profile=None, force_refresh=False: "fresh-token",
         )
@@ -1435,7 +1435,7 @@ class TestCodexLaunch:
         seen = {}
         monkeypatch.setattr(codex, "_model_catalog_path", lambda workspace, provider: catalog_path)
         monkeypatch.setattr(
-            codex,
+            custom_oauth,
             "get_databricks_token",
             lambda *args, **kwargs: pytest.fail("standard token used"),
         )
@@ -1446,7 +1446,7 @@ class TestCodexLaunch:
             seen["profile"] = profile
             return "custom-token"
 
-        monkeypatch.setattr(codex, "get_custom_client_token", custom_token)
+        monkeypatch.setattr(custom_oauth, "get_custom_client_token", custom_token)
 
         def fetch(workspace, token, **kwargs):
             seen.update(workspace=workspace, token=token, provider=kwargs["identifier"])
@@ -1598,7 +1598,7 @@ class TestCodexLaunch:
         monkeypatch.setattr(codex, "LEGACY_CODEX_BACKUP_PATH", tmp_path / "legacy-backup.toml")
         monkeypatch.setattr(codex, "agent_version", lambda binary: version)
         monkeypatch.setattr(codex, "save_state", lambda state: None)
-        monkeypatch.setattr(codex, "get_databricks_token", lambda *_args, **_kw: "tok")
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kw: "tok")
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         launches: list[list[str]] = []
         monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: launches.append(argv))
@@ -1626,7 +1626,7 @@ class TestCodexLaunch:
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.134.0")
         launches = []
         monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: launches.append(argv))
-        monkeypatch.setattr(codex, "get_databricks_token", lambda *_args, **_kw: "tok")
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kw: "tok")
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
 
         with pytest.raises(RuntimeError, match="ug configure --agents codex"):
@@ -2259,7 +2259,7 @@ class TestCodexReadManagedMcpUrls:
 class TestOtelTokenProvider:
     def test_token_provider_uses_default_profile(self, monkeypatch):
         get_token = Mock(return_value="token")
-        monkeypatch.setattr(codex, "get_databricks_token", get_token)
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", get_token)
         provider = codex._otel_token_provider({"profile": "myprof"}, WS)
         assert provider(True) == "token"
         get_token.assert_called_once_with(WS, "myprof", force_refresh=True)
@@ -2267,8 +2267,8 @@ class TestOtelTokenProvider:
     def test_token_provider_uses_custom_oauth_when_configured(self, monkeypatch):
         get_custom_token = Mock(return_value="custom-token")
         get_default_token = Mock()
-        monkeypatch.setattr(codex, "get_custom_client_token", get_custom_token)
-        monkeypatch.setattr(codex, "get_databricks_token", get_default_token)
+        monkeypatch.setattr(custom_oauth, "get_custom_client_token", get_custom_token)
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", get_default_token)
         state = {
             "custom_oauth": {
                 "client_id": "cid",

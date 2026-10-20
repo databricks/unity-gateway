@@ -121,6 +121,7 @@ def test_ug_copilot_refreshes_a_revoked_token_mid_session(live_session, workspac
         )
 
         task.assert_headless_answer("copilot", result)
+        assert (state / "revoked").exists(), "Copilot never ran the revoke step"
         revoked = int((state / "revoked").read_text(encoding="utf-8"))
         session.record(
             "copilot-token-mints.json", {"revoked": revoked, "minted": _minted_count(state)}

@@ -7,6 +7,7 @@ import json
 import httpx
 import pytest
 
+from ucode import custom_oauth
 from ucode.agents import copilot
 
 WS = "https://example.databricks.com"
@@ -377,7 +378,7 @@ class TestWriteToolConfig:
         def no_token(*args, **kwargs):
             raise AssertionError("configure must not mint a token")
 
-        monkeypatch.setattr(copilot, "get_databricks_token", no_token)
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", no_token)
 
         copilot.write_tool_config({"workspace": WS}, "gpt-5")
 
@@ -480,7 +481,7 @@ class TestTokenProvider:
             calls.append((workspace, profile, force_refresh))
             return "profile-token"
 
-        monkeypatch.setattr(copilot, "get_databricks_token", get_token)
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", get_token)
 
         token = copilot._token_provider({"workspace": WS, "profile": "dev"})(True)
 
@@ -494,7 +495,7 @@ class TestTokenProvider:
             calls.append((workspace, client_id, redirect_url, scopes, profile, force_refresh))
             return "custom-token"
 
-        monkeypatch.setattr(copilot, "get_custom_client_token", get_custom)
+        monkeypatch.setattr(custom_oauth, "get_custom_client_token", get_custom)
         state = {
             "workspace": WS,
             "custom_oauth": {
@@ -524,7 +525,7 @@ class _ExitedProcess:
 def _stub_launch(monkeypatch, process=None, token="dbx-token"):
     """Run launch against the real proxy with a stubbed Copilot process; return what it saw."""
     seen = {}
-    monkeypatch.setattr(copilot, "get_databricks_token", lambda *args, **kwargs: token)
+    monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *args, **kwargs: token)
     monkeypatch.setattr(copilot, "agent_version", lambda binary: "1")
 
     def popen(argv, *, env):
@@ -617,7 +618,7 @@ class TestLaunch:
 
     def test_proxy_stops_when_copilot_cannot_start(self, tmp_path, monkeypatch):
         isolate_copilot_config_paths(monkeypatch, tmp_path)
-        monkeypatch.setattr(copilot, "get_databricks_token", lambda *args, **kwargs: "tok")
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *args, **kwargs: "tok")
         monkeypatch.setattr(copilot, "agent_version", lambda binary: "1")
         seen = {}
 
