@@ -194,7 +194,7 @@ def test_ug_configure_managed_codex_catalog_fallback(live_session, workspace, ro
     catalog = json.loads((session.home / ".ucode" / "codex-model-catalog.json").read_text())
     models = catalog.get("models", [])
     listed = [model.get("slug") for model in models if model.get("visibility") == "list"]
-    assert listed == [CODEX_DEFAULT, CODEX_WITHOUT_BUNDLED_METADATA], catalog
+    assert listed == [f"{CODEX_DEFAULT}[1m]", CODEX_WITHOUT_BUNDLED_METADATA], catalog
     fallback = next(
         model for model in models if model.get("slug") == CODEX_WITHOUT_BUNDLED_METADATA
     )
