@@ -280,6 +280,41 @@ class TestDatabricksTokenAuth:
         with pytest.raises(mcp_proxy.ProxyAuthError, match="user cancelled"):
             self._drive(auth, httpx.Request("POST", CONN_URL), httpx.Response(401))
 
+    def test_login_failure_can_be_retried(self, monkeypatch):
+        monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda ws, profile: "tok")
+        monkeypatch.setattr(mcp_proxy, "mcp_service_needs_connection_login", lambda *a, **k: True)
+        outcomes = iter([(False, "user cancelled"), (True, "signed in")])
+        monkeypatch.setattr(mcp_proxy, "run_connection_login", lambda *a, **k: next(outcomes))
+        login = mcp_proxy._ConnectionLogin(CONN_URL, WS, "p")
+
+        with pytest.raises(mcp_proxy.ProxyAuthError, match="user cancelled"):
+            login.run_if_needed()
+
+        assert login.run_if_needed()
+
+    def test_token_lookup_failure_can_be_retried(self, monkeypatch):
+        tokens = iter([RuntimeError("token unavailable"), "tok"])
+
+        def get_token(*args):
+            token = next(tokens)
+            if isinstance(token, Exception):
+                raise token
+            return token
+
+        monkeypatch.setattr(mcp_proxy, "get_databricks_token", get_token)
+        monkeypatch.setattr(mcp_proxy, "mcp_service_needs_connection_login", lambda *a, **k: True)
+        logins = []
+        monkeypatch.setattr(
+            mcp_proxy,
+            "run_connection_login",
+            lambda *a, **k: logins.append(1) or (True, "signed in"),
+        )
+        login = mcp_proxy._ConnectionLogin(CONN_URL, WS, "p")
+
+        assert not login.run_if_needed()
+        assert login.run_if_needed()
+        assert logins == [1]
+
     def test_async_auth_flow_drives_login_on_401(self, monkeypatch):
         # The proxy uses the async client, so async_auth_flow is the real path; the
         # blocking login runs off the event loop via anyio.to_thread.
@@ -304,85 +339,6 @@ class TestDatabricksTokenAuth:
 
 
 CONN_URL = f"{WS}/ai-gateway/mcp-services/system.ai.github"
-
-
-class TestPump:
-    def test_forwards_all_messages_in_order(self):
-        async def scenario() -> list[str]:
-            src_send, src_recv = anyio.create_memory_object_stream(10)
-            dst_send, dst_recv = anyio.create_memory_object_stream(10)
-            # Preload the source, then close its send end so _pump's `async for`
-            # terminates once drained.
-            for msg in ["a", "b", "c"]:
-                await src_send.send(msg)
-            await src_send.aclose()
-
-            await mcp_proxy._pump(src_recv, dst_send)
-
-            received: list[str] = []
-            # _pump closed dst_send on exit, so this drains then stops.
-            async with dst_recv:
-                async for msg in dst_recv:
-                    received.append(msg)
-            return received
-
-        assert anyio.run(scenario) == ["a", "b", "c"]
-
-    def test_closes_destination_when_source_exhausts(self):
-        # A closed dest send-stream is what lets the *other* pump's reader
-        # terminate, so the bridge tears down cleanly when one side hangs up.
-        async def scenario() -> bool:
-            src_send, src_recv = anyio.create_memory_object_stream(1)
-            dst_send, dst_recv = anyio.create_memory_object_stream(1)
-            await src_send.aclose()
-
-            await mcp_proxy._pump(src_recv, dst_send)
-
-            with pytest.raises(anyio.EndOfStream):
-                dst_recv.receive_nowait()
-            return True
-
-        assert anyio.run(scenario) is True
-
-    def test_client_errors_are_forwarded(self):
-        async def scenario() -> Exception:
-            src_send, src_recv = anyio.create_memory_object_stream(1)
-            dst_send, dst_recv = anyio.create_memory_object_stream(1)
-            error = ValueError("malformed client message")
-            await src_send.send(error)
-            await src_send.aclose()
-
-            await mcp_proxy._pump(src_recv, dst_send)
-            return await dst_recv.receive()
-
-        error = anyio.run(scenario)
-        assert isinstance(error, ValueError)
-        assert str(error) == "malformed client message"
-
-    def test_upstream_errors_are_raised(self):
-        async def scenario() -> None:
-            src_send, src_recv = anyio.create_memory_object_stream(1)
-            dst_send, _ = anyio.create_memory_object_stream(1)
-            await src_send.send(httpx.ReadTimeout("upstream timed out"))
-            await src_send.aclose()
-
-            with pytest.raises(mcp_proxy.ProxyTransportError, match="upstream timed out"):
-                await mcp_proxy._pump_upstream(src_recv, dst_send)
-
-        anyio.run(scenario)
-
-    def test_upstream_eof_is_an_error(self):
-        async def scenario() -> None:
-            src_send, src_recv = anyio.create_memory_object_stream(1)
-            dst_send, _ = anyio.create_memory_object_stream(1)
-            await src_send.aclose()
-
-            with pytest.raises(
-                mcp_proxy.ProxyTransportError, match="upstream MCP transport closed"
-            ):
-                await mcp_proxy._pump_upstream(src_recv, dst_send)
-
-        anyio.run(scenario)
 
 
 class TestMcpBridgeConnectionLogin:
@@ -561,17 +517,17 @@ class TestMcpBridgeConnectionLogin:
 
         anyio.run(scenario)
 
-    def test_authentication_tool_accepts_login_completed_outside_proxy(self, monkeypatch):
-        monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda ws, profile: "tok")
+    def test_authentication_tool_runs_login_after_upstream_auth_error(self, monkeypatch):
         monkeypatch.setattr(
             mcp_proxy,
             "mcp_service_needs_connection_login",
-            lambda *a: False,
+            lambda *a: pytest.fail("explicit authentication must not trust classification"),
         )
+        logins = []
         monkeypatch.setattr(
             mcp_proxy,
             "run_connection_login",
-            lambda *a, **k: pytest.fail("login must not run"),
+            lambda *a, **k: logins.append(1) or (True, "signed in"),
         )
 
         async def scenario():
@@ -606,6 +562,7 @@ class TestMcpBridgeConnectionLogin:
                 tg.cancel_scope.cancel()
 
         anyio.run(scenario)
+        assert logins == [1]
 
     def test_authentication_tool_refreshes_tools_before_returning(self, monkeypatch):
         monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda ws, profile: "tok")
@@ -658,6 +615,30 @@ class TestMcpBridgeConnectionLogin:
 
         anyio.run(scenario)
         assert logins == [1]
+
+    def test_authentication_tool_reports_tool_refresh_timeout(self, monkeypatch):
+        monkeypatch.setattr(mcp_proxy, "TOOLS_REFRESH_TIMEOUT_SECONDS", 0.01)
+        monkeypatch.setattr(
+            mcp_proxy,
+            "run_connection_login",
+            lambda *a, **k: (True, "signed in"),
+        )
+
+        async def scenario():
+            to_client, client_receive = anyio.create_memory_object_stream(10)
+            bridge = mcp_proxy._McpBridge(mcp_proxy._ConnectionLogin(CONN_URL, WS, "p"))
+            bridge.authentication_required = True
+
+            await bridge._handle_authentication_tool(2, to_client)
+            notification = (await client_receive.receive()).message
+            response = (await client_receive.receive()).message
+
+            assert isinstance(notification, mcp_proxy.JSONRPCNotification)
+            assert isinstance(response, mcp_proxy.JSONRPCResponse)
+            assert "did not refresh before the timeout" in response.result["content"][0]["text"]
+            assert bridge._tools_refresh_waiters == []
+
+        anyio.run(scenario)
 
     def test_second_auth_error_is_forwarded_without_another_login(self, monkeypatch):
         monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda ws, profile: "tok")
@@ -782,7 +763,7 @@ class TestMcpBridgeConnectionLogin:
 
         anyio.run(scenario)
 
-    def test_login_failure_becomes_proxy_auth_error(self, monkeypatch):
+    def test_automatic_login_failure_forwards_error_and_keeps_bridge_alive(self, monkeypatch):
         monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda ws, profile: "tok")
         monkeypatch.setattr(mcp_proxy, "mcp_service_needs_connection_login", lambda *a: True)
         monkeypatch.setattr(
@@ -792,15 +773,25 @@ class TestMcpBridgeConnectionLogin:
         )
 
         async def scenario():
-            source_send, source_read = anyio.create_memory_object_stream(1)
-            dest_send, _ = anyio.create_memory_object_stream(1)
-            retry_send, _ = anyio.create_memory_object_stream(1)
+            source_send, source_read = anyio.create_memory_object_stream(2)
+            dest_send, dest_read = anyio.create_memory_object_stream(2)
+            retry_send, _ = anyio.create_memory_object_stream(2)
             bridge = mcp_proxy._McpBridge(mcp_proxy._ConnectionLogin(CONN_URL, WS, "p"))
-            bridge.pending_requests[1] = self._tool_call_request()
-            await source_send.send(self._error())
+            bridge.pending_requests = {
+                1: self._tool_call_request(1),
+                2: self._tool_call_request(2),
+            }
+            auth_error = self._error(request_id=1)
+            later_response = self._response(2)
 
-            with pytest.raises(mcp_proxy.ProxyAuthError, match="user cancelled"):
-                await bridge.pump_upstream(source_read, dest_send, retry_send)
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(bridge.pump_upstream, source_read, dest_send, retry_send)
+                with anyio.fail_after(1):
+                    await source_send.send(auth_error)
+                    assert await dest_read.receive() is auth_error
+                    await source_send.send(later_response)
+                    assert await dest_read.receive() is later_response
+                tg.cancel_scope.cancel()
 
         anyio.run(scenario)
 

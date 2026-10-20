@@ -13,6 +13,7 @@ from ucode.agents.desktop.claude import claude_desktop_root_directory
 from ucode.databricks import build_mcp_proxy_argv
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.skills_state import records_for_scope
+from ucode.ui import print_warning
 
 MARKETPLACE_NAME = "unity-gateway-cowork"
 PLUGIN_NAME = "unity-gateway"
@@ -51,6 +52,10 @@ def configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
         return False
 
     cowork_root = discover_cowork_root()
+    previous_state = config_io.read_json_safe(_state_path())
+    previous_root = previous_state.get("cowork_root")
+    if isinstance(previous_root, str) and previous_root and Path(previous_root) != cowork_root:
+        _remove_plugin_registration(Path(previous_root))
     marketplace_root = _marketplace_root()
     plugin_root = marketplace_root / "plugins" / PLUGIN_NAME
     _write_marketplace(marketplace_root, plugin_root, skill_records, mcp_config)
@@ -70,29 +75,10 @@ def revert_cowork() -> bool:
     raw_root = state.get("cowork_root")
     changed = False
     if isinstance(raw_root, str) and raw_root:
-        cowork_root = Path(raw_root)
-        claude = _claude_binary()
-        env = os.environ.copy()
-        env["CLAUDE_CONFIG_DIR"] = str(cowork_root)
-        _run_claude_json(
-            claude,
-            ["plugin", "uninstall", PLUGIN_ID, "--cowork", "--json"],
-            env,
-            accepted_failures=("not installed", "not_installed", "not found"),
-        )
-        _run_claude_json(
-            claude,
-            [
-                "plugin",
-                "marketplace",
-                "remove",
-                MARKETPLACE_NAME,
-                "--cowork",
-                "--json",
-            ],
-            env,
-            accepted_failures=("not found", "not_found", "not registered"),
-        )
+        try:
+            _remove_plugin_registration(Path(raw_root))
+        except RuntimeError as exc:
+            print_warning(f"Could not remove the Claude Cowork registration: {exc}")
         changed = True
 
     marketplace_root = _marketplace_root()
@@ -106,6 +92,33 @@ def revert_cowork() -> bool:
         state_path.unlink()
         changed = True
     return changed
+
+
+def _remove_plugin_registration(cowork_root: Path) -> None:
+    """Remove UG's plugin and marketplace registration from one Cowork root."""
+
+    claude = _claude_binary()
+    env = os.environ.copy()
+    env["CLAUDE_CONFIG_DIR"] = str(cowork_root)
+    _run_claude_json(
+        claude,
+        ["plugin", "uninstall", PLUGIN_ID, "--cowork", "--json"],
+        env,
+        accepted_failures=("not installed", "not_installed", "not found"),
+    )
+    _run_claude_json(
+        claude,
+        [
+            "plugin",
+            "marketplace",
+            "remove",
+            MARKETPLACE_NAME,
+            "--cowork",
+            "--json",
+        ],
+        env,
+        accepted_failures=("not found", "not_found", "not registered"),
+    )
 
 
 def discover_cowork_root(*, desktop_root: Path | None = None) -> Path:
@@ -183,7 +196,8 @@ def _cowork_mcp_config(
         if "claude" not in clients:
             continue
         if custom_oauth:
-            raise RuntimeError("Claude Cowork MCP servers do not support custom OAuth yet.")
+            print_warning(f"Skipping Cowork MCP server `{name}`: custom OAuth is not supported.")
+            continue
         argv = build_mcp_proxy_argv(
             url,
             workspace,

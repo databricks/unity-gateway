@@ -715,10 +715,12 @@ def test_revert_failure_clears_workspace_state_and_allows_retry(desktop, monkeyp
 
     assert failed.exit_code == 1, failed.output
     warnings = [line for line in failed.output.splitlines() if line.startswith("! ")]
-    assert len(warnings) == 1, failed.output
+    assert len(warnings) == 2, failed.output
     assert "Could not revert Claude Desktop" in warnings[0]
+    assert (
+        warnings[1] == "! ug state cleared. Fix the Claude Desktop error and run ug revert again."
+    )
     assert "Claude Desktop profile: failed" in failed.output
-    assert "ug state cleared" in failed.output
 
     assert state_store.load_state() == {}
     assert state_store.load_full_state()["workspaces"] == {}

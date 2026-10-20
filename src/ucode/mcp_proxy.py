@@ -144,13 +144,13 @@ class _ConnectionLogin:
 
     def run_if_needed(self) -> bool:
         """Run connection login once, returning whether the connection is ready."""
-        return self._run_if_needed(already_ready_is_success=False)
+        return self._run_if_needed(check_service=True)
 
     def authenticate_or_confirm_ready(self) -> bool:
-        """Authenticate, or confirm an independently authenticated connection."""
-        return self._run_if_needed(already_ready_is_success=True)
+        """Authenticate after the upstream service reports missing credentials."""
+        return self._run_if_needed(check_service=False)
 
-    def _run_if_needed(self, *, already_ready_is_success: bool) -> bool:
+    def _run_if_needed(self, *, check_service: bool) -> bool:
         with self._lock:
             if self.connection is None:
                 return False
@@ -160,17 +160,25 @@ class _ConnectionLogin:
                 return False
             self._attempted = True
             try:
-                token = get_databricks_token(self.workspace, self.profile)
-            except RuntimeError:
-                return False
-            if not mcp_service_needs_connection_login(self.workspace, token, self.connection):
-                self._completed = already_ready_is_success
-                return already_ready_is_success
-            ok, detail = run_connection_login(self.url, self.workspace, profile=self.profile)
-            if not ok:
-                raise ProxyAuthError(f"connection login for '{self.connection}' failed: {detail}")
-            self._completed = True
-            return True
+                if check_service:
+                    try:
+                        token = get_databricks_token(self.workspace, self.profile)
+                    except RuntimeError:
+                        return False
+                    if not mcp_service_needs_connection_login(
+                        self.workspace, token, self.connection
+                    ):
+                        return False
+                ok, detail = run_connection_login(self.url, self.workspace, profile=self.profile)
+                if not ok:
+                    raise ProxyAuthError(
+                        f"connection login for '{self.connection}' failed: {detail}"
+                    )
+                self._completed = True
+                return True
+            finally:
+                if not self._completed:
+                    self._attempted = False
 
 
 def _build_token_auth(
@@ -246,33 +254,6 @@ def _build_token_auth(
             yield request
 
     return _DatabricksTokenAuth()
-
-
-async def _pump[T](
-    source: _ReceiveStream[T],
-    dest: _SendStream[T],
-) -> None:
-    """Forward every message from ``source`` to ``dest``.
-
-    The proxy is transport-level: it never inspects or rewrites MCP method
-    payloads, so new methods and capabilities pass through untouched."""
-    async with source, dest:
-        async for message in source:
-            await dest.send(message)
-
-
-async def _pump_upstream[T](
-    source: _ReceiveStream[T | Exception],
-    dest: _SendStream[T],
-) -> None:
-    """Forward upstream messages, failing if the transport closes first."""
-    async with source, dest:
-        async for message in source:
-            if isinstance(message, Exception):
-                detail = " ".join(str(message).split()) or type(message).__name__
-                raise ProxyTransportError(f"upstream MCP transport failed: {detail}") from message
-            await dest.send(message)
-    raise ProxyTransportError("upstream MCP transport closed unexpectedly")
 
 
 class _McpBridge:
@@ -380,19 +361,24 @@ class _McpBridge:
                         )
                     )
                 )
-                with anyio.move_on_after(TOOLS_REFRESH_TIMEOUT_SECONDS):
+                with anyio.move_on_after(TOOLS_REFRESH_TIMEOUT_SECONDS) as scope:
                     await refreshed.wait()
+                if scope.cancel_called:
+                    if refreshed in self._tools_refresh_waiters:
+                        self._tools_refresh_waiters.remove(refreshed)
+                    text = (
+                        "Authentication complete, but the tool list did not refresh before the "
+                        "timeout. Retry the user's original request now; if its tools are still "
+                        "unavailable, retry authentication."
+                    )
+                else:
+                    text = (
+                        "Authentication complete. Retry the user's original request now in this "
+                        "same turn using the newly available tools. Do not ask the user to send "
+                        "another message."
+                    )
                 result = {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": (
-                                "Authentication complete. Retry the user's original request now "
-                                "in this same turn using the newly available tools. Do not ask the "
-                                "user to send another message."
-                            ),
-                        }
-                    ],
+                    "content": [{"type": "text", "text": text}],
                     "isError": False,
                 }
 
@@ -469,13 +455,20 @@ class _McpBridge:
                         self.retried_requests.discard(request_id)
                         await dest.send(self._authentication_tool_list_response(request_id))
                         continue
+                    should_retry = False
                     if (
                         original is not None
                         and request_id is not None
                         and request_id not in self.retried_requests
                         and payload.error.code == CONNECTION_AUTH_REQUIRED_ERROR_CODE
-                        and await to_thread.run_sync(self.connection_login.run_if_needed)
                     ):
+                        try:
+                            should_retry = await to_thread.run_sync(
+                                self.connection_login.run_if_needed
+                            )
+                        except ProxyAuthError:
+                            should_retry = False
+                    if should_retry and original is not None and request_id is not None:
                         self.retried_requests.add(request_id)
                         await upstream.send(original)
                         continue

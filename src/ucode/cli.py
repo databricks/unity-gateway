@@ -815,10 +815,14 @@ def _setup_single_agent(
 
         configure_claude_desktop(state, parent_schema=parent_schema)
         if not is_dry_run():
-            resolved_mcps = _configure_managed_mcp_servers(managed, agents={"claude"})
+            resolved_mcps = _configure_managed_mcp_servers(managed)
             skills_configured = _configure_managed_skills(managed)
             if resolved_mcps is not None and skills_configured:
                 _sync_claude_cowork_mcp_servers(state, managed_mcp_servers=resolved_mcps)
+    elif apply_managed and not is_dry_run():
+        from ucode.agents.desktop.setup import revert_claude_cowork
+
+        revert_claude_cowork()
     install_databricks_ai_tools_for_agents(
         [tool], state, force_refresh=tool not in ("claude", "codex")
     )
@@ -1151,6 +1155,10 @@ def _configure_workspace_command(
         configure_claude_desktop(state)
         if not is_dry_run():
             _sync_claude_cowork_mcp_servers(state)
+    elif not is_dry_run():
+        from ucode.agents.desktop.setup import revert_claude_cowork
+
+        revert_claude_cowork()
     summary_lines = [f"[bold]Workspace:[/bold] [cyan]{state['workspace']}[/cyan]"]
     for tool_name in picked:
         spec = TOOL_SPECS[tool_name]
@@ -1457,8 +1465,11 @@ def revert() -> int:
             f"{spec['display']} MCP config",
             "restored" if mcp_results.get(client) else "unchanged",
         )
+    if desktop_result == "failed":
+        print_warning("ug state cleared. Fix the Claude Desktop error and run ug revert again.")
+        return 1
     print_success("ug state cleared")
-    return int(desktop_result == "failed")
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -1803,17 +1814,14 @@ def _sync_claude_cowork_mcp_servers(
     state: dict | None = None, *, managed_mcp_servers: list[dict] | None = None
 ) -> None:
     """Keep Claude Cowork's generated plugin aligned with Claude-targeted MCP state."""
-    current_state = state or load_state()
+    current_state = state if state is not None else load_state()
     configured_tools = set(current_state.get("available_tools") or []) | set(
         current_state.get("last_configured_tools") or []
     )
     if "claude" not in configured_tools:
         return
 
-    persisted_state = load_state()
-    user_mcp_servers = list(
-        persisted_state.get("mcp_servers") or current_state.get("mcp_servers") or []
-    )
+    user_mcp_servers = list(current_state.get("mcp_servers") or [])
     from ucode.agents.desktop.setup import configure_claude_cowork
 
     configure_claude_cowork(

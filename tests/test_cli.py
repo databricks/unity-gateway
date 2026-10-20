@@ -3433,6 +3433,22 @@ class TestRevert:
         assert cleared == [True]
         assert "Claude Code MCP config: restored" in result.output
 
+    def test_desktop_revert_failure_is_actionable(self):
+        with (
+            patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
+            patch("ucode.agents.desktop.setup.revert_desktop", return_value="failed"),
+            patch("ucode.cli.revert_mcp_configs", return_value={}),
+            patch("ucode.cli.claude_agent.revert_managed_settings", return_value="unchanged"),
+            patch("ucode.cli.codex_agent.revert_managed_config", return_value="unchanged"),
+            patch("ucode.cli.restore_file", return_value=False),
+            patch("ucode.cli.revert_legacy_shared_config", return_value=False),
+            patch("ucode.cli.clear_state"),
+        ):
+            result = runner.invoke(app, ["revert"])
+
+        assert result.exit_code == 1
+        assert "Fix the Claude Desktop error and run ug revert again" in result.output
+
 
 @pytest.mark.parametrize("args", [[], ["claude"], ["codex"]])
 def test_unknown_routing_config_does_not_block_launch(monkeypatch, args):
@@ -3866,6 +3882,22 @@ class TestConfigureAgentFlag:
             cli_mod._sync_claude_cowork_mcp_servers(state, managed_mcp_servers=managed)
 
         mock_configure.assert_called_once_with(state, [*state["mcp_servers"], *managed])
+
+    def test_cowork_sync_preserves_explicit_empty_mcp_state(self):
+        import ucode.cli as cli_mod
+
+        state = {
+            **MINIMAL_STATE,
+            "available_tools": ["claude"],
+            "mcp_servers": [],
+        }
+        with (
+            patch("ucode.cli.load_state", side_effect=AssertionError("must not reload state")),
+            patch("ucode.agents.desktop.setup.configure_claude_cowork") as mock_configure,
+        ):
+            cli_mod._sync_claude_cowork_mcp_servers(state)
+
+        mock_configure.assert_called_once_with(state, [])
 
     def test_cowork_sync_skips_when_claude_is_not_configured(self):
         import ucode.cli as cli_mod

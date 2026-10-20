@@ -75,7 +75,9 @@ def test_successful_claude_setup_configures_desktop_once(configuration, monkeypa
 def test_failed_claude_is_not_setup_from_prior_available_tools(configuration, monkeypatch):
     configuration["last_configured_tools"] = ["codex"]
     configure = Mock()
+    revert_cowork = Mock(return_value="removed")
     monkeypatch.setattr(desktop_setup, "configure_claude_desktop", configure)
+    monkeypatch.setattr(desktop_setup, "revert_claude_cowork", revert_cowork)
     assert (
         cli._configure_workspace_command(
             selected_tools=["claude", "codex"],
@@ -84,11 +86,14 @@ def test_failed_claude_is_not_setup_from_prior_available_tools(configuration, mo
         == 0
     )
     configure.assert_not_called()
+    revert_cowork.assert_called_once_with()
 
 
 def test_codex_only_does_not_configure_desktop(configuration, monkeypatch):
     configure = Mock()
+    revert_cowork = Mock(return_value="removed")
     monkeypatch.setattr(desktop_setup, "configure_claude_desktop", configure)
+    monkeypatch.setattr(desktop_setup, "revert_claude_cowork", revert_cowork)
     assert (
         cli._configure_workspace_command(
             tool="codex", workspaces=[("https://workspace.example", "chosen-profile")]
@@ -96,6 +101,7 @@ def test_codex_only_does_not_configure_desktop(configuration, monkeypatch):
         == 0
     )
     configure.assert_not_called()
+    revert_cowork.assert_called_once_with()
 
 
 def test_self_managed_agent_add_does_not_configure_desktop(configuration, monkeypatch):
@@ -148,7 +154,7 @@ def test_single_managed_claude_configures_cowork(configuration, monkeypatch):
         )
         == 0
     )
-    configure_mcps.assert_called_once_with(managed, agents={"claude"})
+    configure_mcps.assert_called_once_with(managed)
     configure_cowork.assert_called_once_with(configuration, servers)
 
 
