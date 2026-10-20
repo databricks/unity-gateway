@@ -57,9 +57,11 @@ before `/clear` still survives it. The live skill-toggle journey covers the real
 native component tests stub the process calls.
 
 Before each on-to-off change, Isaac sessions with
-`ISAAC_SMART_ROUTER_FEEDBACK=1` require a reason of at least 16 characters after
+`ISAAC_SMART_ROUTER_FEEDBACK=1` or `true` require a reason of at least 16 characters after
 trimming surrounding whitespace. Isaac sets this flag from its
-rollout setting or the user's explicit `1`/`0` override. It controls Isaac feedback
+rollout setting or the user's explicit `1`/`0` or `true`/`false` override. As with UG's other
+boolean environment flags, `1`, `true`, `yes`, and `on` enable it (case-insensitive,
+with surrounding whitespace ignored); other values disable it. It controls Isaac feedback
 availability, so UG's routing presets and on/off toggles leave it unchanged.
 The native form keeps routing on until Enter accepts a valid reason, then disables
 routing and uploads the exact text in the background with `isaac feedback`. The

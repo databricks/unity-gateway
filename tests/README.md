@@ -25,8 +25,9 @@ journeys do not cover this form or a live Isaac evidence upload.
 
 `test_claude_answer_delivery.py` covers Claude answer selection, composition, ownership,
 failed tasks and resumed revisions using transcript inputs, plus real subprocess I/O,
-stream-input bypass and capability lifetime. Live model/gateway selection and hook
-activation remain uncovered.
+stream-input bypass and capability lifetime. Text, JSON and streaming JSON results
+stay on stdout when UG redirects its diagnostics to stderr. Live model/gateway
+selection and hook activation remain uncovered.
 
 The **harness-latest** workflow runs every six hours on `main` and currently covers
 smart routing only.
@@ -57,6 +58,12 @@ trailing UI controls; offline cases reject stale states, wrong routing scope, an
 confirmations, and keep the band, the hint row, and the toggle reply apart.
 The mod's own tests (`native_claude/mod_tests`) cover the same rules for both toggles
 without a live agent.
+
+CUJ3 expects GPT Luna in both agents' catalogs and pickers, including Claude's gateway alias,
+and covers an explicit Claude headless task on that model.
+Its Claude decoy catalog includes both Claude and Codex decoys; neither belongs in the scoped picker.
+The managed Claude parent-schema journey expects numbered GPT models to carry `[1m]` in the
+picker while retaining the catalog's display label.
 
 Dedicated CUJs reuse `integration/utils` session/terminal mechanics and file-task
 and transcript readers, not its config stubs or pytest fixtures. Prompt/model

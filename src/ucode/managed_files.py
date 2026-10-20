@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from ucode.config_io import APP_DIR, is_dry_run
+from ucode.env import env_bool
 from ucode.os_compatibility import subprocess_cross_os, system_cross_os
 from ucode.ui import console, print_note, print_success, print_warning
 
@@ -35,7 +36,6 @@ from ucode.ui import console, print_note, print_success, print_warning
 _SUDO = "/usr/bin/sudo"
 # Opt out of all OS-managed settings work (read, conflict check, and the privileged sudo write).
 SKIP_OS_SETTINGS_ENV = "UG_SKIP_OS_SETTINGS"
-_TRUE_VALUES = {"1", "true", "yes", "on"}
 MANAGED_BACKUP_DIR = APP_DIR / "managed-backups"
 MANAGED_BACKUP_MANIFEST_PATH = MANAGED_BACKUP_DIR / "manifest.json"
 MANAGED_FINGERPRINT_VERSION = 1
@@ -96,14 +96,15 @@ def managed_settings_skipped() -> bool:
     """Whether the developer opted out of OS-managed settings via ``UG_SKIP_OS_SETTINGS``.
 
     Set the variable to ``1``/``true``/``yes``/``on`` to make ucode neither read nor update the
-    root-owned managed files (Claude Code ``managed-settings.json``, Codex ``managed_config.toml``).
+    root-owned managed files (Claude Code ``managed-settings.json``, Codex ``managed_config.toml``
+    or, on Windows, ``requirements.toml``).
     ucode then relies solely on its per-user settings, which is enough for a single-user setup that
     always launches through ``ug`` and never needs a bare ``claude``/``codex`` to reach the gateway.
     Skips the privileged ``sudo`` step entirely, so an interactive run is never prompted for a
     password and never hits the "OS-managed settings could not be updated" failure on hosts where
     that write is blocked.
     """
-    return os.environ.get(SKIP_OS_SETTINGS_ENV, "").strip().lower() in _TRUE_VALUES
+    return env_bool(SKIP_OS_SETTINGS_ENV)
 
 
 def managed_files_supported() -> bool:
@@ -121,6 +122,15 @@ def managed_files_supported() -> bool:
 def windows_claude_managed_settings_path() -> Path:
     """The only machine-wide settings file Claude Code reads on Windows."""
     return system_cross_os.windows_program_files_dir() / "ClaudeCode" / "managed-settings.json"
+
+
+CODEX_REQUIREMENTS_FILE = "requirements.toml"
+
+
+def windows_codex_managed_settings_path() -> Path:
+    """Codex's machine-wide settings on Windows: ``requirements.toml``, its admin-enforced file that
+    outranks the user's config and ``-c``. Codex has no admin-only config layer there."""
+    return system_cross_os.windows_program_data_dir() / "OpenAI" / "Codex" / CODEX_REQUIREMENTS_FILE
 
 
 def read_managed_file(path: Path) -> str | None:
@@ -1313,21 +1323,68 @@ def _privileged_remove(path: Path) -> None:
 
 
 def _validate_windows_target(path: Path) -> None:
-    if path != windows_claude_managed_settings_path():
+    if path not in (windows_claude_managed_settings_path(), windows_codex_managed_settings_path()):
         raise RuntimeError(f"Refusing unexpected managed-settings target: {path}")
     if path.is_symlink():
         raise RuntimeError(f"Refusing to replace symlinked managed settings: {path}")
+    if path == windows_codex_managed_settings_path():
+        # Standard users can create folders under ProgramData; a linked one would redirect us.
+        for folder in (path.parent, path.parent.parent):
+            if folder.is_symlink() or folder.is_junction():
+                raise RuntimeError(f"Refusing to write managed settings through link {folder}")
+
+
+# Well-known SIDs, because Windows translates the group names.
+_WINDOWS_SYSTEM_SID = "*S-1-5-18"
+_WINDOWS_ADMINISTRATORS_SID = "*S-1-5-32-544"
+_WINDOWS_USERS_SID = "*S-1-5-32-545"
+
+
+def _secure_windows_codex_folders(path: Path) -> None:
+    """Give the ``OpenAI`` and ``Codex`` folders to Administrators and let standard users only read
+    ``Codex``, like the root-owned 0755 folders on Linux and macOS. A standard user may have created
+    them first and would otherwise keep control.
+
+    Only the folders change, never their contents, so a planted hard link can't redirect the change
+    onto another file. ``/L`` changes a link itself rather than its target, and the caller checks
+    for links again afterwards."""
+    icacls = str(system_cross_os.windows_system32_dir() / "icacls.exe")
+    codex, openai = path.parent, path.parent.parent
+    # Set the owner before resetting: the inherited CREATOR OWNER entry maps to the current owner.
+    for folder, *change in (
+        (openai, "/setowner", _WINDOWS_ADMINISTRATORS_SID),
+        (openai, "/reset"),
+        (codex, "/setowner", _WINDOWS_ADMINISTRATORS_SID),
+        (
+            codex,
+            "/inheritance:r",
+            "/grant:r",
+            f"{_WINDOWS_SYSTEM_SID}:(OI)(CI)F",
+            f"{_WINDOWS_ADMINISTRATORS_SID}:(OI)(CI)F",
+            f"{_WINDOWS_USERS_SID}:(OI)(CI)RX",
+        ),
+    ):
+        result = subprocess_cross_os.run(
+            [icacls, str(folder), *change, "/L"], capture_output=True, text=True, check=False
+        )
+        if result.returncode:
+            output = f"{result.stdout}{result.stderr}".strip()
+            raise PermissionError(f"could not secure {folder}: {output}")
 
 
 def _windows_replace(path: Path, desired_text: str) -> None:
     """Atomically replace ``path`` from this elevated process.
 
     The temp file is created beside the target so the rename stays on one volume and the new file
-    inherits the folder's ACL, which under Program Files lets standard users read but not write."""
+    inherits the folder's ACL, which lets standard users read but not write: Program Files comes
+    that way, and the Codex folders under ProgramData are secured first."""
     _validate_windows_target(path)
     if not system_cross_os.is_admin():
         raise PermissionError("administrator rights are required")
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path == windows_codex_managed_settings_path():
+        _secure_windows_codex_folders(path)
+    _validate_windows_target(path)  # a folder may have been created or swapped for a link meanwhile
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as tmp:

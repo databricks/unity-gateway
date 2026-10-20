@@ -6,6 +6,7 @@ tests/AGENTS.md rule 4.
 """
 
 import json
+import re
 
 import pytest
 from utils.constants import MANAGED_CLAUDE_PROVIDER_SERVICE
@@ -94,8 +95,8 @@ def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session,
     Expected: the installed ug launch writes the parent-schema header and every admin-authored
     default to both Claude settings files, adding ``[1m]`` only to Opus and Sonnet family defaults.
     The replacement picker contains those family defaults and every model independently fetched
-    from the schema, preserving catalog labels. This settings reconciliation check does not claim
-    model inference.
+    from the schema, adding ``[1m]`` to numbered GPT models and preserving catalog labels.
+    This settings reconciliation check does not claim model inference.
     """
     session = live_session
     parent_schema = "system.ai"
@@ -113,6 +114,10 @@ def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session,
     catalog = fetch_anthropic_parent_catalog(
         workspace, session.env["DATABRICKS_BEARER"], parent_schema
     )
+    catalog_picker_labels = {
+        f"{model}[1m]" if re.search(r"\bgpt-\d", model) else model: catalog.display_names.get(model)
+        for model in catalog.model_ids
+    }
     command = [str(session.binary), "claude", "--", "--version"]
     with TerminalProcess(session, "claude", command, "managed-defaults-parent-schema") as terminal:
         terminal.finish(timeout=240)
@@ -141,16 +146,12 @@ def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session,
             )
         picker = settings["modelPicker"]
         assert picker["replaceBuiltInOptions"] is True, picker
-        expected_picker_models = set(expected_picker_models) | set(catalog.model_ids)
-        observed_picker_models = [option["model"] for option in picker["options"]]
-        observed_by_model = {model.removesuffix("[1m]"): model for model in observed_picker_models}
-        assert len(observed_by_model) == len(observed_picker_models), picker
-        assert set(observed_by_model) == {
-            model.removesuffix("[1m]") for model in expected_picker_models
-        }, picker
+        expected_picker_models = set(expected_picker_models) | set(catalog_picker_labels)
+        assert sorted(option["model"] for option in picker["options"]) == sorted(
+            expected_picker_models
+        ), picker
         for option in picker["options"]:
-            model = option["model"].removesuffix("[1m]")
-            if display_name := catalog.display_names.get(model):
+            if display_name := catalog_picker_labels.get(option["model"]):
                 assert option["label"] == display_name, option
 
 

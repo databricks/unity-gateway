@@ -11,7 +11,7 @@ import tomlkit
 from tomlkit.items import Item
 
 from ucode.config_io import read_json_safe, read_toml_safe
-from ucode.managed_files import OS, current_os
+from ucode.managed_files import OS, current_os, windows_codex_managed_settings_path
 from ucode.ui import print_warning
 
 CODEX_PROFILE_NAME = "ucode"
@@ -27,8 +27,12 @@ class ModelVisibility(StrEnum):
 
 
 def codex_managed_config_path() -> Path | None:
+    """Codex's highest-precedence machine-wide file: ``managed_config.toml`` on Linux/macOS,
+    ``requirements.toml`` on Windows."""
     if current_os() in (OS.LINUX, OS.MACOS):
         return Path("/etc/codex/managed_config.toml")
+    if current_os() is OS.WINDOWS:
+        return windows_codex_managed_settings_path()
     return None
 
 
