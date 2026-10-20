@@ -72,8 +72,6 @@ async function setRouting(
   if (typeof recipe !== 'string' || /[\r\n]/.test(recipe)) {
     throw new Error('Smart Router recipe must be a single-line string.');
   }
-  // A Luna Fast launch owns the speed field: on sets it, off removes it (JSON drops undefined).
-  // Other launches leave any caller-supplied speed alone.
   const speed = original(LUNA_FAST_KEY) === '1'
     ? { [SPEED_FIELD]: enabled ? FAST_SPEED : undefined }
     : {};
