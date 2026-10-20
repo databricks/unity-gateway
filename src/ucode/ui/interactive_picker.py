@@ -12,10 +12,12 @@ import threading
 import time
 from collections.abc import Callable
 from contextlib import suppress
+from datetime import UTC
 from typing import Any
 
 import questionary
 from prompt_toolkit.application import Application
+from prompt_toolkit.data_structures import Point
 from prompt_toolkit.filters import Condition, IsDone
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
@@ -26,6 +28,8 @@ from prompt_toolkit.shortcuts import PromptSession
 from questionary.prompts.common import InquirerControl
 from questionary.question import Question
 from questionary.styles import merge_styles_default
+
+from ucode.time_utils import parse_update_time
 
 PICKER_VISIBLE_ROWS = 10
 
@@ -54,6 +58,51 @@ def _description_footer_tokens(description: str) -> list[tuple[str, str]]:
     if not sep:
         return [("class:instruction", _description_preview(description))]
     return [("bold", f"{label}{sep}"), ("class:instruction", _description_preview(body))]
+
+
+def picker_details(
+    name: str,
+    description: object,
+    *,
+    created_by: object = None,
+    create_time: object = None,
+    update_time: object = None,
+    bundle_name: str | None = None,
+) -> str:
+    """Build plain-text detail lines from list metadata; never fetch bundles or credentials.
+
+    Creator is labeled as such: UC does not expose the bundle's author. Missing fields
+    remain explicit rather than implying that the owner is the author.
+    """
+
+    def text(value: object, fallback: str = "Not available") -> str:
+        return " ".join(value.split()) if isinstance(value, str) and value.strip() else fallback
+
+    def date(value: object) -> str:
+        parsed = parse_update_time(value) if isinstance(value, str) else None
+        return parsed.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC") if parsed else "Not available"
+
+    lines = [f"Location: {text(name)}"]
+    if bundle_name:
+        lines.append(f"Bundle: {text(bundle_name)}")
+    lines.extend(
+        [
+            f"Description: {text(description, 'No description provided')}",
+            f"Created by: {text(created_by)}",
+            f"Created: {date(create_time)}",
+            f"Updated: {date(update_time)}",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _detail_tokens(description: str) -> list[tuple[str, str]]:
+    tokens: list[tuple[str, str]] = []
+    for index, line in enumerate(description.splitlines()):
+        if index:
+            tokens.append(("", "\n"))
+        tokens.extend(_description_footer_tokens(line))
+    return tokens
 
 
 class _Back:
@@ -141,6 +190,7 @@ def scrolling_checkbox(
     "Loading more {loading_noun}, this might take a few seconds..." count while it runs.
 
     ``show_description`` adds a footer previewing the highlighted row's ``Choice.description``.
+    Newline-separated metadata retains its labels; Page Up/Down scroll the detail pane.
     It's a separate window rather than questionary's inline ``show_description`` because the
     choices window is sized to the row count, so an inline line would be clipped."""
     merged_style = merge_styles_default(
@@ -176,10 +226,19 @@ def scrolling_checkbox(
         control.error_message = None
         return True
 
+    def detail_height() -> int:
+        return min(8, max(1, app.output.get_size().rows // 3))
+
+    def visible_choice_rows() -> int:
+        # Reserve the prompt and optional loading/search/scroll footers. Re-evaluate
+        # on resize so the detail pane cannot push the choices out of a short terminal.
+        reserved = 5 + (detail_height() + 1 if show_description else 0)
+        return min(PICKER_VISIBLE_ROWS, max(1, app.output.get_size().rows - reserved))
+
     @Condition
     def has_more_choices() -> bool:
         # Live so the scroll hint appears as background-loaded rows stream in.
-        return len(control.choices) > PICKER_VISIBLE_ROWS
+        return len(control.choices) > visible_choice_rows()
 
     @Condition
     def show_loading_footer() -> bool:
@@ -210,11 +269,13 @@ def scrolling_checkbox(
         description = getattr(pointed, "description", None)
         return description if isinstance(description, str) and description else None
 
+    detail_line = {"offset": 0}
+
     def description_tokens() -> list[tuple[str, str]]:
         description = pointed_description()
         if description is None:
             return []
-        return _description_footer_tokens(description)
+        return _detail_tokens(description)
 
     @Condition
     def has_description() -> bool:
@@ -238,7 +299,7 @@ def scrolling_checkbox(
                     Window(
                         control,
                         height=lambda: Dimension.exact(
-                            min(PICKER_VISIBLE_ROWS, max(1, len(control.choices)))
+                            min(visible_choice_rows(), max(1, len(control.choices)))
                         ),
                     ),
                     filter=~IsDone(),
@@ -277,8 +338,14 @@ def scrolling_checkbox(
                         [
                             Window(height=Dimension.exact(1)),
                             Window(
-                                height=Dimension.exact(2),
-                                content=FormattedTextControl(description_tokens),
+                                height=lambda: Dimension(
+                                    min=1, preferred=detail_height(), max=detail_height()
+                                ),
+                                content=FormattedTextControl(
+                                    description_tokens,
+                                    get_cursor_position=lambda: Point(0, detail_line["offset"]),
+                                    show_cursor=False,
+                                ),
                                 wrap_lines=True,
                                 get_line_prefix=lambda line, wrap: _DESCRIPTION_INDENT,
                             ),
@@ -332,6 +399,7 @@ def scrolling_checkbox(
         perform_validation()
 
     def move_cursor_down(event: Any) -> None:
+        detail_line["offset"] = 0
         if control.choice_count == 0:
             return
         control.select_next()
@@ -342,6 +410,7 @@ def scrolling_checkbox(
             tries += 1
 
     def move_cursor_up(event: Any) -> None:
+        detail_line["offset"] = 0
         if control.choice_count == 0:
             return
         control.select_previous()
@@ -351,6 +420,7 @@ def scrolling_checkbox(
             tries += 1
 
     def search_filter(event: Any) -> None:
+        detail_line["offset"] = 0
         control.add_search_character(event.key_sequence[0].key)
 
     for character in string.printable:
@@ -363,6 +433,19 @@ def scrolling_checkbox(
     bindings.add(Keys.Up, eager=True)(move_cursor_up)
     bindings.add(Keys.ControlN, eager=True)(move_cursor_down)
     bindings.add(Keys.ControlP, eager=True)(move_cursor_up)
+
+    if show_description:
+
+        @bindings.add(Keys.PageDown, eager=True)
+        def _(_event: Any) -> None:
+            description = pointed_description() or ""
+            detail_line["offset"] = min(
+                max(0, len(description.splitlines()) - 1), detail_line["offset"] + 3
+            )
+
+        @bindings.add(Keys.PageUp, eager=True)
+        def _(_event: Any) -> None:
+            detail_line["offset"] = max(0, detail_line["offset"] - 3)
 
     @bindings.add(Keys.ControlM, eager=True)
     def _(event: Any) -> None:

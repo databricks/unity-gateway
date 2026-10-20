@@ -137,6 +137,10 @@ OTLP trace export with a refreshing headers helper; no background service is nee
 Register Databricks MCP servers for configured MCP-capable agents. Cursor Agent
 is MCP-only and is included when `cursor-agent` is installed:
 
+Run `ug mcp add` without selectors to browse available services. Highlight a service to
+see its description, creator, and creation/update dates. Type to filter names, use Space
+to select, and Enter to save. Page Up/Down scrolls the detail pane on small terminals.
+
 Use `ug mcp add` to add servers without removing existing registrations:
 
 ```bash
@@ -218,7 +222,10 @@ this contract does not make shared setup transactional.
 ## Skills
 
 Unity Catalog Skills can be registered as MCP tools or downloaded into local
-agent skill directories.
+agent skill directories. Run `ug skills add` without selectors to browse individual
+skills with the same metadata pane as the MCP browser, plus the bundle name.
+Missing metadata is shown explicitly. `Created by` is the UC creator, which may
+differ from the author of the bundle.
 
 ```bash
 # Set up the Databricks skills MCP so your agents can create and manage skills through ug.

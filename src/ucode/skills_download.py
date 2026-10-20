@@ -50,6 +50,7 @@ from ucode.ui import (
     prompt_yes_no,
     scrolling_checkbox,
 )
+from ucode.ui.interactive_picker import picker_details
 
 # `.claude/skills` (Claude) + `.agents/skills` (the alias other agents read).
 SKILL_BASE_DIR_NAMES = (".claude/skills", ".agents/skills")
@@ -643,12 +644,18 @@ def _skill_download_choice(ref: SkillRef, roots: list[Path]) -> questionary.Choi
     """Picker row for one skill: value is its FQN, title flags an on-disk bundle.
 
     On-disk skills stay selectable, since re-downloading is a legitimate update and
-    the existing overwrite prompt confirms it. The detail footer previews the
-    description behind a bold bundle-name label (the row itself shows the FQN, so the
-    bundle name is the one identifier not otherwise on screen).
+    the existing overwrite prompt confirms it. The detail pane shows the UC location,
+    bundle name, description, creator and timestamps returned by the list API.
     """
     on_disk = " (on disk)" if existing_skill_on_disk(roots, ref.bundle_name) else ""
-    description = f"{ref.bundle_name}: {ref.description}" if ref.description else None
+    description = picker_details(
+        ref.fqn,
+        ref.description,
+        created_by=ref.created_by,
+        create_time=ref.create_time,
+        update_time=ref.uc_update_time,
+        bundle_name=ref.bundle_name,
+    )
     return questionary.Choice(title=f"{ref.fqn}{on_disk}", value=ref.fqn, description=description)
 
 
@@ -683,7 +690,7 @@ def prompt_for_skill_download_choices(
     selection = scrolling_checkbox(
         "Skills:",
         choices=[],
-        instruction="(space to toggle, ctrl-a all, enter to save, type to filter)",
+        instruction="(space toggle, ^A all, enter save, type filter, pgup/pgdn details)",
         style=picker_style(),
         background_loader=background_loader,
         loading_noun="skills",

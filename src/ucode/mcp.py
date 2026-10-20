@@ -63,6 +63,7 @@ from ucode.ui import (
     scrolling_checkbox,
     spinner,
 )
+from ucode.ui.interactive_picker import picker_details
 
 # Workspace-relative path fragments for the V2 AI Gateway MCP endpoints, shared by the URL-shape
 # checks (`_is_app_mcp_server`, `_mcp_server_location`) so the set stays in one place.
@@ -464,7 +465,9 @@ def revert_mcp_configs(state: dict) -> dict[str, bool]:
     return results
 
 
-def discover_mcp_service_names(workspace: str, profile: str | None = None) -> list[str]:
+def discover_mcp_service_names(
+    workspace: str, profile: str | None = None, *, metadata: dict[str, dict] | None = None
+) -> list[str]:
     """Curated `system.ai.*` MCP services. Empty list if discovery fails so
     callers can fall back to legacy connection discovery without surfacing
     every error to the picker.
@@ -473,7 +476,8 @@ def discover_mcp_service_names(workspace: str, profile: str | None = None) -> li
     expired/invalid credential surfaces loudly instead of masquerading as an empty
     workspace (AIGTWY-4843)."""
     token = get_databricks_token(workspace, profile)
-    names, reason = list_mcp_services(workspace, token)
+    kwargs = {"metadata": metadata} if metadata is not None else {}
+    names, reason = list_mcp_services(workspace, token, **kwargs)
     raise_for_invalid_access_token(workspace, reason)
     return names
 
@@ -484,6 +488,7 @@ def discover_all_mcp_service_names(
     on_progress: Callable[[int, int, int], None] | None = None,
     on_services: Callable[[list[str]], None] | None = None,
     cancel_event: threading.Event | None = None,
+    metadata: dict[str, dict] | None = None,
 ) -> list[str]:
     """All MCP services across every `<catalog>.<schema>` in the workspace. This
     walks the workspace (see `list_all_mcp_services`) and is the workspace-wide
@@ -491,12 +496,14 @@ def discover_all_mcp_service_names(
     the walk for live count reporting, and `on_services` to stream newly-found
     service names into the picker as the walk progresses."""
     token = get_databricks_token(workspace, profile)
+    kwargs = {"metadata": metadata} if metadata is not None else {}
     names, reason = list_all_mcp_services(
         workspace,
         token,
         on_progress=on_progress,
         on_services=on_services,
         cancel_event=cancel_event,
+        **kwargs,
     )
     raise_for_invalid_access_token(workspace, reason)
     return names
@@ -653,6 +660,7 @@ def _mcp_service_choice(
     known_names: set[str],
     additive: bool,
     managed_names: set[str] | None = None,
+    metadata: dict | None = None,
 ) -> questionary.Choice | None:
     """Picker choice for one MCP-service full name (`<catalog>.<schema>.<id>`), or None to hide it.
 
@@ -666,8 +674,19 @@ def _mcp_service_choice(
     if registered_as in (managed_names or set()):
         return None
     if registered_as in known_names:
-        return None if additive else _server_choice(registered_as, True, display_title)
-    return _add_choice(f"{MCP_SERVICE_SELECTION_PREFIX}{name}", display_title)
+        choice = None if additive else _server_choice(registered_as, True, display_title)
+    else:
+        choice = _add_choice(f"{MCP_SERVICE_SELECTION_PREFIX}{name}", display_title)
+    if choice is not None:
+        details = metadata or {}
+        choice.description = picker_details(
+            name,
+            details.get("comment"),
+            created_by=details.get("created_by"),
+            create_time=details.get("create_time"),
+            update_time=details.get("update_time"),
+        )
+    return choice
 
 
 def build_mcp_picker_choices(
@@ -680,6 +699,7 @@ def build_mcp_picker_choices(
     available_uc_functions_servers: list[dict] | None = None,
     additive: bool = False,
     managed_names: set[str] | None = None,
+    service_metadata: dict[str, dict] | None = None,
 ) -> list[questionary.Choice | questionary.Separator]:
     original_by_name = _servers_by_name(original_servers)
     managed = managed_names or set()
@@ -711,7 +731,11 @@ def build_mcp_picker_choices(
         # Picker shows the dotted UC name; state/agents store the dashed form
         # (see resolver). The shared helper is also used by the background walk that
         # streams more services in, so up-front and streamed rows match exactly.
-        push(_mcp_service_choice(name, known_names, additive, managed))
+        push(
+            _mcp_service_choice(
+                name, known_names, additive, managed, (service_metadata or {}).get(name)
+            )
+        )
         displayed_names.add(name.replace(".", "-"))
 
     for name in available_external_names:
@@ -808,6 +832,7 @@ def prompt_for_mcp_server_choices(
     allow_back: bool = False,
     additive: bool = False,
     managed_names: set[str] | None = None,
+    service_metadata: dict[str, dict] | None = None,
     background_loader: Callable[[Callable[[list[questionary.Choice]], None], threading.Event], None]
     | None = None,
 ) -> list[str] | None | _Back:
@@ -824,7 +849,7 @@ def prompt_for_mcp_server_choices(
     ``background_loader`` streams more choices in after the picker opens (see
     `scrolling_checkbox`) — used to load the workspace-wide MCP-services walk without
     blocking on it up front."""
-    instruction = "(space to toggle, ctrl-a all, enter to save, type to filter)"
+    instruction = "(space toggle, ^A all, enter save, type filter, pgup/pgdn details)"
     if allow_back:
         instruction = "(space to toggle, ctrl-a all, ← back, enter to save, type to filter)"
     selection = scrolling_checkbox(
@@ -839,11 +864,13 @@ def prompt_for_mcp_server_choices(
             available_uc_functions_servers,
             additive=additive,
             managed_names=managed_names,
+            service_metadata=service_metadata,
         ),
         style=picker_style(),
         instruction=instruction,
         allow_back=allow_back,
         background_loader=background_loader,
+        show_description=True,
     ).ask()
     if selection is None:
         return None
@@ -1323,6 +1350,8 @@ def _mcp_services_background_loader(
     never blocks the picker from opening. Deduping against already-shown rows (e.g. the fast
     `system.ai` list) is handled by the picker's append."""
 
+    metadata: dict[str, dict] = {}
+
     def loader(
         append: Callable[[list[questionary.Choice]], None], cancel_event: threading.Event
     ) -> None:
@@ -1332,14 +1361,22 @@ def _mcp_services_background_loader(
             new_choices = [
                 choice
                 for name in new_names
-                if (choice := _mcp_service_choice(name, known_names, additive, managed_names))
+                if (
+                    choice := _mcp_service_choice(
+                        name, known_names, additive, managed_names, metadata.get(name)
+                    )
+                )
                 is not None
             ]
             if new_choices:
                 append(new_choices)
 
         discover_all_mcp_service_names(
-            workspace, profile, on_services=on_services, cancel_event=cancel_event
+            workspace,
+            profile,
+            on_services=on_services,
+            cancel_event=cancel_event,
+            metadata=metadata,
         )
 
     return loader
@@ -1347,22 +1384,24 @@ def _mcp_services_background_loader(
 
 def _discover_selected_mcp_sources(
     workspace: str, profile: str | None, sources: set[str]
-) -> dict[str, list]:
+) -> dict[str, Any]:
     """Discover the picker's sources. The picker searches a single source — MCP services — so
     this fetches the fast curated `system.ai` list synchronously (the slow workspace-wide walk
     streams in afterward via the picker's background loader). The other keys stay in the returned
     dict as empty lists so the picker call is unchanged and can still render/remove
     already-registered servers of any type."""
     services: list[str] = []
+    metadata: dict[str, dict] = {}
     if MCP_SERVICES_SOURCE in sources:
         services = _discover_mcp_source(
             "MCP services",
-            lambda: discover_mcp_service_names(workspace, profile),
+            lambda: discover_mcp_service_names(workspace, profile, metadata=metadata),
         )
     return {
         "external": [],
         "apps": [],
         "services": services,
+        "service_metadata": metadata,
         "genie": [],
         "vector_search": [],
         "uc_functions": [],
@@ -2060,6 +2099,7 @@ def configure_mcp_command(
         additive=append,
         managed_names=managed_names,
         background_loader=services_loader,
+        service_metadata=discovered.get("service_metadata"),
     )
     if selections is None or isinstance(selections, _Back):
         # No back-navigation without the source step; `_Back` can't occur, but keep the guard

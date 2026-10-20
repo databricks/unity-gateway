@@ -451,7 +451,7 @@ class TestMcpPicker:
         assert "Databricks SQL" not in choice_text
         assert "Built-in AI tools" not in choice_text
         assert checkbox_calls[0]["kwargs"]["instruction"] == (
-            "(space to toggle, ctrl-a all, enter to save, type to filter)"
+            "(space toggle, ^A all, enter save, type filter, pgup/pgdn details)"
         )
 
     def test_prompt_returns_none_when_cancelled(self, monkeypatch):
@@ -608,7 +608,9 @@ def _patch_mcp_choices(monkeypatch, *values: str, categories: set[str] | None = 
     )
     # Stub the always-on discoveries so configure_mcp_command tests don't hit
     # real APIs. Individual tests override these after calling the helper.
-    monkeypatch.setattr(mcp, "discover_mcp_service_names", lambda workspace, profile=None: [])
+    monkeypatch.setattr(
+        mcp, "discover_mcp_service_names", lambda workspace, profile=None, **kwargs: []
+    )
     monkeypatch.setattr(
         mcp,
         "discover_all_mcp_service_names",
@@ -1094,7 +1096,12 @@ class TestConfigureMcpCommand:
         walk_calls: list[str] = []
 
         def fake_walk(
-            workspace, profile=None, on_progress=None, on_services=None, cancel_event=None
+            workspace,
+            profile=None,
+            on_progress=None,
+            on_services=None,
+            cancel_event=None,
+            metadata=None,
         ):
             walk_calls.append(workspace)
             if on_services is not None:
@@ -1193,7 +1200,9 @@ class TestConfigureMcpCommand:
         monkeypatch.setattr(mcp, "ensure_databricks_auth", lambda workspace, profile=None: None)
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
         monkeypatch.setattr(mcp, "discover_app_mcp_servers", lambda workspace, profile=None: [])
-        monkeypatch.setattr(mcp, "discover_mcp_service_names", lambda workspace, profile=None: [])
+        monkeypatch.setattr(
+            mcp, "discover_mcp_service_names", lambda workspace, profile=None, **kwargs: []
+        )
         monkeypatch.setattr(
             mcp,
             "prompt_for_mcp_server_choices",
@@ -1418,7 +1427,7 @@ class TestConfigureMcpCommand:
         monkeypatch.setattr(
             mcp,
             "discover_mcp_service_names",
-            lambda workspace, profile=None: (_ for _ in ()).throw(
+            lambda workspace, profile=None, **kwargs: (_ for _ in ()).throw(
                 RuntimeError("permission denied")
             ),
         )
@@ -1449,7 +1458,7 @@ class TestConfigureMcpCommand:
         monkeypatch.setattr(mcp, "ensure_databricks_auth", lambda workspace, profile=None: None)
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
 
-        def fake_services(workspace, profile=None):
+        def fake_services(workspace, profile=None, **kwargs):
             seen_profiles["mcp-services"] = profile
             return []
 
@@ -3820,7 +3829,9 @@ class TestSingleSourceSkipsPrompt:
         monkeypatch.setattr(mcp.shutil, "which", lambda binary: f"/usr/bin/{binary}")
         monkeypatch.setattr(mcp, "ensure_databricks_auth", lambda workspace, profile=None: None)
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
-        monkeypatch.setattr(mcp, "discover_mcp_service_names", lambda workspace, profile=None: [])
+        monkeypatch.setattr(
+            mcp, "discover_mcp_service_names", lambda workspace, profile=None, **kwargs: []
+        )
         monkeypatch.setattr(
             mcp,
             "discover_all_mcp_service_names",
