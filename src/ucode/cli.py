@@ -46,7 +46,12 @@ from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
-from ucode.constants import AGENT_CLAUDE, AGENT_CODEX, SMART_ROUTING_ENV_KEYS
+from ucode.constants import (
+    AGENT_CLAUDE,
+    AGENT_CODEX,
+    ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
+    SMART_ROUTING_ENV_KEYS,
+)
 from ucode.custom_oauth import (
     CUSTOM_OAUTH_CLI_ENV_VAR,
     custom_oauth_cli_enabled,
@@ -2735,7 +2740,7 @@ def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | No
         return False
     if (
         not enabled
-        and os.environ.get("ISAAC_SMART_ROUTER_FEEDBACK") == "1"
+        and os.environ.get(ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR, "").strip().lower() in {"1", "true"}
         and len((reason or "").strip()) < 16
     ):
         print_err(

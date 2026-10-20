@@ -15,7 +15,8 @@ export function createIsaacFeedbackState(): FeedbackState {
 
 export function registerIsaacFeedback(on: On, state: FeedbackState): void {
   on('command.run', {command: 'smart-router'}, async ($, e, next) => {
-    if (e.args.trim() !== 'off' || await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK') !== '1') {
+    if (e.args.trim() !== 'off'
+      || !['1', 'true'].includes((await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK') ?? '').trim().toLowerCase())) {
       return next(e);
     }
     try {
