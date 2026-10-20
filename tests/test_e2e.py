@@ -568,7 +568,7 @@ class TestClaudeLaunch:
                 "CLAUDE_CONFIG_DIR": str(config_dir),
                 "ANTHROPIC_MODEL": model_id,
                 "ANTHROPIC_BASE_URL": base_url,
-                "ANTHROPIC_API_KEY": e2e_token,
+                "DATABRICKS_BEARER": e2e_token,
             }
             cmd = claude.validate_cmd("claude")
             result = _run_agent(cmd, env=env, timeout=90)
@@ -650,7 +650,7 @@ class TestModelProviderLaunch:
             **os.environ,
             "CLAUDE_CONFIG_DIR": str(config_dir),
             "ANTHROPIC_BASE_URL": build_tool_base_url("claude", workspace),
-            "ANTHROPIC_API_KEY": token,
+            "DATABRICKS_BEARER": token,
         }
         # Retry the flaky client-side model pre-flight before giving up; only a persistent failure
         # falls through to _skip_if_provider_unusable.

@@ -292,6 +292,17 @@ class TestRenderOverlay:
         overlay, _ = claude.render_overlay(WS, "s4")
         assert overlay["env"]["CLAUDE_CODE_USE_GATEWAY"] == "1"
 
+    @pytest.mark.parametrize("relayed", [False, True])
+    def test_blanks_shadowing_credentials_as_owned_keys(self, relayed):
+        # Claude Code applies settings env over the shell, so these empty values keep a shell
+        # ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY from outranking ug's credential.
+        overlay, keys = claude.render_overlay(
+            WS, "s4", relayed=relayed, relayed_base_url="http://localhost:8000" if relayed else None
+        )
+        for name in claude.SHADOWING_CREDENTIAL_ENV_VARS:
+            assert overlay["env"][name] == ""
+            assert ["env", name] in keys
+
     @pytest.mark.parametrize("env_value", [None, "", "0", "true", "yes"])
     def test_gateway_model_discovery_disabled_unless_opted_in(self, monkeypatch, env_value):
         if env_value is not None:
@@ -2636,6 +2647,25 @@ class TestWriteToolConfigManagedSettings:
         assert "availableModels" not in managed_content
         assert "modelPicker" not in managed_content
 
+    def test_blank_credentials_land_in_both_files_and_are_revertible(self, monkeypatch):
+        # The managed file covers a bare `claude` too; an existing value there is replaced like
+        # any other ug-owned leaf, and the recorded keys let `ug revert` remove the blanks again.
+        private_writes: list = []
+        managed_writes: list = []
+        existing = {str(FAKE_MANAGED_PATH): {"env": {"ANTHROPIC_API_KEY": "it-authored"}}}
+        self._patch(monkeypatch, private_writes, managed_writes, existing_by_path=existing)
+
+        state = claude.write_tool_config(
+            {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+        )
+
+        private = next(p for path, p in private_writes if path == str(claude.CLAUDE_SETTINGS_PATH))
+        managed = json.loads(managed_writes[0][1])
+        for name in claude.SHADOWING_CREDENTIAL_ENV_VARS:
+            assert private["env"][name] == ""
+            assert managed["env"][name] == ""
+            assert ["env", name] in state["managed_configs"]["claude"]["keys"]
+
     def test_settings_passthrough_lands_in_managed_file_only(self, monkeypatch):
         private_writes: list = []
         managed_writes: list = []
@@ -3201,54 +3231,41 @@ class TestClaudeLaunch:
         assert "ANTHROPIC_DEFAULT_MODEL" not in os.environ
         assert calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), "--debug"]]
 
-    def test_launch_drops_shadowing_shell_credentials(self, monkeypatch, capsys):
-        # Claude Code would send these instead of the gateway apiKeyHelper token (401).
-        launched: list[dict[str, str | None]] = []
+    def test_launch_warns_on_shadowing_credentials_and_keeps_env(self, monkeypatch, capsys):
+        # ug's settings blank these for Claude Code; the user's own environment stays as it was.
         monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
         monkeypatch.delenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, raising=False)
         monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "sk-other-gateway")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-other-gateway")
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
-        monkeypatch.setattr(
-            claude,
-            "exec_or_spawn",
-            lambda _argv: launched.append(
-                {name: os.environ.get(name) for name in claude.SHADOWING_CREDENTIAL_ENV_VARS}
-            ),
-        )
+        monkeypatch.setattr(claude, "exec_or_spawn", lambda _argv: None)
 
         claude.launch({"workspace": WS, "profile": "test"}, ["-p", "hi"], options=LaunchOptions())
 
-        assert launched == [{"ANTHROPIC_AUTH_TOKEN": None, "ANTHROPIC_API_KEY": None}]
+        assert os.environ["ANTHROPIC_AUTH_TOKEN"] == "sk-other-gateway"
+        assert os.environ["ANTHROPIC_API_KEY"] == "sk-other-gateway"
         captured = capsys.readouterr()
         assert "ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY" in captured.err
         assert "ANTHROPIC" not in captured.out
 
-    def test_relayed_launch_drops_shadowing_shell_credentials(self, monkeypatch):
-        launched: list[dict[str, str | None]] = []
+    def test_relayed_launch_warns_on_shadowing_credentials(self, monkeypatch, capsys):
         monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "sk-other-gateway")
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        monkeypatch.setattr(
-            claude,
-            "_launch_relayed",
-            lambda _state, _binary, _tool_args: launched.append(
-                {name: os.environ.get(name) for name in claude.SHADOWING_CREDENTIAL_ENV_VARS}
-            ),
-        )
-
-        claude.launch({"workspace": WS, "claude_relayed": True}, [], options=LaunchOptions())
-
-        assert launched == [{"ANTHROPIC_AUTH_TOKEN": None, "ANTHROPIC_API_KEY": None}]
-
-    def test_launch_ignores_empty_credentials_without_warning(self, monkeypatch, capsys):
-        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "")
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setattr(claude, "_launch_relayed", lambda *_args: None)
 
         claude.launch({"workspace": WS, "claude_relayed": True}, [], options=LaunchOptions())
 
-        assert "ANTHROPIC_AUTH_TOKEN" not in os.environ
-        assert "Ignoring" not in capsys.readouterr().err
+        assert os.environ["ANTHROPIC_AUTH_TOKEN"] == "sk-other-gateway"
+        assert "ANTHROPIC_AUTH_TOKEN from your environment" in capsys.readouterr().err
+
+    def test_launch_does_not_warn_for_empty_credentials(self, monkeypatch, capsys):
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "  ")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setattr(claude, "_launch_relayed", lambda *_args: None)
+
+        claude.launch({"workspace": WS, "claude_relayed": True}, [], options=LaunchOptions())
+
+        assert "ANTHROPIC" not in capsys.readouterr().err
 
     def test_windows_launch_preserves_prompt_as_literal_argv(self, monkeypatch, tmp_path):
         native_binary = tmp_path / "Claude Code" / "claude.exe"

@@ -49,10 +49,10 @@ def test_ug_claude_headless_ignores_shell_anthropic_credentials(live_session, wo
     """Scenario: the user's shell still exports another LLM gateway's Anthropic credentials,
     then they submit a headless prompt through ug.
 
-    Expected: ug reports on stderr that it ignores both variables, and the real agent still
-    authenticates through the gateway and returns the file value in its structured completed
-    answer, with exit code zero and JSON-only stdout. Claude Code ranks both variables above
-    ug's apiKeyHelper, so before this was handled every request failed with 401.
+    Expected: ug's settings blank both variables for Claude Code and ug notes this on stderr.
+    The real agent still authenticates through the gateway and returns the file value in its
+    structured completed answer, with exit code zero and JSON-only stdout. Claude Code ranks both
+    variables above ug's apiKeyHelper, so before this was handled every request failed with 401.
     """
     session = live_session
     task = FileTask(session)

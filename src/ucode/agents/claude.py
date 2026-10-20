@@ -111,6 +111,7 @@ CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR = "CLAUDE_CODE_OAUTH_TOKEN"
 # Claude Code ranks these above `apiKeyHelper` and the subscription login. A value inherited from
 # the user's shell, such as another LLM gateway's key, would replace ug's credential and every
 # gateway request would fail with 401 "Credential was not sent or was of an unsupported type".
+# ug writes them as empty strings in its settings `env`, which Claude Code applies over the shell.
 SHADOWING_CREDENTIAL_ENV_VARS = ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY")
 CLAUDE_CONFIG_DIR = Path.home() / ".claude"
 CLAUDE_SETTINGS_PATH = CLAUDE_CONFIG_DIR / "ucode-settings.json"
@@ -532,6 +533,8 @@ def render_overlay(
         "ENABLE_PROMPT_CACHING_1H": "1",
         "ENABLE_TOOL_SEARCH": "true",
         "CLAUDE_CODE_USE_GATEWAY": "1",
+        # Blank, so a credential in the user's shell can't outrank ug's on this or a bare `claude`.
+        **dict.fromkeys(SHADOWING_CREDENTIAL_ENV_VARS, ""),
     }
     # Intentionally NOT setting ANTHROPIC_MODEL by default. Setting it produces a
     # duplicate catalog row in Claude Code's /model picker (e.g. "Opus 4.8 (1M
@@ -2297,21 +2300,21 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     raise SystemExit(returncode)
 
 
-def _drop_shadowing_credentials() -> None:
-    """Keep inherited Anthropic credentials out of the Claude Code process ug launches.
+def _warn_shadowing_credentials() -> None:
+    """Tell the user that ug's settings override inherited Anthropic credentials.
 
     ug owns Claude Code's authentication on every launch path (the gateway `apiKeyHelper`, or the
-    subscription login behind the relayed proxy); see ``SHADOWING_CREDENTIAL_ENV_VARS``.
+    subscription login behind the relayed proxy). Its settings blank these variables; see
+    ``SHADOWING_CREDENTIAL_ENV_VARS``. The user's environment itself is left unchanged.
     """
-    dropped: list[str] = []
-    for name in SHADOWING_CREDENTIAL_ENV_VARS:
-        if os.environ.pop(name, "").strip():
-            dropped.append(name)
-    if dropped:
+    shadowing = [name for name in SHADOWING_CREDENTIAL_ENV_VARS if os.environ.get(name, "").strip()]
+    if shadowing:
+        verb, pronoun = ("is", "it") if len(shadowing) == 1 else ("are", "them")
         # stderr: headless launches keep stdout machine-readable.
         print_warning_err(
-            f"Ignoring {' and '.join(dropped)} from your environment for this session, "
-            "so Claude Code uses ug's credentials."
+            f"{' and '.join(shadowing)} from your environment {verb} ignored by Claude Code "
+            f"sessions ug configures, which use ug's credentials. Commands Claude runs see "
+            f"{pronoun} empty."
         )
 
 
@@ -2321,7 +2324,7 @@ def launch(
     *,
     options: LaunchOptions,
 ) -> None:
-    _drop_shadowing_credentials()
+    _warn_shadowing_credentials()
     tool_args = _external_web_search_args(state, tool_args)
     binary = SPEC["binary"]
     workspace = state.get("workspace")

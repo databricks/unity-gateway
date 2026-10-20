@@ -146,9 +146,10 @@ These are component checks, not live Windows coverage for every agent.
 
 Agent configuration tests also verify `ug` auth/MCP helper commands, including
 quoted executable paths and replacement of legacy `ucode` routing/web-search helpers.
-`test_agent_claude.py` also checks that default and relayed Claude launches drop inherited
-`ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` before Claude Code starts, warn only on stderr,
-and stay silent for empty values. These component checks replace the exec and relay proxy.
+`test_agent_claude.py` also checks that ug's Claude settings blank `ANTHROPIC_AUTH_TOKEN` and
+`ANTHROPIC_API_KEY` as ug-owned keys in the private and OS-managed files, for default and relayed
+setups, and that launches leave the user's environment unchanged, warn only on stderr, and stay
+silent for empty values. These component checks replace the exec, relay proxy and privileged write.
 
 `test_desktop_auth.py`, `test_desktop_auth_cli.py`, and `test_file_lock_cross_os.py`
 cover Desktop token-only stdout, explicit workspace/profile arguments, interactive-only

@@ -201,7 +201,7 @@ class TestClaudeUserAgent:
         env = {
             **os.environ,
             "CLAUDE_CONFIG_DIR": str(config_dir),
-            "ANTHROPIC_API_KEY": "test-key-not-real",
+            "DATABRICKS_BEARER": "test-key-not-real",
             **overlay["env"],
         }
 
@@ -231,7 +231,7 @@ class TestClaudeUserAgent:
         env = {
             **os.environ,
             "CLAUDE_CONFIG_DIR": str(config_dir),
-            "ANTHROPIC_API_KEY": "test-key-not-real",
+            "DATABRICKS_BEARER": "test-key-not-real",
             **overlay["env"],
         }
 
