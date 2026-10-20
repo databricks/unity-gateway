@@ -3201,7 +3201,7 @@ def _launch_tool(
     previous = {}
     try:
         tool = normalize_tool(tool_name)
-        routing_already_chosen = routing_already_chosen or smart_routing_config.known_version()
+        routing_chosen = routing_already_chosen or smart_routing_config.known_version()
         previous = smart_routing_v2.apply_config(agent=tool)
         if not custom_oauth_cli_enabled(custom_oauth):
             os.environ.pop(CUSTOM_OAUTH_CLI_ENV_VAR, None)
@@ -3329,7 +3329,7 @@ def _launch_tool(
         # Managed smart routing overrides individual routing env vars, but not the flag or a known
         # version. Its version is applied right before launch, after the launch options below.
         managed_smart_routing_applies = (
-            _managed_smart_routing_enabled(managed, tool) and not routing_already_chosen
+            _managed_smart_routing_enabled(managed, tool) and not routing_chosen
         )
         smart_routing_enabled = managed_smart_routing_applies or (
             smart_routing_v2.smart_routing_enabled(None, default=False, agent=tool)
