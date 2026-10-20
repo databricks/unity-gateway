@@ -3245,7 +3245,10 @@ class TestClaudeLaunch:
         assert os.environ["ANTHROPIC_AUTH_TOKEN"] == "sk-other-gateway"
         assert os.environ["ANTHROPIC_API_KEY"] == "sk-other-gateway"
         captured = capsys.readouterr()
-        assert "ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY" in captured.err
+        err = " ".join(captured.err.split())
+        assert "ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY" in err
+        # Points scripted PAT users at ug's own bearer override.
+        assert "set DATABRICKS_BEARER instead" in err
         assert "ANTHROPIC" not in captured.out
 
     def test_relayed_launch_warns_on_shadowing_credentials(self, monkeypatch, capsys):

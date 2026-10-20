@@ -2314,7 +2314,7 @@ def _warn_shadowing_credentials() -> None:
         print_warning_err(
             f"{' and '.join(shadowing)} from your environment {verb} ignored by Claude Code "
             f"sessions ug configures, which use ug's credentials. Commands Claude runs see "
-            f"{pronoun} empty."
+            f"{pronoun} empty. To authenticate with a PAT in scripts, set DATABRICKS_BEARER instead."
         )
 
 
