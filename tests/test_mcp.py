@@ -69,6 +69,82 @@ class TestBuildMcpProxyArgv:
         assert "--profile" not in no_profile
 
 
+class TestCopilotMcpBinaryResolution:
+    def test_available_clients_uses_verified_copilot_path(self, monkeypatch):
+        monkeypatch.setattr(mcp.copilot, "resolve_binary", lambda: "/opt/github/copilot")
+        monkeypatch.setattr(
+            mcp.shutil,
+            "which",
+            lambda binary: f"/usr/bin/{binary}" if binary != "copilot" else None,
+        )
+
+        assert "copilot" in mcp.available_mcp_clients()
+
+    def test_mcp_list_uses_verified_absolute_copilot_path(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(mcp.copilot, "resolve_binary", lambda: "/opt/github/copilot")
+        monkeypatch.setattr(
+            mcp.subprocess_cross_os,
+            "run",
+            lambda argv, **_kwargs: (
+                calls.append(argv)
+                or type("Result", (), {"stdout": "No MCP servers configured.", "stderr": ""})()
+            ),
+        )
+
+        assert mcp.query_live_mcp_status("copilot") == {}
+        assert calls == [["/opt/github/copilot", "mcp", "list"]]
+
+    def test_conflicting_copilot_is_omitted_from_mcp_availability(self, monkeypatch):
+        monkeypatch.setattr(
+            mcp.copilot,
+            "resolve_binary",
+            lambda: (_ for _ in ()).throw(
+                mcp.copilot.CopilotBinaryConflictError(
+                    "AWS Copilot uses the same command name; install GitHub Copilot CLI"
+                )
+            ),
+        )
+
+        monkeypatch.setattr(
+            mcp.shutil,
+            "which",
+            lambda binary: f"/usr/bin/{binary}" if binary != "copilot" else None,
+        )
+
+        assert "copilot" not in mcp.available_mcp_clients()
+
+    def test_explicit_copilot_setup_surfaces_binary_conflict(self, monkeypatch):
+        conflict = "AWS Copilot uses the same command name; install GitHub Copilot CLI"
+        monkeypatch.setattr(mcp, "tool_binary_status", lambda _tool: (False, conflict))
+        monkeypatch.setattr(mcp, "available_mcp_clients", lambda: [])
+        monkeypatch.setattr(
+            mcp,
+            "purge_cross_workspace_mcp_residue",
+            lambda *_args: pytest.fail("must fail before changing MCP state"),
+        )
+
+        with pytest.raises(RuntimeError, match="AWS Copilot"):
+            mcp.setup_mcp_clients(
+                {"workspace": WS, "available_tools": ["copilot"]},
+                "MCP Servers",
+                agents={"copilot"},
+            )
+
+    def test_generic_mcp_list_warns_for_configured_copilot_conflict(self, monkeypatch, capsys):
+        conflict = "AWS Copilot uses the same command name; install GitHub Copilot CLI"
+        monkeypatch.setattr(
+            mcp,
+            "load_state",
+            lambda: {"workspace": WS, "available_tools": ["copilot"], "mcp_servers": []},
+        )
+        monkeypatch.setattr(mcp, "tool_binary_status", lambda _tool: (False, conflict))
+        monkeypatch.setattr(mcp, "available_mcp_clients", lambda: [])
+
+        assert mcp.list_mcp_command() == 0
+        assert "AWS Copilot" in capsys.readouterr().out
+
+
 class TestAddCodexMcpServer:
     def test_registers_stdio_proxy_command(self, monkeypatch):
         calls: list[dict] = []
