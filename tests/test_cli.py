@@ -591,21 +591,6 @@ class TestSubcommandRouting:
         assert result.exit_code == 0, result.output
         mock_set.assert_not_called()
 
-    def test_codex_enable_smart_routing_is_consumed_by_ucode(self):
-        enabled_during_launch = []
-        with patch(
-            "ucode.cli._launch_tool",
-            side_effect=lambda *_args, **_kwargs: enabled_during_launch.append(
-                os.environ.get(cli_mod.smart_routing_v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR)
-            ),
-        ) as mock_launch:
-            result = runner.invoke(app, ["codex", "--enable-smart-routing"])
-
-        assert result.exit_code == 0, result.output
-        assert enabled_during_launch == ["1"]
-        assert cli_mod.smart_routing_v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR not in os.environ
-        assert mock_launch.call_args.args[1].args == []
-
     @pytest.mark.parametrize("tool", ["claude", "codex"])
     @pytest.mark.parametrize(
         ("launch_env", "first_prompt"),
@@ -622,6 +607,11 @@ class TestSubcommandRouting:
     ):
         for name, value in launch_env.items():
             monkeypatch.setenv(name, value)
+        routing_keys = (
+            *cli_mod.smart_routing_v2.SMART_ROUTING_ENV_KEYS,
+            cli_mod.smart_routing_v2.SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
+        )
+        env_before = {key: os.environ.get(key) for key in routing_keys}
         observed = []
 
         with patch(
@@ -632,11 +622,13 @@ class TestSubcommandRouting:
                     cli_mod.smart_routing_v2.first_prompt_routing_enabled(agent=tool),
                 )
             ),
-        ):
+        ) as mock_launch:
             result = runner.invoke(app, [tool, "--enable-smart-routing"])
 
         assert result.exit_code == 0, result.output
         assert observed == [(True, first_prompt)]
+        assert mock_launch.call_args.args[1].args == []
+        assert {key: os.environ.get(key) for key in routing_keys} == env_before
 
     @pytest.mark.parametrize("tool, subcommand", [("codex", "app"), ("claude", "update")])
     def test_native_subcommand_suppresses_inherited_smart_routing(
