@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 import time
 
 import pytest
@@ -18,10 +19,12 @@ from utils.terminal import TerminalProcess
 
 pytestmark = pytest.mark.installation
 
-_FLOORS = {"claude": (2, 1, 290), "codex": (0, 145, 0)}
+# Windows needs a newer Codex for the provider keys ug writes to requirements.toml.
+_CODEX_FLOOR = (0, 156, 0) if sys.platform == "win32" else (0, 145, 0)
+_FLOORS = {"claude": (2, 1, 290), "codex": _CODEX_FLOOR}
 _REQUIREMENTS = {
     "claude": "ug requires Claude Code 2.1.290 or newer",
-    "codex": "ug requires Codex 0.145.0 or newer",
+    "codex": f"ug requires Codex {'.'.join(map(str, _CODEX_FLOOR))} or newer",
 }
 _UPGRADE_PROMPTS = {
     "claude": "Upgrade Claude Code if available?",

@@ -31,6 +31,10 @@ class TestCodexSpec:
 
 
 class TestMinimumVersion:
+    @pytest.fixture(autouse=True)
+    def _linux(self, monkeypatch):
+        monkeypatch.setattr(codex, "current_os", lambda: managed_files.OS.LINUX)
+
     @pytest.mark.parametrize("version", ["0.145.0", "0.148.0", "1.0.0"])
     def test_supported_version(self, monkeypatch, version):
         monkeypatch.setattr(codex, "agent_version", lambda _binary: version)
@@ -47,6 +51,20 @@ class TestMinimumVersion:
         monkeypatch.setattr(codex, "agent_version", lambda _binary: "unknown")
 
         assert codex.minimum_version_error() is None
+
+    @pytest.mark.parametrize(
+        ("version", "expected"),
+        [
+            ("0.155.0", "ug requires Codex 0.156.0 or newer; found 0.155.0."),
+            ("0.156.0", None),
+        ],
+    )
+    def test_windows_needs_requirements_provider_support(self, monkeypatch, version, expected):
+        # Older Windows Codex ignores the provider keys in requirements.toml.
+        monkeypatch.setattr(codex, "current_os", lambda: managed_files.OS.WINDOWS)
+        monkeypatch.setattr(codex, "agent_version", lambda _binary: version)
+
+        assert codex.minimum_version_error() == expected
 
 
 class TestHasUcodeConfig:

@@ -46,7 +46,7 @@ conflicting file stops the command with a request to rerun it elevated.
 
 Codex has no admin-only config layer on Windows, so the same elevated runs write
 `C:\ProgramData\OpenAI\Codex\requirements.toml`, which Codex 0.156.0 and later enforce over the
-user's config and `-c`. It takes only requirement keys: UG writes `model_provider` and the
+user's config and `-c`; UG requires that version on Windows. It takes only requirement keys: UG writes `model_provider` and the
 `Databricks` provider entry, but not `model` or `mcp_servers` (managed MCP servers stay in user
 scope there). A required provider entry replaces the configured one instead of merging, so the
 launch-scoped headers reach Codex through `env_http_headers` and the
