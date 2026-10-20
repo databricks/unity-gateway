@@ -1,6 +1,5 @@
 export const RECIPE_FIELD = 'smart_router_recipe_name';
 export const DISABLED_RECIPE = 'DISABLED';
-// Luna Fast sessions ask the gateway for its fast speed through this body field.
 export const SPEED_FIELD = 'speed';
 export const FAST_SPEED = 'fast';
 export const CLI_MODULE = 'ucode.cli';
