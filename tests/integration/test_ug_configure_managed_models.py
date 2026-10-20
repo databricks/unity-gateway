@@ -142,11 +142,15 @@ def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session,
         picker = settings["modelPicker"]
         assert picker["replaceBuiltInOptions"] is True, picker
         expected_picker_models = set(expected_picker_models) | set(catalog.model_ids)
-        assert sorted(option["model"] for option in picker["options"]) == sorted(
-            expected_picker_models
-        ), picker
+        observed_picker_models = [option["model"] for option in picker["options"]]
+        observed_by_model = {model.removesuffix("[1m]"): model for model in observed_picker_models}
+        assert len(observed_by_model) == len(observed_picker_models), picker
+        assert set(observed_by_model) == {
+            model.removesuffix("[1m]") for model in expected_picker_models
+        }, picker
         for option in picker["options"]:
-            if display_name := catalog.display_names.get(option["model"]):
+            model = option["model"].removesuffix("[1m]")
+            if display_name := catalog.display_names.get(model):
                 assert option["label"] == display_name, option
 
 

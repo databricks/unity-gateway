@@ -89,7 +89,7 @@ class TestCatalogDiscovery(BaseCujTest):
     def test_catalog_discovery_claude_picker_preserves_default(self, cuj):
         """Scenario: configure, launch ug claude, inspect its picker, then submit a task.
 
-        Expected: only Sonnet/Haiku/Kimi appear; Gemini and decoys are absent.
+        Expected: only Sonnet/Haiku/GPT Luna/Kimi appear; Gemini and decoys are absent.
         Dismissing the picker without a selection preserves Sonnet for the completed task.
         """
         session, workspace, recorder = cuj
