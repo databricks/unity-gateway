@@ -168,6 +168,9 @@ cover Desktop token-only stdout, explicit workspace/profile arguments, interacti
 browser recovery, bounded login/lock waits, cancellation, and lock contention.
 Recovery regressions check token recheck before browser login, lock release after
 success/failure, one shared deadline, and network/CLI failures at each recovery stage.
+Proxy bridge coverage also checks that unauthenticated tool discovery exposes a temporary
+authentication tool, advertises dynamic tool-list changes, refreshes the real tools after login,
+and tells the model to retry the original request in the same turn.
 Invalid token output must not appear in helper errors or stdout/stderr.
 Shared CLI discovery selects the newest absolute binary for cached tokens and every
 recovery subprocess; a missing CLI fails before token fetch or browser login.

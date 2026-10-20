@@ -44,7 +44,7 @@ from anyio import to_thread
 from mcp.client.streamable_http import streamable_http_client
 from mcp.server.stdio import stdio_server
 from mcp.shared.message import SessionMessage
-from mcp.types import JSONRPCError, JSONRPCRequest, JSONRPCResponse
+from mcp.types import JSONRPCError, JSONRPCNotification, JSONRPCRequest, JSONRPCResponse
 
 from ucode.databricks import (
     ensure_pat_bearer,
@@ -57,6 +57,8 @@ from ucode.mcp_connection_login import connection_from_url, run_connection_login
 # exit far more usefully than a timeout, so bail out instead of hanging.
 AUTH_FAILURE_EXIT_CODE = 2
 CONNECTION_AUTH_REQUIRED_ERROR_CODE = -32006
+AUTHENTICATE_TOOL_NAME = "authenticate"
+TOOLS_REFRESH_TIMEOUT_SECONDS = 5.0
 
 
 def _httpx() -> ModuleType:
@@ -142,6 +144,13 @@ class _ConnectionLogin:
 
     def run_if_needed(self) -> bool:
         """Run connection login once, returning whether the connection is ready."""
+        return self._run_if_needed(already_ready_is_success=False)
+
+    def authenticate_or_confirm_ready(self) -> bool:
+        """Authenticate, or confirm an independently authenticated connection."""
+        return self._run_if_needed(already_ready_is_success=True)
+
+    def _run_if_needed(self, *, already_ready_is_success: bool) -> bool:
         with self._lock:
             if self.connection is None:
                 return False
@@ -155,7 +164,8 @@ class _ConnectionLogin:
             except RuntimeError:
                 return False
             if not mcp_service_needs_connection_login(self.workspace, token, self.connection):
-                return False
+                self._completed = already_ready_is_success
+                return already_ready_is_success
             ok, detail = run_connection_login(self.url, self.workspace, profile=self.profile)
             if not ok:
                 raise ProxyAuthError(f"connection login for '{self.connection}' failed: {detail}")
@@ -272,20 +282,155 @@ class _McpBridge:
         self.connection_login = connection_login
         self.pending_requests: dict[int | str, SessionMessage] = {}
         self.retried_requests: set[int | str] = set()
+        self.authentication_required = False
+        self.authentication_completed = False
+        self._tools_refresh_waiters: list[anyio.Event] = []
+
+    def _authentication_tool(self) -> dict:
+        connection = self.connection_login.connection or "this service"
+        return {
+            "name": AUTHENTICATE_TOOL_NAME,
+            "description": (
+                f"Sign in to the Unity Gateway {connection} connection. Call this when the user "
+                "requests this service but its normal tools are unavailable. After sign-in, "
+                "immediately retry the user's original request in the same turn using the newly "
+                "available tools; do not ask the user to send another message."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        }
+
+    def _authentication_tool_list_response(self, request_id: int | str) -> SessionMessage:
+        return SessionMessage(
+            JSONRPCResponse(
+                jsonrpc="2.0",
+                id=request_id,
+                result={"tools": [self._authentication_tool()]},
+            )
+        )
+
+    @staticmethod
+    def _with_tool_list_changes(
+        message: SessionMessage,
+        original: SessionMessage | None,
+    ) -> SessionMessage:
+        payload = message.message
+        request = original.message if original is not None else None
+        if (
+            not isinstance(payload, JSONRPCResponse)
+            or not isinstance(request, JSONRPCRequest)
+            or request.method != "initialize"
+        ):
+            return message
+
+        result = dict(payload.result)
+        capabilities = dict(result.get("capabilities") or {})
+        tools = dict(capabilities.get("tools") or {})
+        tools["listChanged"] = True
+        capabilities["tools"] = tools
+        result["capabilities"] = capabilities
+        return SessionMessage(
+            JSONRPCResponse(jsonrpc="2.0", id=payload.id, result=result),
+            metadata=message.metadata,
+        )
+
+    def _mark_tools_refreshed(self) -> None:
+        waiters, self._tools_refresh_waiters = self._tools_refresh_waiters, []
+        for waiter in waiters:
+            waiter.set()
+
+    async def _handle_authentication_tool(
+        self,
+        request_id: int | str,
+        client: _SendStream[SessionMessage],
+    ) -> None:
+        try:
+            authenticated = await to_thread.run_sync(
+                self.connection_login.authenticate_or_confirm_ready
+            )
+        except ProxyAuthError as exc:
+            result = {
+                "content": [{"type": "text", "text": str(exc)}],
+                "isError": True,
+            }
+        else:
+            if not authenticated:
+                result = {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Authentication did not complete. Retry this tool after sign-in.",
+                        }
+                    ],
+                    "isError": True,
+                }
+            else:
+                self.authentication_required = False
+                self.authentication_completed = True
+                refreshed = anyio.Event()
+                self._tools_refresh_waiters.append(refreshed)
+                await client.send(
+                    SessionMessage(
+                        JSONRPCNotification(
+                            jsonrpc="2.0",
+                            method="notifications/tools/list_changed",
+                        )
+                    )
+                )
+                with anyio.move_on_after(TOOLS_REFRESH_TIMEOUT_SECONDS):
+                    await refreshed.wait()
+                result = {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "Authentication complete. Retry the user's original request now "
+                                "in this same turn using the newly available tools. Do not ask the "
+                                "user to send another message."
+                            ),
+                        }
+                    ],
+                    "isError": False,
+                }
+
+        await client.send(
+            SessionMessage(JSONRPCResponse(jsonrpc="2.0", id=request_id, result=result))
+        )
 
     async def pump_client(
         self,
         source: _ReceiveStream[SessionMessage | Exception],
         dest: _SendStream[SessionMessage],
+        client: _SendStream[SessionMessage] | None = None,
     ) -> None:
         async with source, dest:
-            async for message in source:
-                if isinstance(message, Exception):
-                    detail = " ".join(str(message).split()) or type(message).__name__
-                    raise ProxyTransportError(f"client MCP transport failed: {detail}") from message
-                if isinstance(message.message, JSONRPCRequest):
-                    self.pending_requests[message.message.id] = message
-                await dest.send(message)
+            async with anyio.create_task_group() as tg:
+                async for message in source:
+                    if isinstance(message, Exception):
+                        detail = " ".join(str(message).split()) or type(message).__name__
+                        raise ProxyTransportError(
+                            f"client MCP transport failed: {detail}"
+                        ) from message
+                    payload = message.message
+                    if isinstance(payload, JSONRPCRequest):
+                        if (
+                            client is not None
+                            and self.authentication_required
+                            and payload.method == "tools/call"
+                            and isinstance(payload.params, dict)
+                            and payload.params.get("name") == AUTHENTICATE_TOOL_NAME
+                        ):
+                            tg.start_soon(
+                                self._handle_authentication_tool,
+                                payload.id,
+                                client,
+                            )
+                            continue
+                        self.pending_requests[payload.id] = message
+                    await dest.send(message)
 
     async def pump_upstream(
         self,
@@ -302,11 +447,28 @@ class _McpBridge:
                     ) from message
 
                 payload = message.message
+                original = None
+                if isinstance(payload, (JSONRPCResponse, JSONRPCError)):
+                    original = self.pending_requests.get(payload.id)
+                if self.connection_login.connection is not None:
+                    message = self._with_tool_list_changes(message, original)
+                payload = message.message
                 if isinstance(payload, JSONRPCError):
                     request_id = payload.id
-                    original = (
-                        self.pending_requests.get(request_id) if request_id is not None else None
-                    )
+                    request = original.message if original is not None else None
+                    if (
+                        isinstance(request, JSONRPCRequest)
+                        and request_id is not None
+                        and request.method == "tools/list"
+                        and payload.error.code == CONNECTION_AUTH_REQUIRED_ERROR_CODE
+                        and self.connection_login.connection is not None
+                        and not self.authentication_completed
+                    ):
+                        self.authentication_required = True
+                        self.pending_requests.pop(request_id, None)
+                        self.retried_requests.discard(request_id)
+                        await dest.send(self._authentication_tool_list_response(request_id))
+                        continue
                     if (
                         original is not None
                         and request_id is not None
@@ -318,10 +480,20 @@ class _McpBridge:
                         await upstream.send(original)
                         continue
 
+                tools_refreshed = False
+                if isinstance(payload, JSONRPCResponse) and original is not None:
+                    request = original.message
+                    tools_refreshed = (
+                        isinstance(request, JSONRPCRequest)
+                        and request.method == "tools/list"
+                        and self.authentication_completed
+                    )
                 if isinstance(payload, (JSONRPCResponse, JSONRPCError)) and payload.id is not None:
                     self.pending_requests.pop(payload.id, None)
                     self.retried_requests.discard(payload.id)
                 await dest.send(message)
+                if tools_refreshed:
+                    self._mark_tools_refreshed()
         raise ProxyTransportError("upstream MCP transport closed unexpectedly")
 
 
@@ -357,7 +529,7 @@ async def _run(url: str, workspace: str, profile: str | None, use_pat: bool = Fa
                 bridge = _McpBridge(connection_login)
                 async with anyio.create_task_group() as tg:
                     tg.start_soon(bridge.pump_upstream, http_read, stdio_write, http_write)
-                    await bridge.pump_client(stdio_read, http_write)
+                    await bridge.pump_client(stdio_read, http_write, stdio_write)
                     tg.cancel_scope.cancel()
 
 
