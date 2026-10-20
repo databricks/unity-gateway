@@ -171,6 +171,42 @@ def test_codex_uses_existing_presets():
         assert config.resolve_environment(source, agent=AGENT_CODEX) == expected
 
 
+@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
+@pytest.mark.parametrize("selector", [None, "", "   ", "unsupported_version"])
+def test_enabled_version_selects_subagent_only_over_legacy_flags(agent, selector):
+    inherited = {
+        ENABLE_SMART_ROUTING_ENV_VAR: "1",
+        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+        "INHERITED_SETTING": "preserved",
+    }
+    if selector is not None:
+        inherited[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = selector
+    applied = inherited.copy()
+
+    previous = config.apply_enabled_version(applied, agent=agent)
+
+    assert applied == {
+        **_EXPECTED_PRESETS[config.SUBAGENT_ONLY_V0],
+        "INHERITED_SETTING": "preserved",
+    }
+    v2.restore_smart_routing_env(previous, applied)
+    assert applied == inherited
+
+
+@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
+@pytest.mark.parametrize("version", sorted(config._VERSIONS))
+def test_enabled_version_keeps_a_known_version(agent, version):
+    inherited = {ENABLE_SMART_ROUTING_ENV_VAR: "1", SMART_ROUTER_CONFIG_VERSION_ENV_VAR: version}
+    applied = inherited.copy()
+
+    previous = config.apply_enabled_version(applied, agent=agent)
+
+    assert applied == config.resolve_environment(inherited, agent=agent)
+    v2.restore_smart_routing_env(previous, applied)
+    assert applied == inherited
+
+
 @pytest.mark.parametrize("agent, enabled", [(AGENT_CLAUDE, "1"), (AGENT_CODEX, "0")])
 def test_agent_config_selection_and_session_precedence(monkeypatch, agent, enabled, tmp_path):
     monkeypatch.setitem(

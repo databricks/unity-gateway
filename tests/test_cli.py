@@ -27,6 +27,7 @@ import ucode.managed_files as managed_files
 from ucode.cli import app
 from ucode.databricks import GatewayProbe
 from ucode.managed_config import ManagedConfigResult, normalize_managed_config
+from ucode.smart_routing import config as smart_routing_config
 from ucode.state import save_state as real_save_state
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -531,6 +532,25 @@ def _launch_policy_patches(
         }
 
 
+ROUTING_ENV_KEYS = (
+    *smart_routing_config.SMART_ROUTING_ENV_KEYS,
+    smart_routing_config.SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
+)
+ROUTING_OFF = dict.fromkeys(smart_routing_config.SMART_ROUTING_ENV_KEYS, "0")
+
+
+def _routing_env() -> dict[str, str | None]:
+    return {key: os.environ.get(key) for key in ROUTING_ENV_KEYS}
+
+
+def _version_routing_env(version: str, agent: str) -> dict[str, str | None]:
+    """The routing env vars a launch sees after ``version`` is expanded for ``agent``."""
+    expanded = smart_routing_config.resolve_environment(
+        {smart_routing_config.SMART_ROUTER_CONFIG_VERSION_ENV_VAR: version}, agent=agent
+    )
+    return {key: expanded.get(key) for key in ROUTING_ENV_KEYS}
+
+
 def test_bare_launch_preserves_preset_until_agent_selection(monkeypatch):
     monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "subagent_orch_v0")
     monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "0")
@@ -610,20 +630,57 @@ class TestSubcommandRouting:
         assert result.exit_code == 0, result.output
         mock_set.assert_not_called()
 
-    def test_codex_enable_smart_routing_is_consumed_by_ucode(self):
-        enabled_during_launch = []
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    @pytest.mark.parametrize(
+        ("launch_env", "expected_version"),
+        [
+            ({}, smart_routing_config.SUBAGENT_ONLY_V0),
+            ({"ENABLE_SMART_ROUTING_V2": "1"}, smart_routing_config.SUBAGENT_ONLY_V0),
+            ({"ENABLE_SMART_ROUTING_V2": "0"}, smart_routing_config.SUBAGENT_ONLY_V0),
+            ({"ENABLE_SMART_ROUTER_ORCHESTRATOR": "1"}, smart_routing_config.SUBAGENT_ONLY_V0),
+            (
+                {"SMART_ROUTER_CONFIG_VERSION": "unknown_version"},
+                smart_routing_config.SUBAGENT_ONLY_V0,
+            ),
+            *(
+                ({"SMART_ROUTER_CONFIG_VERSION": version}, version)
+                for version in (
+                    smart_routing_config.FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
+                    smart_routing_config.SUBAGENT_ORCH_V0,
+                    smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+                )
+            ),
+        ],
+        ids=[
+            "unset",
+            "v2-on",
+            "v2-off",
+            "orchestrator-on",
+            "unknown-version",
+            "first-prompt-version",
+            "orchestrator-version",
+            "claude-only-version",
+        ],
+    )
+    def test_enable_smart_routing_keeps_a_known_version_or_selects_subagent_only(
+        self, monkeypatch, tool, launch_env, expected_version
+    ):
+        for name, value in launch_env.items():
+            monkeypatch.setenv(name, value)
+        env_before = _routing_env()
+        observed = []
+
         with patch(
             "ucode.cli._launch_tool",
-            side_effect=lambda *_args, **_kwargs: enabled_during_launch.append(
-                os.environ.get(cli_mod.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR)
-            ),
+            side_effect=lambda *_args, **_kwargs: observed.append(_routing_env()),
         ) as mock_launch:
-            result = runner.invoke(app, ["codex", "--enable-smart-routing"])
+            result = runner.invoke(app, [tool, "--enable-smart-routing"])
 
         assert result.exit_code == 0, result.output
-        assert enabled_during_launch == ["1"]
-        assert cli_mod.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR not in os.environ
+        assert observed == [_version_routing_env(expected_version, tool)]
+        assert mock_launch.call_args.kwargs["routing_already_chosen"] is True
         assert mock_launch.call_args.args[1].args == []
+        assert _routing_env() == env_before
 
     @pytest.mark.parametrize("tool, subcommand", [("codex", "app"), ("claude", "update")])
     def test_native_subcommand_suppresses_inherited_smart_routing(
@@ -668,7 +725,10 @@ class TestSubcommandRouting:
 
         def capture(_tool, ctx, **_kwargs):
             captured.append(
-                (os.environ.get(cli_mod.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR), ctx.args)
+                (
+                    os.environ.get(cli_mod.smart_routing_v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR),
+                    ctx.args,
+                )
             )
 
         with patch("ucode.cli._launch_tool", side_effect=capture):
@@ -763,6 +823,90 @@ class TestSubcommandRouting:
 
         assert cli_mod._managed_smart_routing_enabled(managed, "claude") is True
         assert cli_mod._managed_smart_routing_enabled(managed, "codex") is True
+
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    @pytest.mark.parametrize(
+        ("launch_args", "launch_env", "expected_version"),
+        [
+            ([], {}, smart_routing_config.SUBAGENT_ONLY_V0),
+            ([], {"ENABLE_SMART_ROUTING_V2": "1"}, smart_routing_config.SUBAGENT_ONLY_V0),
+            ([], {"ENABLE_SMART_ROUTING_V2": "0"}, smart_routing_config.SUBAGENT_ONLY_V0),
+            (
+                [],
+                {"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0"},
+                smart_routing_config.SUBAGENT_ONLY_V0,
+            ),
+            ([], {"ENABLE_SMART_ROUTER_ORCHESTRATOR": "1"}, smart_routing_config.SUBAGENT_ONLY_V0),
+            *(
+                ([], {"SMART_ROUTER_CONFIG_VERSION": version}, version)
+                for version in (
+                    smart_routing_config.FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
+                    smart_routing_config.SUBAGENT_ORCH_V0,
+                    smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+                )
+            ),
+            (
+                ["--enable-smart-routing"],
+                {"ENABLE_SMART_ROUTING_V2": "1"},
+                smart_routing_config.SUBAGENT_ONLY_V0,
+            ),
+            (["--disable-smart-routing"], {}, None),
+        ],
+        ids=[
+            "managed-default",
+            "v2-on",
+            "v2-off",
+            "subagent-only-off",
+            "orchestrator-on",
+            "first-prompt-version",
+            "orchestrator-version",
+            "claude-only-version",
+            "enable-flag",
+            "disable-flag",
+        ],
+    )
+    def test_managed_smart_routing_overrides_env_vars_but_not_the_flag_or_a_version(
+        self, monkeypatch, tool, launch_args, launch_env, expected_version
+    ):
+        for name, value in launch_env.items():
+            monkeypatch.setenv(name, value)
+        managed = {"enabled_agents": {tool: {"smart_routing_enabled": True}}}
+        env_before = _routing_env()
+        expected_env = (
+            {**dict.fromkeys(ROUTING_ENV_KEYS), **ROUTING_OFF}
+            if expected_version is None
+            else _version_routing_env(expected_version, tool)
+        )
+        observed = []
+
+        with _launch_policy_patches(managed) as calls:
+            calls["launch"].side_effect = lambda *_args, options, **_kwargs: observed.append(
+                (options.launch_smart_routing, _routing_env())
+            )
+            result = runner.invoke(app, [tool, *launch_args])
+
+        assert result.exit_code == 0, result.output
+        routed = cli_mod.smart_routing_v2.smart_routing_enabled(
+            {key: value for key, value in expected_env.items() if value is not None},
+            default=False,
+            agent=tool,
+        )
+        assert observed == [(routed, expected_env)]
+        assert _routing_env() == env_before
+
+    def test_bare_launch_keeps_a_known_version_over_managed_smart_routing(self, monkeypatch):
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", smart_routing_config.SUBAGENT_ORCH_V0)
+        managed = {"enabled_agents": {"claude": {"smart_routing_enabled": True}}}
+        monkeypatch.setattr("ucode.cli.install_databricks_cli", lambda *a, **k: None)
+        monkeypatch.setattr("ucode.cli.refresh_managed_config", lambda state: (managed, False))
+        observed = []
+
+        with _launch_policy_patches(managed) as calls:
+            calls["launch"].side_effect = lambda *_args, **_kwargs: observed.append(_routing_env())
+            result = runner.invoke(app, [])
+
+        assert result.exit_code == 0, result.output
+        assert observed == [_version_routing_env(smart_routing_config.SUBAGENT_ORCH_V0, "claude")]
 
     def test_codex_refresh_is_consumed_by_ucode(self):
         with patch("ucode.cli._launch_tool") as mock_launch:

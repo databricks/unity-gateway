@@ -43,8 +43,11 @@ Resolve and materialize valid selectors at the CLI boundary before argument pars
 Unknown selectors are a no-op: do not apply a preset, mutate the inherited environment, or raise
 an error. Existing legacy flags and explicit launch/session controls retain their behavior.
 Restore the inherited environment on every exit.
-Explicit launch/session on/off controls still apply after version expansion.
-Managed routing defaults must not rewrite already-resolved version flags.
+`--disable-smart-routing` and session on/off controls still apply after version expansion.
+`--enable-smart-routing` and managed smart routing turn routing on only through
+`apply_enabled_version` in `config.py`: keep a known version, otherwise select
+`DEFAULT_ENABLED_VERSION` (an unknown selector is replaced for that launch). Neither may rewrite
+already-resolved version flags.
 
 Every new `smart_routing` or `smart_router` environment variable must be registered in
 `SMART_ROUTING_ENV_KEYS` in the same change, including orchestration controls.
