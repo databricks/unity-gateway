@@ -38,7 +38,8 @@ _CLAUDE_FAMILY_SLOTS = {
 OTEL_TRACING_TOOLS = ("claude", "codex")
 
 # Agents that receive the config's harness-native `agent_native_settings`. Claude only, matching the
-# server: Codex's MCP lockdown lives in requirements.toml, which ug doesn't write yet.
+# server: Codex's MCP lockdown is the requirements.toml [mcp_servers] allowlist, which ug doesn't
+# write yet.
 SETTINGS_PASSTHROUGH_TOOLS = ("claude",)
 
 
