@@ -4,7 +4,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from ucode import cli, desktop_setup
+from ucode import cli
+from ucode.agents.desktop import setup as desktop_setup
 
 
 @pytest.fixture

@@ -35,13 +35,17 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     import ucode.managed_files as managed_files_mod
     import ucode.os_compatibility.subprocess_cross_os as subprocess_cross_os_mod
     import ucode.state as state_mod
+    from ucode import desktop_auth as desktop_auth_mod
     from ucode.agents import codex as codex_mod
+    from ucode.agents.desktop import claude as desktop_mod
 
     state_dir = tmp_path / ".ucode"
     state_dir.mkdir()
     monkeypatch.setattr(state_mod, "STATE_PATH", state_dir / "state.json")
     monkeypatch.setattr(config_io_mod, "APP_DIR", state_dir)
     monkeypatch.setattr(codex_mod, "_otel_service_path", lambda: state_dir / "otel.service")
+    monkeypatch.setattr(desktop_mod, "APP_DIR", state_dir)
+    monkeypatch.setattr(desktop_auth_mod, "_AUTH_LOCK_PATH", state_dir / "claude-desktop-auth.lock")
     # MANAGED_CONFIG_PATH is bound from APP_DIR at import, so patching APP_DIR alone doesn't move it;
     # rebind it or save_managed_state writes to the developer's real ~/.ucode/managed-config.json.
     monkeypatch.setattr(
@@ -52,6 +56,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.setattr(
         managed_files_mod, "MANAGED_BACKUP_MANIFEST_PATH", backup_dir / "manifest.json"
     )
+    monkeypatch.setattr(managed_files_mod, "_config_scope", "global")
     monkeypatch.setattr(codex_mod, "codex_managed_config_path", lambda: None)
     monkeypatch.setattr(
         codex_mod, "CODEX_MODEL_CATALOG_PATH", state_dir / "codex-model-catalog.json"

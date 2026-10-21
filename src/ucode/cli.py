@@ -33,12 +33,14 @@ from ucode.agents import (
     install_databricks_ai_tools_for_agents,
     install_tool_binary,
     normalize_tool,
+    refuse_user_scope_over_managed_files,
     resolve_gemini_provider_model,
     resolve_launch_model,
     resolve_provider_models,
 )
 from ucode.agents import claude as claude_agent
 from ucode.agents import codex as codex_agent
+from ucode.agents import copilot as copilot_agent
 from ucode.agents import (
     launch as launch_agent,
 )
@@ -99,7 +101,7 @@ from ucode.managed_config import (
     normalize_managed_config,
     refresh_managed_config,
 )
-from ucode.managed_files import managed_write_session
+from ucode.managed_files import managed_write_session, set_config_scope
 from ucode.managed_resolve import (
     managed_claude_family_models,
     managed_default_model,
@@ -163,9 +165,11 @@ from ucode.state import (
     get_model_location,
     get_provider_service,
     is_self_managed,
+    load_config_scope,
     load_full_state,
     load_state,
     remove_self_managed_agent,
+    save_config_scope,
     save_state,
     set_current_workspace,
     set_model_location,
@@ -807,7 +811,7 @@ def _setup_single_agent(
     if apply_managed and not managed_enabled_tools(managed or {}):
         state = _record_unmanaged_configured_agents(state, [tool])
     if apply_managed and tool == "claude":
-        from ucode.desktop_setup import configure_claude_desktop
+        from ucode.agents.desktop.setup import configure_claude_desktop
 
         configure_claude_desktop(state, parent_schema=parent_schema)
     install_databricks_ai_tools_for_agents(
@@ -974,6 +978,7 @@ def _configure_workspace_command(
 ) -> int:
     if tool is not None and selected_tools is not None:
         raise RuntimeError("Use either --agent or --agents, not both.")
+    refuse_user_scope_over_managed_files([tool] if tool else selected_tools or [])
 
     # The Databricks-vs-Model-Provider-Service picker is shown only on the fully
     # interactive path (`ug configure` with no --agent/--agents). Naming agents
@@ -1011,6 +1016,7 @@ def _configure_workspace_command(
     managed, _ = refresh_managed_config(state, force_refresh=True)
     managed_tools = managed_enabled_tools(managed) if managed is not None else []
     if managed is not None and managed_tools:
+        refuse_user_scope_over_managed_files(managed_tools)
         configured_tools: list[str] = []
         for tool_name in managed_tools:
             resolved = resolve_state(managed, state, tool_name)
@@ -1046,7 +1052,7 @@ def _configure_workspace_command(
                 if last is None or tool_name in last:
                     configured_tools.append(tool_name)
                     if tool_name == "claude":
-                        from ucode.desktop_setup import configure_claude_desktop
+                        from ucode.agents.desktop.setup import configure_claude_desktop
 
                         configure_claude_desktop(configured, parent_schema=parent_schema)
         if not configured_tools:
@@ -1089,6 +1095,7 @@ def _configure_workspace_command(
     if not picked:
         print_note("No coding agents selected — nothing to configure.")
         return 0
+    refuse_user_scope_over_managed_files(picked)
 
     for tool_name in picked:
         install_tool_binary(
@@ -1124,7 +1131,7 @@ def _configure_workspace_command(
         state, [tool_name for tool_name in picked if tool_name in configured_set]
     )
     if "claude" in configured_set and "claude" in picked:
-        from ucode.desktop_setup import configure_claude_desktop
+        from ucode.agents.desktop.setup import configure_claude_desktop
 
         configure_claude_desktop(state)
     summary_lines = [f"[bold]Workspace:[/bold] [cyan]{state['workspace']}[/cyan]"]
@@ -1393,12 +1400,14 @@ def status() -> int:
 
 
 def revert() -> int:
-    from ucode.desktop_setup import revert_desktop
+    from ucode.agents.desktop.setup import revert_desktop
 
     state = load_state()
     desktop_result = revert_desktop()
     managed_configs = state.get("managed_configs") or {}
     mcp_results = revert_mcp_configs(state)
+    # Before restoring backups: one written by an earlier ug may hold a token.
+    copilot_agent.scrub_stored_credentials()
     claude_managed_result = claude_agent.revert_managed_settings()
     codex_managed_result = codex_agent.revert_managed_config()
 
@@ -3515,7 +3524,7 @@ def _launch_tool(
                 f"{TOOL_SPECS[tool]['display']} may require one-time hook review. Open "
                 "`/hooks` and trust the ug routing hooks if prompted."
             )
-        if tool in ("gemini", "opencode", "kilo", "copilot", "pi"):
+        if tool in ("gemini", "opencode", "kilo", "pi"):
             print_note(
                 f"{TOOL_SPECS[tool]['display']} token refresh is managed automatically "
                 f"every 30 minutes while the session is running."
@@ -3643,6 +3652,8 @@ def default(
     workspace: WorkspaceOption = None,
 ) -> None:
     """Configure and launch coding agents through Databricks AI Gateway."""
+    if ctx.invoked_subcommand != "revert":
+        set_config_scope(load_config_scope())
     if ctx.invoked_subcommand is not None:
         return
     set_dry_run(dry_run)
@@ -4167,6 +4178,22 @@ def configure(
             "compatibility. Accepted for backward compatibility.",
         ),
     ] = False,
+    global_scope: Annotated[
+        bool,
+        typer.Option(
+            "--global",
+            help="Write machine-wide Claude Code and Codex managed settings with sudo (default). "
+            "The choice is saved for later commands.",
+        ),
+    ] = False,
+    user_scope: Annotated[
+        bool,
+        typer.Option(
+            "--user",
+            help="Skip the machine-wide Claude Code and Codex managed settings, without sudo. "
+            "The choice is saved for later commands.",
+        ),
+    ] = False,
     verbose: Annotated[
         str,
         typer.Option(
@@ -4185,6 +4212,10 @@ def configure(
     set_dry_run(dry_run)
     set_verbosity(verbose)
     try:
+        if global_scope and user_scope:
+            raise RuntimeError("Use either --global or --user, not both.")
+        scope = "user" if user_scope else "global"
+        set_config_scope(scope)
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
         if custom_oauth is not None and use_pat:
             raise RuntimeError("--client-id cannot be combined with --use-pat.")
@@ -4334,6 +4365,7 @@ def configure(
             and prompt_yes_no("Configure MCP servers now?")
         ):
             configure_mcp_command()
+        save_config_scope(scope)
     except typer.Exit:
         # `typer.Exit` subclasses RuntimeError, so it has to be re-raised ahead of the handler
         # below. Otherwise a clean exit (e.g. `_reject_configure_under_managed_config` under a

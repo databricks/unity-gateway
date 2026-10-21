@@ -30,6 +30,7 @@ AGENT_PACKAGES = {
     "claude": "@anthropic-ai/claude-code",
     "codex": "@openai/codex",
     "opencode": "opencode-ai",
+    "copilot": "@github/copilot",
 }
 WINDOWS_PATHEXT = ".COM;.EXE;.BAT;.CMD"
 # Claude exports no spans on Windows, where ug writes no machine-wide Claude settings.
@@ -44,7 +45,16 @@ HEADLESS_TEST_NODES = {
     "claude": "test_ug_claude_headless.py::test_ug_claude_headless_prompt_argument",
     "codex": "test_ug_codex_headless.py::test_ug_codex_headless_prompt_argument",
     "opencode": "test_ug_opencode_headless.py::test_ug_opencode_headless_prompt_argument",
+    "copilot": "test_ug_copilot_headless.py::test_ug_copilot_headless_completes_file_task",
 }
+
+
+def agent_version_output(agent: str, output: str) -> str:
+    """The agent's ``--version`` text, normalized for exact-version matching."""
+    if agent == "copilot":
+        # "GitHub Copilot CLI 1.0.91." plus an update hint on later lines.
+        return output.splitlines()[0].removesuffix(".") if output else output
+    return output
 
 
 def redact_secrets(value: str, secrets: Iterable[str]) -> str:
@@ -253,11 +263,13 @@ def arguments(
     parser.add_argument("--claude-version", type=exact_npm_version)
     parser.add_argument("--codex-version", type=exact_npm_version)
     parser.add_argument("--opencode-version", type=exact_npm_version)
+    parser.add_argument("--copilot-version", type=exact_npm_version)
     parser.add_argument("--claude-model", default=environment.get("UG_INTEGRATION_CLAUDE_MODEL"))
     parser.add_argument("--codex-model", default=environment.get("UG_INTEGRATION_CODEX_MODEL"))
     parser.add_argument(
         "--opencode-model", default=environment.get("UG_INTEGRATION_OPENCODE_MODEL")
     )
+    parser.add_argument("--copilot-model", default=environment.get("UG_INTEGRATION_COPILOT_MODEL"))
     parser.add_argument(
         "--claude-provider",
         default="main.ucode.ci_e2e_anthropic_nonrelay_mps",
@@ -356,9 +368,12 @@ def arguments(
             args.pytest_args.extend([flag, str(value)])
     if selected.x:
         args.pytest_args.append("-x")
-    if not (args.claude_version or args.codex_version or args.opencode_version):
+    if not (
+        args.claude_version or args.codex_version or args.opencode_version or args.copilot_version
+    ):
         parser.error(
-            "Select --claude-version, --codex-version and/or --opencode-version explicitly."
+            "Select --claude-version, --codex-version, --opencode-version and/or "
+            "--copilot-version explicitly."
         )
     if args.ug_version != "checkout" and not re.fullmatch(
         r"[0-9][0-9A-Za-z.!+_-]*", args.ug_version
@@ -516,9 +531,11 @@ def main() -> int:
             "claude": args.claude_version,
             "codex": args.codex_version,
             "opencode": args.opencode_version,
+            "copilot": args.copilot_version,
             "claude_model": args.claude_model,
             "codex_model": args.codex_model,
             "opencode_model": args.opencode_model,
+            "copilot_model": args.copilot_model,
             "claude_provider": args.claude_provider,
             "claude_relayed_provider": args.claude_relayed_provider,
             "claude_provider_model": args.claude_provider_model,
@@ -731,7 +748,9 @@ def main() -> int:
         report["agents"] = {}
         for agent in agents:
             agent_command = npm_executable(agent_bin, agent)
-            version = run([agent_command, "--version"], env=runtime_env, timeout=30)
+            version = agent_version_output(
+                agent, run([agent_command, "--version"], env=runtime_env, timeout=30)
+            )
             expected = getattr(args, f"{agent}_version")
             if not re.search(rf"(?<![\w.]){re.escape(expected)}(?![\w.])", version):
                 raise RuntimeError(f"Expected {agent} {expected}, got {version!r}")
@@ -877,10 +896,13 @@ def main() -> int:
             raise RuntimeError("Pytest returned success without a test report.")
         # A bootstrap/update path must not silently alter the selected agent version.
         for agent in agents:
-            after = run(
-                [npm_executable(agent_bin, agent), "--version"],
-                env=runtime_env,
-                timeout=30,
+            after = agent_version_output(
+                agent,
+                run(
+                    [npm_executable(agent_bin, agent), "--version"],
+                    env=runtime_env,
+                    timeout=30,
+                ),
             )
             if after != report["agents"][agent]:
                 raise RuntimeError(f"{agent} changed version during the suite: {after}")

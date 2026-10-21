@@ -75,6 +75,13 @@ because it overrides the model sent to the gateway. Restart Copilot through `ug`
 to change the wire model or API; in-session model selection does not rebuild its
 provider configuration.
 
+`ug copilot` runs Copilot against a loopback proxy for the session. Copilot holds only
+a random session secret; the proxy adds a fresh Databricks token to each gateway
+request, so OAuth sessions keep working past token expiry without a restart, and no
+token is written to `~/.copilot/ucode.env`. If the Databricks sign-in itself expires,
+Copilot shows a "Databricks sign-in expired" error; run `databricks auth login` and
+restart `ug copilot`. Proxy errors are logged to `~/.ucode/logs/copilot-proxy.log`.
+
 Without a managed workspace config, `ug claude` automatically discovers gateway
 models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when
 no provider or model location is selected. Use `--provider` or `--model-location`
@@ -108,7 +115,15 @@ ug configure
 ug configure --agents claude,codex
 ug configure --workspace https://first.databricks.com
 ug configure --profile DEFAULT --agents claude,codex
+ug configure --user
 ```
+
+`--global` (the default) writes the machine-wide Claude Code and Codex managed settings with sudo.
+`--user` skips them, like `UG_SKIP_OS_SETTINGS`, and needs no sudo; use it when you launch through
+`ug`. Configure fails while a managed file for the agent exists, since managed settings take
+precedence; later launches use whatever files are present.
+The choice is saved for launches after a successful configure; `ug configure` without `--user`
+and `ug revert` return to `--global`.
 
 Available coding agents are `codex`, `claude`, `gemini`, `opencode`,
 `copilot`, and `pi`. `cursor` can be included in `--agents` for MCP-only setup;
@@ -406,14 +421,19 @@ preferences are ignored and their files are left untouched. See the bundled
 | Cursor Agent | `~/.cursor/mcp.json` |
 | Unity Gateway | `~/.ucode/managed-state.json`, `~/.ucode/managed-backups/` |
 
-### Codex desktop tracing on Linux
+### Codex desktop tracing
 
-With workspace tracing enabled, run `ug configure --agents codex` on the
-app-server's Linux host, then restart the app-server once. This points Codex's
-trace exporter in `~/.codex/config.toml` at the existing CLI OTEL proxy, run as a
-systemd user service that starts at login; `ug codex` sessions keep their own proxy.
+With workspace tracing enabled, run `ug configure --agents codex` on the machine
+where Codex desktop's app server runs, then restart the app server once. This points
+Codex's trace exporter in `~/.codex/config.toml` at the existing CLI OTEL proxy, run
+as a per-user service that starts at login; `ug codex` sessions keep their own proxy.
 An exporter you already set is left alone. Disabling tracing or `ug revert` removes both.
-Diagnostics: `journalctl --user -u ug-codex-otel.service`.
+
+| OS | Service | Diagnostics |
+|----|---------|-------------|
+| Linux | systemd user service `ug-codex-otel.service` | `journalctl --user -u ug-codex-otel.service` |
+| macOS | LaunchAgent `com.databricks.ug-codex-otel` | `launchctl print gui/$(id -u)/com.databricks.ug-codex-otel` |
+| Windows | Scheduled task `com.databricks.ug-codex-otel` | `schtasks /Query /TN com.databricks.ug-codex-otel /V /FO LIST` |
 
 ## Development
 

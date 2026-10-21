@@ -59,6 +59,7 @@ from ucode.managed_files import (
     SettingsPassthrough,
     apply_settings_passthrough,
     check_skipped_managed_overrides,
+    config_scope,
     current_os,
     managed_file_conflicts,
     managed_file_is_verified,
@@ -276,6 +277,10 @@ def _apply_managed_header_lines(
 def configured_paths(state: dict) -> list[str]:
     """The Claude config file ug writes; the OS-managed file is added by the dispatcher."""
     return [str(CLAUDE_SETTINGS_PATH)]
+
+
+def managed_settings_path() -> Path | None:
+    return _managed_settings_path()
 
 
 def _managed_settings_path() -> Path | None:
@@ -998,7 +1003,7 @@ def reconcile_managed_mcp(
     user-scope fallback), so an admin's ``agent_native_settings`` MCP allowlist keeps admitting them.
     """
     path = _managed_settings_path()
-    if path is None or not managed_writes_allowed():
+    if path is None or managed_settings_skipped() or not managed_writes_allowed():
         return False
     if path.is_symlink():
         raise RuntimeError(
@@ -1874,13 +1879,14 @@ def _reconcile_managed_settings(
     during `ucode claude`, so a bare `claude` could not reach the gateway anyway.
     """
     if managed_settings_skipped():
-        check_skipped_managed_overrides(
-            _managed_settings_path(),
-            parser=_parse_managed_settings,
-            compose=compose,
-            owned_paths=owned_paths,
-            display="Claude Code",
-        )
+        if config_scope() != "user":
+            check_skipped_managed_overrides(
+                _managed_settings_path(),
+                parser=_parse_managed_settings,
+                compose=compose,
+                owned_paths=owned_paths,
+                display="Claude Code",
+            )
         return
     path = _managed_settings_path()
     if path is None:
