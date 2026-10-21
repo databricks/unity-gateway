@@ -25,7 +25,7 @@ class TestProbeOauthClient:
             "urlopen",
             lambda req, timeout=0: (_ for _ in ()).throw(_http_error(400)),
         )
-        assert mcp_oauth._probe_oauth_client(WS, "claude-code") is True
+        assert mcp_oauth._probe_oauth_client(WS, mcp_oauth.CLAUDE_CODE_CIMD_CLIENT_ID) is True
 
     def test_unknown_client_401_is_absent(self, monkeypatch):
         # 401 invalid_client => client not registered on this workspace.
@@ -34,7 +34,7 @@ class TestProbeOauthClient:
             "urlopen",
             lambda req, timeout=0: (_ for _ in ()).throw(_http_error(401)),
         )
-        assert mcp_oauth._probe_oauth_client(WS, "claude-code") is False
+        assert mcp_oauth._probe_oauth_client(WS, mcp_oauth.CLAUDE_CODE_CIMD_CLIENT_ID) is False
 
     def test_network_error_is_inconclusive(self, monkeypatch):
         # A network failure is inconclusive (None) — the caller falls back to the proxy.
@@ -43,7 +43,7 @@ class TestProbeOauthClient:
             "urlopen",
             lambda req, timeout=0: (_ for _ in ()).throw(OSError("down")),
         )
-        assert mcp_oauth._probe_oauth_client(WS, "claude-code") is None
+        assert mcp_oauth._probe_oauth_client(WS, mcp_oauth.CLAUDE_CODE_CIMD_CLIENT_ID) is None
 
     def test_transient_status_is_inconclusive(self, monkeypatch):
         # 429/5xx (rate limit / incident), 404, redirects must NOT be read as "registered".
@@ -53,12 +53,12 @@ class TestProbeOauthClient:
                 "urlopen",
                 lambda req, timeout=0, c=code: (_ for _ in ()).throw(_http_error(c)),
             )
-            assert mcp_oauth._probe_oauth_client(WS, "claude-code") is None
+            assert mcp_oauth._probe_oauth_client(WS, mcp_oauth.CLAUDE_CODE_CIMD_CLIENT_ID) is None
 
     def test_unexpected_success_is_inconclusive(self, monkeypatch):
         # A 2xx for a dummy code is unexpected; don't conclude "registered".
         monkeypatch.setattr(mcp_oauth.urllib.request, "urlopen", lambda req, timeout=0: object())
-        assert mcp_oauth._probe_oauth_client(WS, "claude-code") is None
+        assert mcp_oauth._probe_oauth_client(WS, mcp_oauth.CLAUDE_CODE_CIMD_CLIENT_ID) is None
 
 
 class TestOauthClientAvailableCache:
@@ -68,19 +68,30 @@ class TestOauthClientAvailableCache:
         monkeypatch.setattr(
             mcp_oauth, "_probe_oauth_client", lambda ws, cid: calls.append((ws, cid)) or True
         )
-        assert mcp_oauth.oauth_client_available(WS, "claude-code") is True
-        assert mcp_oauth.oauth_client_available(WS, "claude-code") is True
+        assert mcp_oauth.oauth_client_available(WS, mcp_oauth.CLAUDE_CODE_CIMD_CLIENT_ID) is True
+        assert mcp_oauth.oauth_client_available(WS, mcp_oauth.CLAUDE_CODE_CIMD_CLIENT_ID) is True
         assert len(calls) == 1  # second call served from cache, no re-probe
 
-    def test_negative_result_is_cached_too(self, monkeypatch, tmp_path):
+    def test_negative_result_is_reprobed(self, monkeypatch, tmp_path):
         monkeypatch.setattr(mcp_oauth, "_CACHE_PATH", tmp_path / "cache.json")
         calls: list[int] = []
         monkeypatch.setattr(
             mcp_oauth, "_probe_oauth_client", lambda ws, cid: calls.append(1) or False
         )
-        assert mcp_oauth.oauth_client_available(WS, "claude-code") is False
-        assert mcp_oauth.oauth_client_available(WS, "claude-code") is False
-        assert len(calls) == 1
+        assert mcp_oauth.oauth_client_available(WS, mcp_oauth.CLAUDE_CODE_CIMD_CLIENT_ID) is False
+        assert mcp_oauth.oauth_client_available(WS, mcp_oauth.CLAUDE_CODE_CIMD_CLIENT_ID) is False
+        assert len(calls) == 2
+        assert not (tmp_path / "cache.json").exists()
+
+    def test_old_negative_cache_entry_is_ignored(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(mcp_oauth, "_CACHE_PATH", tmp_path / "cache.json")
+        (tmp_path / "cache.json").write_text(
+            '{"https://ws.staging.cloud.databricks.com": '
+            '{"new-client": {"available": false, "checked_at": 9999999999}}}'
+        )
+        monkeypatch.setattr(mcp_oauth, "_probe_oauth_client", lambda ws, cid: True)
+
+        assert mcp_oauth.oauth_client_available(WS, "new-client") is True
 
     def test_inconclusive_probe_falls_back_and_is_not_cached(self, monkeypatch, tmp_path):
         # An inconclusive probe (None) => oauth_client_available returns False (proxy),
@@ -90,8 +101,8 @@ class TestOauthClientAvailableCache:
         monkeypatch.setattr(
             mcp_oauth, "_probe_oauth_client", lambda ws, cid: calls.append(1) or None
         )
-        assert mcp_oauth.oauth_client_available(WS, "claude-code") is False
-        assert mcp_oauth.oauth_client_available(WS, "claude-code") is False
+        assert mcp_oauth.oauth_client_available(WS, mcp_oauth.CLAUDE_CODE_CIMD_CLIENT_ID) is False
+        assert mcp_oauth.oauth_client_available(WS, mcp_oauth.CLAUDE_CODE_CIMD_CLIENT_ID) is False
         assert len(calls) == 2  # not cached -> re-probed each time
 
     def test_expired_entry_reprobes(self, monkeypatch, tmp_path):
@@ -101,8 +112,8 @@ class TestOauthClientAvailableCache:
         monkeypatch.setattr(
             mcp_oauth, "_probe_oauth_client", lambda ws, cid: calls.append(1) or True
         )
-        mcp_oauth.oauth_client_available(WS, "claude-code")
-        mcp_oauth.oauth_client_available(WS, "claude-code")
+        mcp_oauth.oauth_client_available(WS, mcp_oauth.CLAUDE_CODE_CIMD_CLIENT_ID)
+        mcp_oauth.oauth_client_available(WS, mcp_oauth.CLAUDE_CODE_CIMD_CLIENT_ID)
         assert len(calls) == 2  # re-probed because the cached entry expired
 
 

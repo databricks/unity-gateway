@@ -42,8 +42,8 @@ CURSOR_OAUTH_CLIENT_ID = "cursor-desktop"
 # so it cannot replace this client for Codex CLI's loopback callback.
 CODEX_CLI_OAUTH_CLIENT_ID = "codex-cli"
 
-# Published apps rarely appear/disappear, so a per-workspace probe result is good
-# for a while; delete the cache file to force a re-probe.
+# A published app stays available, but an absent app may be published at any time.
+# Cache positive results only, so the next run detects a newly published app.
 _CACHE_PATH = APP_DIR / "oauth_client_cache.json"
 _CACHE_TTL_SECONDS = 7 * 24 * 3600
 
@@ -109,24 +109,30 @@ def oauth_client_available(workspace: str, client_id: str) -> bool:
     """Whether the workspace has ``client_id`` as a registered OAuth app, cached
     per (workspace, client_id).
 
-    Cached in ``APP_DIR`` with a weekly TTL so ``ug mcp add`` doesn't probe every
-    run. Negative results are cached too (workspaces that don't have it yet)."""
+    Positive results are cached in ``APP_DIR`` with a weekly TTL. Negative and
+    inconclusive results are re-probed on the next run so a newly published app
+    becomes usable without waiting for a cache expiration."""
     ws = workspace.rstrip("/")
     cache = _read_cache()
     entry = cache.get(ws, {}).get(client_id)
-    if entry and (time.time() - entry.get("checked_at", 0)) < _CACHE_TTL_SECONDS:
-        return bool(entry.get("available"))
+    if (
+        entry
+        and entry.get("available")
+        and (time.time() - entry.get("checked_at", 0)) < _CACHE_TTL_SECONDS
+    ):
+        return True
     available = _probe_oauth_client(ws, client_id)
     if available is None:
         # Inconclusive probe (transient status / network error): fall back to the
         # stdio proxy and do NOT cache, so a transient failure isn't sticky for the
         # TTL — we re-probe on the next run.
         return False
-    cache.setdefault(ws, {})[client_id] = {
-        "available": available,
-        "checked_at": time.time(),
-    }
-    _write_cache(cache)
+    if available:
+        cache.setdefault(ws, {})[client_id] = {
+            "available": True,
+            "checked_at": time.time(),
+        }
+        _write_cache(cache)
     return available
 
 
