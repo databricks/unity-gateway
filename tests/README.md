@@ -12,6 +12,21 @@ mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 | Integration CUJs | `integration/test_*.py` | Public configure, TUI, script, command, protocol, and lifecycle journeys |
 | Installation | `integration/test_installation.py` | Fresh installed package, CLI, and local helpers without credentials on Linux and advisory native Windows |
 
+`test_budget.py` covers the workspace-authenticated spend-status client in
+`src/ucode/budget.py`:
+workspace URL/token reuse without account discovery or account CLI authentication,
+personal/shared decimal parsing, optional percentages, pagination through empty pages,
+invalid/repeated tokens, malformed responses, and discarding partial results after failures.
+Future nonempty scope/period strings are preserved, alone or alongside known values.
+Decimal checks cover negative and nonfinite values for all three numeric fields,
+valid zero/fractional strings such as `"85.25"`, and explicit nulls treated like missing
+optional fields. Null regressions cover each numeric field and all three together,
+alongside complete and omitted-field statuses without losing valid limits. One representative
+opaque API error covers client passthrough; command-specific auth/error cases and
+later-page failure coverage remain separate.
+Obsolete account-token tests are replaced by workspace-auth assertions. These are
+unit/component checks, not live workspace or sign-in coverage; CLI wiring is separate.
+
 Claude mod entry-point coverage lives in `test_claude_mod.py` (generated plugin contents),
 `test_claude_smart_routing_v2.py` (launch wiring), and the explicitly selected
 `native_claude/test_mod.py` suite. Claude 2.1.290 validates the module and runs its
@@ -25,8 +40,9 @@ journeys do not cover this form or a live Isaac evidence upload.
 
 `test_claude_answer_delivery.py` covers Claude answer selection, composition, ownership,
 failed tasks and resumed revisions using transcript inputs, plus real subprocess I/O,
-stream-input bypass and capability lifetime. Live model/gateway selection and hook
-activation remain uncovered.
+stream-input bypass and capability lifetime. Text, JSON and streaming JSON results
+stay on stdout when UG redirects its diagnostics to stderr. Live model/gateway
+selection and hook activation remain uncovered.
 
 The **harness-latest** workflow runs every six hours on `main` and currently covers
 smart routing only.
@@ -191,6 +207,12 @@ metadata, and previous-selection state, and verify subsequent configure is a no-
 Existing CLI URL normalization is unchanged. Native Desktop activation,
 GUI/helper/browser behavior, and inference remain untested by these component checks;
 they do not establish native Windows or Linux support.
+The installed-CLI integration suite also configures twice and reverts against isolated
+native Linux and Windows profile paths. It verifies the fixed profile, gateway/helper/model
+fields, metadata selection, and preservation of an unrelated profile. It does not launch
+Desktop or establish GUI, Cowork, helper execution, browser authentication, or inference.
+The [native integration plan](../docs/claude-desktop-integration-testing.md) defines the
+separate interactive macOS and Windows coverage needed for those claims.
 
 `test_desktop_setup.py` exercises configure, refresh, deleted-profile recovery,
 successful setup without the default-model warning, recoverable setup failures that still warn,
@@ -519,7 +541,10 @@ it again during teardown. The TUI cases forward agent requests through the share
 loopback recorder to the real workspace and assert the provider-service header, model,
 paired HTTP 200 response, and final answer. The configuration case verifies sandbox MCP
 selection and generated client listings; live sandbox execution remains deferred because
-MAS cannot downscope the CI service principal. Failed TUI runs
+MAS cannot downscope the CI service principal. CUJ1 and CUJ2 also initialize Claude Desktop's
+Linux profile path and verify that its profile uses, respectively, the published Databricks-hosted
+Claude models or Anthropic provider service and model. This is installed-CLI coverage of real
+published managed configs, not Desktop GUI or helper execution. Failed TUI runs
 retain terminal output/actions/screen and best-effort agent transcript snapshots under the
 runner artifact directory before the temporary homes are deleted. The suite requires
 `UG_CUJ_SP_CLIENT_ID` and `UG_CUJ_SP_CLIENT_SECRET`, with `ug`, `claude`, `codex`, and

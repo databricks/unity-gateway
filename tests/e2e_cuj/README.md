@@ -63,6 +63,12 @@ uv run pytest -c tests/e2e_cuj/pytest.ini --confcutdir=tests/e2e_cuj \
   --collect-only tests/e2e_cuj
 ```
 
+CUJ1 and CUJ2's configuration cases read their dedicated workspaces' published CodingAgentConfig
+without `UCODE_MANAGED_CONFIG_STUB`. They enable Claude Desktop's isolated Linux profile path
+before running installed `ug configure`, then verify the fixed profile uses either the published
+Databricks-hosted Claude models or the published Anthropic provider service and selected model.
+They do not launch Desktop or execute the credential helper.
+
 ## Smart-routing CUJ
 
 `test_cuj4_smart_routing.py` uses its own read-only workspace with managed smart routing enabled.

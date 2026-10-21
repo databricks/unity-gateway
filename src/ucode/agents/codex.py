@@ -79,6 +79,7 @@ from ucode.managed_files import (
     read_managed_file,
     reconcile_managed_file,
     revert_managed_file,
+    warn_managed_write_skipped,
 )
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.smart_routing import v2 as smart_routing_v2
@@ -794,6 +795,7 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
     desired_doc = compose(existing)
     conflicts = managed_file_conflicts(managed_before, desired_doc, MANAGED_KEYS)
     if not managed_writes_allowed() and not conflicts:
+        warn_managed_write_skipped(path, managed_before, desired_doc)
         mark_managed_file_verified(state, "codex", path, scope="local-compatible")
         return
     try:

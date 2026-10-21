@@ -75,6 +75,7 @@ from ucode.managed_files import (
     record_settings_passthrough,
     record_ug_picker,
     revert_managed_file,
+    warn_managed_write_skipped,
     warn_skipped_settings_passthrough,
     windows_claude_managed_settings_path,
     withdrawn_list_items,
@@ -1925,6 +1926,7 @@ def _reconcile_managed_settings(
     _preserve_permission_denies(managed_before, desired_settings, withdrawn=withdrawn_denies or [])
     conflicts = _managed_settings_conflicts(managed_before, desired_settings, owned_paths)
     if not managed_writes_allowed() and not conflicts:
+        warn_managed_write_skipped(path, managed_before, desired_settings)
         mark_managed_file_verified(state, "claude", path, scope="local-compatible")
         return
     try:

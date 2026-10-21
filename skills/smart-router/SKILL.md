@@ -29,7 +29,8 @@ repeat the off command with `--smart-router-feedback '<reason>'` appended, quoti
 the exact text as one shell argument. After a successful toggle, submit that text
 through `/isaac-feedback --category smart-routing <reason>`. Report a submission
 failure without re-enabling routing. This requirement applies when Isaac sets
-`ISAAC_SMART_ROUTER_FEEDBACK=1`; do not change that flag to bypass it.
+`ISAAC_SMART_ROUTER_FEEDBACK` to `1`, `true`, `yes`, or `on` (case-insensitive);
+do not change that flag to bypass it.
 
 With no argument, explain that only `on` and `off` are accepted. Do not edit the state file.
 This affects subsequent subagent model selection in the current session, not the root model

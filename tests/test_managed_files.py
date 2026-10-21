@@ -953,6 +953,46 @@ class TestWindowsManagedWrites:
         assert not any(elsewhere.iterdir())
 
 
+class TestManagedWriteSkippedWarning:
+    @pytest.fixture
+    def warnings(self, monkeypatch):
+        captured: list[str] = []
+        monkeypatch.setattr(managed_files, "print_warning", captured.append)
+        return captured
+
+    def test_configure_names_the_file_it_could_not_write(self, warnings, tmp_path):
+        path = tmp_path / "requirements.toml"
+
+        with managed_files.managed_write_batch(["Codex"]):
+            managed_files.warn_managed_write_skipped(path, {}, {"model_provider": "Databricks"})
+
+        assert warnings == [f"{path} wasn't updated because no admin privileges were detected."]
+
+    def test_dry_run_stays_quiet(self, warnings, monkeypatch, tmp_path):
+        monkeypatch.setattr(managed_files, "is_dry_run", lambda: True)
+
+        with managed_files.managed_write_batch(["Codex"]):
+            managed_files.warn_managed_write_skipped(tmp_path, {}, {"model_provider": "Databricks"})
+
+        assert warnings == []
+
+    def test_launches_stay_quiet(self, warnings, tmp_path):
+        # Launches reconfigure on every run, outside configure's batch.
+        managed_files.warn_managed_write_skipped(tmp_path, {}, {"model_provider": "Databricks"})
+
+        assert warnings == []
+
+    def test_up_to_date_file_needs_no_warning(self, warnings, tmp_path):
+        # Only ug's own User-Agent versions differ, which doesn't change the file's meaning.
+        current = {"http_headers": {"User-Agent": "ucode/1.0 codex/0.154.0"}}
+        desired = {"http_headers": {"User-Agent": "ucode/1.1 codex/0.160.0"}}
+
+        with managed_files.managed_write_batch(["Codex"]):
+            managed_files.warn_managed_write_skipped(tmp_path, current, desired)
+
+        assert warnings == []
+
+
 class TestManagedFileLifecycle:
     def test_noninteractive_creation_is_blocked(self, tmp_path, backup_dir, monkeypatch):
         path = tmp_path / "managed.json"
