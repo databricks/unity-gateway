@@ -417,17 +417,31 @@ class TestCujSmartRouting(BaseCujTest):
                         for path, records in agent_sessions(session, agent).items()
                         if path not in existing_sessions and is_child_session(agent, path, records)
                     }
-                    assert len(children) == 1, (agent, children.keys())
-                    assert any(
-                        child_task.value in answer
-                        for records in children.values()
-                        for answer in assistant_answers(agent, records)
-                    ), agent
+                    # The orchestrator may start another subagent (e.g. a verifier), so check the
+                    # one that ran this task rather than the count.
+                    task_children = [
+                        path
+                        for path, records in children.items()
+                        if any(
+                            child_task.value in answer
+                            for answer in assistant_answers(agent, records)
+                        )
+                    ]
+                    assert len(task_children) == 1, (agent, children.keys())
                     decisions = read_jsonl(decisions_path)[decision_count:]
                     requests = recorder.requests_after(checkpoint)
-                    routes = [request for request in requests if request.path == ROUTING_PATH]
-                    assert len(routes) == int(subagent_routed), (agent, routes)
+                    all_routes = [request for request in requests if request.path == ROUTING_PATH]
+                    if not subagent_routed:
+                        assert not all_routes, (agent, all_routes)
+                    # Each routed subagent sends its own decision request; keep the task's.
+                    routes = [
+                        route
+                        for route in all_routes
+                        if agent != CLAUDE
+                        or child_task.filename in str(route.payload["task"]["prompt"])
+                    ]
                     if subagent_routed:
+                        assert len(routes) == 1, (agent, all_routes)
                         assert_subagent_routed(
                             session,
                             agent,

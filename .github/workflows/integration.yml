@@ -569,9 +569,19 @@ jobs:
         run: |
           uv lock
           uv tool install .
-          npm install -g \
-            "@anthropic-ai/claude-code@$CLAUDE_VERSION" \
-            "@openai/codex@$CODEX_VERSION"
+          install_agents() {
+            npm install -g "$@" \
+              "@anthropic-ai/claude-code@$CLAUDE_VERSION" \
+              "@openai/codex@$CODEX_VERSION"
+          }
+          install_agents
+          # npm can finish while leaving a launcher that cannot execute; check both CLIs here and
+          # force one reinstall, so a broken install fails this step instead of every CUJ test.
+          if ! claude --version || ! codex --version; then
+            install_agents --force
+            claude --version
+            codex --version
+          fi
       - name: Run ${{ matrix.test }}
         run: |
           uv run --with pexpect==4.9.0 --with pyte==0.8.2 \
