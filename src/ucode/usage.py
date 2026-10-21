@@ -123,7 +123,7 @@ def render_budget_limits(statuses: list[BudgetLimitStatus]) -> str:
 
     featured = featured[:_DEFAULT_LIMIT_COUNT]
     additional = additional[: _DEFAULT_LIMIT_COUNT - len(featured)]
-    sections = [label("Your AI Gateway spend limits")]
+    sections = [label("Your Unity Gateway spend limits")]
     sections.extend(_render_limit(status) for status in featured)
     if additional:
         sections.append(label("Additional limits"))
@@ -168,10 +168,10 @@ def usage() -> int:
                 f"Unset {USAGE_SPEND_API_ENV_VAR} to use the standard summary."
             )
             return 0
-        raise RuntimeError(f"Could not retrieve AI Gateway spend limits: {reason}")
+        raise RuntimeError(f"Could not retrieve Unity Gateway spend limits: {reason}")
 
     if not budget_limits:
-        print_note("No AI Gateway spend limits found for this workspace.")
+        print_note("No Unity Gateway spend limits found for this workspace.")
         return 0
 
     console.print(render_budget_limits(budget_limits))

@@ -79,7 +79,7 @@ def list_current_user_budget_spend_statuses(
         params: dict[str, int | str] = {"page_size": _BUDGET_SPEND_STATUS_PAGE_SIZE}
         if page_token is not None:
             params["page_token"] = page_token
-        with spinner("Checking AI Gateway spend limits..."):
+        with spinner("Checking Unity Gateway spend limits..."):
             payload, reason = databricks._http_get_json(
                 f"{base_url}?{urlencode(params)}", workspace_token, timeout=timeout
             )

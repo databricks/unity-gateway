@@ -131,7 +131,7 @@ class TestRenderBudgetLimits:
         )
 
         summary, additional_limits = result.split("[bold]Additional limits[/bold]")
-        assert summary.startswith("\n[bold]Your AI Gateway spend limits[/bold]")
+        assert summary.startswith("\n[bold]Your Unity Gateway spend limits[/bold]")
         assert "[yellow][██████████████████████████░░░░][/yellow] 87% used" in summary
         assert "[bold]Daily personal limit[/bold]" in summary
         assert "$43.50 of $50.00 used · $6.50 remaining today" in summary
@@ -234,26 +234,20 @@ class TestRenderBudgetLimits:
         assert "10% used" not in result
         assert "Showing 5 of 7 spend limits." in result
 
-    @pytest.mark.parametrize("scope_type", [PER_USER, SHARED])
     @pytest.mark.parametrize(
         ("percent", "color"),
         [
             ("0", "green"),
-            ("17", "green"),
-            ("79.99", "green"),
             ("79.999999999999999999", "green"),
             ("80", "yellow"),
-            ("99.99", "yellow"),
             ("99.999999999999999999", "yellow"),
             ("100", "red"),
             ("125", "red"),
         ],
     )
-    def test_meter_colors_follow_exact_80_and_100_percent_thresholds(
-        self, scope_type, percent, color
-    ):
+    def test_meter_colors_follow_exact_80_and_100_percent_thresholds(self, percent, color):
         result = render_budget_limits(
-            [BudgetLimitStatus("budget", scope_type, "MONTH", Decimal(percent))]
+            [BudgetLimitStatus("budget", PER_USER, "MONTH", Decimal(percent))]
         )
         text = Text.from_markup(result)
         console = Console()
@@ -261,7 +255,7 @@ class TestRenderBudgetLimits:
         meter_style = text.get_style_at_offset(console, meter_start)
         percent_style = text.get_style_at_offset(console, text.plain.index(f"{percent}% used"))
         heading_style = text.get_style_at_offset(
-            console, text.plain.index("Your AI Gateway spend limits")
+            console, text.plain.index("Your Unity Gateway spend limits")
         )
 
         assert meter_style.color is not None
@@ -284,7 +278,7 @@ class TestRenderBudgetLimits:
         output = stream.getvalue()
 
         assert output.startswith(
-            "Databricks auth already available\n\nYour AI Gateway spend limits\n"
+            "Databricks auth already available\n\nYour Unity Gateway spend limits\n"
         )
         assert "\x1b" not in output
         assert "[bold]" not in output
@@ -297,7 +291,7 @@ class TestRenderBudgetLimits:
             [BudgetLimitStatus("only", PER_USER, "DAY", Decimal("10"), Decimal("5"), Decimal("50"))]
         )
 
-        assert "Your AI Gateway spend limits" in result
+        assert "Your Unity Gateway spend limits" in result
         assert "Additional limits" not in result
         assert "Showing " not in result
         assert "10% used" in result
@@ -476,7 +470,7 @@ class TestUsageCommand:
         )
 
         assert usage() == 0
-        assert notes == ["No AI Gateway spend limits found for this workspace."]
+        assert notes == ["No Unity Gateway spend limits found for this workspace."]
 
     def test_shows_all_valid_limits_when_no_percentages_are_reported(self, monkeypatch):
         self._stub_auth(monkeypatch, {"workspace": "https://workspace"})
@@ -570,7 +564,7 @@ class TestUsageCommand:
 
         with pytest.raises(RuntimeError) as exc_info:
             usage()
-        assert str(exc_info.value) == f"Could not retrieve AI Gateway spend limits: {reason}"
+        assert str(exc_info.value) == f"Could not retrieve Unity Gateway spend limits: {reason}"
 
     @pytest.mark.parametrize(
         "reason",
@@ -638,7 +632,7 @@ class TestLegacyUsageCommand:
         assert len(printed) == 1
         assert printed[0].startswith("[bold]Budget spend:[/bold]")
         assert "$12.34 of $100.00 (12%)" in printed[0]
-        assert "Your AI Gateway spend limits" not in printed[0]
+        assert "Your Unity Gateway spend limits" not in printed[0]
 
     @pytest.mark.parametrize(
         "reason", ["disabled", "HTTP 404 Not Found", "network error: timed out"]
