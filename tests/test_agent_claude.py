@@ -1088,11 +1088,15 @@ class TestWriteToolConfigManagedSettings:
         assert "modelPicker" not in private_writes[0][1]
         assert "modelPicker" not in json.loads(managed_writes[0][1])
 
-    def test_skip_env_bypasses_managed_file(self, monkeypatch):
+    @pytest.mark.parametrize("opt_out", ["env", "user_scope"])
+    def test_skip_env_bypasses_managed_file(self, monkeypatch, opt_out):
         private_writes: list = []
         managed_writes: list = []
         self._patch(monkeypatch, private_writes, managed_writes)
-        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        if opt_out == "env":
+            monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        else:
+            managed_files.set_config_scope("user")
         # A privileged write must never be attempted when the developer opted out.
         monkeypatch.setattr(
             claude, "reconcile_managed_file", lambda *a, **kw: pytest.fail("must not write managed")
@@ -1129,6 +1133,22 @@ class TestWriteToolConfigManagedSettings:
         assert managed_files.SKIP_OS_SETTINGS_ENV in message
         assert "stale" in message
         assert "ug revert" in message
+
+    def test_user_scope_launches_over_stale_managed_override(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        existing = {
+            str(FAKE_MANAGED_PATH): {
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://old-workspace.databricks.com/ai-gateway/anthropic"
+                }
+            }
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        managed_files.set_config_scope("user")
+        state = {"workspace": WS, "codex_models": []}
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        assert managed_writes == []
 
     def test_skip_env_no_error_without_stale_override(self, monkeypatch):
         private_writes: list = []
@@ -4139,6 +4159,21 @@ class TestClaudeReconcileManagedMcp:
             {"serverName": claude.WEB_SEARCH_MCP_NAME},
         ]
         assert ["allowedMcpServers"] in captured["owned_paths"]
+
+    def test_user_scope_returns_false_without_touching_managed_file(self, monkeypatch):
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: FAKE_MANAGED_PATH)
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(
+            claude, "read_managed_file", lambda path: pytest.fail("must not read managed")
+        )
+        monkeypatch.setattr(
+            claude, "reconcile_managed_file", lambda *a, **k: pytest.fail("must not write")
+        )
+        managed_files.set_config_scope("user")
+        used = claude.reconcile_managed_mcp(
+            {}, {"system-ai-github": claude.managed_mcp_entry(GH_URL)}
+        )
+        assert used is False
 
     def test_mcp_allowlist_not_from_agent_native_settings_is_left_alone(self, monkeypatch):
         captured: dict = {}

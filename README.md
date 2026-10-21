@@ -115,7 +115,15 @@ ug configure
 ug configure --agents claude,codex
 ug configure --workspace https://first.databricks.com
 ug configure --profile DEFAULT --agents claude,codex
+ug configure --user
 ```
+
+`--global` (the default) writes the machine-wide Claude Code and Codex managed settings with sudo.
+`--user` skips them, like `UG_SKIP_OS_SETTINGS`, and needs no sudo; use it when you launch through
+`ug`. Configure fails while a managed file for the agent exists, since managed settings take
+precedence; later launches use whatever files are present.
+The choice is saved for launches after a successful configure; `ug configure` without `--user`
+and `ug revert` return to `--global`.
 
 Available coding agents are `codex`, `claude`, `gemini`, `opencode`,
 `copilot`, and `pi`. `cursor` can be included in `--agents` for MCP-only setup;
@@ -265,9 +273,20 @@ ug skills remove --location main.default --via mcp
 | `ug skills remove` | Remove skill MCP scopes or downloaded skills |
 | `ug export` | Print or write portable managed config JSON |
 | `ug doctor` | Diagnose local setup and offer fixes |
-| `ug usage` | Show AI Gateway spend and budget |
+| `ug usage` | Show Unity Gateway spend and budget |
 | `ug revert` | Clear saved state and restore backed-up config files |
 | `ug upgrade` | Upgrade Unity Gateway |
+
+`ug usage` shows your Unity Gateway budget usage. To try the expanded budget view:
+
+```bash
+ENABLE_UG_USAGE_SPEND_API=1 ug usage
+```
+
+The expanded view shows up to five budget limits, prioritizing the most-used limits
+across personal/shared and daily/monthly budgets. It tells you when more limits exist.
+It uses your configured workspace login; no separate login is needed.
+Leave `ENABLE_UG_USAGE_SPEND_API` unset to keep the standard summary.
 
 Databricks AI Tools are installed only by `ug configure`, never by agent launch
 commands. Use `--enable-databricks-ai-tools` or `--disable-databricks-ai-tools`
@@ -419,6 +438,7 @@ An exporter you already set is left alone. Disabling tracing or `ug revert` remo
 |----|---------|-------------|
 | Linux | systemd user service `ug-codex-otel.service` | `journalctl --user -u ug-codex-otel.service` |
 | macOS | LaunchAgent `com.databricks.ug-codex-otel` | `launchctl print gui/$(id -u)/com.databricks.ug-codex-otel` |
+| Windows | Scheduled task `com.databricks.ug-codex-otel` | `schtasks /Query /TN com.databricks.ug-codex-otel /V /FO LIST` |
 
 ## Development
 

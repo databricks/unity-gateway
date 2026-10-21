@@ -5138,6 +5138,121 @@ class TestConfigureProfilesFlag:
         mock_cfg.assert_not_called()
 
 
+class TestConfigureScopeFlags:
+    """`ug configure --global/--user` picks, saves, and reapplies the managed-settings scope."""
+
+    ARGS = ["configure", "--agents", "claude,codex", "--workspace", "https://first.databricks.com"]
+
+    @staticmethod
+    def _configure(extra=(), *, args=None):
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.install_tool_binary"),
+            patch("ucode.cli.configure_workspace_command") as mock_cfg,
+        ):
+            result = runner.invoke(app, [*(args or TestConfigureScopeFlags.ARGS), *extra])
+        return result, mock_cfg
+
+    def test_default_is_global_and_not_persisted(self):
+        result, _ = self._configure()
+        assert result.exit_code == 0, result.output
+        assert managed_files.config_scope() == "global"
+        assert "config_scope" not in cli_mod.load_full_state()
+
+    def test_user_flag_sets_and_persists_scope(self):
+        result, mock_cfg = self._configure(["--user"])
+        assert result.exit_code == 0, result.output
+        assert managed_files.config_scope() == "user"
+        assert cli_mod.load_full_state()["config_scope"] == "user"
+        assert "user_scope" not in mock_cfg.call_args.kwargs
+
+    def test_global_flag_overrides_saved_user_scope(self):
+        self._configure(["--user"])
+        result, _ = self._configure(["--global"])
+        assert result.exit_code == 0, result.output
+        assert managed_files.config_scope() == "global"
+        assert cli_mod.load_full_state()["config_scope"] == "global"
+
+    def test_configure_without_flag_resets_saved_user_scope(self):
+        self._configure(["--user"])
+        result, _ = self._configure()
+        assert result.exit_code == 0, result.output
+        assert managed_files.config_scope() == "global"
+        assert cli_mod.load_full_state()["config_scope"] == "global"
+
+    def test_managed_file_refuses_before_any_agent_is_configured(self, tmp_path):
+        codex_managed = tmp_path / "managed_config.toml"
+        codex_managed.write_text("x", encoding="utf-8")
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.agents.claude._managed_settings_path", return_value=None),
+            patch("ucode.agents.codex.codex_managed_config_path", return_value=codex_managed),
+            patch("ucode.cli._configure_shared_workspace_states") as mock_login,
+            patch("ucode.cli.configure_selected_tools") as mock_selected,
+        ):
+            result = runner.invoke(app, [*self.ARGS, "--user"])
+        assert result.exit_code == 1
+        assert "managed settings exist" in _strip_ansi(result.output)
+        mock_login.assert_not_called()
+        mock_selected.assert_not_called()
+        assert "config_scope" not in cli_mod.load_full_state()
+
+    @pytest.mark.parametrize("managed", [True, False], ids=["managed_config", "picker"])
+    def test_workspace_paths_refuse_before_configuring(self, tmp_path, managed):
+        claude_managed = tmp_path / "managed-settings.json"
+        claude_managed.write_text("{}", encoding="utf-8")
+        managed_files.set_config_scope("user")
+        with (
+            patch("ucode.agents.claude._managed_settings_path", return_value=claude_managed),
+            patch(
+                "ucode.cli._configure_shared_workspace_states",
+                return_value=[{"workspace": "https://first.databricks.com"}],
+            ),
+            patch("ucode.cli.save_state"),
+            patch(
+                "ucode.cli.refresh_managed_config",
+                return_value=({"enabled": True} if managed else None, None),
+            ),
+            patch("ucode.cli.managed_enabled_tools", return_value=["claude"]),
+            patch("ucode.cli.check_gateway_endpoint", return_value=True),
+            patch("ucode.cli.prompt_for_tools", return_value=["claude"]),
+            patch("ucode.cli.install_tool_binary") as mock_install,
+            patch("ucode.cli.configure_selected_tools") as mock_selected,
+        ):
+            with pytest.raises(RuntimeError, match="managed settings exist"):
+                cli_mod._configure_workspace_command(
+                    workspaces=[("https://first.databricks.com", None)]
+                )
+        mock_install.assert_not_called()
+        mock_selected.assert_not_called()
+
+    def test_flags_are_mutually_exclusive(self):
+        result, mock_cfg = self._configure(["--global", "--user"])
+        assert result.exit_code == 1
+        assert "Use either --global or --user, not both." in _strip_ansi(result.output)
+        mock_cfg.assert_not_called()
+        assert "config_scope" not in cli_mod.load_full_state()
+
+    def test_dry_run_applies_but_does_not_persist(self):
+        result, _ = self._configure(["--user", "--dry-run"])
+        assert result.exit_code == 0, result.output
+        assert managed_files.config_scope() == "user"
+        assert "config_scope" not in cli_mod.load_full_state()
+
+    def test_saved_scope_applies_to_other_commands(self):
+        self._configure(["--user"])
+        managed_files.set_config_scope("global")
+        runner.invoke(app, ["agents", "--help"])
+        assert managed_files.config_scope() == "user"
+
+    def test_revert_does_not_apply_saved_user_scope(self):
+        self._configure(["--user"])
+        managed_files.set_config_scope("global")
+        with patch("ucode.cli.revert", return_value=0):
+            runner.invoke(app, ["revert"])
+        assert managed_files.config_scope() == "global"
+
+
 class TestConfigureSharedStateUsePat:
     """--use-pat reads the profile's PAT from ~/.databrickscfg, exports it as
     DATABRICKS_BEARER, persists the mode, and never opens a browser."""

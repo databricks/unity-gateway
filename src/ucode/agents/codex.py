@@ -9,11 +9,13 @@ import plistlib
 import re
 import signal
 import socket
+import sys
 import tempfile
 import threading
 from collections.abc import Callable
 from pathlib import Path
-from subprocess import CalledProcessError
+from subprocess import CalledProcessError, list2cmdline
+from xml.sax.saxutils import escape
 
 import tomlkit
 from tomlkit.exceptions import ParseError
@@ -67,6 +69,7 @@ from ucode.managed_files import (
     OS,
     ManagedFileWriteUnavailable,
     check_skipped_managed_overrides,
+    config_scope,
     current_os,
     managed_file_conflicts,
     managed_file_is_verified,
@@ -145,7 +148,7 @@ MANAGED_KEYS: list[list[str]] = [
 ]
 CODEX_OTEL_SERVICE_NAME = "ug-codex-otel.service"
 _CODEX_OTEL_UNIT_MARKER = "# Managed by unity-gateway; do not edit."
-# The macOS LaunchAgent label.
+# The macOS LaunchAgent label and the Windows scheduled task name.
 CODEX_OTEL_SERVICE_LABEL = "com.databricks.ug-codex-otel"
 
 LEGACY_MANAGED_KEYS: list[list[str]] = [
@@ -401,13 +404,16 @@ def revert_legacy_shared_config() -> bool:
     through the workspace gateway. ``ucode revert`` only restored the
     per-profile file, leaving those edits in place. Surgically strip them here.
 
-    Also remove the shared app catalog reference and desktop trace exporter installed by modern
-    ucode. Returns True if anything was removed.
+    Also remove the shared app catalog reference, the per-launch model catalogs, and the desktop
+    trace exporter installed by modern ucode. Returns True if anything was removed from config.
     """
     legacy_changed = _strip_legacy_ucode_entries(_legacy_config_path())
     app_catalog_changed = detach_app_model_catalog()
     if app_catalog_changed and CODEX_MODEL_CATALOG_PATH.exists():
         CODEX_MODEL_CATALOG_PATH.unlink()
+    # Launch-scoped catalogs from _model_catalog_path; only the reverted ug profile names them.
+    for path in CODEX_MODEL_CATALOG_PATH.parent.glob(f"{CODEX_MODEL_CATALOG_PATH.stem}-*.json"):
+        path.unlink(missing_ok=True)
     desktop_tracing_changed = _sync_desktop_tracing(None)
     return legacy_changed or app_catalog_changed or desktop_tracing_changed
 
@@ -621,6 +627,9 @@ def revert_managed_config() -> str:
 def _otel_service_path() -> Path:
     if current_os() == OS.MACOS:
         return Path.home() / "Library" / "LaunchAgents" / f"{CODEX_OTEL_SERVICE_LABEL}.plist"
+    if current_os() == OS.WINDOWS:
+        # Task Scheduler keeps its own copy; this one records ownership, the port, and changes.
+        return APP_DIR / f"{CODEX_OTEL_SERVICE_LABEL}.xml"
     config_home = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
     return config_home.expanduser() / "systemd" / "user" / CODEX_OTEL_SERVICE_NAME
 
@@ -691,6 +700,47 @@ def _ensure_launch_agent(path: Path, argv: list[str]) -> None:
     _run_service_command(["launchctl", "bootstrap", domain, str(path)])
 
 
+def _ensure_scheduled_task(path: Path, argv: list[str]) -> None:
+    # A non-admin may only register a logon trigger for their own account.
+    user = "\\".join(filter(None, (os.environ.get("USERDOMAIN"), os.environ.get("USERNAME"))))
+    text = f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Description>{_CODEX_OTEL_UNIT_MARKER}</Description></RegistrationInfo>
+  <Triggers><LogonTrigger><UserId>{escape(user)}</UserId></LogonTrigger></Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{escape(argv[0])}</Command>
+      <Arguments>{escape(list2cmdline(argv[1:]))}</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"""
+    changed = not path.is_file() or _read_otel_service(path) != text
+    if changed:
+        write_text_file(path, text, encoding="utf-16")
+    task = ["/TN", CODEX_OTEL_SERVICE_LABEL]
+    if changed or not _run_service_command(["schtasks", "/Query", *task], check=False):
+        # /Create /F leaves a running proxy on its old command line, so end it first.
+        _run_service_command(["schtasks", "/End", *task], check=False)
+        _run_service_command(["schtasks", "/Create", *task, "/XML", str(path), "/F"])
+    # IgnoreNew keeps this from starting a second proxy next to a running one.
+    # shortcut: RestartOnFailure ignores a nonzero exit, so a crashed proxy waits for the next
+    # login or launch; add a watchdog if that proves too slow.
+    _run_service_command(["schtasks", "/Run", *task])
+
+
 def _systemd_quote(value: str, *, exec_start: bool = False) -> str:
     if any(char in value for char in "\r\n"):
         raise ValueError("systemd unit values cannot contain newlines")
@@ -707,8 +757,13 @@ def _allocate_otel_port() -> int:
         return int(sock.getsockname()[1])
 
 
+def _read_otel_service(path: Path) -> str:
+    # UTF-16 is the encoding Task Scheduler exports and the only one schtasks documents reading.
+    return path.read_text(encoding="utf-16" if current_os() == OS.WINDOWS else "utf-8")
+
+
 def _owned_otel_service(path: Path) -> bool:
-    return path.is_file() and _CODEX_OTEL_UNIT_MARKER in path.read_text(encoding="utf-8")
+    return path.is_file() and _CODEX_OTEL_UNIT_MARKER in _read_otel_service(path)
 
 
 def _ensure_otel_service(workspace: str, port: int) -> None:
@@ -717,6 +772,15 @@ def _ensure_otel_service(workspace: str, port: int) -> None:
         raise RuntimeError(f"Refusing to replace a symlinked service file: {path}")
     if path.exists() and not _owned_otel_service(path):
         raise RuntimeError(f"Refusing to replace an unmanaged service file: {path}")
+    if current_os() == OS.WINDOWS:
+        # pythonw runs the proxy without a console window that closing would kill.
+        # shortcut: the task gets the logon environment, not this shell's DATABRICKS_* overrides;
+        # pass them through if a Windows user needs them.
+        pythonw = Path(sys.executable).with_name("pythonw.exe")
+        python = str(pythonw if pythonw.is_file() else sys.executable)
+        argv = [python, "-m", "ucode.cli", "otel-proxy", "--host", workspace, "--port", str(port)]
+        _ensure_scheduled_task(path, argv)
+        return
     ug_path = ug_binary()
     if not os.path.isabs(ug_path):
         raise RuntimeError(
@@ -764,6 +828,13 @@ def _remove_otel_service() -> None:
         )
         path.unlink(missing_ok=True)
         return
+    if current_os() == OS.WINDOWS:
+        # An already-stopped or deleted task is fine to remove.
+        task = ["/TN", CODEX_OTEL_SERVICE_LABEL]
+        _run_service_command(["schtasks", "/End", *task], check=False)
+        _run_service_command(["schtasks", "/Delete", *task, "/F"], check=False)
+        path.unlink(missing_ok=True)
+        return
     _run_systemctl(["disable", "--now", CODEX_OTEL_SERVICE_NAME])
     path.unlink(missing_ok=True)
     _run_systemctl(["daemon-reload"])
@@ -779,7 +850,7 @@ def _sync_desktop_tracing(workspace: str | None) -> bool:
     It goes in the Codex App settings, which a ``ug codex`` session's own ``-c`` exporter outranks.
     Returns whether that file changed; setup problems only warn.
     """
-    if current_os() not in (OS.LINUX, OS.MACOS) or is_dry_run():
+    if current_os() == OS.OTHER or is_dry_run():
         return False
     try:
         doc = _read_app_config()
@@ -788,9 +859,9 @@ def _sync_desktop_tracing(workspace: str | None) -> bool:
             raise RuntimeError(f"otel in {_legacy_config_path()} is not a table")
         # ug's own unit records the port, so only an exporter at that port is ug's.
         unit = _otel_service_path()
-        unit_text = unit.read_text(encoding="utf-8") if _owned_otel_service(unit) else ""
+        unit_text = _read_otel_service(unit) if _owned_otel_service(unit) else ""
         match = re.search(r" --port (\d+)$", unit_text, re.MULTILINE)
-        # A plist puts the port in its own <string>.
+        # A plist puts the port in its own <string>; task XML ends it with </Arguments>.
         match = match or re.search(r"--port\D+(\d+)", unit_text)
         port = int(match[1]) if match else None
         ours = port is not None and otel.get("trace_exporter") == _desktop_trace_exporter(port)
@@ -829,13 +900,14 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
     if path is not None and path.name == CODEX_REQUIREMENTS_FILE:
         compose = _as_requirements(compose)
     if managed_settings_skipped():
-        check_skipped_managed_overrides(
-            path,
-            parser=_parse_managed_config,
-            compose=compose,
-            owned_paths=MANAGED_KEYS,
-            display="Codex",
-        )
+        if config_scope() != "user":
+            check_skipped_managed_overrides(
+                path,
+                parser=_parse_managed_config,
+                compose=compose,
+                owned_paths=MANAGED_KEYS,
+                display="Codex",
+            )
         return
     if path is None:
         print_warning_err(
@@ -1012,7 +1084,12 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
     platform or a non-interactive run), so the caller routes those servers to the user-scope
     registration instead."""
     path = codex_managed_config_path()
-    if path is None or path.name == CODEX_REQUIREMENTS_FILE or not managed_writes_allowed():
+    if (
+        path is None
+        or path.name == CODEX_REQUIREMENTS_FILE
+        or managed_settings_skipped()
+        or not managed_writes_allowed()
+    ):
         return False
     if path.is_symlink():
         raise RuntimeError(

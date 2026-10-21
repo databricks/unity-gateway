@@ -55,14 +55,14 @@ def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
     static_models = (
         state.get("claude_static_models") if not provider and not parent_schema else None
     )
-    display_names: dict[str, str] = {}
+    token = get_databricks_token(workspace, profile)
+    catalog = list_anthropic_model_catalog(
+        workspace, token, provider=provider, parent_schema=parent_schema
+    )
     if static_models:
         model_ids = static_models
+        display_names = catalog.model_id_to_display_name
     else:
-        token = get_databricks_token(workspace, profile)
-        catalog = list_anthropic_model_catalog(
-            workspace, token, provider=provider, parent_schema=parent_schema
-        )
         if not catalog.model_ids:
             raise RuntimeError(catalog.error_msg or "Gateway model discovery returned no models.")
         model_ids = catalog.model_ids

@@ -236,9 +236,10 @@ files, or leave fresh installs untouched. Tests cover modern, Bedrock, Vertex, a
 Claude-named routes; they do not verify the model behind a name.
 
 Model-label component tests cover catalog display names in `labelOverride`, unchanged
-routing IDs, order/duplicates, and ID-only entries for missing/empty names or static
-lists. Scoped discovery uses the same response for IDs and labels without extra calls.
-Repeat configure refreshes or removes labels. Source lists/maps remain unchanged.
+routing IDs, order/duplicates, and ID-only entries for missing/empty names. Static
+managed lists use discovery only to label matching IDs; their model selection stays
+authoritative. Repeat configure refreshes or removes labels. Source lists/maps remain
+unchanged.
 These checks use temporary files on simulated platforms, not the native model picker.
 
 Desktop OTEL component tests cover native trace settings gated by `claude_otel_tracing`
@@ -330,6 +331,14 @@ Managed smart defaults are covered by `test_managed_config.py`, `test_cli.py`,
 `smart_defaults` wire field, reading older `spend_tiers` caches, skipping recommendations
 without tier rules, applying recommendations when tiers exist, and serializing the current
 API field. These are unit/component checks; live request-count coverage is not included.
+
+`test_usage.py` and `test_budget.py` cover the standard usage summary and the opt-in
+expanded budget view. Tests check selection of up to five limits across personal/shared
+and daily/monthly budgets, including notices when more limits exist.
+They check missing usage amounts, unavailable expanded views, and lookup errors
+without reporting failures as absent budgets.
+Presentation checks cover spacing, usage colors, over-limit values, and output without colors.
+These are unit/component tests, not live sign-in or end-to-end coverage.
 
 The existing `test_codex_smart_routing_v2.py` launcher cases cover session-provider
 selection during first-prompt routing. The native v2 journey covers subagent-only
@@ -697,11 +706,11 @@ and real-shell copy/rename failure handling in temporary directories.
 `test_cli.py` covers the workspace configure session boundary.
 These are unit/component checks; they do not establish live sudo password-prompt behavior.
 
-Codex desktop OTEL component tests cover the systemd unit and the macOS LaunchAgent
-(`launchctl` is simulated), reuse of CLI proxy/auth,
+Codex desktop OTEL component tests cover the systemd unit, the macOS LaunchAgent, and the
+Windows scheduled task (`launchctl` and `schtasks` are simulated), reuse of CLI proxy/auth,
 fixed-port collisions, setup failures that only warn, unchanged launches that keep the
 service running, and leaving another exporter alone. They do not establish a live
-desktop GUI, a real `launchctl` run, or a login/reboot pass.
+desktop GUI, a real `launchctl` or `schtasks` run, or a login/reboot pass.
 
 | Scenario | Status / requirement |
 | --- | --- |

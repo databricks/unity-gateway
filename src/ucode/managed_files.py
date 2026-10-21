@@ -36,6 +36,9 @@ from ucode.ui import console, print_note, print_success, print_warning
 _SUDO = "/usr/bin/sudo"
 # Opt out of all OS-managed settings work (read, conflict check, and the privileged sudo write).
 SKIP_OS_SETTINGS_ENV = "UG_SKIP_OS_SETTINGS"
+CONFIG_SCOPES = ("global", "user")
+DEFAULT_CONFIG_SCOPE = "global"
+_config_scope = DEFAULT_CONFIG_SCOPE
 MANAGED_BACKUP_DIR = APP_DIR / "managed-backups"
 MANAGED_BACKUP_MANIFEST_PATH = MANAGED_BACKUP_DIR / "manifest.json"
 MANAGED_FINGERPRINT_VERSION = 1
@@ -92,8 +95,19 @@ def current_os() -> OS:
     return OS.OTHER
 
 
+def set_config_scope(scope: str) -> None:
+    global _config_scope
+    if scope not in CONFIG_SCOPES:
+        raise ValueError(f"Unknown config scope {scope!r}; expected one of {CONFIG_SCOPES}.")
+    _config_scope = scope
+
+
+def config_scope() -> str:
+    return _config_scope
+
+
 def managed_settings_skipped() -> bool:
-    """Whether the developer opted out of OS-managed settings via ``UG_SKIP_OS_SETTINGS``.
+    """Whether OS-managed settings are opted out via ``UG_SKIP_OS_SETTINGS`` or the ``user`` scope.
 
     Set the variable to ``1``/``true``/``yes``/``on`` to make ucode neither read nor update the
     root-owned managed files (Claude Code ``managed-settings.json``, Codex ``managed_config.toml``
@@ -102,9 +116,9 @@ def managed_settings_skipped() -> bool:
     always launches through ``ug`` and never needs a bare ``claude``/``codex`` to reach the gateway.
     Skips the privileged ``sudo`` step entirely, so an interactive run is never prompted for a
     password and never hits the "OS-managed settings could not be updated" failure on hosts where
-    that write is blocked.
+    that write is blocked. ``ug configure --user`` has the same effect.
     """
-    return env_bool(SKIP_OS_SETTINGS_ENV)
+    return env_bool(SKIP_OS_SETTINGS_ENV) or _config_scope == "user"
 
 
 def managed_files_supported() -> bool:

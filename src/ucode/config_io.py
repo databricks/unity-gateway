@@ -92,13 +92,13 @@ def restore_file(config_path: Path, backup_path: Path, managed: bool) -> bool:
         raise RuntimeError(f"Failed to restore config at {config_path}") from exc
 
 
-def write_text_file(path: Path, content: str) -> None:
+def write_text_file(path: Path, content: str, *, encoding: str = "utf-8") -> None:
     if _dry_run:
         console.print(f"\n[bold]\\[dry run] {path}[/bold]\n{content}")
         return
     ensure_parent_dir(path)
     try:
-        path.write_text(content, encoding="utf-8")
+        path.write_text(content, encoding=encoding)
     except OSError as exc:
         raise RuntimeError(f"Failed to write config file: {path}") from exc
 

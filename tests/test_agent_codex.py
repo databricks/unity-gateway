@@ -789,6 +789,8 @@ class TestCodexRevertLegacySharedConfig:
         shared_path.parent.mkdir()
         catalog_path = codex.CODEX_MODEL_CATALOG_PATH
         catalog_path.write_text("{}", encoding="utf-8")
+        launch_catalog = codex._model_catalog_path("https://example.com", "provider")
+        launch_catalog.write_text("{}", encoding="utf-8")
         shared_path.write_text(
             "model_catalog_json = "
             + json.dumps(str(catalog_path))
@@ -799,6 +801,7 @@ class TestCodexRevertLegacySharedConfig:
 
         assert read_toml_safe(shared_path) == {"personality": "friendly"}
         assert not catalog_path.exists()
+        assert not launch_catalog.exists()
         assert "codex app-server daemon restart" in " ".join(capsys.readouterr().err.split())
 
 
@@ -1746,9 +1749,13 @@ class TestCodexManagedConfig:
         assert profile["model"] == "gpt-5"
         assert "env_http_headers" not in profile["model_providers"]["Databricks"]
 
-    def test_skip_env_bypasses_managed_config(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("opt_out", ["env", "user_scope"])
+    def test_skip_env_bypasses_managed_config(self, tmp_path, monkeypatch, opt_out):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)
-        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        if opt_out == "env":
+            monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        else:
+            managed_files.set_config_scope("user")
         # A privileged write must never be attempted when the developer opted out.
         monkeypatch.setattr(
             codex, "reconcile_managed_file", lambda *a, **kw: pytest.fail("must not write managed")
@@ -1785,6 +1792,22 @@ class TestCodexManagedConfig:
         assert managed_files.SKIP_OS_SETTINGS_ENV in message
         assert "stale" in message
         assert "ug revert" in message
+
+    def test_user_scope_launches_over_stale_managed_override(self, tmp_path, monkeypatch):
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+        managed_path.parent.mkdir(parents=True, exist_ok=True)
+        managed_path.write_text(
+            'model_provider = "Databricks"\n'
+            "[model_providers.Databricks]\n"
+            'base_url = "https://old-workspace.databricks.com/ai-gateway/openai/v1"\n',
+            encoding="utf-8",
+        )
+        managed_files.set_config_scope("user")
+
+        codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+
+        assert read_toml_safe(config_path)["model_provider"] == "Databricks"
+        assert "old-workspace" in managed_path.read_text(encoding="utf-8")
 
     def test_skip_env_no_error_without_stale_override(self, tmp_path, monkeypatch):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)
@@ -2230,6 +2253,65 @@ class TestCodexManagedConfig:
             ["bootout", target],
         ]
 
+    def test_desktop_tracing_scheduled_task_lifecycle(self, tmp_path, monkeypatch):
+        self._sudo_counting_env(tmp_path, monkeypatch)
+        app_path = codex._legacy_config_path()
+        task_path = codex._otel_service_path()
+        pythonw = tmp_path / "Scripts" / "pythonw.exe"
+        pythonw.parent.mkdir()
+        pythonw.write_text("")
+        monkeypatch.setattr(codex, "current_os", lambda: managed_files.OS.WINDOWS)
+        monkeypatch.setattr(codex.sys, "executable", str(pythonw.with_name("python.exe")))
+        monkeypatch.setattr(codex, "_allocate_otel_port", lambda: 43199)
+        monkeypatch.setenv("USERDOMAIN", "CORP")
+        monkeypatch.setenv("USERNAME", "dev")
+        registered = running = False
+        verbs = []
+
+        def schtasks(argv, **_kwargs):
+            nonlocal registered, running
+            verb = argv[1]
+            verbs.append(verb)
+            assert argv[2:4] == ["/TN", codex.CODEX_OTEL_SERVICE_LABEL]
+            if verb == "/Create":
+                assert argv[4:] == ["/XML", str(task_path), "/F"]
+                registered = True
+            elif verb == "/Delete":
+                registered = running = False
+            elif not registered or (verb == "/End" and not running):
+                raise CalledProcessError(1, argv, stderr="ERROR:")
+            elif verb in ("/Run", "/End"):
+                running = verb == "/Run"
+
+        monkeypatch.setattr(codex.subprocess_cross_os, "run", Mock(side_effect=schtasks))
+        tracing = {"workspace": WS, "codex_otel_tracing": True}
+
+        codex.write_tool_config(dict(tracing))
+        exporter = codex._otel_proxy_overlay("http://127.0.0.1:43199/v1/traces")["otel"]
+        assert read_toml_safe(app_path)["otel"] == exporter
+        # schtasks reads the UTF-16 that Task Scheduler itself exports.
+        assert task_path.read_bytes().startswith((b"\xff\xfe", b"\xfe\xff"))
+        task = task_path.read_text(encoding="utf-16")
+        assert f"<Command>{pythonw}</Command>" in task
+        assert f"<Arguments>-m ucode.cli otel-proxy --host {WS} --port 43199</Arguments>" in task
+        assert "<UserId>CORP\\dev</UserId>" in task
+
+        codex.write_tool_config(dict(tracing))
+        newer = "https://newer.databricks.com"
+        codex.write_tool_config({**tracing, "workspace": newer})
+        assert f"--host {newer} --port 43199</Arguments>" in task_path.read_text(encoding="utf-16")
+        codex.write_tool_config({"workspace": newer})
+        assert "otel" not in read_toml_safe(app_path)
+        assert not task_path.exists()
+        assert not registered
+        # IgnoreNew makes /Run a no-op for a running proxy; a new definition ends the old one.
+        assert verbs == [
+            *["/End", "/Create", "/Run"],
+            *["/Query", "/Run"],
+            *["/End", "/Create", "/Run"],
+            *["/End", "/Delete"],
+        ]
+
 
 class TestWriteConfigBackup:
     """A re-configure must not snapshot the file ucode itself generated."""
@@ -2380,6 +2462,20 @@ class TestCodexReconcileManagedMcp:
         monkeypatch.setattr(
             codex, "reconcile_managed_file", lambda *a, **k: pytest.fail("must not write")
         )
+        assert codex.reconcile_managed_mcp({}, {"s": codex.managed_mcp_entry(self.ARGV)}) is False
+
+    def test_user_scope_returns_false_without_touching_managed_file(self, monkeypatch):
+        monkeypatch.setattr(
+            codex, "codex_managed_config_path", lambda: Path("/etc/codex/managed_config.toml")
+        )
+        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(
+            codex, "read_managed_file", lambda path: pytest.fail("must not read managed")
+        )
+        monkeypatch.setattr(
+            codex, "reconcile_managed_file", lambda *a, **k: pytest.fail("must not write")
+        )
+        managed_files.set_config_scope("user")
         assert codex.reconcile_managed_mcp({}, {"s": codex.managed_mcp_entry(self.ARGV)}) is False
 
     def test_preserves_prior_verification_scope(self, monkeypatch):

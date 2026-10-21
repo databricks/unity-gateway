@@ -179,6 +179,10 @@ recommendation while its generated `ANTHROPIC_MODEL` setting and native header s
 Sonnet, then exits. It does not verify Claude's inference model. All three cases leave
 workspace and budget configuration unchanged.
 
+`../test_usage.py` and `../test_budget.py` cover budget selection, display, unavailable
+expanded views, and errors.
+The expanded view has unit/component coverage only; CUJ5 tests the standard summary.
+
 Shared subprocess command resolution is covered by `../test_subprocess_cross_os.py` and
 enforced by Ruff. These component checks do not establish native Windows coverage
 for every agent; the Windows journeys below validate their explicitly selected paths.
@@ -416,9 +420,10 @@ files, or leave fresh installs untouched. Tests cover modern, Bedrock, Vertex, a
 Claude-named routes; they do not verify the model behind a name.
 
 Model-label component tests cover catalog display names in `labelOverride`, unchanged
-routing IDs, order/duplicates, and ID-only entries for missing/empty names or static
-lists. Scoped discovery uses the same response for IDs and labels without extra calls.
-Repeat configure refreshes or removes labels. Source lists/maps remain unchanged.
+routing IDs, order/duplicates, and ID-only entries for missing/empty names. Static
+managed lists use discovery only to label matching IDs; their model selection stays
+authoritative. Repeat configure refreshes or removes labels. Source lists/maps remain
+unchanged.
 These checks use temporary files on simulated platforms, not the native model picker.
 
 Desktop OTEL coverage remains in `../test_claude_desktop.py` and
