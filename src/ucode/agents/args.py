@@ -7,9 +7,13 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class SmartRouterLaunch:
-    """How a launch is smart-routed. Only first-prompt routing needs a dedicated launcher."""
+    """How a launch is smart-routed. Only first-prompt routing needs a dedicated launcher.
+
+    A launch that doesn't start on gets the setup only, so `/smart-router on` can turn it on.
+    """
 
     first_prompt: bool = False
+    starts_on: bool = True
 
 
 @dataclass(frozen=True)

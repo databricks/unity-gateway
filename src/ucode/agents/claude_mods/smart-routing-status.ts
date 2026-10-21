@@ -1,11 +1,11 @@
 import type { On } from 'claude-code'
 import { SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY } from './constants.ts'
-import { isRoutingEnabled } from './routing-state.ts'
+import { parseSessionSwitch } from './session-file.ts'
 
 const BANNER = 'unity gateway smart router'
 
-// The band shows at launch and after each toggle, and hides once the next prompt's turn
-// completes. A prompt submitted while it shows arms the hide for that prompt's turn.
+// Once the session has been on, the band shows at launch and after each toggle, and hides once
+// the next prompt's turn completes. A prompt submitted while it shows arms the hide for that turn.
 const band = { isVisible: true, isHideArmed: false }
 
 export function showStatusBand(): void {
@@ -15,32 +15,18 @@ export function showStatusBand(): void {
 
 type RoutingState = { enabled: boolean; firstPrompt: boolean }
 
-// Claude's capability scanner requires literal names in $.env.get calls.
-async function readRoutingState($: any): Promise<RoutingState> {
-  let full: unknown
-  let subagentOnly: unknown
-  let file: unknown
+// Undefined until the session has been on: before that it shows no Smart Router UI.
+async function readRoutingState($: any): Promise<RoutingState | undefined> {
+  let session
   try {
-    full = await $.env.get('ENABLE_SMART_ROUTING_V2')
+    // Claude's capability scanner requires literal names in $.env.get calls.
+    const file = await $.env.get('UCODE_SESSION_ENV_FILE')
+    session = file ? parseSessionSwitch(await $.fs.read(file)) : undefined
   } catch {}
-  try {
-    subagentOnly = await $.env.get('ENABLE_SMART_ROUTING_SUBAGENT_ONLY')
-  } catch {}
-  try {
-    file = await $.env.get('UCODE_SESSION_ENV_FILE')
-  } catch {}
-  if (typeof file === 'string' && file) {
-    try {
-      const overrides = JSON.parse(await $.fs.read(file))
-      if (overrides && typeof overrides === 'object') {
-        if (SMART_ROUTING_KEY in overrides) full = overrides[SMART_ROUTING_KEY]
-        if (SUBAGENT_ONLY_KEY in overrides) subagentOnly = overrides[SUBAGENT_ONLY_KEY]
-      }
-    } catch {}
-  }
+  if (!session?.everEnabled) return undefined
   return {
-    enabled: isRoutingEnabled({ [SMART_ROUTING_KEY]: full, [SUBAGENT_ONLY_KEY]: subagentOnly }),
-    firstPrompt: full === '1' && subagentOnly !== '1',
+    enabled: session.enabled,
+    firstPrompt: session.whenOn[SMART_ROUTING_KEY] === '1' && session.whenOn[SUBAGENT_ONLY_KEY] !== '1',
   }
 }
 
@@ -59,11 +45,12 @@ export const registerStatusBand = (on: On): void => {
     return next(e)
   })
 
-  // The prompt hint row always carries the state as a plain tail, so it stays visible after
-  // the band hides and flips as soon as a toggle succeeds.
+  // Once the session has been on, the prompt hint row carries the state as a plain tail, so it
+  // stays visible after the band hides and flips as soon as a toggle succeeds.
   on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
-    const { enabled } = await readRoutingState($)
-    const state = `smart router ${enabled ? 'ON' : 'OFF'}`
+    const routing = await readRoutingState($)
+    if (!routing) return next(e)
+    const state = `smart router ${routing.enabled ? 'ON' : 'OFF'}`
     const tail = e.props.tail ? `${e.props.tail} · ${state}` : state
     return next({ ...e, props: { ...e.props, tail } })
   })
@@ -71,8 +58,10 @@ export const registerStatusBand = (on: On): void => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const theirs = await next(e)
     if (!band.isVisible) return theirs
+    const routing = await readRoutingState($)
+    if (!routing) return theirs
     const { Box, Text } = $.ui.resolve(e)
-    const { enabled, firstPrompt } = await readRoutingState($)
+    const { enabled, firstPrompt } = routing
 
     const pill = enabled
       ? Text({ bold: true, color: 'black', backgroundColor: 'green', children: [' ON '] })

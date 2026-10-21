@@ -443,10 +443,11 @@ class TestSubagentRoutedLaunch:
     """Subagent-only routing adds its setup to Claude's normal launch."""
 
     @staticmethod
-    def _launch(monkeypatch, tmp_path, caller_args):
+    def _launch(monkeypatch, tmp_path, caller_args, starts_on=True):
         monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/bin/ug")
         monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
-        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        if starts_on:
+            monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", tmp_path / "ucode-settings.json")
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
         monkeypatch.setattr(v2, "_model_picker_catalog", lambda: None)
@@ -468,11 +469,33 @@ class TestSubagentRoutedLaunch:
         claude.launch(
             {"workspace": "https://example.com"},
             caller_args,
-            options=LaunchOptions(smart_router=SmartRouterLaunch()),
+            options=LaunchOptions(smart_router=SmartRouterLaunch(starts_on=starts_on)),
         )
 
         (argv,) = launches
         return argv, json.loads(argv[argv.index("--settings") + 1])
+
+    def test_on_demand_launch_starts_off_with_the_orchestrator_ready(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, raising=False)
+        monkeypatch.delenv(v2.ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR, raising=False)
+
+        argv, settings = self._launch(monkeypatch, tmp_path, [], starts_on=False)
+
+        env = settings["env"]
+        for key in v2.SMART_ROUTING_ENV_KEYS:
+            assert key not in env
+        assert json.loads(Path(env[v2.SESSION_ENV_VAR]).read_text()) == {
+            "enabled": False,
+            "when_on": v2.ON_DEMAND_WHEN_ON,
+            "ever_enabled": False,
+        }
+        prompt_hook = settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+        assert "ucode.smart_routing.orchestrator_hook" in prompt_hook
+        plugin_dir = Path(argv[argv.index("--plugin-dir") + 1])
+        assert (plugin_dir / "agents" / "explorer.md").is_file()
+        skills_dir = config_io.APP_DIR.parent / ".claude" / "skills"
+        assert (skills_dir / "smart-router" / "SKILL.md").is_file()
+        assert not (skills_dir / "smart-router-orchestrator").exists()
 
     def test_adds_routing_to_the_normal_launch(self, tmp_path, monkeypatch):
         caller_args = [
@@ -553,9 +576,9 @@ class TestSubagentRoutedLaunch:
         }
 
     def test_plugin_folder_is_reused_for_identical_contents(self):
-        first = v2._routed_claude_plugin_dir(["system.ai.claude-opus-4-8"])
-        again = v2._routed_claude_plugin_dir(["system.ai.claude-opus-4-8"])
-        other = v2._routed_claude_plugin_dir(["system.ai.claude-sonnet-5"])
+        first = v2._routed_claude_plugin_dir(["system.ai.claude-opus-4-8"], role_agents=False)
+        again = v2._routed_claude_plugin_dir(["system.ai.claude-opus-4-8"], role_agents=False)
+        other = v2._routed_claude_plugin_dir(["system.ai.claude-sonnet-5"], role_agents=False)
 
         assert again == first
         assert other != first

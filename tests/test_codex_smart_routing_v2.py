@@ -385,6 +385,7 @@ class TestLaunchCodex:
         configured = v2._v2_hooks(
             {"workspace": WS, "profile": "myprof"},
             ["system.ai.gpt-5-6-sol"],
+            with_orchestrator=False,
         )["PreToolUse"]
 
         assert len(configured) == 1
@@ -409,6 +410,7 @@ class TestLaunchCodex:
         configured = v2._v2_hooks(
             {"workspace": WS, "profile": "myprof"},
             ["system.ai.gpt-5-6-sol"],
+            with_orchestrator=False,
         )["PreToolUse"]
 
         routing_commands = [

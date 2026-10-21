@@ -20,15 +20,12 @@ from ucode.constants import (
 )
 from ucode.smart_routing.config import resolve_environment
 from ucode.smart_routing.hooks import sync_managed_hooks
+from ucode.smart_routing.orchestrator_hook import DISABLED_CONTEXT, context_output, prompt_event
 from ucode.smart_routing.session_env import effective_environment, session_env_path
 
-HOOK_MODULE = "ucode.smart_routing.orchestrator"
-DISABLED_CONTEXT = (
-    "Smart Router Orchestrator is off for this session. This supersedes earlier "
-    "Smart Router Orchestrator instructions. Continue in the root unless the user explicitly "
-    "requests subagents; use native tools and the current Smart Router setting for those requests. "
-    "Collect results from children already running."
-)
+HOOK_MODULE = "ucode.smart_routing.orchestrator_hook"
+# Also matches hooks that earlier releases pointed at this module.
+HOOK_MARKER = "ucode.smart_routing.orchestrator"
 
 
 def feature_enabled(env: Mapping[str, str] | None = None, *, agent: str) -> bool:
@@ -40,8 +37,6 @@ def enabled(env: Mapping[str, str] | None = None, *, agent: str) -> bool:
     from ucode.smart_routing.v2 import smart_routing_enabled
 
     source = os.environ if env is None else env
-    if not feature_enabled(source, agent=agent):
-        return False
     if source.get("ISAAC_LAUNCH_MODE", "").strip().lower() == "omni":
         return False
     try:
@@ -50,8 +45,9 @@ def enabled(env: Mapping[str, str] | None = None, *, agent: str) -> bool:
             return False
     except (RuntimeError, OSError):
         return False
-    return smart_routing_enabled(
-        effective_environment(source, agent=agent), default=False, agent=agent
+    effective = effective_environment(source, agent=agent)
+    return feature_enabled(effective, agent=agent) and smart_routing_enabled(
+        effective, default=False, agent=agent
     )
 
 
@@ -61,13 +57,12 @@ def skill_directory() -> Path:
 
 def add_claude_agents(plugin_dir: Path) -> None:
     """Load roles alongside the router's exact-model agents, only for this launch."""
-    if feature_enabled(agent=AGENT_CLAUDE):
-        shutil.copytree(skill_directory() / "agents", plugin_dir / "agents", dirs_exist_ok=True)
+    shutil.copytree(skill_directory() / "agents", plugin_dir / "agents", dirs_exist_ok=True)
 
 
-def sync_hooks(doc: dict, *, agent: str) -> None:
+def sync_hooks(doc: dict, *, agent: str, enabled: bool) -> None:
     groups = {}
-    if feature_enabled(agent=agent):
+    if enabled:
         argv = [sys.executable, "-m", HOOK_MODULE, "--agent", agent]
         hook = {
             "type": "command",
@@ -80,16 +75,12 @@ def sync_hooks(doc: dict, *, agent: str) -> None:
             "UserPromptSubmit": [{"hooks": [hook]}],
             "SessionStart": [{"matcher": "compact", "hooks": [hook]}],
         }
-    sync_managed_hooks(doc, HOOK_MODULE, groups)
+    sync_managed_hooks(doc, HOOK_MARKER, groups)
 
 
 def hook_output(payload: object, *, agent: str) -> dict | None:
-    if not isinstance(payload, dict) or payload.get("agent_id"):
-        return None
-    event = payload.get("hook_event_name")
-    if event != "UserPromptSubmit" and not (
-        event == "SessionStart" and payload.get("source") == "compact"
-    ):
+    event = prompt_event(payload)
+    if event is None:
         return None
     context = DISABLED_CONTEXT
     if enabled(agent=agent):
@@ -110,7 +101,7 @@ def hook_output(payload: object, *, agent: str) -> dict | None:
                 else claude_answer_delivery.UNAVAILABLE_CONTEXT
             )
             context = f"{delivery}\n\n{context}"
-    return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": context}}
+    return context_output(event, context)
 
 
 def main() -> None:

@@ -1504,7 +1504,7 @@ def launch(
             f"{LEGACY_LAYOUT_CODEX_VERSION_TEXT} or newer, then run `codex --version` to verify "
             "the active installation."
         )
-        if smart_router is not None:
+        if smart_router is not None and smart_router.starts_on:
             print_warning_err("Smart routing is unavailable on this Codex version.")
         _run_codex(
             state,
@@ -1570,7 +1570,9 @@ def launch(
                 if slugs:
                     profile_doc["model"] = slugs[0]
     if smart_router is not None:
-        smart_routing_v2.add_codex_smart_router(state, profile_doc)
+        smart_routing_v2.add_codex_smart_router(
+            state, profile_doc, starts_on=smart_router.starts_on
+        )
     _run_codex(
         state,
         [binary, *codex_config_args(profile_doc)],

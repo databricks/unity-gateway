@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from ucode.constants import (
@@ -11,6 +13,7 @@ from ucode.constants import (
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
+    SMART_ROUTING_ENV_KEYS,
 )
 from ucode.smart_routing import config, orchestrator, session_env, v2
 
@@ -200,3 +203,69 @@ def test_agent_config_selection_and_session_precedence(monkeypatch, agent, enabl
         session_env.SESSION_ENV_VAR: str(control),
         "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
     }
+
+
+_WHEN_ON = _EXPECTED_PRESETS[config.SUBAGENT_ORCH_V0]
+_ROUTING_OFF = dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
+
+
+def _session_routing() -> dict[str, str]:
+    effective = session_env.effective_environment(agent=AGENT_CLAUDE)
+    return {key: effective.get(key) for key in SMART_ROUTING_ENV_KEYS}
+
+
+@pytest.mark.parametrize("starts_on", [True, False])
+def test_session_switch_turns_routing_on_and_off(monkeypatch, starts_on):
+    path = session_env.start_session({}, enabled=starts_on, when_on=_WHEN_ON)
+    monkeypatch.setenv(session_env.SESSION_ENV_VAR, str(path))
+
+    assert json.loads(path.read_text()) == {
+        "enabled": starts_on,
+        "when_on": _WHEN_ON,
+        "ever_enabled": starts_on,
+    }
+    assert _session_routing() == (_WHEN_ON if starts_on else _ROUTING_OFF)
+    assert session_env.set_session_enabled(True) is not starts_on
+    assert _session_routing() == _WHEN_ON
+    assert session_env.set_session_enabled(False) is False
+    assert _session_routing() == _ROUTING_OFF
+    assert session_env.set_session_enabled(True) is False
+    assert json.loads(path.read_text())["ever_enabled"] is True
+
+
+def test_earlier_session_files_keep_flat_overrides(tmp_path, monkeypatch):
+    path = tmp_path / "env.json"
+    path.write_text("{}")
+    monkeypatch.setenv(session_env.SESSION_ENV_VAR, str(path))
+    monkeypatch.setenv(ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+
+    assert _session_routing()[ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
+    assert session_env.set_session_enabled(False) is False
+    assert json.loads(path.read_text()) == _ROUTING_OFF
+    assert _session_routing() == _ROUTING_OFF
+    assert session_env.set_session_enabled(True) is False
+    assert json.loads(path.read_text()) == {}
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        '{"enabled": "yes", "when_on": {}, "ever_enabled": false}',
+        '{"enabled": true, "when_on": {"UNKNOWN_FLAG": "1"}, "ever_enabled": true}',
+        '{"enabled": true, "when_on": {}}',
+        '{"UNKNOWN_FLAG": "1"}',
+        "[]",
+        "not json",
+    ],
+)
+def test_invalid_session_file_keeps_inherited_flags(tmp_path, monkeypatch, capsys, contents):
+    path = tmp_path / "env.json"
+    path.write_text(contents)
+    monkeypatch.setenv(session_env.SESSION_ENV_VAR, str(path))
+    monkeypatch.setenv(ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+
+    assert _session_routing()[ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
+    assert "could not read session controls" in capsys.readouterr().err
+    with pytest.raises(RuntimeError, match="are invalid"):
+        session_env.set_session_enabled(True)
+    assert path.read_text() == contents

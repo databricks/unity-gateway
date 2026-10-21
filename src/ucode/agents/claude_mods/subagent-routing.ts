@@ -1,4 +1,5 @@
 import type { On, PluginOptions } from 'claude-code'
+import { parseSessionSwitch } from './session-file.ts'
 
 type RoutingRecord = { model: string; rationale: string; seconds?: number }
 
@@ -21,6 +22,16 @@ const secondsSince = async ($: any, start: number | undefined): Promise<number |
   return current === undefined || start === undefined ? undefined : Math.max(0, current - start) / 1000
 }
 
+// Claude's capability scanner requires the literal name at each $.env.get call site.
+const isSessionOff = async ($: any): Promise<boolean> => {
+  try {
+    const file = await $.env.get('UCODE_SESSION_ENV_FILE')
+    return Boolean(file) && parseSessionSwitch(await $.fs.read(file))?.enabled === false
+  } catch {
+    return false
+  }
+}
+
 export const registerSubagentRouting = (on: On, options: PluginOptions): void => {
   const records = new Map<string, RoutingRecord>()
   // Calls waiting on the router, by when routing started, shown with a spinner and timer.
@@ -28,7 +39,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
 
   on('tool.call', { tool: ['Agent', 'Task'] }, async ($, e, next) => {
     const command = options.routeCommand as readonly string[]
-    if (!command.length) return next(e)
+    if (!command.length || await isSessionOff($)) return next(e)
     const { tool, tool_use_id, agentId, ...input } = e
     let route
     let spinner: { cancel: () => void } | undefined

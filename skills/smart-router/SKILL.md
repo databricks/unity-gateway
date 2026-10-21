@@ -1,9 +1,9 @@
 ---
 name: smart-router
-description: Enable or disable Unity Gateway subagent model routing for the current smart-routed Claude or Codex session, along with Smart Router Orchestrator when opted in.
+description: Enable or disable Unity Gateway subagent model routing for the current Claude or Codex session, along with Smart Router Orchestrator when the session includes it.
 allowed-tools: Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing --smart-router-feedback *), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing --smart-router-feedback *)
 metadata:
-  version: "1.4.0"
+  version: "1.5.0"
 ---
 
 # Smart Router
@@ -34,11 +34,12 @@ do not change that flag to bypass it.
 
 With no argument, explain that only `on` and `off` are accepted. Do not edit the state file.
 This affects subsequent subagent model selection in the current session, not the root model
-or first prompt. In sessions launched with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`, it also controls Smart Router
-Orchestrator. When turned off, earlier Smart Router Orchestrator instructions
+or first prompt. It also controls Smart Router Orchestrator when the session includes it: a
+session started with Smart Router off includes it, and one started on includes it if launched
+with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`. When turned off, earlier Smart Router Orchestrator instructions
 are superseded: do not start new automatic delegation or fall back to Smart Router Orchestrator role models.
 Continue in the root unless the user explicitly requests a subagent. Honor that request using
 native tools and normal harness model selection, without Smart Router Orchestrator; keep routing off.
-Existing children can finish. When turned on, apply the `smart-router-orchestrator`
-skill to further work only if the session was launched with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`.
+Existing children can finish. When turned on, the Smart Router Orchestrator workflow, when the
+session includes it, arrives with the next prompt; follow it for further work.
 Do not change the orchestration feature flag. Return the command's result.

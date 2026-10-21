@@ -760,6 +760,75 @@ class TestSubcommandRouting:
 
         assert options.smart_router == SmartRouterLaunch(first_prompt=first_prompt)
 
+    @pytest.mark.parametrize("tool", ["codex", "claude"])
+    @pytest.mark.parametrize(
+        ("gate", "routing_enabled", "disabled", "model", "provider", "expected"),
+        [
+            ("1", False, False, None, None, SmartRouterLaunch(starts_on=False)),
+            ("", False, False, None, None, None),
+            ("1", True, False, None, None, SmartRouterLaunch()),
+            ("", True, False, None, None, SmartRouterLaunch()),
+            ("1", False, True, None, None, None),
+            ("1", False, False, "fixed", None, None),
+            ("1", False, False, None, "catalog.schema.service", None),
+        ],
+    )
+    def test_on_demand_smart_router_policy(
+        self, monkeypatch, tool, gate, routing_enabled, disabled, model, provider, expected
+    ):
+        monkeypatch.setenv("ENABLE_SMART_ROUTER_ON_DEMAND", gate)
+
+        options = cli_mod._launch_options(
+            tool,
+            [],
+            smart_routing_enabled=routing_enabled,
+            explicit_prompt=False,
+            user_pinned_model=model,
+            provider=provider,
+            smart_routing_disabled=disabled,
+        )
+
+        assert options.smart_router == expected
+
+    @pytest.mark.parametrize(
+        ("tool_args", "expected"),
+        [(["-p", "hi"], None), (["--resume"], SmartRouterLaunch(starts_on=False))],
+    )
+    def test_on_demand_skips_claude_print_mode(self, monkeypatch, tool_args, expected):
+        monkeypatch.setenv("ENABLE_SMART_ROUTER_ON_DEMAND", "1")
+
+        options = cli_mod._launch_options(
+            "claude",
+            tool_args,
+            smart_routing_enabled=False,
+            explicit_prompt=False,
+            user_pinned_model=None,
+            provider=None,
+        )
+
+        assert options.smart_router == expected
+
+    @pytest.mark.parametrize(
+        ("args", "routing_env", "expected"),
+        [
+            ([], {}, SmartRouterLaunch(starts_on=False)),
+            ([], {"ENABLE_SMART_ROUTING_V2": "0"}, SmartRouterLaunch(starts_on=False)),
+            (["--disable-smart-routing"], {}, None),
+        ],
+    )
+    def test_on_demand_honors_only_an_explicit_disable(
+        self, monkeypatch, args, routing_env, expected
+    ):
+        monkeypatch.setenv("ENABLE_SMART_ROUTER_ON_DEMAND", "1")
+        for key, value in routing_env.items():
+            monkeypatch.setenv(key, value)
+        with _launch_policy_patches(None) as calls:
+            result = runner.invoke(app, ["codex", *args])
+
+        assert result.exit_code == 0, result.output
+        assert calls["launch"].call_args.kwargs["options"].smart_router == expected
+        assert "trust the ug routing hooks" not in result.output
+
     def test_managed_smart_routing_routes_the_first_prompt(self):
         managed = {"enabled_agents": {"codex": {"smart_routing_enabled": True}}}
         with _launch_policy_patches(managed) as calls:

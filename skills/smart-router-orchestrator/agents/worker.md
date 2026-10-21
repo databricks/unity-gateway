@@ -1,6 +1,6 @@
 ---
 name: worker
-description: Implement one bounded change in files explicitly assigned by the supervisor.
+description: Implement one bounded change in files explicitly assigned by the supervisor. Use only when Smart Router is on.
 model: sonnet
 ---
 
