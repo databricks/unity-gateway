@@ -8,10 +8,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from ucode import cli, desktop_setup
+from ucode import cli
 from ucode import state as state_store
 from ucode.agents.desktop import claude as claude_desktop
 from ucode.agents.desktop import claude_config as desktop_config
+from ucode.agents.desktop import setup as desktop_setup
 from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER, MODEL_SERVICE_PARENT_SCHEMA_HEADER
 from ucode.databricks import AnthropicModelCatalog
 
