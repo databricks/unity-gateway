@@ -37,7 +37,7 @@ from ucode.databricks import (
 )
 from ucode.mcp_connection_login import connection_from_url
 from ucode.mcp_oauth import (
-    CLAUDE_CODE_OAUTH_CLIENT_IDS,
+    CLAUDE_CODE_CIMD_CLIENT_ID,
     CODEX_CLI_OAUTH_CLIENT_ID,
     CURSOR_OAUTH_CLIENT_ID,
     first_available_oauth_client,
@@ -76,8 +76,8 @@ MCP_SQL_PATH = "/api/2.0/mcp/sql"
 # These agents can pin a pre-registered OAuth client and drive the `/oidc` login
 # themselves (so `/mcp` shows "needs authentication" / Cursor shows a login), which
 # is a much better experience than the stdio proxy for a connection-backed service:
-#   - Claude Code: `claude mcp add --transport http --client-id <app>`, preferring
-#     its URL client ID where published, with `claude-code` as a fallback.
+#   - Claude Code: `claude mcp add --transport http --client-id <app>` with its
+#     published CIMD URL client ID.
 #   - Cursor: a `url` server with an `auth.CLIENT_ID` in ~/.cursor/mcp.json.
 # Both need the app *published on the workspace* (checked per-workspace via
 # `first_available_oauth_client`) and its loopback `/callback` redirect registered on
@@ -91,7 +91,7 @@ MCP_SQL_PATH = "/api/2.0/mcp/sql"
 # (`--header`) — stay on the stdio proxy even where their apps exist; add one here
 # (with its registration branch below) once its CLI can pin a client.
 AGENT_OAUTH_CLIENTS = {
-    "claude": CLAUDE_CODE_OAUTH_CLIENT_IDS,
+    "claude": (CLAUDE_CODE_CIMD_CLIENT_ID,),
     "cursor": (CURSOR_OAUTH_CLIENT_ID,),
     "codex": (CODEX_CLI_OAUTH_CLIENT_ID,),
 }

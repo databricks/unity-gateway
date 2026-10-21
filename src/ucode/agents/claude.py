@@ -83,7 +83,6 @@ from ucode.managed_files import (
 )
 from ucode.mcp_oauth import (
     CLAUDE_CODE_CIMD_CLIENT_ID,
-    CLAUDE_CODE_OAUTH_CLIENT_IDS,
     MCP_OAUTH_CALLBACK_PORT,
     first_available_oauth_client,
 )
@@ -970,7 +969,7 @@ def managed_mcp_uses_managed_file(workspace: str, *, use_pat: bool) -> bool:
         managed_files_supported()
         and managed_writes_allowed()
         and not use_pat
-        and first_available_oauth_client(workspace, CLAUDE_CODE_OAUTH_CLIENT_IDS) is not None
+        and first_available_oauth_client(workspace, (CLAUDE_CODE_CIMD_CLIENT_ID,)) is not None
     )
 
 

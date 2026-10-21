@@ -6,9 +6,8 @@ registers the service as a **direct HTTP** MCP server, the agent itself drives
 that login via OAuth against the workspace ``/oidc`` — and `/oidc` has no dynamic
 client registration, so the agent must present a **pre-registered public client**.
 
-Claude Code's URL client ID is preferred where published. Older workspaces can
-still use the ``claude-code`` client. Both have the loopback ``/callback`` path
-Claude Code needs. We probe each candidate and cache the result per workspace.
+Claude Code uses its URL client ID where published. We probe each candidate and
+cache the result per workspace.
 """
 
 from __future__ import annotations
@@ -25,20 +24,13 @@ from ucode.config_io import APP_DIR, read_json_safe, write_json_file
 # document at this URL does not make an OAuth client available on every workspace.
 CLAUDE_CODE_CIMD_CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata"
 
-# Legacy published OAuth client Claude Code authenticates with. Any loopback
-# callback port works — `/oidc` strips the port when matching loopback redirects
-# (RFC 8252 §8.4) — but the redirect *path* (`/callback`) must be registered,
-# which this client has and `databricks-cli` does not.
-CLAUDE_CODE_OAUTH_CLIENT_ID = "claude-code"
-CLAUDE_CODE_OAUTH_CLIENT_IDS = (CLAUDE_CODE_CIMD_CLIENT_ID, CLAUDE_CODE_OAUTH_CLIENT_ID)
 MCP_OAUTH_CALLBACK_PORT = 3118
 
 # Published public OAuth client Cursor authenticates with for OAuth MCP servers.
 # Cursor's `mcp.json` accepts a pre-registered `auth.CLIENT_ID` (no dynamic client
 # registration, which `/oidc` lacks) and drives the login to Cursor's fixed loopback
 # redirect `http://localhost:8787/callback`. `/oidc` matches loopback redirects by
-# path (RFC 8252 §8.4), so the registered `/callback` path is what matters — the
-# same requirement `claude-code` satisfies.
+# path (RFC 8252 §8.4), so the registered `/callback` path is required.
 CURSOR_OAUTH_CLIENT_ID = "cursor-desktop"
 
 # Published public OAuth client Codex authenticates with for OAuth MCP servers
@@ -147,8 +139,6 @@ def first_available_oauth_client(workspace: str, client_ids: tuple[str, ...]) ->
 
 __all__ = [
     "CLAUDE_CODE_CIMD_CLIENT_ID",
-    "CLAUDE_CODE_OAUTH_CLIENT_IDS",
-    "CLAUDE_CODE_OAUTH_CLIENT_ID",
     "CURSOR_OAUTH_CLIENT_ID",
     "CODEX_CLI_OAUTH_CLIENT_ID",
     "MCP_OAUTH_CALLBACK_PORT",

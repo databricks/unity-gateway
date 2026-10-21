@@ -247,6 +247,17 @@ class TestKiloMcpClient:
 
 
 class TestConfigureClientMcpServer:
+    def test_claude_does_not_probe_legacy_client_when_cimd_is_absent(self, monkeypatch):
+        probed: list[str] = []
+        monkeypatch.setattr(
+            mcp,
+            "first_available_oauth_client",
+            lambda ws, client_ids: probed.extend(client_ids) or None,
+        )
+
+        assert mcp._oauth_http_client("claude", WS, use_pat=False) is None
+        assert probed == [mcp.CLAUDE_CODE_CIMD_CLIENT_ID]
+
     def test_configures_copilot_with_proxy_argv(self, monkeypatch):
         calls: list[tuple[str, list[str]]] = []
 
@@ -786,25 +797,10 @@ class TestManagedMcpEntry:
             None,
             use_pat=False,
             always_load=False,
-            http_client=mcp.CLAUDE_CODE_OAUTH_CLIENT_IDS[0],
+            http_client=mcp.CLAUDE_CODE_CIMD_CLIENT_ID,
         )
         assert e == mcp.claude.managed_mcp_entry(self.MCP_URL)
         assert e["type"] == "http" and e["url"] == self.MCP_URL
-
-    def test_claude_http_preserves_legacy_fallback_client(self, monkeypatch):
-        monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
-        monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
-        legacy_client = mcp.CLAUDE_CODE_OAUTH_CLIENT_IDS[1]
-        entry = mcp._managed_mcp_entry(
-            "claude",
-            self.MCP_URL,
-            WS,
-            None,
-            use_pat=False,
-            always_load=False,
-            http_client=legacy_client,
-        )
-        assert entry["oauth"]["clientId"] == legacy_client
 
     def test_claude_stdio_when_http_client_but_non_mcp_services_url(self):
         # http_client set, but a non-connection URL still uses the stdio proxy.
@@ -816,7 +812,7 @@ class TestManagedMcpEntry:
             None,
             use_pat=False,
             always_load=False,
-            http_client=mcp.CLAUDE_CODE_OAUTH_CLIENT_IDS[0],
+            http_client=mcp.CLAUDE_CODE_CIMD_CLIENT_ID,
         )
         assert e["type"] == "stdio"
 
@@ -833,7 +829,7 @@ class TestManagedMcpEntry:
             None,
             use_pat=False,
             always_load=False,
-            http_client=mcp.CLAUDE_CODE_OAUTH_CLIENT_IDS[0],
+            http_client=mcp.CLAUDE_CODE_CIMD_CLIENT_ID,
         )
         assert e["type"] == "stdio"
 
