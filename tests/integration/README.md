@@ -60,6 +60,25 @@ The shared request recorder and native compatibility-retry checks live in
 configuration glue and imports those helpers; request forwarding, header
 redaction, and paired response assertions retain their behavior.
 
+Routed Codex v1 child close/resume is covered by the component suite
+`../test_codex_resume.py` and the optional native Codex 0.159.3 reproduction documented in
+`../README.md`. The latter uses UG's real hooks and native lifecycle with synthetic local
+router/provider responses, including restart, nested children, and unset effort. This suite
+does not yet contain a live gateway child-resume journey. Claude and external evaluation
+plugins are outside that fix's launch path.
+Missing settings confirmations and metadata/persistence failures need separate
+validation; they are not covered by the component suite.
+
+Both Codex routing modes use the app-server. The launcher supplies a working directory
+to the remote TUI so its native folder-trust prompt runs on fresh projects. Component
+coverage in `../test_codex_smart_routing_v2.py` checks initial sandbox resolution through
+Codex's current server configuration without replacing explicit selections or changing
+resumed and later threads. Cross-platform launch arguments and startup-failure cleanup
+need separate validation.
+The live Codex subagent toggle journey compares every native parent turn with the
+configured model and requires no first-prompt route or rewrite in the interposer log.
+The interposer also protects resumed children in subagent-only sessions.
+
 CUJ3 and CUJ4 require a non-empty HTTP 200 for inference. Claude 2.1.290's known
 thinking-display 400 is accepted only when the next inference request with the same system
 context and session metadata removes `display`,
@@ -76,6 +95,9 @@ Claude child HTTP prompts may carry one appended newline after the route-selecti
 offline cases reject any other prompt changes and retain exact Codex matching.
 Offline CUJ cases also cover Codex delegated-turn completion and task-request matching;
 see `../e2e_cuj/README.md` for the evidence requirements.
+Codex's native runtime-context updates within a turn, such as a date change at midnight, do not
+count as new user prompts. Offline checks require the context-only native kind and matching turn
+ID, and still reject untagged or mixed messages, other-turn updates, and duplicate prompts.
 
 The [catalog discovery journey](../e2e_cuj/README.md) uses the CUJ3 workspace to check
 agent-compatible pickers (including GPT Luna for both agents), schema exclusions, configured
@@ -106,10 +128,17 @@ completed task rows before submitting `/exit`. Claude 2.1.290 retains finished c
 checkmarked `done` rows and no running or scheduled section. The helper observes menu dismissal
 after Escape before typing `/exit`. Offline PTY checks reject active/scheduled tasks, partial
 lists, and completed-task text outside the native menu.
+If `/tasks` opens a single agent's detail panel, the helper presses its advertised Left-arrow
+key to return to the full list before checking completion. If that closes the panel to the
+input prompt, it reopens `/tasks` and still requires completion evidence from the full list.
+Offline PTY cases cover both navigation outcomes, repeated detail panels, delayed navigation,
+and other tasks that remain active even when the selected agent is already complete. The helper
+must wait for navigation to finish; a still-visible completed detail panel is insufficient.
 It neither stops tasks nor confirms an exit dialog. Process exit retains its 30-second
 timeout. Offline PTY checks cover this ordering.
-The shared wait also runs before CUJ4's Claude preset sessions exit, after delegated-task
-evidence is checked, because Claude can resume a child after its first completed answer.
+CUJ4's Claude preset sessions first wait for the parent's answer with the delegated file's
+value, then open the task view and use the shared wait. The parent can resume a completed
+child while forming its reply, and that resumed child can outlive the parent's answer.
 
 `../test_startup_imports.py` covers the bare version fast path, deferred imports,
 metadata fallback, and other-argument dispatch as component checks. Installation

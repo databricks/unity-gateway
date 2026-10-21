@@ -92,9 +92,16 @@ Offline PTY checks verify that the Claude background-task wait observes "No task
 running" or a native task menu containing only completed rows before sending `/exit`, without
 stopping tasks or confirming an exit dialog. Running/scheduled sections, incomplete row counts,
 and completed-task text outside the native menu cannot satisfy the wait.
+When `/tasks` opens one agent's detail panel, the helper uses its Left-arrow navigation to
+return to the full list. If that closes the panel to the input prompt, it reopens `/tasks`.
+Offline PTY checks cover both navigation outcomes, repeated detail panels, and running and
+completed agents. A completed detail panel cannot satisfy the wait while navigation is pending;
+all tasks must finish before exit, including when the selected agent is already done.
 The live Claude subagent skill-toggle journey uses this wait after its final calculation.
-CUJ4's Claude preset sessions also use it after verifying delegated file tasks: a completed
-answer does not prove that a resumed child has stopped running.
+CUJ4's Claude preset sessions wait for the parent's answer with the delegated file's value
+before opening the task view, since the parent can resume a child while forming its reply.
+They then wait for background completion: the parent's answer does not prove that a resumed
+child has stopped running.
 They cover Claude/Codex helper dispatch and rejection of routing decisions without
 the agent-specific prompt-submission evidence.
 The shared preset CUJ runs both agents for every version and derives routing and
@@ -126,6 +133,9 @@ Child HTTP matching accepts Claude's single appended transport newline after the
 checkpoint; additional text, whitespace, and Codex prompt changes remain rejected.
 Offline CUJ regressions cover Codex delegated-turn completion and exact task-request matching;
 notifications alone, Claude title requests, and parent continuations do not qualify.
+Codex parent-turn evidence accepts native runtime-context updates for the same turn, including
+midnight date changes. Untagged, mixed user/context, and other-turn messages still end the match;
+duplicate prompts remain rejected.
 Unrelated and pre-checkpoint request bodies are excluded before JSON decoding.
 CUJ4 accepts both top-level tool definitions (Codex 0.154.0) and Responses Lite
 `additional_tools` input items (0.162.1). Encrypted child messages match the routed
@@ -328,10 +338,19 @@ Managed smart defaults are covered by `test_managed_config.py`, `test_cli.py`,
 without tier rules, applying recommendations when tiers exist, and serializing the current
 API field. These are unit/component checks; live request-count coverage is not included.
 
-`test_codex_smart_routing_v2.py` checks that the remote Codex TUI receives the
-gateway provider on Windows while Unix launch arguments stay unchanged and routing
-hooks stay with the app-server. This is component coverage, not a live Windows
-sign-in or TUI test.
+`test_codex_smart_routing_v2.py` checks initial sandbox resolution through Codex's
+current server configuration, including after a rejected startup request. Explicit
+sandbox/profile selections, resumed/forked sessions, and later thread starts remain
+unchanged. Cross-platform launch arguments and cleanup after app-server startup
+failure need separate validation.
+
+`test_codex_resume.py` covers SQLite persistence across guard restarts, saved model/effort
+restoration (including unset effort), nested callers sharing the root session ID,
+descendant traversal through unrouted parents, live follow-ups, deliberate overrides,
+native-v2 exclusion, identity mismatches, and repeated/overlapping resumes. Its loopback
+WebSocket peer substitutes the external Codex service. Metadata/persistence failures
+and missing native confirmation are not covered. The live subagent toggle journey
+checks that the parent retains its configured model.
 
 Claude picker composition is checked directly through the catalog and renderer functions in
 `test_agent_claude.py`; focused CLI cases cover source selection and launch precedence.
@@ -407,6 +426,9 @@ Claude checks local mod confirmations and the inference payload's `smart_router_
 Codex checks saved session controls and native tool-result confirmations after each toggle.
 Both explicitly request their children,
 including while routing is off.
+The Codex journey checks every native parent turn against the configured model and
+requires no first-prompt route or rewrite in the interposer log. Subagent-only launches
+use that interposer to protect resumed children.
 The managed-fixture banner journeys separately cover the selector unset (managed default) and
 `first_prompt_and_subagent_no_orch_v0` for real first-prompt tasks.
 Preset parameterization augments only routing hooks, skill toggles, and first-prompt routing;
@@ -478,7 +500,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_codex_app_reports_unknown_argument` | Pass an invalid option directly to `ug codex app` with legacy smart routing off/on | Real Codex parser error and status preserved |
 | `test_ug_codex_app_server_client_initializes` | Connect a stdio client, direct/`--` separator, with legacy smart routing off/on | Actual JSON-RPC initialize response; no non-JSON stdout; no routing |
 | `test_smart_routing_claude_route_subagent_hook`, `test_smart_routing_codex_route_subagent_hook` | Pipe a native spawn payload to the installed Claude mod command or Codex PreToolUse hook with legacy subagent routing or each supported routing preset | Claude returns model/rationale/updatedInput JSON naming the routed agent the mod labels; Codex returns an allow-hook decision; requested model replaced by a routed agent definition (Claude) or bundled catalog slug (Codex) from the offered models; one audited decision matching the session and task |
-| `test_smart_router_skill_toggles_claude_subagent_routing`, `test_smart_router_skill_toggles_codex_subagent_routing` | Configure, launch a real subagent-only TUI with legacy routing-only/orchestration flags or the three subagent-only presets, then spawn tagged children while invoking the installed Smart Router skill to switch routing on -> off -> on in the same session | Routing-only cases install `smart-router`; orchestration cases also install `smart-router-orchestrator`; all three native children complete; only routing-enabled phases show a native model/rationale row (Claude) or subagent banner (Codex) and produce a live routing decision correlated with the child; Claude's recorded task inference payloads carry `smart_router_recipe_name` as launch recipe -> DISABLED -> launch recipe, omit the recipe header, and receive successful gateway responses; opted-in Codex banners include `[orchestrator on]`; no first-prompt routing wrapper; the customer full-mode preset is intentionally outside this journey; normal exit |
+| `test_smart_router_skill_toggles_claude_subagent_routing`, `test_smart_router_skill_toggles_codex_subagent_routing` | Configure, launch a real subagent-only TUI with legacy routing-only/orchestration flags or the three subagent-only presets, then spawn tagged children while invoking the installed Smart Router skill to switch routing on -> off -> on in the same session | Routing-only cases install `smart-router`; orchestration cases also install `smart-router-orchestrator`; all three native children complete; only routing-enabled phases show a native model/rationale row (Claude) or subagent banner (Codex) and produce a live routing decision correlated with the child; Claude's recorded task inference payloads carry `smart_router_recipe_name` as launch recipe -> DISABLED -> launch recipe, omit the recipe header, and receive successful gateway responses; opted-in Codex banners include `[orchestrator on]`; the parent's first prompt is not routed; Codex retains its configured model on every parent turn and records no first-prompt route or rewrite; the customer full-mode preset is intentionally outside this journey; normal exit |
 | `test_ug_configure_claude_repeat_and_revert`, `test_ug_configure_codex_repeat_and_revert` | Configure twice over user settings; complete a task; revert twice | Settings preserved; no bearer in ug state; generated config removed; status unconfigured |
 | `test_ug_configure_claude_cleans_stale_skills_mcp_on_workspace_switch` | Configure the first workspace, register its skills MCP, switch to a second real workspace, and use Claude | Old registration removed from Claude and the new workspace state; old workspace bucket preserved; repeat configure stays clean; real file task completes on the second workspace |
 | `test_ug_configure_claude_rejects_invalid_credentials`, `test_ug_configure_codex_rejects_invalid_credentials` | Configure with a rejected bearer against the real workspace | Authentication failure; no successful saved setup |
@@ -699,7 +721,7 @@ desktop GUI, a real `launchctl` run, or a login/reboot pass.
 | Saved Claude picker selection | Unit/component checks in `test_agent_claude.py` cover mapped family aliases, `[1m]`/`[200k]` variants, and unavailable-model fallback without changing saved settings. No dedicated live journey. |
 | Fresh provider/parent validation and mixed Bedrock filtering | Not covered after removing the duplicate model-discovery suites |
 | TUI initial prompt supplied on the launch command line | Not yet covered; headless prompt arguments are covered |
-| Follow-up turns and conversation resume | Not covered; reopen proves startup, not conversation resume |
+| Follow-up turns and conversation resume | Routed Codex v1 child close/resume has component coverage and the native reproduction below. Other resume paths and a live gateway resume journey remain uncovered; reopen alone proves startup |
 | Claude/Codex interactive smart routing | First-prompt routing is covered by the `managed_fixture` banner journeys and CUJ4. The live subagent-only journeys spawn native children and invoke the installed Smart Router skill to verify routing on -> off -> on within one Claude/Codex session. The scheduled harness-latest workflow repeats CUJ4, routing hooks, skill toggles, and banners with both latest agents. Plugin-refresh survival and native daemon/background dispatch remain deferred. |
 | Full allow/deny tool-permission matrix | Not covered; onboarding/trust uses actual TUI choices |
 | Desktop Codex app, Isaac itself, auto-upgrades | Not covered by command forwarding or pinned-version tests |
@@ -711,6 +733,34 @@ See [integration/README.md](integration/README.md) for commands, CI, artifacts,
 and reproduction. Follow [AGENTS.md](AGENTS.md) and [CLAUDE.md](CLAUDE.md) when
 adding, modifying, or removing tests. The ordinary suite enforces both the
 no-mocking boundary and the Scenario/Expected docstring format.
+
+### Native Codex resume reproduction
+
+[`scripts/reproduce_codex_resume.py`](../scripts/reproduce_codex_resume.py) uses an installed
+Codex 0.159.3 binary, UG's actual CLI hooks, and deterministic loopback router/Responses services.
+It needs Linux and `bwrap` to isolate native/UG state without changing user configuration.
+Generated fixture hooks are approved through Codex's native trust API. No gateway credentials
+or model inference are used; this is component reproduction, not a live gateway integration test.
+
+Run from a checkout with its Python dependencies already installed, using new output directories:
+
+```bash
+PYTHONPATH="$PWD/src" uv run --no-sync python scripts/reproduce_codex_resume.py \
+  --binary /absolute/path/to/codex --version 0.159.3 \
+  --output /tmp/ug-resume-baseline --baseline
+PYTHONPATH="$PWD/src" uv run --no-sync python scripts/reproduce_codex_resume.py \
+  --binary /absolute/path/to/codex --version 0.159.3 \
+  --output /tmp/ug-resume-fixed
+```
+
+The baseline keeps routing enabled and omits the guard hooks; success means it observed the
+child switching from `gpt-5.1-codex-mini`/high to the parent's `gpt-5.1`/low after resume.
+The fixed case requires the child's model/effort to stay unchanged in provider requests
+and native thread settings. Both check live follow-ups and preserve the parent's settings.
+Add `--restart`, `--nested`, or `--no-effort` to test a new native process, subtree restoration,
+or unset effort. Outputs include routing calls, requests, native events/settings, tool results,
+and `result.json`; missing stages or failed hooks fail the run. Other native Codex versions,
+Windows/macOS, TUI interaction, and production incidence are not established by this check.
 
 Native launch-option component tests (`native_claude/test_mod.py`) check two real Claude
 processes with different resolved routing baselines. Python cases cover Claude-specific presets,

@@ -212,6 +212,63 @@ def test_cuj_evidence_codex_rejects_wrong_turn(tmp_path):
     assert completed_turn(CODEX, wrong_turn, task) is None
 
 
+@pytest.mark.parametrize(
+    "case",
+    ["runtime", "untagged", "user_text", "mixed", "wrong_turn", "missing_turn", "duplicate"],
+)
+def test_cuj_evidence_codex_midnight_environment_update(tmp_path, case):
+    task = FileTask(SimpleNamespace(cwd=tmp_path))
+    rows = records(CODEX, task, "gpt-6-luna")
+    update = {
+        "type": "response_item",
+        "payload": {
+            "type": "message",
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": (
+                        "<environment_context>\n  <current_date>2026-10-13</current_date>\n"
+                        "</environment_context>"
+                    ),
+                }
+            ],
+            "internal_chat_message_metadata_passthrough": {
+                "turn_id": "turn",
+                "content_item_kinds": ["environments.environment_context"],
+            },
+        },
+    }
+    metadata = update["payload"]["internal_chat_message_metadata_passthrough"]
+    if case == "untagged":
+        update["payload"].pop("internal_chat_message_metadata_passthrough")
+    elif case == "user_text":
+        metadata["content_item_kinds"] = ["user.text"]
+    elif case == "mixed":
+        metadata["content_item_kinds"].append("user.text")
+        update["payload"]["content"].append({"type": "input_text", "text": "A different task."})
+    elif case == "wrong_turn":
+        metadata["turn_id"] = "later"
+    elif case == "missing_turn":
+        metadata.pop("turn_id")
+    rows.insert(-1, update)
+    if case == "duplicate":
+        rows.insert(-1, copy.deepcopy(rows[3]))
+        with pytest.raises(AssertionError, match="Prompt was submitted more than once"):
+            completed_turn(CODEX, rows, task)
+    elif case == "runtime":
+        turn = completed_turn(CODEX, rows, task)
+        assert turn is not None
+        assert (turn.session_id, turn.turn_id, turn.models, turn.answer) == (
+            "session",
+            "turn",
+            ["gpt-6-luna"],
+            task.value,
+        )
+    else:
+        assert completed_turn(CODEX, rows, task) is None
+
+
 def _tagged_codex_notification(row):
     notification = copy.deepcopy(row)
     notification["payload"]["content"] = [{"type": "input_text", "text": "<subagent_notification>"}]

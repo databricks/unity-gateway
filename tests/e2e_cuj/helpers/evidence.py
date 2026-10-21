@@ -234,6 +234,16 @@ class CodexCujHelper(BaseCujHelper):
                 and payload.get("type") == "message"
                 and payload.get("role") == "user"
             ):
+                # Midnight can refresh Codex's runtime context mid-turn. Only skip
+                # updates identified by the native context kind and current turn ID.
+                message_metadata = payload.get("internal_chat_message_metadata_passthrough") or {}
+                if (
+                    message_metadata.get("content_item_kinds")
+                    == ["environments.environment_context"]
+                    and active_turn
+                    and message_metadata.get("turn_id") == active_turn
+                ):
+                    continue
                 source, prompt = "response", message_text(payload.get("content"))
             if source:
                 if prompt == task.prompt:

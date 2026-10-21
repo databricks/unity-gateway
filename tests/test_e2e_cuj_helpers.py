@@ -239,7 +239,10 @@ time.sleep(30)
         "transcript",
     ],
 )
-def test_claude_waits_for_background_task_completion_before_exit(tmp_path, view):
+@pytest.mark.parametrize(
+    "entry", ["list", "running-detail", "completed-detail", "detail-to-prompt"]
+)
+def test_claude_waits_for_background_task_completion_before_exit(tmp_path, view, entry):
     """An offline terminal fixture requires /tasks, completion, Escape, then /exit."""
     views = {
         "empty": "No tasks currently running",
@@ -283,7 +286,22 @@ def test_claude_waits_for_background_task_completion_before_exit(tmp_path, view)
         "transcript": ("Background\n\n  Completed (1)\n✔ ug_subagent_one   done · Sonnet 5\n\n❯"),
     }
     views["resumed"] = views["mixed"]
+    detail = (
+        "Background task update waiting while this panel is open\n"
+        "agent › Read file contents\n"
+        + ("✔ Completed · 9s · Haiku 4.5\n" if entry == "completed-detail" else "9s · Haiku 4.5\n")
+        + "← to go back · Esc/Enter/Space to close"
+        + (" · x to stop" if entry in ("running-detail", "detail-to-prompt") else "")
+        + " · f to foreground"
+    )
+    panels = [detail] * (2 if entry == "detail-to-prompt" else int(entry != "list"))
+    full_view = views[view]
+    if view in ("detail", "detail_running"):
+        panels.append(full_view)
+        full_view = views["completed" if view == "detail" else "running"]
     complete = view in ("empty", "completed", "detail", "resumed")
+    # Each delayed panel can require another rendered /tasks submission.
+    timeout = (5 if complete else 2) + 2 * len(panels)
     script = tmp_path / "ug"
     script.write_text(
         f"""#!{sys.executable}
@@ -299,7 +317,20 @@ print("Background tasks: scheduled task · Runs once in 1m", flush=True)
 time.sleep(0.8)
 previous = termios.tcgetattr(sys.stdin.fileno())
 tty.setraw(sys.stdin.fileno())
-print("\\x1b[2J\\x1b[H" + {views[view]!r}.replace("\\n", "\\r\\n"), flush=True)
+panels = {panels!r}
+for index, panel in enumerate(panels):
+    print("\\x1b[2J\\x1b[H" + panel.replace("\\n", "\\r\\n"), flush=True)
+    assert sys.stdin.read(3) == "\\x1b[D", "Must return to the full task list"
+    time.sleep(0.8)
+    assert not select.select([sys.stdin], [], [], 0)[0], "Repeated task-list navigation"
+    if index + 1 < len(panels) or {view in ("detail", "detail_running")!r}:
+        termios.tcsetattr(sys.stdin.fileno(), termios.TCSANOW, previous)
+        print("\\x1b[2J\\x1b[HWaiting for 1 background agent to finish", flush=True)
+        print("─" * 40 + "\\n❯\\n" + "─" * 40, flush=True)
+        print("  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents", flush=True)
+        assert sys.stdin.readline().strip() == "/tasks", "Must reopen the task view"
+        tty.setraw(sys.stdin.fileno())
+print("\\x1b[2J\\x1b[H" + {full_view!r}.replace("\\n", "\\r\\n"), flush=True)
 if {view == "resumed"!r}:
     time.sleep(0.8)
     assert not select.select([sys.stdin], [], [], 0)[0], "Exited with a resumed child running"
@@ -314,7 +345,7 @@ assert sys.stdin.readline().strip() == "/exit"
     session = UserSession(tmp_path, script, tmp_path / "artifacts", "token")
     with Terminal(session, "waits-before-exit", [], agent=CLAUDE) as tui:
         if complete:
-            tui.wait_for_background_tasks(timeout=5)
+            tui.wait_for_background_tasks(timeout=timeout)
             tui.exit_normally()
             assert tui.child.exitstatus == 0
             close = next(
@@ -322,15 +353,20 @@ assert sys.stdin.readline().strip() == "/exit"
                 for action in tui.actions
                 if action["reason"] == "close the completed background-task view"
             )
-            assert views[view].splitlines()[0] in close["screen_before"]
+            assert full_view.splitlines()[0] in close["screen_before"]
             if view == "resumed":
                 assert "Running (1)" not in close["screen_before"]
                 assert "Completed (2)" in close["screen_before"]
         else:
             with pytest.raises(AssertionError, match="task view reporting no running tasks"):
-                tui.wait_for_background_tasks(timeout=2)
+                tui.wait_for_background_tasks(timeout=timeout)
             assert not tui.ended
             assert not any("/exit" in action["keys"] for action in tui.actions)
+            assert full_view in tui.visible
+        back = [action for action in tui.actions if action.get("keys") == "\x1b[D"]
+        assert len(back) == len(panels)
+        for action, panel in zip(back, panels, strict=True):
+            assert panel in action["screen_before"]
 
 
 def test_mcp_list_poll_retries_a_failed_probe_until_rows_match(monkeypatch):

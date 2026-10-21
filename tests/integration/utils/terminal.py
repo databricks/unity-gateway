@@ -43,9 +43,6 @@ def _claude_background_task_detail(text):
 def _claude_background_tasks_complete(text):
     if re.search(r"(?m)^\s*No tasks currently running\s*$", text):
         return True
-    detail = _claude_background_task_detail(text)
-    if detail is not None:
-        return re.match(r"✔ Completed\b", detail[1]) is not None
     menu = _claude_background_task_menu(text)
     if menu is None:
         return False
@@ -570,8 +567,30 @@ class AgentTerminal(TerminalProcess):
         """Wait in Claude's native task view without stopping or detaching work."""
         assert self.agent == "claude", self.agent
         self.submit("/tasks")
+        returning_to_list = False
+
+        def completed(text):
+            nonlocal returning_to_list
+            # With one active task, /tasks opens its detail panel instead of the list.
+            # A completed detail panel does not establish that every task has stopped.
+            if _claude_background_task_detail(text) is not None:
+                if not returning_to_list:
+                    self.send("\x1b[D", "return from task details to the full background-task list")
+                    returning_to_list = True
+                return False
+            # A directly opened detail panel can return to the input prompt.
+            # Reopen the task view; the prompt alone says nothing about active work.
+            if returning_to_list and re.search(
+                r"(?m)^[ \t]*─+[ \t]*\n[ \t]*❯[ \t]*\n[ \t]*─+[ \t]*$",
+                text,
+            ):
+                self.submit("/tasks")
+                returning_to_list = False
+                return False
+            return _claude_background_tasks_complete(text)
+
         self.wait_for(
-            _claude_background_tasks_complete,
+            completed,
             "Claude's task view reporting no running tasks",
             timeout=timeout,
         )

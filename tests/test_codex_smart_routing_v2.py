@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from ucode import codex_config
 from ucode.agents import LaunchOptions, codex
-from ucode.smart_routing import codex_interposer, codex_routing, v2
+from ucode.smart_routing import codex_interposer, codex_resume, codex_routing, v2
 
 WS = "https://example.databricks.com"
 
@@ -280,6 +283,8 @@ class TestLaunchCodex:
         assert processes[0].kwargs["env"]["CODEX_HOME"] == "/user/codex-home"
         tui_argv = processes[1].argv
         expected_tui_args = [
+            "--cd",
+            str(Path.cwd()),
             "--remote",
             "ws://127.0.0.1:41002",
             "--model",
@@ -310,6 +315,7 @@ class TestLaunchCodex:
         assert interposer_args["kwargs"]["switch_message_fn"] is v2.format_routing_notice
         assert stopped == [True]
         assert processes[0].terminated is True
+        assert codex_resume.app_server_url() is None
 
     def test_managed_http_headers_reach_app_server_config(self, monkeypatch):
         # Smart routing rebuilds the overlay and passes it to the app-server as `-c` overrides that
@@ -364,59 +370,6 @@ class TestLaunchCodex:
         assert "x-databricks-workspace" in provider_arg
         assert "eng-ml-inference" in provider_arg
 
-    def test_subagent_only_launch_runs_tui_directly(self, tmp_path, monkeypatch):
-        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
-        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
-        monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
-        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
-        monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
-        monkeypatch.setattr(
-            v2.subprocess,
-            "Popen",
-            lambda *_args, **_kwargs: pytest.fail("subagent-only routing spawns no app-server"),
-        )
-        monkeypatch.setattr(
-            codex_interposer,
-            "start_interposer_thread",
-            lambda *_args, **_kwargs: pytest.fail("subagent-only routing must not interpose"),
-        )
-        execd = []
-
-        def fake_exec(argv):
-            execd.append(argv)
-            raise SystemExit(0)
-
-        monkeypatch.setattr(v2, "exec_or_spawn", fake_exec)
-
-        with pytest.raises(SystemExit) as exc:
-            v2.launch_codex(
-                {"workspace": WS, "codex_models": ["system.ai.gpt-5-6-sol"]},
-                ["--search"],
-                binary="codex",
-                start_model="gpt-start",
-                render_overlay=codex.render_overlay,
-            )
-
-        assert exc.value.code == 0
-        (argv,) = execd
-        assert argv[0] == "codex"
-        assert argv[-1] == "--search"
-        assert 'model="gpt-start"' in argv
-        hook_override = next(arg for arg in argv if arg.startswith("hooks.PreToolUse="))
-        assert "codex-router-hook route-subagent" in hook_override
-        assert "--model system.ai.gpt-5-6-sol" in hook_override
-        assert (
-            "shell_environment_policy.set.UCODE_SESSION_ENV_FILE="
-            + json.dumps(os.environ["UCODE_SESSION_ENV_FILE"])
-        ) in argv
-        assert (
-            "shell_environment_policy.set.UCODE_SMART_ROUTER_PYTHON="
-            + json.dumps(os.environ["UCODE_SMART_ROUTER_PYTHON"])
-        ) in argv
-        # The hook subprocesses inherit the launch environment and pass the routing gate.
-        assert os.environ[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
-        assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "token"
-
     def test_v2_pre_tool_hook_leaves_saved_hooks_to_codex(self, tmp_path, monkeypatch):
         codex_home = tmp_path / ".codex"
         codex_home.mkdir()
@@ -436,8 +389,9 @@ class TestLaunchCodex:
             ["system.ai.gpt-5-6-sol"],
         )["PreToolUse"]
 
-        assert len(configured) == 1
+        assert len(configured) == 2
         assert configured[0]["matcher"] == "Agent|.*spawn_agent$"
+        assert configured[1]["matcher"] == ".*(resume_agent|send_input)$"
         assert "--model system.ai.gpt-5-6-sol" in configured[0]["hooks"][0]["command"]
         assert (codex_home / "config.toml").read_bytes() == before
 
@@ -464,10 +418,16 @@ class TestLaunchCodex:
             hook["command"]
             for group in configured
             for hook in group["hooks"]
-            if "codex-router-hook" in hook["command"]
+            if "codex-router-hook route-subagent" in hook["command"]
         ]
         assert len(routing_commands) == 1
-        assert routing_commands[0].startswith("/bin/ug codex-router-hook route-subagent ")
+        assert shlex.split(routing_commands[0])[:5] == [
+            sys.executable,
+            "-m",
+            "ucode.cli",
+            "codex-router-hook",
+            "route-subagent",
+        ]
         assert "--model system.ai.gpt-5-6-sol" in routing_commands[0]
         assert "--model old" not in routing_commands[0]
 
@@ -702,6 +662,75 @@ def test_interposer_startup_failure_is_propagated(monkeypatch):
 
 
 class TestInterposerSession:
+    @pytest.mark.parametrize("use_server_default", [False, True])
+    @pytest.mark.parametrize(
+        "sandbox", [None, "read-only", "workspace-write", "danger-full-access"]
+    )
+    def test_initial_thread_uses_server_for_stale_sandbox_default(
+        self, use_server_default, sandbox
+    ):
+        sess = codex_interposer._Session(
+            None, log=lambda _m: None, use_server_sandbox_default=use_server_default
+        )
+        request = {
+            "id": 1,
+            "method": "thread/start",
+            "params": {
+                "cwd": "/project",
+                "sandbox": sandbox,
+                "approvalPolicy": "never",
+                "model": "gpt-selected",
+                "config": {"sandbox_workspace_write": {"network_access": False}},
+            },
+        }
+        result = sess.on_tui_frame(json.dumps(request))
+        expected = json.loads(json.dumps(request))
+        if use_server_default and sandbox == "read-only":
+            del expected["params"]["sandbox"]
+        assert json.loads(result.frame) == expected
+        assert result.needs_settings_update is False
+
+        sess.on_engine_frame(json.dumps({"id": 1, "result": {"thread": {"id": "t1"}}}))
+        request["id"] = 2
+        frame = json.dumps(request)
+        assert sess.on_tui_frame(frame).frame == frame
+
+    def test_initial_sandbox_default_survives_a_rejected_start(self):
+        sess = codex_interposer._Session(None, log=lambda _m: None, use_server_sandbox_default=True)
+        request = {"id": "start", "method": "thread/start", "params": {"sandbox": "read-only"}}
+        expected = {"id": "start", "method": "thread/start", "params": {}}
+        assert json.loads(sess.on_tui_frame(json.dumps(request)).frame) == expected
+        sess.on_engine_frame(
+            json.dumps({"id": "start", "error": {"message": "unsupported history"}})
+        )
+        assert json.loads(sess.on_tui_frame(json.dumps(request)).frame) == expected
+
+    @pytest.mark.parametrize("method", ["turn/start", "thread/resume", "thread/settings/update"])
+    def test_server_sandbox_default_leaves_followups_and_restoration_unchanged(self, method):
+        sess = codex_interposer._Session(None, log=lambda _m: None, use_server_sandbox_default=True)
+        frame = json.dumps({"id": 1, "method": method, "params": {"sandbox": "read-only"}})
+        assert sess.on_tui_frame(frame).frame == frame
+
+    def test_server_sandbox_default_preserves_explicit_profile_selection(self):
+        sess = codex_interposer._Session(None, log=lambda _m: None, use_server_sandbox_default=True)
+        frame = json.dumps(
+            {
+                "id": 1,
+                "method": "thread/start",
+                "params": {"sandbox": "read-only", "permissions": ":read-only"},
+            }
+        )
+        assert sess.on_tui_frame(frame).frame == frame
+
+    @pytest.mark.parametrize("method", ["thread/resume", "thread/fork"])
+    def test_restored_session_keeps_sandbox_selection_for_new_threads(self, method):
+        sess = codex_interposer._Session(None, log=lambda _m: None, use_server_sandbox_default=True)
+        frame = json.dumps({"id": 1, "method": method, "params": {"sandbox": "read-only"}})
+        assert sess.on_tui_frame(frame).frame == frame
+        sess.on_engine_frame(json.dumps({"id": 1, "result": {"thread": {"id": "restored"}}}))
+        frame = json.dumps({"id": 2, "method": "thread/start", "params": {"sandbox": "read-only"}})
+        assert sess.on_tui_frame(frame).frame == frame
+
     def _turn_start(self, model: str, thread_id: str = "t1", prompt: str = "Fix the parser") -> str:
         return json.dumps(
             {
