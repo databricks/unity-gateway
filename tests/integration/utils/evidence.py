@@ -169,6 +169,11 @@ class FileTask:
             f"Read the local file {self.filename} in the current directory using a tool. "
             "Reply with only its contents."
         )
+        # Small models can drop path segments after a space when rebuilding the absolute path.
+        self.prompt_with_path = (
+            f"Read the local file {session.cwd / self.filename} using a tool. "
+            "Reply with only its contents."
+        )
         self.delegate_prompt = (
             f"Delegate this task to one subagent: read the local file {self.filename} in the "
             "current directory using a tool and return its contents. Do not read the file "

@@ -735,6 +735,11 @@ def main() -> int:
         runtime_paths = [runtime_bin, agent_bin, tool_bin]
         if os.name == "nt":
             system_root = Path(base_env["SYSTEMROOT"])
+            # Copilot's shell tool tries pwsh first; Windows PowerShell alone can miss its 40s
+            # startup probe on a cold runner and leave Copilot without a shell.
+            pwsh = shutil.which("pwsh", path=base_env.get("PATH"))
+            if "copilot" in agents and pwsh:
+                runtime_paths.append(Path(pwsh).parent)
             runtime_paths.extend(
                 [
                     system_root / "System32",
