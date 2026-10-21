@@ -73,6 +73,8 @@ trailing UI controls; offline cases reject stale states, wrong routing scope, an
 confirmations, and keep the band, the hint row, and the toggle reply apart.
 The mod's own tests (`native_claude/mod_tests`) cover the same rules for both toggles
 without a live agent.
+They also check that a Luna Fast launch adds `"speed": "fast"` beside the recipe,
+that off removes it and on restores it, and that other launches leave a caller's `speed` alone.
 
 CUJ3 expects GPT Luna in both agents' catalogs and pickers, including Claude's gateway alias,
 and covers an explicit Claude headless task on that model.

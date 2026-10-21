@@ -7,7 +7,10 @@ import {
   DISABLE_ROUTING_FLAG,
   DISABLED_RECIPE,
   ENABLE_ROUTING_FLAG,
+  FAST_SPEED,
+  LUNA_FAST_KEY,
   RECIPE_FIELD,
+  SPEED_FIELD,
 } from './constants.ts';
 import { mergeExtraBody } from './extra-body.ts';
 import { createIsaacFeedbackState, registerIsaacFeedback } from './isaac-feedback.ts';
@@ -69,6 +72,9 @@ async function setRouting(
   if (typeof recipe !== 'string' || /[\r\n]/.test(recipe)) {
     throw new Error('Smart Router recipe must be a single-line string.');
   }
+  const speed = original(LUNA_FAST_KEY) === '1'
+    ? { [SPEED_FIELD]: enabled ? FAST_SPEED : undefined }
+    : {};
   const environment = {
     ENABLE_SMART_ROUTING_V2: enabled ? original('ENABLE_SMART_ROUTING_V2') : '0',
     ENABLE_SMART_ROUTING_SUBAGENT_ONLY: enabled ? original('ENABLE_SMART_ROUTING_SUBAGENT_ONLY') : '0',
@@ -76,6 +82,7 @@ async function setRouting(
     ENABLE_LUNA_FAST: enabled ? original('ENABLE_LUNA_FAST') : '0',
     CLAUDE_CODE_EXTRA_BODY: mergeExtraBody(previous.CLAUDE_CODE_EXTRA_BODY, {
       [RECIPE_FIELD]: recipe,
+      ...speed,
     }),
   };
   try {
