@@ -826,8 +826,7 @@ def add_claude_http_mcp_server(
     against ``/oidc`` with the ``resource`` indicator: on a missing/expired
     connection credential, ``/mcp`` shows "needs authentication" and Authenticate
     runs the login (``/oidc`` -> ``/mcp-service-login``). ``client_id`` is the
-    published app (the URL client ID is preferred; ``claude-code`` remains a
-    fallback). Both have the loopback ``/callback`` redirect registered; the port
+    published CIMD URL client ID. It has the loopback ``/callback`` redirect registered; the port
     is arbitrary because ``/oidc`` ignores the port
     for loopback redirects."""
     cmd = [
