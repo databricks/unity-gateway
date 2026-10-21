@@ -38,7 +38,9 @@ The required Isaac feedback form and background delivery notifications need manu
 validation using the released Isaac skill and existing capture/retry CLI. Check
 category selection, empty and inline feedback, native retries, the off form's
 16-character minimum, cancellation, repeated toggles, and submission success/failure.
-Also check that submission makes no model request and a new task can run during upload,
+Also check that the form closes immediately and submission makes no model request.
+Start a new task during capture and confirm the report retains the original task;
+toggle routing during upload and confirm its recorded settings stay fixed. Check that
 saved evidence stays unchanged, upload permission denials are honored, local
 previews stay local, and Other stays text-only. Run `/isaac-feedback` in sessions
 launched with routing both on and off; check that a routing-disabled launch keeps

@@ -64,24 +64,26 @@ rollout setting or the user's explicit `1`/`0` or `true`/`false` override. As wi
 boolean environment flags, `1`, `true`, `yes`, and `on` enable it (case-insensitive,
 with surrounding whitespace ignored); other values disable it. It controls Isaac feedback
 availability, so UG's routing presets and on/off toggles leave it unchanged.
-The native form keeps routing on until Enter accepts a valid reason and Isaac saves
-the bounded local snapshot. It uses the existing `--with-evidence --capture-local`
-options, with the Isaac executable and absolute capture directory resolved at launch.
-Then it disables routing, closes the form, and uploads the saved report with `isaac feedback --retry <id>` in
-the existing native background callback. The transcript shows the sending message
-and feedback ID. Delivery produces both a persistent message and a success toast;
-a failed upload offers `/isaac-feedback retry <id>` for the original snapshot.
+The native form keeps routing on until Enter accepts a valid reason. It closes the
+form and shows the sending message and feedback ID before starting Isaac. The existing
+native background callback runs `isaac feedback --with-evidence` to capture and upload
+the report while the user continues working. Routing is turned off independently of
+that process. Delivery produces both a persistent message and a success toast;
+a failed upload offers `/isaac-feedback retry <id>` when a local snapshot was saved.
 Before submitting, Cancel or Escape leaves routing on and sends nothing. A missing
-`isaac` CLI or an unavailable form leaves routing on. A feedback submission failure after a valid
+`isaac` executable at launch or an unavailable form leaves routing on. A feedback submission failure after a valid
 reason leaves routing off and reports the failure in the transcript. The form makes no model requests.
 
 With the same flag enabled, `/isaac-feedback` uses the same native form,
 capture, and background uploader as `/smart-router off`. It asks for a category
 when none was supplied, and for feedback text when the invocation is empty.
 `/isaac-feedback --category smart-routing <text>` submits directly. Smart-routing
-reports capture the current session's most recent task; the native flow does not
-generate an agent note. Other reports retain their text-only transport and do not
-receive an evidence feedback ID. `/isaac-feedback retry <id>` uploads the saved
+reports pin the current session's most recent task by its native user-message ID.
+The `session.append` hook remembers that ID; a session with no observed prompt uses
+Isaac's existing target inspection before opening the form. Empty sessions use an
+unmatched `no-prior-task` selector so subsequent work cannot become their target.
+The native flow does not generate an agent note. Other reports retain their text-only
+transport and do not receive an evidence feedback ID. `/isaac-feedback retry <id>` uploads the saved
 snapshot in the background without capturing it again.
 
 The submission and its sending/completion messages make no model requests and
@@ -94,10 +96,17 @@ is enabled. Routing stays disabled and the status band stays hidden. UG keeps th
 temporary plugin alive until Claude exits, then removes it. If setup fails, UG warns
 and launches Claude without the feedback hooks.
 
+Each submission passes Claude's native session ID and the current routing controls
+to Isaac. Valid session-file overrides are copied into that child process's environment,
+so turning routing off or back on cannot change the report's recorded settings.
+These settings describe submission time; subagent execution still requires routing-log
+evidence. An invalid controls file remains unverified.
+
 These uploads belong to the running Claude session. Keep it open until completion;
-if interrupted, retry the saved evidence ID on the same machine. No Isaac background
-worker or new CLI options are required. Saving evidence before returning control
-keeps a later task or file edit out of that snapshot.
+if interrupted, retry the saved evidence ID on the same machine. If capture did not
+finish, submit the feedback again. No Isaac background worker or new CLI options are
+required. Evidence is collected in the background: the selected task stays fixed,
+while transcript and file snapshots reflect capture time and available file history.
 
 `isaac-feedback.ts` owns this Databricks-specific policy, form, and submission.
 `register.ts` binds the routing callbacks before Isaac's command guard, then

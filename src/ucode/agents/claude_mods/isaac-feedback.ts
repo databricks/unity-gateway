@@ -26,6 +26,7 @@ function showResult($: EngineInterface, feedbackId: string, sent: boolean): void
 type FeedbackState = {
   submitted: boolean;
   reason: string;
+  lastPromptId?: string | null;
   category?: FeedbackCategory;
   turnOff?: boolean;
   readRoutingEnabled?: () => Promise<boolean>;
@@ -36,14 +37,66 @@ export function createIsaacFeedbackState(): FeedbackState {
   return { submitted: false, reason: '' };
 }
 
-function uploadFeedback(
-  $: EngineInterface, isaacExecutable: string, feedbackId: string, message?: string,
-): void {
-  showSending($, feedbackId);
-  const args = feedbackId ? ['--retry', feedbackId] : ['--category', 'other'];
-  void $.process.run([isaacExecutable, 'feedback', ...args], { stdin: message, timeoutMs: 120000 })
-    .then(result => showResult($, feedbackId, result.exitCode === 0),
-      () => showResult($, feedbackId, false));
+async function feedbackEnvironment($: EngineInterface): Promise<Record<string, string>> {
+  const env: Record<string, string> = {
+    CLAUDE_CODE_SESSION_ID: await $.session.id(),
+    // A nested Claude launch can inherit another harness's identity markers.
+    CODEX_THREAD_ID: '', CODEX_CI: '', CODEX_HOME: '', CODEX_SANDBOX: '', OPENCODE: '', CURSOR_AGENT: '',
+    ENABLE_SMART_ROUTING_V2: (await $.env.get('ENABLE_SMART_ROUTING_V2')) === '1' ? '1' : '0',
+    ENABLE_SMART_ROUTING_SUBAGENT_ONLY: (await $.env.get('ENABLE_SMART_ROUTING_SUBAGENT_ONLY')) === '1' ? '1' : '0',
+    ENABLE_SMART_ROUTER_ORCHESTRATOR: (await $.env.get('ENABLE_SMART_ROUTER_ORCHESTRATOR')) ?? '',
+    SMART_ROUTER_NAME: (await $.env.get('SMART_ROUTER_NAME')) ?? '',
+    SMART_ROUTER_CONFIG_VERSION: (await $.env.get('SMART_ROUTER_CONFIG_VERSION')) ?? '',
+    UCODE_SESSION_ENV_FILE: '',
+  };
+  const controls = await $.env.get('UCODE_SESSION_ENV_FILE');
+  if (controls) {
+    try {
+      const overrides = JSON.parse(await $.fs.read(controls));
+      const keys = ['ENABLE_SMART_ROUTING_V2', 'ENABLE_SMART_ROUTING_SUBAGENT_ONLY', 'ENABLE_SMART_ROUTER_ORCHESTRATOR'];
+      if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)
+          || Object.entries(overrides).some(([key, value]) => !keys.includes(key) || (value !== '0' && value !== '1'))) {
+        throw new Error('Invalid routing controls.');
+      }
+      Object.assign(env, overrides);
+    } catch {
+      // Let Isaac report unreadable controls instead of claiming a verified state.
+      env.UCODE_SESSION_ENV_FILE = controls;
+    }
+  }
+  // Valid controls are frozen here; a later toggle must not change this report.
+  return env;
+}
+
+async function prepareFeedbackTarget(
+  $: EngineInterface, state: FeedbackState, isaacExecutable: string,
+): Promise<void> {
+  if (state.lastPromptId !== undefined) return;
+  // Resumed sessions may not have emitted a prompt during this plugin's lifetime.
+  const result = await $.process.run(
+    [isaacExecutable, 'feedback', '--inspect-target', '--harness', 'claude', '--session-id', await $.session.id()],
+    { timeoutMs: 10000 },
+  );
+  if (result.exitCode !== 0) throw new Error('Could not identify the feedback target.');
+  if (state.lastPromptId === undefined) state.lastPromptId = JSON.parse(result.stdout).message_id ?? null;
+}
+
+async function uploadFeedback(
+  $: EngineInterface, isaacExecutable: string, isaacFeedbackDirectory: string, feedbackId: string,
+  args: string[], message?: string, env?: Record<string, string>,
+): Promise<void> {
+  try {
+    const result = await $.process.run([isaacExecutable, 'feedback', ...args], { stdin: message, env, timeoutMs: 120000 });
+    if (result.exitCode === 0) {
+      if (result.stderr.trim()) $.ui.log(result.stderr.trim());
+      showResult($, feedbackId, true);
+      return;
+    }
+  } catch {
+    // A timeout can leave a saved report, which should be retried with its original ID.
+  }
+  const saved = feedbackId && await $.fs.exists(`${isaacFeedbackDirectory}/${feedbackId}/receipt.json`).catch(() => false);
+  showResult($, saved ? feedbackId : '', false);
 }
 
 async function submitFeedback(
@@ -59,42 +112,47 @@ async function submitFeedback(
   }
   if (!state.category || !isaacExecutable || !isaacFeedbackDirectory) return 'Isaac feedback is unavailable.';
   state.submitted = true;
-  $.ui.invalidate('ui.render');
   const feedbackId = state.category === 'smart-routing' ? crypto.randomUUID() : '';
+  const { turnOff, disableRouting } = state;
+  let env: Record<string, string> | undefined;
+  let promptId: string | null | undefined;
+  let args = ['--category', 'other'];
   try {
     if (feedbackId) {
-      const capture = await $.process.run(
-        [isaacExecutable, 'feedback', '--category', 'smart-routing', '--harness', 'claude',
-          '--session-id', await $.session.id(), '--feedback-id', feedbackId, '--with-evidence',
-          '--capture-local', isaacFeedbackDirectory],
-        { stdin: message, timeoutMs: 120000 },
-      );
-      if (capture.exitCode !== 0) throw new Error('Could not save feedback.');
-      if (capture.stderr.trim()) $.ui.log(capture.stderr.trim());
-    }
-    if (state.turnOff) {
-      if (!state.disableRouting) throw new Error('Smart Router controls are unavailable.');
-      await state.disableRouting(['--smart-router-feedback', message]);
+      await prepareFeedbackTarget($, state, isaacExecutable);
+      promptId = state.lastPromptId;
+      env = await feedbackEnvironment($);
+      args = ['--category', 'smart-routing', '--harness', 'claude',
+        '--session-id', env.CLAUDE_CODE_SESSION_ID, '--feedback-id', feedbackId, '--with-evidence',
+        // An unmatched selector keeps an empty session from picking up the user's next task.
+        '--turn-id', promptId ?? 'no-prior-task'];
     }
   } catch {
     state.submitted = false;
-    $.ui.invalidate('ui.render');
-    return state.turnOff
-      ? 'Could not save feedback or update Smart Router. Smart Router is still on; retry or restart through UG.'
-      : 'Could not save feedback. Nothing was uploaded; retry /isaac-feedback.';
+    return 'Could not prepare feedback. Nothing was uploaded; retry /isaac-feedback.';
   }
   await $.ui.close({ id: FEEDBACK_PANE }).catch(() => {});
+  showSending($, feedbackId);
+  if (feedbackId && promptId === null) {
+    $.ui.log('No earlier task was found. This feedback can help diagnose setup or controls, but has no task or model request to analyze.');
+  }
+  void uploadFeedback($, isaacExecutable, isaacFeedbackDirectory, feedbackId, args, message, env);
+  if (turnOff) {
+    try {
+      if (!disableRouting) throw new Error('Smart Router controls are unavailable.');
+      await disableRouting(['--smart-router-feedback', message]);
+    } catch {
+      $.ui.log('Could not turn Smart Router off. Feedback is still being sent; retry /smart-router off or restart through UG.');
+    }
+  }
   state.submitted = false;
-  uploadFeedback($, isaacExecutable, feedbackId, feedbackId ? undefined : message);
 }
 
 async function openFeedbackForm(
   $: EngineInterface, state: FeedbackState, isaacExecutable: string, isaacFeedbackDirectory: string,
 ): Promise<boolean> {
   if (!isaacExecutable || !isaacFeedbackDirectory) return false;
-  // `isaac --version` launches a harness; the help command checks the installed CLI.
-  const help = await $.process.run([isaacExecutable, 'feedback', '--help'], { timeoutMs: 10000 });
-  if (help.exitCode !== 0) return false;
+  if (state.category !== 'other') await prepareFeedbackTarget($, state, isaacExecutable);
   $.ui.invalidate('ui.render');
   const pane = await $.ui.open({
     id: FEEDBACK_PANE, title: state.turnOff ? 'Turn Smart Router off' : 'Isaac feedback',
@@ -108,9 +166,17 @@ async function openFeedbackForm(
 export function registerIsaacFeedback(
   on: On, state: FeedbackState, isaacExecutable: string, isaacFeedbackDirectory: string,
 ): void {
+  on('session.append', { door: 'prompt' }, ($, e, next) => {
+    if (!e.agentId && !e.message.isMeta) state.lastPromptId = e.uuid;
+    return next(e);
+  });
+  on('session.end', ($, e, next) => {
+    state.lastPromptId = undefined;
+    return next(e);
+  });
   on('command.run', { command: 'isaac-feedback' }, async ($, e, next) => {
     if (!envBool(await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK'))) return next(e);
-    if (state.submitted) return { text: 'Feedback is still being saved.' };
+    if (state.submitted) return { text: 'Feedback is being prepared.' };
     let message = e.args;
     let category: FeedbackCategory | undefined;
     if (message.startsWith('-- ')) {
@@ -131,7 +197,8 @@ export function registerIsaacFeedback(
           if (!feedbackId || rest.length || !FEEDBACK_ID.test(feedbackId)) {
             return { text: 'Usage: /isaac-feedback retry <feedback-id>' };
           }
-          uploadFeedback($, isaacExecutable, feedbackId);
+          showSending($, feedbackId);
+          void uploadFeedback($, isaacExecutable, isaacFeedbackDirectory, feedbackId, ['--retry', feedbackId]);
           return {};
         }
         // Keep explicit inspection and local-preview requests with the existing skill.
@@ -159,7 +226,7 @@ export function registerIsaacFeedback(
     if (e.args.trim() !== 'off') return next(e);
     const feedbackRequired = envBool(await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK'));
     if (!feedbackRequired) return next(e);
-    if (state.submitted) return { text: 'Feedback is still being saved.' };
+    if (state.submitted) return { text: 'Feedback is being prepared.' };
     try {
       if (!state.readRoutingEnabled || !state.disableRouting) {
         throw new Error('Smart Router controls are unavailable.');
@@ -169,7 +236,7 @@ export function registerIsaacFeedback(
       state.reason = '';
       state.category = 'smart-routing';
       state.turnOff = true;
-      if (await openFeedbackForm($, state, isaacExecutable, isaacFeedbackDirectory)) return {text: 'Smart Router is off'};
+      if (await openFeedbackForm($, state, isaacExecutable, isaacFeedbackDirectory)) return {};
     } catch {
       // No reason was collected, so leave routing unchanged.
     }
@@ -179,7 +246,6 @@ export function registerIsaacFeedback(
   on('ui.render', { component: 'Pane' }, ($, e, next) => {
     if (e.requestId !== FEEDBACK_PANE || e.surface === 'mobile') return next(e);
     const { Box, Text, Input, Button } = $.ui.resolve(e);
-    if (state.submitted) return Text({ children: ['Saving feedback...'] });
     if (!state.category) {
       const choose = async (category: FeedbackCategory) => {
         state.category = category;

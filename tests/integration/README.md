@@ -97,7 +97,9 @@ The required Isaac feedback form, evidence submission, and background delivery
 notifications need a separate manual Isaac check. The gateway toggle journey does
 not cover the form or notification timing. Use the released Isaac skill with the
 existing capture/retry CLI to check native category selection and retries,
-submission without model requests, completion during another task, immutable
+immediate form dismissal without model requests, and completion during another task.
+Verify the original task stays selected when a new prompt precedes capture, and
+routing settings stay fixed across subsequent toggles. Check immutable saved
 evidence, upload permission denials, local previews, and text-only Other reports.
 Also launch with routing disabled:
 `/isaac-feedback` should still submit in the background, the status band should
