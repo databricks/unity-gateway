@@ -70,12 +70,23 @@ supports `--background`, it saves a bounded local snapshot and detaches the uplo
 The form passes its submission timestamp with `--target-before` so a later task
 cannot become the feedback target. A queued acknowledgement does not trigger a
 success toast: the mod checks local `--status` until delivery or for about a minute.
+Delivery produces both a persistent transcript message and a success toast.
 Longer uploads keep running independently; `/isaac-feedback status <id>` checks
 them and `/isaac-feedback retry <id>` retries the original report. Older Isaac
 versions keep their synchronous CLI call in the mod's background task.
 Cancel or Escape leaves routing on and sends nothing. A missing
 `isaac` CLI or an unavailable form leaves routing on. A feedback submission failure after a valid
 reason leaves routing off and reports the failure in the transcript. The form makes no model requests.
+
+With the same feedback flag enabled, `/isaac-feedback` uses these native notifications
+too. After a Bash call returns a background-submission receipt, the mod displays
+"Sending feedback in the background. You can keep working. Feedback ID: ..." and
+attaches the shared delivery monitor. Native clocks keep the monitor running after
+the skill's turn ends. It only confirms delivery when `--status` returns `submitted`
+for that ID; failures retain the original retry ID. The tool result carries
+`delivery_notifications: "native"` so the skill avoids a duplicate acknowledgement.
+Category selection, evidence collection, and Bash permission checks stay with the
+skill and CLI. No extra model turn is needed for a completion notification.
 
 `isaac-feedback.ts` owns this Databricks-specific policy, form, and submission.
 `register.ts` binds the routing callbacks before Isaac's command guard, then
@@ -100,7 +111,9 @@ and launch recipe after on. Each phase retains completed native parent/child
 answers and requires successful real gateway responses, with no recipe header.
 
 The `Claude mod · 2.1.290` CI job validates the packaged module and checks event
-forwarding and launch-local options. To run those component checks locally:
+forwarding, launch-local options, and feedback delivery notifications. The notification
+component tests supply CLI results and clock ticks through native events; they do not
+upload feedback. To run those component checks locally:
 
 ```bash
 UCODE_TEST_CLAUDE_BINARY=/absolute/path/to/claude \

@@ -1,7 +1,90 @@
-import type { On } from 'claude-code';
+import type { EngineInterface, On } from 'claude-code';
 import { envBool } from './constants.ts';
 
 const FEEDBACK_PANE = 'smart-router-feedback';
+
+type DeliveryReceipt = {
+  feedback_id: string;
+  delivery_status: string;
+  [key: string]: unknown;
+};
+
+function readDeliveryReceipt(output: string): { receipt: DeliveryReceipt; line: string } | undefined {
+  for (const line of output.trim().split('\n').reverse()) {
+    try {
+      const receipt = JSON.parse(line);
+      if (typeof receipt?.feedback_id === 'string'
+          && /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(receipt.feedback_id)
+          && typeof receipt.delivery_status === 'string') {
+        return { receipt, line };
+      }
+    } catch {}
+  }
+  return undefined;
+}
+
+function showSending($: EngineInterface, feedbackId: string): void {
+  $.ui.log(`Sending feedback in the background. You can keep working. Feedback ID: ${feedbackId}`);
+}
+
+function showSubmitted($: EngineInterface, feedbackId: string): void {
+  $.ui.log(`Feedback submitted successfully. Feedback ID: ${feedbackId}`);
+  $.ui.toast('Feedback submitted successfully ✅');
+}
+
+function showUnconfirmed($: EngineInterface, feedbackId: string): void {
+  $.ui.log(`Feedback delivery is unconfirmed. Retry with /isaac-feedback retry ${feedbackId}.`);
+}
+
+function watchDelivery(
+  $: EngineInterface,
+  feedbackId: string,
+  active: Set<string>,
+  announce = true,
+): void {
+  if (active.has(feedbackId)) return;
+  active.add(feedbackId);
+  if (announce) showSending($, feedbackId);
+  let attempts = 0;
+  let checking = false;
+  let timer: { cancel: () => void } | undefined;
+  const stop = () => {
+    timer?.cancel();
+    active.delete(feedbackId);
+  };
+  const check = async () => {
+    if (checking) return;
+    checking = true;
+    attempts += 1;
+    try {
+      const result = await $.process.run(['isaac', 'feedback', '--status', feedbackId], { timeoutMs: 10000 });
+      const status = result.exitCode === 0 ? readDeliveryReceipt(result.stdout)?.receipt : undefined;
+      if (status?.feedback_id !== feedbackId) throw new Error('Feedback status unavailable.');
+      if (status.delivery_status === 'submitted') {
+        stop();
+        showSubmitted($, feedbackId);
+      } else if (status.delivery_status !== 'queued') {
+        throw new Error('Feedback needs a retry.');
+      } else if (attempts >= 13) {
+        stop();
+        $.ui.log(`Feedback is still queued. Check it with /isaac-feedback status ${feedbackId}.`);
+      }
+    } catch {
+      stop();
+      showUnconfirmed($, feedbackId);
+    } finally {
+      checking = false;
+    }
+  };
+  try {
+    // Native clocks keep checking after the skill's turn ends and are disposed with the mod.
+    timer = $.clock.every(5000, () => { void check(); });
+    void check();
+  } catch {
+    stop();
+    $.ui.log(`Check feedback delivery with /isaac-feedback status ${feedbackId}.`);
+  }
+}
 
 type FeedbackState = {
   submitted: boolean;
@@ -16,6 +99,33 @@ export function createIsaacFeedbackState(): FeedbackState {
 }
 
 export function registerIsaacFeedback(on: On, state: FeedbackState): void {
+  const active = new Set<string>();
+  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    const answer = await next(e);
+    // The skill still owns category/target selection and the original permission-checked call.
+    if (typeof e.command !== 'string' || !e.command.includes('--background')
+        || !/\bfeedback\b/.test(e.command)) return answer;
+    try {
+      const payload = answer.result;
+      if (!payload || typeof payload !== 'object' || !('stdout' in payload)
+          || typeof payload.stdout !== 'string') return answer;
+      const parsed = readDeliveryReceipt(payload.stdout);
+      if (!parsed || !['queued', 'submitted'].includes(parsed.receipt.delivery_status)
+          || !envBool(await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK'))) return answer;
+      watchDelivery($, parsed.receipt.feedback_id, active);
+      // Tell the skill that native UI owns the acknowledgement, avoiding a duplicate model reply.
+      const rendered = JSON.stringify({ ...parsed.receipt, delivery_notifications: 'native' });
+      return {
+        ...answer,
+        result: { ...payload, stdout: payload.stdout.replace(parsed.line, rendered) },
+        ...(typeof answer.text === 'string' ? { text: answer.text.replace(parsed.line, rendered) } : {}),
+      };
+    } catch {
+      // A notification failure must not hide the submission result from the skill.
+      return answer;
+    }
+  });
+
   on('command.run', {command: 'smart-router'}, async ($, e, next) => {
     if (e.args.trim() !== 'off') return next(e);
     const feedbackRequired = envBool(await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK'));
@@ -79,36 +189,29 @@ export function registerIsaacFeedback(on: On, state: FeedbackState): void {
             await $.ui.close({ id: FEEDBACK_PANE }).catch(() => {});
             // Upload in the background through Isaac's CLI, without a model turn.
             const feedbackId = crypto.randomUUID();
-            $.ui.log(`Sending feedback in the background. You can keep working. Feedback ID: ${feedbackId}`);
+            showSending($, feedbackId);
             const background = state.backgroundSupported;
             void (async () => {
               const sessionId = await $.session.id();
               const args = ['isaac', 'feedback', '--category', 'smart-routing', '--harness', 'claude',
                 '--session-id', sessionId, '--feedback-id', feedbackId];
               if (background) args.push('--background', '--target-before', targetBefore);
-              let result = await $.process.run(args, { stdin: value, timeoutMs: 120000 });
+              const result = await $.process.run(args, { stdin: value, timeoutMs: 120000 });
               if (result.exitCode !== 0) throw new Error('Feedback command failed.');
               // Older Isaac releases finish delivery in the command itself.
               if (!background) {
-                $.ui.toast('Feedback submitted successfully ✅');
+                showSubmitted($, feedbackId);
                 return;
               }
-              for (let attempt = 0; attempt <= 12; attempt += 1) {
-                const status = JSON.parse(result.stdout);
-                if (status.delivery_status === 'submitted') {
-                  $.ui.toast('Feedback submitted successfully ✅');
-                  return;
-                }
-                if (status.delivery_status !== 'queued') throw new Error('Feedback needs a retry.');
-                if (attempt === 12) break;
-                await new Promise((resolve) => setTimeout(resolve, 5000));
-                result = await $.process.run(['isaac', 'feedback', '--status', feedbackId], { timeoutMs: 10000 });
-                if (result.exitCode !== 0) throw new Error('Feedback status unavailable.');
+              const status = readDeliveryReceipt(result.stdout)?.receipt;
+              if (status?.feedback_id !== feedbackId
+                  || !['queued', 'submitted'].includes(status.delivery_status)) {
+                throw new Error('Feedback needs a retry.');
               }
-              $.ui.log(`Feedback is still queued. Check it with /isaac-feedback status ${feedbackId}.`);
+              watchDelivery($, feedbackId, active, false);
             })().catch(() => {
               // Keep the original ID even when the enqueue acknowledgement was lost.
-              $.ui.log(`Smart Router is off. Feedback delivery is unconfirmed. Retry with /isaac-feedback retry ${feedbackId}.`);
+              showUnconfirmed($, feedbackId);
             });
           },
         }),
