@@ -62,6 +62,7 @@ from ucode.databricks import (
 )
 from ucode.launcher import exec_or_spawn
 from ucode.managed_files import (
+    CODEX_REQUIREMENTS_FILE,
     OS,
     ManagedFileWriteUnavailable,
     check_skipped_managed_overrides,
@@ -77,6 +78,7 @@ from ucode.managed_files import (
     read_managed_file,
     reconcile_managed_file,
     revert_managed_file,
+    warn_managed_write_skipped,
 )
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.smart_routing import v2 as smart_routing_v2
@@ -109,6 +111,14 @@ LEGACY_CODEX_MODEL_PROVIDER_NAME = "ucode-databricks"
 _PROVIDER_HTTP_HEADERS_KEY_PATHS = [
     ["model_providers", CODEX_MODEL_PROVIDER_NAME, "http_headers"],
 ]
+# Windows requirements.toml replaces the whole provider entry, so launch-scoped headers set with
+# `-c` would be dropped; Codex reads them from these variables instead.
+_LAUNCH_ROUTING_HEADER_ENV_VARS = {
+    MODEL_PROVIDER_SERVICE_HEADER: "UG_CODEX_MODEL_PROVIDER_SERVICE",
+    MODEL_SERVICE_PARENT_SCHEMA_HEADER: "UG_CODEX_MODEL_SERVICE_PARENT_SCHEMA",
+    SMART_ROUTER_RECIPE_HEADER: "UG_CODEX_SMART_ROUTER_RECIPE",
+    AI_GATEWAY_REQUEST_TAGS_HEADER: "UG_CODEX_REQUEST_TAGS",
+}
 MINIMUM_CODEX_VERSION = (0, 145, 0)
 MINIMUM_CODEX_VERSION_TEXT = "0.145.0"
 # Codex 0.134.0 introduced per-profile config files; older releases use the legacy layout.
@@ -749,16 +759,18 @@ def _sync_desktop_tracing(workspace: str | None) -> bool:
 
 def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> None:
     """Reconcile Codex's highest-precedence config while preserving unrelated policy."""
+    path = codex_managed_config_path()
+    if path is not None and path.name == CODEX_REQUIREMENTS_FILE:
+        compose = _as_requirements(compose)
     if managed_settings_skipped():
         check_skipped_managed_overrides(
-            codex_managed_config_path(),
+            path,
             parser=_parse_managed_config,
             compose=compose,
             owned_paths=MANAGED_KEYS,
             display="Codex",
         )
         return
-    path = codex_managed_config_path()
     if path is None:
         print_warning_err(
             "Machine-wide Codex settings aren't supported on this platform; skipped the managed "
@@ -782,6 +794,7 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
     desired_doc = compose(existing)
     conflicts = managed_file_conflicts(managed_before, desired_doc, MANAGED_KEYS)
     if not managed_writes_allowed() and not conflicts:
+        warn_managed_write_skipped(path, managed_before, desired_doc)
         mark_managed_file_verified(state, "codex", path, scope="local-compatible")
         return
     try:
@@ -805,6 +818,20 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
     mark_managed_file_verified(state, "codex", path)
 
 
+def _as_requirements(compose: Callable[[dict], dict]) -> Callable[[dict], dict]:
+    """Shape ug's managed config for ``requirements.toml``, which ignores ``model``."""
+
+    def compose_requirements(base: dict) -> dict:
+        doc = compose(base)
+        doc.pop("model", None)
+        doc["model_providers"][CODEX_MODEL_PROVIDER_NAME]["env_http_headers"] = dict(
+            _LAUNCH_ROUTING_HEADER_ENV_VARS
+        )
+        return doc
+
+    return compose_requirements
+
+
 MANAGED_MCP_CONFIG_KEY = "mcp_servers"
 _CODEX_MCP_AUTH_ENV_VARS = [
     "DATABRICKS_BEARER",
@@ -820,8 +847,11 @@ def managed_mcp_uses_managed_file() -> bool:
     with the developer's own ``~/.codex/config.toml`` servers, so a managed entry never hides a
     personal one. It fits whenever the platform supports the sudo reconcile and the run is
     interactive; otherwise the caller falls back to the user-scope registration."""
+    path = codex_managed_config_path()
+    # requirements.toml's [mcp_servers] is an allowlist, not server definitions.
     return (
-        codex_managed_config_path() is not None
+        path is not None
+        and path.name != CODEX_REQUIREMENTS_FILE
         and managed_files_supported()
         and managed_writes_allowed()
     )
@@ -916,7 +946,7 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
     platform or a non-interactive run), so the caller routes those servers to the user-scope
     registration instead."""
     path = codex_managed_config_path()
-    if path is None or not managed_writes_allowed():
+    if path is None or path.name == CODEX_REQUIREMENTS_FILE or not managed_writes_allowed():
         return False
     if path.is_symlink():
         raise RuntimeError(
@@ -968,7 +998,7 @@ def read_managed_mcp_urls() -> dict[str, str]:
     Read-only, for ``ug mcp list`` to tag managed servers now that the managed file is their source
     of truth rather than ug state. The gateway URL is the ``--url`` argument of the proxy command."""
     path = codex_managed_config_path()
-    if path is None:
+    if path is None or path.name == CODEX_REQUIREMENTS_FILE:
         return {}
     try:
         text = read_managed_file(path)
@@ -1045,6 +1075,24 @@ def _set_provider_header(config: dict, provider: str | None) -> None:
 
 def _set_parent_schema_header(config: dict, parent_schema: str | None) -> None:
     _set_routing_header(config, MODEL_SERVICE_PARENT_SCHEMA_HEADER, parent_schema)
+
+
+def _export_launch_routing_headers(config: dict) -> None:
+    """Mirror the routing headers this launch passes with ``-c`` into the variables that Windows
+    ``requirements.toml`` reads through ``env_http_headers``."""
+    headers = _managed_provider_headers(config) or {}
+    for header, name in _LAUNCH_ROUTING_HEADER_ENV_VARS.items():
+        value = headers.get(header)
+        if isinstance(value, str) and value:
+            os.environ[name] = value
+        else:
+            os.environ.pop(name, None)
+
+
+def _render_launch_overlay(*args, **kwargs) -> dict:
+    overlay = render_overlay(*args, **kwargs)
+    _export_launch_routing_headers(overlay)
+    return overlay
 
 
 def _set_routing_header(config: dict, header: str, value: str | None) -> None:
@@ -1342,6 +1390,7 @@ def launch(
         )
     _set_provider_header(profile_doc, provider)
     _set_parent_schema_header(profile_doc, parent_schema if not provider else None)
+    _export_launch_routing_headers(profile_doc)
     updating = tool_args[:1] == ["update"]
     if updating and _is_ucode_catalog_reference(profile_doc.get("model_catalog_json")):
         profile_doc.pop("model_catalog_json")
@@ -1410,7 +1459,7 @@ def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
         tool_args,
         binary=binary,
         start_model=start_model,
-        render_overlay=render_overlay,
+        render_overlay=_render_launch_overlay,
     )
 
 

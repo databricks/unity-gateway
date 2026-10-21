@@ -1,4 +1,5 @@
 import type { On } from 'claude-code';
+import { envBool } from './constants.ts';
 
 const FEEDBACK_PANE = 'smart-router-feedback';
 
@@ -15,9 +16,9 @@ export function createIsaacFeedbackState(): FeedbackState {
 
 export function registerIsaacFeedback(on: On, state: FeedbackState): void {
   on('command.run', {command: 'smart-router'}, async ($, e, next) => {
-    if (e.args.trim() !== 'off' || await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK') !== '1') {
-      return next(e);
-    }
+    if (e.args.trim() !== 'off') return next(e);
+    const feedbackRequired = envBool(await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK'));
+    if (!feedbackRequired) return next(e);
     try {
       if (!state.readRoutingEnabled || !state.disableRouting) {
         throw new Error('Smart Router controls are unavailable.');

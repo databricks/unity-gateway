@@ -11,7 +11,6 @@ below and to `TOOL_ALIASES` if needed.
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -26,6 +25,7 @@ from ucode.databricks import (
     map_claude_family_models,
     resolve_provider_service,
 )
+from ucode.env import env_bool
 from ucode.managed_config import refresh_managed_config
 from ucode.managed_files import managed_write_batch
 from ucode.os_compatibility import subprocess_cross_os
@@ -87,7 +87,6 @@ _NATIVE_UPGRADE_COMMANDS = {
 # Lets launchers that already own the agent install (e.g. Isaac) skip the
 # required-upgrade confirmation; declining it would only fail the launch.
 AUTO_UPGRADE_AGENT_ENV = "UG_AUTO_UPGRADE_AGENT"
-_TRUE_VALUES = {"1", "true", "yes", "on"}
 
 # ucode tool -> `databricks aitools` agent id. gemini/pi aren't supported.
 AITOOLS_AGENT_TOKENS = {
@@ -160,7 +159,7 @@ def _update_installed_tool_binary(tool: str, version: str | None = None) -> bool
 
 
 def _auto_upgrade_agent_enabled() -> bool:
-    return os.environ.get(AUTO_UPGRADE_AGENT_ENV, "").strip().lower() in _TRUE_VALUES
+    return env_bool(AUTO_UPGRADE_AGENT_ENV)
 
 
 def _minimum_version_error(tool: str) -> str | None:

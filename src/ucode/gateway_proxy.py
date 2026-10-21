@@ -41,6 +41,8 @@ from urllib.parse import unquote
 
 import httpx
 
+from ucode.env import env_bool
+
 # Header we overwrite with the freshly-minted Databricks credential. Any
 # client-supplied value is replaced, so a stale settings.json value can't leak.
 AI_GATEWAY_TOKEN_HEADER = "X-Databricks-AI-Gateway-Token"
@@ -80,11 +82,10 @@ _DEFAULT_TTL_S = 3600
 # contain locally-generated request ids, timings, status codes, byte counts,
 # and exception class names — never headers, bodies, or credentials.
 _DIAGNOSTICS_ENV = "UCODE_RELAYED_PROXY_DIAGNOSTICS"
-_DIAGNOSTICS_TRUE = frozenset({"1", "true", "yes", "on"})
 
 
 def _diagnostics_enabled() -> bool:
-    return os.environ.get(_DIAGNOSTICS_ENV, "").strip().lower() in _DIAGNOSTICS_TRUE
+    return env_bool(_DIAGNOSTICS_ENV)
 
 
 def log_proxy_diagnostic(event: str, **fields: object) -> None:
