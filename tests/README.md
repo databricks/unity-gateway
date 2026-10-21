@@ -233,9 +233,10 @@ files, or leave fresh installs untouched. Tests cover modern, Bedrock, Vertex, a
 Claude-named routes; they do not verify the model behind a name.
 
 Model-label component tests cover catalog display names in `labelOverride`, unchanged
-routing IDs, order/duplicates, and ID-only entries for missing/empty names or static
-lists. Scoped discovery uses the same response for IDs and labels without extra calls.
-Repeat configure refreshes or removes labels. Source lists/maps remain unchanged.
+routing IDs, order/duplicates, and ID-only entries for missing/empty names. Static
+managed lists use discovery only to label matching IDs; their model selection stays
+authoritative. Repeat configure refreshes or removes labels. Source lists/maps remain
+unchanged.
 These checks use temporary files on simulated platforms, not the native model picker.
 
 Desktop OTEL component tests cover native trace settings gated by `claude_otel_tracing`

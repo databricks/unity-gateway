@@ -479,24 +479,60 @@ def test_configure_overwrites_reserved_uuid_without_ownership_record(desktop, ca
     }
 
 
-def test_managed_static_catalog_does_not_fetch_discovery(desktop, monkeypatch):
-    def forbidden(*args, **kwargs):
-        pytest.fail("A managed static catalog must not trigger discovery")
+def test_managed_static_catalog_uses_discovery_only_for_labels(desktop, monkeypatch):
+    haiku = "main.models.claude-haiku-4-5"
+    extra = "system.ai.claude-sonnet-5"
+    calls = []
 
-    monkeypatch.setattr(desktop_setup, "list_anthropic_model_catalog", forbidden)
+    def catalog(workspace, token, **kwargs):
+        calls.append((workspace, token, kwargs))
+        return AnthropicModelCatalog(
+            model_ids=[extra, haiku],
+            model_id_to_display_name={haiku: "Claude Haiku 4.5", extra: "Claude Sonnet 5"},
+        )
+
+    monkeypatch.setattr(desktop_setup, "list_anthropic_model_catalog", catalog)
     desktop_setup.configure_claude_desktop(
         {
             "workspace": "https://workspace.example",
             "profile": "chosen-profile",
-            "claude_static_models": ["main.models.claude-haiku-4-5", "main.models.gpt-5-6-sol"],
+            "claude_static_models": [haiku, "main.models.gpt-5-6-sol"],
             "claude_http_headers": {"X-Admin": "configured"},
         }
     )
+    assert calls == [
+        (
+            "https://workspace.example",
+            "component-token",
+            {"provider": None, "parent_schema": None},
+        )
+    ]
     profile = configured_profile(desktop)
     assert profile["inferenceModels"] == [
-        {"name": "main.models.claude-haiku-4-5"},
+        {"name": haiku, "labelOverride": "Claude Haiku 4.5"},
     ]
     assert profile["inferenceCustomHeaders"]["X-Admin"] == "configured"
+
+
+def test_managed_static_catalog_keeps_ids_when_label_discovery_fails(desktop, monkeypatch):
+    haiku = "main.models.claude-haiku-4-5"
+    monkeypatch.setattr(
+        desktop_setup,
+        "list_anthropic_model_catalog",
+        lambda *args, **kwargs: AnthropicModelCatalog(
+            model_ids=[], model_id_to_display_name={}, error_msg="Discovery unavailable"
+        ),
+    )
+
+    desktop_setup.configure_claude_desktop(
+        {
+            "workspace": "https://workspace.example",
+            "profile": "chosen-profile",
+            "claude_static_models": [haiku],
+        }
+    )
+
+    assert configured_profile(desktop)["inferenceModels"] == [{"name": haiku}]
 
 
 def test_configure_refreshes_model_labels_from_discovery(desktop, monkeypatch):
