@@ -109,10 +109,7 @@ from .request_tags import request_tags_header_value
 GATEWAY_MODEL_DISCOVERY_ENV_VAR = "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"
 # If set, Claude Code launches in headless mode instead of the interactive login flow.
 CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR = "CLAUDE_CODE_OAUTH_TOKEN"
-# Claude Code ranks these above `apiKeyHelper` and the subscription login. A value inherited from
-# the user's shell, such as another LLM gateway's key, would replace ug's credential and every
-# gateway request would fail with 401 "Credential was not sent or was of an unsupported type".
-# ug writes them as empty strings in its settings `env`, which Claude Code applies over the shell.
+# Blank inherited credentials so Claude uses ug's configured authentication.
 SHADOWING_CREDENTIAL_ENV_VARS = ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY")
 CLAUDE_CONFIG_DIR = Path.home() / ".claude"
 CLAUDE_SETTINGS_PATH = CLAUDE_CONFIG_DIR / "ucode-settings.json"
@@ -2302,6 +2299,15 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     raise SystemExit(returncode)
 
 
+def shadowing_credentials_message() -> str:
+    """Why a shell ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY doesn't reach ug's Claude sessions."""
+    return (
+        f"{' and '.join(SHADOWING_CREDENTIAL_ENV_VARS)} from your environment are ignored by "
+        "Claude Code sessions ug configures, which use ug's credentials. Commands Claude runs see "
+        "them empty. To authenticate with a PAT in scripts, set DATABRICKS_BEARER instead."
+    )
+
+
 def _warn_shadowing_credentials() -> None:
     """Tell the user that ug's settings override inherited Anthropic credentials.
 
@@ -2309,15 +2315,9 @@ def _warn_shadowing_credentials() -> None:
     subscription login behind the relayed proxy). Its settings blank these variables; see
     ``SHADOWING_CREDENTIAL_ENV_VARS``. The user's environment itself is left unchanged.
     """
-    shadowing = [name for name in SHADOWING_CREDENTIAL_ENV_VARS if os.environ.get(name, "").strip()]
-    if shadowing:
-        verb, pronoun = ("is", "it") if len(shadowing) == 1 else ("are", "them")
+    if any(os.environ.get(name, "").strip() for name in SHADOWING_CREDENTIAL_ENV_VARS):
         # stderr: headless launches keep stdout machine-readable.
-        print_warning_err(
-            f"{' and '.join(shadowing)} from your environment {verb} ignored by Claude Code "
-            f"sessions ug configures, which use ug's credentials. Commands Claude runs see "
-            f"{pronoun} empty. To authenticate with a PAT in scripts, set DATABRICKS_BEARER instead."
-        )
+        print_warning_err(shadowing_credentials_message())
 
 
 def launch(

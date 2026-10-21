@@ -20,6 +20,7 @@ from ucode.agents import (
     tool_version_error,
     update_tool_binary,
 )
+from ucode.agents.claude import SHADOWING_CREDENTIAL_ENV_VARS, shadowing_credentials_message
 from ucode.databricks import (
     MIN_DATABRICKS_CLI_VERSION,
     check_databricks_auth,
@@ -44,11 +45,6 @@ from ucode.ui import (
     spinner,
     status_badge,
 )
-
-# Env vars that shadow the credential ucode configures for Claude Code. Claude
-# warns when its own token and one of these are both set, so we surface them.
-_CLAUDE_TOKEN_ENV_VARS = ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY")
-
 
 # status -> (glyph, status_badge kind). "info" is a healthy line that still
 # carries an optional suggestion (e.g. installing a missing dependency).
@@ -225,22 +221,16 @@ def _check_databricks_auth() -> Check | None:
 
 
 def _check_anthropic_env_collision() -> Check | None:
-    """Warn when a Claude token env var is set that collides with ucode's own.
+    """Warn when a Claude token env var is set, since ug's Claude settings blank it.
 
-    ucode authenticates Claude Code through the gateway; a stray
-    `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` in the environment shadows that
-    and makes Claude complain. We can't unset a parent shell's env, so this is
-    advisory (no fix). Returns None when nothing collides.
+    Claude Code ranks `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` above ug's
+    `apiKeyHelper`, so ug's settings set both to empty strings; a shell value is
+    therefore ignored, which matters to scripts that relied on it. Advisory only
+    (no fix). Returns None when neither is set.
     """
-    set_vars = [name for name in _CLAUDE_TOKEN_ENV_VARS if os.environ.get(name, "").strip()]
-    if not set_vars:
+    if not any(os.environ.get(name, "").strip() for name in SHADOWING_CREDENTIAL_ENV_VARS):
         return None
-    joined = ", ".join(set_vars)
-    return Check(
-        "Claude auth env",
-        "warn",
-        f"{joined} is set and can collide with ucode's Claude auth; unset it in your shell",
-    )
+    return Check("Claude auth env", "warn", shadowing_credentials_message())
 
 
 def _check_ug() -> Check:

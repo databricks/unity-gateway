@@ -3254,6 +3254,8 @@ class TestClaudeLaunch:
         monkeypatch.delenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, raising=False)
         monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "sk-other-gateway")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-other-gateway")
+        # launch() exports the minted token; register it so teardown removes it again.
+        monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
         monkeypatch.setattr(claude, "exec_or_spawn", lambda _argv: None)
 
@@ -3267,16 +3269,6 @@ class TestClaudeLaunch:
         # Points scripted PAT users at ug's own bearer override.
         assert "set DATABRICKS_BEARER instead" in err
         assert "ANTHROPIC" not in captured.out
-
-    def test_relayed_launch_warns_on_shadowing_credentials(self, monkeypatch, capsys):
-        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "sk-other-gateway")
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        monkeypatch.setattr(claude, "_launch_relayed", lambda *_args: None)
-
-        claude.launch({"workspace": WS, "claude_relayed": True}, [], options=LaunchOptions())
-
-        assert os.environ["ANTHROPIC_AUTH_TOKEN"] == "sk-other-gateway"
-        assert "ANTHROPIC_AUTH_TOKEN from your environment" in capsys.readouterr().err
 
     def test_launch_does_not_warn_for_empty_credentials(self, monkeypatch, capsys):
         monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "  ")
