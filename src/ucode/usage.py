@@ -8,6 +8,7 @@ from ucode.databricks import (
     apply_pat_environment,
     ensure_databricks_auth,
     get_databricks_token,
+    raise_for_invalid_access_token,
     resolve_current_budget_spend,
 )
 from ucode.state import load_state
@@ -40,7 +41,7 @@ def usage() -> int:
     state = load_state()
     workspace = state.get("workspace")
     if not workspace:
-        raise RuntimeError("Workspace is not configured. Run `ucode configure` first.")
+        raise RuntimeError("Workspace is not configured. Run `ug configure` first.")
 
     profile = state.get("profile")
     apply_pat_environment(state)
@@ -49,7 +50,8 @@ def usage() -> int:
         token = get_databricks_token(workspace, profile)
 
     with spinner("Checking budget spend..."):
-        budget_spend, _ = resolve_current_budget_spend(workspace, token)
+        budget_spend, reason = resolve_current_budget_spend(workspace, token)
+    raise_for_invalid_access_token(workspace, reason)
 
     if budget_spend is None:
         print_note(

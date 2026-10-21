@@ -29,11 +29,12 @@ tests. Keep work scoped to the behavior requested by the user.
    and regression coverage. Report failures instead of concealing them. The sole
    exception is the `managed_fixture` marker: it uses the built-in
    `UCODE_MANAGED_CONFIG_STUB` hook to inject the admin CodingAgentConfig INPUT so the
-   real `ug configure` path can be exercised across config shapes the live workspace does
-   not publish and one workspace fetch can be replayed across isolated cases. The gateway,
-   agent binaries, ug internals, and ug state stay real; the config fetch/wire contract stays
-   covered by the un-stubbed `managed` tests; and the hook must never be used to disable
-   validation or conceal a failure.
+   real `ug configure` path runs against a known config on the common managed workspace.
+   Every injected config is a checked-in JSON file in `fixtures/managed_config/` (the GET
+   shape of one CodingAgentConfig), so `ug configure --file` (#866) can replace the hook
+   mechanically. The gateway, agent binaries, ug internals, and ug state stay real; the
+   config fetch/wire contract is covered by unit tests and the read-only `e2e_cuj/` CUJs;
+   and the hook must never be used to disable validation or conceal a failure.
 5. **Real responses and binaries.** Pin requested ug and agent versions. Never
    substitute a missing binary/service. Reuse explicit e2e workspace/auth settings;
    never pick a developer's Databricks profile automatically.
@@ -60,6 +61,9 @@ tests. Keep work scoped to the behavior requested by the user.
     seed onboarding completion, intercept model traffic, or replace a TUI with
     print/exec mode while claiming interactive coverage. Require an interactive
     prompt and observable input/exit behavior. Boot is not first-prompt inference.
+12. **Short random ids.** Generate run ids, markers and file values with
+    `fresh_id()` from `integration/utils/evidence.py`. Models drop characters
+    when copying longer ids into tool calls.
 
 `configure` no longer runs a post-configure agent probe (the deprecated
 `--skip-validate` flag is accepted as a no-op); task tests still require a real
@@ -88,7 +92,8 @@ exercise.
   and Docker build files belong in `integration/utils/`; keep pytest entry points
   and run documentation at the suite root.
 - Current scope is basic Claude/Codex configuration, routing, script usage,
-  command forwarding, and configure/revert CUJs. Do not add MCP/skills functionality,
+  command forwarding, and configure/revert CUJs, plus Copilot CLI headless
+  model tasks (non-blocking lane). Do not add MCP/skills functionality,
   tracing, or the broad configure-option matrix without a new scope request.
   Existing `mcp --help` checks cover dispatch only.
 

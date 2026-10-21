@@ -1,0 +1,21 @@
+{
+  "spec_version": 1,
+  "default_agent": "CODING_AGENT_CLAUDE_CODE",
+  "enabled_agents": [
+    {
+      "agent": "CODING_AGENT_CLAUDE_CODE",
+      "config": {
+        "models": {
+          "model_provider_service": "main.default.ci_e2e_anthropic_mps"
+        },
+        "default_models": {
+          "default_model": "anthropic.claude-sonnet-5",
+          "default_fable_model": "anthropic.claude-fable-5-1",
+          "default_opus_model": "anthropic.claude-opus-5",
+          "default_sonnet_model": "anthropic.claude-sonnet-5",
+          "default_haiku_model": "anthropic.claude-haiku-4-5"
+        }
+      }
+    }
+  ]
+}

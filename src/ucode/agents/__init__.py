@@ -16,6 +16,7 @@ import subprocess
 from pathlib import Path
 
 from ucode.config_io import ToolSpec
+from ucode.constants import AGENT_CLAUDE, AGENT_CODEX
 from ucode.databricks import (
     AnthropicModelCatalog,
     get_databricks_token,
@@ -24,9 +25,11 @@ from ucode.databricks import (
     map_claude_family_models,
     resolve_provider_service,
 )
+from ucode.env import env_bool
 from ucode.managed_config import refresh_managed_config
-from ucode.managed_files import managed_write_batch
-from ucode.state import get_provider_service, load_state, save_state
+from ucode.managed_files import config_scope, managed_write_batch
+from ucode.os_compatibility import subprocess_cross_os
+from ucode.state import get_model_location, get_provider_service, load_state, save_state
 from ucode.telemetry import agent_version
 from ucode.ui import (
     print_err,
@@ -37,9 +40,10 @@ from ucode.ui import (
     prompt_yes_no,
     prompt_yes_no_default,
     spinner,
+    status_subprocess_stdout,
 )
 
-from . import claude, codex, copilot, gemini, opencode, pi
+from . import claude, codex, copilot, gemini, kilo, opencode, pi
 from .args import LaunchOptions as LaunchOptions
 from .args import explicit_model_arg_value as explicit_model_arg_value
 
@@ -48,6 +52,7 @@ _MODULES = {
     "claude": claude,
     "gemini": gemini,
     "opencode": opencode,
+    "kilo": kilo,
     "copilot": copilot,
     "pi": pi,
 }
@@ -66,6 +71,8 @@ TOOL_ALIASES = {
     "gemini": "gemini",
     "gemini-cli": "gemini",
     "opencode": "opencode",
+    "kilo": "kilo",
+    "kilocode": "kilo",
     "copilot": "copilot",
     "pi": "pi",
 }
@@ -77,6 +84,9 @@ _NATIVE_UPGRADE_COMMANDS = {
     "claude": ["claude", "upgrade"],
     "codex": ["codex", "update"],
 }
+# Lets launchers that already own the agent install (e.g. Isaac) skip the
+# required-upgrade confirmation; declining it would only fail the launch.
+AUTO_UPGRADE_AGENT_ENV = "UG_AUTO_UPGRADE_AGENT"
 
 # ucode tool -> `databricks aitools` agent id. gemini/pi aren't supported.
 AITOOLS_AGENT_TOKENS = {
@@ -114,7 +124,7 @@ def normalize_tool(tool: str) -> str:
     normalized = TOOL_ALIASES.get(tool.strip().lower())
     if not normalized:
         raise RuntimeError(
-            f"Unsupported tool '{tool}'. Use one of: codex, claude, gemini, opencode, copilot, pi."
+            f"Unsupported tool '{tool}'. Use one of: codex, claude, gemini, opencode, kilo, copilot, pi."
         )
     return normalized
 
@@ -138,7 +148,7 @@ def _update_installed_tool_binary(tool: str, version: str | None = None) -> bool
         # Detach potentially incompatible metadata until the next validated refresh.
         codex.detach_app_model_catalog()
     try:
-        subprocess.run(command, check=True, timeout=300)
+        subprocess_cross_os.run(command, check=True, timeout=300, stdout=status_subprocess_stdout())
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         print_warning(f"Could not update {spec['display']}; continuing.")
         return False
@@ -146,6 +156,10 @@ def _update_installed_tool_binary(tool: str, version: str | None = None) -> bool
     print_success(f"{spec['display']} is up to date")
     agent_version.cache_clear()
     return bool(shutil.which(binary))
+
+
+def _auto_upgrade_agent_enabled() -> bool:
+    return env_bool(AUTO_UPGRADE_AGENT_ENV)
 
 
 def _minimum_version_error(tool: str) -> str | None:
@@ -207,8 +221,12 @@ def install_tool_binary(
             print_warning(version_error)
             # Native upgraders run in place, so confirm before mutating the install;
             # EOF/piped runs take the default and upgrade (a required fix must not stall).
-            if tool in _NATIVE_UPGRADE_COMMANDS and not prompt_yes_no_default(
-                f"Upgrade {spec['display']} if available?", default=True
+            if (
+                tool in _NATIVE_UPGRADE_COMMANDS
+                and not _auto_upgrade_agent_enabled()
+                and not prompt_yes_no_default(
+                    f"Upgrade {spec['display']} if available?", default=True
+                )
             ):
                 raise RuntimeError(version_error)
             if not _update_installed_tool_binary(tool):
@@ -230,8 +248,13 @@ def install_tool_binary(
     if tool == "codex":
         codex.detach_app_model_catalog()
     try:
-        subprocess.run(["npm", "install", "-g", package], check=True, timeout=300)
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        subprocess_cross_os.run(
+            ["npm", "install", "-g", package],
+            check=True,
+            timeout=300,
+            stdout=status_subprocess_stdout(),
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         message = f"Failed to install {spec['display']} automatically."
         if strict:
             raise RuntimeError(message) from exc
@@ -256,7 +279,7 @@ def ensure_tool_binary_available(tool: str) -> None:
     raise RuntimeError(
         f"{spec['display']} is not installed (`{binary}` was not found on PATH). "
         f"Install it with `npm install -g {spec['package']}` or run "
-        f"`ucode configure` to try automatic installation."
+        f"`ug configure` to try automatic installation."
     )
 
 
@@ -301,7 +324,7 @@ def resolve_launch_model(
     # if model is not specified for codex, then launch with harness's default model.
     if not model and tool != "codex":
         raise RuntimeError(
-            f"No models available for {tool}. Run `ucode configure` to set up your workspace."
+            f"No models available for {tool}. Run `ug configure` to set up your workspace."
         )
     return state, model
 
@@ -391,6 +414,25 @@ def resolve_gemini_provider_model(
     )
 
 
+def refuse_user_scope_over_managed_files(tools: list[str]) -> None:
+    """Run by ``ug configure`` before any agent is configured; launches use the files present."""
+    if config_scope() != "user":
+        return
+    for tool in tools:
+        if tool == AGENT_CLAUDE:
+            display, path = "Claude Code", claude.managed_settings_path()
+        elif tool == AGENT_CODEX:
+            display, path = "Codex", codex.codex_managed_config_path()
+        else:
+            continue
+        if path is not None and path.exists():
+            raise RuntimeError(
+                f"`ug configure --user` can't be used while {display} managed settings exist at "
+                f"{path}; they take precedence over user settings. Run `ug revert` if ug wrote "
+                "them, ask your administrator to remove them, or use `ug configure --global`."
+            )
+
+
 def configure_tool(
     tool: str,
     state: dict,
@@ -405,11 +447,11 @@ def configure_tool(
     picker_catalog: AnthropicModelCatalog | None = None,
 ) -> dict:
     result: dict | tuple[dict, str]
-    if tool == "codex":
+    if tool == AGENT_CODEX:
         result = codex.write_tool_config(
             state, model, provider=provider, parent_schema=parent_schema
         )
-    elif tool == "claude":
+    elif tool == AGENT_CLAUDE:
         # A Model Provider Service or parent schema routes by header and discovers models natively,
         # so the usual "model required" guard doesn't apply to either Claude source.
         if not model and not provider and not parent_schema:
@@ -437,9 +479,11 @@ def configure_tool(
             result = copilot.write_tool_config(state, model)
         elif tool == "pi":
             result = pi.write_tool_config(state, model)
+        elif tool == "kilo":
+            result = kilo.write_tool_config(state, model)
         else:
             result = opencode.write_tool_config(state, model)
-    # gemini/opencode/copilot/pi return (state, token); codex/claude return state
+    # gemini/opencode/kilo/pi return (state, token); codex/claude/copilot return state
     if isinstance(result, tuple):
         return result[0]
     return result
@@ -478,7 +522,7 @@ def check_gateway_endpoint(state: dict, tool: str) -> bool:
     """V2-only: a tool is available iff we discovered models for it."""
     if tool == "claude":
         return bool(state.get("claude_models"))
-    if tool == "opencode":
+    if tool in ("opencode", "kilo"):
         return bool(state.get("opencode_models"))
     if tool == "codex":
         return bool(state.get("codex_models"))
@@ -498,6 +542,7 @@ def check_gateway_endpoint(state: dict, tool: str) -> bool:
 _TOOL_DISCOVERY_SOURCES: dict[str, tuple[str, ...]] = {
     "claude": ("claude",),
     "opencode": ("claude", "gemini", "oss"),
+    "kilo": ("claude", "gemini", "oss"),
     "codex": ("codex",),
     "gemini": ("gemini",),
     "copilot": ("claude", "codex"),
@@ -516,9 +561,12 @@ def _availability_failure_detail(tool: str, state: dict) -> str:
     return " (" + "; ".join(parts) + ")"
 
 
-def configure_single_tool(tool: str, state: dict, *, parent_schema: str | None = None) -> dict:
+def configure_single_tool(
+    tool: str, state: dict, *, parent_schema: str | None = None, provider: str | None = None
+) -> dict:
     """Check availability, configure, and persist state for one tool only."""
-    provider = None if parent_schema else get_provider_service(state, tool)
+    parent_schema = parent_schema or _persisted_model_location(tool, state, provider)
+    provider = None if parent_schema else provider or get_provider_service(state, tool)
     # A Model Provider Service or parent schema routes through the same gateway and pins no
     # globally discovered Databricks model, so the availability check doesn't apply.
     if not provider and not parent_schema:
@@ -535,6 +583,17 @@ def configure_single_tool(tool: str, state: dict, *, parent_schema: str | None =
     state["available_tools"] = available_tools
     save_state(state)
     return state
+
+
+def _persisted_model_location(tool: str, state: dict, provider: str | None) -> str | None:
+    """The model location ``ug configure`` saved for ``tool``, unless a provider is in play.
+
+    Only claude and codex discover models by parent schema; an explicit or persisted provider
+    keeps the source it names.
+    """
+    if tool not in (AGENT_CLAUDE, AGENT_CODEX) or provider or get_provider_service(state, tool):
+        return None
+    return get_model_location(state, tool)
 
 
 def _configure_one(
@@ -585,7 +644,9 @@ def configure_selected_tools(
     configured: list[str] = []
     with managed_write_batch(_managed_settings_displays(tools)):
         for tool in tools:
-            parent_schema = (parent_schemas or {}).get(tool)
+            parent_schema = (parent_schemas or {}).get(tool) or _persisted_model_location(
+                tool, state, None
+            )
             provider = None if parent_schema else get_provider_service(state, tool)
             try:
                 state = _configure_one(tool, state, provider, parent_schema=parent_schema)
@@ -638,11 +699,11 @@ def ensure_provider_state(tool: str) -> dict:
     state = load_state()
     workspace = state.get("workspace")
     if not workspace:
-        raise RuntimeError("No workspace configured. Run `ucode configure` first.")
+        raise RuntimeError("No workspace configured. Run `ug configure` first.")
     available_tools = state.get("available_tools") or []
     if tool not in available_tools:
         raise RuntimeError(
             f"{TOOL_SPECS[tool]['display']} is not available on this workspace. "
-            f"Run `ucode configure` to set up your agents."
+            f"Run `ug configure` to set up your agents."
         )
     return state

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+from contextlib import contextmanager
 from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
@@ -44,7 +45,9 @@ class TestPrintSuccess:
         self, monkeypatch, encoding, expected_marker
     ):
         output = io.BytesIO()
-        stream = io.TextIOWrapper(output, encoding=encoding, errors="strict")
+        # newline="" avoids the TextIOWrapper's platform newline translation so the
+        # assertion sees Rich's own "\n" rather than "\r\n" on Windows.
+        stream = io.TextIOWrapper(output, encoding=encoding, errors="strict", newline="")
         monkeypatch.setattr(
             ui_mod,
             "console",
@@ -577,26 +580,37 @@ class TestChoiceViewportCap:
                 return window.height
         raise AssertionError("no InquirerControl window found")
 
+    @staticmethod
+    @contextmanager
+    def _headless_session():
+        # Build pickers without opening a real console; Windows under Git Bash
+        # has no Windows console screen buffer for prompt_toolkit to attach to.
+        with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+            yield
+
     def test_short_list_keeps_natural_height(self):
         # At or below the threshold everything fits, so the window is left unbounded (height=None)
         # rather than padded to a fixed size.
         n = ui_mod._SCROLL_HINT_THRESHOLD
-        question = questionary.select("p", choices=[f"m{i}" for i in range(n)])
-        ui_mod._cap_choice_viewport(question, n)
+        with self._headless_session():
+            question = questionary.select("p", choices=[f"m{i}" for i in range(n)])
+            ui_mod._cap_choice_viewport(question, n)
         assert self._choice_window_height(question) is None
 
     def test_long_list_is_capped_to_the_threshold(self):
         n = ui_mod._SCROLL_HINT_THRESHOLD + 15
-        question = questionary.select("p", choices=[f"m{i}" for i in range(n)])
-        ui_mod._cap_choice_viewport(question, n)
+        with self._headless_session():
+            question = questionary.select("p", choices=[f"m{i}" for i in range(n)])
+            ui_mod._cap_choice_viewport(question, n)
         height = self._choice_window_height(question)
         assert height.max == ui_mod._SCROLL_HINT_THRESHOLD
         assert height.preferred == ui_mod._SCROLL_HINT_THRESHOLD
 
     def test_checkbox_list_is_capped_too(self):
         n = ui_mod._SCROLL_HINT_THRESHOLD + 15
-        question = questionary.checkbox("p", choices=[f"m{i}" for i in range(n)])
-        ui_mod._cap_choice_viewport(question, n)
+        with self._headless_session():
+            question = questionary.checkbox("p", choices=[f"m{i}" for i in range(n)])
+            ui_mod._cap_choice_viewport(question, n)
         assert self._choice_window_height(question).max == ui_mod._SCROLL_HINT_THRESHOLD
 
     def test_missing_application_is_a_no_op(self):

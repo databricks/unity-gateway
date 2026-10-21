@@ -47,10 +47,16 @@ class _FakeGateway:
     a streaming relay is exercised, not just a single write)."""
 
     def __init__(
-        self, status: int = 200, chunks: list[bytes] | None = None, sse_delay: float = 0.0
+        self,
+        status: int = 200,
+        chunks: list[bytes] | None = None,
+        sse_delay: float = 0.0,
+        statuses: list[int] | None = None,
     ):
         self.requests: list[_CapturedRequest] = []
         self._status = status
+        # Per-request statuses, in order; `status` applies once they run out.
+        self._statuses = list(statuses or [])
         self._chunks = chunks if chunks is not None else [b'{"ok":true}']
         self._sse_delay = sse_delay
         self._server: ThreadingHTTPServer | None = None
@@ -64,6 +70,7 @@ class _FakeGateway:
     def start(self) -> None:
         captured = self.requests
         status, chunks, sse_delay = self._status, self._chunks, self._sse_delay
+        statuses = self._statuses
 
         class Handler(BaseHTTPRequestHandler):
             def _serve(self) -> None:
@@ -77,7 +84,7 @@ class _FakeGateway:
                         body=body,
                     )
                 )
-                self.send_response(status)
+                self.send_response(statuses.pop(0) if statuses else status)
                 self.send_header("Content-Type", "text/event-stream")
                 self.end_headers()
                 for chunk in chunks:
@@ -263,3 +270,179 @@ class TestOtelProxyEndToEnd:
         assert req.header("Authorization") == "Bearer per-user-otel-token"
         assert req.header("X-Databricks-AI-Gateway-Token") is None
         assert req.body == b"\x0a\x02\x08\x01"
+
+
+@contextlib.contextmanager
+def _running_gateway_auth_proxy(
+    gateway: _FakeGateway,
+    token_provider=None,
+    *,
+    added_headers=None,
+    on_refresh_failure=None,
+):
+    server, cache, client = gateway_proxy.start_gateway_auth_proxy(
+        gateway.base_url,
+        token_provider or _counting_token(),
+        session_secret=_SESSION_SECRET,
+        added_headers=added_headers or {},
+        sign_in_hint="Run `databricks auth login`.",
+        on_refresh_failure=on_refresh_failure or (lambda exc: None),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        cache.stop()
+        client.close()
+        thread.join(timeout=2)
+
+
+_SESSION_SECRET = "session-secret"
+
+
+class TestGatewayAuthProxyEndToEnd:
+    def test_swaps_session_secret_for_fresh_token_and_adds_headers(self, make_gateway):
+        gw = make_gateway()
+        with _running_gateway_auth_proxy(
+            gw,
+            _counting_token("dbx-token"),
+            added_headers={"User-Agent": "ucode/1 copilot/2", "X-Tag": "t"},
+        ) as proxy_url:
+            resp = httpx.post(
+                f"{proxy_url}/ai-gateway/mlflow/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {_SESSION_SECRET}",
+                    "User-Agent": "OpenAI/JS 5.20.1",
+                    "x-tag": "client-value",
+                },
+                content=b'{"model":"m"}',
+                timeout=10,
+            )
+        assert resp.status_code == 200
+        req = gw.requests[-1]
+        assert req.path == "/ai-gateway/mlflow/v1/chat/completions"
+        assert req.header("Authorization") == "Bearer dbx-token"
+        assert req.header("User-Agent") == "ucode/1 copilot/2"
+        assert req.header("X-Tag") == "t"
+        assert req.body == b'{"model":"m"}'
+
+    def test_accepts_secret_in_x_api_key_and_does_not_forward_it(self, make_gateway):
+        gw = make_gateway()
+        with _running_gateway_auth_proxy(gw, _counting_token("dbx-token")) as proxy_url:
+            resp = httpx.post(
+                f"{proxy_url}/ai-gateway/anthropic/v1/messages",
+                headers={"x-api-key": _SESSION_SECRET},
+                content=b"{}",
+                timeout=10,
+            )
+        assert resp.status_code == 200
+        req = gw.requests[-1]
+        assert req.path == "/ai-gateway/anthropic/v1/messages"
+        assert req.header("x-api-key") is None
+        assert req.header("Authorization") == "Bearer dbx-token"
+
+    @pytest.mark.parametrize("credential", [None, "Bearer wrong", "Basic session-secret"])
+    def test_rejects_missing_or_wrong_secret_without_forwarding(self, make_gateway, credential):
+        gw = make_gateway()
+        headers = {"Authorization": credential} if credential else {}
+        with _running_gateway_auth_proxy(gw) as proxy_url:
+            resp = httpx.post(
+                f"{proxy_url}/ai-gateway/mlflow/v1/responses",
+                headers=headers,
+                content=b"{}",
+                timeout=10,
+            )
+        assert resp.status_code == 401
+        assert gw.requests == []
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/api/2.0/clusters/list",
+            "/ai-gateway/anthropic/../../api/2.0/clusters/list",
+            "/ai-gateway/mlflow/v1/%2e%2e/%2e%2e/%2e%2e/api/2.0/clusters/list",
+            "/ai-gateway/mlflow/v1/%252e%252e/%252e%252e/%252e%252e/api/2.0/clusters/list",
+            "/ai-gateway/otel/v1/traces",
+        ],
+    )
+    def test_refuses_paths_outside_model_routes(self, make_gateway, path):
+        gw = make_gateway()
+        with _running_gateway_auth_proxy(gw) as proxy_url:
+            resp = httpx.post(
+                f"{proxy_url}{path}",
+                headers={"Authorization": f"Bearer {_SESSION_SECRET}"},
+                content=b"{}",
+                timeout=10,
+            )
+        assert resp.status_code == 404
+        assert gw.requests == []
+
+    def test_expired_token_is_refreshed_and_request_retried(self, make_gateway):
+        # The session outlives the token: the gateway rejects the first one, the proxy
+        # mints a new one and the same request succeeds without the agent restarting.
+        tokens = iter(["expired-token", "fresh-token"])
+        calls: list[bool] = []
+
+        def provider(force_refresh: bool) -> str:
+            calls.append(force_refresh)
+            return next(tokens)
+
+        gw = make_gateway(statuses=[401, 200])
+        with _running_gateway_auth_proxy(gw, provider) as proxy_url:
+            resp = httpx.post(
+                f"{proxy_url}/ai-gateway/anthropic/v1/messages",
+                headers={"Authorization": f"Bearer {_SESSION_SECRET}"},
+                content=b"{}",
+                timeout=10,
+            )
+        assert resp.status_code == 200
+        assert calls == [True, True]
+        assert [req.header("Authorization") for req in gw.requests] == [
+            "Bearer expired-token",
+            "Bearer fresh-token",
+        ]
+
+    @pytest.mark.parametrize(
+        ("path", "expected_error"),
+        [
+            (
+                "/ai-gateway/anthropic/v1/messages",
+                {"type": "error", "error": {"type": "authentication_error"}},
+            ),
+            ("/ai-gateway/mlflow/v1/responses", {"error": {"type": "invalid_request_error"}}),
+        ],
+    )
+    def test_failed_refresh_returns_actionable_401(
+        self, make_gateway, capsys, path, expected_error
+    ):
+        minted: list[bool] = []
+
+        def provider(force_refresh: bool) -> str:
+            minted.append(force_refresh)
+            if len(minted) > 1:
+                raise RuntimeError("refresh token revoked")
+            return "token"
+
+        failures: list[str] = []
+        gw = make_gateway(status=401)
+        with _running_gateway_auth_proxy(
+            gw, provider, on_refresh_failure=lambda exc: failures.append(str(exc))
+        ) as proxy_url:
+            resp = httpx.post(
+                f"{proxy_url}{path}",
+                headers={"Authorization": f"Bearer {_SESSION_SECRET}"},
+                content=b"{}",
+                timeout=10,
+            )
+        assert resp.status_code == 401
+        body = resp.json()
+        error = body["error"]
+        assert error["type"] == expected_error["error"]["type"]
+        assert body.get("type") == expected_error.get("type")
+        assert "Databricks sign-in expired. Run `databricks auth login`." in error["message"]
+        assert failures == ["refresh token revoked"]
+        assert len(gw.requests) == 1
+        assert capsys.readouterr().err == ""

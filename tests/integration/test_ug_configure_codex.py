@@ -40,7 +40,7 @@ def test_ug_configure_codex_databricks(live_session, workspace):
 
     config = tomllib.loads((session.home / ".codex/ucode.config.toml").read_text())
     helper = config["model_providers"][config["model_provider"]]["auth"]
-    assert Path(helper["command"]) == session.binary.with_name("ug")
+    assert Path(helper["command"]).with_suffix("") == session.binary.with_name("ug")
     assert helper["args"][0] == "auth-token"
     token_result = session.run(
         *helper["args"], binary=helper["command"], strip_ansi=False, timeout=30

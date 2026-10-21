@@ -22,6 +22,8 @@ from ucode.agents import (
 )
 from ucode.databricks import (
     MIN_DATABRICKS_CLI_VERSION,
+    check_databricks_auth,
+    databricks_cli_installed,
     databricks_cli_version,
     has_valid_databricks_auth,
     install_databricks_cli,
@@ -32,6 +34,7 @@ from ucode.state import load_state
 from ucode.telemetry import ug_version
 from ucode.ui import (
     console,
+    encodable_glyph,
     heading,
     label,
     print_note,
@@ -50,10 +53,10 @@ _CLAUDE_TOKEN_ENV_VARS = ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY")
 # status -> (glyph, status_badge kind). "info" is a healthy line that still
 # carries an optional suggestion (e.g. installing a missing dependency).
 _BADGES = {
-    "ok": ("✓", "ok"),
-    "warn": ("!", "warn"),
-    "error": ("✗", "error"),
-    "info": ("•", "info"),
+    "ok": (("✓", "+"), "ok"),
+    "warn": (("!", "!"), "warn"),
+    "error": (("✗", "x"), "error"),
+    "info": (("•", "*"), "info"),
 }
 
 
@@ -107,11 +110,11 @@ def _install_databricks() -> bool:
         install_databricks_cli()
     except RuntimeError:
         return False
-    return shutil.which("databricks") is not None
+    return databricks_cli_installed()
 
 
 def _check_databricks_cli() -> Check:
-    if not shutil.which("databricks"):
+    if not databricks_cli_installed():
         return Check(
             "Databricks CLI",
             "error",
@@ -140,7 +143,7 @@ def _check_workspace() -> Check:
     return Check(
         "Workspace",
         "warn",
-        "not configured — run `ucode configure` to set your Databricks workspace",
+        "not configured — run `ug configure` to set your Databricks workspace",
     )
 
 
@@ -195,9 +198,16 @@ def _check_databricks_auth() -> Check | None:
         return None
     profile = state.get("profile")
     with spinner("Verifying Databricks credentials..."):
-        ok = has_valid_databricks_auth(workspace, profile)
+        ok = check_databricks_auth(workspace, profile)
     if ok:
         return Check("Databricks auth", "ok", "credentials are valid")
+    if ok is None:
+        # Logging in would hit the same unrunnable CLI, so offer no fix.
+        return Check(
+            "Databricks auth",
+            "warn",
+            "could not run the Databricks CLI to check credentials",
+        )
 
     def _login() -> bool:
         try:
@@ -262,8 +272,9 @@ def doctor() -> int:
     problems = 0
     applied = 0
     for check in checks:
-        glyph, kind = _BADGES[check.status]
-        console.print(f"  {status_badge(glyph, kind)} {label(check.name)}: {check.detail}")
+        (glyph, fallback), kind = _BADGES[check.status]
+        badge = status_badge(encodable_glyph(glyph, fallback), kind)
+        console.print(f"  {badge} {label(check.name)}: {check.detail}")
         if check.status in ("warn", "error"):
             problems += 1
         if check.suggestion is None:

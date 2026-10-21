@@ -17,9 +17,11 @@ from ucode.databricks import (
     build_auth_token_argv,
     build_shared_base_urls,
 )
+from ucode.managed_files import CONFIG_SCOPES, DEFAULT_CONFIG_SCOPE
 
 STATE_PATH = APP_DIR / "state.json"
 STATE_VERSION = 3
+CONFIG_SCOPE_KEY = "config_scope"
 # Transient key holding the developer's own values for whatever a managed config layered over them.
 # Present only in memory: the layered values render the agent settings files, while `save_state`
 # restores what's under it so `state.json` keeps recording the developer's own configuration.
@@ -39,6 +41,23 @@ def load_full_state() -> dict:
     if not isinstance(data, dict) or data.get("state_version") != STATE_VERSION:
         return {"state_version": STATE_VERSION, "current_workspace": None, "workspaces": {}}
     return data
+
+
+def load_config_scope() -> str:
+    scope = load_full_state().get(CONFIG_SCOPE_KEY)
+    return scope if scope in CONFIG_SCOPES else DEFAULT_CONFIG_SCOPE
+
+
+def save_config_scope(scope: str) -> None:
+    if is_dry_run() or load_config_scope() == scope:
+        return
+    full = load_full_state()
+    full[CONFIG_SCOPE_KEY] = scope
+    try:
+        APP_DIR.mkdir(parents=True, exist_ok=True)
+        STATE_PATH.write_text(json.dumps(full, indent=2), encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(f"Failed to write state file: {STATE_PATH}") from exc
 
 
 def load_state() -> dict:
@@ -240,8 +259,9 @@ def build_agent_state(state: dict) -> dict[str, dict]:
 
 
 def clear_state() -> None:
-    """Remove the current workspace entry from state."""
+    """Remove the current workspace entry and the config scope from state."""
     full = load_full_state()
+    full.pop(CONFIG_SCOPE_KEY, None)
     workspace = full.get("current_workspace")
     if workspace:
         full.get("workspaces", {}).pop(workspace, None)
@@ -251,6 +271,52 @@ def clear_state() -> None:
         STATE_PATH.write_text(json.dumps(full, indent=2), encoding="utf-8")
     except OSError as exc:
         raise RuntimeError(f"Failed to clear state file: {STATE_PATH}") from exc
+
+
+SELF_MANAGED_AGENTS_KEY = "self_managed_agents"
+
+
+def self_managed_agents(state: dict) -> list[str]:
+    """The agents the developer has opted into self-managing for this workspace."""
+    value = state.get(SELF_MANAGED_AGENTS_KEY)
+    return list(value) if isinstance(value, list) else []
+
+
+def is_self_managed(state: dict, tool: str) -> bool:
+    """True when the developer has explicitly added ``tool`` to their self-managed list."""
+    return tool in self_managed_agents(state)
+
+
+def workspace_self_managed_agents(workspace: str) -> list[str]:
+    """The self-managed list persisted for ``workspace`` specifically (empty if none).
+
+    The opt-in is per workspace, so a configure that switches workspaces must read the
+    destination's own list rather than carry the source workspace's forward.
+    """
+    block = load_full_state().get("workspaces", {}).get(workspace, {})
+    value = block.get(SELF_MANAGED_AGENTS_KEY)
+    return list(value) if isinstance(value, list) else []
+
+
+def add_self_managed_agent(state: dict, tool: str) -> dict:
+    """Record ``tool`` as self-managed; no-op if already present."""
+    agents = self_managed_agents(state)
+    if tool not in agents:
+        agents.append(tool)
+        state[SELF_MANAGED_AGENTS_KEY] = agents
+    return state
+
+
+def remove_self_managed_agent(state: dict, tool: str) -> dict:
+    """Remove ``tool`` from the self-managed list; no-op if not present."""
+    agents = self_managed_agents(state)
+    if tool in agents:
+        agents.remove(tool)
+        if agents:
+            state[SELF_MANAGED_AGENTS_KEY] = agents
+        else:
+            state.pop(SELF_MANAGED_AGENTS_KEY, None)
+    return state
 
 
 def is_tool_managed(state: dict, tool: str) -> bool:
@@ -296,6 +362,33 @@ def set_provider_service(state: dict, tool: str, full_name: str | None) -> dict:
         state["provider_services"] = providers
     else:
         state.pop("provider_services", None)
+    return state
+
+
+def get_model_location(state: dict, tool: str) -> str | None:
+    """Return the persisted Unity Catalog model location (``<catalog>.<schema>``) for ``tool``.
+
+    Launches discover models in this schema instead of ``system.ai`` unless overridden by an
+    explicit ``--model-location`` or ``--provider`` flag.
+    """
+    locations = state.get("model_locations")
+    if not isinstance(locations, dict):
+        return None
+    location = locations.get(tool)
+    return location if isinstance(location, str) and location else None
+
+
+def set_model_location(state: dict, tool: str, location: str | None) -> dict:
+    """Persist (or clear, when ``location`` is None) ``tool``'s model location."""
+    locations = dict(state.get("model_locations") or {})
+    if location:
+        locations[tool] = location
+    else:
+        locations.pop(tool, None)
+    if locations:
+        state["model_locations"] = locations
+    else:
+        state.pop("model_locations", None)
     return state
 
 

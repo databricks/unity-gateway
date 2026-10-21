@@ -26,64 +26,35 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-AGENT_PACKAGES = {"claude": "@anthropic-ai/claude-code", "codex": "@openai/codex"}
-MANAGED_DEFAULTS_TARGETS = (
-    (
-        "UG_MPS_DEFAULTS_BEARER",
-        "https://eng-ml-inference-batch-inference-us-west-2.cloud.databricks.com",
-        "1c359c0f-58bc-42ac-a74f-079ccb173676",
-        "UG_MPS_DEFAULTS_CLIENT_SECRET",
-    ),
-    (
-        "UG_PARENT_SCHEMA_DEFAULTS_BEARER",
-        "https://eng-ml-inference-ap-northeast-2.cloud.databricks.com",
-        "95e267dc-4393-4360-9d45-4b9b13b2d370",
-        "UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET",
-    ),
-)
+AGENT_PACKAGES = {
+    "claude": "@anthropic-ai/claude-code",
+    "codex": "@openai/codex",
+    "opencode": "opencode-ai",
+    "copilot": "@github/copilot",
+}
 WINDOWS_PATHEXT = ".COM;.EXE;.BAT;.CMD"
-UV_INDEX_CREDENTIAL_ENV = (
-    "UV_INDEX_DATABRICKS_PYPI_USERNAME",
-    "UV_INDEX_DATABRICKS_PYPI_PASSWORD",
-)
-NPM_TOKEN_ENV = "UG_INTEGRATION_NPM_TOKEN"
-INSTALLER_CREDENTIAL_ENV = (*UV_INDEX_CREDENTIAL_ENV, NPM_TOKEN_ENV)
+# Claude exports no spans on Windows, where ug writes no machine-wide Claude settings.
+WINDOWS_UNSUPPORTED_MODULES = {"test_ug_claude_tracing.py"}
+WINDOWS_UNSUPPORTED_NODES = {
+    # Seeds machine-wide managed settings, which ug has no Windows path for.
+    "test_ug_configure_claude_lifecycle.py::test_unmanaged_claude_preserves_preexisting_family_defaults",
+    # Codex's Windows sandbox can't read ug's owner-only session-env dir yet.
+    "test_ug_smart_routing_hooks.py::test_smart_router_skill_toggles_codex_subagent_routing",
+}
 HEADLESS_TEST_NODES = {
     "claude": "test_ug_claude_headless.py::test_ug_claude_headless_prompt_argument",
     "codex": "test_ug_codex_headless.py::test_ug_codex_headless_prompt_argument",
+    "opencode": "test_ug_opencode_headless.py::test_ug_opencode_headless_prompt_argument",
+    "copilot": "test_ug_copilot_headless.py::test_ug_copilot_headless_completes_file_task",
 }
 
 
-def installer_environment(
-    base_environment: Mapping[str, str],
-    source_environment: Mapping[str, str],
-    credential_keys: Iterable[str],
-    npm_user_config: Path | None = None,
-) -> dict[str, str]:
-    """Add only supported installer credentials to an isolated environment."""
-    environment = dict(base_environment)
-    for key in credential_keys:
-        if value := source_environment.get(key):
-            environment[key] = value
-    if npm_user_config is not None:
-        environment["npm_config_userconfig"] = str(npm_user_config)
-    return environment
-
-
-def npm_user_config(registry: str) -> str:
-    """Configure npm auth through an environment reference, never a raw token."""
-    parsed = urllib.parse.urlsplit(registry)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError("The npm registry must be an absolute HTTP(S) URL.")
-    if parsed.username or parsed.password:
-        raise ValueError("The npm registry URL must not contain credentials.")
-    registry = registry.rstrip("/") + "/"
-    auth_path = parsed.path.rstrip("/") + "/"
-    return (
-        f"registry={registry}\n"
-        f"//{parsed.netloc}{auth_path}:_authToken=${{{NPM_TOKEN_ENV}}}\n"
-        "always-auth=true\n"
-    )
+def agent_version_output(agent: str, output: str) -> str:
+    """The agent's ``--version`` text, normalized for exact-version matching."""
+    if agent == "copilot":
+        # "GitHub Copilot CLI 1.0.91." plus an update hint on later lines.
+        return output.splitlines()[0].removesuffix(".") if output else output
+    return output
 
 
 def redact_secrets(value: str, secrets: Iterable[str]) -> str:
@@ -169,6 +140,15 @@ def integration_test_targets(
         return targets
     if platform_name == "nt" and installation_only:
         return [str(suite / "test_installation.py")]
+    if platform_name == "nt":
+        modules = [
+            str(module)
+            for module in sorted(suite.glob("test_*.py"))
+            if module.name not in WINDOWS_UNSUPPORTED_MODULES
+        ]
+        # pytest matches --deselect against node IDs relative to the suite's pytest.ini.
+        deselected = [f"--deselect={node}" for node in sorted(WINDOWS_UNSUPPORTED_NODES)]
+        return [*modules, *deselected]
     return [str(suite)]
 
 
@@ -282,8 +262,14 @@ def arguments(
     parser.add_argument("--entry-point", choices=["ug", "ucode"], default="ug")
     parser.add_argument("--claude-version", type=exact_npm_version)
     parser.add_argument("--codex-version", type=exact_npm_version)
+    parser.add_argument("--opencode-version", type=exact_npm_version)
+    parser.add_argument("--copilot-version", type=exact_npm_version)
     parser.add_argument("--claude-model", default=environment.get("UG_INTEGRATION_CLAUDE_MODEL"))
     parser.add_argument("--codex-model", default=environment.get("UG_INTEGRATION_CODEX_MODEL"))
+    parser.add_argument(
+        "--opencode-model", default=environment.get("UG_INTEGRATION_OPENCODE_MODEL")
+    )
+    parser.add_argument("--copilot-model", default=environment.get("UG_INTEGRATION_COPILOT_MODEL"))
     parser.add_argument(
         "--claude-provider",
         default="main.ucode.ci_e2e_anthropic_nonrelay_mps",
@@ -384,11 +370,6 @@ def arguments(
         "pytest_args", nargs=argparse.REMAINDER, help="After --, pass pytest filters."
     )
     args = parser.parse_args(argv)
-    if platform_name != "posix" and not (args.installation_only or args.headless_only):
-        parser.error(
-            "Live agent/TUI integration requires POSIX PTY, managed-settings, and signal "
-            "support. Use --installation-only or --headless-only on Windows."
-        )
     # Only selection/early-stop controls are accepted. Pytest configuration,
     # plugins and report destinations are part of the suite's isolation contract.
     filters = argparse.ArgumentParser(add_help=False)
@@ -407,8 +388,13 @@ def arguments(
             args.pytest_args.extend([flag, str(value)])
     if selected.x:
         args.pytest_args.append("-x")
-    if not (args.claude_version or args.codex_version):
-        parser.error("Select --claude-version and/or --codex-version explicitly.")
+    if not (
+        args.claude_version or args.codex_version or args.opencode_version or args.copilot_version
+    ):
+        parser.error(
+            "Select --claude-version, --codex-version, --opencode-version and/or "
+            "--copilot-version explicitly."
+        )
     if args.ug_version != "checkout" and not re.fullmatch(
         r"[0-9][0-9A-Za-z.!+_-]*", args.ug_version
     ):
@@ -516,25 +502,10 @@ def main() -> int:
     base_env["npm_config_fetch_timeout"] = "30000"
     base_env["UV_CACHE_DIR"] = str(output / "cache")
     base_env["UV_DEFAULT_INDEX"] = args.default_index
-    npm_token = os.environ.get(NPM_TOKEN_ENV, "")
-    npm_config = None
-    if npm_token:
-        npm_config = output / "installer.npmrc"
-        # npm expands the environment reference at request time. The short-lived
-        # token is never written to disk or included in an argument or URL.
-        npm_config.write_text(npm_user_config(args.npm_registry))
-    python_install_env = installer_environment(base_env, os.environ, UV_INDEX_CREDENTIAL_ENV)
-    npm_install_env = installer_environment(base_env, os.environ, (NPM_TOKEN_ENV,), npm_config)
-    installer_secrets = tuple(os.environ.get(key, "") for key in INSTALLER_CREDENTIAL_ENV)
     bearer = os.environ.get("DATABRICKS_BEARER", "").strip()
     second_bearer = os.environ.get("DATABRICKS_SECOND_BEARER", "").strip()
     oauth_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
-    target_bearers: dict[str, str] = {}
-    client_secrets = (
-        os.environ.get("DATABRICKS_CLIENT_SECRET", ""),
-        os.environ.get("UG_MPS_DEFAULTS_CLIENT_SECRET", ""),
-        os.environ.get("UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET", ""),
-    )
+    client_secrets = (os.environ.get("DATABRICKS_CLIENT_SECRET", ""),)
 
     def redact(value: str) -> str:
         return redact_secrets(
@@ -543,9 +514,7 @@ def main() -> int:
                 bearer,
                 second_bearer,
                 oauth_token,
-                *target_bearers.values(),
                 *client_secrets,
-                *installer_secrets,
             ),
         )
 
@@ -558,7 +527,8 @@ def main() -> int:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
         ) as proc:
             try:
                 stdout, stderr = proc.communicate(timeout=timeout)
@@ -580,8 +550,12 @@ def main() -> int:
             "entry_point": args.entry_point,
             "claude": args.claude_version,
             "codex": args.codex_version,
+            "opencode": args.opencode_version,
+            "copilot": args.copilot_version,
             "claude_model": args.claude_model,
             "codex_model": args.codex_model,
+            "opencode_model": args.opencode_model,
+            "copilot_model": args.copilot_model,
             "claude_provider": args.claude_provider,
             "claude_relayed_provider": args.claude_relayed_provider,
             "claude_provider_model": args.claude_provider_model,
@@ -635,7 +609,6 @@ def main() -> int:
             run(
                 [uv, "build", "--wheel", "--out-dir", wheels, ROOT],
                 cwd=ROOT,
-                env=python_install_env,
             )
             (wheel,) = wheels.glob("*.whl")
             report["git_commit"] = run(["git", "rev-parse", "HEAD"], cwd=ROOT)
@@ -668,7 +641,6 @@ def main() -> int:
                 constraints.as_uri(),
                 package,
             ],
-            env=python_install_env,
         )
         run([uv, "pip", "check", "--python", python])
         freeze = run([uv, "pip", "freeze", "--python", python])
@@ -735,7 +707,6 @@ def main() -> int:
                     "--registry",
                     args.npm_registry,
                 ],
-                env=npm_install_env,
             )
         else:
             run(
@@ -751,7 +722,6 @@ def main() -> int:
                     args.npm_registry,
                     *[f"{AGENT_PACKAGES[a]}@{getattr(args, f'{a}_version')}" for a in agents],
                 ],
-                env=npm_install_env,
             )
         shutil.copyfile(npm_prefix / "package-lock.json", output / "npm-lock.json")
         report["npm_packages"] = json.loads(
@@ -802,7 +772,9 @@ def main() -> int:
         report["agents"] = {}
         for agent in agents:
             agent_command = npm_executable(agent_bin, agent)
-            version = run([agent_command, "--version"], env=runtime_env, timeout=30)
+            version = agent_version_output(
+                agent, run([agent_command, "--version"], env=runtime_env, timeout=30)
+            )
             expected = getattr(args, f"{agent}_version")
             if not re.search(rf"(?<![\w.]){re.escape(expected)}(?![\w.])", version):
                 raise RuntimeError(f"Expected {agent} {expected}, got {version!r}")
@@ -824,7 +796,8 @@ def main() -> int:
                 ],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
+                encoding="utf-8",
+                errors="replace",
                 stdin=subprocess.DEVNULL,
             ) as auth:
                 auth_stdout, _ = auth.communicate(timeout=30)
@@ -842,17 +815,8 @@ def main() -> int:
             if client_id and client_secret:
                 bearer = mint_m2m_token(args.workspace, client_id, client_secret)
 
-        if not args.installation_only:
-            for bearer_env, target_workspace, client_id, secret_env in MANAGED_DEFAULTS_TARGETS:
-                secret = os.environ.get(secret_env, "").strip()
-                if args.workspace.rstrip("/") == target_workspace:
-                    target_bearers[bearer_env] = bearer
-                elif secret:
-                    target_bearers[bearer_env] = mint_m2m_token(target_workspace, client_id, secret)
-
-        test_dependencies = ["pytest==9.0.3"]
-        if os.name == "posix":
-            test_dependencies.extend(["pexpect==4.9.0", "pyte==0.8.2"])
+        test_dependencies = ["pytest==9.0.3", "httpx==0.28.1", "pyte==0.8.2"]
+        test_dependencies.append("pexpect==4.9.0" if os.name == "posix" else "pywinpty==3.0.5")
         run(
             [
                 uv,
@@ -864,7 +828,6 @@ def main() -> int:
                 args.default_index,
                 *test_dependencies,
             ],
-            env=python_install_env,
         )
         (output / "test-dependencies.txt").write_text(
             run([uv, "pip", "freeze", "--python", test_python]) + "\n"
@@ -891,10 +854,6 @@ def main() -> int:
                 "UG_INTEGRATION_CODEX_PARENT_MODEL": args.codex_parent_model,
                 "UCODE_TEST_WORKSPACE": args.workspace or "",
                 "DATABRICKS_BEARER": bearer,
-                "UG_MPS_DEFAULTS_BEARER": target_bearers.get("UG_MPS_DEFAULTS_BEARER", ""),
-                "UG_PARENT_SCHEMA_DEFAULTS_BEARER": target_bearers.get(
-                    "UG_PARENT_SCHEMA_DEFAULTS_BEARER", ""
-                ),
                 "UCODE_TEST_SECOND_WORKSPACE": args.second_workspace or "",
                 "DATABRICKS_SECOND_BEARER": second_bearer,
                 "UG_INTEGRATION_WAREHOUSE_ID": args.warehouse_id or "",
@@ -965,10 +924,13 @@ def main() -> int:
             raise RuntimeError("Pytest returned success without a test report.")
         # A bootstrap/update path must not silently alter the selected agent version.
         for agent in agents:
-            after = run(
-                [npm_executable(agent_bin, agent), "--version"],
-                env=runtime_env,
-                timeout=30,
+            after = agent_version_output(
+                agent,
+                run(
+                    [npm_executable(agent_bin, agent), "--version"],
+                    env=runtime_env,
+                    timeout=30,
+                ),
             )
             if after != report["agents"][agent]:
                 raise RuntimeError(f"{agent} changed version during the suite: {after}")

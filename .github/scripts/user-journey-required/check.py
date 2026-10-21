@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Require integration coverage when a PR changes a ug user journey.
 
-This script is run only from the trusted default branch by a
-``pull_request_target`` workflow. PR-controlled patches are untrusted text: they
-are retrieved through the GitHub API and sent to the judge, never executed.
+The workflow checks this script out from the default branch and runs it automatically
+for in-repo PRs, or for a fork PR when an org member comments ``/user-journey-check``.
+PR-controlled patches are untrusted text: they are retrieved through the
+GitHub API and sent to the judge, never executed.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ MAX_DIFF_BYTES = 60_000
 INTEGRATION_DIFF_BYTES = MAX_DIFF_BYTES // 2
 WAIVER_LABEL = "skip-user-journey-test"
 WAIVER_COMMENT = "/skip-user-journey-test"
+RESPONSES_API_PATH = "/ai-gateway/codex/v1/responses"
 
 SYSTEM_PROMPT = """You are a CI policy gate for Unity Gateway (ug), a Python CLI that
 configures and launches coding agents through Databricks AI Gateway.
@@ -151,6 +153,30 @@ def build_system_prompt(test_policy: str) -> str:
     )
 
 
+def build_responses_request(model: str, user_prompt: str, test_policy: str) -> dict[str, Any]:
+    return {
+        "model": model,
+        "instructions": build_system_prompt(test_policy),
+        "input": user_prompt,
+        "max_output_tokens": 1_000,
+        "store": False,
+    }
+
+
+def extract_response_text(payload: dict[str, Any]) -> str:
+    """Extract final text while ignoring reasoning and tool-call output items."""
+    parts: list[str] = []
+    for item in payload.get("output", []) or []:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        for content in item.get("content", []) or []:
+            if isinstance(content, dict) and content.get("type") == "output_text":
+                text = content.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+    return "\n".join(parts).strip()
+
+
 def parse_verdict(content: str) -> tuple[bool, str]:
     """Parse the strict JSON judge response, tolerating accidental fences."""
     candidate = content.strip()
@@ -180,19 +206,9 @@ def _judge(title: str, diff: str, test_policy: str) -> tuple[bool, str]:
     token = _env("DATABRICKS_BEARER")
     model = _env("USER_JOURNEY_JUDGE_MODEL")
     user_prompt = f"Pull request title: {title}\n\nDiff:\n{diff}\n"
-    body = json.dumps(
-        {
-            "model": model,
-            "temperature": 0,
-            "max_tokens": 250,
-            "messages": [
-                {"role": "system", "content": build_system_prompt(test_policy)},
-                {"role": "user", "content": user_prompt},
-            ],
-        }
-    ).encode()
+    body = json.dumps(build_responses_request(model, user_prompt, test_policy)).encode()
     request = urllib.request.Request(
-        f"{host}/ai-gateway/mlflow/v1/chat/completions",
+        f"{host}{RESPONSES_API_PATH}",
         data=body,
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
         method="POST",
@@ -200,17 +216,19 @@ def _judge(title: str, diff: str, test_policy: str) -> tuple[bool, str]:
     try:
         with urllib.request.urlopen(request, timeout=90) as response:
             payload = json.load(response)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read(1_000).decode(errors="replace").strip()
+        raise GateError(
+            f"The Databricks user-journey judge request failed ({exc.code}): {detail}"
+        ) from exc
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         raise GateError(f"The Databricks user-journey judge request failed: {exc}") from exc
 
-    try:
-        content = payload["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise GateError(
-            "The Databricks user-journey judge returned an unexpected response."
-        ) from exc
-    if not isinstance(content, str):
-        raise GateError("The Databricks user-journey judge returned non-text content.")
+    if not isinstance(payload, dict):
+        raise GateError("The Databricks user-journey judge returned an unexpected response.")
+    content = extract_response_text(payload)
+    if not content:
+        raise GateError("The Databricks user-journey judge returned no output text.")
     return parse_verdict(content)
 
 
@@ -279,6 +297,22 @@ def _sync_waiver_label() -> int:
     return _pass("waiver label already matches the authorized comment state.")
 
 
+def _record_evaluated_head(pr_path: str, pr: dict[str, Any]) -> None:
+    """Pin the verdict to the head the diff was read at, for the fork-PR status report."""
+    sha = str(pr.get("head", {}).get("sha", ""))
+    current = _gh_json(pr_path)
+    current_sha = str(current.get("head", {}).get("sha", "")) if isinstance(current, dict) else ""
+    if not re.fullmatch(r"[0-9a-f]{40}", sha) or current_sha != sha:
+        raise GateError(
+            f"The PR head changed while its diff was read ({sha[:7] or 'unknown'} -> "
+            f"{current_sha[:7] or 'unknown'}). Re-run this check."
+        )
+    output = os.environ.get("GITHUB_OUTPUT")
+    if output:
+        with open(output, "a") as handle:
+            handle.write(f"sha={sha}\n")
+
+
 def _pass(message: str) -> int:
     print(f"PASS: {message}")
     return 0
@@ -298,6 +332,7 @@ def main() -> int:
         files = _gh_json(f"{pr_path}/files", paginate=True)
         if not isinstance(pr, dict) or not isinstance(files, list):
             raise GateError("GitHub returned an unexpected pull-request response.")
+        _record_evaluated_head(pr_path, pr)
 
         if not any(_is_product_path(str(file.get("filename", ""))) for file in files):
             return _pass("no ug product or packaging files changed; no journey test is required.")

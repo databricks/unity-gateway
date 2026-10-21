@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 import questionary
 from rich.table import Table
 
-from ucode.agents import claude, codex, copilot, cursor, gemini, opencode
+from ucode.agents import claude, codex, copilot, cursor, gemini, kilo, opencode
 from ucode.config_io import restore_file
 from ucode.constants import MCP_CLEANUP_SCOPES, MCP_USER_SCOPE
 from ucode.databricks import (
@@ -42,6 +42,7 @@ from ucode.mcp_oauth import (
     CURSOR_OAUTH_CLIENT_ID,
     oauth_client_available,
 )
+from ucode.os_compatibility import subprocess_cross_os
 from ucode.skills_api import (
     _SKILLS_WALK_DEADLINE_SECONDS,
     _SKILLS_WALK_TIMEOUT_REASON,
@@ -115,6 +116,11 @@ MCP_CLIENTS = {
         "display": "OpenCode",
         "list_command": "opencode mcp list",
     },
+    "kilo": {
+        "binary": "kilo",
+        "display": "Kilo",
+        "list_command": "kilo mcp list",
+    },
     "copilot": {
         "binary": "copilot",
         "display": "GitHub Copilot CLI",
@@ -156,7 +162,7 @@ def add_codex_mcp_server(name: str, argv: list[str]) -> None:
     # `--` fences the proxy argv off from codex's own flag parser, registering
     # it as a stdio server (codex spawns the command and speaks MCP over it).
     try:
-        subprocess.run(
+        subprocess_cross_os.run(
             ["codex", "mcp", "add", name, "--", *argv],
             check=True,
             capture_output=True,
@@ -176,7 +182,7 @@ def add_codex_http_mcp_server(name: str, url: str, client_id: str) -> None:
     derives its own per-server loopback `/callback/<hash>` redirect at login time; `/oidc` accepts
     that unregistered path via the `enableCodexLoopbackRedirectExemption` flag (loopback host only)."""
     try:
-        subprocess.run(
+        subprocess_cross_os.run(
             [
                 "codex",
                 "mcp",
@@ -200,7 +206,7 @@ def add_codex_http_mcp_server(name: str, url: str, client_id: str) -> None:
 
 def remove_codex_mcp_server(name: str) -> bool:
     try:
-        result = subprocess.run(
+        result = subprocess_cross_os.run(
             ["codex", "mcp", "remove", name],
             check=False,
             capture_output=True,
@@ -225,11 +231,19 @@ def _gemini_cli_env() -> dict[str, str]:
     return env
 
 
+def _kilo_cli_env() -> dict[str, str]:
+    # Pin XDG_CONFIG_HOME to the isolated dir ug writes Kilo's config into, so
+    # `kilo mcp list` reads the same config (matches kilo.build_runtime_env).
+    env = os.environ.copy()
+    env["XDG_CONFIG_HOME"] = str(kilo.KILO_XDG_CONFIG_HOME)
+    return env
+
+
 def add_gemini_mcp_server(name: str, argv: list[str]) -> None:
     # Register the proxy as a stdio server: `gemini mcp add <name> <cmd> <args…>
     # --type stdio`. The scope/type flags trail the captured command + args.
     try:
-        subprocess.run(
+        subprocess_cross_os.run(
             [
                 "gemini",
                 "mcp",
@@ -253,7 +267,7 @@ def add_gemini_mcp_server(name: str, argv: list[str]) -> None:
 
 def remove_gemini_mcp_server(name: str) -> bool:
     try:
-        result = subprocess.run(
+        result = subprocess_cross_os.run(
             ["gemini", "mcp", "remove", name, "--scope", MCP_USER_SCOPE],
             check=False,
             capture_output=True,
@@ -388,6 +402,9 @@ def configure_client_mcp_server(
     if client == "opencode":
         removed = opencode.write_mcp_server_config(name, argv)
         return [MCP_USER_SCOPE] if removed else []
+    if client == "kilo":
+        removed = kilo.write_mcp_server_config(name, argv)
+        return [MCP_USER_SCOPE] if removed else []
     if client == "copilot":
         removed = copilot.write_mcp_server_config(name, argv)
         return [MCP_USER_SCOPE] if removed else []
@@ -408,6 +425,8 @@ def remove_client_mcp_server(client: str, name: str) -> list[str]:
         return [MCP_USER_SCOPE] if remove_gemini_mcp_server(name) else []
     if client == "opencode":
         return [MCP_USER_SCOPE] if opencode.remove_mcp_server_config(name) else []
+    if client == "kilo":
+        return [MCP_USER_SCOPE] if kilo.remove_mcp_server_config(name) else []
     if client == "copilot":
         return [MCP_USER_SCOPE] if copilot.remove_mcp_server_config(name) else []
     if client == "cursor":
@@ -1095,8 +1114,21 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
             if is_eligible
             else {}
         )
+        # Claude also needs every server ug registers elsewhere, so an admin MCP allowlist keeps them.
+        extra = (
+            {
+                "also_registered": [
+                    n
+                    for s in working
+                    if "claude" in _mcp_server_clients(s)
+                    if (n := _server_name(s))
+                ]
+            }
+            if agent == "claude"
+            else {}
+        )
         try:
-            written = module.reconcile_managed_mcp(state, entries)
+            written = module.reconcile_managed_mcp(state, entries, **extra)
         except RuntimeError as exc:
             print_warning(f"Could not update {MCP_CLIENTS[agent]['display']} managed MCP: {exc}")
             written = False
@@ -1347,6 +1379,7 @@ _MCP_CLIENT_MODULES = {
     "copilot": copilot,
     "cursor": cursor,
     "opencode": opencode,
+    "kilo": kilo,
 }
 
 
@@ -1390,6 +1423,8 @@ def _managed_mcp_entry(
         return copilot.build_mcp_server_entry(argv)
     if client == "opencode":
         return opencode.build_mcp_server_entry(argv)
+    if client == "kilo":
+        return kilo.build_mcp_server_entry(argv)
     raise RuntimeError(f"Unsupported MCP client '{client}'.")
 
 
@@ -1755,7 +1790,7 @@ def setup_mcp_clients(
     """
     workspace = state.get("workspace")
     if not workspace:
-        raise RuntimeError("Workspace is not configured. Run `ucode configure` first.")
+        raise RuntimeError("Workspace is not configured. Run `ug configure` first.")
 
     purge_cross_workspace_mcp_residue(state, workspace)
 
@@ -1771,12 +1806,12 @@ def setup_mcp_clients(
         if missing:
             raise RuntimeError(
                 f"Requested agent(s) not configured for MCP: {', '.join(missing)}. "
-                f"Configure them first with `ucode configure --agents {','.join(missing)}`."
+                f"Configure them first with `ug configure --agents {','.join(missing)}`."
             )
         clients = [client for client in clients if client in agents]
     if not clients:
         raise RuntimeError(
-            "No configured MCP-capable coding agents are installed. Run `ucode configure` "
+            "No configured MCP-capable coding agents are installed. Run `ug configure` "
             "for Codex, Claude, Gemini, OpenCode, or GitHub Copilot CLI first."
         )
     configured_tools = set(state.get("available_tools") or [])
@@ -1795,7 +1830,7 @@ def setup_mcp_clients(
         print_note(f"{action_note}: {client_names}")
     for client in missing_clients:
         print_warning(
-            f"{MCP_CLIENTS[client]['display']} is configured in ucode but not installed; "
+            f"{MCP_CLIENTS[client]['display']} is configured in ug but not installed; "
             "skipping MCP config."
         )
     return workspace, profile, clients
@@ -2332,6 +2367,31 @@ def _parse_codex_mcp_list(output: str) -> dict[str, str]:
     return statuses
 
 
+def _parse_kilo_mcp_list(output: str) -> dict[str, str]:
+    """Parse `kilo mcp list`'s tree output into ``{server_name: state}``.
+
+    Kilo prints one server per line as ``●  <glyph> <name> <status>`` (glyph ✓/✗), with indented
+    ``│``-prefixed detail lines (the proxy command, error text) that must be skipped so the command
+    URL isn't misread as a server. (This is the OpenCode-family shape; parsing it generically for
+    every client is tracked separately — here it is scoped to Kilo.)
+    """
+    statuses: dict[str, str] = {}
+    for raw in output.splitlines():
+        line = raw.strip()
+        # Server rows start with the ● bullet; ┌/│/└ tree lines are headers/details.
+        if not line.startswith("●"):
+            continue
+        tokens = line.lstrip("● ").split()
+        # Expect: <glyph> <name> <status…>; require the health glyph so headers don't slip through.
+        if len(tokens) < 2 or tokens[0] not in (_HEALTH_OK_MARKERS + _HEALTH_FAIL_MARKERS):
+            continue
+        name = tokens[1]
+        if " " in name:
+            continue
+        statuses[name] = _classify_health_line(line)
+    return statuses
+
+
 def parse_mcp_list_output(client: str, output: str) -> dict[str, str]:
     """Parse an agent's `mcp list` output into ``{server_name: live-state}`` (best-effort).
 
@@ -2340,7 +2400,12 @@ def parse_mcp_list_output(client: str, output: str) -> dict[str, str]:
     failure detail (``Failed to connect - HTTP 404 Not Found``), so checking it up front would
     let one broken server empty the whole listing.
     """
-    parsed = _parse_codex_mcp_list(output) if client == "codex" else _parse_health_mcp_list(output)
+    if client == "codex":
+        parsed = _parse_codex_mcp_list(output)
+    elif client == "kilo":
+        parsed = _parse_kilo_mcp_list(output)
+    else:
+        parsed = _parse_health_mcp_list(output)
     if not parsed and _is_missing_mcp_server_output(output):
         return {}
     return parsed
@@ -2356,11 +2421,21 @@ def _run_mcp_list(client: str) -> str | None:
     if not spec:
         return None
     argv = str(spec["list_command"]).split()
-    # Gemini reads its config from a pinned home dir, matching how ucode registers servers there.
-    env = _gemini_cli_env() if client == "gemini" else None
+    # Gemini and Kilo read their config from a pinned dir, matching how ucode registers servers there.
+    if client == "gemini":
+        env = _gemini_cli_env()
+    elif client == "kilo":
+        env = _kilo_cli_env()
+    else:
+        env = None
     try:
-        result = subprocess.run(
-            argv, check=False, capture_output=True, text=True, timeout=90, env=env
+        result = subprocess_cross_os.run(
+            argv,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=90,
+            env=env,
         )
     except (subprocess.TimeoutExpired, OSError):
         return None
@@ -2487,6 +2562,42 @@ def _row_status(
     )
 
 
+def configured_mcp_servers_by_name(
+    state: dict, agents: set[str] | None = None
+) -> dict[str, dict[str, Any]]:
+    """Merge the developer- and workspace-managed MCP servers ug has configured, keyed by
+    registered name, unioning the agents each is on. Skills connections are excluded (they are
+    reported/handled separately). ``agents`` drops agents outside that scope, and a server left
+    with no in-scope agent is omitted. Each value is ``{"server", "clients", "managed"}``.
+
+    Managed servers (the ``managed_mcp_servers`` fallback state and each agent's OS-managed file)
+    come from the shared ``managed_mcp_servers`` helper, so this stays in agreement with ``ug mcp
+    list`` and the ``ug mcp add`` picker. Used by ``ug mcp list`` and ``ug status`` so both see the
+    same configured-server set regardless of how a managed server was delivered."""
+    configured: dict[str, dict[str, Any]] = {}
+
+    def _collect(server: dict, *, managed: bool) -> None:
+        name = _server_name(server)
+        if not name or server.get("kind") == SKILLS_MCP_KIND:
+            return
+        clients = [
+            client for client in _mcp_server_clients(server) if agents is None or client in agents
+        ]
+        if not clients:
+            return
+        entry = configured.setdefault(name, {"server": server, "clients": [], "managed": managed})
+        entry["clients"] = _merge_clients(entry["clients"], clients)
+        entry["managed"] = entry["managed"] or managed
+
+    for server in state.get("mcp_servers") or []:
+        _collect(server, managed=False)
+    # Fallback ``managed_mcp_servers`` state + each agent's OS-managed file, via the shared helper
+    # (keeps the isinstance guard and _MANAGED_FILE_AGENTS set, so this can't drift from `ug mcp list`).
+    for server in managed_mcp_servers(state, agents):
+        _collect(server, managed=True)
+    return configured
+
+
 def list_mcp_command(agents: set[str] | None = None) -> int:
     """`ug mcp list`: show the Databricks MCP servers ug has configured and their live
     connection status in each coding agent, one row per server.
@@ -2518,28 +2629,10 @@ def list_mcp_command(agents: set[str] | None = None) -> int:
 
     live = _query_live_statuses(probe_clients)
 
-    # Merge developer- and workspace-managed servers by registered name, unioning their agents.
-    # ``--agents`` drops agents outside the scope, and a server left with no in-scope agent is
-    # omitted. The skills connection is intentionally excluded — it's reported by the skill commands.
-    configured: dict[str, dict[str, Any]] = {}
-
-    def _collect(server: dict, *, managed: bool) -> None:
-        name = _server_name(server)
-        if not name or server.get("kind") == SKILLS_MCP_KIND:
-            return
-        clients = [
-            client for client in _mcp_server_clients(server) if agents is None or client in agents
-        ]
-        if not clients:
-            return
-        entry = configured.setdefault(name, {"server": server, "clients": [], "managed": managed})
-        entry["clients"] = _merge_clients(entry["clients"], clients)
-        entry["managed"] = entry["managed"] or managed
-
-    for server in state.get("mcp_servers") or []:
-        _collect(server, managed=False)
-    for server in managed_mcp_servers(state, agents):
-        _collect(server, managed=True)
+    # Merge developer- and workspace-managed servers by registered name, unioning their agents
+    # (shared with `ug status` so both see the same configured-server set, including the servers
+    # delivered through the agents' OS-managed files).
+    configured = configured_mcp_servers_by_name(state, agents)
 
     if configured:
         table = Table(box=None, pad_edge=False, header_style="bold")
@@ -2752,7 +2845,7 @@ def _print_skills_summary(entry: dict) -> None:
             print_kv(f"{display} URL", build_skills_mcp_url(workspace, locations))
             print_kv(f"{display} tools", _skills_tools_description(locations))
     print_note(
-        "Run `ucode <agent>` to use the skills MCP. For existing sessions, "
+        "Run `ug <agent>` to use the skills MCP. For existing sessions, "
         "restart the agent for the skills to take effect."
     )
 

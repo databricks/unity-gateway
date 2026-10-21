@@ -16,11 +16,13 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from email.message import Message
 from enum import Enum
@@ -35,6 +37,8 @@ from ucode.constants import (
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
 )
+from ucode.os_compatibility import subprocess_cross_os
+from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock
 from ucode.telemetry import ug_version
 from ucode.ui import (
     err_console,
@@ -45,14 +49,13 @@ from ucode.ui import (
     print_success,
     print_warning,
     spinner,
+    status_subprocess_stdout,
 )
 
 UNIX_DATABRICKS_INSTALL_URL = (
     "https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh"
 )
-WINDOWS_DATABRICKS_INSTALL_URL = (
-    "https://raw.githubusercontent.com/databricks/setup-cli/main/install.ps1"
-)
+WINDOWS_DATABRICKS_WINGET_PACKAGE = "Databricks.DatabricksCLI"
 AI_GATEWAY_DOCS_URL = "https://docs.databricks.com/aws/en/ai-gateway/overview-beta"
 ANTHROPIC_MODELS_PATH = "/ai-gateway/anthropic/v1/models"
 # v1.0.0 is the release that ships `databricks aitools`.
@@ -67,6 +70,29 @@ TOKEN_REFRESH_INTERVAL_SECONDS = 1800
 # we retry rather than treat them as an expired session.
 _TOKEN_CACHE_LOCK_MARKERS = ("cache update", "exit status 45")
 _TOKEN_FETCH_MAX_ATTEMPTS = 4
+# Only explicit credential refusals justify a negative memo; unknown CLI errors
+# can be network, VPN, or service failures that the next call should retry.
+_TOKEN_CREDENTIAL_FAILURE_MARKERS = (
+    "invalid_grant",
+    "invalid refresh token",
+    "refresh token is invalid",
+    "expired refresh token",
+    "refresh token has expired",
+    "no cached token",
+    "no cached credentials",
+    "not configured for this host",
+)
+# `get_databricks_token` is called from many places during one launch, and each
+# miss costs a CLI subprocess (plus a doomed re-auth when the profile is stale).
+# A minted token is reused until this close to its expiry; a token whose JSON
+# carries no expiry, and a failure, are only remembered briefly so long-lived
+# processes (MCP/relay proxies) still notice a re-login done elsewhere.
+_TOKEN_MEMO_EXPIRY_MARGIN_S = 300
+_TOKEN_MEMO_DEFAULT_TTL_S = 60
+_TOKEN_MEMO_FAILURE_TTL_S = 60
+# End browser login before Codex's 180 s helper timeout.
+_BROWSER_LOGIN_TIMEOUT_SECONDS = 150
+_BROWSER_LOGIN_LOCK_PATH = APP_DIR / "auth-login.lock"
 _HTTP_GET_RETRYABLE_STATUS_CODES = frozenset({429})
 _HTTP_GET_RETRY_BASE_SECONDS = 1.0
 _HTTP_GET_RETRY_MAX_SECONDS = 5.0
@@ -197,12 +223,13 @@ def _log_auth_diagnostics() -> None:
         return
 
     try:
-        version_result = subprocess.run(
-            ["databricks", "--version"],
+        version_result = subprocess_cross_os.run(
+            [databricks_cli_path(), "--version"],
             check=False,
             capture_output=True,
             text=True,
             timeout=10,
+            stdin=subprocess.DEVNULL,
         )
         version = (version_result.stdout or version_result.stderr or "").strip()
         _debug("databricks --version", version[:200])
@@ -210,12 +237,13 @@ def _log_auth_diagnostics() -> None:
         _debug("databricks --version", f"exception: {type(exc).__name__}: {exc}")
 
     try:
-        profiles_result = subprocess.run(
-            ["databricks", "auth", "profiles", "--output", "json"],
+        profiles_result = subprocess_cross_os.run(
+            [databricks_cli_path(), "auth", "profiles", "--output", "json"],
             check=False,
             capture_output=True,
             text=True,
             timeout=10,
+            stdin=subprocess.DEVNULL,
         )
         _debug(
             "databricks auth profiles",
@@ -285,40 +313,35 @@ def clear_workspace_org_id_cache() -> None:
     _WORKSPACE_ORG_IDS.clear()
 
 
-def _http_get_json(
+def _http_get_bytes(
     url: str,
     token: str,
     *,
     timeout: int = 10,
     max_retries: int = 0,
     headers: dict[str, str] | None = None,
-) -> tuple[dict | list | None, str | None]:
-    """GET a JSON endpoint. Returns (payload, None) on success, (None, reason) on failure.
+) -> tuple[bytes | None, str | None]:
+    """GET raw bytes. Returns (body, None) on success, (None, reason) on failure.
 
     ``max_retries`` opts individual callers into bounded retries for rate limits
     and network failures. Other callers retain the original single-attempt
     behavior.
 
-    Honors UCODE_DEBUG=1 to append status + truncated body to ~/.ucode/debug.log.
+    Honors UCODE_DEBUG=1 to append status + truncated error body to ~/.ucode/debug.log.
     """
     if max_retries < 0:
         raise ValueError("max_retries must be non-negative")
 
-    request_headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    request_headers = {"Authorization": f"Bearer {token}"}
     request_headers.update(headers or {})
     request = urllib_request.Request(url, headers=request_headers)
     for attempt in range(max_retries + 1):
         try:
             with urllib_request.urlopen(request, timeout=timeout) as response:
-                body = response.read().decode("utf-8")
+                body = response.read()
                 _capture_org_id(url, getattr(response, "headers", None))
             _debug(f"GET {url}", f"HTTP 200, {len(body)} bytes")
-            if _debug_enabled():
-                _debug("body", body[:4000])
-            try:
-                return json.loads(body), None
-            except json.JSONDecodeError as exc:
-                return None, f"response was not valid JSON ({exc.msg})"
+            return body, None
         except urllib_error.HTTPError as exc:
             body = ""
             try:
@@ -363,6 +386,36 @@ def _http_get_json(
     raise AssertionError("unreachable")
 
 
+def _http_get_json(
+    url: str,
+    token: str,
+    *,
+    timeout: int = 10,
+    max_retries: int = 0,
+    headers: dict[str, str] | None = None,
+) -> tuple[dict | list | None, str | None]:
+    """GET a JSON endpoint via `_http_get_bytes`, sharing its retries and failure reasons.
+
+    Honors UCODE_DEBUG=1 to append status + truncated body to ~/.ucode/debug.log.
+    """
+    body, reason = _http_get_bytes(
+        url,
+        token,
+        timeout=timeout,
+        max_retries=max_retries,
+        headers={"Accept": "application/json", **(headers or {})},
+    )
+    if body is None:
+        return None, reason
+    text = body.decode("utf-8")
+    if _debug_enabled():
+        _debug("body", text[:4000])
+    try:
+        return json.loads(text), None
+    except json.JSONDecodeError as exc:
+        return None, f"response was not valid JSON ({exc.msg})"
+
+
 def _http_send_json(
     method: str,
     url: str,
@@ -371,6 +424,7 @@ def _http_send_json(
     *,
     timeout: int = 10,
     allow_empty_body: bool = False,
+    headers: dict[str, str] | None = None,
 ) -> tuple[dict | list | None, str | None]:
     """Send a request that may carry a JSON body, and decode a JSON response.
 
@@ -382,10 +436,11 @@ def _http_send_json(
     empty body there is the expected result, not a decode failure.
     """
     body_bytes = json.dumps(payload).encode("utf-8") if payload is not None else None
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    request_headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     if body_bytes is not None:
-        headers["Content-Type"] = "application/json"
-    request = urllib_request.Request(url, data=body_bytes, method=method, headers=headers)
+        request_headers["Content-Type"] = "application/json"
+    request_headers.update(headers or {})
+    request = urllib_request.Request(url, data=body_bytes, method=method, headers=request_headers)
     try:
         with urllib_request.urlopen(request, timeout=timeout) as response:
             body = response.read().decode("utf-8")
@@ -423,11 +478,16 @@ def _http_send_json(
 
 
 def _http_post_json(
-    url: str, token: str, payload: dict, *, timeout: int = 10
+    url: str,
+    token: str,
+    payload: dict,
+    *,
+    timeout: int = 10,
+    headers: dict[str, str] | None = None,
 ) -> tuple[dict | list | None, str | None]:
     """POST a JSON body to an endpoint. Returns (payload, None) on success,
     (None, reason) on failure. Mirrors `_http_get_json`."""
-    return _http_send_json("POST", url, token, payload, timeout=timeout)
+    return _http_send_json("POST", url, token, payload, timeout=timeout, headers=headers)
 
 
 def _http_patch_json(
@@ -448,36 +508,6 @@ def _http_delete(
     should test ``reason`` rather than the payload.
     """
     return _http_send_json("DELETE", url, token, None, timeout=timeout, allow_empty_body=True)
-
-
-def _http_get_bytes(url: str, token: str, *, timeout: int = 10) -> tuple[bytes | None, str | None]:
-    """GET raw bytes. Returns (body, None) on success, (None, reason) on failure.
-
-    Like `_http_get_json` but leaves the body undecoded, since skill bundles can
-    contain binary files.
-    """
-    request = urllib_request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    try:
-        with urllib_request.urlopen(request, timeout=timeout) as response:
-            body = response.read()
-            _capture_org_id(url, getattr(response, "headers", None))
-        _debug(f"GET {url}", f"HTTP 200, {len(body)} bytes")
-        return body, None
-    except urllib_error.HTTPError as exc:
-        detail = ""
-        try:
-            detail = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
-        except Exception:
-            detail = ""
-        _debug(f"GET {url}", f"HTTP {exc.code} {exc.reason}")
-        reason = f"HTTP {exc.code} {exc.reason}"
-        excerpt = detail.strip()[:200]
-        if excerpt:
-            reason = f"{reason}: {excerpt}"
-        return None, reason
-    except urllib_error.URLError as exc:
-        _debug(f"GET {url}", f"URLError: {exc.reason}")
-        return None, f"network error: {exc.reason}"
 
 
 # Workspace group whose members are workspace admins. `ucode setup` / `ucode publish` are restricted
@@ -654,13 +684,18 @@ def run(
     env: dict[str, str] | None = None,
     timeout: int | None = None,
 ) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
-    return subprocess.run(
+    return subprocess_cross_os.run(
         args,
         check=check,
         capture_output=capture_output,
         text=text,
         env=env,
         timeout=timeout,
+        **(
+            {"stdin": subprocess.DEVNULL}
+            if capture_output
+            else {"stdout": status_subprocess_stdout()}
+        ),
     )
 
 
@@ -679,6 +714,14 @@ def workspace_hostname(workspace: str) -> str:
     return parsed.hostname
 
 
+def workspace_origin(workspace: str) -> str:
+    """Return the workspace scheme and authority, preserving an explicit port."""
+    parsed = urlparse(normalize_workspace_url(workspace))
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise RuntimeError(f"Unable to derive origin from workspace URL: {workspace}")
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
 def _parse_databricks_cli_version(output: str) -> tuple[int, int, int] | None:
     # Example output: "Databricks CLI v0.299.2"
     match = re.search(r"v?(\d+)\.(\d+)\.(\d+)", output)
@@ -687,14 +730,209 @@ def _parse_databricks_cli_version(output: str) -> tuple[int, int, int] | None:
     return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
 
 
+def _iter_databricks_executables() -> list[str]:
+    """Scan every directory on PATH for a `databricks` executable, in PATH order.
+
+    A machine can have more than one `databricks` on PATH (e.g. a stale
+    ``~/.local/bin/databricks`` shadowing a newer Homebrew install); this is the
+    first step of discovering all of them so the caller can pick the best one
+    instead of `shutil.which`'s first match. Returns absolute paths and does NOT
+    dedupe — the same real binary can be reachable via more than one PATH entry
+    (e.g. a symlink), and deduping by realpath is `_discover_databricks_clis`'s
+    job. On POSIX a candidate must have the execute bit; on Windows PATHEXT is
+    honored (a matching filename is runnable — there's no execute bit to test).
+    """
+    if os.name == "nt":
+        exts = tuple(e for e in os.environ.get("PATHEXT", "").split(os.pathsep) if e) or (
+            ".exe",
+            ".bat",
+            ".cmd",
+        )
+
+        def perms_ok(_path: str) -> bool:
+            return True
+    else:
+        exts = ("",)
+
+        def perms_ok(path: str) -> bool:
+            return os.access(path, os.X_OK)
+
+    found: list[str] = []
+    seen_dirs: set[str] = {""}  # seed with "" so empty PATH entries are skipped
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        if directory in seen_dirs:
+            continue
+        seen_dirs.add(directory)
+        for ext in exts:
+            candidate = os.path.join(directory, f"databricks{ext}")
+            if os.path.isfile(candidate) and perms_ok(candidate):
+                found.append(os.path.abspath(candidate))
+    return found
+
+
+def _read_databricks_cli_version(path: str) -> tuple[int, int, int] | None:
+    """Run ``<path> --version`` and parse it. None on any subprocess or parse failure.
+
+    Used only by discovery, which is what establishes ``path`` in the first
+    place — every other caller reads a version through ``databricks_cli_path()``.
+    """
+    try:
+        result = run([path, "--version"], check=False, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    raw = result.stdout or result.stderr or ""
+    output = (raw if isinstance(raw, str) else raw.decode(errors="replace")).strip()
+    return _parse_databricks_cli_version(output)
+
+
+# Process-lifetime cache of discovered `databricks` binaries as an ordered list,
+# best-first: highest parseable version first, unparseable ones last, with PATH order
+# preserved among equals. `databricks_cli_path` just reads the front. None means
+# "not yet scanned" — distinct from an empty list, a cached "found nothing".
+_DISCOVERED_DATABRICKS_CLIS_ORDERED: list[tuple[str, tuple[int, int, int] | None]] | None = None
+
+
+def _discover_databricks_clis(
+    *, use_cache: bool = True
+) -> list[tuple[str, tuple[int, int, int] | None]]:
+    """Find every distinct `databricks` binary on PATH, ordered best-first.
+
+    Dedupes by ``os.path.realpath`` (first PATH-order occurrence wins), so the
+    same binary reachable via more than one PATH entry is only probed once.
+    Version is None when the candidate's ``--version`` errors or its output can't
+    be parsed. The result is sorted newest-version-first (unparseable last, PATH
+    order kept among ties), so the front entry is the one to run. Cached for the
+    life of the process; pass ``use_cache=False`` to force a fresh scan (which
+    also refreshes the cache).
+    """
+    global _DISCOVERED_DATABRICKS_CLIS_ORDERED
+    if use_cache and _DISCOVERED_DATABRICKS_CLIS_ORDERED is not None:
+        return _DISCOVERED_DATABRICKS_CLIS_ORDERED
+
+    seen_real: set[str] = set()
+    discovered: list[tuple[str, tuple[int, int, int] | None]] = []
+    for path in _iter_databricks_executables():
+        real = os.path.realpath(path)
+        if real in seen_real:
+            continue
+        seen_real.add(real)
+        discovered.append((path, _read_databricks_cli_version(path)))
+
+    # Best-first: highest version wins. A stable sort keeps PATH order among equal
+    # versions, and the None-version sentinel (unparseable) sinks below every real one.
+    discovered.sort(key=lambda pv: pv[1] or (-1, -1, -1), reverse=True)
+    _DISCOVERED_DATABRICKS_CLIS_ORDERED = discovered
+    return _DISCOVERED_DATABRICKS_CLIS_ORDERED
+
+
+def _select_databricks_cli(
+    minimum: tuple[int, int, int],
+) -> tuple[str, tuple[int, int, int]] | tuple[None, None]:
+    """The newest discovered CLI whose version is >= ``minimum``, or ``(None, None)``.
+
+    Discovery is already ordered newest-first, so the first match is the newest
+    one meeting ``minimum`` (ties resolve to the earliest on PATH).
+    """
+    for path, version in _discover_databricks_clis():
+        if version is not None and version >= minimum:
+            return path, version
+    return None, None
+
+
+def databricks_cli_path() -> str:
+    """Absolute path to the `databricks` binary every subprocess call must use.
+
+    A machine can have more than one `databricks` on PATH (e.g. a stale
+    ``~/.local/bin/databricks`` shadowing a newer Homebrew install), and
+    `shutil.which` only ever returns the first match — which may be the wrong
+    one. Discovery instead orders every binary newest-first, so the front entry
+    is the one to run; its absolute path means a shadowing install or a
+    minimal-PATH launcher (e.g. a desktop GUI) can't cause the wrong binary to
+    run. Falls back to the bare name only when nothing is discovered at all —
+    running it then raises FileNotFoundError, which callers surface as "CLI not
+    installed". Cached via discovery — call ``clear_databricks_cli_cache()`` to
+    force re-resolution (e.g. after installing/upgrading the CLI).
+    """
+    clis = _discover_databricks_clis()
+    return clis[0][0] if clis else "databricks"
+
+
+def clear_databricks_cli_cache() -> None:
+    """Forget cached CLI discovery/resolution (used by tests, and after an install/upgrade)."""
+    global _DISCOVERED_DATABRICKS_CLIS_ORDERED
+    _DISCOVERED_DATABRICKS_CLIS_ORDERED = None
+    with _AUTH_LOGIN_NO_BROWSER_SUPPORT_LOCK:
+        _AUTH_LOGIN_NO_BROWSER_SUPPORT.clear()
+
+
+def databricks_cli_installed() -> bool:
+    """Whether any `databricks` binary was found on PATH."""
+    return bool(_discover_databricks_clis())
+
+
+def _windows_user_path() -> str | None:
+    if sys.platform != "win32":
+        return None
+
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            value, _ = winreg.QueryValueEx(key, "Path")
+    except OSError:
+        return None
+    return value if isinstance(value, str) else None
+
+
+def _refresh_windows_path() -> None:
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    path = os.environ.get("PATH", "")
+    entries = path.split(os.pathsep) if path else []
+    persisted_path = _windows_user_path()
+    candidates = persisted_path.split(os.pathsep) if persisted_path else []
+    if local_app_data:
+        candidates.insert(0, str(Path(local_app_data) / "Microsoft" / "WinGet" / "Links"))
+
+    known = {os.path.normcase(entry) for entry in entries}
+    new_entries = []
+    for entry in candidates:
+        expanded = os.path.expandvars(entry)
+        normalized = os.path.normcase(expanded)
+        if expanded and normalized not in known:
+            new_entries.append(expanded)
+            known.add(normalized)
+    if not new_entries:
+        return
+    # Writing renames the inherited `Path` to `PATH` for child processes, so only write on change.
+    os.environ["PATH"] = os.pathsep.join([*new_entries, *entries])
+    clear_databricks_cli_cache()
+
+
 def _run_databricks_cli_installer(brew_subcommand: str = "install") -> None:
     system = platform.system()
     try:
         if system == "Windows":
+            winget = shutil.which("winget")
+            if winget is None:
+                raise RuntimeError(
+                    "WinGet is required on Windows. Install App Installer, then run "
+                    f"`winget install --exact --id {WINDOWS_DATABRICKS_WINGET_PACKAGE}`."
+                )
             run(
-                ["powershell", "-Command", f"irm {WINDOWS_DATABRICKS_INSTALL_URL} | iex"],
+                [
+                    winget,
+                    brew_subcommand,
+                    "--exact",
+                    "--id",
+                    WINDOWS_DATABRICKS_WINGET_PACKAGE,
+                    "--source",
+                    "winget",
+                    "--accept-package-agreements",
+                    "--accept-source-agreements",
+                ],
                 timeout=240,
             )
+            _refresh_windows_path()
         elif system == "Darwin" and shutil.which("brew"):
             run(["brew", brew_subcommand, "databricks/tap/databricks"], timeout=240)
         elif shutil.which("curl"):
@@ -705,69 +943,67 @@ def _run_databricks_cli_installer(brew_subcommand: str = "install") -> None:
             raise RuntimeError("Neither curl nor wget is available.")
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError) as exc:
         message = "Failed to install/upgrade Databricks CLI automatically."
-        # The official installer only tells you to remove /usr/local/bin/databricks,
-        # but a stale copy in ~/.local/bin can shadow it and break the install. Point
-        # at it explicitly so users know to delete that one too.
-        local_bin = Path("~/.local/bin/databricks").expanduser()
-        if local_bin.exists():
-            message += (
-                f"\nIf you have an existing Databricks CLI installation, please first "
-                f"remove it using\n  rm '{local_bin}'"
-            )
+        if system == "Windows" and isinstance(exc, RuntimeError):
+            message += f"\n{exc}"
         raise RuntimeError(message) from exc
+    # A binary may have just been installed/upgraded at a new (or the same) path;
+    # drop any stale discovery/resolution so the next lookup re-scans PATH.
+    clear_databricks_cli_cache()
 
 
 def ensure_databricks_cli_version(
     minimum: tuple[int, int, int] = MIN_DATABRICKS_CLI_VERSION,
 ) -> None:
-    try:
-        result = run(
-            ["databricks", "--version"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise RuntimeError("Failed to read Databricks CLI version.") from exc
+    clis = _discover_databricks_clis(use_cache=False)
+    if not clis:
+        raise RuntimeError("Failed to read Databricks CLI version.")
 
-    raw = result.stdout or result.stderr or ""
-    output = (raw if isinstance(raw, str) else raw.decode(errors="replace")).strip()
-    version = _parse_databricks_cli_version(output)
-    if version is None:
+    parsed = [(path, version) for path, version in clis if version is not None]
+    if not parsed:
+        # Best-effort sample for the error message: the binary we'd run's raw
+        # `--version` output (already known unparseable, but worth showing why).
+        try:
+            result = run(
+                [databricks_cli_path(), "--version"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            raw = result.stdout or result.stderr or ""
+            output = (raw if isinstance(raw, str) else raw.decode(errors="replace")).strip()
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            output = f"<error reading version: {exc}>"
         raise RuntimeError(
             f"Could not parse Databricks CLI version from `databricks --version` output: {output!r}"
         )
-    if version < minimum:
-        current = ".".join(str(n) for n in version)
+
+    newest_path, newest_version = max(parsed, key=lambda item: item[1])
+    if newest_version < minimum:
+        current = ".".join(str(n) for n in newest_version)
         required = ".".join(str(n) for n in minimum)
         print_warning(
             f"Databricks CLI v{current} is too old (need v{required} or newer). Upgrading..."
         )
         _run_databricks_cli_installer(brew_subcommand="upgrade")
         ensure_databricks_cli_version(minimum)
+        return
+
+    # A discovered CLI already meets the floor: drop the cached resolution so
+    # `databricks_cli_path()` re-resolves to it (it may differ from whatever was
+    # cached before this call, e.g. right after an install).
+    clear_databricks_cli_cache()
 
 
 def databricks_cli_version() -> tuple[int, int, int] | None:
-    """Return the installed Databricks CLI's (major, minor, patch), or None if
-    the CLI is absent or its version can't be read/parsed. Unlike
-    ``ensure_databricks_cli_version`` this only reports — it never upgrades — so
-    ``ucode doctor`` can decide what to recommend."""
-    if not shutil.which("databricks"):
-        return None
-    try:
-        result = run(
-            ["databricks", "--version"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    raw = result.stdout or result.stderr or ""
-    output = (raw if isinstance(raw, str) else raw.decode(errors="replace")).strip()
-    return _parse_databricks_cli_version(output)
+    """Return the version of the Databricks CLI that ``databricks_cli_path()``
+    would run, or None if none was discovered / its version can't be
+    read/parsed. Unlike ``ensure_databricks_cli_version`` this only reports —
+    it never upgrades — so ``ucode doctor`` can decide what to recommend."""
+    # Discovery is ordered best-first, so the front entry's version is the one
+    # `databricks_cli_path()` would run.
+    clis = _discover_databricks_clis()
+    return clis[0][1] if clis else None
 
 
 def upgrade_databricks_cli() -> bool:
@@ -792,7 +1028,10 @@ def install_databricks_cli(
     ``databricks aitools`` floor (v1.0.0) rejects a perfectly usable public-preview
     build (e.g. v0.299.2) as a false positive. A missing CLI is still installed —
     only the version *check* is bypassed."""
-    if shutil.which("databricks"):
+    if platform.system() == "Windows":
+        _refresh_windows_path()
+
+    if databricks_cli_installed():
         if not skip_version_check:
             ensure_databricks_cli_version(minimum)
         return
@@ -801,7 +1040,7 @@ def install_databricks_cli(
     print_warning("`databricks` was not found. Installing Databricks CLI...")
     _run_databricks_cli_installer(brew_subcommand="install")
 
-    if not shutil.which("databricks"):
+    if not _discover_databricks_clis(use_cache=False):
         raise RuntimeError(
             "Databricks CLI install completed, but `databricks` is still not on PATH."
         )
@@ -823,7 +1062,15 @@ def install_ai_tools(agent_tokens: list[str], profile: str | None = None) -> Non
     try:
         with spinner(f"Installing Databricks AI Tools for {agents_arg}..."):
             run(
-                ["databricks", "aitools", "install", "--agents", agents_arg, "--scope", "global"]
+                [
+                    databricks_cli_path(),
+                    "aitools",
+                    "install",
+                    "--agents",
+                    agents_arg,
+                    "--scope",
+                    "global",
+                ]
                 + _profile_args(profile),
                 check=True,
                 capture_output=True,
@@ -889,6 +1136,15 @@ def save_databricks_cli_oauth_profile(workspace: str, profile: str, client_id: s
 
 
 def has_valid_databricks_auth(workspace: str, profile: str | None = None) -> bool:
+    return check_databricks_auth(workspace, profile) is True
+
+
+def check_databricks_auth(workspace: str, profile: str | None = None) -> bool | None:
+    """Whether the workspace has valid credentials, or None when the CLI could not be run to check.
+
+    None covers a CLI that fails to start (e.g. Windows `Access is denied` inside an agent sandbox)
+    or times out, so callers can tell "unchecked" from "rejected".
+    """
     # Auth owned elsewhere is valid by definition: skip the `databricks auth
     # token` shell-out (which only knows user-OAuth) and any login it triggers.
     if external_bearer_configured():
@@ -898,36 +1154,56 @@ def has_valid_databricks_auth(workspace: str, profile: str | None = None) -> boo
     # profiles for the same host, `databricks auth token --host …` refuses
     # to disambiguate without --profile, so resolve it from the host here.
     profile = profile or find_profile_name_for_host(workspace)
-    try:
-        env = build_databricks_cli_env(workspace, profile)
-        result = run(
-            [
-                "databricks",
-                "auth",
-                "token",
-                "--host",
-                workspace,
-                *_profile_args(profile),
-                "--output",
-                "json",
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=15,
-        )
-        _debug(
-            "has_valid_databricks_auth",
-            _format_subprocess_result(result),
-        )
-        if result.returncode != 0:
+    # Only a memoized token short-circuits: a memoized failure must not stop the
+    # caller's interactive login from being offered.
+    memo_key = _token_memo_key(workspace, profile)
+    memoized = _memoized_token(memo_key)
+    if memoized is not None and memoized.token:
+        return True
+    with _token_inflight_lock(memo_key):
+        # A negative memo is deliberately ignored, but another successful
+        # fetch may have completed while this caller waited for the key.
+        memoized = _memoized_token(memo_key)
+        if memoized is not None and memoized.token:
+            return True
+        epoch = _token_cache_epoch()
+        try:
+            env = build_databricks_cli_env(workspace, profile)
+            result = run(
+                [
+                    databricks_cli_path(),
+                    "auth",
+                    "token",
+                    "--host",
+                    workspace,
+                    *_profile_args(profile),
+                    "--output",
+                    "json",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=15,
+            )
+            _debug(
+                "has_valid_databricks_auth",
+                _format_subprocess_result(result),
+            )
+            if result.returncode != 0:
+                return False
+            data = json.loads(result.stdout or "{}")
+            token = data.get("access_token")
+            if not token:
+                return False
+            _remember_token(memo_key, token, _token_lifetime_s(data), _token_epoch=epoch)
+            return True
+        except json.JSONDecodeError as exc:
+            _debug("has_valid_databricks_auth", f"exception: {type(exc).__name__}: {exc}")
             return False
-        data = json.loads(result.stdout or "{}")
-        return bool(data.get("access_token"))
-    except (json.JSONDecodeError, OSError, subprocess.TimeoutExpired) as exc:
-        _debug("has_valid_databricks_auth", f"exception: {type(exc).__name__}: {exc}")
-        return False
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            _debug("has_valid_databricks_auth", f"exception: {type(exc).__name__}: {exc}")
+            return None
 
 
 def list_profile_entries() -> list[dict]:
@@ -946,7 +1222,7 @@ def list_profile_entries() -> list[dict]:
     """
     try:
         result = run(
-            ["databricks", "auth", "profiles", "--output", "json"],
+            [databricks_cli_path(), "auth", "profiles", "--output", "json"],
             check=False,
             capture_output=True,
             text=True,
@@ -1085,7 +1361,7 @@ def run_databricks_login(workspace: str, profile: str | None = None) -> None:
     try:
         profile_name = profile or find_profile_name_for_host(workspace)
         cmd = [
-            "databricks",
+            databricks_cli_path(),
             "auth",
             "login",
             "--host",
@@ -1097,6 +1373,9 @@ def run_databricks_login(workspace: str, profile: str | None = None) -> None:
         raise RuntimeError("`databricks auth login` failed.") from exc
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("`databricks auth login` timed out.") from exc
+    finally:
+        # Even a failed login may have replaced the profile's tokens.
+        clear_databricks_token_cache()
     print_success("Databricks authentication complete")
 
 
@@ -1158,11 +1437,388 @@ def _bearer_from_command(command: str) -> str:
     raise RuntimeError(f"DATABRICKS_BEARER_COMMAND {reason}. Command: {command}.{detail}")
 
 
+@dataclass(frozen=True)
+class _MemoizedToken:
+    token: str | None
+    error: str | None
+    valid_until: float
+    wall_valid_until: float
+
+
+_TOKEN_MEMO: dict[tuple[str, str | None], _MemoizedToken] = {}
+_TOKEN_MEMO_LOCK = threading.Lock()
+_TOKEN_IN_FLIGHT_LOCKS: dict[tuple[str, str | None], threading.Lock] = {}
+_TOKEN_CACHE_EPOCH = 0
+# Keyed by CLI path: whether `databricks auth login` accepts `--no-browser`.
+_AUTH_LOGIN_NO_BROWSER_SUPPORT: dict[str, bool] = {}
+_AUTH_LOGIN_NO_BROWSER_SUPPORT_LOCK = threading.Lock()
+
+
+def clear_databricks_token_cache() -> None:
+    """Forget memoized tokens and failures (after a login, and between tests)."""
+    global _TOKEN_CACHE_EPOCH
+    with _TOKEN_MEMO_LOCK:
+        _TOKEN_CACHE_EPOCH += 1
+        _TOKEN_MEMO.clear()
+
+
+def _token_memo_key(workspace: str, profile: str | None) -> tuple[str, str | None]:
+    return workspace.rstrip("/"), profile
+
+
+def _token_inflight_lock(key: tuple[str, str | None]) -> threading.Lock:
+    """Return the persistent single-flight lock for one workspace/profile key."""
+    with _TOKEN_MEMO_LOCK:
+        lock = _TOKEN_IN_FLIGHT_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _TOKEN_IN_FLIGHT_LOCKS[key] = lock
+        return lock
+
+
+def _token_cache_epoch() -> int:
+    with _TOKEN_MEMO_LOCK:
+        return _TOKEN_CACHE_EPOCH
+
+
+def _memoized_token(key: tuple[str, str | None]) -> _MemoizedToken | None:
+    with _TOKEN_MEMO_LOCK:
+        entry = _TOKEN_MEMO.get(key)
+        if entry is None:
+            return None
+        # Monotonic time may pause during suspend; wall time catches expiry
+        # during sleep, while monotonic time bounds reuse after clock rollback.
+        if time.monotonic() >= entry.valid_until or time.time() >= entry.wall_valid_until:
+            del _TOKEN_MEMO[key]
+            return None
+        return entry
+
+
+def _token_lifetime_s(payload: dict) -> float | None:
+    """Seconds until a token expires, using the earliest stated deadline.
+
+    The earlier of ``expires_in`` and the absolute ``expiry`` wins, so a CLI
+    that echoes the as-issued ``expires_in`` cannot stretch the memo past the
+    token.
+    """
+    lifetimes: list[float] = []
+    expires_in = payload.get("expires_in")
+    if isinstance(expires_in, int | float) and not isinstance(expires_in, bool):
+        lifetimes.append(float(expires_in))
+    expiry = payload.get("expiry")
+    if isinstance(expiry, str) and expiry:
+        try:
+            parsed = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+        except ValueError:
+            parsed = None
+        if parsed is not None and parsed.tzinfo is not None:
+            lifetimes.append(parsed.timestamp() - time.time())
+    return min(lifetimes) if lifetimes else None
+
+
+def _remember_token(
+    key: tuple[str, str | None],
+    token: str,
+    lifetime_s: float | None,
+    *,
+    _token_epoch: int | None = None,
+) -> None:
+    ttl = (
+        lifetime_s - _TOKEN_MEMO_EXPIRY_MARGIN_S
+        if lifetime_s is not None
+        else _TOKEN_MEMO_DEFAULT_TTL_S
+    )
+    with _TOKEN_MEMO_LOCK:
+        if _token_epoch is not None and _token_epoch != _TOKEN_CACHE_EPOCH:
+            return
+        if ttl <= 0:
+            # A forced refresh can replace a still-valid memo with a token that
+            # is already too close to expiry to reuse. Do not leave the older
+            # token behind for subsequent non-forced callers.
+            _TOKEN_MEMO.pop(key, None)
+            return
+        _TOKEN_MEMO[key] = _MemoizedToken(token, None, time.monotonic() + ttl, time.time() + ttl)
+
+
+def _remember_token_failure(
+    key: tuple[str, str | None], error: str, *, _token_epoch: int | None = None
+) -> None:
+    with _TOKEN_MEMO_LOCK:
+        if _token_epoch is not None and _token_epoch != _TOKEN_CACHE_EPOCH:
+            return
+        _TOKEN_MEMO[key] = _MemoizedToken(
+            None,
+            error,
+            time.monotonic() + _TOKEN_MEMO_FAILURE_TTL_S,
+            time.time() + _TOKEN_MEMO_FAILURE_TTL_S,
+        )
+
+
+def _auth_login_supports_no_browser(cli: str) -> bool:
+    """Whether this CLI's `auth login` accepts ``--no-browser``; checked once per process.
+
+    Current CLIs (v1.17-v1.19) reject the flag outright, so running the re-auth
+    just spawns a guaranteed `unknown flag` failure. Fail closed: if ``--help``
+    can't be read or fails, a login with the flag would not have worked either.
+    """
+    with _AUTH_LOGIN_NO_BROWSER_SUPPORT_LOCK:
+        supported = _AUTH_LOGIN_NO_BROWSER_SUPPORT.get(cli)
+        if supported is None:
+            try:
+                result = run(
+                    [cli, "auth", "login", "--help"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                supported = result.returncode == 0 and "--no-browser" in (
+                    f"{result.stdout or ''}{result.stderr or ''}"
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                _debug("auth login --help", f"exception: {type(exc).__name__}: {exc}")
+                supported = False
+            _AUTH_LOGIN_NO_BROWSER_SUPPORT[cli] = supported
+        return supported
+
+
+def _browser_login(
+    workspace: str,
+    profile: str | None,
+    env: dict[str, str],
+    fetch: Callable[[], tuple[str, float | None]],
+) -> tuple[str, float | None]:
+    """Serialize browser sign-in across helpers sharing the CLI's callback port."""
+    started = time.monotonic()
+    _BROWSER_LOGIN_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with _BROWSER_LOGIN_LOCK_PATH.open("a+b") as lock_file:
+        acquire_exclusive_file_lock(lock_file)
+        # Another helper may have signed in while we waited.
+        token, lifetime_s = fetch()
+        if token:
+            return token, lifetime_s
+        remaining = _BROWSER_LOGIN_TIMEOUT_SECONDS - (time.monotonic() - started)
+        if remaining <= 0:
+            return "", None
+        try:
+            # Keep login output off the helper's token-only stdout.
+            subprocess_cross_os.run(
+                [
+                    databricks_cli_path(),
+                    "auth",
+                    "login",
+                    "--host",
+                    workspace,
+                    *_profile_args(profile),
+                ],
+                timeout=remaining,
+                stdin=subprocess.DEVNULL,
+                stdout=sys.stderr,
+                stderr=sys.stderr,
+                env=env,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            _debug("auth login", f"exception: {type(exc).__name__}: {exc}")
+        return fetch()
+
+
+def _get_databricks_token_for_profile(
+    workspace: str,
+    profile: str | None,
+    *,
+    force_refresh: bool,
+    browser_login: bool,
+) -> str:
+    memo_key = _token_memo_key(workspace, profile)
+    if not force_refresh:
+        memoized = _memoized_token(memo_key)
+        if memoized is not None:
+            _debug(
+                "get_databricks_token",
+                f"memoized {'token' if memoized.token else 'failure'} "
+                f"profile={profile or '<none>'}",
+            )
+            if memoized.token:
+                return memoized.token
+            if not browser_login:
+                raise RuntimeError(memoized.error)
+
+    # The second memo check is required after waiting for another caller's
+    # fetch. The lock is per workspace/profile, so unrelated profiles proceed.
+    with _token_inflight_lock(memo_key):
+        if not force_refresh:
+            memoized = _memoized_token(memo_key)
+            if memoized is not None:
+                _debug(
+                    "get_databricks_token",
+                    f"memoized {'token' if memoized.token else 'failure'} "
+                    f"profile={profile or '<none>'}",
+                )
+                if memoized.token:
+                    return memoized.token
+                if not browser_login:
+                    raise RuntimeError(memoized.error)
+        token_epoch = _token_cache_epoch()
+        return _fetch_databricks_token_for_profile(
+            workspace,
+            profile,
+            force_refresh=force_refresh,
+            browser_login=browser_login,
+            token_epoch=token_epoch,
+        )
+
+
+def _fetch_databricks_token_for_profile(
+    workspace: str,
+    profile: str | None,
+    *,
+    force_refresh: bool,
+    browser_login: bool,
+    token_epoch: int,
+) -> str:
+    memo_key = _token_memo_key(workspace, profile)
+    env = build_databricks_cli_env(workspace, profile)
+    cli = databricks_cli_path()
+    cmd = [
+        cli,
+        "auth",
+        "token",
+        "--host",
+        workspace,
+        *_profile_args(profile),
+        "--output",
+        "json",
+    ]
+    if force_refresh:
+        cmd.append("--force-refresh")
+
+    _debug(
+        "get_databricks_token.env",
+        "set="
+        + ",".join(sorted(k for k in env if k.startswith("DATABRICKS_") or k in {"BUNDLE_PROFILE"}))
+        + f" profile={profile or '<none>'}",
+    )
+
+    # Treat unknown failures as transient unless the CLI explicitly identifies
+    # invalid or missing credentials.
+    transient_failure = True
+
+    def _fetch() -> tuple[str, float | None, str]:
+        """Return (access_token, lifetime_s, diagnostics). token is '' on failure."""
+        nonlocal transient_failure
+        transient_failure = True
+        try:
+            result = run(
+                cmd,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=15,
+            )
+            _debug("auth token", _format_subprocess_result(result))
+            if result.returncode == 0:
+                payload = json.loads(result.stdout or "{}")
+                if not isinstance(payload, dict):
+                    return "", None, "Databricks CLI token response is not a JSON object"
+                return payload.get("access_token", ""), _token_lifetime_s(payload), ""
+            diagnostics = f"{result.stderr or ''}\n{result.stdout or ''}"
+            transient_failure = not any(
+                marker in diagnostics.lower() for marker in _TOKEN_CREDENTIAL_FAILURE_MARKERS
+            )
+            return "", None, diagnostics
+        except (subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+            _debug("auth token", f"exception: {type(exc).__name__}: {exc}")
+            return "", None, str(exc)
+
+    def _fetch_with_lock_retry() -> tuple[str, float | None]:
+        """Mint a token, retrying transient token-cache lock contention.
+
+        Concurrent `databricks auth token` calls racing on the shared cache fail
+        fast with a lock error (see ``_TOKEN_CACHE_LOCK_MARKERS``). The lock is
+        held only for the brief cache write, so a short jittered backoff almost
+        always wins the next attempt. A non-lock failure returns '' immediately
+        so the caller can fall through to the re-auth path."""
+        nonlocal transient_failure
+        for attempt in range(_TOKEN_FETCH_MAX_ATTEMPTS):
+            token, lifetime_s, diagnostics = _fetch()
+            if token:
+                return token, lifetime_s
+            if not any(marker in diagnostics.lower() for marker in _TOKEN_CACHE_LOCK_MARKERS):
+                return "", None
+            _debug("auth token", f"cache-lock contention (attempt {attempt + 1}); retrying")
+            transient_failure = True
+            if attempt < _TOKEN_FETCH_MAX_ATTEMPTS - 1:
+                time.sleep(random.uniform(0.05, 0.1 * (2**attempt)))
+        return "", None
+
+    token, lifetime_s = _fetch_with_lock_retry()
+    if not token and browser_login and not transient_failure:
+        # A desktop app's helper has no terminal to finish a non-browser login.
+        token, lifetime_s = _browser_login(workspace, profile, env, _fetch_with_lock_retry)
+    elif not token and _auth_login_supports_no_browser(cli):
+        # Session may have expired — attempt non-interactive re-auth and retry once.
+        _debug("auth token", "empty on first fetch; attempting auth login --no-browser")
+        try:
+            reauth = run(
+                [
+                    cli,
+                    "auth",
+                    "login",
+                    "--host",
+                    workspace,
+                    *_profile_args(profile),
+                    "--no-browser",
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=30,
+            )
+            _debug("auth login", _format_subprocess_result(reauth))
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            # A failed re-auth changed nothing, so re-fetching would fail the same way.
+            if isinstance(exc, subprocess.TimeoutExpired):
+                transient_failure = True
+            _debug("auth login", f"exception: {type(exc).__name__}: {exc}")
+        else:
+            if reauth.returncode == 0:
+                token, lifetime_s = _fetch_with_lock_retry()
+            else:
+                _debug("auth login", f"returned non-zero status {reauth.returncode}")
+    elif not token:
+        _debug("auth token", "empty on first fetch; CLI has no `auth login --no-browser`")
+
+    if not token:
+        error = f"Databricks CLI returned no access token for {workspace}. "
+        if transient_failure:
+            error += (
+                "Retry the request and check network connectivity or Databricks CLI diagnostics."
+            )
+        else:
+            error += "Run `databricks auth login` to re-authenticate."
+            profile_name = profile or find_profile_name_for_host(workspace)
+            if profile_name:
+                error += (
+                    " The saved Databricks CLI profile may be stale or invalid. Try:\n"
+                    f"  databricks auth logout --profile {profile_name}\n"
+                    f"  databricks auth login --host {workspace} --profile {profile_name}"
+                )
+        # A forced refresh is a retry after a rejected token; its failure must not
+        # shadow an earlier token that non-forced callers may still be using.
+        if not force_refresh and not transient_failure:
+            _remember_token_failure(memo_key, error, _token_epoch=token_epoch)
+        raise RuntimeError(error)
+    _remember_token(memo_key, token, lifetime_s, _token_epoch=token_epoch)
+    return token
+
+
 def get_databricks_token(
     workspace: str,
     profile: str | None = None,
     *,
     force_refresh: bool = False,
+    browser_login: bool = False,
 ) -> str:
     # ``DATABRICKS_BEARER`` is the CI escape hatch: when set, skip the
     # `databricks auth token` subprocess entirely and return the pre-fetched
@@ -1187,105 +1843,12 @@ def get_databricks_token(
     # See has_valid_databricks_auth: resolve the profile from the host when
     # the caller didn't supply one, so duplicate-host cfgs don't break us.
     profile = profile or find_profile_name_for_host(workspace)
-    env = build_databricks_cli_env(workspace, profile)
-    cmd = [
-        "databricks",
-        "auth",
-        "token",
-        "--host",
+    return _get_databricks_token_for_profile(
         workspace,
-        *_profile_args(profile),
-        "--output",
-        "json",
-    ]
-    if force_refresh:
-        cmd.append("--force-refresh")
-
-    _debug(
-        "get_databricks_token.env",
-        "set="
-        + ",".join(sorted(k for k in env if k.startswith("DATABRICKS_") or k in {"BUNDLE_PROFILE"}))
-        + f" profile={profile or '<none>'}",
+        profile,
+        force_refresh=force_refresh,
+        browser_login=browser_login,
     )
-
-    def _fetch() -> tuple[str, str]:
-        """Return (access_token, stderr). token is '' on any failure."""
-        try:
-            result = run(
-                cmd,
-                check=False,
-                capture_output=True,
-                text=True,
-                env=env,
-                timeout=15,
-            )
-            _debug("auth token", _format_subprocess_result(result))
-            if result.returncode == 0:
-                return json.loads(result.stdout or "{}").get("access_token", ""), ""
-            return "", result.stderr or ""
-        except (subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
-            _debug("auth token", f"exception: {type(exc).__name__}: {exc}")
-            return "", str(exc)
-
-    def _fetch_with_lock_retry() -> str:
-        """Mint a token, retrying transient token-cache lock contention.
-
-        Concurrent `databricks auth token` calls racing on the shared cache fail
-        fast with a lock error (see ``_TOKEN_CACHE_LOCK_MARKERS``). The lock is
-        held only for the brief cache write, so a short jittered backoff almost
-        always wins the next attempt. A non-lock failure returns '' immediately
-        so the caller can fall through to the re-auth path."""
-        for attempt in range(_TOKEN_FETCH_MAX_ATTEMPTS):
-            token, stderr = _fetch()
-            if token:
-                return token
-            if not any(marker in stderr.lower() for marker in _TOKEN_CACHE_LOCK_MARKERS):
-                return ""
-            _debug("auth token", f"cache-lock contention (attempt {attempt + 1}); retrying")
-            if attempt < _TOKEN_FETCH_MAX_ATTEMPTS - 1:
-                time.sleep(random.uniform(0.05, 0.1 * (2**attempt)))
-        return ""
-
-    token = _fetch_with_lock_retry()
-    if not token:
-        # Session may have expired — attempt non-interactive re-auth and retry once.
-        _debug("auth token", "empty on first fetch; attempting auth login --no-browser")
-        try:
-            reauth = run(
-                [
-                    "databricks",
-                    "auth",
-                    "login",
-                    "--host",
-                    workspace,
-                    *_profile_args(profile),
-                    "--no-browser",
-                ],
-                capture_output=True,
-                text=True,
-                env=env,
-                timeout=30,
-            )
-            _debug("auth login", _format_subprocess_result(reauth))
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-            _debug("auth login", f"exception: {type(exc).__name__}: {exc}")
-        token = _fetch_with_lock_retry()
-
-    if not token:
-        profile_name = profile or find_profile_name_for_host(workspace)
-        stale_profile_hint = ""
-        if profile_name:
-            stale_profile_hint = (
-                " The saved Databricks CLI profile may be stale or invalid. Try:\n"
-                f"  databricks auth logout --profile {profile_name}\n"
-                f"  databricks auth login --host {workspace} --profile {profile_name}"
-            )
-        raise RuntimeError(
-            f"Databricks CLI returned no access token for {workspace}. "
-            "Run `databricks auth login` to re-authenticate."
-            f"{stale_profile_hint}"
-        )
-    return token
 
 
 def _extract_apps_payload(payload: object) -> list[dict]:
@@ -1326,17 +1889,9 @@ class AuthTokenError(RuntimeError):
 
 
 def raise_for_invalid_access_token(workspace: str, reason: str | None) -> None:
-    """Raise :class:`AuthTokenError` with re-auth guidance when ``reason`` shows the
-    workspace rejected the token itself. No-op for any other failure (permission,
-    transient) so a best-effort discovery caller can still skip a source quietly."""
+    """Raise a concise auth error for a rejected token; ignore other failures."""
     if reason and _looks_like_definitive_auth_failure(reason):
-        raise AuthTokenError(
-            f"Databricks rejected the access token for {workspace} — it is expired or "
-            f"invalid ({reason}). Re-authenticate:\n"
-            f"  databricks auth login --host {workspace}\n"
-            "If this profile uses a personal access token (PAT), generate a new token "
-            "and update it in ~/.databrickscfg."
-        )
+        raise AuthTokenError("Your access token is expired or invalid.")
 
 
 def _looks_like_cli_permission_error(stderr: str | None) -> bool:
@@ -1357,7 +1912,7 @@ def list_databricks_apps(workspace: str, profile: str | None = None) -> list[dic
     try:
         result = run(
             [
-                "databricks",
+                databricks_cli_path(),
                 "apps",
                 "list",
                 *_profile_args(profile),
@@ -1442,10 +1997,9 @@ def build_auth_shell_command(
     Used where a tool wants the helper as one command *string* (Claude Code's
     `apiKeyHelper`). On every platform this resolves to the `ug auth-token`
     executable rather than a POSIX shell pipeline, so no `sh`/`jq` is required."""
-    argv = build_auth_token_argv(workspace, profile, use_pat=use_pat)
-    if platform.system() == "Windows":
-        return subprocess.list2cmdline(argv)
-    return shlex.join(argv)
+    return subprocess_cross_os.shell_command(
+        build_auth_token_argv(workspace, profile, use_pat=use_pat)
+    )
 
 
 def build_otel_headers_argv(
@@ -1464,10 +2018,9 @@ def build_otel_headers_shell_command(
     workspace: str, profile: str | None = None, *, use_pat: bool = False
 ) -> str:
     """Shell-quoted form of :func:`build_otel_headers_argv`."""
-    argv = build_otel_headers_argv(workspace, profile, use_pat=use_pat)
-    if platform.system() == "Windows":
-        return subprocess.list2cmdline(argv)
-    return shlex.join(argv)
+    return subprocess_cross_os.shell_command(
+        build_otel_headers_argv(workspace, profile, use_pat=use_pat)
+    )
 
 
 # A model-service's `name` is `model-services/system.ai.<model-name>`; the
@@ -1649,7 +2202,7 @@ def list_model_services(
         if cached is not None:
             return list(cached), None
 
-    hostname = workspace_hostname(workspace)
+    origin = workspace_origin(workspace)
     ids: list[str] = []
     page_token: str | None = None
     seen_tokens: set[str] = set()
@@ -1661,7 +2214,7 @@ def list_model_services(
         }
         if page_token:
             params["page_token"] = page_token
-        url = f"https://{hostname}/api/2.1/unity-catalog/model-services?{urlencode(params)}"
+        url = f"{origin}/api/2.1/unity-catalog/model-services?{urlencode(params)}"
         payload, reason = _get_model_services_page(url, token)
         if payload is None:
             # Surface the failure only if we have nothing yet; a mid-pagination
@@ -1830,12 +2383,30 @@ def discover_model_services(
 _CODING_AGENT_CONFIGS_API_PATH = "/api/ai-gateway/v2/coding-agent-configs"
 
 
+def _managed_config_user_agent() -> str:
+    """``ucode/<v>`` plus each ``<agent>/<v>`` ug already wrote into the OS-managed files.
+
+    The fetch serves every agent, so it reports what ug configured on this machine; reading the
+    managed files avoids probing each agent's ``--version`` on every fetch."""
+    from ucode.agents import claude, codex  # the agent modules import this one
+    from ucode.managed_files import ug_agent_token
+
+    tokens = [f"ucode/{ug_version()}"]
+    for agent, user_agent in (
+        ("claude", claude.managed_user_agent()),
+        ("codex", codex.managed_user_agent()),
+    ):
+        token = ug_agent_token(user_agent or "", agent)
+        if token:
+            tokens.append(token)
+    return " ".join(tokens)
+
+
 def fetch_managed_coding_agent_configs(workspace: str, token: str) -> tuple[list[dict], str | None]:
     """List the workspace's managed CodingAgentConfig(s) via the AI Gateway."""
-    hostname = workspace_hostname(workspace)
-    url = f"https://{hostname}{_CODING_AGENT_CONFIGS_API_PATH}"
+    url = f"{workspace_origin(workspace)}{_CODING_AGENT_CONFIGS_API_PATH}"
     payload, reason = _http_get_json(
-        url, token, timeout=30, headers={"User-Agent": f"ucode/{ug_version()}"}
+        url, token, timeout=30, headers={"User-Agent": _managed_config_user_agent()}
     )
     if reason is not None:
         return [], reason
@@ -1856,8 +2427,7 @@ def fetch_model_recommendation(workspace: str, token: str) -> tuple[dict, str | 
     The request takes no parameters: the server matches the caller's live spend against the managed
     config's budget tiers and resolves the agent first, then that agent's model.
     """
-    hostname = workspace_hostname(workspace)
-    url = f"https://{hostname}{_CODING_AGENT_CONFIGS_API_PATH}:recommendModel"
+    url = f"{workspace_origin(workspace)}{_CODING_AGENT_CONFIGS_API_PATH}:recommendModel"
     payload, reason = _http_post_json(url, token, {}, timeout=30)
     if reason is not None:
         return {}, reason
@@ -1880,8 +2450,8 @@ def fetch_external_model_prices(workspace: str, token: str) -> tuple[list[dict],
     Returns ``(models, reason)`` with each model the raw API entry; ``reason`` is non-None on failure
     (callers omit cost rather than fail).
     """
-    hostname = workspace_hostname(workspace)
-    base_url = f"https://{hostname}{_EXTERNAL_PROVIDER_MODELS_API_PATH}"
+    origin = workspace_origin(workspace)
+    base_url = f"{origin}{_EXTERNAL_PROVIDER_MODELS_API_PATH}"
     models: list[dict] = []
     page_token: str | None = None
     seen_tokens: set[str] = set()
@@ -1917,7 +2487,7 @@ MANAGED_CONFIG_UPDATE_MASK_PATHS: tuple[str, ...] = (
     "enabled_agents",
     "mcp_servers",
     "skills",
-    "spend_tiers",
+    "smart_defaults",
 )
 
 
@@ -2125,22 +2695,24 @@ def build_skills_mcp_url(workspace: str, locations: list[str]) -> str:
 
 # Maps the gateway routing dialect a coding tool speaks to the Model Provider
 # Service `provider_type`s it can be backed by. claude speaks Anthropic's API,
-# which both the `anthropic` and `amazon_bedrock` provider types serve (Bedrock
-# just exposes different model ids); codex speaks OpenAI's, which the `openai`,
-# `azure_openai`, and `microsoft_foundry` provider types all serve (the gateway
-# fronts Azure OpenAI and Foundry with the OpenAI surface); gemini speaks
-# Google's, served by a Gemini Enterprise provider. Tags are the short form
-# produced by `_provider_type_tag` (e.g. `amazon_bedrock`).
+# which the `anthropic`, `amazon_bedrock`, and `bedrock_mantle` provider types
+# serve (Bedrock just exposes different model ids); codex speaks OpenAI's, which
+# the `openai`, `azure_openai`, `microsoft_foundry`, `amazon_bedrock`, and
+# `bedrock_mantle` provider types all serve (the gateway fronts them with the
+# OpenAI surface); gemini speaks Google's, served by a Gemini Enterprise
+# provider. Tags are the short form produced by `_provider_type_tag` (e.g.
+# `amazon_bedrock`).
 _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
-    "claude": ("anthropic", "amazon_bedrock"),
-    "codex": ("openai", "azure_openai", "microsoft_foundry"),
+    "claude": ("anthropic", "amazon_bedrock", "bedrock_mantle"),
+    "codex": ("openai", "azure_openai", "microsoft_foundry", "amazon_bedrock", "bedrock_mantle"),
     "gemini": ("gemini_enterprise",),
 }
 
 # Provider types that expose Bedrock-style model ids (e.g.
-# `us.anthropic.claude-sonnet-4-6`) instead of the agent's canonical model
-# names, so ucode must pin them explicitly.
-BEDROCK_PROVIDER_TYPES: tuple[str, ...] = ("amazon_bedrock",)
+# `us.anthropic.claude-sonnet-4-6`, or region-less `anthropic.claude-*` on
+# Mantle) instead of the agent's canonical model names, so ucode must pin them
+# explicitly.
+BEDROCK_PROVIDER_TYPES: tuple[str, ...] = ("amazon_bedrock", "bedrock_mantle")
 
 
 def tool_supports_provider_type(tool: str, provider_type: str) -> bool:
@@ -2199,7 +2771,7 @@ def list_model_provider_services(
             # reach the next.
             return [dict(service) for service in cached], None
 
-    hostname = workspace_hostname(workspace)
+    origin = workspace_origin(workspace)
     services: list[dict] = []
     page_token: str | None = None
     seen_tokens: set[str] = set()
@@ -2210,9 +2782,7 @@ def list_model_provider_services(
             params["parent"] = f"schemas/{parent}"
         if page_token:
             params["page_token"] = page_token
-        url = (
-            f"https://{hostname}/api/2.1/unity-catalog/model-provider-services?{urlencode(params)}"
-        )
+        url = f"{origin}/api/2.1/unity-catalog/model-provider-services?{urlencode(params)}"
         payload, reason = _http_get_json(url, token, timeout=30)
         if payload is None:
             # Surface the failure only if we have nothing yet; a mid-pagination blip still
@@ -2285,8 +2855,8 @@ def get_model_provider_service(
     server-side filter) makes a service that plainly exists look absent. Addressing it directly
     removes that whole class of false negative.
     """
-    hostname = workspace_hostname(workspace)
-    url = f"https://{hostname}/api/2.1/unity-catalog/model-provider-services/{service_name}"
+    origin = workspace_origin(workspace)
+    url = f"{origin}/api/2.1/unity-catalog/model-provider-services/{service_name}"
     payload, reason = _http_get_json(url, token, timeout=30)
     if payload is None:
         return None, reason
@@ -2368,7 +2938,7 @@ def service_usable_for_tool(tool: str, service: dict) -> bool:
     provider_type = service.get("provider_type", "")
     if not tool_supports_provider_type(tool, provider_type):
         return False
-    if provider_type in BEDROCK_PROVIDER_TYPES:
+    if tool == "claude" and provider_type in BEDROCK_PROVIDER_TYPES:
         return bool(service.get("allow_all_targets")) or bool(
             map_claude_family_models(service.get("targets") or [])
         )
@@ -2412,7 +2982,8 @@ def resolve_provider_service(
             f"which {tool} can't route to (supported: {supported})."
         )
     if (
-        provider_type in BEDROCK_PROVIDER_TYPES
+        tool == "claude"
+        and provider_type in BEDROCK_PROVIDER_TYPES
         and not match.get("allow_all_targets")
         and not map_claude_family_models(match.get("targets") or [])
     ):
@@ -2473,6 +3044,17 @@ def map_claude_family_models(targets: list[str]) -> dict[str, str]:
             best_key[family] = key
             result[family] = model_id
     return result
+
+
+# Claude Code sizes its context window from a `[1m]` id hint; gpt-oss's window is far below 1M.
+_GPT_1M_MODEL_RE = re.compile(
+    r"^(?:anthropic-aigw-[0-9a-fA-F]{8}-)?(?:system\.ai\.)?(?:databricks-)?gpt-\d[a-z0-9.-]*$"
+)
+
+
+def maybe_add_gpt_1m_suffix(model: str) -> str:
+    """Add Claude Code's `[1m]` hint to GPT ids except gpt-oss; return other ids unchanged."""
+    return f"{model}[1m]" if _GPT_1M_MODEL_RE.match(model) else model
 
 
 # A bare launch pins the first tier the service offers, so it never dead-ends on a model the
@@ -2771,14 +3353,14 @@ def _get_anthropic_models_json(
     parent_schema: str | None = None,
     provider: str | None = None,
 ) -> tuple[dict | list | None, str | None]:
-    hostname = workspace_hostname(workspace)
+    origin = workspace_origin(workspace)
     headers = None
     if provider is not None:
         headers = {MODEL_PROVIDER_SERVICE_HEADER: provider}
     elif parent_schema is not None:
         headers = {MODEL_SERVICE_PARENT_SCHEMA_HEADER: parent_schema}
     return _http_get_json(
-        f"https://{hostname}{ANTHROPIC_MODELS_PATH}?limit=1000",
+        f"{origin}{ANTHROPIC_MODELS_PATH}?limit=1000",
         token,
         max_retries=_ANTHROPIC_MODEL_DISCOVERY_SETUP_MAX_RETRIES,
         **({"headers": headers} if headers is not None else {}),
@@ -3013,8 +3595,7 @@ _MODEL_SERVICE_EMPTY_DETAIL = (
 
 
 def _probe_model_services(workspace: str, token: str) -> GatewayProbe:
-    hostname = workspace_hostname(workspace)
-    base = f"https://{hostname}/api/2.1/unity-catalog/model-services"
+    base = f"{workspace_origin(workspace)}/api/2.1/unity-catalog/model-services"
     page_token: str | None = None
     for page in range(_MODEL_SERVICE_PROBE_MAX_PAGES):
         params: dict[str, object] = {"page_size": _MODEL_SERVICE_PROBE_PAGE_SIZE}
@@ -3251,10 +3832,7 @@ def build_pi_base_urls(workspace: str) -> dict[str, str]:
 
 
 def build_copilot_base_url(workspace: str) -> str:
-    # Copilot CLI's `openai` provider appends `/chat/completions` to the
-    # configured base URL. The Databricks MLflow chat-completions gateway is
-    # OpenAI-compatible and serves Claude, codex (gpt-5), and gemini models
-    # behind one URL.
+    # Copilot appends `/responses` or `/chat/completions`; both use this gateway base.
     return f"{workspace}/ai-gateway/mlflow/v1"
 
 

@@ -23,7 +23,7 @@ def budget_warn_fraction(managed: dict | None) -> float:
     Tiers at 0 are skipped — they activate from the first dollar, so warning on one would leave the
     panel permanently amber.
     """
-    policy = (managed or {}).get("budget_policy")
+    policy = (managed or {}).get("smart_defaults")
     tiers = policy.get("tiers") if isinstance(policy, dict) else None
     fractions = [
         float(pct)
