@@ -69,6 +69,7 @@ export function registerIsaacFeedback(on: On, state: FeedbackState, isaacExecuta
     let answer;
     if (!feedbackId && evidence) {
       const captureOptions = ['--capture-local', "'~/.isaac/feedback'"];
+      if (!options.includes('--with-evidence')) captureOptions.unshift('--with-evidence');
       const captureCommand = delimiter < 0 ? [...raw, ...captureOptions]
         : [...raw.slice(0, delimiter), ...captureOptions, ...raw.slice(delimiter)];
       const capture = await next({ ...e, command: captureCommand.join(' '), run_in_background: false });
