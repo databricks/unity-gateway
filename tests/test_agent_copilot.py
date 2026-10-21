@@ -369,6 +369,13 @@ class TestBuildProviderCatalog:
         ]
         assert skipped == [("text-embedding-3-small", "it isn't a chat model")]
 
+    def test_orders_dotted_provider_versions_newest_first(self):
+        models, _ = copilot.build_provider_catalog(
+            ["gpt-5", "gpt-5.6", "gpt-5.1", "gpt-5.5"], "openai"
+        )
+
+        assert [m.id for m in models] == ["gpt-5.6", "gpt-5.5", "gpt-5.1", "gpt-5"]
+
 
 def _stub_provider_service(monkeypatch, service, *, anthropic_ids=(), codex_slugs=None):
     monkeypatch.setattr(copilot, "launch_token", lambda state, workspace, **_: "dbx-token")

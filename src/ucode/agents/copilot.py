@@ -132,6 +132,8 @@ _CLAUDE_DASHED_VERSION_PATTERN = re.compile(r"-(\d+)-(\d+)$")
 # Provider-side Claude ids end in a release date and, on Bedrock, a version: `-20250929-v1:0`.
 _CLAUDE_RELEASE_SUFFIX_PATTERN = re.compile(r"(?:-\d{8})?(?:-v\d+(?::\d+)?)?$")
 _CLAUDE_HAIKU_MAJOR_PATTERN = re.compile(r"^claude-haiku-(\d+)")
+# Provider ids write versions with dots (`gpt-5.6`); the version sort reads dash-separated digits.
+_DOTTED_VERSION_PATTERN = re.compile(r"(?<=\d)\.(?=\d)")
 _CLAUDE_CATALOG_VERSION_PATTERN = re.compile(r"^claude-([a-z]+)-(\d+)(?:\.(\d+))?$")
 
 # (maxPromptTokens, maxOutputTokens) by Copilot catalog id. Copilot assumes a 128K prompt for
@@ -262,7 +264,8 @@ def _catalog_sort_key(model: CopilotModel) -> tuple:
         ),
         len(ANTHROPIC_FAMILIES),
     )
-    return (tuple(PROVIDER_NAMES).index(model.wire), family, model_version_sort_key(model.id))
+    version_key = model_version_sort_key(_DOTTED_VERSION_PATTERN.sub("-", model.id))
+    return (tuple(PROVIDER_NAMES).index(model.wire), family, version_key)
 
 
 def build_copilot_catalog(entries: Iterable[ModelServiceEntry | str]) -> list[CopilotModel]:
