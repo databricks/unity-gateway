@@ -54,10 +54,9 @@ Claude's `mcp__plugin_<plugin>_<server>__<tool>` pattern.
 
 Cowork plugin support can still be disabled by Anthropic account feature flags or managed
 Desktop policy. UG treats installation as best-effort: failure warns but does not fail Claude
-Code setup. The plugin is removed when Claude is removed or disabled, `ug revert` runs, or the
-current workspace has no Cowork MCP servers or managed skills left. Switching to an unmanaged
-workspace does not by itself remove it. The native Desktop gateway profile is separate and
-remains under the cleanup rules below.
+Code setup. Configure never removes an installed Cowork plugin when Claude is omitted, disabled,
+or has no current MCP servers or managed skills. Only `ug revert` removes it. The native Desktop
+gateway profile is separate and remains under the cleanup rules below.
 
 ## Models and authentication
 
@@ -193,10 +192,10 @@ Profile configure/revert waits at most five seconds for its file lock. A timeout
 does not interrupt the holder or change profile, metadata, or selection-state files.
 
 Desktop setup failures only warn: successful Claude Code configuration still returns exit 0.
-`--dry-run` performs no Desktop or Cowork discovery, writes, or plugin commands. Removing
-Claude from managed configuration removes the Cowork plugin but does not revoke a
-previously written native Desktop profile. Desktop does not run UG's launch-time managed-agent
-checks; gateway authorization remains the enforcement boundary.
+`--dry-run` performs no Desktop or Cowork discovery, writes, or plugin commands. Removing Claude
+from managed configuration preserves both the Cowork plugin and a previously written native
+Desktop profile until `ug revert`. Desktop does not run UG's launch-time managed-agent checks;
+gateway authorization remains the enforcement boundary.
 
 ## Validation limits
 

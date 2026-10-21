@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -309,9 +310,10 @@ def test_cowork_mcp_config_skips_custom_oauth(capsys):
     assert "Skipping Cowork MCP server `github`" in capsys.readouterr().out
 
 
-def test_empty_managed_content_removes_prior_plugin_without_discovery(monkeypatch):
+def test_empty_managed_content_preserves_prior_plugin_without_discovery(monkeypatch):
     monkeypatch.setattr(cowork, "records_for_scope", lambda *args: [])
-    monkeypatch.setattr(cowork, "revert_cowork", lambda: True)
+    revert = Mock(return_value=True)
+    monkeypatch.setattr(cowork, "revert_cowork", revert)
     monkeypatch.setattr(
         cowork,
         "discover_cowork_root",
@@ -321,6 +323,7 @@ def test_empty_managed_content_removes_prior_plugin_without_discovery(monkeypatc
     assert not cowork.configure_cowork(
         {"workspace": "https://workspace.example", "profile": "chosen"}, []
     )
+    revert.assert_not_called()
 
 
 def test_revert_uses_saved_root_and_removes_owned_files(tmp_path, monkeypatch):

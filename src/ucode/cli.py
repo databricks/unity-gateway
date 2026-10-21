@@ -819,10 +819,6 @@ def _setup_single_agent(
             skills_configured = _configure_managed_skills(managed)
             if resolved_mcps is not None and skills_configured:
                 _sync_claude_cowork_mcp_servers(state, managed_mcp_servers=resolved_mcps)
-    elif apply_managed and not is_dry_run():
-        from ucode.agents.desktop.setup import revert_claude_cowork
-
-        revert_claude_cowork()
     install_databricks_ai_tools_for_agents(
         [tool], state, force_refresh=tool not in ("claude", "codex")
     )
@@ -1076,11 +1072,7 @@ def _configure_workspace_command(
             registered_mcps = [
                 str(server["name"]) for server in (resolved_mcps or []) if server.get("name")
             ]
-            from ucode.agents.desktop.setup import revert_claude_cowork
-
-            if "claude" not in configured_tools:
-                revert_claude_cowork()
-            elif resolved_mcps is not None and skills_configured:
+            if "claude" in configured_tools and resolved_mcps is not None and skills_configured:
                 _sync_claude_cowork_mcp_servers(state, managed_mcp_servers=resolved_mcps)
         _summarize_managed_config(managed, configured_tools, registered_mcps)
         return 0
@@ -1155,10 +1147,6 @@ def _configure_workspace_command(
         configure_claude_desktop(state)
         if not is_dry_run():
             _sync_claude_cowork_mcp_servers(state)
-    elif not is_dry_run():
-        from ucode.agents.desktop.setup import revert_claude_cowork
-
-        revert_claude_cowork()
     summary_lines = [f"[bold]Workspace:[/bold] [cyan]{state['workspace']}[/cyan]"]
     for tool_name in picked:
         spec = TOOL_SPECS[tool_name]

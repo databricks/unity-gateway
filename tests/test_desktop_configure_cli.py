@@ -86,7 +86,7 @@ def test_failed_claude_is_not_setup_from_prior_available_tools(configuration, mo
         == 0
     )
     configure.assert_not_called()
-    revert_cowork.assert_called_once_with()
+    revert_cowork.assert_not_called()
 
 
 def test_codex_only_does_not_configure_desktop(configuration, monkeypatch):
@@ -101,7 +101,7 @@ def test_codex_only_does_not_configure_desktop(configuration, monkeypatch):
         == 0
     )
     configure.assert_not_called()
-    revert_cowork.assert_called_once_with()
+    revert_cowork.assert_not_called()
 
 
 def test_self_managed_agent_add_does_not_configure_desktop(configuration, monkeypatch):
@@ -278,7 +278,7 @@ def test_unmanaged_configure_syncs_user_mcp_servers_to_cowork(configuration, mon
     configure_cowork.assert_called_once_with(configuration, user_servers)
 
 
-def test_managed_config_without_claude_removes_cowork(configuration, monkeypatch):
+def test_managed_config_without_claude_preserves_cowork(configuration, monkeypatch):
     configuration["last_configured_tools"] = ["codex"]
     revert_cowork = Mock(return_value="removed")
     monkeypatch.setattr(desktop_setup, "revert_claude_cowork", revert_cowork)
@@ -294,4 +294,4 @@ def test_managed_config_without_claude_removes_cowork(configuration, monkeypatch
         )
         == 0
     )
-    revert_cowork.assert_called_once_with()
+    revert_cowork.assert_not_called()

@@ -48,7 +48,6 @@ def configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
         custom_oauth=bool(state.get("custom_oauth")),
     )
     if not skill_records and not mcp_config["mcpServers"]:
-        revert_cowork()
         return False
 
     cowork_root = discover_cowork_root()
