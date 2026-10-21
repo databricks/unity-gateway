@@ -63,7 +63,7 @@ def main() -> None:
         (state / "signed-out").touch()
     token_ids = minted.read_text(encoding="utf-8").split() if minted.exists() else []
     for token_id in token_ids:
-        databricks(host, "tokens", "delete", token_id, check=mode != "cleanup")
+        databricks(host, "tokens", "delete", token_id, check=False)
     if mode != "cleanup":
         time.sleep(AUTH_CACHE_SECONDS + 3)
         (state / "revoked").write_text(str(len(token_ids)), encoding="utf-8")

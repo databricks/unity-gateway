@@ -236,6 +236,8 @@ def test_ug_copilot_upgrade_scrubs_token_saved_by_older_ug(live_session, workspa
     token_saving_ug = _install_token_saving_ug(session)
     env_file = session.home / ".copilot/ucode.env"
 
+    # v0.2.0 crashes printing its status marks to a cp1252 console on Windows.
+    session.env["PYTHONIOENCODING"] = "utf-8"
     session.run(
         "configure",
         "--agents",
@@ -246,6 +248,7 @@ def test_ug_copilot_upgrade_scrubs_token_saved_by_older_ug(live_session, workspa
         "--skip-upgrade",
         binary=token_saving_ug,
     )
+    del session.env["PYTHONIOENCODING"]
     assert session.env["DATABRICKS_BEARER"] in env_file.read_text(encoding="utf-8"), (
         "ug v0.2.0 no longer saves the bearer, so this journey has no legacy token to scrub"
     )
