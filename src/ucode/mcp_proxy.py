@@ -124,7 +124,7 @@ def _fail_fast(message: str) -> None:
 
 
 class _ConnectionLogin:
-    """Run at most one per-connection login for this proxy session."""
+    """Run automatic login once per proxy session; explicit login may retry."""
 
     def __init__(
         self,
@@ -138,47 +138,39 @@ class _ConnectionLogin:
         self.workspace = workspace
         self.profile = profile
         self.connection = None if use_pat else connection_from_url(url)
-        self._attempted = False
+        self._login_attempted = False
         self._completed = False
         self._lock = Lock()
 
     def run_if_needed(self) -> bool:
-        """Run connection login once, returning whether the connection is ready."""
-        return self._run_if_needed(check_service=True)
+        """Run automatic connection login once, returning whether the connection is ready."""
+        return self._run_if_needed(check_service=True, retry=False)
 
     def authenticate_or_confirm_ready(self) -> bool:
-        """Authenticate after the upstream service reports missing credentials."""
-        return self._run_if_needed(check_service=False)
+        """Authenticate explicitly, allowing retry after a cancelled or failed login."""
+        return self._run_if_needed(check_service=False, retry=True)
 
-    def _run_if_needed(self, *, check_service: bool) -> bool:
+    def _run_if_needed(self, *, check_service: bool, retry: bool) -> bool:
         with self._lock:
             if self.connection is None:
                 return False
             if self._completed:
                 return True
-            if self._attempted:
+            if check_service:
+                try:
+                    token = get_databricks_token(self.workspace, self.profile)
+                except RuntimeError:
+                    return False
+                if not mcp_service_needs_connection_login(self.workspace, token, self.connection):
+                    return False
+            if self._login_attempted and not retry:
                 return False
-            self._attempted = True
-            try:
-                if check_service:
-                    try:
-                        token = get_databricks_token(self.workspace, self.profile)
-                    except RuntimeError:
-                        return False
-                    if not mcp_service_needs_connection_login(
-                        self.workspace, token, self.connection
-                    ):
-                        return False
-                ok, detail = run_connection_login(self.url, self.workspace, profile=self.profile)
-                if not ok:
-                    raise ProxyAuthError(
-                        f"connection login for '{self.connection}' failed: {detail}"
-                    )
-                self._completed = True
-                return True
-            finally:
-                if not self._completed:
-                    self._attempted = False
+            self._login_attempted = True
+            ok, detail = run_connection_login(self.url, self.workspace, profile=self.profile)
+            if not ok:
+                raise ProxyAuthError(f"connection login for '{self.connection}' failed: {detail}")
+            self._completed = True
+            return True
 
 
 def _build_token_auth(
@@ -368,8 +360,8 @@ class _McpBridge:
                         self._tools_refresh_waiters.remove(refreshed)
                     text = (
                         "Authentication complete, but the tool list did not refresh before the "
-                        "timeout. Retry the user's original request now; if its tools are still "
-                        "unavailable, retry authentication."
+                        "timeout. Retry the user's original request now. If its tools are still "
+                        "unavailable, tell the user to start a new session."
                     )
                 else:
                     text = (
@@ -385,6 +377,25 @@ class _McpBridge:
         await client.send(
             SessionMessage(JSONRPCResponse(jsonrpc="2.0", id=request_id, result=result))
         )
+
+    async def _authenticate_and_retry(
+        self,
+        request_id: int | str,
+        original: SessionMessage,
+        auth_error: SessionMessage,
+        client: _SendStream[SessionMessage],
+        upstream: _SendStream[SessionMessage],
+    ) -> None:
+        try:
+            authenticated = await to_thread.run_sync(self.connection_login.run_if_needed)
+        except ProxyAuthError:
+            authenticated = False
+        if authenticated:
+            await upstream.send(original)
+            return
+        self.pending_requests.pop(request_id, None)
+        self.retried_requests.discard(request_id)
+        await client.send(auth_error)
 
     async def pump_client(
         self,
@@ -425,68 +436,72 @@ class _McpBridge:
         upstream: _SendStream[SessionMessage],
     ) -> None:
         async with source, dest:
-            async for message in source:
-                if isinstance(message, Exception):
-                    detail = " ".join(str(message).split()) or type(message).__name__
-                    raise ProxyTransportError(
-                        f"upstream MCP transport failed: {detail}"
-                    ) from message
+            async with anyio.create_task_group() as tg:
+                async for message in source:
+                    if isinstance(message, Exception):
+                        detail = " ".join(str(message).split()) or type(message).__name__
+                        raise ProxyTransportError(
+                            f"upstream MCP transport failed: {detail}"
+                        ) from message
 
-                payload = message.message
-                original = None
-                if isinstance(payload, (JSONRPCResponse, JSONRPCError)):
-                    original = self.pending_requests.get(payload.id)
-                if self.connection_login.connection is not None:
-                    message = self._with_tool_list_changes(message, original)
-                payload = message.message
-                if isinstance(payload, JSONRPCError):
-                    request_id = payload.id
-                    request = original.message if original is not None else None
-                    if (
-                        isinstance(request, JSONRPCRequest)
-                        and request_id is not None
-                        and request.method == "tools/list"
-                        and payload.error.code == CONNECTION_AUTH_REQUIRED_ERROR_CODE
-                        and self.connection_login.connection is not None
-                        and not self.authentication_completed
-                    ):
-                        self.authentication_required = True
-                        self.pending_requests.pop(request_id, None)
-                        self.retried_requests.discard(request_id)
-                        await dest.send(self._authentication_tool_list_response(request_id))
-                        continue
-                    should_retry = False
-                    if (
-                        original is not None
-                        and request_id is not None
-                        and request_id not in self.retried_requests
-                        and payload.error.code == CONNECTION_AUTH_REQUIRED_ERROR_CODE
-                    ):
-                        try:
-                            should_retry = await to_thread.run_sync(
-                                self.connection_login.run_if_needed
+                    payload = message.message
+                    original = None
+                    if isinstance(payload, (JSONRPCResponse, JSONRPCError)):
+                        original = self.pending_requests.get(payload.id)
+                    if self.connection_login.connection is not None:
+                        message = self._with_tool_list_changes(message, original)
+                    payload = message.message
+                    if isinstance(payload, JSONRPCError):
+                        request_id = payload.id
+                        request = original.message if original is not None else None
+                        if (
+                            isinstance(request, JSONRPCRequest)
+                            and request_id is not None
+                            and request.method == "tools/list"
+                            and payload.error.code == CONNECTION_AUTH_REQUIRED_ERROR_CODE
+                            and self.connection_login.connection is not None
+                            and not self.authentication_completed
+                        ):
+                            self.authentication_required = True
+                            self.pending_requests.pop(request_id, None)
+                            self.retried_requests.discard(request_id)
+                            await dest.send(self._authentication_tool_list_response(request_id))
+                            continue
+                        if (
+                            original is not None
+                            and request_id is not None
+                            and request_id not in self.retried_requests
+                            and payload.error.code == CONNECTION_AUTH_REQUIRED_ERROR_CODE
+                            and self.connection_login.connection is not None
+                        ):
+                            self.retried_requests.add(request_id)
+                            tg.start_soon(
+                                self._authenticate_and_retry,
+                                request_id,
+                                original,
+                                message,
+                                dest,
+                                upstream,
                             )
-                        except ProxyAuthError:
-                            should_retry = False
-                    if should_retry and original is not None and request_id is not None:
-                        self.retried_requests.add(request_id)
-                        await upstream.send(original)
-                        continue
+                            continue
 
-                tools_refreshed = False
-                if isinstance(payload, JSONRPCResponse) and original is not None:
-                    request = original.message
-                    tools_refreshed = (
-                        isinstance(request, JSONRPCRequest)
-                        and request.method == "tools/list"
-                        and self.authentication_completed
-                    )
-                if isinstance(payload, (JSONRPCResponse, JSONRPCError)) and payload.id is not None:
-                    self.pending_requests.pop(payload.id, None)
-                    self.retried_requests.discard(payload.id)
-                await dest.send(message)
-                if tools_refreshed:
-                    self._mark_tools_refreshed()
+                    tools_refreshed = False
+                    if isinstance(payload, JSONRPCResponse) and original is not None:
+                        request = original.message
+                        tools_refreshed = (
+                            isinstance(request, JSONRPCRequest)
+                            and request.method == "tools/list"
+                            and self.authentication_completed
+                        )
+                    if (
+                        isinstance(payload, (JSONRPCResponse, JSONRPCError))
+                        and payload.id is not None
+                    ):
+                        self.pending_requests.pop(payload.id, None)
+                        self.retried_requests.discard(payload.id)
+                    await dest.send(message)
+                    if tools_refreshed:
+                        self._mark_tools_refreshed()
         raise ProxyTransportError("upstream MCP transport closed unexpectedly")
 
 

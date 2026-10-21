@@ -35,11 +35,18 @@ def configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
     workspace = state.get("workspace")
     if not isinstance(workspace, str) or not workspace:
         raise RuntimeError("No Databricks workspace is configured for Cowork.")
+
+    previous_state = config_io.read_json_safe(_state_path())
+    skill_records = _managed_skill_records(workspace)
+    if not previous_state and not skill_records and not mcp_servers:
+        return False
+    if not previous_state and not _cowork_sessions_root_exists():
+        return False
+
     profile = state.get("profile")
     if not isinstance(profile, str) or not profile:
         raise RuntimeError("Select an explicit Databricks CLI profile for Cowork.")
 
-    skill_records = _managed_skill_records(workspace)
     mcp_config = _cowork_mcp_config(
         mcp_servers,
         workspace,
@@ -47,11 +54,10 @@ def configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
         use_pat=bool(state.get("use_pat")),
         custom_oauth=bool(state.get("custom_oauth")),
     )
-    if not skill_records and not mcp_config["mcpServers"]:
+    if not previous_state and not skill_records and not mcp_config["mcpServers"]:
         return False
 
     cowork_root = discover_cowork_root()
-    previous_state = config_io.read_json_safe(_state_path())
     previous_root = previous_state.get("cowork_root")
     if isinstance(previous_root, str) and previous_root and Path(previous_root) != cowork_root:
         _remove_plugin_registration(Path(previous_root))
@@ -72,13 +78,16 @@ def revert_cowork() -> bool:
     state_path = _state_path()
     state = config_io.read_json_safe(state_path)
     raw_root = state.get("cowork_root")
-    changed = False
+    roots: list[Path] = []
     if isinstance(raw_root, str) and raw_root:
-        try:
-            _remove_plugin_registration(Path(raw_root))
-        except RuntimeError as exc:
-            print_warning(f"Could not remove the Claude Cowork registration: {exc}")
-        changed = True
+        roots.append(Path(raw_root))
+    for root in _cowork_roots():
+        if root not in roots and _has_ug_registration(root):
+            roots.append(root)
+
+    changed = False
+    for root in roots:
+        changed = _remove_plugin_registration(root) or changed
 
     marketplace_root = _marketplace_root()
     if marketplace_root.exists() or marketplace_root.is_symlink():
@@ -93,19 +102,24 @@ def revert_cowork() -> bool:
     return changed
 
 
-def _remove_plugin_registration(cowork_root: Path) -> None:
+def _cowork_sessions_root_exists() -> bool:
+    root = claude_desktop_root_directory()
+    return root is not None and (root / "local-agent-mode-sessions").is_dir()
+
+
+def _remove_plugin_registration(cowork_root: Path) -> bool:
     """Remove UG's plugin and marketplace registration from one Cowork root."""
 
     claude = _claude_binary()
     env = os.environ.copy()
     env["CLAUDE_CONFIG_DIR"] = str(cowork_root)
-    _run_claude_json(
+    plugin_result = _run_claude_json(
         claude,
         ["plugin", "uninstall", PLUGIN_ID, "--cowork", "--json"],
         env,
         accepted_failures=("not installed", "not_installed", "not found"),
     )
-    _run_claude_json(
+    marketplace_result = _run_claude_json(
         claude,
         [
             "plugin",
@@ -118,6 +132,7 @@ def _remove_plugin_registration(cowork_root: Path) -> None:
         env,
         accepted_failures=("not found", "not_found", "not registered"),
     )
+    return bool(plugin_result or marketplace_result)
 
 
 def discover_cowork_root(*, desktop_root: Path | None = None) -> Path:
@@ -126,10 +141,7 @@ def discover_cowork_root(*, desktop_root: Path | None = None) -> Path:
     root = desktop_root or claude_desktop_root_directory()
     if root is None:
         raise RuntimeError("Claude Cowork configuration is unavailable on this platform.")
-    sessions_root = root / "local-agent-mode-sessions"
-    candidates = sorted(
-        grandchild for child in _directories(sessions_root) for grandchild in _directories(child)
-    )
+    candidates = _cowork_roots(desktop_root=root)
     if not candidates:
         raise RuntimeError("Open and start Claude Cowork once, then run `ug configure` again.")
     if len(candidates) == 1:
@@ -145,6 +157,30 @@ def discover_cowork_root(*, desktop_root: Path | None = None) -> Path:
         return marked_winners[0]
     paths = ", ".join(str(candidate) for candidate in candidates)
     raise RuntimeError(f"Could not determine the active Cowork profile; candidates: {paths}.")
+
+
+def _cowork_roots(*, desktop_root: Path | None = None) -> list[Path]:
+    root = desktop_root or claude_desktop_root_directory()
+    if root is None:
+        return []
+    sessions_root = root / "local-agent-mode-sessions"
+    return sorted(
+        grandchild for child in _directories(sessions_root) for grandchild in _directories(child)
+    )
+
+
+def _has_ug_registration(cowork_root: Path) -> bool:
+    for relative_path in (
+        "cowork_plugins/installed_plugins.json",
+        "cowork_plugins/known_marketplaces.json",
+    ):
+        try:
+            content = (cowork_root / relative_path).read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if PLUGIN_ID in content or MARKETPLACE_NAME in content:
+            return True
+    return False
 
 
 def _directories(path: Path) -> list[Path]:

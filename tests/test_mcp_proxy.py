@@ -6,6 +6,7 @@ import subprocess
 import tomllib
 from contextlib import asynccontextmanager
 from pathlib import Path
+from threading import Event
 
 import anyio
 import httpx
@@ -280,7 +281,7 @@ class TestDatabricksTokenAuth:
         with pytest.raises(mcp_proxy.ProxyAuthError, match="user cancelled"):
             self._drive(auth, httpx.Request("POST", CONN_URL), httpx.Response(401))
 
-    def test_login_failure_can_be_retried(self, monkeypatch):
+    def test_login_failure_requires_explicit_retry(self, monkeypatch):
         monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda ws, profile: "tok")
         monkeypatch.setattr(mcp_proxy, "mcp_service_needs_connection_login", lambda *a, **k: True)
         outcomes = iter([(False, "user cancelled"), (True, "signed in")])
@@ -290,7 +291,8 @@ class TestDatabricksTokenAuth:
         with pytest.raises(mcp_proxy.ProxyAuthError, match="user cancelled"):
             login.run_if_needed()
 
-        assert login.run_if_needed()
+        assert not login.run_if_needed()
+        assert login.authenticate_or_confirm_ready()
 
     def test_token_lookup_failure_can_be_retried(self, monkeypatch):
         tokens = iter([RuntimeError("token unavailable"), "tok"])
@@ -636,6 +638,8 @@ class TestMcpBridgeConnectionLogin:
             assert isinstance(notification, mcp_proxy.JSONRPCNotification)
             assert isinstance(response, mcp_proxy.JSONRPCResponse)
             assert "did not refresh before the timeout" in response.result["content"][0]["text"]
+            assert "retry authentication" not in response.result["content"][0]["text"]
+            assert "start a new session" in response.result["content"][0]["text"]
             assert bridge._tools_refresh_waiters == []
 
         anyio.run(scenario)
@@ -670,6 +674,44 @@ class TestMcpBridgeConnectionLogin:
 
         anyio.run(scenario)
         assert logins == [1]
+
+    def test_automatic_login_does_not_block_other_upstream_messages(self, monkeypatch):
+        monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda ws, profile: "tok")
+        monkeypatch.setattr(mcp_proxy, "mcp_service_needs_connection_login", lambda *a: True)
+        login_started = Event()
+        release_login = Event()
+
+        def login(*args, **kwargs):
+            login_started.set()
+            assert release_login.wait(2)
+            return True, "signed in"
+
+        monkeypatch.setattr(mcp_proxy, "run_connection_login", login)
+
+        async def scenario():
+            source_send, source_read = anyio.create_memory_object_stream(2)
+            dest_send, dest_read = anyio.create_memory_object_stream(2)
+            retry_send, retry_read = anyio.create_memory_object_stream(2)
+            bridge = mcp_proxy._McpBridge(mcp_proxy._ConnectionLogin(CONN_URL, WS, "p"))
+            first_request = self._tool_call_request(1)
+            bridge.pending_requests = {
+                1: first_request,
+                2: self._tool_call_request(2),
+            }
+            later_response = self._response(2)
+
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(bridge.pump_upstream, source_read, dest_send, retry_send)
+                with anyio.fail_after(1):
+                    await source_send.send(self._error(request_id=1))
+                    assert await anyio.to_thread.run_sync(login_started.wait, 1)
+                    await source_send.send(later_response)
+                    assert await dest_read.receive() is later_response
+                    release_login.set()
+                    assert await retry_read.receive() is first_request
+                tg.cancel_scope.cancel()
+
+        anyio.run(scenario)
 
     def test_distinct_auth_errors_retry_after_one_login(self, monkeypatch):
         monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda ws, profile: "tok")

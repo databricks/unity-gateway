@@ -135,6 +135,7 @@ from ucode.mcp import (
     remove_skills_locations_command,
     revert_mcp_configs,
 )
+from ucode.mcp import managed_mcp_servers as load_managed_mcp_servers
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.skills_download import (
     configure_location_skills_download_command,
@@ -1436,8 +1437,6 @@ def revert() -> int:
     # Older Codex (< 0.134.0) had ucode edit the shared ~/.codex/config.toml in
     # place; restoring the per-profile file above does not undo that.
     legacy_codex_stripped = revert_legacy_shared_config()
-    clear_state()
-
     print_heading("Revert")
     print_kv("Workspace", state.get("workspace") or "none")
     for tool, spec in TOOL_SPECS.items():
@@ -1454,8 +1453,9 @@ def revert() -> int:
             "restored" if mcp_results.get(client) else "unchanged",
         )
     if desktop_result == "failed":
-        print_warning("ug state cleared. Fix the Claude Desktop error and run ug revert again.")
+        print_warning("ug state retained. Fix the Claude Desktop error and run ug revert again.")
         return 1
+    clear_state()
     print_success("ug state cleared")
     return 0
 
@@ -1810,11 +1810,13 @@ def _sync_claude_cowork_mcp_servers(
         return
 
     user_mcp_servers = list(current_state.get("mcp_servers") or [])
+    if managed_mcp_servers is None:
+        managed_mcp_servers = load_managed_mcp_servers(current_state, {"claude"})
     from ucode.agents.desktop.setup import configure_claude_cowork
 
     configure_claude_cowork(
         current_state,
-        [*user_mcp_servers, *(managed_mcp_servers or [])],
+        [*user_mcp_servers, *managed_mcp_servers],
     )
 
 

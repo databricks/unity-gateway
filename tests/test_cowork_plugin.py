@@ -4,7 +4,6 @@ import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
 
 import pytest
 
@@ -94,6 +93,7 @@ def test_configure_generates_plugin_and_installs_in_cowork_scope(tmp_path, monke
     ug_binary = tmp_path / "bin" / "ug"
     monkeypatch.setattr(cowork.config_io, "APP_DIR", app_dir)
     monkeypatch.setattr(cowork, "discover_cowork_root", lambda: cowork_root)
+    monkeypatch.setattr(cowork, "_cowork_sessions_root_exists", lambda: True)
     monkeypatch.setattr(cowork.shutil, "which", lambda name: str(ug_binary.parent / name))
     monkeypatch.setattr(
         cowork,
@@ -179,6 +179,7 @@ def test_configure_updates_installed_plugin(tmp_path, monkeypatch):
     cowork_root.mkdir()
     monkeypatch.setattr(cowork.config_io, "APP_DIR", tmp_path / ".ucode")
     monkeypatch.setattr(cowork, "discover_cowork_root", lambda: cowork_root)
+    monkeypatch.setattr(cowork, "_cowork_sessions_root_exists", lambda: True)
     bin_dir = tmp_path / "bin"
     monkeypatch.setattr(cowork.shutil, "which", lambda name: str(bin_dir / name))
     monkeypatch.setattr(cowork, "records_for_scope", lambda *args: [])
@@ -211,6 +212,7 @@ def test_configure_records_root_before_plugin_command_failure(tmp_path, monkeypa
     cowork_root.mkdir()
     monkeypatch.setattr(cowork.config_io, "APP_DIR", app_dir)
     monkeypatch.setattr(cowork, "discover_cowork_root", lambda: cowork_root)
+    monkeypatch.setattr(cowork, "_cowork_sessions_root_exists", lambda: True)
     monkeypatch.setattr(cowork, "records_for_scope", lambda *args: [])
     monkeypatch.setattr(
         cowork,
@@ -310,20 +312,42 @@ def test_cowork_mcp_config_skips_custom_oauth(capsys):
     assert "Skipping Cowork MCP server `github`" in capsys.readouterr().out
 
 
-def test_empty_managed_content_preserves_prior_plugin_without_discovery(monkeypatch):
+def test_empty_content_without_prior_plugin_or_cowork_sessions_skips_silently(
+    tmp_path, monkeypatch
+):
+    app_dir = tmp_path / ".ucode"
+    monkeypatch.setattr(cowork.config_io, "APP_DIR", app_dir)
     monkeypatch.setattr(cowork, "records_for_scope", lambda *args: [])
-    revert = Mock(return_value=True)
-    monkeypatch.setattr(cowork, "revert_cowork", revert)
+    monkeypatch.setattr(cowork, "claude_desktop_root_directory", lambda: tmp_path / "Claude-3p")
     monkeypatch.setattr(
         cowork,
         "discover_cowork_root",
         lambda: pytest.fail("Cowork discovery should not run for empty content"),
     )
 
-    assert not cowork.configure_cowork(
+    assert not cowork.configure_cowork({"workspace": "https://workspace.example"}, [])
+
+
+def test_empty_content_replaces_prior_plugin(tmp_path, monkeypatch):
+    app_dir = tmp_path / ".ucode"
+    app_dir.mkdir(exist_ok=True)
+    cowork_root = tmp_path / "cowork"
+    state_path = app_dir / cowork.STATE_FILENAME
+    state_path.write_text(json.dumps({"version": 1, "cowork_root": str(cowork_root)}))
+    monkeypatch.setattr(cowork.config_io, "APP_DIR", app_dir)
+    monkeypatch.setattr(cowork, "records_for_scope", lambda *args: [])
+    monkeypatch.setattr(cowork, "discover_cowork_root", lambda: cowork_root)
+    writes = []
+    installs = []
+    monkeypatch.setattr(cowork, "_write_marketplace", lambda *args: writes.append(args))
+    monkeypatch.setattr(cowork, "_install_plugin", lambda *args: installs.append(args))
+
+    assert cowork.configure_cowork(
         {"workspace": "https://workspace.example", "profile": "chosen"}, []
     )
-    revert.assert_not_called()
+
+    assert writes[0][3] == {"mcpServers": {}}
+    assert installs[0][0] == cowork_root
 
 
 def test_revert_uses_saved_root_and_removes_owned_files(tmp_path, monkeypatch):
@@ -380,7 +404,35 @@ def test_revert_accepts_idempotent_json_failure(tmp_path, monkeypatch):
     assert not (app_dir / cowork.STATE_FILENAME).exists()
 
 
-def test_revert_removes_owned_files_when_claude_cli_is_missing(tmp_path, monkeypatch, capsys):
+def test_revert_removes_orphaned_registration_without_saved_state(tmp_path, monkeypatch):
+    app_dir = tmp_path / ".ucode"
+    desktop_root = tmp_path / "Claude-3p"
+    unrelated_root = _cowork_root(desktop_root, "account-a", "org-a")
+    orphaned_root = _cowork_root(desktop_root, "account-b", "org-b")
+    plugins_dir = orphaned_root / "cowork_plugins"
+    plugins_dir.mkdir()
+    (plugins_dir / "installed_plugins.json").write_text(
+        json.dumps({cowork.PLUGIN_ID: {"installPath": "/missing/source"}})
+    )
+    monkeypatch.setattr(cowork.config_io, "APP_DIR", app_dir)
+    monkeypatch.setattr(cowork, "claude_desktop_root_directory", lambda: desktop_root)
+    bin_dir = tmp_path / "bin"
+    monkeypatch.setattr(cowork.shutil, "which", lambda name: str(bin_dir / name))
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(returncode=0, stdout='{"outcome":"ok"}', stderr="")
+
+    monkeypatch.setattr(cowork.subprocess_cross_os, "run", run)
+
+    assert cowork.revert_cowork()
+    assert len(calls) == 2
+    assert all(call[1]["env"]["CLAUDE_CONFIG_DIR"] == str(orphaned_root) for call in calls)
+    assert all(call[1]["env"]["CLAUDE_CONFIG_DIR"] != str(unrelated_root) for call in calls)
+
+
+def test_revert_retains_owned_files_when_claude_cli_is_missing(tmp_path, monkeypatch):
     app_dir = tmp_path / ".ucode"
     app_dir.mkdir(exist_ok=True)
     marketplace = app_dir / cowork.MARKETPLACE_DIRECTORY_NAME
@@ -390,8 +442,8 @@ def test_revert_removes_owned_files_when_claude_cli_is_missing(tmp_path, monkeyp
     monkeypatch.setattr(cowork.config_io, "APP_DIR", app_dir)
     monkeypatch.setattr(cowork.shutil, "which", lambda name: None)
 
-    assert cowork.revert_cowork()
+    with pytest.raises(RuntimeError, match="Claude CLI is required"):
+        cowork.revert_cowork()
 
-    assert not marketplace.exists()
-    assert not state_path.exists()
-    assert "Could not remove the Claude Cowork registration" in capsys.readouterr().out
+    assert marketplace.exists()
+    assert state_path.exists()

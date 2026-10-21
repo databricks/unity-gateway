@@ -3442,11 +3442,13 @@ class TestRevert:
             patch("ucode.cli.codex_agent.revert_managed_config", return_value="unchanged"),
             patch("ucode.cli.restore_file", return_value=False),
             patch("ucode.cli.revert_legacy_shared_config", return_value=False),
-            patch("ucode.cli.clear_state"),
+            patch("ucode.cli.clear_state") as clear_state,
         ):
             result = runner.invoke(app, ["revert"])
 
         assert result.exit_code == 1
+        clear_state.assert_not_called()
+        assert "ug state retained" in result.output
         assert "Fix the Claude Desktop error and run ug revert again" in result.output
 
 
@@ -3841,6 +3843,7 @@ class TestConfigureAgentFlag:
             patch("ucode.cli.install_databricks_ai_tools_for_agents") as mock_install,
             patch("ucode.cli.configure_mcp_command") as mock_mcp,
             patch("ucode.cli.load_state", return_value=configured_state),
+            patch("ucode.cli.load_managed_mcp_servers", return_value=[]),
             patch("ucode.agents.desktop.setup.configure_claude_cowork") as mock_configure_cowork,
         ):
             cli_mod._configure_optional_setup(state, ["claude", "codex"])
@@ -3883,7 +3886,32 @@ class TestConfigureAgentFlag:
 
         mock_configure.assert_called_once_with(state, [*state["mcp_servers"], *managed])
 
-    def test_cowork_sync_preserves_explicit_empty_mcp_state(self):
+    def test_cowork_sync_loads_managed_mcp_servers_when_not_supplied(self):
+        import ucode.cli as cli_mod
+
+        state = {
+            **MINIMAL_STATE,
+            "available_tools": ["claude"],
+            "mcp_servers": [],
+        }
+        managed = [
+            {
+                "name": "managed-server",
+                "url": "https://workspace.example/managed",
+                "clients": ["claude"],
+            }
+        ]
+        with (
+            patch("ucode.cli.load_state", side_effect=AssertionError("must not reload state")),
+            patch("ucode.cli.load_managed_mcp_servers", return_value=managed) as mock_managed,
+            patch("ucode.agents.desktop.setup.configure_claude_cowork") as mock_configure,
+        ):
+            cli_mod._sync_claude_cowork_mcp_servers(state)
+
+        mock_managed.assert_called_once_with(state, {"claude"})
+        mock_configure.assert_called_once_with(state, managed)
+
+    def test_cowork_sync_preserves_explicit_empty_managed_mcp_state(self):
         import ucode.cli as cli_mod
 
         state = {
@@ -3892,10 +3920,13 @@ class TestConfigureAgentFlag:
             "mcp_servers": [],
         }
         with (
-            patch("ucode.cli.load_state", side_effect=AssertionError("must not reload state")),
+            patch(
+                "ucode.cli.load_managed_mcp_servers",
+                side_effect=AssertionError("explicit managed state must be preserved"),
+            ),
             patch("ucode.agents.desktop.setup.configure_claude_cowork") as mock_configure,
         ):
-            cli_mod._sync_claude_cowork_mcp_servers(state)
+            cli_mod._sync_claude_cowork_mcp_servers(state, managed_mcp_servers=[])
 
         mock_configure.assert_called_once_with(state, [])
 

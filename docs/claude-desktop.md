@@ -54,9 +54,12 @@ Claude's `mcp__plugin_<plugin>_<server>__<tool>` pattern.
 
 Cowork plugin support can still be disabled by Anthropic account feature flags or managed
 Desktop policy. UG treats installation as best-effort: failure warns but does not fail Claude
-Code setup. Configure never removes an installed Cowork plugin when Claude is omitted, disabled,
-or has no current MCP servers or managed skills. Only `ug revert` removes it. The native Desktop
-gateway profile is separate and remains under the cleanup rules below.
+Code setup. If the current workspace has no Claude-targeted MCP servers or managed skills, UG
+keeps the plugin installed but replaces its contents with an empty plugin so a prior workspace's
+tools and skills do not remain active. If Cowork has never been started and UG has no prior plugin
+state, setup skips silently. Only `ug revert` removes the plugin registration and generated
+marketplace. The native Desktop gateway profile is separate and remains under the cleanup rules
+below.
 
 ## Models and authentication
 
@@ -176,6 +179,12 @@ otherwise it clears the selection. A later selection of another profile is prese
 Only this previous-selection ID is saved in `~/.ucode/claude-desktop.json`.
 Repeated configure retains it while UG remains selected.
 
+Revert also uninstalls `unity-gateway@unity-gateway-cowork`, removes its marketplace
+registration, and deletes UG's generated marketplace. This removes the MCP connectors and
+skills delivered by that plugin. It also cleans up an exact UG registration left in another
+Cowork profile by an older failed revert. Unrelated Desktop plugins, connectors, and skills are
+left untouched.
+
 The revert summary reports `Claude Desktop profile: removed`, `unchanged`, or `failed`.
 
 Old random-ID and workspace-derived profiles from earlier builds are left untouched;
@@ -184,10 +193,10 @@ is no longer needed; normal CLI URL handling is unchanged.
 
 Files are replaced atomically one at a time with best-effort rollback of their exact
 previous bytes on write failure. This is not a crash-atomic transaction across files.
-Workspace state is cleared even if Desktop revert fails. Desktop's separate
-previous-selection file is retained on failure, so cleanup can still be retried
-with `ug revert`. A Desktop cleanup failure produces one warning and exit code 1;
-the summary reports the failed profile cleanup and confirms workspace state was cleared.
+Workspace and Cowork cleanup state is retained if Desktop revert fails, so cleanup can be
+retried with `ug revert`. The generated Cowork marketplace is also retained until its plugin
+and marketplace registrations are removed successfully. A Desktop cleanup failure produces
+one warning and exit code 1; the summary reports the failed cleanup.
 Profile configure/revert waits at most five seconds for its file lock. A timeout
 does not interrupt the holder or change profile, metadata, or selection-state files.
 

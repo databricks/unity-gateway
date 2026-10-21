@@ -683,7 +683,7 @@ def test_profile_lock_timeout_warns_and_preserves_state(desktop, monkeypatch, ca
     assert "retry" in output
 
 
-def test_revert_failure_clears_workspace_state_and_allows_retry(desktop, monkeypatch):
+def test_revert_failure_retains_workspace_state_and_allows_retry(desktop, monkeypatch):
     previous_id = "12345678-1234-4abc-8def-123456789abc"
     (desktop / f"{previous_id}.json").write_text("{}")
     metadata_path = desktop / "_meta.json"
@@ -718,17 +718,18 @@ def test_revert_failure_clears_workspace_state_and_allows_retry(desktop, monkeyp
     assert len(warnings) == 2, failed.output
     assert "Could not revert Claude Desktop" in warnings[0]
     assert (
-        warnings[1] == "! ug state cleared. Fix the Claude Desktop error and run ug revert again."
+        warnings[1] == "! ug state retained. Fix the Claude Desktop error and run ug revert again."
     )
     assert "Claude Desktop profile: failed" in failed.output
 
-    assert state_store.load_state() == {}
-    assert state_store.load_full_state()["workspaces"] == {}
+    assert state_store.load_state()["workspace"] == state["workspace"]
+    assert state["workspace"] in state_store.load_full_state()["workspaces"]
     assert selection_path.read_bytes() == selection_before
     assert {path.name: path.read_bytes() for path in desktop.glob("*.json")} == profiles_before
 
     retried = runner.invoke(cli.app, ["revert"])
     assert retried.exit_code == 0, retried.output
+    assert state_store.load_state() == {}
     assert not (desktop / f"{claude_desktop.PROFILE_ID}.json").exists()
     assert not selection_path.exists()
     assert json.loads(metadata_path.read_text()) == {
