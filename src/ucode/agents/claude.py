@@ -14,7 +14,7 @@ import sys
 import threading
 import traceback
 from collections.abc import Callable, Iterable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -2270,21 +2270,28 @@ def _feedback_launch_args(
     if not env_bool(ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR):
         yield tool_args, settings_override
         return
-    APP_DIR.mkdir(parents=True, exist_ok=True)
-    with TemporaryDirectory(prefix="claude-feedback-", dir=APP_DIR) as directory:
-        plugin_dir = Path(directory) / "plugin"
-        smart_routing_v2._write_routed_claude_plugin(plugin_dir, [])
-        feedback_settings = {
-            "pluginConfigs": {
-                smart_routing_v2.CLAUDE_ROUTING_PLUGIN_NAME: {
-                    "options": smart_routing_v2._claude_mod_launch_options({})
+    with ExitStack() as stack:
+        try:
+            APP_DIR.mkdir(parents=True, exist_ok=True)
+            directory = stack.enter_context(
+                TemporaryDirectory(prefix="claude-feedback-", dir=APP_DIR)
+            )
+            plugin_dir = Path(directory) / "plugin"
+            smart_routing_v2._write_routed_claude_plugin(plugin_dir, [])
+            feedback_settings = {
+                "pluginConfigs": {
+                    smart_routing_v2.CLAUDE_ROUTING_PLUGIN_NAME: {
+                        "options": smart_routing_v2._claude_mod_launch_options({})
+                    }
                 }
             }
-        }
-        yield (
-            ["--plugin-dir", str(plugin_dir), *tool_args],
-            _merge_claude_settings(settings_override or {}, feedback_settings),
-        )
+            tool_args, settings_override = (
+                ["--plugin-dir", str(plugin_dir), *tool_args],
+                _merge_claude_settings(settings_override or {}, feedback_settings),
+            )
+        except Exception as exc:  # noqa: BLE001 - optional setup must not block normal launch
+            print_warning(f"Could not load Isaac feedback notifications: {exc}")
+        yield tool_args, settings_override
 
 
 def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:

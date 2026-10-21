@@ -90,7 +90,8 @@ text-only transport and do not receive an evidence feedback ID.
 
 Claude launches without smart routing also load the feedback hooks when this flag
 is enabled. Routing stays disabled and the status band stays hidden. UG keeps the
-temporary plugin alive until Claude exits, then removes it.
+temporary plugin alive until Claude exits, then removes it. If setup fails, UG warns
+and launches Claude without the feedback hooks.
 
 These uploads belong to the running Claude session. Keep it open until completion;
 if interrupted, retry the saved evidence ID on the same machine. No Isaac background
