@@ -33,6 +33,7 @@ from ucode.agents import (
     install_databricks_ai_tools_for_agents,
     install_tool_binary,
     normalize_tool,
+    refuse_user_scope_over_managed_files,
     resolve_gemini_provider_model,
     resolve_launch_model,
     resolve_provider_models,
@@ -976,6 +977,7 @@ def _configure_workspace_command(
 ) -> int:
     if tool is not None and selected_tools is not None:
         raise RuntimeError("Use either --agent or --agents, not both.")
+    refuse_user_scope_over_managed_files([tool] if tool else selected_tools or [])
 
     # The Databricks-vs-Model-Provider-Service picker is shown only on the fully
     # interactive path (`ug configure` with no --agent/--agents). Naming agents
@@ -1013,6 +1015,7 @@ def _configure_workspace_command(
     managed, _ = refresh_managed_config(state, force_refresh=True)
     managed_tools = managed_enabled_tools(managed) if managed is not None else []
     if managed is not None and managed_tools:
+        refuse_user_scope_over_managed_files(managed_tools)
         configured_tools: list[str] = []
         for tool_name in managed_tools:
             resolved = resolve_state(managed, state, tool_name)
@@ -1091,6 +1094,7 @@ def _configure_workspace_command(
     if not picked:
         print_note("No coding agents selected — nothing to configure.")
         return 0
+    refuse_user_scope_over_managed_files(picked)
 
     for tool_name in picked:
         install_tool_binary(
@@ -4208,8 +4212,7 @@ def configure(
         if global_scope and user_scope:
             raise RuntimeError("Use either --global or --user, not both.")
         scope = "user" if user_scope else "global"
-        if global_scope or user_scope:
-            set_config_scope(scope)
+        set_config_scope(scope)
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
         if custom_oauth is not None and use_pat:
             raise RuntimeError("--client-id cannot be combined with --use-pat.")
@@ -4359,8 +4362,7 @@ def configure(
             and prompt_yes_no("Configure MCP servers now?")
         ):
             configure_mcp_command()
-        if global_scope or user_scope:
-            save_config_scope(scope)
+        save_config_scope(scope)
     except typer.Exit:
         # `typer.Exit` subclasses RuntimeError, so it has to be re-raised ahead of the handler
         # below. Otherwise a clean exit (e.g. `_reject_configure_under_managed_config` under a

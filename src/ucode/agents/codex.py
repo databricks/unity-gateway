@@ -67,6 +67,7 @@ from ucode.managed_files import (
     OS,
     ManagedFileWriteUnavailable,
     check_skipped_managed_overrides,
+    config_scope,
     current_os,
     managed_file_conflicts,
     managed_file_is_verified,
@@ -764,13 +765,14 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
     if path is not None and path.name == CODEX_REQUIREMENTS_FILE:
         compose = _as_requirements(compose)
     if managed_settings_skipped():
-        check_skipped_managed_overrides(
-            path,
-            parser=_parse_managed_config,
-            compose=compose,
-            owned_paths=MANAGED_KEYS,
-            display="Codex",
-        )
+        if config_scope() != "user":
+            check_skipped_managed_overrides(
+                path,
+                parser=_parse_managed_config,
+                compose=compose,
+                owned_paths=MANAGED_KEYS,
+                display="Codex",
+            )
         return
     if path is None:
         print_warning_err(

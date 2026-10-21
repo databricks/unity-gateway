@@ -113,8 +113,10 @@ ug configure --user
 
 `--global` (the default) writes the machine-wide Claude Code and Codex managed settings with sudo.
 `--user` skips them, like `UG_SKIP_OS_SETTINGS`, and needs no sudo; use it when you launch through
-`ug`. It fails while a managed file for the agent exists, since managed settings take precedence.
-The choice is saved after a successful configure, until `ug revert` or the next `--global`/`--user`.
+`ug`. Configure fails while a managed file for the agent exists, since managed settings take
+precedence; later launches use whatever files are present.
+The choice is saved for launches after a successful configure; `ug configure` without `--user`
+and `ug revert` return to `--global`.
 
 Available coding agents are `codex`, `claude`, `gemini`, `opencode`,
 `copilot`, and `pi`. `cursor` can be included in `--agents` for MCP-only setup;

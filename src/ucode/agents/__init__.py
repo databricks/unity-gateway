@@ -414,21 +414,23 @@ def resolve_gemini_provider_model(
     )
 
 
-def _refuse_user_scope_over_managed_file(tool: str) -> None:
+def refuse_user_scope_over_managed_files(tools: list[str]) -> None:
+    """Run by ``ug configure`` before any agent is configured; launches use the files present."""
     if config_scope() != "user":
         return
-    if tool == AGENT_CLAUDE:
-        display, path = "Claude Code", claude._managed_settings_path()
-    elif tool == AGENT_CODEX:
-        display, path = "Codex", codex.codex_managed_config_path()
-    else:
-        return
-    if path is not None and path.exists():
-        raise RuntimeError(
-            f"`ug configure --user` can't be used while {display} managed settings exist at "
-            f"{path}; they take precedence over user settings. Run `ug revert` if ug wrote them, "
-            "ask your administrator to remove them, or use `ug configure --global`."
-        )
+    for tool in tools:
+        if tool == AGENT_CLAUDE:
+            display, path = "Claude Code", claude.managed_settings_path()
+        elif tool == AGENT_CODEX:
+            display, path = "Codex", codex.codex_managed_config_path()
+        else:
+            continue
+        if path is not None and path.exists():
+            raise RuntimeError(
+                f"`ug configure --user` can't be used while {display} managed settings exist at "
+                f"{path}; they take precedence over user settings. Run `ug revert` if ug wrote "
+                "them, ask your administrator to remove them, or use `ug configure --global`."
+            )
 
 
 def configure_tool(
@@ -444,7 +446,6 @@ def configure_tool(
     parent_schema: str | None = None,
     picker_catalog: AnthropicModelCatalog | None = None,
 ) -> dict:
-    _refuse_user_scope_over_managed_file(tool)
     result: dict | tuple[dict, str]
     if tool == AGENT_CODEX:
         result = codex.write_tool_config(

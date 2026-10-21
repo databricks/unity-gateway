@@ -1744,9 +1744,13 @@ class TestCodexManagedConfig:
         assert profile["model"] == "gpt-5"
         assert "env_http_headers" not in profile["model_providers"]["Databricks"]
 
-    def test_skip_env_bypasses_managed_config(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("opt_out", ["env", "user_scope"])
+    def test_skip_env_bypasses_managed_config(self, tmp_path, monkeypatch, opt_out):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)
-        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        if opt_out == "env":
+            monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        else:
+            managed_files.set_config_scope("user")
         # A privileged write must never be attempted when the developer opted out.
         monkeypatch.setattr(
             codex, "reconcile_managed_file", lambda *a, **kw: pytest.fail("must not write managed")
@@ -1784,17 +1788,21 @@ class TestCodexManagedConfig:
         assert "stale" in message
         assert "ug revert" in message
 
-    def test_user_scope_bypasses_managed_config(self, tmp_path, monkeypatch):
+    def test_user_scope_launches_over_stale_managed_override(self, tmp_path, monkeypatch):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)
-        managed_files.set_config_scope("user")
-        monkeypatch.setattr(
-            codex, "reconcile_managed_file", lambda *a, **kw: pytest.fail("must not write managed")
+        managed_path.parent.mkdir(parents=True, exist_ok=True)
+        managed_path.write_text(
+            'model_provider = "Databricks"\n'
+            "[model_providers.Databricks]\n"
+            'base_url = "https://old-workspace.databricks.com/ai-gateway/openai/v1"\n',
+            encoding="utf-8",
         )
+        managed_files.set_config_scope("user")
 
         codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
 
         assert read_toml_safe(config_path)["model_provider"] == "Databricks"
-        assert not managed_path.exists()
+        assert "old-workspace" in managed_path.read_text(encoding="utf-8")
 
     def test_skip_env_no_error_without_stale_override(self, tmp_path, monkeypatch):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)

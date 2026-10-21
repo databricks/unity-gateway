@@ -1216,35 +1216,55 @@ class TestConfiguredPaths:
 
 class TestConfigureToolUserScope:
     @pytest.mark.parametrize(
-        "tool,path_owner,path_attr,writer",
-        [
-            ("claude", "claude", "_managed_settings_path", "write_tool_config"),
-            ("codex", "codex", "codex_managed_config_path", "write_tool_config"),
-        ],
+        "tool,path_attr",
+        [("claude", "_managed_settings_path"), ("codex", "codex_managed_config_path")],
     )
     @pytest.mark.parametrize("exists", [True, False])
-    def test_managed_file_blocks_user_scope(
-        self, monkeypatch, tmp_path, tool, path_owner, path_attr, writer, exists
-    ):
+    def test_managed_file_blocks_user_scope(self, monkeypatch, tmp_path, tool, path_attr, exists):
         managed = tmp_path / "managed"
         if exists:
             managed.write_text("x", encoding="utf-8")
-        module = getattr(agents_mod, path_owner)
+        module = getattr(agents_mod, tool)
         monkeypatch.setattr(module, path_attr, lambda: managed)
-        written: list = []
-        monkeypatch.setattr(module, writer, lambda state, *a, **kw: written.append(tool) or state)
         managed_files.set_config_scope("user")
 
         if exists:
             with pytest.raises(RuntimeError, match=r"--user.*managed settings exist.*--global"):
-                agents_mod.configure_tool(tool, {}, "m")
-            assert written == []
+                agents_mod.refuse_user_scope_over_managed_files([tool])
         else:
-            agents_mod.configure_tool(tool, {}, "m")
-            assert written == [tool]
+            agents_mod.refuse_user_scope_over_managed_files([tool])
+
+    def test_windows_codex_requirements_blocks_user_scope(self, monkeypatch, tmp_path):
+        import ucode.codex_config as codex_config
+        from ucode.os_compatibility import system_cross_os
+
+        requirements = tmp_path / "OpenAI" / "Codex" / managed_files.CODEX_REQUIREMENTS_FILE
+        requirements.parent.mkdir(parents=True)
+        requirements.write_text('model_provider = "Databricks"\n', encoding="utf-8")
+        monkeypatch.setattr(codex_config, "current_os", lambda: managed_files.OS.WINDOWS)
+        monkeypatch.setattr(system_cross_os, "windows_program_data_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            agents_mod.codex, "codex_managed_config_path", codex_config.codex_managed_config_path
+        )
+        managed_files.set_config_scope("user")
+        with pytest.raises(RuntimeError, match="requirements.toml"):
+            agents_mod.refuse_user_scope_over_managed_files(["codex"])
 
     def test_no_managed_path_is_not_checked(self, monkeypatch):
         monkeypatch.setattr(agents_mod.codex, "codex_managed_config_path", lambda: None)
-        monkeypatch.setattr(agents_mod.codex, "write_tool_config", lambda state, *a, **kw: state)
         managed_files.set_config_scope("user")
-        agents_mod.configure_tool("codex", {}, "m")
+        agents_mod.refuse_user_scope_over_managed_files(["codex"])
+
+    def test_launch_does_not_refuse_over_managed_file(self, monkeypatch, tmp_path):
+        managed = tmp_path / "managed"
+        managed.write_text("x", encoding="utf-8")
+        monkeypatch.setattr(agents_mod.claude, "_managed_settings_path", lambda: managed)
+        written: list = []
+        monkeypatch.setattr(
+            agents_mod.claude,
+            "write_tool_config",
+            lambda state, *a, **kw: written.append(1) or state,
+        )
+        managed_files.set_config_scope("user")
+        agents_mod.configure_tool("claude", {}, "m")
+        assert written == [1]
