@@ -83,7 +83,10 @@ from ucode.databricks import (
     probe_unity_gateway_capabilities,
     resolve_pat_token,
     resolve_provider_launch_model,
+    resolve_workspace_host,
     run_databricks_login,
+    workspace_origin,
+    workspace_url_org_id,
 )
 from ucode.env import env_bool
 from ucode.managed_budget import (
@@ -166,11 +169,13 @@ from ucode.state import (
     is_self_managed,
     load_full_state,
     load_state,
+    record_workspace_alias,
     remove_self_managed_agent,
     save_state,
     set_current_workspace,
     set_model_location,
     set_provider_service,
+    workspace_alias_target,
     workspace_self_managed_agents,
 )
 from ucode.string_utils import is_valid_catalog_schema
@@ -453,7 +458,7 @@ def _parse_workspace_option(workspace: str) -> list[tuple[str, str | None]]:
         url = normalize_workspace_url(workspace)
     except ValueError as exc:
         raise RuntimeError(str(exc)) from exc
-    return [(url, None)]
+    return [_resolve_shared_host(url, None, workspace_url_org_id(url))]
 
 
 def _parse_profile_option(profile: str) -> list[tuple[str, str | None]]:
@@ -486,7 +491,44 @@ def _parse_profile_option(profile: str) -> list[tuple[str, str | None]]:
         workspace = normalize_workspace_url(host)
     except ValueError as exc:
         raise RuntimeError(str(exc)) from exc
-    return [(workspace, name)]
+    workspace_id = str(entry.get("workspace_id") or "").strip()
+    return [_resolve_shared_host(workspace, name, workspace_id if workspace_id.isdigit() else None)]
+
+
+def _resolve_shared_host(
+    workspace: str, profile: str | None, workspace_id: str | None
+) -> tuple[str, str | None]:
+    """Swap a host shared by several workspaces for the selected workspace's own host.
+
+    ``workspace_id`` comes from the URL's ``?o=`` selector or the profile's ``workspace_id``.
+    When it names a workspace served from another host, that host is configured and the shared
+    host is recorded as an alias of it. The profile is dropped then: it addresses the shared host,
+    so a login for the workspace host must not rewrite it. When the lookup fails, the URL is used
+    as given. Without a workspace id, a shared host already recorded as an alias resolves to the
+    workspace it was configured as.
+    """
+    if workspace_id is None:
+        target = workspace_alias_target(workspace)
+        return (workspace, profile) if target is None else (target, None)
+    shared = workspace_origin(workspace)
+    host = resolve_workspace_host(workspace, workspace_id)
+    if host is None:
+        print_warning(
+            f"Could not look up the host of workspace {workspace_id} behind {shared}; "
+            f"using {workspace} as given."
+        )
+        return workspace, profile
+    if host == shared:
+        return shared, profile
+    print_note(f"Workspace {workspace_id} on {shared} is served by {host}; configuring {host}.")
+    record_workspace_alias(shared, host)
+    return host, None
+
+
+def _launch_workspace(workspace: str) -> str:
+    """Resolve a launch's ``--workspace`` to the workspace host, as configure does."""
+    url = normalize_workspace_url(workspace)
+    return _resolve_shared_host(url, None, workspace_url_org_id(url))[0]
 
 
 def configure_shared_state(
@@ -3124,7 +3166,7 @@ def _launch_tool(
         # auto-configures it if unseen), so `ug claude --provider ... --workspace ...`
         # works without a prior `ug configure`.
         if workspace_url:
-            set_current_workspace(normalize_workspace_url(workspace_url))
+            set_current_workspace(_launch_workspace(workspace_url))
         existing = load_state()
         # Workspaces configured with --use-pat export the profile's PAT as
         # DATABRICKS_BEARER up front so every auth check below (and the
@@ -3672,7 +3714,7 @@ def _launch_managed_default(
 ) -> None:
     """Route bare ``ucode`` by whether the workspace publishes a managed config."""
     if workspace:
-        set_current_workspace(normalize_workspace_url(workspace))
+        set_current_workspace(_launch_workspace(workspace))
     state = load_state()
     current = state.get("workspace")
     if not current:

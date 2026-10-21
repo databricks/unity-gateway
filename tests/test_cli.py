@@ -27,6 +27,7 @@ import ucode.managed_files as managed_files
 from ucode.cli import app
 from ucode.databricks import GatewayProbe
 from ucode.managed_config import ManagedConfigResult, normalize_managed_config
+from ucode.state import WORKSPACE_ALIASES_KEY, load_full_state, record_workspace_alias
 from ucode.state import save_state as real_save_state
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -4916,6 +4917,150 @@ class TestParseProfileOption:
         cli_mod = self._patch_profiles(monkeypatch, [{"name": "DEFAULT", "auth_type": "pat"}])
         with pytest.raises(RuntimeError, match="no host configured"):
             cli_mod._parse_profile_option("DEFAULT")
+
+    def test_shared_host_profile_resolves_to_workspace_host(self, monkeypatch):
+        cli_mod = self._patch_profiles(
+            monkeypatch,
+            [{"name": "shared", "host": SHARED_HOST, "workspace_id": SHARED_WORKSPACE_ID}],
+        )
+        lookups = _stub_workspace_host_lookup(monkeypatch, WORKSPACE_HOST)
+
+        # The profile addresses the shared host, so it is not reused for the workspace host.
+        assert cli_mod._parse_profile_option("shared") == [(WORKSPACE_HOST, None)]
+        assert lookups == [(SHARED_HOST, SHARED_WORKSPACE_ID)]
+        assert load_full_state()[WORKSPACE_ALIASES_KEY] == {SHARED_HOST: WORKSPACE_HOST}
+
+    def test_profile_on_its_workspace_host_is_kept(self, monkeypatch):
+        cli_mod = self._patch_profiles(
+            monkeypatch,
+            [{"name": "ws", "host": WORKSPACE_HOST, "workspace_id": SHARED_WORKSPACE_ID}],
+        )
+        _stub_workspace_host_lookup(monkeypatch, WORKSPACE_HOST)
+
+        assert cli_mod._parse_profile_option("ws") == [(WORKSPACE_HOST, "ws")]
+        assert WORKSPACE_ALIASES_KEY not in load_full_state()
+
+    def test_profile_without_workspace_id_skips_lookup(self, monkeypatch):
+        cli_mod = self._patch_profiles(
+            monkeypatch, [{"name": "acct", "host": SHARED_HOST, "account_id": "a-1"}]
+        )
+        lookups = _stub_workspace_host_lookup(monkeypatch, WORKSPACE_HOST)
+
+        assert cli_mod._parse_profile_option("acct") == [(SHARED_HOST, "acct")]
+        assert lookups == []
+
+    def test_profile_on_aliased_shared_host_uses_recorded_workspace(self, monkeypatch):
+        cli_mod = self._patch_profiles(
+            monkeypatch, [{"name": "acct", "host": SHARED_HOST, "account_id": "a-1"}]
+        )
+        record_workspace_alias(SHARED_HOST, WORKSPACE_HOST)
+
+        assert cli_mod._parse_profile_option("acct") == [(WORKSPACE_HOST, None)]
+
+
+SHARED_HOST = "https://shared.databricks.com"
+SHARED_WORKSPACE_ID = "1965859176160743"
+WORKSPACE_HOST = "https://dbc-123.cloud.databricks.com"
+
+
+def _stub_workspace_host_lookup(monkeypatch, host):
+    lookups: list[tuple[str, str]] = []
+
+    def fake_resolve(workspace, workspace_id):
+        lookups.append((workspace, workspace_id))
+        return host
+
+    monkeypatch.setattr(cli_mod, "resolve_workspace_host", fake_resolve)
+    return lookups
+
+
+class TestParseWorkspaceOption:
+    def test_shared_host_selector_resolves_to_workspace_host(self, monkeypatch, capsys):
+        lookups = _stub_workspace_host_lookup(monkeypatch, WORKSPACE_HOST)
+
+        entries = cli_mod._parse_workspace_option(f"{SHARED_HOST}?o={SHARED_WORKSPACE_ID}")
+
+        assert entries == [(WORKSPACE_HOST, None)]
+        assert lookups == [(f"{SHARED_HOST}?o={SHARED_WORKSPACE_ID}", SHARED_WORKSPACE_ID)]
+        assert load_full_state()[WORKSPACE_ALIASES_KEY] == {SHARED_HOST: WORKSPACE_HOST}
+        assert f"configuring {WORKSPACE_HOST}" in " ".join(capsys.readouterr().out.split())
+
+    def test_selector_on_the_workspace_host_is_dropped(self, monkeypatch):
+        _stub_workspace_host_lookup(monkeypatch, WORKSPACE_HOST)
+
+        entries = cli_mod._parse_workspace_option(f"{WORKSPACE_HOST}/?o={SHARED_WORKSPACE_ID}")
+
+        assert entries == [(WORKSPACE_HOST, None)]
+        assert WORKSPACE_ALIASES_KEY not in load_full_state()
+
+    def test_failed_lookup_keeps_url_and_warns(self, monkeypatch, capsys):
+        _stub_workspace_host_lookup(monkeypatch, None)
+        url = f"{SHARED_HOST}?o={SHARED_WORKSPACE_ID}"
+
+        assert cli_mod._parse_workspace_option(url) == [(url, None)]
+        assert WORKSPACE_ALIASES_KEY not in load_full_state()
+        assert "Could not look up the host" in " ".join(capsys.readouterr().out.split())
+
+    def test_plain_url_skips_lookup(self, monkeypatch):
+        lookups = _stub_workspace_host_lookup(monkeypatch, WORKSPACE_HOST)
+
+        assert cli_mod._parse_workspace_option(f"{WORKSPACE_HOST}/") == [(WORKSPACE_HOST, None)]
+        assert lookups == []
+
+    def test_bare_shared_host_resolves_to_recorded_workspace(self, monkeypatch):
+        record_workspace_alias(SHARED_HOST, WORKSPACE_HOST)
+        lookups = _stub_workspace_host_lookup(monkeypatch, WORKSPACE_HOST)
+
+        assert cli_mod._parse_workspace_option(f"{SHARED_HOST}/") == [(WORKSPACE_HOST, None)]
+        assert lookups == []
+
+
+class TestLaunchWorkspace:
+    def test_shared_host_selector_resolves_and_records_alias(self, monkeypatch):
+        lookups = _stub_workspace_host_lookup(monkeypatch, WORKSPACE_HOST)
+
+        assert cli_mod._launch_workspace(f"{SHARED_HOST}?o={SHARED_WORKSPACE_ID}") == WORKSPACE_HOST
+        assert lookups == [(f"{SHARED_HOST}?o={SHARED_WORKSPACE_ID}", SHARED_WORKSPACE_ID)]
+        assert load_full_state()[WORKSPACE_ALIASES_KEY] == {SHARED_HOST: WORKSPACE_HOST}
+
+    def test_bare_shared_host_resolves_to_recorded_workspace(self, monkeypatch):
+        record_workspace_alias(SHARED_HOST, WORKSPACE_HOST)
+        _stub_workspace_host_lookup(monkeypatch, None)
+
+        assert cli_mod._launch_workspace(SHARED_HOST) == WORKSPACE_HOST
+
+    def test_plain_host_is_normalized_without_lookup(self, monkeypatch):
+        lookups = _stub_workspace_host_lookup(monkeypatch, WORKSPACE_HOST)
+
+        assert cli_mod._launch_workspace("dbc-123.cloud.databricks.com/") == WORKSPACE_HOST
+        assert lookups == []
+
+    def test_agent_launch_targets_the_workspace_host(self, monkeypatch):
+        _stub_workspace_host_lookup(monkeypatch, WORKSPACE_HOST)
+        switched: list[str] = []
+        monkeypatch.setattr(cli_mod, "set_current_workspace", switched.append)
+
+        def stop_after_switch():
+            raise RuntimeError("stop")
+
+        monkeypatch.setattr(cli_mod, "load_state", stop_after_switch)
+
+        result = runner.invoke(
+            app, ["codex", "--workspace", f"{SHARED_HOST}?o={SHARED_WORKSPACE_ID}"]
+        )
+
+        assert switched == [WORKSPACE_HOST]
+        assert result.exit_code != 0
+
+    def test_bare_launch_targets_the_workspace_host(self, monkeypatch):
+        _stub_workspace_host_lookup(monkeypatch, WORKSPACE_HOST)
+        switched: list[str] = []
+        monkeypatch.setattr(cli_mod, "set_current_workspace", switched.append)
+        monkeypatch.setattr(cli_mod, "load_state", lambda: {})
+
+        runner.invoke(app, ["--workspace", f"{SHARED_HOST}?o={SHARED_WORKSPACE_ID}"])
+
+        assert switched == [WORKSPACE_HOST]
 
 
 class TestConfigureProfilesFlag:
