@@ -111,9 +111,7 @@ and launch recipe after on. Each phase retains completed native parent/child
 answers and requires successful real gateway responses, with no recipe header.
 
 The `Claude mod · 2.1.290` CI job validates the packaged module and checks event
-forwarding, launch-local options, and feedback delivery notifications. The notification
-component tests supply CLI results and clock ticks through native events; they do not
-upload feedback. To run those component checks locally:
+forwarding and launch-local options. To run those component checks locally:
 
 ```bash
 UCODE_TEST_CLAUDE_BINARY=/absolute/path/to/claude \
