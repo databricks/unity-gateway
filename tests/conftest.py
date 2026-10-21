@@ -62,7 +62,14 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(codex_mod, "CODEX_CONFIG_PATH", tmp_path / ".codex" / "ucode.config.toml")
 
-    def reject_privileged_write(path, _desired_text):
+    # The machine-wide copy lives outside APP_DIR; never read or write the host's /etc copy.
+    monkeypatch.setattr(
+        managed_config_mod, "MACHINE_MANAGED_CONFIG_PATH", tmp_path / "etc-unitygateway.json"
+    )
+    # Authoritative reads are recorded per process; one test's read must not publish in another.
+    managed_config_mod._authoritative_reads.clear()
+
+    def reject_privileged_write(path, _desired_text, **_kwargs):
         pytest.fail(
             f"test attempted a privileged managed-config write to {path}; "
             "mock the agent's managed path and writer"

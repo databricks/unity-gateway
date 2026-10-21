@@ -30,10 +30,19 @@ target_is_allowed() {
     case "$platform:$1" in
         "linux:/etc/claude-code/managed-settings.json"|\
         "linux:/etc/codex/managed_config.toml"|\
+        "linux:/etc/unitygateway/managed-config.json"|\
         "macos:/Library/Application Support/ClaudeCode/managed-settings.json"|\
-        "macos:/etc/codex/managed_config.toml") return 0 ;;
+        "macos:/etc/codex/managed_config.toml"|\
+        "macos:/etc/unitygateway/managed-config.json") return 0 ;;
         *) return 1 ;;
     esac
+}
+
+# Unity Gateway's own machine file is read by every user, so its directory and file are always
+# reset to root-owned and not writable by others, even when they already exist with other metadata.
+# The agents' settings files instead keep whatever metadata their administrator gave them.
+is_ug_owned_target() {
+    [ "$1" = "/etc/unitygateway/managed-config.json" ]
 }
 
 decode_arg() {
@@ -134,6 +143,9 @@ replace_one() (
         run_step mkdir -p "$parent"
         run_step chown 0:0 "$parent"
         run_step chmod 0755 "$parent"
+    elif is_ug_owned_target "$target"; then
+        run_step chown 0:0 "$parent"
+        run_step chmod 0755 "$parent"
     fi
 
     staging=$(mktemp "$staging_template") || exit "$?"
@@ -182,6 +194,10 @@ replace_one() (
             exit 1
         fi
         run_step cp "$source_path" "$staging"
+        if is_ug_owned_target "$target"; then
+            run_step chown 0:0 "$staging"
+            run_step chmod 0644 "$staging"
+        fi
     else
         if ! source_is_valid; then
             printf '%s\n' "Refusing invalid managed-settings source: $source_path" >&2

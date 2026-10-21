@@ -37,10 +37,24 @@ from ucode.databricks import (
     fetch_model_recommendation,
     get_databricks_token,
 )
+from ucode.managed_files import (
+    MACHINE_MANAGED_CONFIG_PATH,
+    OS,
+    current_os,
+    managed_settings_skipped,
+    write_machine_file,
+)
+from ucode.managed_resolve import (
+    managed_enabled_tools,
+    managed_provider_service,
+    managed_unity_catalog_location,
+)
 from ucode.time_utils import parse_update_time
 from ucode.ui import console, print_warning
 
 MANAGED_CONFIG_PATH = config_io.APP_DIR / "managed-config.json"
+# The ``ug_state`` layout in the machine-wide copy (see :func:`sync_machine_managed_config`).
+MACHINE_STATE_VERSION = 1
 
 # Shown to a developer when their workspace has no admin-defined managed config yet — the normal
 # case, not an error. Kept here so the CLI (which surfaces it) uses one consistent message.
@@ -632,6 +646,18 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+# The authoritative reads (``save_managed_state`` with an ``outcome``) made by this process, by
+# workspace. A failed fetch that fell back to the cached file is not one, so the machine-wide copy is
+# only ever published from, or invalidated by, a read this command actually made.
+_authoritative_reads: dict[str, dict] = {}
+
+
+def authoritative_managed_read(workspace: str | None) -> dict | None:
+    """The persisted payload of this process's authoritative read for ``workspace``, if any."""
+    read = _authoritative_reads.get(workspace or "")
+    return dict(read) if read is not None else None
+
+
 def save_managed_state(workspace: str, config: dict, *, outcome: str | None = None) -> None:
     """Persist the raw managed config to ``~/.ucode/managed-config.json`` at mode 0600.
 
@@ -652,6 +678,7 @@ def save_managed_state(workspace: str, config: dict, *, outcome: str | None = No
     if outcome is not None:
         payload["retrieved_at"] = _utcnow().isoformat()
         payload["outcome"] = outcome
+        _authoritative_reads[workspace] = dict(payload)
     if config_io.is_dry_run():
         # Print rather than write, matching how the agent config writers behave under --dry-run.
         console.print(
@@ -775,6 +802,8 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
         cached = _cached_result_if_fresh(workspace)
         if cached is not None:
             return cached
+    # Only this read can count as authoritative from here on; a failure below records none.
+    _authoritative_reads.pop(workspace, None)
     try:
         token = get_databricks_token(workspace, state.get("profile"))
     except RuntimeError as exc:
@@ -852,3 +881,189 @@ def _summarize_read_failure(reason: str) -> str:
         return status.strip()
     condensed = " ".join(reason.split())
     return condensed if len(condensed) <= 160 else condensed[:157] + "..."
+
+
+# Best-effort detection of credentials in the admin-authored config, which has free-form fields
+# (``http_headers``, ``agent_native_settings``) that may hold any name and value. Key names are
+# matched by whole word (so ``MAX_OUTPUT_TOKENS`` is not), values by shape.
+_CREDENTIAL_SEGMENTS = frozenset(
+    {
+        "apikey",
+        "authorization",
+        "bearer",
+        "cookie",
+        "credential",
+        "credentials",
+        "jwt",
+        "passwd",
+        "password",
+        "pat",
+        "secret",
+        "signature",
+        "token",
+    }
+)
+_CREDENTIAL_PAIRS = frozenset(
+    {("api", "key"), ("access", "key"), ("private", "key"), ("ssh", "key")}
+)
+_CREDENTIAL_VALUES = (
+    # An auth scheme anywhere, e.g. a `Name: Bearer x` header line or `Authorization=Basic x`.
+    re.compile(r"\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{4,}", re.IGNORECASE),
+    # `token=...`, `api_key: ...`, and the like inside a query string or header list.
+    re.compile(
+        r"\b(token|api[-_]?key|apikey|secret|password|passwd|pwd|sig|signature)\s*[=:]\s*[^\s&,;]+",
+        re.IGNORECASE,
+    ),
+    # Credentials in a URL's userinfo.
+    re.compile(r"://[^/\s:@]+:[^/\s@]+@"),
+    # Well-known token prefixes, and a JWT.
+    re.compile(
+        r"\b(sk-[A-Za-z0-9_-]{8,}|dapi[0-9a-f]{16,}|gh[pousr]_[A-Za-z0-9]{16,}"
+        r"|github_pat_[A-Za-z0-9_]{16,}|xox[abpors]-[A-Za-z0-9-]{8,}|AKIA[0-9A-Z]{16}"
+        r"|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})"
+    ),
+)
+_HEADER_LINE = re.compile(r"^\s*([A-Za-z0-9_-]+)\s*:")
+
+
+def _is_credential_key(key: str) -> bool:
+    words = [
+        w for w in re.split(r"[^a-z0-9]+", re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", key).lower()) if w
+    ]
+    if any(word in _CREDENTIAL_SEGMENTS for word in words):
+        return True
+    return any(pair in _CREDENTIAL_PAIRS for pair in zip(words, words[1:], strict=False))
+
+
+def _is_credential_value(value: str) -> bool:
+    if any(pattern.search(value) for pattern in _CREDENTIAL_VALUES):
+        return True
+    # A header list in one string (e.g. ANTHROPIC_CUSTOM_HEADERS): check each `Name:` line's name.
+    return any(
+        (match := _HEADER_LINE.match(line)) and _is_credential_key(match.group(1))
+        for line in value.splitlines()
+    )
+
+
+def machine_config_credential_fields(config: object, path: str = "") -> list[str]:
+    """Where the raw managed ``config`` may hold a credential, as dotted paths.
+
+    Best-effort and deliberately broad: it scans the whole config, flagging a key named like a
+    credential (``Authorization``, ``X-Api-Key``, a ``*_TOKEN`` env var) and a value shaped like one
+    (``Bearer ...``, ``token=...``, a header line naming a credential, URL userinfo, a known token
+    prefix). A false positive only withholds the machine-wide copy; a miss would publish a secret.
+    """
+    found: list[str] = []
+    if isinstance(config, dict):
+        for key, value in config.items():
+            child = f"{path}.{key}" if path else str(key)
+            if isinstance(key, str) and _is_credential_key(key):
+                found.append(child)
+            else:
+                found.extend(machine_config_credential_fields(value, child))
+    elif isinstance(config, list):
+        for index, item in enumerate(config):
+            found.extend(machine_config_credential_fields(item, f"{path}[{index}]"))
+    elif isinstance(config, str) and _is_credential_value(config):
+        found.append(path)
+    return found
+
+
+def _machine_ug_state(managed: dict, tools: list[str]) -> dict:
+    """The launch state another user needs for ``tools``, derived from the managed policy alone.
+
+    Uses ``state.py``'s keys. Model lists and defaults stay in ``config``; nothing comes from the
+    administrator's own ``state.json`` (profiles, credentials, paths, ports, preferences).
+    """
+    providers: dict[str, str] = {}
+    locations: dict[str, str] = {}
+    for tool in tools:
+        provider = managed_provider_service(managed, tool)
+        location = managed_unity_catalog_location(managed, tool)
+        if provider:
+            providers[tool] = provider
+        elif location and tool in ("claude", "codex"):
+            locations[tool] = location
+    return {
+        "version": MACHINE_STATE_VERSION,
+        "available_tools": tools,
+        "provider_services": providers,
+        "model_locations": locations,
+    }
+
+
+def _dump_machine_payload(payload: dict) -> str:
+    return json.dumps(payload, indent=2) + "\n"
+
+
+def sync_machine_managed_config(
+    workspace: str,
+    managed: dict | None,
+    configured_tools: list[str],
+    *,
+    keep_configured: bool = False,
+) -> str:
+    """Publish (or invalidate) ``/etc/unitygateway/managed-config.json`` after ``ug configure``.
+
+    The file uses ``~/.ucode/managed-config.json``'s format (the raw ``config`` verbatim, its
+    ``retrieved_at`` and ``outcome``) plus a ``ug_state`` naming the managed agents that configured
+    here and their managed sources, so a later launch by another user can rebuild its managed state.
+
+    Acts only on an authoritative read made by this command: a fetch that failed and fell back to the
+    cache neither publishes nor invalidates. A read finding no policy (removed, never published, or
+    the feature off) replaces a published copy with a no-policy record, so the old one can't stay in
+    force. ``configured_tools`` are the agents that configured successfully; with
+    ``keep_configured`` (one agent at a time) agents an earlier run published for the same workspace
+    and policy stay listed. Returns ``skipped``, ``unchanged``, ``invalidated``, ``created``,
+    ``written``, or ``unsupported``.
+    """
+    read = authoritative_managed_read(workspace)
+    if read is None:
+        return "skipped"
+    if managed_settings_skipped():
+        return "skipped"
+    if current_os() not in (OS.LINUX, OS.MACOS):
+        return "unsupported"
+    existing = config_io.read_json_safe(MACHINE_MANAGED_CONFIG_PATH)
+    # A copy that exists but can't be read or parsed may still be published: invalidate it too.
+    maybe_published = existing.get("outcome") == _OUTCOME_PUBLISHED or (
+        not existing and MACHINE_MANAGED_CONFIG_PATH.exists()
+    )
+    if managed is None or read.get("outcome") != _OUTCOME_PUBLISHED:
+        if not maybe_published:
+            return "unchanged"
+        status = write_machine_file(MACHINE_MANAGED_CONFIG_PATH, _dump_machine_payload(read))
+        return "invalidated" if status in ("created", "written") else status
+    credentials = machine_config_credential_fields(read.get("config"))
+    if credentials:
+        message = (
+            "The managed config may contain credentials ("
+            + ", ".join(credentials[:5])
+            + "), so it was not published machine-wide, where every user can read it."
+        )
+        if maybe_published:
+            # Don't leave an older published copy authoritative in place of this one.
+            withdrawn = {**read, "config": {}, "outcome": _OUTCOME_NONE}
+            try:
+                write_machine_file(MACHINE_MANAGED_CONFIG_PATH, _dump_machine_payload(withdrawn))
+            except RuntimeError as exc:
+                message += f" The earlier published copy could not be withdrawn either: {exc}"
+        raise RuntimeError(message)
+    enabled = managed_enabled_tools(managed)
+    tools = [tool for tool in enabled if tool in configured_tools]
+    same_policy = (
+        existing.get("workspace") == workspace
+        and existing.get("outcome") == _OUTCOME_PUBLISHED
+        and existing.get("config") == read.get("config")
+    )
+    if keep_configured and same_policy:
+        earlier = _as_dict(existing.get("ug_state")).get("available_tools")
+        kept = set(earlier) if isinstance(earlier, list) else set()
+        tools = [tool for tool in enabled if tool in kept or tool in configured_tools]
+    payload = {**read, "ug_state": _machine_ug_state(managed, tools)}
+    if same_policy and {k: v for k, v in existing.items() if k != "retrieved_at"} == {
+        k: v for k, v in payload.items() if k != "retrieved_at"
+    }:
+        # Only the read time differs, so an identical configure rewrites nothing.
+        payload["retrieved_at"] = existing.get("retrieved_at")
+    return write_machine_file(MACHINE_MANAGED_CONFIG_PATH, _dump_machine_payload(payload))

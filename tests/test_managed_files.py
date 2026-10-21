@@ -687,6 +687,274 @@ chown() {
         assert not list(parent.glob(".managed_config.toml.ucode.*"))
 
 
+class TestWriteMachineFile:
+    """`write_machine_file`: ug's own root-owned, world-readable machine file."""
+
+    def _privileged_writes(self, monkeypatch) -> list[tuple[Path, str]]:
+        writes: list[tuple[Path, str]] = []
+
+        def replace(path, text, **_kwargs):
+            writes.append((path, text))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
+        monkeypatch.setattr(managed_files, "_sudo_replace", replace)
+        # tmp files belong to the test user; treat them as root-owned unless a test says otherwise.
+        monkeypatch.setattr(managed_files, "_machine_file_metadata_ok", lambda _path: True)
+        return writes
+
+    def test_equal_content_with_loose_metadata_is_rewritten(self, tmp_path, monkeypatch):
+        writes = self._privileged_writes(monkeypatch)
+        path = tmp_path / "managed-config.json"
+        path.write_text('{"a": 1}\n', encoding="utf-8")
+        monkeypatch.setattr(managed_files, "_machine_file_metadata_ok", lambda _path: False)
+
+        assert managed_files.write_machine_file(path, '{"a": 1}\n') == "written"
+        assert writes == [(path, '{"a": 1}\n')]
+
+    def test_metadata_check_requires_root_owner_and_closed_modes(self, tmp_path):
+        path = tmp_path / "managed-config.json"
+        path.write_text("{}", encoding="utf-8")
+        path.chmod(0o644)
+        # The test user isn't root, so ownership alone fails the check.
+        assert managed_files._machine_file_metadata_ok(path) is (os.getuid() == 0)
+        assert managed_files._machine_file_metadata_ok(tmp_path / "missing.json") is False
+
+    def test_creates_then_skips_identical_content(self, tmp_path, monkeypatch):
+        writes = self._privileged_writes(monkeypatch)
+        path = tmp_path / "unitygateway" / "managed-config.json"
+
+        assert managed_files.write_machine_file(path, '{"a": 1}\n') == "created"
+        assert managed_files.write_machine_file(path, '{"a": 1}\n') == "unchanged"
+        # Equal JSON with different formatting is also a no-op.
+        assert managed_files.write_machine_file(path, '{"a":1}') == "unchanged"
+        assert managed_files.write_machine_file(path, '{"a": 2}\n') == "written"
+        assert [text for _path, text in writes] == ['{"a": 1}\n', '{"a": 2}\n']
+
+    def test_dry_run_prints_without_writing(self, tmp_path, monkeypatch, capsys):
+        writes = self._privileged_writes(monkeypatch)
+        path = tmp_path / "managed-config.json"
+        config_io.set_dry_run(True)
+
+        assert managed_files.write_machine_file(path, '{"a": 1}\n') == "written"
+
+        assert writes == []
+        assert not path.exists()
+        assert "[dry run]" in capsys.readouterr().out
+
+    def test_skip_os_settings_skips(self, tmp_path, monkeypatch):
+        writes = self._privileged_writes(monkeypatch)
+        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+
+        assert managed_files.write_machine_file(tmp_path / "f.json", "{}\n") == "skipped"
+        assert writes == []
+
+    def test_windows_is_out_of_scope(self, tmp_path, monkeypatch):
+        writes = self._privileged_writes(monkeypatch)
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.WINDOWS)
+
+        assert managed_files.write_machine_file(tmp_path / "f.json", "{}\n") == "unsupported"
+        assert writes == []
+
+    def test_root_without_terminal_may_create(self, tmp_path, monkeypatch):
+        writes = self._privileged_writes(monkeypatch)
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: False)
+        path = tmp_path / "managed-config.json"
+
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: False)
+        with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="non-interactively"):
+            managed_files.write_machine_file(path, "{}\n")
+        assert writes == []
+
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
+        assert managed_files.write_machine_file(path, "{}\n") == "created"
+
+    def test_unverified_replacement_is_a_failure(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
+        monkeypatch.setattr(managed_files, "_sudo_replace", lambda *_a, **_k: None)
+
+        with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="expected contents"):
+            managed_files.write_machine_file(tmp_path / "managed-config.json", "{}\n")
+
+    def test_shares_the_agent_settings_sudo_session(self, tmp_path, monkeypatch):
+        """One sudo worker serves the agent settings and the machine file: one password prompt."""
+        processes: list[_FakeSudoWorkerProcess] = []
+
+        def popen(command, **kwargs):
+            process = _FakeSudoWorkerProcess(command, **kwargs)
+            write = process.stdin.write
+
+            def write_and_apply(data: str) -> int:
+                written = write(data)
+                if data.startswith("REPLACE"):
+                    _source, target, text = process.requests[-1]
+                    Path(target).parent.mkdir(parents=True, exist_ok=True)
+                    Path(target).write_text(text, encoding="utf-8")
+                return written
+
+            setattr(process.stdin, "write", write_and_apply)  # noqa: B010 -- typed test double
+            processes.append(process)
+            return process
+
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
+        monkeypatch.setattr(managed_files, "_sudo_replace", _REAL_SUDO_REPLACE)
+        monkeypatch.setattr(managed_files.subprocess_cross_os, "popen", popen)
+        monkeypatch.setattr(
+            managed_files.subprocess_cross_os,
+            "run",
+            lambda *args, **kwargs: pytest.fail("the session must not start another sudo process"),
+        )
+        agent_file = tmp_path / "claude-code" / "managed-settings.json"
+        machine_file = tmp_path / "unitygateway" / "managed-config.json"
+        monkeypatch.setitem(
+            managed_files._SUDO_REPLACE_TARGETS,
+            managed_files.OS.LINUX,
+            frozenset({agent_file, machine_file}),
+        )
+
+        with managed_files.managed_write_session():
+            _REAL_SUDO_REPLACE(agent_file, "{}\n")
+            assert managed_files.write_machine_file(machine_file, '{"a": 1}\n') == "created"
+
+        assert len(processes) == 1
+        assert [target for _source, target, _text in processes[0].requests] == [
+            str(agent_file),
+            str(machine_file),
+        ]
+
+    def test_machine_path_is_allowlisted_on_unix(self):
+        for os_enum in (managed_files.OS.LINUX, managed_files.OS.MACOS):
+            assert (
+                managed_files.MACHINE_MANAGED_CONFIG_PATH
+                in managed_files._SUDO_REPLACE_TARGETS[os_enum]
+            )
+        assert managed_files.MACHINE_MANAGED_CONFIG_PATH == Path(
+            "/etc/unitygateway/managed-config.json"
+        )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="The managed writer is Unix-only")
+def test_real_shell_creates_machine_config_root_owned_and_world_readable(tmp_path):
+    """The machine file gets a root-owned 0755 directory and a root-owned 0644 file, atomically."""
+    source = tmp_path / "source.json"
+    source.write_text('{"outcome": "published"}\n', encoding="utf-8")
+    target = tmp_path / "unitygateway" / "managed-config.json"
+    chown_log = tmp_path / "chown.log"
+    # Unit-only relocation: production still accepts only the fixed /etc path.
+    script = managed_files._SUDO_REPLACE_SCRIPT.replace(
+        "/etc/unitygateway/managed-config.json", str(target)
+    )
+    script = script.replace(
+        '\ncase "$mode" in',
+        '\nchown() {\n    printf \'%s\\n\' "$*" >> "$UG_TEST_CHOWN_LOG"\n}\ncase "$mode" in',
+    )
+    request = " ".join(
+        [
+            "REPLACE",
+            "1",
+            managed_files._encode_worker_arg(str(source)),
+            managed_files._encode_worker_arg(str(target)),
+        ]
+    )
+    result = subprocess.run(
+        ["/bin/sh", "-c", script, "worker-test", "session", managed_files.current_os().value],
+        input=request + "\nQUIT\n",
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env={**os.environ, "SUDO_UID": str(os.getuid()), "UG_TEST_CHOWN_LOG": str(chown_log)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "OK 1\n"
+    assert target.read_text(encoding="utf-8") == '{"outcome": "published"}\n'
+    assert target.stat().st_mode & 0o777 == 0o644
+    assert target.parent.stat().st_mode & 0o777 == 0o755
+    chown_calls = chown_log.read_text(encoding="utf-8").splitlines()
+    assert chown_calls[0] == f"0:0 {target.parent}"
+    assert chown_calls[1].startswith(f"0:0 {target.parent}/.managed-config.json.ucode.")
+    assert not list(target.parent.glob(".managed-config.json.ucode.*"))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="The managed writer is Unix-only")
+def test_real_shell_resets_existing_machine_config_metadata(tmp_path):
+    """An existing machine file and directory are reset to root-owned 0644 / 0755 on replace."""
+    source = tmp_path / "source.json"
+    source.write_text('{"outcome": "published"}\n', encoding="utf-8")
+    parent = tmp_path / "unitygateway"
+    parent.mkdir()
+    parent.chmod(0o777)
+    target = parent / "managed-config.json"
+    target.write_text("old\n", encoding="utf-8")
+    target.chmod(0o600)
+    chown_log = tmp_path / "chown.log"
+    script = managed_files._SUDO_REPLACE_SCRIPT.replace(
+        "/etc/unitygateway/managed-config.json", str(target)
+    )
+    script = script.replace(
+        '\ncase "$mode" in',
+        '\nchown() {\n    printf \'%s\\n\' "$*" >> "$UG_TEST_CHOWN_LOG"\n}\ncase "$mode" in',
+    )
+    request = " ".join(
+        [
+            "REPLACE",
+            "1",
+            managed_files._encode_worker_arg(str(source)),
+            managed_files._encode_worker_arg(str(target)),
+        ]
+    )
+    result = subprocess.run(
+        ["/bin/sh", "-c", script, "worker-test", "session", managed_files.current_os().value],
+        input=request + "\nQUIT\n",
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env={**os.environ, "SUDO_UID": str(os.getuid()), "UG_TEST_CHOWN_LOG": str(chown_log)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "OK 1\n"
+    assert target.read_text(encoding="utf-8") == '{"outcome": "published"}\n'
+    assert target.stat().st_mode & 0o777 == 0o644
+    assert parent.stat().st_mode & 0o777 == 0o755
+    chown_calls = chown_log.read_text(encoding="utf-8").splitlines()
+    assert chown_calls[0] == f"0:0 {parent}"
+    assert chown_calls[1].startswith(f"0:0 {parent}/.managed-config.json.ucode.")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="The managed writer is Unix-only")
+def test_real_shell_keeps_agent_settings_metadata(tmp_path):
+    """Only ug's own file is reset; an agent's existing settings keep their administrator's mode."""
+    source = tmp_path / "source.json"
+    source.write_text("{}\n", encoding="utf-8")
+    target = tmp_path / "managed-settings.json"
+    target.write_text("old\n", encoding="utf-8")
+    target.chmod(0o640)
+    script = managed_files._SUDO_REPLACE_SCRIPT.replace(
+        "/etc/claude-code/managed-settings.json", str(target)
+    )
+    request = " ".join(
+        [
+            "REPLACE",
+            "1",
+            managed_files._encode_worker_arg(str(source)),
+            managed_files._encode_worker_arg(str(target)),
+        ]
+    )
+    result = subprocess.run(
+        ["/bin/sh", "-c", script, "worker-test", "session", managed_files.current_os().value],
+        input=request + "\nQUIT\n",
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env={**os.environ, "SUDO_UID": str(os.getuid())},
+    )
+
+    assert result.stdout == "OK 1\n", result.stderr
+    assert target.stat().st_mode & 0o777 == 0o640
+
+
 class TestManagedSettingsSkipped:
     """``UG_SKIP_OS_SETTINGS`` opts out of every OS-managed-file operation."""
 

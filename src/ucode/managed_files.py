@@ -64,17 +64,23 @@ class OS(Enum):
 
 MANAGED_FILES_SUPPORTED_OSES = (OS.LINUX, OS.MACOS, OS.WINDOWS)
 
+# Unity Gateway's own machine-wide copy of the workspace's managed config, published by
+# `ug configure` for other users on the machine (see managed_config.sync_machine_managed_config).
+MACHINE_MANAGED_CONFIG_PATH = Path("/etc/unitygateway/managed-config.json")
+
 _SUDO_REPLACE_TARGETS = {
     OS.LINUX: frozenset(
         {
             Path("/etc/claude-code/managed-settings.json"),
             Path("/etc/codex/managed_config.toml"),
+            MACHINE_MANAGED_CONFIG_PATH,
         }
     ),
     OS.MACOS: frozenset(
         {
             Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
             Path("/etc/codex/managed_config.toml"),
+            MACHINE_MANAGED_CONFIG_PATH,
         }
     ),
 }
@@ -1318,6 +1324,77 @@ def _session_worker() -> _SudoReplaceWorker:
     return worker
 
 
+def write_machine_file(path: Path, desired_text: str, *, display: str = "Unity Gateway") -> str:
+    """Atomically replace a root-owned, world-readable machine file through the managed session.
+
+    For ug's own files, which need no backup or revert snapshot. Reuses the command's sudo worker,
+    so it never prompts separately. The privileged script always leaves the file ``root``/``0644``
+    in a ``root``/``0755`` directory, even when either already existed with other metadata.
+    Unchanged text (or equal JSON) writes nothing;
+    ``--dry-run`` prints instead; ``UG_SKIP_OS_SETTINGS`` and platforms other than Linux and macOS
+    skip it. A root run needs no terminal. Returns ``skipped``, ``unsupported``, ``unchanged``,
+    ``created``, or ``written``; raises :class:`ManagedFileWriteUnavailable` when the write fails.
+    """
+    if managed_settings_skipped():
+        return "skipped"
+    if current_os() not in (OS.LINUX, OS.MACOS):
+        return "unsupported"
+    if path.is_symlink():
+        raise RuntimeError(f"Refusing to update {path} through a symlink.")
+    current_text = read_managed_file(path)
+    if current_text is not None and _machine_file_metadata_ok(path):
+        if current_text == desired_text:
+            return "unchanged"
+        try:
+            if json.loads(current_text) == json.loads(desired_text):
+                return "unchanged"
+        except json.JSONDecodeError:
+            pass
+    if is_dry_run():
+        console.print(f"\n[bold]\\[dry run] {path} (via sudo)[/bold]\n{desired_text}")
+        return "written"
+    if not (
+        managed_writes_allowed(repair_existing=current_text is not None)
+        or system_cross_os.is_admin()
+    ):
+        raise ManagedFileWriteUnavailable(
+            f"Could not update {path} non-interactively. Run the command from an interactive "
+            "terminal, or as root."
+        )
+    if _sudo_may_prompt():
+        _print_managed_write_permission(display)
+    try:
+        _sudo_replace(path, desired_text, allow_admin=True)
+    except PermissionError as exc:
+        raise ManagedFileWriteUnavailable(f"Could not update {path}: {exc}") from exc
+    except subprocess.CalledProcessError as exc:
+        raise ManagedFileWriteUnavailable(_sudo_failure_message(path, display, exc)) from exc
+    if read_managed_file(path) != desired_text:
+        raise ManagedFileWriteUnavailable(
+            f"{path} did not contain the expected contents after the update."
+        )
+    return "written" if current_text is not None else "created"
+
+
+def _machine_file_metadata_ok(path: Path) -> bool:
+    """Whether ``path`` and its directory are root-owned and writable only by root.
+
+    Equal content alone doesn't make a machine file current: one with looser ownership or mode is
+    rewritten, which resets both.
+    """
+    try:
+        file_stat = path.stat()
+        dir_stat = path.parent.stat()
+    except OSError:
+        return False
+    return (
+        file_stat.st_uid == 0
+        and file_stat.st_mode & 0o777 == 0o644
+        and dir_stat.st_uid == 0
+        and not dir_stat.st_mode & 0o022
+    )
+
+
 def _privileged_replace(path: Path, desired_text: str) -> None:
     if current_os() is not OS.WINDOWS:
         _sudo_replace(path, desired_text)
@@ -1418,10 +1495,16 @@ def _sudo_remove(path: Path) -> None:
             _restore_immutable(path, original_flags)
 
 
-def _sudo_replace(path: Path, desired_text: str) -> None:
-    """Atomically replace ``path`` while preserving metadata and file flags."""
+def _sudo_replace(path: Path, desired_text: str, *, allow_admin: bool = False) -> None:
+    """Atomically replace ``path`` while preserving metadata and file flags.
+
+    ``allow_admin`` also permits a non-interactive run as root (device provisioning).
+    """
     _validate_sudo_replace_target(path)
-    if not managed_writes_allowed(repair_existing=path.is_file()):
+    if not (
+        managed_writes_allowed(repair_existing=path.is_file())
+        or (allow_admin and system_cross_os.is_admin())
+    ):
         raise RuntimeError("Refusing to create managed settings non-interactively.")
     non_interactive = not _sudo_may_prompt()
     with tempfile.NamedTemporaryFile(

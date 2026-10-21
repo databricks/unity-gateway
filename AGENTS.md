@@ -173,3 +173,17 @@ Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`
 | Smart Router and Smart Router Orchestrator hooks | Merge | Merge | Launch-only `PreToolUse`, plus `UserPromptSubmit` and compact `SessionStart` with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`; Codex combines them with its native hook sources and applies project trust; `features.hooks` is enabled for a smart-routed launch |
 
 </details>
+
+`ug configure` also publishes the workspace's managed config machine-wide on Linux and macOS,
+at `/etc/unitygateway/managed-config.json` (directory `root` `0755`, file `root` `0644`, reset on
+every write), so a later launch by another user can rebuild its managed state. `ug` owns the whole file. It
+keeps `~/.ucode/managed-config.json`'s format (`workspace`, the raw `config`, `retrieved_at`,
+`outcome`) and adds a `ug_state` with the managed agents that configured on this machine and
+their managed `provider_services` and `model_locations`. Nothing from the administrator's own
+`state.json` is copied. Only an authoritative read writes it: a published policy replaces it,
+and a removed or disabled policy (or a switch to an unmanaged workspace) replaces a published
+copy with a no-policy record. A failed fetch leaves it alone. A config with anything that looks
+like a credential (a best-effort check of names and values across the whole config, aimed at
+`http_headers` and `agent_native_settings`) is not published, and an older copy is withdrawn. The write reuses the
+command's sudo session, needs no terminal as root, and is skipped by `UG_SKIP_OS_SETTINGS`.
+Launches don't read it yet.

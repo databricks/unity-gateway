@@ -98,8 +98,9 @@ from ucode.managed_config import (
     load_managed_state,
     normalize_managed_config,
     refresh_managed_config,
+    sync_machine_managed_config,
 )
-from ucode.managed_files import managed_write_session
+from ucode.managed_files import MACHINE_MANAGED_CONFIG_PATH, managed_write_session
 from ucode.managed_resolve import (
     managed_claude_family_models,
     managed_default_model,
@@ -766,6 +767,38 @@ def _configure_shared_workspace_states(
     return states
 
 
+def _sync_machine_managed_config(
+    state: dict,
+    managed: dict | None,
+    configured_tools: list[str],
+    *,
+    keep_configured: bool = False,
+) -> None:
+    """Publish this configure's managed config machine-wide for other users (best-effort).
+
+    A failed privileged write is reported, never counted as success, and leaves the per-user
+    configuration that already succeeded in place.
+    """
+    workspace = state.get("workspace")
+    if not workspace:
+        return
+    try:
+        status = sync_machine_managed_config(
+            workspace, managed, configured_tools, keep_configured=keep_configured
+        )
+    except RuntimeError as exc:
+        print_warning(
+            f"Did not update the machine-wide config at {MACHINE_MANAGED_CONFIG_PATH}: {exc}"
+        )
+        return
+    if is_dry_run():
+        return
+    if status in ("created", "written"):
+        print_success(f"Saved the managed config machine-wide to {MACHINE_MANAGED_CONFIG_PATH}")
+    elif status == "invalidated":
+        print_note(f"Cleared the managed config from {MACHINE_MANAGED_CONFIG_PATH}")
+
+
 def _setup_single_agent(
     workspace_entries: list[tuple[str, str | None]],
     tool: str,
@@ -804,6 +837,10 @@ def _setup_single_agent(
     elif apply_managed:
         managed, _ = refresh_managed_config(state, force_refresh=False)
     state = configure_single_tool(tool, state, parent_schema=parent_schema)
+    if apply_managed and tool in ("claude", "codex"):
+        _sync_machine_managed_config(
+            state, managed, [tool] if managed is not None else [], keep_configured=True
+        )
     if apply_managed and not managed_enabled_tools(managed or {}):
         state = _record_unmanaged_configured_agents(state, [tool])
     if apply_managed and tool == "claude":
@@ -1049,6 +1086,8 @@ def _configure_workspace_command(
                         from ucode.desktop_setup import configure_claude_desktop
 
                         configure_claude_desktop(configured, parent_schema=parent_schema)
+        # Before the check below, so a policy whose agents all failed still replaces an older copy.
+        _sync_machine_managed_config(state, managed, configured_tools)
         if not configured_tools:
             raise RuntimeError(
                 "None of the coding agents enabled by your workspace configuration "
@@ -1061,6 +1100,9 @@ def _configure_workspace_command(
         _summarize_managed_config(managed, configured_tools, registered_mcps)
         return 0
 
+    # No managed agents to apply: publish a policy that enables none, or invalidate a copy that a
+    # removed or disabled policy left behind.
+    _sync_machine_managed_config(state, managed, [])
     available_on_workspace: list[str] = []
     tools_to_check = selected_tools or list(TOOL_SPECS)
     for tool_name in tools_to_check:
