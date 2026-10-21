@@ -48,6 +48,9 @@ class TestClassifyCopilotModel:
             ("system.ai.gpt-6-1-sol", "responses"),
             ("databricks-gpt-5-3-codex", "responses"),
             ("system.ai.gpt-4-1", "completions"),
+            ("system.ai.gpt-6.1-sol", "responses"),
+            ("gpt-5.4", "responses"),
+            ("claude-sonnet-4.5", "anthropic"),
         ],
     )
     def test_names_decide_the_wire(self, model, wire):
@@ -703,15 +706,12 @@ def _stub_launch(monkeypatch, process=None, token="dbx-token"):
         seen["registry_path"] = registry_path
         seen["registry"] = json.loads(open(registry_path, encoding="utf-8").read())
         provider = seen["registry"]["providers"][0]
-        seen["accepted"] = {
-            secret: httpx.post(
-                f"{provider['baseUrl']}/v1/messages",
-                headers={"Authorization": f"Bearer {secret}"},
-                content=b"{}",
-                timeout=5,
-            ).status_code
-            for secret in ("wrong-secret",)
-        }
+        seen["wrong_secret_status"] = httpx.post(
+            f"{provider['baseUrl']}/v1/messages",
+            headers={"Authorization": "Bearer wrong-secret"},
+            content=b"{}",
+            timeout=5,
+        ).status_code
         return process or _ExitedProcess()
 
     monkeypatch.setattr(copilot.subprocess_cross_os, "popen", popen)
@@ -739,7 +739,7 @@ class TestLaunch:
         assert secret not in seen["env"].values()
         assert "dbx-token" not in json.dumps(registry)
         # The proxy is live while Copilot runs and refuses other credentials.
-        assert seen["accepted"] == {"wrong-secret": 401}
+        assert seen["wrong_secret_status"] == 401
         assert not os.path.exists(seen["registry_path"])
 
     def test_explicit_model_is_rewritten_to_the_registry_ref(self, tmp_path, monkeypatch):
@@ -837,10 +837,6 @@ class TestLaunch:
 class TestManagedKeys:
     def test_only_the_model_and_offline_mode(self):
         assert copilot.MANAGED_KEYS == ["COPILOT_MODEL", "COPILOT_OFFLINE"]
-
-    def test_excludes_credentials(self):
-        for key in copilot.CREDENTIAL_ENV_KEYS:
-            assert key not in copilot.MANAGED_KEYS
 
 
 class TestMinimumVersion:

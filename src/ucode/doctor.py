@@ -31,6 +31,8 @@ from ucode.databricks import (
     run_databricks_login,
     upgrade_databricks_cli,
 )
+from ucode.managed_config import load_managed_state
+from ucode.managed_resolve import resolve_state
 from ucode.state import load_state
 from ucode.telemetry import ug_version
 from ucode.ui import (
@@ -190,6 +192,9 @@ def _check_copilot_models() -> Check | None:
     state = load_state()
     if "copilot" not in (state.get("available_tools") or []):
         return None
+    managed = load_managed_state(state.get("workspace"))
+    if managed:
+        state = resolve_state(managed, state, "copilot")
     catalog = copilot.copilot_catalog(state)
     if not catalog:
         return Check(

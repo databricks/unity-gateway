@@ -139,7 +139,8 @@ _CLAUDE_200K_LIMITS = (168_000, 32_000)
 
 def _model_tail(model: str) -> str:
     """The model name without its ``<catalog>.<schema>.`` and ``databricks-`` prefixes or ``[...]`` suffix."""
-    tail = model.split("[", 1)[0].rsplit(".", 1)[-1].lower()
+    name = model.split("[", 1)[0].lower()
+    tail = name.split(".", 2)[-1] if name.count(".") >= 2 else name
     return tail.removeprefix("databricks-")
 
 

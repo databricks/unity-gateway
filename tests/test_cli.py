@@ -5958,15 +5958,19 @@ class TestConfigureSharedStateCopilotCatalog:
 
     WS = "https://copilot.databricks.com"
 
-    def _configure(self, monkeypatch, *, listed, saved=None):
+    def _configure(self, monkeypatch, *, listed, saved=None, previous_ws=None, dest_saved=None):
         import ucode.cli as cli_mod
         import ucode.databricks as db_mod
 
         TestConfigureSharedStateSkipDiscovery._stub(monkeypatch)
-        previous = {"workspace": self.WS}
+        previous = {"workspace": previous_ws or self.WS}
         if saved is not None:
             previous["copilot_catalog"] = saved
         monkeypatch.setattr(cli_mod, "load_state", lambda: dict(previous))
+        dest_block = {} if dest_saved is None else {"copilot_catalog": dest_saved}
+        monkeypatch.setattr(
+            cli_mod, "load_full_state", lambda: {"workspaces": {self.WS: dest_block}}
+        )
         if listed is not None:
             db_mod._MODEL_SERVICES_CACHE[self.WS] = [db_mod.ModelServiceEntry(m) for m in listed]
         reason = None if listed else "HTTP 503"
@@ -6001,6 +6005,33 @@ class TestConfigureSharedStateCopilotCatalog:
         assert state["copilot_catalog"] == saved
         assert state["_discovery_reasons"]["copilot"] == "HTTP 503"
         assert "Copilot model discovery failed (HTTP 503)" in capsys.readouterr().out
+
+    def test_failed_listing_after_a_workspace_switch_drops_the_other_workspace_catalog(
+        self, monkeypatch
+    ):
+        saved = {"models": ["system.ai.gpt-5-4"], "discovered_at": "2026-10-01T00:00:00+00:00"}
+
+        state = self._configure(
+            monkeypatch, listed=None, saved=saved, previous_ws="https://other.databricks.com"
+        )
+
+        assert "copilot_catalog" not in state
+
+    def test_failed_listing_after_a_workspace_switch_keeps_that_workspace_catalog(
+        self, monkeypatch
+    ):
+        other = {"models": ["system.ai.gpt-5-4"], "discovered_at": "2026-10-01T00:00:00+00:00"}
+        own = {"models": ["system.ai.gpt-5-5"], "discovered_at": "2026-10-02T00:00:00+00:00"}
+
+        state = self._configure(
+            monkeypatch,
+            listed=None,
+            saved=other,
+            previous_ws="https://other.databricks.com",
+            dest_saved=own,
+        )
+
+        assert state["copilot_catalog"] == own
 
 
 class TestConfigureSharedStateSkipPreflight:
@@ -6674,6 +6705,8 @@ class TestChildStdoutLaunch:
         ("tool", "tool_args", "display"),
         [
             ("claude", ["-p", "say hello", "--output-format", "json"], "Claude Code"),
+            ("copilot", ["-p", "say hello", "--output-format", "json"], "GitHub Copilot CLI"),
+            ("copilot", ["--prompt=say hello"], "GitHub Copilot CLI"),
             (
                 "claude",
                 ["--output-format", "stream-json", "--verbose", "--print", "say hello"],
@@ -6753,6 +6786,7 @@ class TestChildStdoutLaunch:
         [
             ("claude", ["-p", "hello"]),
             ("claude", ["--print", "hello"]),
+            ("copilot", ["-p", "hello"]),
             ("codex", ["app-server"]),
             ("codex", ["exec", "hello"]),
             ("codex", ["exec", "--json", "hello"]),
@@ -6786,6 +6820,8 @@ class TestChildStdoutLaunch:
         [
             ("claude", [], "Claude Code"),
             ("claude", ["explain --print and -p"], "Claude Code"),
+            ("copilot", [], "GitHub Copilot CLI"),
+            ("copilot", ["--", "-p"], "GitHub Copilot CLI"),
             ("claude", ["--", "-p"], "Claude Code"),
             ("codex", [], "Codex"),
             ("codex", ["explain exec and e"], "Codex"),

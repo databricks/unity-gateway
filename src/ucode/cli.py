@@ -552,6 +552,13 @@ def configure_shared_state(
         state[SELF_MANAGED_AGENTS_KEY] = dest_self_managed
     else:
         state.pop(SELF_MANAGED_AGENTS_KEY, None)
+    if previous_workspace != workspace:
+        dest_block = load_full_state().get("workspaces", {}).get(workspace, {})
+        dest_catalog = dest_block.get(copilot_agent.CATALOG_STATE_KEY)
+        if dest_catalog:
+            state[copilot_agent.CATALOG_STATE_KEY] = dest_catalog
+        else:
+            state.pop(copilot_agent.CATALOG_STATE_KEY, None)
     if profile:
         state["profile"] = profile
     else:
