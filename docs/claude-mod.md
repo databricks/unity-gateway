@@ -75,16 +75,18 @@ Before submitting, Cancel or Escape leaves routing on and sends nothing. A missi
 `isaac` CLI or an unavailable form leaves routing on. A feedback submission failure after a valid
 reason leaves routing off and reports the failure in the transcript. The form makes no model requests.
 
-With the same flag enabled, `/isaac-feedback` keeps the existing skill's category,
-target, exact text, and agent note. The Bash hook recognizes a single literal Isaac
-feedback command, saves evidence locally in the foreground, and submits that
-snapshot. Retries and text-only Other reports use Claude's native
-background Bash task. Both calls retain normal Bash permission checks; local
-previews, target inspection, and compound shell commands pass through unchanged.
-The native task completion event reports success or failure without a model turn
-or status polling. `delivery_notifications: "native"` tells the skill to end without
-duplicating the sending message. Other reports retain their existing text-only
-transport and do not receive an evidence feedback ID.
+With the same flag enabled, `/isaac-feedback` keeps the skill's category, target,
+exact text, and agent note. The skill saves evidence locally in the foreground,
+then calls `isaac feedback --retry <id>` using Claude's native background Bash
+task. Retries and text-only Other reports also use background Bash. This requires
+Isaac's background-submission skill instructions; the CLI commands already exist.
+
+The hook observes background tasks with the description `Isaac feedback upload <id>`
+(or `Isaac feedback upload` for Other). It leaves commands and Bash permission
+checks unchanged. Native task completion reports success or failure without a
+model turn or status polling. `delivery_notifications: "native"` tells the skill
+to end without duplicating the sending message. Other reports retain their
+text-only transport and do not receive an evidence feedback ID.
 
 Claude launches without smart routing also load the feedback hooks when this flag
 is enabled. Routing stays disabled and the status band stays hidden. UG keeps the

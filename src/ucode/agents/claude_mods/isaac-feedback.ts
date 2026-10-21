@@ -3,17 +3,7 @@ import { envBool } from './constants.ts';
 
 const FEEDBACK_PANE = 'smart-router-feedback';
 const FEEDBACK_ID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
-
-function literalCommand(command: string): { raw: string[]; args: string[] } | undefined {
-  // The skill emits one literal command. Leave shell expansion and compound commands alone.
-  const word = /(?:[^\s'"\\$`;&|<>()*?[\]{}#~]+|'[^']*'|"[^"\\$`]*"|\\[^\r\n])+/g;
-  const raw = command.match(word);
-  if (!raw || !/^[ \t]*$/.test(command.replace(word, ''))) return;
-  const args = raw.map(value => value.replace(/'([^']*)'|"([^"]*)"|\\(.)/g,
-    (_, single, double, escaped) => single ?? double ?? escaped));
-  if (!/(?:^|[/\\])isaac(?:\.exe)?$/.test(args[0]) || args[1] !== 'feedback') return;
-  return { raw, args };
-}
+const FEEDBACK_UPLOAD_DESCRIPTION = 'Isaac feedback upload';
 
 function feedbackSuffix(feedbackId: string): string {
   return feedbackId ? ` Feedback ID: ${feedbackId}` : '';
@@ -47,48 +37,12 @@ export function createIsaacFeedbackState(): FeedbackState {
 export function registerIsaacFeedback(on: On, state: FeedbackState, isaacExecutable: string): void {
   const uploads = new Map<string, string>();
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
-    if (typeof e.command !== 'string' || !e.command.includes('feedback')) return next(e);
-    const command = literalCommand(e.command);
-    if (!command || !envBool(await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK'))) return next(e);
-    const { raw, args } = command;
-    const delimiter = args.indexOf('--');
-    const options = delimiter < 0 ? args.slice(2) : args.slice(2, delimiter);
-    if (options.some(value => ['--help', '-h', '--inspect-target', '--capture-local', '--retry-pending'].includes(value.split('=')[0]))) {
-      return next(e);
-    }
-    const option = (name: string): string | undefined => {
-      const index = options.findIndex(value => value === name || value.startsWith(`${name}=`));
-      if (index < 0) return;
-      return options[index] === name ? options[index + 1] : options[index].slice(name.length + 1);
-    };
-    let feedbackId = option('--retry') || '';
-    if (options.some(value => value.split('=')[0] === '--retry') && !FEEDBACK_ID.test(feedbackId)) return next(e);
-    const category = option('--category') || option('-c') || 'other';
-    const evidence = options.includes('--with-evidence') || category === 'smart-routing';
-    let captureNotice = '';
-    let answer;
-    if (!feedbackId && evidence) {
-      const captureOptions = ['--capture-local', "'~/.isaac/feedback'"];
-      if (!options.includes('--with-evidence')) captureOptions.unshift('--with-evidence');
-      const captureCommand = delimiter < 0 ? [...raw, ...captureOptions]
-        : [...raw.slice(0, delimiter), ...captureOptions, ...raw.slice(delimiter)];
-      const capture = await next({ ...e, command: captureCommand.join(' '), run_in_background: false });
-      const payload = capture.result;
-      if (capture.isError || capture.deny || !payload || typeof payload !== 'object'
-          || !('stdout' in payload) || typeof payload.stdout !== 'string') return capture;
-      const id = /[/\\]([0-9a-f-]{36})[/\\]receipt\.json/i.exec(payload.stdout)?.[1];
-      if (!id || !FEEDBACK_ID.test(id)) return capture;
-      feedbackId = id;
-      captureNotice = payload.stdout.split('Local feedback receipt:')[0].trim();
-      answer = await $.tool.call({
-        tool: 'Bash', tool_use_id: `${e.tool_use_id}-upload`,
-        command: `${raw[0]} feedback --retry ${id}`,
-        description: 'Upload saved Isaac feedback', run_in_background: true,
-      });
-    } else {
-      if (!feedbackId && category !== 'other') return next(e);
-      answer = await next({ ...e, run_in_background: true });
-    }
+    if (e.run_in_background !== true || typeof e.description !== 'string'
+        || !e.description.startsWith(FEEDBACK_UPLOAD_DESCRIPTION)) return next(e);
+    const feedbackId = e.description.slice(FEEDBACK_UPLOAD_DESCRIPTION.length).trim();
+    if ((feedbackId && !FEEDBACK_ID.test(feedbackId))
+        || !envBool(await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK'))) return next(e);
+    const answer = await next(e);
     // Native Bash owns permission checks, process lifetime, and the completion event.
     const payload = answer.result;
     if (answer.isError || answer.deny || !payload || typeof payload !== 'object'
@@ -98,8 +52,7 @@ export function registerIsaacFeedback(on: On, state: FeedbackState, isaacExecuta
     const text = JSON.stringify({
       feedback_id: feedbackId || null,
       delivery_notifications: 'native',
-      capture_notice: captureNotice || undefined,
-      instruction: 'The native UI reports sending and completion. Relay capture_notice if present, then end without repeating these messages, polling, or calling TaskOutput.',
+      instruction: 'The native UI reports sending and completion. End without repeating these messages, polling, or calling TaskOutput.',
     });
     return { ...answer, text, result: { ...payload, stdout: text } };
   });

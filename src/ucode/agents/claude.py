@@ -2418,6 +2418,7 @@ def launch(
         os.environ.update(fallback_env)
     if env_bool(ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR):
         with _feedback_launch_args(launch_args, settings_override) as (args, override):
+            # Keep the temporary feedback plugin available until this Claude session exits.
             exec_or_spawn(
                 _build_claude_argv(binary, args, settings_override=override), wait_for_child=True
             )
