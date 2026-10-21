@@ -241,6 +241,8 @@ covered by the hermetic proxy tests in `tests/test_gateway_proxy_integration.py`
 `utils/agents/claude.py` and `utils/agents/codex.py` own the existing native answer
 parsing, session paths, and child-session detection. `utils/evidence.py` dispatches
 through them without changing existing journey commands or completion assertions.
+Claude child answers include sidechain `SubagentHandback` messages, which newer
+Claude versions use instead of final text blocks; parent handbacks remain excluded.
 
 ## Run a specific combination
 

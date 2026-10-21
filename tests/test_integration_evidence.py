@@ -176,6 +176,50 @@ def test_claude_model_identity_uses_assistant_answer_not_tool_output():
     assert claude.completed_task_models(records, "value") == {"catalog.models.claude_sonnet"}
 
 
+def test_claude_assistant_answers_include_subagent_handback():
+    records = [
+        {
+            "type": "assistant",
+            "isSidechain": True,
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-use",
+                        "name": "SubagentHandback",
+                        "input": {"message": "child answer"},
+                    }
+                ],
+            },
+        }
+    ]
+
+    assert claude.assistant_answers(records) == ["child answer"]
+
+
+def test_claude_assistant_answers_ignore_parent_handback():
+    records = [
+        {
+            "type": "assistant",
+            "isSidechain": False,
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-use",
+                        "name": "SubagentHandback",
+                        "input": {"message": "not a child answer"},
+                    }
+                ],
+            },
+        }
+    ]
+
+    assert claude.assistant_answers(records) == []
+
+
 def completed_records(agent, model, answer="value", turn_id="matching"):
     if agent == "claude":
         return [
