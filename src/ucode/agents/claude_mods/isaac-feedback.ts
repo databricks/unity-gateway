@@ -34,7 +34,9 @@ export function createIsaacFeedbackState(): FeedbackState {
   return { submitted: false, reason: '' };
 }
 
-export function registerIsaacFeedback(on: On, state: FeedbackState, isaacExecutable: string): void {
+export function registerIsaacFeedback(
+  on: On, state: FeedbackState, isaacExecutable: string, isaacFeedbackDirectory: string,
+): void {
   const uploads = new Map<string, string>();
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     if (e.run_in_background !== true || typeof e.description !== 'string'
@@ -75,7 +77,7 @@ export function registerIsaacFeedback(on: On, state: FeedbackState, isaacExecuta
         throw new Error('Smart Router controls are unavailable.');
       }
       if (!await state.readRoutingEnabled()) return {text: 'Smart Router is off'};
-      if (!isaacExecutable) throw new Error('Isaac CLI is unavailable.');
+      if (!isaacExecutable || !isaacFeedbackDirectory) throw new Error('Isaac feedback is unavailable.');
       // The form uploads through Isaac's CLI; without it, keep routing on. `isaac --version` launches a harness.
       const help = await $.process.run([isaacExecutable, 'feedback', '--help'], { timeoutMs: 10000 });
       if (help.exitCode !== 0) {
@@ -126,7 +128,7 @@ export function registerIsaacFeedback(on: On, state: FeedbackState, isaacExecuta
               const capture = await $.process.run(
                 [isaacExecutable, 'feedback', '--category', 'smart-routing', '--harness', 'claude',
                   '--session-id', sessionId, '--feedback-id', feedbackId, '--with-evidence',
-                  '--capture-local', '~/.isaac/feedback'],
+                  '--capture-local', isaacFeedbackDirectory],
                 { stdin: value, timeoutMs: 120000 },
               );
               if (capture.exitCode !== 0) throw new Error('Could not save feedback.');

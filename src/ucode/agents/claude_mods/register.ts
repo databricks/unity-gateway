@@ -117,7 +117,7 @@ export function register(on: On, options: PluginOptions): void {
     }
     return next(e);
   });
-  registerIsaacFeedback(on, feedback, options.isaacExecutable as string);
+  registerIsaacFeedback(on, feedback, options.isaacExecutable as string, options.isaacFeedbackDirectory as string);
   on('command.run', {command: 'smart-router'}, async ($, e) => {
     const action = e.args.trim();
     try {

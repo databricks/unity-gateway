@@ -66,8 +66,8 @@ with surrounding whitespace ignored); other values disable it. It controls Isaac
 availability, so UG's routing presets and on/off toggles leave it unchanged.
 The native form keeps routing on until Enter accepts a valid reason and Isaac saves
 the bounded local snapshot. It uses the existing `--with-evidence --capture-local`
-options, with the Isaac executable resolved at launch. Then it disables routing,
-closes the form, and uploads the saved report with `isaac feedback --retry <id>` in
+options, with the Isaac executable and absolute capture directory resolved at launch.
+Then it disables routing, closes the form, and uploads the saved report with `isaac feedback --retry <id>` in
 the existing native background callback. The transcript shows the sending message
 and feedback ID. Delivery produces both a persistent message and a success toast;
 a failed upload offers `/isaac-feedback retry <id>` for the original snapshot.

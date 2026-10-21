@@ -349,6 +349,7 @@ def _claude_mod_launch_options(env: Mapping[str, str] | None = None) -> dict:
         "recipe": source.get(routing.ROUTER_NAME_ENV_VAR, "").strip() or routing.ROUTER_NAME,
         "routeCommand": [],
         "isaacExecutable": str(Path(isaac).absolute()) if isaac else "",
+        "isaacFeedbackDirectory": str(Path.home() / ".isaac" / "feedback"),
     }
 
 
@@ -367,6 +368,12 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
                     "default": "",
                     "title": "Isaac executable",
                     "description": "Isaac CLI resolved at launch for feedback submission",
+                },
+                "isaacFeedbackDirectory": {
+                    "type": "string",
+                    "default": "",
+                    "title": "Isaac feedback directory",
+                    "description": "Absolute directory for locally captured feedback",
                 },
                 "routeCommand": {
                     "type": "string",

@@ -58,6 +58,7 @@ def test_launch_options_resolve_versions_without_mutating_input(version):
         "recipe": "custom_recipe",
         "routeCommand": [],
         "isaacExecutable": str(Path(isaac).absolute()) if isaac else "",
+        "isaacFeedbackDirectory": str(Path.home() / ".isaac" / "feedback"),
     }
     # Taking the baseline must not alter the caller's launch environment.
     assert env == before
@@ -73,4 +74,5 @@ def test_launch_options_preserve_empty_and_absent_values():
         "recipe": "task_v3",
         "routeCommand": [],
         "isaacExecutable": str(Path(isaac).absolute()) if isaac else "",
+        "isaacFeedbackDirectory": str(Path.home() / ".isaac" / "feedback"),
     }
