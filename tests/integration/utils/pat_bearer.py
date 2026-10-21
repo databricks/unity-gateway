@@ -2,15 +2,21 @@
 
 ``mint`` prints a fresh short-lived workspace PAT (ug's ``DATABRICKS_BEARER_COMMAND`` contract)
 issued with ``UG_INTEGRATION_ISSUER_BEARER``, unless ``sign-out`` has run. ``revoke`` and
-``sign-out`` delete every PAT minted so far, as a user revoking or signing out mid-session would;
-``cleanup`` deletes them at teardown. Token ids, never token values, are kept in STATE_DIR.
+``sign-out`` delete every PAT minted so far, as a user revoking or signing out mid-session would,
+then wait out the workspace's auth cache; ``cleanup`` deletes them at teardown. Token ids, never
+token values, are kept in STATE_DIR.
 """
 
 import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
+
+LIFETIME_SECONDS = 30
+# The workspace keeps accepting a deleted token from its auth cache for up to a minute.
+AUTH_CACHE_SECONDS = 60
 
 
 def databricks(host: str, *args: str, check: bool = True) -> str:
@@ -44,7 +50,7 @@ def main() -> None:
                 "tokens",
                 "create",
                 "--lifetime-seconds",
-                "900",
+                str(LIFETIME_SECONDS),
                 "--comment",
                 "ug-integration-copilot",
             )
@@ -59,6 +65,7 @@ def main() -> None:
     for token_id in token_ids:
         databricks(host, "tokens", "delete", token_id, check=mode != "cleanup")
     if mode != "cleanup":
+        time.sleep(AUTH_CACHE_SECONDS + 3)
         (state / "revoked").write_text(str(len(token_ids)), encoding="utf-8")
 
 

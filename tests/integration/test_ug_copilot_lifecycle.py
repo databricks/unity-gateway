@@ -18,8 +18,8 @@ pytestmark = [pytest.mark.live, pytest.mark.copilot]
 PAT_BEARER = Path(__file__).parent / "utils" / "pat_bearer.py"
 # v0.2.0, the last release that saved the Databricks token in ~/.copilot/ucode.env.
 TOKEN_SAVING_UG = (
-    "unity-gateway @ git+https://github.com/databricks/unity-gateway"
-    "@cb7bd8c54800ac59b9701ea0ac9f561c83d07bf7"
+    "unity-gateway @ https://github.com/databricks/unity-gateway/archive/"
+    "cb7bd8c54800ac59b9701ea0ac9f561c83d07bf7.zip"
 )
 
 
@@ -69,12 +69,11 @@ def _delete_minted(session, workspace, state):
 
 
 def _install_token_saving_ug(session) -> Path:
-    uv = shutil.which("uv", path=session.env["PATH"])
-    assert uv, "Installing the older ug release needs uv."
     venv = session.home.parent / "ug-0.2.0"
+    python = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     for command in (
-        [uv, "venv", "--python", "3.12", str(venv)],
-        [uv, "pip", "install", "--python", str(venv), TOKEN_SAVING_UG],
+        [sys.executable, "-m", "venv", str(venv)],
+        [str(python), "-m", "pip", "install", "--quiet", TOKEN_SAVING_UG],
     ):
         subprocess.run(
             command,
@@ -87,6 +86,13 @@ def _install_token_saving_ug(session) -> Path:
     return venv / ("Scripts/ug.exe" if os.name == "nt" else "bin/ug")
 
 
+def _run_once(command):
+    return (
+        "First run this shell command exactly once in sync mode with initial_wait 90, and wait "
+        f"for it to finish (it takes up to a minute): {command}"
+    )
+
+
 def _minted_count(state):
     return len((state / "minted").read_text(encoding="utf-8").split())
 
@@ -97,17 +103,17 @@ def test_ug_copilot_refreshes_a_revoked_token_mid_session(live_session, workspac
     The headless Claude task first runs a shell step that deletes every PAT minted so far,
     including the one ug's proxy holds, then reads the fixture.
 
-    Expected: the gateway rejects the revoked token, ug mints a new one without restarting
-    Copilot, and Copilot's completed answer contains the fixture's value. Limits: needs the
-    e2e principal to create PATs; a gateway that still honors a just-deleted PAT fails the
-    mint-after-revoke assertion.
+    Expected: once the workspace's auth cache drops the revoked token, the gateway rejects it,
+    ug mints a new one without restarting Copilot, and Copilot's completed answer contains the
+    fixture's value. Limits: needs the e2e principal to create 30-second PATs, and the step
+    waits about a minute for the cache.
     """
     session = live_session
     task = FileTask(session)
     _configure(session, workspace)
     state, step = _pat_sign_in(session, workspace)
     session.record("copilot-model.json", {"model": CLAUDE_TEST_MODEL})
-    prompt = f"First run this shell command exactly once: {step('revoke')} Then: {task.prompt}"
+    prompt = f"{_run_once(step('revoke'))} Then: {task.prompt}"
 
     try:
         result = session.run(
@@ -137,16 +143,16 @@ def test_ug_copilot_reports_expired_sign_in(live_session, workspace):
     The headless Claude task first runs a shell step that makes the bearer command fail
     and deletes every PAT minted so far, then reads the fixture.
 
-    Expected: ug cannot mint a replacement, so Copilot's output shows ug's sign-in-expired
-    message with the `databricks auth login` fix, and the failure is logged to
-    ~/.ucode/logs/copilot-proxy.log instead of Copilot's terminal.
+    Expected: once the gateway rejects the revoked token, ug cannot mint a replacement, so
+    Copilot's output shows ug's sign-in-expired message with the `databricks auth login` fix,
+    and the failure is logged to ~/.ucode/logs/copilot-proxy.log instead of Copilot's terminal.
     """
     session = live_session
     task = FileTask(session)
     _configure(session, workspace)
     state, step = _pat_sign_in(session, workspace)
     session.record("copilot-model.json", {"model": CLAUDE_TEST_MODEL})
-    prompt = f"First run this shell command exactly once: {step('sign-out')} Then: {task.prompt}"
+    prompt = f"{_run_once(step('sign-out'))} Then: {task.prompt}"
 
     try:
         result = session.run(
