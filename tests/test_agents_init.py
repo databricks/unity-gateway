@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import json
+import os
 import subprocess
-from contextlib import contextmanager
+import sys
+from contextlib import contextmanager, nullcontext, redirect_stdout
 from unittest.mock import MagicMock
 
 import pytest
 
 import ucode.agents as agents_mod
+import ucode.databricks as db_mod
+from ucode import managed_files
 from ucode.agents import (
     DEFAULT_TOOL,
     TOOL_SPECS,
@@ -25,6 +30,7 @@ from ucode.agents import (
 )
 from ucode.agents.args import has_explicit_model_arg
 from ucode.managed_config import ManagedConfigResult
+from ucode.ui import redirect_output_to_stderr
 
 
 class TestModelArgumentParsing:
@@ -51,7 +57,7 @@ class TestModelArgumentParsing:
 
 class TestToolSpecs:
     def test_all_tools_present(self):
-        assert set(TOOL_SPECS) == {"codex", "claude", "gemini", "opencode", "copilot", "pi"}
+        assert set(TOOL_SPECS) == {"codex", "claude", "gemini", "opencode", "kilo", "copilot", "pi"}
 
     def test_each_spec_has_required_keys(self):
         required = {"binary", "package", "display", "config_path", "backup_path"}
@@ -200,6 +206,24 @@ class TestConfigureWiresAiToolsInstall:
         )
 
         configure.assert_called_once_with("claude", state, parent_schema="main.default")
+
+    def test_explicit_relayed_provider_configures_relayed(self, monkeypatch):
+        state = {"workspace": "https://x.databricks.com"}
+        monkeypatch.setattr(
+            agents_mod,
+            "check_gateway_endpoint",
+            lambda *_a: pytest.fail("a provider must not require global model availability"),
+        )
+        monkeypatch.setattr(agents_mod, "resolve_provider_models", lambda *_a: (None, None, True))
+        configure = MagicMock(return_value=state)
+        monkeypatch.setattr(agents_mod, "configure_tool", configure)
+        monkeypatch.setattr(agents_mod, "save_state", lambda _state: None)
+
+        agents_mod.configure_single_tool("claude", state, provider="main.default.relay")
+
+        configure.assert_called_once_with(
+            "claude", state, None, provider="main.default.relay", provider_models=None, relayed=True
+        )
 
     def test_configure_selected_tools_triggers_install(self, monkeypatch):
         captured = self._stub_configure(monkeypatch)
@@ -520,6 +544,50 @@ class TestConfigureOneGeminiProvider:
             agents_mod._configure_one("gemini", self._STATE, "c.s.g")
 
 
+class TestPersistedModelLocation:
+    _STATE = {"workspace": "https://ws.databricks.com", "profile": None}
+
+    def _capture(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            agents_mod,
+            "configure_tool",
+            lambda tool, state, model=None, **kw: calls.append((tool, kw)) or state,
+        )
+        monkeypatch.setattr(agents_mod, "save_state", lambda state: None)
+        monkeypatch.setattr(agents_mod, "managed_write_batch", lambda *_a: nullcontext())
+        return calls
+
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    def test_configure_selected_tools_uses_saved_location(self, monkeypatch, tool):
+        calls = self._capture(monkeypatch)
+        state = {**self._STATE, "model_locations": {tool: "main.models"}}
+
+        agents_mod.configure_selected_tools(state, [tool], install_ai_tools=False)
+
+        assert calls == [(tool, {"parent_schema": "main.models"})]
+
+    def test_saved_provider_wins_over_location(self, monkeypatch):
+        calls = self._capture(monkeypatch)
+        monkeypatch.setattr(
+            agents_mod, "resolve_provider_models", lambda *_a: ({"opus": "x"}, None, False)
+        )
+        state = {
+            **self._STATE,
+            "provider_services": {"claude": "main.default.mps"},
+            "model_locations": {"claude": "main.models"},
+        }
+
+        agents_mod.configure_selected_tools(state, ["claude"], install_ai_tools=False)
+
+        assert calls[0][1]["provider"] == "main.default.mps"
+        assert "parent_schema" not in calls[0][1]
+
+    def test_gemini_ignores_saved_location(self):
+        state = {**self._STATE, "model_locations": {"gemini": "main.models"}}
+        assert agents_mod._persisted_model_location("gemini", state, None) is None
+
+
 class TestResolveGeminiProviderModel:
     _STATE = {"workspace": "https://ws.databricks.com", "profile": None}
 
@@ -587,6 +655,106 @@ class TestResolveGeminiProviderModel:
         assert (model, error) == ("gemini-3.5-flash", None)
 
 
+class TestBootstrapStdout:
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    @pytest.mark.parametrize("installed", [False, True], ids=["install", "upgrade"])
+    @pytest.mark.parametrize("child_owns_stdout", [False, True], ids=["interactive", "protocol"])
+    @pytest.mark.parametrize("failure", [None, "databricks", "agent"])
+    def test_setup_children_respect_stdout_ownership(
+        self, monkeypatch, capfd, tool, installed, child_owns_stdout, failure
+    ):
+        """Real subprocess streams exercise simulated installers and native handoff."""
+        available = {"databricks": installed, tool: installed}
+        updated = set()
+        commands = []
+
+        def which(binary):
+            return (
+                f"/tools/{binary}" if available.get(binary) or binary in {"npm", "brew"} else None
+            )
+
+        def run_dependency(command, **kwargs):
+            commands.append(command)
+            if command in (["databricks", "--version"], ["/tools/databricks", "--version"]):
+                version = "1.17.0" if "databricks" in updated else "0.1.0"
+                script = f"print('Databricks CLI v{version}')"
+            else:
+                dependency = "databricks" if command[0] == "brew" else "agent"
+                returncode = int(failure == dependency)
+                script = (
+                    f"import sys; print('{dependency} setup stdout'); "
+                    f"print('{dependency} setup stderr', file=sys.stderr); sys.exit({returncode})"
+                )
+                if returncode == 0:
+                    binary = "databricks" if dependency == "databricks" else tool
+                    available[binary] = True
+                    updated.add(binary)
+            kwargs["timeout"] = 10
+            kwargs.setdefault("stdin", subprocess.DEVNULL)
+            return subprocess.run([sys.executable, "-c", script], **kwargs)
+
+        monkeypatch.setattr(agents_mod.shutil, "which", which)
+        monkeypatch.setattr(
+            db_mod,
+            "_iter_databricks_executables",
+            lambda: ["/tools/databricks"] if available["databricks"] else [],
+        )
+        monkeypatch.setattr(db_mod.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(agents_mod, "_too_new_downgrade", lambda _tool: None)
+        monkeypatch.setattr(
+            agents_mod,
+            "_minimum_version_error",
+            lambda _tool: None if tool in updated else "must upgrade",
+        )
+        monkeypatch.setattr(agents_mod, "prompt_yes_no_default", lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(agents_mod.subprocess_cross_os, "run", run_dependency)
+
+        with redirect_stdout(sys.stdout):
+            if child_owns_stdout:
+                redirect_output_to_stderr()
+            with pytest.raises(RuntimeError) if failure else nullcontext():
+                agents_mod.ensure_bootstrap_dependencies(tool)
+                subprocess.run(
+                    [sys.executable, "-c", 'print(\'{"result":"native output"}\')'],
+                    stdin=subprocess.DEVNULL,
+                    check=True,
+                    timeout=10,
+                )
+
+        captured = capfd.readouterr()
+        assert "databricks setup stderr" in captured.err
+        assert not {"Databricks CLI v0.1.0", "Databricks CLI v1.17.0"}.intersection(
+            (captured.out + captured.err).splitlines()
+        )
+        assert [
+            "brew",
+            "upgrade" if installed else "install",
+            "databricks/tap/databricks",
+        ] in commands
+        if failure != "databricks":
+            agent_command = (
+                agents_mod._NATIVE_UPGRADE_COMMANDS[tool]
+                if installed
+                else ["npm", "install", "-g", TOOL_SPECS[tool]["package"]]
+            )
+            assert agent_command in commands
+            assert "agent setup stderr" in captured.err
+        if child_owns_stdout:
+            # The native child's print emits "\r\n" on Windows; compare on logical lines.
+            assert captured.out.replace("\r\n", "\n") == (
+                "" if failure else '{"result":"native output"}\n'
+            )
+            assert "databricks setup stdout" in captured.err
+            if failure != "databricks":
+                assert "agent setup stdout" in captured.err
+        else:
+            assert "databricks setup stdout" in captured.out
+            assert "setup stdout" not in captured.err
+            if failure != "databricks":
+                assert "agent setup stdout" in captured.out
+            assert ('{"result":"native output"}' in captured.out) is (failure is None)
+
+
 class TestInstallToolBinary:
     @staticmethod
     def _seed_codex_catalog_reference(catalog_ref: str | None = None):
@@ -594,7 +762,9 @@ class TestInstallToolBinary:
         shared_path = codex.CODEX_CONFIG_PATH.parent / "config.toml"
         shared_path.parent.mkdir(parents=True, exist_ok=True)
         reference = catalog_ref or str(codex.CODEX_MODEL_CATALOG_PATH)
-        shared_path.write_text(f'model_catalog_json = "{reference}"\n', encoding="utf-8")
+        shared_path.write_text(
+            "model_catalog_json = " + json.dumps(reference) + "\n", encoding="utf-8"
+        )
         return shared_path
 
     def test_non_strict_returns_false_when_npm_missing(self, monkeypatch):
@@ -602,19 +772,32 @@ class TestInstallToolBinary:
 
         assert install_tool_binary("opencode", strict=False) is False
 
-    def test_non_strict_returns_false_when_install_fails(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "install_error",
+        [
+            subprocess.CalledProcessError(1, ["npm"]),
+            subprocess.TimeoutExpired(["npm"], 300),
+            FileNotFoundError("npm"),
+        ],
+    )
+    @pytest.mark.parametrize("strict", [False, True])
+    def test_install_failure_is_reported(self, monkeypatch, install_error, strict):
         def fake_which(binary: str) -> str | None:
             if binary == "npm":
                 return "/usr/bin/npm"
             return None
 
         def fake_run(*args, **kwargs):
-            raise subprocess.CalledProcessError(1, args[0])
+            raise install_error
 
         monkeypatch.setattr("ucode.agents.shutil.which", fake_which)
         monkeypatch.setattr("ucode.agents.subprocess.run", fake_run)
 
-        assert install_tool_binary("opencode", strict=False) is False
+        if strict:
+            with pytest.raises(RuntimeError, match="Failed to install"):
+                install_tool_binary("opencode", strict=True)
+        else:
+            assert install_tool_binary("opencode", strict=False) is False
 
     def test_existing_binary_does_not_prompt_for_optional_update(self, monkeypatch, capsys):
         calls: list[list[str]] = []
@@ -664,6 +847,45 @@ class TestInstallToolBinary:
         assert install_tool_binary(tool) is True
         assert calls == [command]
         assert prompts == [(f"Upgrade {TOOL_SPECS[tool]['display']} if available?", True)]
+
+    @pytest.mark.parametrize(
+        ("tool", "command"),
+        [
+            ("claude", ["claude", "upgrade"]),
+            ("codex", ["codex", "update"]),
+        ],
+    )
+    def test_required_update_skips_prompt_when_auto_upgrade_set(self, monkeypatch, tool, command):
+        calls = []
+        monkeypatch.setenv("UG_AUTO_UPGRADE_AGENT", "1")
+        monkeypatch.setattr("ucode.agents.shutil.which", lambda binary: f"/usr/bin/{binary}")
+        monkeypatch.setattr("ucode.agents._too_new_downgrade", lambda _: None)
+        monkeypatch.setattr(
+            "ucode.agents.subprocess.run",
+            lambda args, **kwargs: calls.append(args) or subprocess.CompletedProcess(args, 0),
+        )
+        monkeypatch.setattr(
+            "ucode.agents.prompt_yes_no_default",
+            lambda prompt, *, default: (_ for _ in ()).throw(AssertionError("should not prompt")),
+        )
+        errors = iter(["must upgrade", None])
+        monkeypatch.setattr("ucode.agents._minimum_version_error", lambda _: next(errors))
+
+        assert install_tool_binary(tool) is True
+        assert calls == [command]
+
+    def test_auto_upgrade_still_fails_when_upgrade_leaves_tool_below_floor(self, monkeypatch):
+        monkeypatch.setenv("UG_AUTO_UPGRADE_AGENT", "1")
+        monkeypatch.setattr("ucode.agents.shutil.which", lambda binary: f"/usr/bin/{binary}")
+        monkeypatch.setattr("ucode.agents._too_new_downgrade", lambda _: None)
+        monkeypatch.setattr(
+            "ucode.agents.subprocess.run",
+            lambda args, **kwargs: subprocess.CompletedProcess(args, 0),
+        )
+        monkeypatch.setattr("ucode.agents._minimum_version_error", lambda _: "must upgrade")
+
+        with pytest.raises(RuntimeError, match="must upgrade"):
+            install_tool_binary("claude")
 
     @pytest.mark.parametrize(
         "catalog_ref",
@@ -980,7 +1202,7 @@ class TestConfiguredPaths:
         assert paths == [
             str(CLAUDE_SETTINGS_PATH).replace(str(CLAUDE_SETTINGS_PATH.home()), "~", 1)
         ]
-        assert paths[0].startswith("~/")
+        assert paths[0].startswith(f"~{os.sep}")
 
     def test_appends_os_managed_file_recorded_in_state(self):
         from ucode.agents import configured_paths
@@ -990,3 +1212,59 @@ class TestConfiguredPaths:
         paths = configured_paths("codex", state)
         assert str(CODEX_CONFIG_PATH).replace(str(CODEX_CONFIG_PATH.home()), "~", 1) in paths
         assert "/etc/codex/managed_config.toml" in paths
+
+
+class TestConfigureToolUserScope:
+    @pytest.mark.parametrize(
+        "tool,path_attr",
+        [("claude", "_managed_settings_path"), ("codex", "codex_managed_config_path")],
+    )
+    @pytest.mark.parametrize("exists", [True, False])
+    def test_managed_file_blocks_user_scope(self, monkeypatch, tmp_path, tool, path_attr, exists):
+        managed = tmp_path / "managed"
+        if exists:
+            managed.write_text("x", encoding="utf-8")
+        module = getattr(agents_mod, tool)
+        monkeypatch.setattr(module, path_attr, lambda: managed)
+        managed_files.set_config_scope("user")
+
+        if exists:
+            with pytest.raises(RuntimeError, match=r"--user.*managed settings exist.*--global"):
+                agents_mod.refuse_user_scope_over_managed_files([tool])
+        else:
+            agents_mod.refuse_user_scope_over_managed_files([tool])
+
+    def test_windows_codex_requirements_blocks_user_scope(self, monkeypatch, tmp_path):
+        import ucode.codex_config as codex_config
+        from ucode.os_compatibility import system_cross_os
+
+        requirements = tmp_path / "OpenAI" / "Codex" / managed_files.CODEX_REQUIREMENTS_FILE
+        requirements.parent.mkdir(parents=True)
+        requirements.write_text('model_provider = "Databricks"\n', encoding="utf-8")
+        monkeypatch.setattr(codex_config, "current_os", lambda: managed_files.OS.WINDOWS)
+        monkeypatch.setattr(system_cross_os, "windows_program_data_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            agents_mod.codex, "codex_managed_config_path", codex_config.codex_managed_config_path
+        )
+        managed_files.set_config_scope("user")
+        with pytest.raises(RuntimeError, match="requirements.toml"):
+            agents_mod.refuse_user_scope_over_managed_files(["codex"])
+
+    def test_no_managed_path_is_not_checked(self, monkeypatch):
+        monkeypatch.setattr(agents_mod.codex, "codex_managed_config_path", lambda: None)
+        managed_files.set_config_scope("user")
+        agents_mod.refuse_user_scope_over_managed_files(["codex"])
+
+    def test_launch_does_not_refuse_over_managed_file(self, monkeypatch, tmp_path):
+        managed = tmp_path / "managed"
+        managed.write_text("x", encoding="utf-8")
+        monkeypatch.setattr(agents_mod.claude, "_managed_settings_path", lambda: managed)
+        written: list = []
+        monkeypatch.setattr(
+            agents_mod.claude,
+            "write_tool_config",
+            lambda state, *a, **kw: written.append(1) or state,
+        )
+        managed_files.set_config_scope("user")
+        agents_mod.configure_tool("claude", {}, "m")
+        assert written == [1]

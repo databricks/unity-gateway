@@ -21,10 +21,73 @@ Tests live in `tests/`.
 
 - Use Python 3.12+.
 - Keep changes scoped to the requested behavior.
-- Follow the existing module boundaries: CLI orchestration in `cli.py`, agent-specific behavior in `agents/<name>.py`, shared agent dispatch in `agents/__init__.py`, Databricks calls in `databricks.py`, skill download (UC fetch client + on-disk writer + download orchestration) in `skills_download.py`, MCP-connection state glue in `mcp.py`, and presentation helpers in `ui.py`. Skill download persists no disk state — it writes files to `--path` (or the home dir) and registers only the schema-less skills MCP connection. `ug configure skills` with no `--location` (or `--mcp` with no `--location`) registers that schema-less connection without downloading anything.
+- Follow the existing module boundaries: CLI orchestration in `cli.py`, CLI-agent behavior in `agents/<name>.py`, desktop-app adapters in `agents/desktop/`, shared agent dispatch in `agents/__init__.py`, Databricks calls in `databricks.py`, skill download (UC fetch client + on-disk writer + download orchestration) in `skills_download.py`, MCP-connection state glue in `mcp.py`, and presentation helpers in `ui.py`. Skill download persists no disk state — it writes files to `--path` (or the home dir) and registers only the schema-less skills MCP connection. `ug configure skills` with no `--location` (or `--mcp` with no `--location`) registers that schema-less connection without downloading anything.
 - Prefer existing helpers for config file writes, state persistence, UI messages, and Databricks authentication.
+- Use `ucode.os_compatibility.subprocess_cross_os.run` / `ucode.os_compatibility.subprocess_cross_os.popen` for subprocesses; they resolve Windows npm wrappers automatically and default text streams to UTF-8 with replacement for invalid bytes. Keep commands as argument lists. Do not repeat these encoding defaults at callsites; explicit encoding/error overrides and binary mode remain supported. Ruff rejects direct `subprocess.run` / `subprocess.Popen` calls outside `os_compatibility/subprocess_cross_os.py` and tests.
+- Use `acquire_exclusive_file_lock` / `release_file_lock` from `ucode.os_compatibility.file_lock_cross_os` instead of calling `fcntl.flock`, `fcntl.lockf`, or `msvcrt.locking` directly. Ruff enforces this outside the compatibility module and tests.
+- Use `is_admin`, `windows_program_files_dir`, `windows_program_data_dir`, and `windows_system32_dir` from `ucode.os_compatibility.system_cross_os` instead of calling `IsUserAnAdmin` or reading `ProgramFiles`/`ProgramData`/`SystemRoot` directly.
+- Use `launcher.exec_or_spawn` when handing the terminal to an agent. Shell strings and explicit executable overrides keep their existing subprocess semantics.
 - Add or update focused tests for behavior changes.
+- Never trigger a workflow with `pull_request_target`; `tests/test_integration_contract.py` rejects it. Use `pull_request` for checks that need no secrets, and a member-only `issue_comment` command that checks out the default branch (as in `fork-integration.yml`) for checks that need secrets on fork PRs.
 - Do not modify generated or lock files unless the dependency graph intentionally changes.
+
+## Smart-routing configuration
+
+`SMART_ROUTER_CONFIG_VERSION` is the external selector. Version definitions live in
+`src/ucode/smart_routing/config.py` under `_VERSIONS`; their managed environment keys
+are registered in `SMART_ROUTING_ENV_KEYS` in `src/ucode/constants.py`.
+An unset or empty selector preserves legacy environment-flag behavior.
+A valid nonempty selector overrides every conflicting legacy value in that registry.
+Do not use `setdefault` or preserve inherited values for version-owned parameters.
+Resolve and materialize valid selectors at the CLI boundary before argument parsing or callbacks.
+Unknown selectors are a no-op: do not apply a preset, mutate the inherited environment, or raise
+an error. Existing legacy flags and explicit launch/session controls retain their behavior.
+Restore the inherited environment on every exit.
+Explicit launch/session on/off controls still apply after version expansion.
+Managed routing defaults must not rewrite already-resolved version flags.
+
+Every new `smart_routing` or `smart_router` environment variable must be registered in
+`SMART_ROUTING_ENV_KEYS` in the same change, including orchestration controls.
+Pass Claude's resolved launch baseline through native `pluginConfigs` options in the existing
+launch settings. Keep the TypeScript static; toggles must not write configuration files. An explicit toggle
+may delegate the session-control write to UG's CLI, which validates and replaces that file
+atomically; the mod itself still writes no file.
+
+### Adding a parameter
+
+1. Define its environment-variable constant in `src/ucode/constants.py` and add it to
+   `SMART_ROUTING_ENV_KEYS`.
+2. Set an explicit value for it in **every** `_VERSIONS` entry, including existing versions.
+   Choose values that preserve existing versions' behavior. Current parameters accept only
+   the strings `"0"` and `"1"`; do not use booleans, empty strings, or omitted keys.
+3. Add its consumer in the appropriate routing module. Use `resolve_environment` for
+   config-aware reads, or the legacy flags materialized by `apply_config` at launch.
+   Keep launch-scoped changes restorable and preserve legacy behavior without a selector.
+4. `SMART_ROUTING_ENV_KEYS` controls environment snapshots, restoration, and launch/session
+   off overrides. Keep routing activation limited to the V2 and subagent-only flags:
+   orchestration alone must not enable routing. Add regression tests for the new parameter's
+   controls. Session overrides must apply after version resolution.
+   Update the native Claude mod's literal setters and registry coverage test in the same change.
+
+`_validate_versions` runs at module import and rejects missing keys, unknown keys, and
+invalid values. Do not weaken the complete-key check or infer required keys from `_VERSIONS`.
+If a new parameter needs nonbinary values, add parameter-specific validation and tests.
+
+### Adding a config type or revision
+
+1. Add a complete mapping to `_VERSIONS` with an explicit suffix, such as `new_mode_v0`.
+   For a changed existing mode, add `existing_mode_v1` rather than changing its `_v0` behavior.
+   Do not add unsuffixed names or version aliases.
+2. Define every key in `SMART_ROUTING_ENV_KEYS`; never rely on the caller's
+   inherited environment to fill missing values.
+3. Update the version table and examples in `README.md` and any affected bundled-skill docs.
+4. Extend `tests/test_smart_routing_config.py` for the new mode, precedence over legacy flags,
+   environment restoration, validation failures, and applicable session/launch behavior.
+   Update unknown-version tests when a previously rejected version becomes supported.
+   Follow `tests/AGENTS.md` and update its coverage READMEs.
+
+Run `uv run pytest tests/test_smart_routing_config.py` plus relevant routing/CLI tests,
+then `just lint`. These component checks do not establish live agent or gateway coverage.
 
 ## Style
 
@@ -32,3 +95,81 @@ Tests live in `tests/`.
 - Use warnings for recoverable setup problems and errors for launch/runtime blockers.
 - Preserve existing Rich UI conventions, including `print_warning`, `print_err`, `print_success`, `print_section`, and `spinner`.
 - Avoid broad refactors while fixing a narrow bug.
+
+## Fields `ug` manages
+
+This is the allow list of fields `ug` owns. Every field not listed is left
+alone. For each listed field, `ug` does one of:
+
+- **Create/replace**: `ug` owns the whole value and writes it.
+- **Merge**: `ug` writes only its own entries within a shared value and leaves the rest alone.
+- **Ignore**: `ug` does not touch the field.
+
+The two columns show what `ug` does without and with a [managed config](https://docs.databricks.com/aws/en/ai-gateway/coding-agent-configure-govern), the coding agent config admins publish through the API.
+
+This is the intended behavior; we are still working to make the code match it in every case. In particular, `ug` today also clears some fields that this list leaves alone: the `env.ANTHROPIC_DEFAULT_*_MODEL_NAME` companions, `env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`, `env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`, and Codex `model_reasoning_effort`.
+
+<details>
+<summary>Claude Code</summary>
+
+Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file (`/etc/claude-code/managed-settings.json` on Linux, `/Library/Application Support/ClaudeCode/managed-settings.json` on macOS, `C:\Program Files\ClaudeCode\managed-settings.json` on Windows), which takes precedence.
+
+| Field | Without managed config | With managed config | Notes |
+|-------|------------------------|---------------------|-------|
+| `apiKeyHelper` | Create/replace | Create/replace | Gateway auth-token helper |
+| `env.ANTHROPIC_BASE_URL` | Create/replace | Create/replace | Gateway endpoint URL |
+| `env.ANTHROPIC_CUSTOM_HEADERS` | Merge | Merge | Merge `ug`'s routing and attribution headers by name; other header lines left alone. Admin headers added under managed config |
+| `env.CLAUDE_CODE_API_KEY_HELPER_TTL_MS` | Create/replace | Create/replace | Auth-helper cache TTL |
+| `env.ENABLE_PROMPT_CACHING_1H` | Create/replace | Create/replace | Prompt-caching flag |
+| `env.ENABLE_TOOL_SEARCH` | Create/replace | Create/replace | Tool-search flag |
+| `env.CLAUDE_CODE_USE_GATEWAY` | Create/replace | Create/replace | Gateway-routing flag |
+| `env.ANTHROPIC_MODEL` | Ignore | Create/replace | Launch model, from the config's `default_model` or the budget recommendation when spend tiers are set; written at launch, not by `ug configure` |
+| `env.ANTHROPIC_DEFAULT_*_MODEL` | Create/replace | Create/replace | Per-family default (opus, sonnet, haiku, fable); the config's family default wins under managed config. Without a managed config, left as the OS-managed file has them (model discovery skipped) when that file has a `modelPicker` with family defaults |
+| Model picker | Ignore | Create/replace | `availableModels`, `enforceAvailableModels`, `modelPicker`; only for a managed static model list |
+| `permissions.deny` | Merge | Merge | Add `ug`'s own `WebSearch` rule when it replaces web search; other rules left alone |
+| Tracing | Ignore | Create/replace | The seven `CLAUDE_CODE_*`/`OTEL_*` trace keys and `otelHeadersHelper`; only when the config enables tracing |
+| `managedMcpServers` | Ignore | Merge | Add/update the config's MCP server entries; other entries left alone |
+| Smart-routing hooks | Merge | Merge | `PreToolUse`, `SessionStart`, `SubagentStart`; only `ug`'s own marked handlers, other hooks left alone |
+| Admin `agent_native_settings` | Ignore | Create/replace | Managed file only; copied as-is. Keys `ug` owns are skipped, `permissions.deny` and hooks are merged, and `ug`'s MCP servers are added to an admin `allowedMcpServers`. Removed when the admin drops them, unless edited by hand |
+| Smart Router Orchestrator hooks | Merge | Merge | Launch-only `UserPromptSubmit` and compact `SessionStart` handlers for smart-routed sessions with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`; read the same session controls as routing |
+
+</details>
+
+Claude Desktop third-party profiles live under `Claude-3p/configLibrary` in
+`~/Library/Application Support` on macOS, `%LOCALAPPDATA%` on current Windows releases,
+and `~/.config` on Linux. Windows and Linux require Desktop to have opened once.
+UG reserves UUID `5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6` for its fully owned profile.
+Configure replaces the whole file, updates its metadata entry, and selects it;
+changing workspaces replaces the same profile. Revert deletes that file and entry.
+Unrelated profiles and metadata are preserved. Only the previous selection is saved
+in `~/.ucode/claude-desktop.json`; profile contents are not restored on revert.
+Old random-ID and workspace-derived profiles are left untouched.
+Desktop setup is configure-only and best-effort. Writes retain atomic replacement,
+failure rollback, and the Desktop-only five-second lock timeout.
+Desktop filters both static and discovered model IDs with case-insensitive `\bclaude-`;
+shared discovery and Claude Code lists are unchanged. If no IDs match, setup warns without writes.
+When `claude_otel_tracing` is enabled, Desktop's reserved profile also owns
+`otlpEndpoint`, `otlpProtocol`, `otlpHeadersHelper`, and `otlpTracesEnabled`. A generated
+`.sh`/`.cmd` wrapper pins the configuring Python installation, workspace, and profile
+for the existing `otel-headers` command. Native sessions rerun it as tokens rotate;
+no bearer is persisted. Disable/revert removes the wrapper, with atomic writes and
+rollback shared with the profile. Disabled tracing omits these fields on replacement.
+See `docs/claude-desktop.md` for native validation limits and revert behavior.
+
+<details>
+<summary>Codex</summary>
+
+Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`. On Windows the managed file is `C:\ProgramData\OpenAI\Codex\requirements.toml`, which omits `model` and `mcp_servers` and adds `env_http_headers` for the launch-scoped headers.
+
+| Field | Without managed config | With managed config | Notes |
+|-------|------------------------|---------------------|-------|
+| `model_provider` | Create/replace | Create/replace | Gateway provider (`Databricks`) |
+| `model` | Ignore | Create/replace | The config's default model |
+| `model_providers.Databricks` | Merge | Merge | Provider block: name, gateway base URL, wire API, `ug` auth command; other keys left alone |
+| `http_headers` | Merge | Merge | In `[model_providers.Databricks]`; merge `ug`'s routing headers by name, admin headers added under managed config |
+| `model_catalog_json` | Create/replace | Create/replace | In `~/.codex/config.toml`; `ug`'s own catalog reference, for a static model list |
+| `otel.trace_exporter` | Ignore | Create/replace | In `~/.codex/config.toml` when the config enables tracing, for Codex desktop; another exporter and other telemetry settings left alone |
+| `mcp_servers` | Ignore | Merge | Managed file; add/update the config's MCP server entries, other entries left alone |
+| Smart Router and Smart Router Orchestrator hooks | Merge | Merge | Launch-only `PreToolUse`, plus `UserPromptSubmit` and compact `SessionStart` with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`; Codex combines them with its native hook sources and applies project trust; `features.hooks` is enabled for a smart-routed launch |
+
+</details>

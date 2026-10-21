@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -59,6 +61,78 @@ def test_system_prompt_includes_trusted_test_policy():
     assert "do not exempt a newly introduced journey" in prompt
 
 
+def test_responses_request_uses_instructions_and_does_not_store_output():
+    request = gate.build_responses_request(
+        "system.ai.gpt-5-6-sol", "Review this diff", "Integration-test policy"
+    )
+
+    assert gate.RESPONSES_API_PATH.endswith("/responses")
+    assert request["model"] == "system.ai.gpt-5-6-sol"
+    assert request["input"] == "Review this diff"
+    assert "Integration-test policy" in request["instructions"]
+    assert request["store"] is False
+    assert "messages" not in request
+
+
+def test_extract_response_text_ignores_reasoning_items():
+    payload = {
+        "output": [
+            {"type": "reasoning", "content": [{"type": "output_text", "text": "hidden"}]},
+            {
+                "type": "message",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": '{"needs_test": false, "reason": "internal refactor"}',
+                    }
+                ],
+            },
+        ]
+    }
+
+    assert gate.extract_response_text(payload) == (
+        '{"needs_test": false, "reason": "internal refactor"}'
+    )
+
+
+def test_judge_posts_to_responses_api(monkeypatch):
+    monkeypatch.setenv("DATABRICKS_HOST", "https://example.databricks.com")
+    monkeypatch.setenv("DATABRICKS_BEARER", "token")
+    monkeypatch.setenv("USER_JOURNEY_JUDGE_MODEL", "system.ai.gpt-5-6-sol")
+    requests = []
+
+    def urlopen(request, timeout):
+        requests.append((request, timeout))
+        return BytesIO(
+            json.dumps(
+                {
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": json.dumps(
+                                        {"needs_test": False, "reason": "internal refactor"}
+                                    ),
+                                }
+                            ],
+                        }
+                    ]
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(gate.urllib.request, "urlopen", urlopen)
+
+    assert gate._judge("Refactor", "diff", "policy") == (False, "internal refactor")
+    request, timeout = requests[0]
+    body = json.loads(request.data)
+    assert request.full_url == "https://example.databricks.com/ai-gateway/codex/v1/responses"
+    assert body["input"] == "Pull request title: Refactor\n\nDiff:\ndiff\n"
+    assert timeout == 90
+
+
 def test_waiver_requires_exact_comment_by_allowlisted_admin():
     comments = [{"body": gate.WAIVER_COMMENT, "user": {"login": "rohita5l"}}]
 
@@ -84,3 +158,56 @@ def test_waiver_command_must_match_exactly():
     ]
 
     assert gate._waiver_status(comments, {"rohita5l", "lilly-luo"}) == (False, "")
+
+
+EVALUATED = "a" * 40
+
+
+def _gate_with_heads(monkeypatch, tmp_path, *heads, filename="README.md"):
+    output = tmp_path / "github-output"
+    output.touch()
+    monkeypatch.setenv("REPO", "databricks/unity-gateway")
+    monkeypatch.setenv("PR_NUMBER", "1")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    pulls = iter({"title": "Change", "head": {"sha": sha}} for sha in heads)
+    files = [{"filename": filename, "status": "modified", "patch": "+change"}]
+
+    def gh_json(path, paginate=False):
+        if path.endswith("/files"):
+            return files
+        if path.endswith("/comments"):
+            return []
+        return next(pulls)
+
+    monkeypatch.setattr(gate, "_gh_json", gh_json)
+    return gate.main(), output.read_text()
+
+
+def test_gate_records_the_head_its_diff_was_read_at(monkeypatch, tmp_path):
+    assert _gate_with_heads(monkeypatch, tmp_path, EVALUATED, EVALUATED) == (
+        0,
+        f"sha={EVALUATED}\n",
+    )
+
+
+def test_gate_fails_without_a_verdict_sha_when_the_head_moves(monkeypatch, tmp_path, capsys):
+    assert _gate_with_heads(monkeypatch, tmp_path, EVALUATED, "b" * 40) == (1, "")
+    assert (
+        "The PR head changed while its diff was read (aaaaaaa -> bbbbbbb)"
+        in capsys.readouterr().out
+    )
+
+
+def test_gate_records_the_head_when_the_verdict_fails(monkeypatch, tmp_path):
+    policy = tmp_path / "AGENTS.md"
+    policy.write_text("policy")
+    monkeypatch.setenv("TEST_POLICY_PATH", str(policy))
+    monkeypatch.setenv("USER_JOURNEY_WAIVER_ADMINS", "rohita5l")
+    monkeypatch.setattr(gate, "_judge", lambda title, diff, test_policy: (True, "new launch flow"))
+
+    assert _gate_with_heads(
+        monkeypatch, tmp_path, EVALUATED, EVALUATED, filename="src/ucode/cli.py"
+    ) == (
+        1,
+        f"sha={EVALUATED}\n",
+    )

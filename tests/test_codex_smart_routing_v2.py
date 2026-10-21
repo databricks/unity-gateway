@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+from types import SimpleNamespace
 
 import pytest
 
-from ucode import codex_config
+from ucode import codex_config, custom_oauth
 from ucode.agents import LaunchOptions, codex
 from ucode.smart_routing import codex_interposer, codex_routing, v2
 
@@ -71,7 +72,7 @@ class TestLaunchCodex:
                 {
                     "binary": "codex",
                     "start_model": "gpt-start",
-                    "render_overlay": codex.render_overlay,
+                    "render_overlay": codex._render_launch_overlay,
                 },
             )
         ]
@@ -96,7 +97,7 @@ class TestLaunchCodex:
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile_path)
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.144.0")
-        monkeypatch.setattr(codex, "get_databricks_token", lambda *_args, **_kw: "token")
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kw: "token")
         monkeypatch.setattr(v2, "launch_codex", lambda *args, **kwargs: pytest.fail("launched"))
         monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: launches.append(argv))
 
@@ -111,6 +112,7 @@ class TestLaunchCodex:
     def test_codex_launch_normalizes_cached_bootstrap_model(self, monkeypatch):
         calls = []
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        monkeypatch.setattr(codex, "custom_catalog_models", lambda: None)
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
         monkeypatch.setattr(codex, "_smart_routing_config_model", lambda state: None)
 
@@ -154,6 +156,7 @@ class TestLaunchCodex:
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile_path)
         monkeypatch.setattr(codex, "codex_managed_config_path", lambda: managed_path)
         monkeypatch.setattr(codex, "agent_version", lambda _: "0.145.0")
+        monkeypatch.setattr(codex, "custom_catalog_models", lambda: None)
         if custom_home:
             monkeypatch.setenv("CODEX_HOME", str(config_home))
             monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", tmp_path / "unused.config.toml")
@@ -174,13 +177,19 @@ class TestLaunchCodex:
                 assert path.read_text() == content
         assert codex._smart_routing_config_model({"codex_default_model": "admin"}) == "admin"
 
-    def test_owns_app_server_interposer_and_tui_lifecycle(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("platform_name", "tui_has_provider"), [("posix", False), ("nt", True)]
+    )
+    def test_owns_app_server_interposer_and_tui_lifecycle(
+        self, monkeypatch, platform_name, tui_has_provider
+    ):
         processes = []
         interposer_args = {}
         stopped = []
         token_calls = []
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setenv("CODEX_HOME", "/user/codex-home")
+        monkeypatch.setattr(v2, "os", SimpleNamespace(name=platform_name, environ=os.environ))
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
 
@@ -254,20 +263,41 @@ class TestLaunchCodex:
         assert "--profile myprof" in hook_override
         assert "--model system.ai.gpt-5-6-sol" in hook_override
         assert "--model system.ai.glm-5-2" in hook_override
-        assert processes[0].argv[10:] == [
+        config_values = processes[0].argv[3:-2:2]
+        assert (
+            "shell_environment_policy.set.UCODE_SESSION_ENV_FILE="
+            + json.dumps(os.environ["UCODE_SESSION_ENV_FILE"])
+        ) in config_values
+        assert (
+            "shell_environment_policy.set.UCODE_SMART_ROUTER_PYTHON="
+            + json.dumps(os.environ["UCODE_SMART_ROUTER_PYTHON"])
+        ) in config_values
+        assert processes[0].argv[-2:] == [
             "--listen",
             "ws://127.0.0.1:41001",
         ]
         assert processes[0].kwargs["env"][v2.OAUTH_TOKEN_ENV_VAR] == "token-1"
         assert processes[0].kwargs["env"]["CODEX_HOME"] == "/user/codex-home"
-        assert processes[1].argv == [
-            "codex",
+        tui_argv = processes[1].argv
+        expected_tui_args = [
             "--remote",
             "ws://127.0.0.1:41002",
             "--model",
             "gpt-start",
             "--search",
         ]
+        if tui_has_provider:
+            assert tui_argv[:4] == [
+                "codex",
+                "--config",
+                'model_provider="Databricks"',
+                "--config",
+            ]
+            assert tui_argv[4] == processes[0].argv[7]
+            assert tui_argv[5:] == expected_tui_args
+        else:
+            assert tui_argv == ["codex", *expected_tui_args]
+        assert not any(arg.startswith("hooks.") for arg in tui_argv)
         assert interposer_args["args"] == (v2.LOOPBACK_HOST, "ws://127.0.0.1:41001")
         assert interposer_args["kwargs"]["available_models"] == [
             "system.ai.gpt-5-6-sol",
@@ -375,11 +405,19 @@ class TestLaunchCodex:
         hook_override = next(arg for arg in argv if arg.startswith("hooks.PreToolUse="))
         assert "codex-router-hook route-subagent" in hook_override
         assert "--model system.ai.gpt-5-6-sol" in hook_override
+        assert (
+            "shell_environment_policy.set.UCODE_SESSION_ENV_FILE="
+            + json.dumps(os.environ["UCODE_SESSION_ENV_FILE"])
+        ) in argv
+        assert (
+            "shell_environment_policy.set.UCODE_SMART_ROUTER_PYTHON="
+            + json.dumps(os.environ["UCODE_SMART_ROUTER_PYTHON"])
+        ) in argv
         # The hook subprocesses inherit the launch environment and pass the routing gate.
         assert os.environ[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
         assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "token"
 
-    def test_v2_pre_tool_hook_preserves_user_hooks(self, tmp_path, monkeypatch):
+    def test_v2_pre_tool_hook_leaves_saved_hooks_to_codex(self, tmp_path, monkeypatch):
         codex_home = tmp_path / ".codex"
         codex_home.mkdir()
         (codex_home / "config.toml").write_text(
@@ -392,16 +430,18 @@ class TestLaunchCodex:
         )
         monkeypatch.setenv("CODEX_HOME", str(codex_home))
 
-        configured = v2._v2_pre_tool_use_hooks(
+        before = (codex_home / "config.toml").read_bytes()
+        configured = v2._v2_hooks(
             {"workspace": WS, "profile": "myprof"},
             ["system.ai.gpt-5-6-sol"],
-        )
+        )["PreToolUse"]
 
-        assert configured[0]["hooks"][0]["command"] == "user-policy"
-        assert configured[1]["matcher"] == "Agent|.*spawn_agent$"
-        assert "--model system.ai.gpt-5-6-sol" in configured[1]["hooks"][0]["command"]
+        assert len(configured) == 1
+        assert configured[0]["matcher"] == "Agent|.*spawn_agent$"
+        assert "--model system.ai.gpt-5-6-sol" in configured[0]["hooks"][0]["command"]
+        assert (codex_home / "config.toml").read_bytes() == before
 
-    def test_v2_pre_tool_hook_replaces_existing_ucode_hook(self, tmp_path, monkeypatch):
+    def test_v2_pre_tool_hook_uses_current_model(self, tmp_path, monkeypatch):
         monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/bin/ug")
         codex_home = tmp_path / ".codex"
         codex_home.mkdir()
@@ -415,10 +455,10 @@ class TestLaunchCodex:
         )
         monkeypatch.setenv("CODEX_HOME", str(codex_home))
 
-        configured = v2._v2_pre_tool_use_hooks(
+        configured = v2._v2_hooks(
             {"workspace": WS, "profile": "myprof"},
             ["system.ai.gpt-5-6-sol"],
-        )
+        )["PreToolUse"]
 
         routing_commands = [
             hook["command"]
@@ -615,7 +655,7 @@ class TestCustomCatalogModels:
 
         assert interposer_kwargs["available_models"] == ["gpt-6-astra", "gpt-6-b"]
         catalog_override = next(arg for arg in launched[0] if arg.startswith("model_catalog_json="))
-        assert catalog_override == f'model_catalog_json="{tmp_path / "cli.json"}"'
+        assert catalog_override == "model_catalog_json=" + json.dumps(str(tmp_path / "cli.json"))
         hook_override = next(arg for arg in launched[0] if arg.startswith("hooks.PreToolUse="))
         assert "--model gpt-6-astra" in hook_override
         assert "--model gpt-6-b" in hook_override

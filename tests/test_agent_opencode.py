@@ -81,6 +81,50 @@ class TestAuthPlugin:
         assert "if (!refreshPromise)" in plugin
         assert "mintToken().finally(() => { refreshPromise = undefined })" in plugin
 
+    def test_opencode_2_plugin_uses_default_definition_and_session_hooks(self):
+        plugin = opencode.render_auth_plugin({"workspace": WS}, v2=True)
+
+        assert "export default {" in plugin
+        assert 'id: "ucode.databricks-auth"' in plugin
+        assert "UcodeDatabricksAuth" not in plugin
+        assert "options.fetch" not in plugin
+        assert 'ctx.session.hook("http.request"' in plugin
+        assert "expiresAt <= Date.now() + REFRESH_SKEW_MS" in plugin
+        assert 'event.request.headers.set("Authorization", "Bearer " + accessToken)' in plugin
+        assert 'ctx.session.hook("retry"' in plugin
+        assert "event.error.status !== 401 || event.attempt > 2" in plugin
+        assert "event.decision = { retry: true, delay: 0 }" in plugin
+        assert "}, { providerID })" in plugin
+
+    def test_opencode_2_retry_refreshes_only_a_rejected_current_token(self):
+        plugin = opencode.render_auth_plugin({"workspace": WS}, v2=True)
+
+        assert 'ctx.session.hook("http.response"' in plugin
+        assert "if (event.response.status === 401)" in plugin
+        assert 'rejectedAuthorization = event.request.headers.get("Authorization")' in plugin
+        assert (
+            'if (rejectedAuthorization === "Bearer " + accessToken) await refreshToken()' in plugin
+        )
+
+    @pytest.mark.parametrize(
+        ("installed", "entrypoint"),
+        [
+            ("1.0.220", "export const UcodeDatabricksAuth"),
+            ("2.0.14", "export default {"),
+            ("unknown", "export const UcodeDatabricksAuth"),
+        ],
+    )
+    def test_writes_plugin_for_installed_opencode_major(
+        self, tmp_path, monkeypatch, installed, entrypoint
+    ):
+        monkeypatch.setattr(opencode, "OPENCODE_CONFIG_PATH", tmp_path / "opencode.json")
+        monkeypatch.setattr(opencode, "agent_version", lambda _binary: installed)
+
+        opencode.write_auth_plugin({"workspace": WS})
+
+        plugin = (tmp_path / "plugin" / opencode.OPENCODE_AUTH_PLUGIN_PATH.name).read_text()
+        assert entrypoint in plugin
+
 
 class TestRenderOverlay:
     def test_sets_model(self):
@@ -213,6 +257,29 @@ class TestRenderOverlay:
         provider_headers = overlay["provider"]["databricks-anthropic"]["options"]["headers"]
         assert "User-Agent" not in provider_headers
         assert provider_headers["Authorization"] == "Bearer tok"
+
+    def test_request_tags_header_added_per_model_when_env_set(self, monkeypatch):
+        # Like the UA, request tags ride at the per-model level so they survive
+        # OpenCode's provider-level header clobber.
+        tags = '{"team":"infra","env":"prod"}'
+        monkeypatch.setenv("AI_GATEWAY_REQUEST_TAGS", tags)
+        models = {"anthropic": ["claude-sonnet"], "oss": ["gpt-oss"]}
+        overlay, _ = opencode.render_overlay("claude-sonnet", "tok", _base_urls(), models)
+        for provider, model in (
+            ("databricks-anthropic", "claude-sonnet"),
+            ("databricks-oss", "gpt-oss"),
+        ):
+            model_headers = overlay["provider"][provider]["models"][model]["headers"]
+            assert model_headers["Databricks-Ai-Gateway-Request-Tags"] == tags
+
+    def test_request_tags_header_absent_when_env_unset(self, monkeypatch):
+        monkeypatch.delenv("AI_GATEWAY_REQUEST_TAGS", raising=False)
+        models = {"anthropic": ["claude-sonnet"]}
+        overlay, _ = opencode.render_overlay("claude-sonnet", "tok", _base_urls(), models)
+        model_headers = overlay["provider"]["databricks-anthropic"]["models"]["claude-sonnet"][
+            "headers"
+        ]
+        assert "Databricks-Ai-Gateway-Request-Tags" not in model_headers
 
     def test_managed_keys_include_model(self):
         _, keys = opencode.render_overlay("model", "tok", _base_urls(), {})
@@ -484,7 +551,7 @@ class TestOpencodeLaunchModel:
             patch("ucode.agents.opencode.get_databricks_token", return_value="tok"),
             patch("ucode.agents.opencode.agent_version", return_value="1.0.220"),
             patch("ucode.agents.opencode.save_state"),
-            patch("ucode.agents.opencode.subprocess.Popen") as popen,
+            patch("ucode.agents.opencode.subprocess_cross_os.popen") as popen,
         ):
             popen.return_value.wait.return_value = 7
             with pytest.raises(SystemExit) as exc_info:
@@ -501,7 +568,7 @@ class TestOpencodeLaunchModel:
         state = {"opencode_models": {"anthropic": ["claude-sonnet"]}}
         with (
             patch("ucode.agents.opencode._configure_launch") as configure,
-            patch("ucode.agents.opencode.subprocess.Popen") as popen,
+            patch("ucode.agents.opencode.subprocess_cross_os.popen") as popen,
             pytest.raises(RuntimeError, match="not configured"),
         ):
             opencode.launch(
@@ -543,6 +610,7 @@ class TestWriteToolConfigStaleProviderCleanup:
 
         with (
             patch("ucode.agents.opencode.get_databricks_token", return_value="tok"),
+            patch("ucode.agents.opencode.agent_version", return_value="1.0.220"),
             patch("ucode.agents.opencode.save_state"),
         ):
             oc_mod.write_tool_config(state, "claude-sonnet", token="tok")

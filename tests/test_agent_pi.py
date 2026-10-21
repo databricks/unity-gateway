@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import shlex
 from unittest.mock import patch
+
+import pytest
 
 from ucode.agents import pi
 
@@ -107,6 +110,25 @@ class TestRenderOverlayUserAgent:
         expected = "ucode/0.1.0 pi/0.74.0"
         for name in ("databricks-claude", "databricks-openai", "databricks-gemini"):
             assert overlay["providers"][name]["headers"]["User-Agent"] == expected
+
+    def test_request_tags_header_on_all_providers_when_env_set(self, monkeypatch):
+        tags = '{"team":"infra","env":"prod"}'
+        monkeypatch.setenv("AI_GATEWAY_REQUEST_TAGS", tags)
+        overlay, _ = _overlay(
+            "claude-sonnet",
+            claude_models={"sonnet": "claude-sonnet"},
+            codex_models=["gpt-5"],
+            gemini_models=["gemini-2"],
+        )
+        for name in ("databricks-claude", "databricks-openai", "databricks-gemini"):
+            headers = overlay["providers"][name]["headers"]
+            assert headers["Databricks-Ai-Gateway-Request-Tags"] == tags
+
+    def test_request_tags_header_absent_when_env_unset(self, monkeypatch):
+        monkeypatch.delenv("AI_GATEWAY_REQUEST_TAGS", raising=False)
+        overlay, _ = _overlay("claude-sonnet", claude_models={"sonnet": "claude-sonnet"})
+        headers = overlay["providers"]["databricks-claude"]["headers"]
+        assert "Databricks-Ai-Gateway-Request-Tags" not in headers
 
 
 class TestRenderOverlayCompatFlags:
@@ -477,6 +499,28 @@ class TestBuildPiApiKey:
         api_key = pi.build_pi_api_key({"workspace": WS})
 
         assert api_key == f"!/tools/ug auth-token --host {WS}"
+
+    @pytest.mark.parametrize(
+        "ug_exe",
+        [r"C:\Users\me\.local\bin\ug.EXE", r"C:\Program Files\ug.exe", r"C:\Users\O'Brien\ug.exe"],
+    )
+    def test_windows_executable_path_survives_bash(self, monkeypatch, ug_exe):
+        # Pi runs `!command` through Git Bash on Windows, so the command must be
+        # POSIX-quoted: an unquoted `C:\...\ug.EXE` would lose its backslashes.
+        monkeypatch.setattr("ucode.databricks.platform.system", lambda: "Windows")
+        monkeypatch.setattr("ucode.databricks.shutil.which", lambda command: ug_exe)
+        api_key = pi.build_pi_api_key({"workspace": WS, "profile": "my profile", "use_pat": True})
+
+        assert api_key.startswith("!")
+        assert shlex.split(api_key[1:]) == [
+            ug_exe,
+            "auth-token",
+            "--host",
+            WS,
+            "--profile",
+            "my profile",
+            "--use-pat",
+        ]
 
     def test_omits_force_refresh(self):
         # Pi has no token cache on this path, so --force-refresh would round-trip

@@ -31,8 +31,8 @@ already uses). A token still reaches the process environment: `launch` exports
 from __future__ import annotations
 
 import os
+import shlex
 import signal
-import subprocess
 
 from ucode.config_io import (
     APP_DIR,
@@ -42,17 +42,20 @@ from ucode.config_io import (
     read_json_safe,
     write_json_file,
 )
+from ucode.constants import AI_GATEWAY_REQUEST_TAGS_HEADER
 from ucode.databricks import (
     ANTHROPIC_FAMILIES,
-    build_auth_shell_command,
+    build_auth_token_argv,
     build_pi_base_urls,
     classify_model_family,
     get_databricks_token,
 )
+from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
 
 from .args import LaunchOptions
+from .request_tags import request_tags_header_value
 
 PI_UCODE_HOME = APP_DIR / "pi-home"
 PI_CONFIG_DIR = PI_UCODE_HOME / ".pi" / "agent"
@@ -118,6 +121,11 @@ def render_overlay(
     # Pi expands header values that match an env var name. Our UA contains
     # `/` and a space so it can never collide — safe to pass as a literal.
     ua_headers = {"User-Agent": f"ucode/{ug_version()} pi/{agent_version('pi')}"}
+    request_tags = request_tags_header_value()
+    if request_tags:
+        # Similarly to UA, request_tags is a JSON object (validated in `request_tags_header_value()`)
+        # so it can never collide with an env var name
+        ua_headers[AI_GATEWAY_REQUEST_TAGS_HEADER] = request_tags
 
     claude_ids = sorted(set(claude_models.values()))
     if claude_ids:
@@ -171,12 +179,17 @@ def build_pi_api_key(state: dict) -> str:
 
     No `--force-refresh`: pi has no token cache of its own on this path, so
     forcing a mint would round-trip to the workspace every turn. Plain
-    `auth-token` serves the CLI's cached token until it nears expiry."""
-    return "!" + build_auth_shell_command(
+    `auth-token` serves the CLI's cached token until it nears expiry.
+
+    Always POSIX-quoted: pi runs `!command` values through bash on every OS
+    (Git Bash on Windows), which strips the backslashes from a cmd.exe-style
+    ``C:\\...\\ug.exe`` path."""
+    argv = build_auth_token_argv(
         state["workspace"],
         state.get("profile"),
         use_pat=bool(state.get("use_pat")),
     )
+    return "!" + shlex.join(argv)
 
 
 def write_tool_config(
@@ -298,7 +311,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
     token = _configure_launch(state)
     env = build_runtime_env(token)
 
-    proc = subprocess.Popen([SPEC["binary"], *tool_args], env=env)
+    proc = subprocess_cross_os.popen([SPEC["binary"], *tool_args], env=env)
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:

@@ -1,8 +1,8 @@
 """Claude managed-config CUJs for repository scenarios 1, 3, and 5.
 
-The admin CodingAgentConfig is fetched once from the managed workspace, its Claude model source is
-set to the dedicated test MPS, and the result is reused through ``UCODE_MANAGED_CONFIG_STUB`` in
-each isolated session. Normalization, config writers, the gateway, and Claude Code remain real.
+The admin CodingAgentConfig is the checked-in ``claude_mps.json`` fixture, whose Claude model source
+is the dedicated test MPS, injected through ``UCODE_MANAGED_CONFIG_STUB`` in each isolated session.
+Normalization, config writers, the gateway, and Claude remain real.
 """
 
 import json
@@ -11,9 +11,8 @@ import os
 import pytest
 from utils.constants import MANAGED_CLAUDE_PROVIDER_SERVICE
 from utils.managed import (
-    fetch_managed_config_stub,
     is_managed_config_control_plane_cache,
-    use_managed_config_stub,
+    use_managed_config_fixture,
 )
 from utils.model_discovery import claude_model_in_picker
 from utils.provider_catalog import (
@@ -26,18 +25,6 @@ pytestmark = [pytest.mark.managed_fixture, pytest.mark.claude]
 
 
 @pytest.fixture(scope="module")
-def _managed_claude_config_stub(workspace, tmp_path_factory):
-    return fetch_managed_config_stub(
-        workspace,
-        os.environ["DATABRICKS_BEARER"],
-        tmp_path_factory.mktemp("managed-config-claude"),
-        "managed-config-claude.json",
-        agent="CODING_AGENT_CLAUDE_CODE",
-        provider_service=MANAGED_CLAUDE_PROVIDER_SERVICE,
-    )
-
-
-@pytest.fixture(scope="module")
 def _managed_claude_provider_catalog(workspace):
     return fetch_anthropic_provider_catalog(
         workspace,
@@ -47,8 +34,8 @@ def _managed_claude_provider_catalog(workspace):
 
 
 @pytest.fixture(autouse=True)
-def _managed_claude_config(live_session, _managed_claude_config_stub):
-    use_managed_config_stub(live_session, _managed_claude_config_stub)
+def _managed_claude_config(live_session):
+    use_managed_config_fixture(live_session, "claude_mps")
 
 
 def _claude_state_and_agent_files(session):

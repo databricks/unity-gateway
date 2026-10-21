@@ -13,25 +13,63 @@ The two stacked PRs make precedence handling deterministic:
    managed-settings path.
 
 After both PRs merge, interactive configuration reconciles the agent's OS-managed file by default.
-Non-interactive and CI execution never elevates privileges and instead uses local settings when the
-managed file is compatible.
+Non-interactive execution uses local settings when the managed file is compatible. Both agents repair
+conflicting managed settings using `sudo -n`, which requires existing authorization and never prompts
+for a password. If that repair is denied, the agent does not launch.
 
 ## Configuration Files
 
 | Agent | Local ucode configuration | OS-managed configuration |
 | --- | --- | --- |
-| Claude Code | `~/.claude/ucode-settings.json` | Linux: `/etc/claude-code/managed-settings.json`; macOS: `/Library/Application Support/ClaudeCode/managed-settings.json` |
-| Codex | `~/.codex/ucode.config.toml` | `/etc/codex/managed_config.toml` |
+| Claude Code | `~/.claude/ucode-settings.json` | Linux: `/etc/claude-code/managed-settings.json`; macOS: `/Library/Application Support/ClaudeCode/managed-settings.json`; Windows: `C:\Program Files\ClaudeCode\managed-settings.json` |
+| Codex | `~/.codex/ucode.config.toml` | Linux and macOS: `/etc/codex/managed_config.toml`; Windows: `C:\ProgramData\OpenAI\Codex\requirements.toml` |
 
 The local file is always written. The OS-managed file is additionally reconciled during interactive
 configuration, except for Claude subscription relay.
 
+## Per-user Scope
+
+`ug configure --user` (saved as `config_scope` in `~/.ucode/state.json`, default `global`) skips the
+OS-managed files like `UG_SKIP_OS_SETTINGS`: no administrator permission, and managed MCP servers
+register in user scope. Because OS-managed settings take precedence over user settings,
+`ug configure --user` fails before configuring any agent while a selected agent's OS-managed file
+exists (including Windows `requirements.toml`), whoever wrote it; `ug revert`, removal, or
+`--global` resolves it. Launches don't check: a managed file added later simply takes precedence,
+without the `UG_SKIP_OS_SETTINGS` stale-override error. `ug configure` without `--user` and
+`ug revert` reset the scope to `global`.
+
 ## Interactive Detection
 
-An invocation may modify OS-managed settings only when standard input is a TTY. Standard output does
-not affect the decision, so piping logs does not disable an otherwise interactive configuration.
-CI, pipes, cron jobs, and headless subprocesses normally have non-TTY standard input and therefore
-remain local-only.
+Standard input determines whether UG may request administrator permission interactively. Standard
+output does not affect the decision. Without a TTY, either agent may repair an existing conflicting
+file through one-shot `sudo -n` with stdin disconnected; absent or compatible files remain local-only.
+A denied repair blocks launch.
+
+`managed_writes_allowed` centralizes this policy: its default remains interactive-only, while the
+shared reconciliation/writer permits an existing-file repair attempt. The writer derives sudo's
+prompt mode and stdin handling itself; the predicate does not probe or grant authorization.
+
+Windows has no `sudo`, so the terminal doesn't matter there: an elevated (or SYSTEM) process may
+write `C:\Program Files\ClaudeCode\managed-settings.json` directly, which lets device provisioning
+run `ug configure` headlessly. Standard users can't write under Program Files. For them, as for a
+headless Linux/macOS run, an absent or compatible file stays local-only, and a conflicting file
+stops the command with a request to rerun it elevated. When the machine-wide file lacks UG's
+settings, `ug configure` warns that it wasn't updated because no admin privileges were
+detected; launches, which reconfigure on every run, stay quiet.
+
+Codex has no admin-only config layer on Windows, so the same elevated runs write
+`C:\ProgramData\OpenAI\Codex\requirements.toml`, which Codex 0.156.0 and later enforce over the
+user's config and `-c`. It takes only requirement keys: UG writes `model_provider` and the
+`Databricks` provider entry, but not `model` or `mcp_servers` (managed MCP servers stay in user
+scope there). A required provider entry replaces the configured one instead of merging, so the
+launch-scoped headers reach Codex through `env_http_headers` and the
+`UG_CODEX_MODEL_PROVIDER_SERVICE`, `UG_CODEX_MODEL_SERVICE_PARENT_SCHEMA`,
+`UG_CODEX_SMART_ROUTER_RECIPE`, and `UG_CODEX_REQUEST_TAGS` variables that `ug codex` sets at
+launch. Standard users can create folders under ProgramData and keep control of the ones they
+create, so before each write UG makes Administrators the owner of `OpenAI` and `Codex`, resets
+`OpenAI` to its inherited permissions, and lets standard users only read `Codex`, like the
+root-owned 0755 folders on Linux and macOS. It changes only those two folders, not files already in
+them, and refuses to write through a linked `OpenAI` or `Codex` folder.
 
 This is a new shared ucode distinction. The previous implementation inferred interactivity from
 command shape in some flows and did not guard managed-file writes consistently.
@@ -46,12 +84,25 @@ command shape in some flows and did not guard managed-file writes consistently.
 | Interactive | Already identical | Continue without a backup, write, or `sudo` invocation. |
 | Non-interactive | Absent | Use the local ucode file. Do not create the managed file. |
 | Non-interactive | Ucode-owned values absent or equal | Use the local ucode file. Do not modify the managed file. |
-| Non-interactive | Ucode-owned value conflicts | Stop before launching because the higher-precedence value would override ucode. |
+| Non-interactive | Ucode-owned value conflicts | Repair through `sudo -n`; stop before launching if authorization or verification fails. |
 | Any | Invalid, unreadable, or symlinked | Stop without modifying the file because precedence cannot be established safely. |
 
 `ucode configure`, first-time `ucode claude` or `ucode codex`, and later launches all use the same
 agent-specific reconciliation path. A first-time launch from an interactive terminal can therefore
-request administrator permission. A first-time non-interactive launch remains local-only.
+request administrator permission. A first-time non-interactive launch uses local settings unless
+the agent must repair an existing conflicting managed file.
+
+For Claude, turning off UG tracing preserves the live OS-managed telemetry values unchanged,
+including values UG wrote on an earlier run. The same applies when the workspace has no managed
+Coding Agent Config, even if stale local state says tracing was enabled. A tracing-disabled write
+does not claim ownership of external telemetry merely because it appears in the full-file snapshot.
+This does not relax conflicts when a workspace managed config explicitly enables UG tracing.
+
+Claude custom headers are compared by name and value, ignoring order, name casing, and surrounding
+whitespace. Differences in `User-Agent` and `Databricks-Smart-Router-Recipe` alone do not block a
+local-only launch: these headers attribute traffic, rather than select the gateway or provider.
+The OS-managed header string still wins, so UG attribution may be unavailable for those launches.
+Required coding-agent-mode, provider, authentication, and other header differences remain blockers.
 
 ## Interactive Reconciliation
 
@@ -70,6 +121,24 @@ An existing managed file is reconciled even when it does not currently conflict.
 ucode-required value exists at the highest-precedence scope and avoids separate behavior for absent,
 partial, and conflicting files.
 
+## Admin Settings Passthrough
+
+An admin can put Claude Code settings in the coding agent config under `agent_native_settings`.
+ucode copies them as-is into Claude Code's managed file. The server decides which keys are allowed.
+Codex isn't supported yet.
+
+- **ucode's own keys win.** A setting that would overwrite something ucode writes (gateway URL,
+  auth, models, MCP servers) is skipped with a warning.
+- **Shared lists are merged.** `permissions.deny` and hooks keep entries IT added; ucode only adds
+  and removes its own.
+- **ucode's MCP servers stay allowed.** If the admin sets `allowedMcpServers`, ucode adds the
+  servers it registers, so the allowlist doesn't block them.
+- **Removed settings are cleaned up.** When the admin drops a setting, or the developer switches to a
+  workspace without it, ucode removes it, unless someone edited it by hand. `ucode revert` removes
+  everything ucode wrote.
+- **Managed file only.** Settings never go into the private ucode file. Where the managed file can't
+  be written (unsupported platform, relayed launch), they aren't applied.
+
 ## Privileged Write Transaction
 
 The shared writer handles ordinary MDM-installed and root-owned files rather than treating them as
@@ -87,8 +156,8 @@ errors:
 - retries once only when device management restored the exact pre-write contents;
 - preserves a concurrently changed policy instead of overwriting it.
 
-The privilege boundary is interactive. Non-interactive paths do not invoke either normal `sudo` or
-`sudo -n`.
+Interactive updates may request administrator permission. Non-interactive conflict repairs use only
+`sudo -n` with stdin disconnected.
 
 Root access cannot sustainably override an actively enforced policy. If an MDM process immediately
 restores the original file twice, ucode stops with an error instead of repeatedly fighting the
@@ -145,7 +214,7 @@ to unchanged launches.
 
 The verification scopes distinguish:
 
-- an interactively reconciled managed file;
+- a managed file reconciled interactively or through an authorized non-prompting repair;
 - a managed file verified as compatible with local settings;
 - a managed file verified as compatible with Claude relay.
 
@@ -184,9 +253,9 @@ result. An identical file produces no elevation message.
 Representative blockers are:
 
 ```text
-Claude Code configuration cannot be applied non-interactively because OS-managed settings at
-<path> override ucode values: env.ANTHROPIC_BASE_URL. Run `ucode configure --agent claude` from an
-interactive terminal or contact your administrator.
+Claude Code cannot start because ucode could not update <path>: sudo: a password is required.
+Run the ucode command from an interactive terminal and approve the administrator prompt, or contact
+your administrator.
 ```
 
 ```text

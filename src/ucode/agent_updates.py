@@ -7,6 +7,8 @@ import re
 import shutil
 import subprocess
 
+from ucode.os_compatibility import subprocess_cross_os
+
 _BASE_VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 _STABLE_VERSION_RE = re.compile(r"v?\d+\.\d+\.\d+$")
 
@@ -32,7 +34,7 @@ def published_versions(package: str) -> list[str]:
     if not shutil.which("npm"):
         return []
     try:
-        result = subprocess.run(
+        result = subprocess_cross_os.run(
             ["npm", "view", package, "versions", "--json"],
             capture_output=True,
             text=True,

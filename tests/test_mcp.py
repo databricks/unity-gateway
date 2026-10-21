@@ -154,6 +154,98 @@ class TestCursorMcpClient:
         assert "cursor" not in clients
 
 
+class TestKiloMcpClient:
+    def test_kilo_registered_in_mcp_clients(self):
+        assert "kilo" in mcp.MCP_CLIENTS
+        assert mcp.MCP_CLIENTS["kilo"]["binary"] == "kilo"
+        assert mcp.MCP_CLIENTS["kilo"]["list_command"] == "kilo mcp list"
+
+    def test_kilo_in_client_modules(self):
+        assert mcp._MCP_CLIENT_MODULES["kilo"] is mcp.kilo
+
+    def test_kilo_cli_env_pins_xdg_config_home(self):
+        # `kilo mcp list` must read ug's isolated config dir, so the env ug runs it
+        # with pins XDG_CONFIG_HOME to the same dir kilo.build_runtime_env uses.
+        env = mcp._kilo_cli_env()
+        assert env["XDG_CONFIG_HOME"] == str(mcp.kilo.KILO_XDG_CONFIG_HOME)
+
+    def test_parses_kilo_tree_mcp_list_output(self):
+        # Kilo prints `●  <glyph> <name> <status>` rows with indented `│` detail lines
+        # (the proxy command, which must NOT be parsed as a server).
+        output = (
+            "┌  MCP Servers\n"
+            "│\n"
+            "●  ✗ system-ai-atlassian failed\n"
+            "│      Failed to get tools\n"
+            "│      /path/ug mcp-proxy --url https://ws/ai-gateway/.../system.ai.atlassian\n"
+            "│\n"
+            "●  ✓ system-ai-dbsql connected\n"
+            "│      /path/ug mcp-proxy --url https://ws/ai-gateway/.../system.ai.dbsql\n"
+            "└  2 server(s)\n"
+        )
+        assert mcp.parse_mcp_list_output("kilo", output) == {
+            "system-ai-atlassian": mcp.LIVE_FAILED,
+            "system-ai-dbsql": mcp.LIVE_CONNECTED,
+        }
+
+    def test_kilo_empty_listing_parses_to_no_servers(self):
+        assert mcp.parse_mcp_list_output("kilo", "▲  No MCP servers configured") == {}
+
+    def test_run_mcp_list_passes_xdg_env_for_kilo(self, monkeypatch):
+        # Regression: without the pinned XDG_CONFIG_HOME, `kilo mcp list` reads the
+        # user's default ~/.config/kilo and reports ug's servers as missing.
+        captured: dict = {}
+
+        class _Result:
+            stdout = ""
+            stderr = ""
+
+        def _fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            captured["env"] = kwargs.get("env")
+            return _Result()
+
+        monkeypatch.setattr(mcp.subprocess_cross_os, "run", _fake_run)
+        mcp._run_mcp_list("kilo")
+
+        assert captured["argv"] == ["kilo", "mcp", "list"]
+        assert captured["env"] is not None
+        assert captured["env"]["XDG_CONFIG_HOME"] == str(mcp.kilo.KILO_XDG_CONFIG_HOME)
+
+    def test_configure_dispatches_proxy_argv_to_kilo_writer(self, monkeypatch):
+        calls: list[tuple[str, list[str]]] = []
+        monkeypatch.setattr(
+            mcp.kilo,
+            "write_mcp_server_config",
+            lambda name, argv: calls.append((name, argv)) or False,
+        )
+
+        removed_scopes = mcp.configure_client_mcp_server("kilo", "github", GH_URL, WS, "p")
+
+        assert removed_scopes == []
+        assert calls == [("github", _proxy_argv())]
+
+    def test_configure_reports_user_scope_on_replace(self, monkeypatch):
+        monkeypatch.setattr(mcp.kilo, "write_mcp_server_config", lambda name, argv: True)
+        assert mcp.configure_client_mcp_server("kilo", "github", GH_URL, WS, "p") == [
+            mcp.MCP_USER_SCOPE
+        ]
+
+    def test_remove_dispatches_to_kilo_remover(self, monkeypatch):
+        calls: list[str] = []
+        monkeypatch.setattr(
+            mcp.kilo, "remove_mcp_server_config", lambda name: calls.append(name) or True
+        )
+        assert mcp.remove_client_mcp_server("kilo", "github-mcp") == [mcp.MCP_USER_SCOPE]
+        assert calls == ["github-mcp"]
+
+    def test_managed_entry_builds_via_kilo_module(self):
+        argv = mcp.build_mcp_proxy_argv(GH_URL, WS, None, use_pat=False)
+        assert mcp._managed_mcp_entry(
+            "kilo", GH_URL, WS, None, use_pat=False, always_load=False, http_client=None
+        ) == mcp.kilo.build_mcp_server_entry(argv)
+
+
 class TestConfigureClientMcpServer:
     def test_configures_copilot_with_proxy_argv(self, monkeypatch):
         calls: list[tuple[str, list[str]]] = []
@@ -2869,7 +2961,7 @@ class TestPrintSkillsSummary:
             f"URL: {WS}/ai-gateway/skills/?schema=main.default "
             "Configured: Claude Code, Codex "
             "Tools: UC skill utility tools + skills tools in schema main.default "
-            "• Run `ucode <agent>` to use the skills MCP. For existing sessions, "
+            "• Run `ug <agent>` to use the skills MCP. For existing sessions, "
             "restart the agent for the skills to take effect."
         )
 
@@ -2881,7 +2973,7 @@ class TestPrintSkillsSummary:
             f"URL: {WS}/ai-gateway/skills/ "
             "Configured: Claude Code, Codex "
             "Tools: UC skill utility tools "
-            "• Run `ucode <agent>` to use the skills MCP. For existing sessions, "
+            "• Run `ug <agent>` to use the skills MCP. For existing sessions, "
             "restart the agent for the skills to take effect."
         )
 
@@ -3385,8 +3477,9 @@ class TestReconcileManagedMcpServers:
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
 
-        def claude_reconcile(state, servers):
+        def claude_reconcile(state, servers, *, also_registered=()):
             captured["claude"] = servers
+            captured["claude_also_registered"] = sorted(also_registered)
             return claude_delivered
 
         def codex_reconcile(state, servers):
@@ -3494,6 +3587,8 @@ class TestReconcileManagedMcpServers:
             {"mcp_servers": {"names": ["system.ai.github"]}}, {"claude", "codex"}
         )
         assert captured["claude"] == {}
+        # The user-scope fallback is still a server ug registers, so a Claude allowlist must admit it.
+        assert captured["claude_also_registered"] == ["sg"]
         assert "sg" in captured["codex"]
         assert applied["working"] == [{"name": "sg", "url": "u", "clients": ["claude"]}]
         assert saved["managed_mcp_servers"] == [{"name": "sg", "url": "u", "clients": ["claude"]}]
@@ -4001,6 +4096,72 @@ class TestParseMcpListOutput:
         assert mcp.parse_mcp_list_output("claude", out) == {"svc": mcp.LIVE_FAILED}
 
 
+class TestConfiguredMcpServersByName:
+    """The shared enumeration used by both `ug mcp list` and `ug status`."""
+
+    @pytest.fixture(autouse=True)
+    def _no_managed_files(self, monkeypatch):
+        # Default: no OS-managed-file servers, so state-only cases are deterministic.
+        monkeypatch.setattr(mcp.claude, "read_managed_mcp_urls", dict)
+        monkeypatch.setattr(mcp.codex, "read_managed_mcp_urls", dict)
+
+    def _state(self):
+        return {
+            "mcp_servers": [
+                {"name": "system-ai-github", "url": "u1", "clients": ["claude", "codex"]},
+                {
+                    "name": mcp.SKILLS_MCP_SERVER_NAME,
+                    "kind": mcp.SKILLS_MCP_KIND,
+                    "clients": ["claude"],
+                },
+            ],
+            "managed_mcp_servers": [
+                {"name": "system-ai-github", "url": "u1", "clients": ["cursor"]},
+                {"name": "databricks-genie-abc", "url": "u2", "clients": ["claude"]},
+            ],
+        }
+
+    def test_merges_by_name_and_unions_clients(self):
+        by_name = mcp.configured_mcp_servers_by_name(self._state())
+        assert set(by_name) == {"system-ai-github", "databricks-genie-abc"}
+        gh = by_name["system-ai-github"]
+        # Developer + workspace-managed entries unioned; managed flag sticks.
+        assert gh["clients"] == ["claude", "codex", "cursor"]
+        assert gh["managed"] is True
+
+    def test_excludes_skills_connection(self):
+        assert mcp.SKILLS_MCP_SERVER_NAME not in mcp.configured_mcp_servers_by_name(self._state())
+
+    def test_agents_scope_drops_servers_with_no_in_scope_agent(self):
+        by_name = mcp.configured_mcp_servers_by_name(self._state(), agents={"cursor"})
+        # Only the github service has a cursor client; genie (claude-only) is dropped.
+        assert set(by_name) == {"system-ai-github"}
+        assert by_name["system-ai-github"]["clients"] == ["cursor"]
+
+    def test_includes_servers_delivered_via_os_managed_files(self, monkeypatch):
+        # Managed servers written to the agents' OS-managed files (Claude/Codex) live in those
+        # files, not state, so `ug status`/`ug mcp list` must still see them via the managed-file read.
+        url = f"{WS}/ai-gateway/mcp-services/system.ai.slack"
+        monkeypatch.setattr(mcp.claude, "read_managed_mcp_urls", lambda: {"system-ai-slack": url})
+        monkeypatch.setattr(mcp.codex, "read_managed_mcp_urls", lambda: {"system-ai-slack": url})
+        by_name = mcp.configured_mcp_servers_by_name({"mcp_servers": [], "managed_mcp_servers": []})
+        assert "system-ai-slack" in by_name
+        entry = by_name["system-ai-slack"]
+        # Delivered to both agents' managed files → unioned, flagged managed, URL preserved.
+        assert entry["clients"] == ["claude", "codex"]
+        assert entry["managed"] is True
+        assert entry["server"]["url"] == url
+
+    def test_managed_file_read_respects_agents_scope(self, monkeypatch):
+        url = f"{WS}/ai-gateway/mcp-services/system.ai.slack"
+        monkeypatch.setattr(mcp.claude, "read_managed_mcp_urls", lambda: {"system-ai-slack": url})
+        monkeypatch.setattr(mcp.codex, "read_managed_mcp_urls", lambda: {"system-ai-slack": url})
+        by_name = mcp.configured_mcp_servers_by_name(
+            {"mcp_servers": [], "managed_mcp_servers": []}, agents={"codex"}
+        )
+        assert by_name["system-ai-slack"]["clients"] == ["codex"]
+
+
 class TestListMcpCommand:
     def _state(self):
         # A developer-added AI Gateway service on claude+codex, a workspace-managed one, and a
@@ -4180,3 +4341,24 @@ class TestListMcpCommand:
         out = _unwrap(capsys.readouterr().out)
         assert "No MCP servers are configured by ug" in out
         assert "No supported MCP clients are installed" in out
+
+
+def test_setup_mcp_clients_user_messages_name_ug_not_ucode(monkeypatch, capsys):
+    """User-facing hints must say `ug`; `ucode` is only the internal package name."""
+    monkeypatch.setattr(mcp, "purge_cross_workspace_mcp_residue", lambda *a, **k: None)
+    monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
+    monkeypatch.setattr(mcp, "configured_mcp_clients", lambda state, installed: ["claude"])
+
+    state = {
+        "workspace": "https://example.cloud.databricks.com",
+        "available_tools": ["claude", "codex"],
+    }
+    mcp.setup_mcp_clients(state, "Add MCP Servers", require_auth=False)
+    out = _unwrap(capsys.readouterr().out)
+    assert "Codex is configured in ug but not installed" in out
+    assert "ucode" not in out
+
+    with pytest.raises(RuntimeError, match="`ug configure --agents codex`"):
+        mcp.setup_mcp_clients(state, "Add MCP Servers", require_auth=False, agents={"codex"})
+    with pytest.raises(RuntimeError, match="Run `ug configure` first"):
+        mcp.setup_mcp_clients({}, "Add MCP Servers")

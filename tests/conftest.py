@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,7 +18,7 @@ from ucode.ui import normalize_workspace_url
 
 # The integration suite has its own configuration and subprocess-only fixtures.
 # Run it through scripts/run_integration.py, outside this fixture hierarchy.
-collect_ignore = ["integration"]
+collect_ignore = ["integration", "e2e_cuj", "native_claude"]
 
 
 @pytest.fixture(autouse=True)
@@ -32,13 +33,19 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     import ucode.databricks as databricks_mod
     import ucode.managed_config as managed_config_mod
     import ucode.managed_files as managed_files_mod
+    import ucode.os_compatibility.subprocess_cross_os as subprocess_cross_os_mod
     import ucode.state as state_mod
+    from ucode import desktop_auth as desktop_auth_mod
     from ucode.agents import codex as codex_mod
+    from ucode.agents.desktop import claude as desktop_mod
 
     state_dir = tmp_path / ".ucode"
     state_dir.mkdir()
     monkeypatch.setattr(state_mod, "STATE_PATH", state_dir / "state.json")
     monkeypatch.setattr(config_io_mod, "APP_DIR", state_dir)
+    monkeypatch.setattr(codex_mod, "_otel_service_path", lambda: state_dir / "otel.service")
+    monkeypatch.setattr(desktop_mod, "APP_DIR", state_dir)
+    monkeypatch.setattr(desktop_auth_mod, "_AUTH_LOCK_PATH", state_dir / "claude-desktop-auth.lock")
     # MANAGED_CONFIG_PATH is bound from APP_DIR at import, so patching APP_DIR alone doesn't move it;
     # rebind it or save_managed_state writes to the developer's real ~/.ucode/managed-config.json.
     monkeypatch.setattr(
@@ -49,6 +56,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.setattr(
         managed_files_mod, "MANAGED_BACKUP_MANIFEST_PATH", backup_dir / "manifest.json"
     )
+    monkeypatch.setattr(managed_files_mod, "_config_scope", "global")
     monkeypatch.setattr(codex_mod, "codex_managed_config_path", lambda: None)
     monkeypatch.setattr(
         codex_mod, "CODEX_MODEL_CATALOG_PATH", state_dir / "codex-model-catalog.json"
@@ -62,14 +70,41 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(managed_files_mod, "_sudo_replace", reject_privileged_write)
+    # Windows CI runners are elevated; never let an unmocked test write C:\Program Files.
+    monkeypatch.setattr(managed_files_mod.system_cross_os, "is_admin", lambda: False)
+    monkeypatch.setattr(managed_files_mod, "_windows_replace", reject_privileged_write)
     monkeypatch.delenv("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", raising=False)
+    monkeypatch.delenv("UCODE_SESSION_ENV_FILE", raising=False)
+    monkeypatch.delenv("UCODE_SMART_ROUTER_PYTHON", raising=False)
+    # When the suite runs inside a ug smart-routing session, these ambient env vars
+    # make smart_routing_enabled()/configured_router_name() read the host's live
+    # routing state, leaking a Databricks-Smart-Router-Recipe header into
+    # header-rendering tests. Clear them so routing stays off unless a test opts in.
+    monkeypatch.delenv("ENABLE_SMART_ROUTING_V2", raising=False)
+    monkeypatch.delenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", raising=False)
+    monkeypatch.delenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", raising=False)
+    monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
+    monkeypatch.delenv("SMART_ROUTER_NAME", raising=False)
+    # On Windows, resolve_command swaps a bare program name for whatever `shutil.which`
+    # finds on the developer's PATH (e.g. a real `codex.CMD`). Rebind only the compatibility
+    # helper's `shutil` so argv stays host-independent; helper tests patch `which` explicitly.
+    monkeypatch.setattr(
+        subprocess_cross_os_mod, "shutil", SimpleNamespace(which=lambda _name: None)
+    )
     # A developer's ambient managed-config stub would otherwise short-circuit every fetch in the suite.
     monkeypatch.delenv("UCODE_MANAGED_CONFIG_STUB", raising=False)
     # The model-services listing is memoized for the life of the process, so without this a cached
     # result would leak into the next test and make a stubbed listing look like it was never called.
     databricks_mod.clear_model_services_cache()
     databricks_mod.clear_workspace_org_id_cache()
+    # The resolved Databricks CLI path/discovery is cached for the life of the
+    # process; a real resolution (or a prior test's patched one) must not leak
+    # into a test that assumes a bare "databricks" or a specific fake CLI.
+    databricks_mod.clear_databricks_cli_cache()
+    # Tokens and token failures are memoized for the process; a fake CLI's answer
+    # in one test must not satisfy (or fail) a fetch in the next.
+    databricks_mod.clear_databricks_token_cache()
 
 
 def _workspace() -> str:

@@ -3,20 +3,17 @@
 from __future__ import annotations
 
 import os
-import platform
-import shlex
-import subprocess
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import NotRequired, TypedDict
 from urllib.parse import urlparse
 
-from databricks.sdk import oauth
-
 from ucode.constants import LOCALHOST, LOOPBACK_HOST
 from ucode.databricks import (
     build_auth_token_argv,
+    clear_databricks_token_cache,
+    databricks_cli_path,
     ensure_databricks_cli_version,
     external_bearer_configured,
     get_databricks_token,
@@ -24,6 +21,11 @@ from ucode.databricks import (
     run,
     save_databricks_cli_oauth_profile,
 )
+from ucode.os_compatibility.file_lock_cross_os import (
+    acquire_exclusive_file_lock,
+    release_file_lock,
+)
+from ucode.os_compatibility.subprocess_cross_os import shell_command
 from ucode.ui import err_console, normalize_workspace_url, print_warning_err
 
 DEFAULT_REDIRECT_URL = f"http://{LOCALHOST}:8020"
@@ -110,29 +112,24 @@ def build_custom_auth_token_argv(workspace: str, config: CustomOAuthConfig) -> l
 
 
 def build_custom_auth_shell_command(workspace: str, config: CustomOAuthConfig) -> str:
-    argv = build_custom_auth_token_argv(workspace, config)
-    if platform.system() == "Windows":
-        return subprocess.list2cmdline(argv)
-    return shlex.join(argv)
+    return shell_command(build_custom_auth_token_argv(workspace, config))
 
 
 @contextmanager
 def _custom_oauth_lock(cache_dir: Path, redirect_url: str) -> Iterator[None]:
-    """Serialize helpers sharing a callback port with a POSIX file lock.
+    """Serialize helpers sharing a callback port with an OS file lock.
 
     Keep the lock file in place: unlinking it could let waiters lock different
     inodes. The OS releases the lock even if the helper is killed on timeout.
     """
-    import fcntl
-
     cache_dir.mkdir(parents=True, exist_ok=True)
     port = urlparse(redirect_url).port
     with (cache_dir / f"ug-oauth-{port}.lock").open("a+b") as lock_file:
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        acquire_exclusive_file_lock(lock_file)
         try:
             yield
         finally:
-            fcntl.flock(lock_file, fcntl.LOCK_UN)
+            release_file_lock(lock_file)
 
 
 def _custom_cli_profile(workspace: str, client_id: str) -> str:
@@ -153,7 +150,7 @@ def ensure_custom_oauth_cli_token(
     if has_valid_databricks_auth(workspace, profile):
         return get_databricks_token(workspace, profile)
     login_args = [
-        "databricks",
+        databricks_cli_path(),
         "auth",
         "login",
         "--host",
@@ -165,7 +162,10 @@ def ensure_custom_oauth_cli_token(
         "--scopes",
         ",".join(scope for scope in config["scopes"] if scope != "offline_access"),
     ]
-    run(login_args, timeout=CUSTOM_OAUTH_TIMEOUT_MS // 1000)
+    try:
+        run(login_args, timeout=CUSTOM_OAUTH_TIMEOUT_MS // 1000)
+    finally:
+        clear_databricks_token_cache()
     return get_databricks_token(workspace, profile)
 
 
@@ -184,6 +184,9 @@ def get_custom_client_token(
     if custom_oauth_cli_enabled(config):
         profile = profile or _custom_cli_profile(workspace, config["client_id"])
         return get_databricks_token(workspace, profile, force_refresh=force_refresh)
+    # `databricks.sdk` eagerly imports every service module (~0.7s); only the SDK backend needs it.
+    from databricks.sdk import oauth
+
     try:
         endpoints = oauth.get_workspace_endpoints(workspace)
         cache = oauth.TokenCache(
@@ -235,3 +238,19 @@ def get_custom_client_token(
             f"redirect URL ({config['redirect_url']}); ensure its local port is available and "
             "the SDK token cache is writable, then retry."
         ) from exc
+
+
+def launch_token(state: dict, workspace: str, *, force_refresh: bool = False) -> str:
+    """The token an agent launch authenticates with: the custom-OAuth client token when
+    configured, else the CLI profile's."""
+    custom_oauth = state.get("custom_oauth")
+    if isinstance(custom_oauth, dict):
+        return get_custom_client_token(
+            workspace,
+            custom_oauth["client_id"],
+            custom_oauth["redirect_url"],
+            scopes=custom_oauth["scopes"],
+            profile=custom_oauth.get("profile"),
+            force_refresh=force_refresh,
+        )
+    return get_databricks_token(workspace, state.get("profile"), force_refresh=force_refresh)
