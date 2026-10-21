@@ -3444,7 +3444,7 @@ class TestOtelProxyCommand:
             patch(
                 "ucode.gateway_proxy.start_otel_proxy", return_value=(server, cache, client)
             ) as start,
-            patch("ucode.agents.codex.get_databricks_token", return_value="fresh-token") as token,
+            patch("ucode.custom_oauth.get_databricks_token", return_value="fresh-token") as token,
         ):
             result = runner.invoke(app, ["otel-proxy", "--host", workspace, "--port", "43199"])
             assert start.call_args.args[1](True) == "fresh-token"

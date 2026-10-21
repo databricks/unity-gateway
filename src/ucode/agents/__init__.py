@@ -464,7 +464,7 @@ def configure_tool(
             result = kilo.write_tool_config(state, model)
         else:
             result = opencode.write_tool_config(state, model)
-    # gemini/opencode/copilot/pi return (state, token); codex/claude return state
+    # gemini/opencode/kilo/pi return (state, token); codex/claude/copilot return state
     if isinstance(result, tuple):
         return result[0]
     return result

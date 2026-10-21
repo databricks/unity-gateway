@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import json
 import os
+import plistlib
 import re
 import sys
 from pathlib import Path
+from subprocess import CalledProcessError
 from unittest.mock import Mock
 
 import pytest
 
-from ucode import gateway_proxy, managed_files
+from ucode import custom_oauth, gateway_proxy, managed_files
 from ucode.agents import LaunchOptions, codex
 from ucode.config_io import read_toml_safe
 from ucode.smart_routing import codex_routing
@@ -996,7 +998,7 @@ class TestCodexLaunch:
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.134.0")
         monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: launches.append(argv))
         monkeypatch.setattr(
-            codex,
+            custom_oauth,
             "get_databricks_token",
             lambda workspace, profile=None, force_refresh=False: "tok",
         )
@@ -1061,7 +1063,7 @@ class TestCodexLaunch:
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         launches = self._patch(tmp_path, monkeypatch)
         monkeypatch.setattr(
-            codex,
+            custom_oauth,
             "get_databricks_token",
             lambda workspace, profile=None, force_refresh=False: "fresh-token",
         )
@@ -1486,7 +1488,7 @@ class TestCodexLaunch:
         seen = {}
         monkeypatch.setattr(codex, "_model_catalog_path", lambda workspace, provider: catalog_path)
         monkeypatch.setattr(
-            codex,
+            custom_oauth,
             "get_databricks_token",
             lambda *args, **kwargs: pytest.fail("standard token used"),
         )
@@ -1497,7 +1499,7 @@ class TestCodexLaunch:
             seen["profile"] = profile
             return "custom-token"
 
-        monkeypatch.setattr(codex, "get_custom_client_token", custom_token)
+        monkeypatch.setattr(custom_oauth, "get_custom_client_token", custom_token)
 
         def fetch(workspace, token, **kwargs):
             seen.update(workspace=workspace, token=token, provider=kwargs["identifier"])
@@ -1649,7 +1651,7 @@ class TestCodexLaunch:
         monkeypatch.setattr(codex, "LEGACY_CODEX_BACKUP_PATH", tmp_path / "legacy-backup.toml")
         monkeypatch.setattr(codex, "agent_version", lambda binary: version)
         monkeypatch.setattr(codex, "save_state", lambda state: None)
-        monkeypatch.setattr(codex, "get_databricks_token", lambda *_args, **_kw: "tok")
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kw: "tok")
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         launches: list[list[str]] = []
         monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: launches.append(argv))
@@ -1677,7 +1679,7 @@ class TestCodexLaunch:
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.134.0")
         launches = []
         monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: launches.append(argv))
-        monkeypatch.setattr(codex, "get_databricks_token", lambda *_args, **_kw: "tok")
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kw: "tok")
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
 
         with pytest.raises(RuntimeError, match="ug configure --agents codex"):
@@ -2003,6 +2005,24 @@ class TestCodexManagedConfig:
         assert state["managed_file_fingerprints"]["codex"]["scope"] == "local-compatible"
         assert codex.managed_config_is_current(state)
 
+    def test_headless_configure_warns_that_the_machine_file_was_not_updated(
+        self, tmp_path, monkeypatch
+    ):
+        managed_path, sudo_writes = self._sudo_counting_env(
+            tmp_path, monkeypatch, non_interactive=True
+        )
+        warnings: list[str] = []
+        monkeypatch.setattr(managed_files, "print_warning", warnings.append)
+
+        with managed_files.managed_write_batch(["Codex"]):
+            codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+
+        assert sudo_writes == []
+        assert not managed_path.exists()
+        assert f"{managed_path} wasn't updated because no admin privileges were detected." in (
+            warnings
+        )
+
     def test_noninteractive_repairs_conflicting_managed_config_without_prompting(
         self, tmp_path, monkeypatch
     ):
@@ -2143,6 +2163,72 @@ class TestCodexManagedConfig:
         assert codex.revert_legacy_shared_config() is True
         assert "otel" not in read_toml_safe(app_path)
         assert not unit_path.exists()
+
+    def test_desktop_tracing_launch_agent_lifecycle(self, tmp_path, monkeypatch):
+        self._sudo_counting_env(tmp_path, monkeypatch)
+        app_path = codex._legacy_config_path()
+        plist_path = codex._otel_service_path()
+        ug_path = str(tmp_path / "ug")
+        monkeypatch.setattr(codex, "current_os", lambda: managed_files.OS.MACOS)
+        monkeypatch.setattr(codex.os, "getuid", lambda: 501, raising=False)
+        monkeypatch.setattr(codex, "_allocate_otel_port", lambda: 43199)
+        monkeypatch.setattr(codex, "ug_binary", lambda: ug_path)
+        monkeypatch.setenv("PATH", "/opt/homebrew/bin")
+        for name in (
+            "DATABRICKS_CONFIG_FILE",
+            "DATABRICKS_AUTH_STORAGE",
+            "ENABLE_CUSTOM_OAUTH_FROM_CLI",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        target = f"gui/501/{codex.CODEX_OTEL_SERVICE_LABEL}"
+        loaded = False
+        commands = []
+
+        def launchctl(argv, **_kwargs):
+            nonlocal loaded
+            commands.append(argv[1:])
+            if argv[1] == "bootstrap":
+                loaded = True
+            elif argv[1] == "bootout":
+                loaded = False
+            elif not loaded:
+                raise CalledProcessError(113, argv, stderr="Could not find service")
+
+        monkeypatch.setattr(codex.subprocess_cross_os, "run", Mock(side_effect=launchctl))
+        tracing = {"workspace": WS, "codex_otel_tracing": True}
+
+        codex.write_tool_config(dict(tracing))
+        exporter = codex._otel_proxy_overlay("http://127.0.0.1:43199/v1/traces")["otel"]
+        assert read_toml_safe(app_path)["otel"] == exporter
+        assert plistlib.loads(plist_path.read_bytes()) == {
+            "Label": codex.CODEX_OTEL_SERVICE_LABEL,
+            "ProgramArguments": [ug_path, "otel-proxy", "--host", WS, "--port", "43199"],
+            "EnvironmentVariables": {"PATH": "/opt/homebrew/bin"},
+            "RunAtLoad": True,
+            "KeepAlive": {"SuccessfulExit": False},
+        }
+
+        codex.write_tool_config(dict(tracing))
+        newer = "https://newer.databricks.com"
+        codex.write_tool_config({**tracing, "workspace": newer})
+        assert plistlib.loads(plist_path.read_bytes())["ProgramArguments"][3:] == [
+            newer,
+            "--port",
+            "43199",
+        ]
+        codex.write_tool_config({"workspace": newer})
+        assert "otel" not in read_toml_safe(app_path)
+        assert not plist_path.exists()
+        # An unchanged launch leaves the loaded agent alone; a new plist needs a reload.
+        assert commands == [
+            ["print", target],
+            ["bootstrap", "gui/501", str(plist_path)],
+            ["print", target],
+            ["print", target],
+            ["bootout", target],
+            ["bootstrap", "gui/501", str(plist_path)],
+            ["bootout", target],
+        ]
 
 
 class TestWriteConfigBackup:
@@ -2345,7 +2431,7 @@ class TestCodexReadManagedMcpUrls:
 class TestOtelTokenProvider:
     def test_token_provider_uses_default_profile(self, monkeypatch):
         get_token = Mock(return_value="token")
-        monkeypatch.setattr(codex, "get_databricks_token", get_token)
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", get_token)
         provider = codex._otel_token_provider({"profile": "myprof"}, WS)
         assert provider(True) == "token"
         get_token.assert_called_once_with(WS, "myprof", force_refresh=True)
@@ -2353,8 +2439,8 @@ class TestOtelTokenProvider:
     def test_token_provider_uses_custom_oauth_when_configured(self, monkeypatch):
         get_custom_token = Mock(return_value="custom-token")
         get_default_token = Mock()
-        monkeypatch.setattr(codex, "get_custom_client_token", get_custom_token)
-        monkeypatch.setattr(codex, "get_databricks_token", get_default_token)
+        monkeypatch.setattr(custom_oauth, "get_custom_client_token", get_custom_token)
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", get_default_token)
         state = {
             "custom_oauth": {
                 "client_id": "cid",

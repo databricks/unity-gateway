@@ -1,9 +1,30 @@
 # Integration tests
 
+The spend-status client's workspace authentication, optional percentage handling,
+pagination, validation, and failure propagation are covered by component tests in
+`../test_budget.py`, importing the client from `src/ucode/budget.py`.
+Account-authentication checks are replaced by assertions that
+the client reuses the workspace token without starting CLI auth. These checks do not
+establish live workspace, sign-in, or CLI output coverage.
+Client component tests also preserve unknown nonempty scope/period strings without
+losing known limits, and reject malformed enum types and invalid/negative/nonfinite
+amounts. Zero and fractional decimal strings remain valid. Explicit nulls in
+percent consumed, spend, and threshold are treated like missing optional fields,
+individually or together, without discarding valid statuses. Redundant client error
+variants are reduced to one opaque passthrough case; later-page failure checks remain.
+
 Claude answer delivery has offline transcript and subprocess coverage in
 `../test_claude_answer_delivery.py`, including stdout preservation for text, JSON and
 streaming JSON when UG redirects diagnostics to stderr. Live model/gateway selection
 and capability-hook activation are not covered here; interactive selection is unsupported.
+
+Claude Desktop has installed-CLI profile lifecycle coverage in the existing Linux and
+Windows lanes. It configures twice and reverts against each platform's isolated native
+profile path, checking the fixed profile, gateway/helper/model fields, metadata, prior
+selection, and an unrelated profile. It does not launch Desktop. The
+[native testing plan](../../docs/claude-desktop-integration-testing.md) covers the remaining
+macOS/Windows GUI, Cowork, model-switching, and browser-authentication work; those GUI and
+virtualization prerequisites are not satisfied by the headless suite.
 
 The separate [dedicated-workspace CUJ](../e2e_cuj/AGENTS.md) lives in `tests/e2e_cuj/`
 and runs directly with pytest. It does not use this suite's runner or config fixtures.
@@ -208,6 +229,15 @@ when an explicit model is supplied. The only live OpenCode journey is the headle
 prompt case in `test_ug_opencode_headless.py`; there is no dedicated live OpenCode
 model-selection journey.
 
+Copilot CLI has two live headless journeys in `test_ug_copilot_headless.py`, one per
+wire API (Anthropic Messages for Claude, Responses for GPT). Both go through the
+session's loopback proxy and check that no file under the session home holds the
+Databricks credential. `test_ug_copilot_lifecycle.py` signs in through
+`DATABRICKS_BEARER_COMMAND` (`utils/pat_bearer.py` mints 15-minute PATs) and has the agent
+revoke them mid-task: once to require a refresh, once with sign-out to require the
+sign-in-expired message. It also covers configure/revert, including upgrading from ug v0.2.0, which saved the bearer. Refresh near natural expiry is
+covered by the hermetic proxy tests in `tests/test_gateway_proxy_integration.py`.
+
 ## Shared agent helpers
 
 `utils/agents/claude.py` and `utils/agents/codex.py` own the existing native answer
@@ -261,6 +291,7 @@ exercise explicit model arguments use a real `system.ai` model already discovere
 by `ug configure`, recorded in that case's `model.json`. Optional `--claude-model`
 `--codex-model` and `--opencode-model` overrides reproduce a particular model-related failure.
 OpenCode is opt-in: pass `--opencode-version` (for example `1.18.31`) to install and select it.
+Copilot CLI is opt-in the same way: pass `--copilot-version` (for example `1.0.91`).
 
 ```bash
 # Constrain the suspected dependency while keeping the real CLI and gateway.
@@ -419,6 +450,8 @@ test_ug_claude_headless.py              # script prompts, models, caller setting
 test_ug_claude_relayed.py               # relayed session: subscription + Databricks-hosted models
 test_ug_claude_tracing.py               # Claude OTLP export reaches the configured trace table
 test_ug_codex_headless.py               # script prompts and model arguments
+test_ug_copilot_headless.py             # Copilot via the session proxy: Claude + GPT tasks, no token on disk
+test_ug_copilot_lifecycle.py            # Copilot refresh after revocation, sign-in expired, configure/revert, upgrade
 test_ug_codex_tracing.py                # Codex OTLP export reaches the configured trace table
 test_ug_claude_commands.py              # command help forwarding
 test_ug_codex_commands.py               # command help and parser error forwarding
@@ -426,6 +459,7 @@ test_ug_codex_app_server.py             # actual client/server initialize exchan
 test_ug_smart_routing_hooks.py           # live hook contract plus skill-driven subagent toggles
 test_ug_codex_v2_routing.py              # native v2 parent/child assignment routing CUJ
 test_ug_configure_claude_lifecycle.py   # repeat setup, revert, rejected credentials
+test_ug_configure_claude_desktop.py     # native-path Desktop profile lifecycle, no GUI
 test_ug_configure_claude_workspace_switch.py # real skills MCP cleanup across two workspaces
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
 test_ug_claude_managed_model_discovery.py # Claude MPS policy cases (claude_mps.json)
@@ -617,7 +651,7 @@ cases instead complete real file tasks through `--workspace` and `--model-locati
 journeys check setup and launch with existing services, without inference.
 
 There are **85 live cases** (including 11 marked TUI journeys) and **7 installation
-checks** with Claude and Codex; selecting OpenCode adds one live headless case and two `managed_fixture` cases. One
+checks** with Claude and Codex; selecting OpenCode adds one live headless case and two `managed_fixture` cases; selecting Copilot adds six live cases. One
 **`workspace_switch` case** uses two real workspaces and checks skills MCP cleanup and a completed
 Claude task. A further **43 `managed_fixture` cases** (ten of them also `live`) run on the
 managed workspace with a checked-in JSON CodingAgentConfig from `tests/fixtures/managed_config/`
@@ -856,6 +890,8 @@ A second non-blocking job, **Managed OpenCode self-managed** (`managed_fixture a
 in `test_ug_agents_self_managed.py`), installs Claude, Codex and OpenCode and runs against the
 managed e2e workspace (`E2E_ADMIN_WORKSPACE`) with the injected `managed_workspace_default` config,
 which enables Claude/Codex but not OpenCode. It is likewise outside `cujs`.
+A non-blocking **Copilot** job (`live and copilot`, six cases) runs on Linux and Windows the
+same way and is likewise outside `cujs` until it is stable.
 
 Each lane installs only the agent CLIs it needs (one, except the managed OpenCode lane's
 three), once, and runs all its configure, headless,

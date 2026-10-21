@@ -132,6 +132,21 @@ def assistant_answer_contains(session, agent: str, value: str, *, child: bool = 
     )
 
 
+def assert_no_bearer_on_disk(session) -> None:
+    """No file under the session home holds the Databricks bearer."""
+    bearer = session.env.get("DATABRICKS_BEARER")
+    assert bearer, "The live suite authenticates with DATABRICKS_BEARER."
+    encoded = bearer.encode()
+    for path in session.home.rglob("*"):
+        if path.is_file() and not path.is_symlink():
+            assert encoded not in path.read_bytes(), f"{path} holds the Databricks credential"
+    env_file = session.home / ".copilot/ucode.env"
+    if env_file.exists():
+        text = env_file.read_text(encoding="utf-8")
+        assert "COPILOT_PROVIDER_BEARER_TOKEN" not in text
+        assert "OAUTH_TOKEN" not in text
+
+
 def fresh_id():
     """Return a 12-hex-char id; models drop characters when copying longer ones."""
     return uuid.uuid4().hex[:12]
@@ -215,6 +230,15 @@ class FileTask:
                 if row.get("type") == "text"
             )
             assert self.value in answer, result.stdout
+        elif agent == "copilot":
+            assert result.returncode == 0, result.stdout
+            assert any(row.get("type") == "assistant.turn_end" for row in payloads), result.stdout
+            answers = [
+                (row.get("data") or {}).get("content", "")
+                for row in payloads
+                if row.get("type") == "assistant.message"
+            ]
+            assert any(self.value in answer for answer in answers), result.stdout
         else:
             raise AssertionError(f"Unknown agent: {agent}")
 

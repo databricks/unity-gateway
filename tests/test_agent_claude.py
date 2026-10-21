@@ -2430,6 +2430,23 @@ class TestWriteToolConfigManagedSettings:
 
         assert managed_writes == []
 
+    def test_unelevated_configure_warns_that_the_machine_file_was_not_updated(self, monkeypatch):
+        managed_writes: list = []
+        self._patch(monkeypatch, [], managed_writes)
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: False)
+        warnings: list[str] = []
+        monkeypatch.setattr(managed_files, "print_warning", warnings.append)
+
+        with managed_files.managed_write_batch(["Claude Code"]):
+            claude.write_tool_config(
+                {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+            )
+
+        assert managed_writes == []
+        assert f"{FAKE_MANAGED_PATH} wasn't updated because no admin privileges were detected." in (
+            warnings
+        )
+
     def test_noninteractive_repairs_conflicting_managed_settings_without_prompting(
         self, monkeypatch
     ):

@@ -27,6 +27,7 @@ from .helpers.constants import (
     SANDBOX_MCP_SERVICE_NAME,
     WEB_SEARCH_MCP_SERVICE_NAME,
 )
+from .helpers.desktop import assert_claude_desktop_profile, enable_claude_desktop
 from .helpers.evidence import assert_served
 from .helpers.mcp import registered_name
 from .helpers.poll import poll
@@ -226,6 +227,7 @@ class TestCuj2Configuration(_Cuj2Base):
         _assert_cuj2_config(published)
         _assert_mps_catalog(workspace)
         _assert_mcp_services(workspace)
+        config_library = enable_claude_desktop(session, workspace.url)
 
         configured = session.run(
             "configure",
@@ -237,6 +239,17 @@ class TestCuj2Configuration(_Cuj2Base):
         )
         assert "Select coding agents to configure:" not in configured.stdout, configured.stdout
         _assert_configured_files(session, workspace.url)
+        claude_mps, claude_model = MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE]
+        assert_claude_desktop_profile(
+            session,
+            config_library,
+            workspace.url,
+            model_ids=[claude_model],
+            custom_headers={
+                "x-databricks-use-coding-agent-mode": "true",
+                PROVIDER_HEADER: claude_mps,
+            },
+        )
         _assert_generated_mcp_listings(session)
 
 

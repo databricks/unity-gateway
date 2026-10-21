@@ -12,6 +12,21 @@ mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 | Integration CUJs | `integration/test_*.py` | Public configure, TUI, script, command, protocol, and lifecycle journeys |
 | Installation | `integration/test_installation.py` | Fresh installed package, CLI, and local helpers without credentials on Linux and advisory native Windows |
 
+`test_budget.py` covers the workspace-authenticated spend-status client in
+`src/ucode/budget.py`:
+workspace URL/token reuse without account discovery or account CLI authentication,
+personal/shared decimal parsing, optional percentages, pagination through empty pages,
+invalid/repeated tokens, malformed responses, and discarding partial results after failures.
+Future nonempty scope/period strings are preserved, alone or alongside known values.
+Decimal checks cover negative and nonfinite values for all three numeric fields,
+valid zero/fractional strings such as `"85.25"`, and explicit nulls treated like missing
+optional fields. Null regressions cover each numeric field and all three together,
+alongside complete and omitted-field statuses without losing valid limits. One representative
+opaque API error covers client passthrough; command-specific auth/error cases and
+later-page failure coverage remain separate.
+Obsolete account-token tests are replaced by workspace-auth assertions. These are
+unit/component checks, not live workspace or sign-in coverage; CLI wiring is separate.
+
 Claude mod entry-point coverage lives in `test_claude_mod.py` (generated plugin contents),
 `test_claude_smart_routing_v2.py` (launch wiring), and the explicitly selected
 `native_claude/test_mod.py` suite. Claude 2.1.290 validates the module and runs its
@@ -191,6 +206,12 @@ metadata, and previous-selection state, and verify subsequent configure is a no-
 Existing CLI URL normalization is unchanged. Native Desktop activation,
 GUI/helper/browser behavior, and inference remain untested by these component checks;
 they do not establish native Windows or Linux support.
+The installed-CLI integration suite also configures twice and reverts against isolated
+native Linux and Windows profile paths. It verifies the fixed profile, gateway/helper/model
+fields, metadata selection, and preservation of an unrelated profile. It does not launch
+Desktop or establish GUI, Cowork, helper execution, browser authentication, or inference.
+The [native integration plan](../docs/claude-desktop-integration-testing.md) defines the
+separate interactive macOS and Windows coverage needed for those claims.
 
 `test_desktop_setup.py` exercises configure, refresh, deleted-profile recovery,
 successful setup without the default-model warning, recoverable setup failures that still warn,
@@ -448,6 +469,10 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_case_14_*` | Launch configured and fresh Codex with a model location | The app-server list exactly matches the independent API-compatible parent catalog, includes the dedicated Codex service, and contains no out-of-schema models |
 | `test_ug_claude_headless_prompt_argument`, `test_ug_claude_headless_prompt_stdin`, `test_ug_claude_headless_prompt_after_separator` | Run Claude from a script using each prompt form | Structured final answer contains the file value; exit zero; no routing |
 | `test_ug_codex_headless_prompt_argument`, `test_ug_codex_headless_prompt_stdin`, `test_ug_codex_headless_prompt_after_separator` | Run Codex from a script using each prompt form | Completed turn and final answer contain the file value; exit zero; no routing |
+| `test_ug_copilot_headless_completes_file_task`, `test_ug_copilot_headless_gpt_responses_task` | Run Copilot CLI from a script (`-p ... --output-format json`) on a Claude model (Anthropic Messages) and a GPT model (Responses) | Completed turn whose assistant message contains the file value; no file under the session home holds the Databricks credential (non-blocking CI lane) |
+| `test_ug_copilot_refreshes_a_revoked_token_mid_session`, `test_ug_copilot_reports_expired_sign_in` | Sign in through `DATABRICKS_BEARER_COMMAND` minting short-lived PATs; mid-task the agent revokes them (or also signs out) | Revoked: a token is minted after the revocation and the task completes without restarting Copilot. Signed out: output shows "Databricks sign-in expired" with `databricks auth login`; the failure is in `~/.ucode/logs/copilot-proxy.log`, not the terminal (non-blocking CI lane) |
+| `test_ug_configure_copilot_repeat_and_revert` | Configure Copilot twice over a user-owned `~/.copilot/mcp-config.json`, run a GPT task, revert twice | Task completes; no file holds the bearer; revert removes `~/.copilot/ucode.env`, leaves the user file byte-identical and reports Not Configured. (non-blocking CI lane) |
+| `test_ug_copilot_upgrade_scrubs_token_saved_by_older_ug` | Configure Copilot with ug v0.2.0 (pinned commit; saves the bearer in `~/.copilot/ucode.env`), then configure with this ug, run a GPT task, revert | v0.2.0 left the bearer; after this ug's configure no file holds it; task completes; revert leaves no token and no `ucode.env` (non-blocking CI lane) |
 | `test_ug_opencode_headless_prompt_argument` | Run OpenCode from a script (`run --format json --auto`) with an argument prompt | Completed Read tool call; final text answer contains the file value; exit zero (non-blocking CI lane) |
 | `test_ug_agents_self_managed_opencode_journey` | Under the injected `managed_workspace_default` config (enables Claude/Codex, not OpenCode): bare configure, `ug agents list`, refused OpenCode launch, `ug agents add opencode`, real headless task, `ug agents remove opencode` (marker `managed_fixture and opencode`, non-blocking CI lane) | OpenCode absent from the list and launch fails with "doesn't enable OpenCode" / `ug agents add opencode`; after add it is listed self-managed and the headless Read task returns the fixture value; after remove it is hidden and refused again |
 | `test_ug_agents_admin_managed_guardrails` | `ug agents add` / `remove` on an agent the admin config enables | Add is a no-op noting the admin manages it; remove is rejected with nonzero exit |
@@ -525,7 +550,10 @@ it again during teardown. The TUI cases forward agent requests through the share
 loopback recorder to the real workspace and assert the provider-service header, model,
 paired HTTP 200 response, and final answer. The configuration case verifies sandbox MCP
 selection and generated client listings; live sandbox execution remains deferred because
-MAS cannot downscope the CI service principal. Failed TUI runs
+MAS cannot downscope the CI service principal. CUJ1 and CUJ2 also initialize Claude Desktop's
+Linux profile path and verify that its profile uses, respectively, the published Databricks-hosted
+Claude models or Anthropic provider service and model. This is installed-CLI coverage of real
+published managed configs, not Desktop GUI or helper execution. Failed TUI runs
 retain terminal output/actions/screen and best-effort agent transcript snapshots under the
 runner artifact directory before the temporary homes are deleted. The suite requires
 `UG_CUJ_SP_CLIENT_ID` and `UG_CUJ_SP_CLIENT_SECRET`, with `ug`, `claude`, `codex`, and
@@ -669,10 +697,11 @@ and real-shell copy/rename failure handling in temporary directories.
 `test_cli.py` covers the workspace configure session boundary.
 These are unit/component checks; they do not establish live sudo password-prompt behavior.
 
-Codex desktop OTEL component tests cover the startup unit, reuse of CLI proxy/auth,
+Codex desktop OTEL component tests cover the systemd unit and the macOS LaunchAgent
+(`launchctl` is simulated), reuse of CLI proxy/auth,
 fixed-port collisions, setup failures that only warn, unchanged launches that keep the
 service running, and leaving another exporter alone. They do not establish a live
-desktop GUI or systemd login/reboot pass.
+desktop GUI, a real `launchctl` run, or a login/reboot pass.
 
 | Scenario | Status / requirement |
 | --- | --- |
