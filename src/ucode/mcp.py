@@ -37,10 +37,10 @@ from ucode.databricks import (
 )
 from ucode.mcp_connection_login import connection_from_url
 from ucode.mcp_oauth import (
-    CLAUDE_CODE_OAUTH_CLIENT_ID,
+    CLAUDE_CODE_OAUTH_CLIENT_IDS,
     CODEX_CLI_OAUTH_CLIENT_ID,
     CURSOR_OAUTH_CLIENT_ID,
-    oauth_client_available,
+    first_available_oauth_client,
 )
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.skills_api import (
@@ -76,10 +76,11 @@ MCP_SQL_PATH = "/api/2.0/mcp/sql"
 # These agents can pin a pre-registered OAuth client and drive the `/oidc` login
 # themselves (so `/mcp` shows "needs authentication" / Cursor shows a login), which
 # is a much better experience than the stdio proxy for a connection-backed service:
-#   - Claude Code: `claude mcp add --transport http --client-id <app>`.
+#   - Claude Code: `claude mcp add --transport http --client-id <app>`, preferring
+#     its URL client ID where published, with `claude-code` as a fallback.
 #   - Cursor: a `url` server with an `auth.CLIENT_ID` in ~/.cursor/mcp.json.
 # Both need the app *published on the workspace* (checked per-workspace via
-# `oauth_client_available`) and its loopback `/callback` redirect registered on
+# `first_available_oauth_client`) and its loopback `/callback` redirect registered on
 # `/oidc` — which lacks dynamic client registration, so a pre-registered client is
 # required.
 #   - Codex: a `url` server with `oauth.client_id` (`codex mcp add --oauth-client-id
@@ -89,10 +90,10 @@ MCP_SQL_PATH = "/api/2.0/mcp/sql"
 # Agents whose `mcp add` accepts only a static bearer, not an OAuth client — gemini
 # (`--header`) — stay on the stdio proxy even where their apps exist; add one here
 # (with its registration branch below) once its CLI can pin a client.
-AGENT_OAUTH_CLIENT = {
-    "claude": CLAUDE_CODE_OAUTH_CLIENT_ID,
-    "cursor": CURSOR_OAUTH_CLIENT_ID,
-    "codex": CODEX_CLI_OAUTH_CLIENT_ID,
+AGENT_OAUTH_CLIENTS = {
+    "claude": CLAUDE_CODE_OAUTH_CLIENT_IDS,
+    "cursor": (CURSOR_OAUTH_CLIENT_ID,),
+    "codex": (CODEX_CLI_OAUTH_CLIENT_ID,),
 }
 
 MCP_CLIENTS = {
@@ -306,16 +307,14 @@ def _oauth_http_client(client: str, workspace: str, *, use_pat: bool) -> str | N
     """The published OAuth app id to register a **native HTTP+OAuth** MCP entry against for
     ``client`` (Claude Code / Cursor), or ``None`` to use the stdio ``ug mcp-proxy`` instead.
 
-    Native HTTP+OAuth fits only an agent that pins an OAuth client (``AGENT_OAUTH_CLIENT``), on a
+    Native HTTP+OAuth fits only an agent that pins an OAuth client (``AGENT_OAUTH_CLIENTS``), on a
     non-PAT run (PAT has no interactive OAuth), whose workspace actually publishes that client.
     This is the client-level half of the choice, shared by the per-server
     (:func:`configure_client_mcp_server`) and batched (:func:`_managed_mcp_entry`) paths. It is
     URL-independent, so callers can compute it once per (client, workspace); the per-server half
     (:func:`_native_oauth_http_entry`) decides whether a *specific* URL warrants the native entry."""
-    oauth_client = AGENT_OAUTH_CLIENT.get(client)
-    if oauth_client is not None and not use_pat and oauth_client_available(workspace, oauth_client):
-        return oauth_client
-    return None
+    clients = AGENT_OAUTH_CLIENTS.get(client)
+    return first_available_oauth_client(workspace, clients) if clients and not use_pat else None
 
 
 def _native_oauth_http_entry(
@@ -1037,9 +1036,10 @@ def _agent_managed_file_entries(
             # Native HTTP+OAuth only for a connection-backed mcp-service; a no-login service
             # (web_search) or non-mcp-services URL stays on the stdio proxy, so both delivery
             # paths resolve identically and no-login services aren't forced into an OAuth flow.
-            if _native_oauth_http_entry(claude_oauth, url, workspace, profile) is None:
+            native_client = _native_oauth_http_entry(claude_oauth, url, workspace, profile)
+            if native_client is None:
                 continue
-            entries[name] = claude.managed_mcp_entry(url)
+            entries[name] = claude.managed_mcp_entry(url, client_id=native_client)
         elif agent == "codex":
             entries[name] = codex.managed_mcp_entry(
                 build_mcp_proxy_argv(url, workspace, profile, use_pat=use_pat)
@@ -1405,7 +1405,7 @@ def _managed_mcp_entry(
     native_client = _native_oauth_http_entry(http_client, url, workspace, profile)
     if client == "claude":
         if native_client is not None:
-            return claude.managed_mcp_entry(url)
+            return claude.managed_mcp_entry(url, client_id=native_client)
         argv = build_mcp_proxy_argv(url, workspace, profile, use_pat=use_pat)
         return claude.user_stdio_mcp_entry(argv, always_load=always_load)
     if client == "cursor" and native_client is not None:

@@ -266,7 +266,9 @@ class TestConfigureClientMcpServer:
         http_calls: list[tuple[str, str]] = []
         proxy_calls: list[tuple[str, list[str]]] = []
         monkeypatch.setattr(
-            mcp, "oauth_client_available", lambda ws, client_id: claude_code_available
+            mcp,
+            "first_available_oauth_client",
+            lambda ws, client_ids: client_ids[0] if claude_code_available else None,
         )
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
@@ -324,7 +326,9 @@ class TestConfigureClientMcpServer:
         http_calls: list[tuple[str, str, str]] = []
         proxy_calls: list[tuple[str, list[str]]] = []
         monkeypatch.setattr(
-            mcp, "oauth_client_available", lambda ws, client_id: cursor_client_available
+            mcp,
+            "first_available_oauth_client",
+            lambda ws, client_ids: client_ids[0] if cursor_client_available else None,
         )
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
@@ -363,7 +367,9 @@ class TestConfigureClientMcpServer:
         http_calls: list[tuple[str, str, str]] = []
         proxy_calls: list[tuple[str, list[str]]] = []
         monkeypatch.setattr(
-            mcp, "oauth_client_available", lambda ws, client_id: codex_client_available
+            mcp,
+            "first_available_oauth_client",
+            lambda ws, client_ids: client_ids[0] if codex_client_available else None,
         )
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
@@ -412,7 +418,9 @@ class TestConfigureClientMcpServer:
         probed: list[str] = []
         proxy_calls: list[tuple[str, list[str]]] = []
         monkeypatch.setattr(
-            mcp, "oauth_client_available", lambda ws, client_id: probed.append(client_id) or True
+            mcp,
+            "first_available_oauth_client",
+            lambda ws, client_ids: probed.append(client_ids) or client_ids[0],
         )
         monkeypatch.setattr(
             mcp, "add_gemini_mcp_server", lambda name, argv: proxy_calls.append((name, argv))
@@ -692,7 +700,7 @@ class TestApplyMcpServerChanges:
             "configure_client_mcp_server",
             lambda c, n, *a, **k: per_server.append((c, n)) or [],
         )
-        monkeypatch.setattr(mcp, "oauth_client_available", lambda *a, **k: False)
+        monkeypatch.setattr(mcp, "first_available_oauth_client", lambda *a, **k: None)
         working = [
             self._server("a", ["claude", "codex", "gemini", "cursor"]),
             self._server("b", ["claude", "codex", "gemini", "cursor"]),
@@ -735,7 +743,7 @@ class TestApplyMcpServerChanges:
         monkeypatch.setattr(
             mcp.claude, "write_user_mcp_servers", lambda a, r: writes.append((a, r))
         )
-        monkeypatch.setattr(mcp, "oauth_client_available", lambda ws, cid: True)
+        monkeypatch.setattr(mcp, "first_available_oauth_client", lambda ws, cids: cids[0])
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
         url = f"{WS}/ai-gateway/mcp-services/system.ai.github"
@@ -778,16 +786,37 @@ class TestManagedMcpEntry:
             None,
             use_pat=False,
             always_load=False,
-            http_client="claude-code",
+            http_client=mcp.CLAUDE_CODE_OAUTH_CLIENT_IDS[0],
         )
         assert e == mcp.claude.managed_mcp_entry(self.MCP_URL)
         assert e["type"] == "http" and e["url"] == self.MCP_URL
+
+    def test_claude_http_preserves_legacy_fallback_client(self, monkeypatch):
+        monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
+        legacy_client = mcp.CLAUDE_CODE_OAUTH_CLIENT_IDS[1]
+        entry = mcp._managed_mcp_entry(
+            "claude",
+            self.MCP_URL,
+            WS,
+            None,
+            use_pat=False,
+            always_load=False,
+            http_client=legacy_client,
+        )
+        assert entry["oauth"]["clientId"] == legacy_client
 
     def test_claude_stdio_when_http_client_but_non_mcp_services_url(self):
         # http_client set, but a non-connection URL still uses the stdio proxy.
         url = f"{WS}/api/2.0/mcp/vector-search/main.docs"
         e = mcp._managed_mcp_entry(
-            "claude", url, WS, None, use_pat=False, always_load=False, http_client="claude-code"
+            "claude",
+            url,
+            WS,
+            None,
+            use_pat=False,
+            always_load=False,
+            http_client=mcp.CLAUDE_CODE_OAUTH_CLIENT_IDS[0],
         )
         assert e["type"] == "stdio"
 
@@ -798,7 +827,13 @@ class TestManagedMcpEntry:
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: False)
         url = f"{WS}/ai-gateway/mcp-services/system.ai.web_search"
         e = mcp._managed_mcp_entry(
-            "claude", url, WS, None, use_pat=False, always_load=False, http_client="claude-code"
+            "claude",
+            url,
+            WS,
+            None,
+            use_pat=False,
+            always_load=False,
+            http_client=mcp.CLAUDE_CODE_OAUTH_CLIENT_IDS[0],
         )
         assert e["type"] == "stdio"
 
@@ -3474,6 +3509,11 @@ class TestReconcileManagedMcpServers:
             mcp.claude, "managed_mcp_uses_managed_file", lambda ws, *, use_pat: claude_eligible
         )
         monkeypatch.setattr(mcp.codex, "managed_mcp_uses_managed_file", lambda: codex_eligible)
+        monkeypatch.setattr(
+            mcp,
+            "first_available_oauth_client",
+            lambda ws, client_ids: client_ids[0],
+        )
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
 

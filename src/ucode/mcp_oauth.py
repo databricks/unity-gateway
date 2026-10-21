@@ -6,12 +6,9 @@ registers the service as a **direct HTTP** MCP server, the agent itself drives
 that login via OAuth against the workspace ``/oidc`` — and `/oidc` has no dynamic
 client registration, so the agent must present a **pre-registered public client**.
 
-``claude-code`` is that published client for Claude Code: it has the loopback
-``/callback`` redirect Claude Code uses registered (``databricks-cli`` does not,
-so Claude's direct-HTTP OAuth is rejected against it). Where a workspace has
-``claude-code``, ucode registers these services as direct HTTP so ``/mcp`` shows
-"needs authentication" and Authenticate drives the login natively. Not every
-workspace has it yet, so we probe — and cache the answer per workspace.
+Claude Code's URL client ID is preferred where published. Older workspaces can
+still use the ``claude-code`` client. Both have the loopback ``/callback`` path
+Claude Code needs. We probe each candidate and cache the result per workspace.
 """
 
 from __future__ import annotations
@@ -23,11 +20,17 @@ from urllib.parse import urlencode
 
 from ucode.config_io import APP_DIR, read_json_safe, write_json_file
 
-# Published public OAuth client Claude Code authenticates with. Any loopback
+# Claude Code's published URL client ID (Client ID Metadata Document). The
+# workspace must recognize it before ug registers it; merely serving the
+# document at this URL does not make an OAuth client available on every workspace.
+CLAUDE_CODE_CIMD_CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata"
+
+# Legacy published OAuth client Claude Code authenticates with. Any loopback
 # callback port works — `/oidc` strips the port when matching loopback redirects
 # (RFC 8252 §8.4) — but the redirect *path* (`/callback`) must be registered,
 # which this client has and `databricks-cli` does not.
 CLAUDE_CODE_OAUTH_CLIENT_ID = "claude-code"
+CLAUDE_CODE_OAUTH_CLIENT_IDS = (CLAUDE_CODE_CIMD_CLIENT_ID, CLAUDE_CODE_OAUTH_CLIENT_ID)
 MCP_OAUTH_CALLBACK_PORT = 3118
 
 # Published public OAuth client Cursor authenticates with for OAuth MCP servers.
@@ -134,10 +137,21 @@ def oauth_client_available(workspace: str, client_id: str) -> bool:
     return available
 
 
+def first_available_oauth_client(workspace: str, client_ids: tuple[str, ...]) -> str | None:
+    """Choose the first published client for this workspace, preserving fallback order."""
+    return next(
+        (client_id for client_id in client_ids if oauth_client_available(workspace, client_id)),
+        None,
+    )
+
+
 __all__ = [
+    "CLAUDE_CODE_CIMD_CLIENT_ID",
+    "CLAUDE_CODE_OAUTH_CLIENT_IDS",
     "CLAUDE_CODE_OAUTH_CLIENT_ID",
     "CURSOR_OAUTH_CLIENT_ID",
     "CODEX_CLI_OAUTH_CLIENT_ID",
     "MCP_OAUTH_CALLBACK_PORT",
     "oauth_client_available",
+    "first_available_oauth_client",
 ]

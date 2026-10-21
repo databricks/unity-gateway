@@ -104,3 +104,36 @@ class TestOauthClientAvailableCache:
         mcp_oauth.oauth_client_available(WS, "claude-code")
         mcp_oauth.oauth_client_available(WS, "claude-code")
         assert len(calls) == 2  # re-probed because the cached entry expired
+
+
+class TestFirstAvailableOauthClient:
+    def test_prefers_cimd_when_workspace_has_both_clients(self, monkeypatch):
+        probed: list[str] = []
+        monkeypatch.setattr(
+            mcp_oauth,
+            "oauth_client_available",
+            lambda ws, client_id: probed.append(client_id) or True,
+        )
+        assert (
+            mcp_oauth.first_available_oauth_client(WS, mcp_oauth.CLAUDE_CODE_OAUTH_CLIENT_IDS)
+            == mcp_oauth.CLAUDE_CODE_CIMD_CLIENT_ID
+        )
+        assert probed == [mcp_oauth.CLAUDE_CODE_CIMD_CLIENT_ID]
+
+    def test_falls_back_to_legacy_client(self, monkeypatch):
+        monkeypatch.setattr(
+            mcp_oauth,
+            "oauth_client_available",
+            lambda ws, client_id: client_id == mcp_oauth.CLAUDE_CODE_OAUTH_CLIENT_ID,
+        )
+        assert (
+            mcp_oauth.first_available_oauth_client(WS, mcp_oauth.CLAUDE_CODE_OAUTH_CLIENT_IDS)
+            == mcp_oauth.CLAUDE_CODE_OAUTH_CLIENT_ID
+        )
+
+    def test_returns_none_when_no_client_is_published(self, monkeypatch):
+        monkeypatch.setattr(mcp_oauth, "oauth_client_available", lambda ws, client_id: False)
+        assert (
+            mcp_oauth.first_available_oauth_client(WS, mcp_oauth.CLAUDE_CODE_OAUTH_CLIENT_IDS)
+            is None
+        )
