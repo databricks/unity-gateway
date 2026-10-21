@@ -1239,6 +1239,43 @@ class TestResolveProviderService:
         assert service is None
         assert "can't route to" in error
 
+    def test_copilot_accepts_openai(self, monkeypatch):
+        self._patch(monkeypatch)
+        service, error = db_mod.resolve_provider_service(
+            "copilot", "main.schema1.openai-svc", WS, "token"
+        )
+        assert error is None
+        assert service["provider_type"] == "openai"
+
+    def test_copilot_rejects_bedrock_without_claude(self, monkeypatch):
+        self._patch(monkeypatch)
+        service, error = db_mod.resolve_provider_service(
+            "copilot", "main.schema2.bedrock-titan-svc", WS, "token"
+        )
+        assert service is None
+        assert "no Claude models" in error
+
+    def test_copilot_rejects_a_subscription_relay(self, monkeypatch):
+        payload = {
+            "model_provider_services": [
+                {
+                    "name": "model-provider-services/main.schema1.relay-svc",
+                    "config": {
+                        "provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_ANTHROPIC",
+                        "anthropic": {"relayed": {}},
+                    },
+                }
+            ]
+        }
+        monkeypatch.setattr(
+            db_mod, "_http_get_json", lambda url, token, timeout=30: (payload, None)
+        )
+        service, error = db_mod.resolve_provider_service(
+            "copilot", "main.schema1.relay-svc", WS, "token"
+        )
+        assert service is None
+        assert "only Claude Code can use" in error
+
     def test_bedrock_without_claude_rejected(self, monkeypatch):
         self._patch(monkeypatch)
         service, error = db_mod.resolve_provider_service(
@@ -1383,6 +1420,24 @@ class TestServiceUsableForTool:
         }
         assert not db_mod.service_usable_for_tool("claude", service)
         assert db_mod.service_usable_for_tool("codex", service)
+        assert not db_mod.service_usable_for_tool("copilot", service)
+
+    @pytest.mark.parametrize(
+        "provider_type", ["anthropic", "amazon_bedrock", "bedrock_mantle", "openai", "azure_openai"]
+    )
+    def test_copilot_routes_anthropic_and_openai_services(self, provider_type):
+        service = {"provider_type": provider_type, "targets": [], "allow_all_targets": True}
+        assert db_mod.service_usable_for_tool("copilot", service)
+
+    @pytest.mark.parametrize("provider_type", ["microsoft_foundry", "gemini_enterprise", "custom"])
+    def test_copilot_skips_other_provider_types(self, provider_type):
+        service = {"provider_type": provider_type, "targets": [], "allow_all_targets": True}
+        assert not db_mod.service_usable_for_tool("copilot", service)
+
+    def test_copilot_skips_a_subscription_relay(self):
+        service = {"provider_type": "anthropic", "targets": [], "relayed": True}
+        assert not db_mod.service_usable_for_tool("copilot", service)
+        assert db_mod.service_usable_for_tool("claude", service)
 
 
 class TestModelProviderFeatureUnavailable:

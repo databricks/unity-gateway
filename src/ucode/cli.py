@@ -893,11 +893,11 @@ def _maybe_select_provider_service(tool: str, state: dict) -> dict:
     (``system.ai``), a Model Provider Service, or a custom Unity Catalog model location — and
     persist (or clear) the choice.
 
-    No-op for tools other than claude/codex/gemini (gemini has no custom location). Falls back
-    to Databricks when no matching provider services are found or the listing fails and no
-    custom location is offered.
+    No-op for tools other than claude/codex/gemini/copilot (gemini and copilot have no custom
+    location). Falls back to Databricks when no matching provider services are found or the
+    listing fails and no custom location is offered.
     """
-    if tool not in ("claude", "codex", "gemini"):
+    if tool not in ("claude", "codex", "gemini", "copilot"):
         return state
     display = TOOL_SPECS[tool]["display"]
 
@@ -3654,6 +3654,8 @@ def _launch_tool(
                 state["_codex_launch_provider"] = provider
             elif parent_schema:
                 state["_codex_launch_parent_schema"] = parent_schema
+        elif tool == "copilot" and provider:
+            state[copilot_agent.LAUNCH_PROVIDER_KEY] = provider
         launch_options = _launch_options(
             tool,
             ctx.args,
@@ -4104,10 +4106,18 @@ def kilo_cmd(
 )
 def copilot_cmd(
     ctx: typer.Context,
+    provider: Annotated[
+        str | None,
+        typer.Option(
+            "--provider",
+            help="Route through a Unity Catalog Model Provider Service "
+            "(<catalog>.<schema>.<name>); `/model` then lists that service's models.",
+        ),
+    ] = None,
     skip_preflight: SkipPreflightOption = False,
 ) -> None:
     """Launch GitHub Copilot CLI via Databricks."""
-    _launch_tool("copilot", ctx, skip_preflight=skip_preflight)
+    _launch_tool("copilot", ctx, provider=provider, skip_preflight=skip_preflight)
 
 
 @app.command(

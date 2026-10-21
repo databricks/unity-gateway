@@ -2756,13 +2756,18 @@ def build_skills_mcp_url(workspace: str, locations: list[str]) -> str:
 # the `openai`, `azure_openai`, `microsoft_foundry`, `amazon_bedrock`, and
 # `bedrock_mantle` provider types all serve (the gateway fronts them with the
 # OpenAI surface); gemini speaks Google's, served by a Gemini Enterprise
-# provider. Tags are the short form produced by `_provider_type_tag` (e.g.
-# `amazon_bedrock`).
+# provider. copilot speaks both: Anthropic's for Claude targets and OpenAI's for
+# the rest, on each provider's native route. Tags are the short form produced by
+# `_provider_type_tag` (e.g. `amazon_bedrock`).
 _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
     "claude": ("anthropic", "amazon_bedrock", "bedrock_mantle"),
     "codex": ("openai", "azure_openai", "microsoft_foundry", "amazon_bedrock", "bedrock_mantle"),
     "gemini": ("gemini_enterprise",),
+    "copilot": ("anthropic", "amazon_bedrock", "bedrock_mantle", "openai", "azure_openai"),
 }
+
+# Agents that can only use a Bedrock service's Claude targets.
+_CLAUDE_ONLY_BEDROCK_TOOLS = ("claude", "copilot")
 
 # Provider types that expose Bedrock-style model ids (e.g.
 # `us.anthropic.claude-sonnet-4-6`, or region-less `anthropic.claude-*` on
@@ -2985,8 +2990,8 @@ def list_tool_provider_services(
 def service_usable_for_tool(tool: str, service: dict) -> bool:
     """True when ``tool`` can actually route through ``service``.
 
-    Beyond the provider-type match, a Bedrock service is only usable for claude
-    if it exposes at least one Claude model in its targets — otherwise there's no
+    Beyond the provider-type match, a relayed (subscription) service is Claude Code only, and a
+    Bedrock service is only usable for claude or copilot if it exposes at least one Claude model in its targets — otherwise there's no
     routable model id to pin — or is ``allow_all_targets``, in which case the model
     id comes from elsewhere (e.g. the managed config's authored default). (Anthropic
     services use canonical names, so any match is usable.)
@@ -2994,7 +2999,9 @@ def service_usable_for_tool(tool: str, service: dict) -> bool:
     provider_type = service.get("provider_type", "")
     if not tool_supports_provider_type(tool, provider_type):
         return False
-    if tool == "claude" and provider_type in BEDROCK_PROVIDER_TYPES:
+    if tool == "copilot" and service.get("relayed"):
+        return False
+    if tool in _CLAUDE_ONLY_BEDROCK_TOOLS and provider_type in BEDROCK_PROVIDER_TYPES:
         return bool(service.get("allow_all_targets")) or bool(
             map_claude_family_models(service.get("targets") or [])
         )
@@ -3037,8 +3044,13 @@ def resolve_provider_service(
             f"Model provider service '{service_name}' is a '{provider_type}' provider, "
             f"which {tool} can't route to (supported: {supported})."
         )
+    if tool == "copilot" and match.get("relayed"):
+        return None, (
+            f"Model provider service '{service_name}' relays a Claude subscription, which only "
+            "Claude Code can use. Pick an API-key provider service for Copilot."
+        )
     if (
-        tool == "claude"
+        tool in _CLAUDE_ONLY_BEDROCK_TOOLS
         and provider_type in BEDROCK_PROVIDER_TYPES
         and not match.get("allow_all_targets")
         and not map_claude_family_models(match.get("targets") or [])
@@ -3896,6 +3908,11 @@ def build_pi_base_urls(workspace: str) -> dict[str, str]:
 def build_copilot_base_url(workspace: str) -> str:
     # Copilot appends `/responses` or `/chat/completions`; both use this gateway base.
     return f"{workspace}/ai-gateway/mlflow/v1"
+
+
+def build_copilot_provider_base_url(workspace: str) -> str:
+    """Copilot's OpenAI base for a Model Provider Service: the native route, served untranslated."""
+    return f"{workspace}/ai-gateway/openai/v1"
 
 
 def build_shared_base_urls(workspace: str) -> dict[str, str | dict[str, str]]:

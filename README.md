@@ -89,6 +89,14 @@ restart, and no Databricks token is written to disk. If the Databricks sign-in i
 Copilot shows a "Databricks sign-in expired" error; run `databricks auth login` and
 restart `ug copilot`. Proxy errors are logged to `~/.ucode/logs/copilot-proxy.log`.
 
+`ug copilot --provider <catalog>.<schema>.<name>` routes the session through a Model Provider
+Service instead, and `/model` lists that service's models: Claude models of an Anthropic or
+Bedrock service, and the chat models of an OpenAI or Azure OpenAI service. For a service that
+allows every model, ug lists what the gateway reports; name any other model it serves with
+`--model`. Services that relay a Claude subscription work only with Claude Code. Interactive
+`ug configure` offers the matching services under **External Models**, and a managed workspace
+config can set one for Copilot.
+
 Without a managed workspace config, `ug claude` automatically discovers gateway
 models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when
 no provider or model location is selected. Use `--provider` or `--model-location`
