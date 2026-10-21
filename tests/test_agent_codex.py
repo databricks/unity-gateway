@@ -804,6 +804,20 @@ class TestCodexRevertLegacySharedConfig:
         assert not launch_catalog.exists()
         assert "codex app-server daemon restart" in " ".join(capsys.readouterr().err.split())
 
+    def test_revert_deletes_ug_catalog_beside_user_pointer(self):
+        shared_path = codex.CODEX_CONFIG_PATH.parent / "config.toml"
+        shared_path.parent.mkdir()
+        user_catalog = shared_path.parent / "mine.json"
+        user_catalog.write_text("{}", encoding="utf-8")
+        shared_path.write_text(f"model_catalog_json = {json.dumps(str(user_catalog))}\n")
+        codex.CODEX_MODEL_CATALOG_PATH.write_text("{}", encoding="utf-8")
+
+        assert codex.revert_legacy_shared_config() is False
+
+        assert read_toml_safe(shared_path) == {"model_catalog_json": str(user_catalog)}
+        assert user_catalog.exists()
+        assert not codex.CODEX_MODEL_CATALOG_PATH.exists()
+
 
 class TestCodexAppCatalog:
     def test_publish_refresh_and_reattach_preserve_settings_and_report_restart(self, capsys):

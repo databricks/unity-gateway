@@ -408,10 +408,9 @@ def revert_legacy_shared_config() -> bool:
     """
     legacy_changed = _strip_legacy_ucode_entries(_legacy_config_path())
     app_catalog_changed = detach_app_model_catalog()
-    if app_catalog_changed and CODEX_MODEL_CATALOG_PATH.exists():
-        CODEX_MODEL_CATALOG_PATH.unlink()
-    # Launch-scoped catalogs from _model_catalog_path; only the reverted ug profile names them.
-    for path in CODEX_MODEL_CATALOG_PATH.parent.glob(f"{CODEX_MODEL_CATALOG_PATH.stem}-*.json"):
+    # The stable catalog is written even beside a user's own pointer, and only the reverted ug
+    # profile names the launch-scoped ones from _model_catalog_path.
+    for path in CODEX_MODEL_CATALOG_PATH.parent.glob(f"{CODEX_MODEL_CATALOG_PATH.stem}*.json"):
         path.unlink(missing_ok=True)
     desktop_tracing_changed = _sync_desktop_tracing(None)
     return legacy_changed or app_catalog_changed or desktop_tracing_changed

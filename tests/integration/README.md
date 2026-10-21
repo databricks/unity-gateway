@@ -26,11 +26,12 @@ selection, and an unrelated profile. It does not launch Desktop. The
 macOS/Windows GUI, Cowork, model-switching, and browser-authentication work; those GUI and
 virtualization prerequisites are not satisfied by the headless suite.
 
-Codex desktop has managed-fixture lifecycle coverage in `test_ug_configure_codex_desktop.py`.
-It configures twice beside user-owned `~/.codex/config.toml` settings, checks the stable catalog
-pointer, an unchanged repeat configure with no restart notice, and `ug revert`; a second case keeps a user-owned catalog pointer through configure and
-revert. It does not cover desktop tracing (its systemd/launchd service needs a user session), the
-GUI, or inference.
+Codex desktop has managed-fixture coverage in `test_ug_configure_codex_desktop.py`. It
+configures twice beside user-owned `~/.codex/config.toml` settings and checks the stable catalog
+pointer and an unchanged repeat configure with no restart notice; a second case keeps a user-owned
+catalog pointer through configure and revert while revert deletes ug's own catalog. Revert of
+ug's pointer is covered by `test_ug_codex_managed_model_discovery.py`. It does not cover desktop
+tracing (its systemd/launchd service needs a user session), the GUI, or inference.
 
 The separate [dedicated-workspace CUJ](../e2e_cuj/AGENTS.md) lives in `tests/e2e_cuj/`
 and runs directly with pytest. It does not use this suite's runner or config fixtures.
@@ -464,7 +465,7 @@ test_ug_codex_app_server.py             # actual client/server initialize exchan
 test_ug_smart_routing_hooks.py           # live hook contract plus skill-driven subagent toggles
 test_ug_configure_claude_lifecycle.py   # repeat setup, revert, rejected credentials
 test_ug_configure_claude_desktop.py     # native-path Desktop profile lifecycle, no GUI
-test_ug_configure_codex_desktop.py      # stubbed managed Codex desktop catalog pointer lifecycle, no GUI
+test_ug_configure_codex_desktop.py      # stubbed managed Codex desktop catalog pointer, no GUI
 test_ug_configure_claude_workspace_switch.py # real skills MCP cleanup across two workspaces
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
 test_ug_claude_managed_model_discovery.py # Claude MPS policy cases (claude_mps.json)
