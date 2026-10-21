@@ -2970,9 +2970,7 @@ def _print_budget_panel(recommendation: dict, tool: str, managed: dict | None = 
         console.print(panel)
 
 
-def _configure_managed_mcp_servers(
-    managed: dict | None, *, agents: set[str] | None = None
-) -> list[dict] | None:
+def _configure_managed_mcp_servers(managed: dict | None) -> list[dict] | None:
     """Register the managed config's MCP servers for every enabled MCP-client agent.
 
     Runs during ``ug configure`` after the enabled agents are configured, so a workspace-published
@@ -2984,13 +2982,9 @@ def _configure_managed_mcp_servers(
     generated plugin; state alone can't, since #717 writes some servers to OS-managed files.
     """
     managed = managed or {}
-    target_agents = (
-        agents
-        if agents is not None
-        else {tool for tool in managed_enabled_tools(managed) if tool in MCP_CLIENTS}
-    )
+    agents = {tool for tool in managed_enabled_tools(managed) if tool in MCP_CLIENTS}
     try:
-        registered = reconcile_managed_mcp_servers(managed, target_agents)
+        registered = reconcile_managed_mcp_servers(managed, agents)
     except McpServiceListingRateLimited:
         # A transient 429 while discovering the workspace's MCP services: skip MCP setup for this
         # run (existing servers are left untouched) with an info note instead of a hard failure, so
