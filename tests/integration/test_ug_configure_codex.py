@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 from utils.constants import CODEX_TEST_MODEL
-from utils.evidence import FileTask
+from utils.evidence import FileTask, assert_completed_task_model
 from utils.terminal import AgentTerminal, ConfigureTerminal
 
 pytestmark = [pytest.mark.live, pytest.mark.tui, pytest.mark.codex]
@@ -133,6 +133,7 @@ def _run_codex_openai_dialect_mps_cuj(session, workspace, provider, model, label
         tui.wait_for_task(task, timeout=300)
         tui.exit_normally()
     task.assert_completed(session, "codex")
+    assert_completed_task_model(session, "codex", task.value, model)
     session.assert_not_routed()
 
 
