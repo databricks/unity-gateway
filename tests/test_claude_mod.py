@@ -44,6 +44,7 @@ def test_launch_options_resolve_versions_without_mutating_input(version):
         "ENABLE_SMART_ROUTING_V2": "0",
         "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0",
         "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
+        "ENABLE_LUNA_FAST": "0",
         "SMART_ROUTER_NAME": " custom_recipe ",
     }
     before = env.copy()
@@ -65,7 +66,12 @@ def test_launch_options_preserve_empty_and_absent_values():
         "ENABLE_SMART_ROUTING_V2": "",
         "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "",
         "ENABLE_SMART_ROUTER_ORCHESTRATOR": "",
-        "unset": ["ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "ENABLE_SMART_ROUTER_ORCHESTRATOR"],
+        "ENABLE_LUNA_FAST": "",
+        "unset": [
+            "ENABLE_SMART_ROUTING_SUBAGENT_ONLY",
+            "ENABLE_SMART_ROUTER_ORCHESTRATOR",
+            "ENABLE_LUNA_FAST",
+        ],
         "recipe": "task_v3",
         "routeCommand": [],
     }

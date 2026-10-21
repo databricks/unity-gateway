@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from ucode.constants import (
     AGENT_CLAUDE,
     AGENT_CODEX,
+    ENABLE_LUNA_FAST_ENV_VAR,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
@@ -19,26 +22,31 @@ _EXPECTED_PRESETS = {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        ENABLE_LUNA_FAST_ENV_VAR: "0",
     },
     config.SUBAGENT_ONLY_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        ENABLE_LUNA_FAST_ENV_VAR: "0",
     },
     config.SUBAGENT_ONLY_V1: {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        ENABLE_LUNA_FAST_ENV_VAR: "0",
     },
     config.SUBAGENT_ORCH_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+        ENABLE_LUNA_FAST_ENV_VAR: "0",
     },
     config.SUBAGENT_ORCH_V1: {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+        ENABLE_LUNA_FAST_ENV_VAR: "0",
     },
 }
 
@@ -177,26 +185,91 @@ def test_agent_config_selection_and_session_precedence(monkeypatch, agent, enabl
         config._VERSIONS[config.SUBAGENT_ORCH_V0],
         AGENT_CODEX,
         {
-            "ENABLE_SMART_ROUTING_V2": "0",
-            "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0",
-            "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
+            ENABLE_SMART_ROUTING_ENV_VAR: "0",
+            ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+            ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+            ENABLE_LUNA_FAST_ENV_VAR: "0",
         },
     )
-    source = {"SMART_ROUTER_CONFIG_VERSION": "subagent_orch_v0"}
+    source = {SMART_ROUTER_CONFIG_VERSION_ENV_VAR: config.SUBAGENT_ORCH_V0}
     expected = {
-        "ENABLE_SMART_ROUTING_V2": "0",
-        "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": enabled,
-        "ENABLE_SMART_ROUTER_ORCHESTRATOR": enabled,
+        ENABLE_SMART_ROUTING_ENV_VAR: "0",
+        ENABLE_SUBAGENT_ROUTING_ENV_VAR: enabled,
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: enabled,
+        ENABLE_LUNA_FAST_ENV_VAR: "0",
     }
     assert config.resolve_environment(source, agent=agent) == expected
     assert v2.smart_routing_enabled(source, default=True, agent=agent) == (enabled == "1")
     assert orchestrator.feature_enabled(source, agent=agent) == (enabled == "1")
 
     control = tmp_path / "session.json"
-    control.write_text('{"ENABLE_SMART_ROUTER_ORCHESTRATOR":"0"}')
+    control.write_text(json.dumps({ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0"}))
     source[session_env.SESSION_ENV_VAR] = str(control)
     assert session_env.effective_environment(source, agent=agent) == {
         **expected,
         session_env.SESSION_ENV_VAR: str(control),
-        "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
     }
+
+
+_CLAUDE_ONLY_LUNA_FAST_PRESETS = {
+    AGENT_CLAUDE: {
+        ENABLE_SMART_ROUTING_ENV_VAR: "0",
+        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+        ENABLE_LUNA_FAST_ENV_VAR: "1",
+    },
+    AGENT_CODEX: {
+        ENABLE_SMART_ROUTING_ENV_VAR: "0",
+        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        ENABLE_LUNA_FAST_ENV_VAR: "0",
+    },
+}
+
+
+@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
+def test_claude_only_luna_fast_overrides_legacy_flags_and_restores(agent):
+    source = {
+        SMART_ROUTER_CONFIG_VERSION_ENV_VAR: config.SUBAGENT_ORCH_V0_CLAUDE_ONLY_LUNA_FAST,
+        ENABLE_SMART_ROUTING_ENV_VAR: "1",
+        ENABLE_LUNA_FAST_ENV_VAR: "0" if agent == AGENT_CLAUDE else "1",
+        "UNRELATED_SETTING": "preserved",
+    }
+    original = source.copy()
+    expected = {"UNRELATED_SETTING": "preserved", **_CLAUDE_ONLY_LUNA_FAST_PRESETS[agent]}
+
+    assert config.resolve_environment(source, agent=agent) == expected
+    assert source == original
+    applied = source.copy()
+    previous = config.apply_config(applied, agent=agent)
+    assert applied == expected
+    v2.restore_smart_routing_env(previous, applied)
+    assert applied == original
+
+    claude = agent == AGENT_CLAUDE
+    assert v2.smart_routing_enabled(source, default=True, agent=agent) is claude
+    assert v2.first_prompt_routing_enabled(source, agent=agent) is False
+    assert orchestrator.feature_enabled(source, agent=agent) is claude
+
+
+def test_claude_only_luna_fast_session_off_clears_luna_fast(tmp_path):
+    control = tmp_path / "session.json"
+    control.write_text(json.dumps({ENABLE_LUNA_FAST_ENV_VAR: "0"}))
+    source = {
+        SMART_ROUTER_CONFIG_VERSION_ENV_VAR: config.SUBAGENT_ORCH_V0_CLAUDE_ONLY_LUNA_FAST,
+        session_env.SESSION_ENV_VAR: str(control),
+    }
+    assert session_env.effective_environment(source, agent=AGENT_CLAUDE) == {
+        **_CLAUDE_ONLY_LUNA_FAST_PRESETS[AGENT_CLAUDE],
+        session_env.SESSION_ENV_VAR: str(control),
+        ENABLE_LUNA_FAST_ENV_VAR: "0",
+    }
+
+
+def test_existing_versions_keep_luna_fast_off():
+    for version, agents in config._VERSIONS.items():
+        if version == config.SUBAGENT_ORCH_V0_CLAUDE_ONLY_LUNA_FAST:
+            continue
+        for flags in agents.values():
+            assert flags[ENABLE_LUNA_FAST_ENV_VAR] == "0"

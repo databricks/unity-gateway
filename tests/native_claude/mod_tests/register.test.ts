@@ -9,6 +9,7 @@ const ROUTED = {
   ENABLE_SMART_ROUTING_V2: '0',
   ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1',
   ENABLE_SMART_ROUTER_ORCHESTRATOR: '1',
+  ENABLE_LUNA_FAST: '0',
   unset: [],
   recipe: RECIPE,
 };
@@ -24,6 +25,7 @@ function setup(on: On, { body = CALLER_BODY, pinned = '', launched = true } = {}
     ENABLE_SMART_ROUTING_V2: launched ? ROUTED.ENABLE_SMART_ROUTING_V2 : '0',
     ENABLE_SMART_ROUTING_SUBAGENT_ONLY: launched ? ROUTED.ENABLE_SMART_ROUTING_SUBAGENT_ONLY : '0',
     ENABLE_SMART_ROUTER_ORCHESTRATOR: launched ? ROUTED.ENABLE_SMART_ROUTER_ORCHESTRATOR : '0',
+    ENABLE_LUNA_FAST: launched ? ROUTED.ENABLE_LUNA_FAST : '0',
   };
   const writes: string[] = [];
   on('env.get', ($, e) => ({ value: env[e.name] }));
