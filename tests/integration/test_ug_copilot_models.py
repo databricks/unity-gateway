@@ -5,7 +5,6 @@ from utils.constants import (
     CLAUDE_TEST_MODEL,
     CODEX_TEST_MODEL,
     COPILOT_HEADLESS_FLAGS,
-    COPILOT_OLDER_CLAUDE_MODEL,
 )
 from utils.evidence import (
     FileTask,
@@ -38,7 +37,8 @@ def test_ug_copilot_one_setup_runs_claude_then_gpt_by_provider_ref(live_session,
 
     Expected: both completed answers contain their fixture values and were sent as the requested
     models, the sessions started on `dbx-anthropic` then `dbx-responses`, and no session registry
-    is left afterwards.
+    is left afterwards. The Claude model is older than its family's newest, so only the full
+    discovered catalog registers it for Copilot.
     """
     session = live_session
     claude_task = FileTask(session)
@@ -73,33 +73,6 @@ def test_ug_copilot_one_setup_runs_claude_then_gpt_by_provider_ref(live_session,
     assert f"dbx-anthropic/{CLAUDE_TEST_MODEL}" in selected
     assert f"dbx-responses/{CODEX_TEST_MODEL}" in selected
     assert_no_session_registry_left(session)
-
-
-def test_ug_copilot_runs_an_older_claude_from_the_full_catalog(live_session, workspace):
-    """Scenario: configure Copilot, then run a headless task on an older Claude than its family's
-    newest model.
-
-    Expected: the completed answer contains the fixture value and was sent as that older model,
-    which only reaches Copilot through the full discovered catalog. Limit: needs the model on the
-    e2e workspace.
-    """
-    session = live_session
-    task = FileTask(session)
-    _configure(session, workspace)
-    session.record("copilot-model.json", {"model": COPILOT_OLDER_CLAUDE_MODEL})
-
-    result = session.run(
-        "copilot",
-        "--model",
-        COPILOT_OLDER_CLAUDE_MODEL,
-        "-p",
-        task.prompt,
-        *COPILOT_HEADLESS_FLAGS,
-        timeout=180,
-    )
-
-    task.assert_headless_answer("copilot", result)
-    assert_completed_task_model(session, "copilot", task.value, COPILOT_OLDER_CLAUDE_MODEL)
 
 
 def test_ug_copilot_unknown_model_lists_available_models(live_session, workspace):
