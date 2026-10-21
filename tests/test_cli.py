@@ -5176,7 +5176,9 @@ class TestConfigureSharedStateUsePat:
         monkeypatch.setattr(
             cli_mod, "probe_unity_gateway_capabilities", lambda w, t: MODEL_SERVICE_PROBE
         )
-        monkeypatch.setattr(cli_mod, "discover_model_services", lambda w, t: ({}, [], [], [], None))
+        monkeypatch.setattr(
+            cli_mod, "discover_model_services", lambda w, t, **_kw: ({}, [], [], [], None)
+        )
         monkeypatch.setattr(cli_mod, "discover_claude_models", lambda w, t: ({}, None))
         monkeypatch.setattr(cli_mod, "discover_gemini_models", lambda w, t: ([], None))
         monkeypatch.setattr(cli_mod, "discover_codex_models", lambda w, t: ([], None))
@@ -5197,6 +5199,40 @@ class TestConfigureSharedStateUsePat:
         assert os_mod.environ["DATABRICKS_BEARER"] == "dapi-pat"
         assert state["use_pat"] is True
         assert saved and saved[-1]["use_pat"] is True
+
+    def test_configure_passes_probe_claude_by_wanted_tools(self, monkeypatch):
+        cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
+        seen: list[bool] = []
+
+        def fake_ms(w, t, *, probe_claude):
+            seen.append(probe_claude)
+            return {}, [], [], [], None
+
+        monkeypatch.setattr(cli_mod, "discover_model_services", fake_ms)
+        cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["codex"])
+        cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["claude"])
+        cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
+        assert seen == [False, True, True]
+
+    def test_all_claude_denied_skips_unprobed_fallback(self, monkeypatch):
+        cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
+        monkeypatch.setattr(
+            cli_mod,
+            "discover_model_services",
+            lambda w, t, **_kw: ({}, ["gpt-5-5"], [], [], db_mod.CLAUDE_ALL_DENIED_REASON),
+        )
+
+        def boom(w, t):
+            raise AssertionError("must not list denied Claude models unprobed")
+
+        monkeypatch.setattr(cli_mod, "discover_claude_models", boom)
+        state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["claude"])
+
+        assert state["claude_models"] == {}
+        reasons = state["_discovery_reasons"]
+        assert reasons["claude"] == db_mod.CLAUDE_ALL_DENIED_REASON
+        assert "permission" in reasons["claude"]
+        assert reasons["codex"] is None
 
     def test_happy_path_prints_success_without_model_service_detail(self, monkeypatch, capsys):
         cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
@@ -5336,7 +5372,7 @@ class TestConfigureSharedStateUsePat:
         monkeypatch.setattr(
             cli_mod,
             "discover_model_services",
-            lambda w, t: (
+            lambda w, t, **_kw: (
                 {"opus": "system.ai.claude-opus-4-8"},
                 ["system.ai.gpt-5"],
                 [],
@@ -5363,7 +5399,7 @@ class TestConfigureSharedStateUsePat:
         monkeypatch.setattr(
             cli_mod,
             "discover_model_services",
-            lambda w, t: (
+            lambda w, t, **_kw: (
                 {},
                 ["system.ai.gpt-5-6-sol"],
                 [],
@@ -5386,7 +5422,7 @@ class TestConfigureSharedStateUsePat:
         monkeypatch.setattr(
             cli_mod,
             "discover_model_services",
-            lambda w, t: (
+            lambda w, t, **_kw: (
                 {"fable": "system.ai.claude-fable-5", "opus": "system.ai.claude-opus-4-8"},
                 [],
                 [],
@@ -5425,7 +5461,7 @@ class TestConfigureSharedStateUsePat:
         monkeypatch.setattr(
             cli_mod,
             "discover_model_services",
-            lambda w, t: ({"fable": "system.ai.claude-fable-5"}, [], [], [], None),
+            lambda w, t, **_kw: ({"fable": "system.ai.claude-fable-5"}, [], [], [], None),
         )
 
         state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
@@ -5471,12 +5507,14 @@ class TestConfigureSharedStateUsePat:
         # No UC model-services: each family falls back to the legacy listing.
         cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
         monkeypatch.setattr(
-            cli_mod, "discover_model_services", lambda w, t: ({}, [], [], [], "no model services")
+            cli_mod,
+            "discover_model_services",
+            lambda w, t, **_kw: ({}, [], [], [], "no model services"),
         )
         monkeypatch.setattr(
             cli_mod,
             "discover_claude_models",
-            lambda w, t: (
+            lambda w, t, **_kw: (
                 {"opus": "databricks-claude-opus-4-8", "sonnet": "databricks-claude-sonnet-4-6"},
                 None,
             ),
@@ -5534,7 +5572,9 @@ class TestConfigureSharedStateMcpCleanup:
         monkeypatch.setattr(
             cli_mod, "probe_unity_gateway_capabilities", lambda w, t: MODEL_SERVICE_PROBE
         )
-        monkeypatch.setattr(cli_mod, "discover_model_services", lambda w, t: ({}, [], [], [], None))
+        monkeypatch.setattr(
+            cli_mod, "discover_model_services", lambda w, t, **_kw: ({}, [], [], [], None)
+        )
         monkeypatch.setattr(cli_mod, "discover_claude_models", lambda w, t: ({}, None))
         monkeypatch.setattr(cli_mod, "discover_gemini_models", lambda w, t: ([], None))
         monkeypatch.setattr(cli_mod, "discover_codex_models", lambda w, t: ([], None))
@@ -6566,6 +6606,30 @@ class TestChildStdoutLaunch:
         captured = capfd.readouterr()
         assert captured.out == '{"result":"child output"}\n'
         assert "Gateway status" in captured.err
+
+
+class TestToolsWantClaude:
+    def test_only_claude_consumers_trigger_probe(self):
+        assert cli_mod._tools_want_claude(None)
+        assert cli_mod._tools_want_claude({"claude"})
+        assert cli_mod._tools_want_claude({"codex", "pi"})
+        assert not cli_mod._tools_want_claude({"codex"})
+        assert not cli_mod._tools_want_claude({"gemini", "codex"})
+
+    @pytest.mark.parametrize("tools", [{"codex"}, {"claude"}, {"claude", "codex"}])
+    def test_status_never_probes(self, tools):
+        state = {**MINIMAL_STATE, "profile": "p"}
+        with (
+            patch("ucode.cli.get_databricks_token", return_value="token"),
+            patch(
+                "ucode.cli.discover_model_services",
+                return_value=({}, ["c"], [], [], None),
+            ) as ms,
+            patch("ucode.cli.discover_claude_models", return_value=({}, None)),
+            patch("ucode.cli.discover_gemini_models", return_value=([], None)),
+        ):
+            cli_mod._live_status_model_state(state, tools)
+        assert ms.call_args.kwargs["probe_claude"] is False
 
 
 class TestLaunchWithManagedFilePicker:

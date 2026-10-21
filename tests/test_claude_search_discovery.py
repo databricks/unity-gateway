@@ -47,7 +47,7 @@ def search_setup(tmp_path, monkeypatch):
     monkeypatch.setattr(
         cli,
         "discover_model_services",
-        lambda *_: ({"opus": CLAUDE_MODEL}, [SEARCH_MODEL], [], [], None),
+        lambda *_, **_kw: ({"opus": CLAUDE_MODEL}, [SEARCH_MODEL], [], [], None),
     )
     monkeypatch.setattr(claude, "refresh_managed_config", lambda *_: SimpleNamespace(manifest=None))
 
@@ -76,7 +76,7 @@ def test_claude_only_setup_registers_search_without_prior_codex_setup(
         monkeypatch.setattr(
             cli,
             "discover_model_services",
-            lambda *_: ({"opus": CLAUDE_MODEL}, [], [], [], None),
+            lambda *_, **_kw: ({"opus": CLAUDE_MODEL}, [], [], [], None),
         )
         monkeypatch.setattr(cli, "discover_codex_models", lambda *_: ([SEARCH_MODEL], None))
     else:
@@ -110,7 +110,7 @@ def test_claude_only_setup_without_search_models_preserves_existing_search(
     monkeypatch.setattr(
         cli,
         "discover_model_services",
-        lambda *_: ({"opus": CLAUDE_MODEL}, [], [], [], None),
+        lambda *_, **_kw: ({"opus": CLAUDE_MODEL}, [], [], [], None),
     )
     monkeypatch.setattr(cli, "discover_codex_models", lambda *_: ([], "No available GPT models"))
 

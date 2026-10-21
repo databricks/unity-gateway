@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import configparser
 import functools
+import hashlib
 import json
 import logging
 import logging.handlers
@@ -21,6 +22,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -2163,6 +2165,7 @@ def clear_model_services_cache() -> None:
     """Forget cached model-service listings (used by tests, and after a workspace switch)."""
     _MODEL_SERVICES_CACHE.clear()
     _MODEL_PROVIDER_SERVICES_CACHE.clear()
+    _CLAUDE_CALLABLE_CACHE.clear()
 
 
 def has_cached_model_provider_services(workspace: str, parent: str | None = None) -> bool:
@@ -2325,8 +2328,96 @@ def discover_claude_models_unbucketed(workspace: str, token: str) -> tuple[list[
     return [m for m in ids if "claude-" in m.lower()], None
 
 
+# Per-process memo of `_claude_model_is_callable`, keyed by (workspace, token fingerprint, model id)
+# so a profile/PAT switch on the same workspace never reuses another identity's answer. Only
+# definite answers are stored; a probe that could not tell is never cached.
+_CLAUDE_CALLABLE_CACHE: dict[tuple[str, str, str], bool] = {}
+
+
+_CLAUDE_PROBE_TIMEOUT = 10
+_CLAUDE_PROBE_MAX_CANDIDATES = 2  # newest N per family; a deeper fallback is left unprobed
+_CLAUDE_PROBE_DEADLINE = 15.0  # overall seconds across all families
+
+
+def _token_fingerprint(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()[:16]
+
+
+def clear_claude_callable_cache() -> None:
+    _CLAUDE_CALLABLE_CACHE.clear()
+
+
+def _claude_model_is_callable(
+    workspace: str, token: str, model_id: str, *, timeout: int = _CLAUDE_PROBE_TIMEOUT
+) -> bool:
+    """False only when the gateway answers a 1-token request with an EXECUTE-denial 403.
+
+    The model-services listing does not say which services the caller may invoke, so a model the
+    user lacks EXECUTE on still shows up. Any other outcome (success, OAuth-scope 403, IP-ACL /
+    budget / policy 403, 5xx, network error) returns True: an inconclusive probe must keep
+    today's behavior.
+    """
+    key = (workspace, _token_fingerprint(token), model_id)
+    cached = _CLAUDE_CALLABLE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    _payload, reason = _http_post_json(
+        f"{workspace_origin(workspace)}/ai-gateway/anthropic/v1/messages",
+        token,
+        {"model": model_id, "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]},
+        timeout=timeout,
+    )
+    if reason is None:
+        callable_ = True
+    elif _looks_like_execute_denial(reason):
+        callable_ = False
+    else:
+        return True
+    _CLAUDE_CALLABLE_CACHE[key] = callable_
+    return callable_
+
+
+def _drop_uncallable_claude_models(
+    workspace: str, token: str, candidates: dict[str, list[str]]
+) -> dict[str, str]:
+    """Pick the newest callable model per Claude family; drop families with none.
+
+    Families are probed in parallel, newest candidate first, stopping at the first callable one.
+    Probing is bounded: at most ``_CLAUDE_PROBE_MAX_CANDIDATES`` candidates per family and an
+    overall ``_CLAUDE_PROBE_DEADLINE``. Anything not probed in time is inconclusive and kept, so the
+    result matches the unprobed path. A family whose probed candidates were all definitively
+    EXECUTE-denied is omitted rather than defaulted to a model we know is denied.
+    """
+    if not candidates:
+        return {}
+    deadline = time.monotonic() + _CLAUDE_PROBE_DEADLINE
+
+    def pick(models: list[str]) -> str | None:
+        for model in models[:_CLAUDE_PROBE_MAX_CANDIDATES]:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return model  # out of time: inconclusive, keep
+            if _claude_model_is_callable(
+                workspace, token, model, timeout=max(1, min(_CLAUDE_PROBE_TIMEOUT, int(remaining)))
+            ):
+                return model
+        if len(models) > _CLAUDE_PROBE_MAX_CANDIDATES:
+            return models[_CLAUDE_PROBE_MAX_CANDIDATES]  # beyond the probe cap: unprobed, keep
+        return None
+
+    with ThreadPoolExecutor(max_workers=len(candidates)) as pool:
+        picks = dict(zip(candidates, pool.map(pick, candidates.values()), strict=True))
+    return {family: model for family, model in picks.items() if model}
+
+
+CLAUDE_ALL_DENIED_REASON = (
+    "you don't have permission to use any Claude model on this workspace "
+    "(EXECUTE is denied on every Claude model service)"
+)
+
+
 def discover_model_services(
-    workspace: str, token: str
+    workspace: str, token: str, *, probe_claude: bool = False
 ) -> tuple[dict[str, str], list[str], list[str], list[str], str | None]:
     """Discover models via UC model-services and bucket them by family name.
 
@@ -2339,6 +2430,12 @@ def discover_model_services(
     - ``gemini_models`` is the list of ``system.ai.*gemini-*`` ids, newest first.
     - ``oss_models`` is the list of OSS-model ``system.ai.*`` ids.
 
+    ``probe_claude`` gates the billed 1-token callability probes used to skip Claude models the
+    user cannot call; opt-in, pass True only when a Claude agent is wanted. A family whose candidates are all
+    denied is omitted. When every Claude family is denied, ``reason`` is ``CLAUDE_ALL_DENIED_REASON``
+    (even if other families were found) so callers skip the unprobed ``discover_claude_models``
+    fallback, which would list the same denied models.
+
     ``reason`` is None on success, else explains why nothing was found. Family
     bucketing is by name substring because the model-services API does not
     expose per-model API dialects.
@@ -2347,14 +2444,19 @@ def discover_model_services(
     if not ids:
         return {}, [], [], [], reason
 
-    claude_models: dict[str, str] = {}
+    claude_candidates: dict[str, list[str]] = {}
     for family in ANTHROPIC_FAMILIES:
         candidates = sorted(
             [m for m in ids if f"claude-{family}-" in m],
             reverse=True,
         )
         if candidates:
-            claude_models[family] = candidates[0]
+            claude_candidates[family] = candidates
+    if probe_claude:
+        claude_models = _drop_uncallable_claude_models(workspace, token, claude_candidates)
+    else:
+        claude_models = {family: models[0] for family, models in claude_candidates.items()}
+    claude_denied = bool(probe_claude and claude_candidates and not claude_models)
 
     codex_models = sorted([m for m in ids if "gpt-" in m], key=model_version_sort_key)
     gemini_models = sorted([m for m in ids if "gemini-" in m], key=model_version_sort_key)
@@ -2362,6 +2464,8 @@ def discover_model_services(
     oss_models = [m for m in ids if any(family in m for family in _OSS_MODEL_FAMILIES)]
 
     if not (claude_models or codex_models or gemini_models or oss_models):
+        if claude_denied:
+            return {}, [], [], [], CLAUDE_ALL_DENIED_REASON
         sample = ", ".join(ids[:5])
         return (
             {},
@@ -2373,7 +2477,13 @@ def discover_model_services(
                 f"claude/gpt/gemini/oss families (got: {sample})"
             ),
         )
-    return claude_models, codex_models, gemini_models, oss_models, None
+    return (
+        claude_models,
+        codex_models,
+        gemini_models,
+        oss_models,
+        CLAUDE_ALL_DENIED_REASON if claude_denied else None,
+    )
 
 
 # --- Managed coding-agent config (admin-authored, developer-read) -----------
@@ -3690,6 +3800,21 @@ def _looks_like_scope_failure(reason: str) -> bool:
 
 def _looks_like_permission_failure(reason: str) -> bool:
     return "HTTP 403" in reason
+
+
+def _looks_like_execute_denial(reason: str) -> bool:
+    """True only for the gateway's model-service EXECUTE denial.
+
+    Real wording: "User does not have permission to use model service 'system.ai.claude-opus-5-5'".
+    Other 403s (IP ACL, budget, policy, OAuth scope) say nothing about this model, so they are
+    "unknown" and must not drop a family.
+    """
+    lowered = reason.lower()
+    return (
+        "http 403" in lowered
+        and "permission to use model service" in lowered
+        and not _looks_like_scope_failure(reason)
+    )
 
 
 CODING_AGENT_RECOMMEND_MODEL_PATH = "/api/ai-gateway/v2/coding-agent-configs:recommendModel"

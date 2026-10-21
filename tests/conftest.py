@@ -92,6 +92,9 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     # The model-services listing is memoized for the life of the process, so without this a cached
     # result would leak into the next test and make a stubbed listing look like it was never called.
     databricks_mod.clear_model_services_cache()
+    # The Claude callability probe POSTs to the gateway; keep tests offline unless they opt in.
+    monkeypatch.setattr(databricks_mod, "_claude_model_is_callable", lambda *_a, **_k: True)
+    databricks_mod.clear_claude_callable_cache()
     databricks_mod.clear_workspace_org_id_cache()
     # The resolved Databricks CLI path/discovery is cached for the life of the
     # process; a real resolution (or a prior test's patched one) must not leak
