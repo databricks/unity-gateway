@@ -1,7 +1,7 @@
 """GitHub Copilot CLI agent: runs Copilot against a per-session Databricks model registry.
 
 Copilot reads its BYOK models from a providers.json registry (`COPILOT_PROVIDERS_CONFIG`). Each
-`ug copilot` launch writes one (~/.copilot/ucode-providers-<id>.json) listing every Databricks
+`ug copilot` launch writes one (~/.copilot/ug-providers-<id>.json) listing every Databricks
 model Copilot can use,
 so `/model` switches between them mid-session, across wire APIs. Each family keeps its native
 wire: Claude on the gateway's Anthropic endpoint (with Copilot's catalog id as `modelId`, so
@@ -69,8 +69,8 @@ COPILOT_MCP_CONFIG_PATH = COPILOT_CONFIG_DIR / "ucode-mcp-config.json"
 COPILOT_BACKUP_PATH = APP_DIR / "copilot-ucode-env.backup"
 COPILOT_MCP_BACKUP_PATH = APP_DIR / "copilot-ucode-mcp-config.backup.json"
 COPILOT_PROXY_LOG_PATH = APP_DIR / "logs" / "copilot-proxy.log"
-_REGISTRY_PREFIX = "ucode-providers-"
-_REGISTRY_LOCK_NAME = "ucode-providers.lock"
+_REGISTRY_PREFIX = "ug-providers-"
+_REGISTRY_LOCK_NAME = "ug-providers.lock"
 
 MINIMUM_COPILOT_VERSION = (1, 0, 91)
 
@@ -554,7 +554,7 @@ def minimum_version_error() -> str | None:
         return None
     required = ".".join(str(part) for part in MINIMUM_COPILOT_VERSION)
     return (
-        f"GitHub Copilot CLI {installed} is too old. ucode requires {required} or newer for "
+        f"GitHub Copilot CLI {installed} is too old. ug requires {required} or newer for "
         f"Databricks model switching. Update it with `npm install -g {SPEC['package']}`."
     )
 

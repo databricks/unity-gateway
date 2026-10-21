@@ -386,7 +386,7 @@ class TestSessionRegistry:
         with copilot.session_registry({"models": ["x"]}) as path:
             assert json.loads(path.read_text(encoding="utf-8")) == {"models": ["x"]}
             assert path.parent == copilot.COPILOT_CONFIG_DIR
-            assert path.name.startswith("ucode-providers-")
+            assert path.name.startswith("ug-providers-")
             if os.name != "nt":
                 assert path.stat().st_mode & 0o777 == 0o600
 
@@ -405,10 +405,10 @@ class TestSessionRegistry:
         isolate_copilot_config_paths(monkeypatch, tmp_path)
         config_dir = copilot.COPILOT_CONFIG_DIR
         config_dir.mkdir(parents=True)
-        dead = config_dir / "ucode-providers-dead.json"
+        dead = config_dir / "ug-providers-dead.json"
         dead.write_text("{}", encoding="utf-8")
         dead.with_suffix(".lock").touch()
-        unlocked = config_dir / "ucode-providers-crashed-before-lock.json"
+        unlocked = config_dir / "ug-providers-crashed-before-lock.json"
         unlocked.write_text("{}", encoding="utf-8")
         users_own = config_dir / "providers.json"
         users_own.write_text("{}", encoding="utf-8")
@@ -773,7 +773,7 @@ class TestLaunch:
             copilot.launch(dict(STATE), ["--model", "nope"], options=copilot.LaunchOptions())
 
         assert seen == {}
-        assert not list(copilot.COPILOT_CONFIG_DIR.glob("ucode-providers-*"))
+        assert not list(copilot.COPILOT_CONFIG_DIR.glob("ug-providers-*"))
 
     def test_warns_about_managed_models_copilot_cannot_use(self, tmp_path, monkeypatch, capsys):
         isolate_copilot_config_paths(monkeypatch, tmp_path)

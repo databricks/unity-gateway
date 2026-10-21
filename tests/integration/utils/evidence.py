@@ -158,7 +158,7 @@ def copilot_selected_models(session) -> list[str]:
 
 def assert_no_session_registry_left(session) -> None:
     """`ug copilot` removes its per-session registry, which holds the proxy secret, on exit."""
-    leftovers = sorted(session.home.glob(".copilot/ucode-providers-*"))
+    leftovers = sorted(session.home.glob(".copilot/ug-providers-*"))
     assert not leftovers, f"Session registries left behind: {leftovers}"
 
 
