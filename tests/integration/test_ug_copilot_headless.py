@@ -79,7 +79,7 @@ def test_ug_copilot_headless_gpt_responses_task(live_session, workspace):
         "--model",
         CODEX_TEST_MODEL,
         "-p",
-        task.prompt,
+        task.prompt_with_path,
         *COPILOT_HEADLESS_FLAGS,
         timeout=180,
     )

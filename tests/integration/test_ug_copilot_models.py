@@ -60,7 +60,7 @@ def test_ug_copilot_one_setup_runs_claude_then_gpt_by_provider_ref(live_session,
         "--model",
         f"dbx-responses/{CODEX_TEST_MODEL}",
         "-p",
-        gpt_task.prompt,
+        gpt_task.prompt_with_path,
         *COPILOT_HEADLESS_FLAGS,
         timeout=180,
     )
@@ -128,7 +128,7 @@ def test_ug_copilot_tui_switches_from_claude_to_gpt_with_model_command(live_sess
         tui.wait_for_task(claude_task)
         tui.submit(f"/model {gpt_ref}")
         tui.wait_for(lambda screen: "Model changed" in screen, "the model switch notice")
-        tui.submit(gpt_task.prompt)
+        tui.submit(gpt_task.prompt_with_path)
         tui.wait_for_task(gpt_task)
         tui.exit_normally()
 
