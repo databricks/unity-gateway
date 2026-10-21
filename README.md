@@ -258,35 +258,20 @@ ug skills remove --location main.default --via mcp
 | `ug skills remove` | Remove skill MCP scopes or downloaded skills |
 | `ug export` | Print or write portable managed config JSON |
 | `ug doctor` | Diagnose local setup and offer fixes |
-| `ug usage` | Show AI Gateway spend and budget |
+| `ug usage` | Show Unity Gateway spend and budget |
 | `ug revert` | Clear saved state and restore backed-up config files |
 | `ug upgrade` | Upgrade Unity Gateway |
 
-`ug usage` uses the existing coding-agent budget summary from `recommendModel` by default.
-Opt in to the new spend-status API and multi-limit display with:
+`ug usage` shows your Unity Gateway budget usage. To try the expanded budget view:
 
 ```bash
 ENABLE_UG_USAGE_SPEND_API=1 ug usage
 ```
 
-Only the exact value `1` enables this path; unset, `0`, and other values retain the
-existing behavior. This local opt-in does not enable the backend SAFE flag.
-Both paths use workspace credentials; neither needs account OAuth credentials or login.
-
-When enabled, `ug usage` reads blocking AI Gateway spend limits from the workspace endpoint
-`GET /api/ai-gateway/v2/budget-spend-statuses`, using the configured workspace
-credentials and profile.
-AI Gateway derives the caller's account and workspace from the authenticated request.
-ug follows pagination tokens, including after empty pages, and displays up to five limits.
-It first selects the highest usage percentage in each personal/shared daily/monthly category,
-then fills remaining slots with the next-highest percentages. A note identifies truncated
-listings. Lookup failures, including a disabled endpoint, are
-reported as errors without falling back to `recommendModel`; the no-limits message appears
-only after a successful empty lookup.
-Displayed limits without a percentage use “Usage percentage not reported”,
-alongside any personal spend or threshold amounts supplied by the API.
-Future scope or period values remain eligible for display with their raw enum labels,
-rather than failing the listing or being mislabeled as shared/monthly limits.
+The expanded view shows up to five budget limits, prioritizing the most-used limits
+across personal/shared and daily/monthly budgets. It tells you when more limits exist.
+It uses your configured workspace login; no separate login is needed.
+Leave `ENABLE_UG_USAGE_SPEND_API` unset to keep the standard summary.
 
 Databricks AI Tools are installed only by `ug configure`, never by agent launch
 commands. Use `--enable-databricks-ai-tools` or `--disable-databricks-ai-tools`
