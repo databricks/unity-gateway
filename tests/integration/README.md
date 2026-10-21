@@ -29,9 +29,9 @@ virtualization prerequisites are not satisfied by the headless suite.
 Codex desktop has managed-fixture coverage in `test_ug_configure_codex_desktop.py`. It
 configures twice beside user-owned `~/.codex/config.toml` settings and checks the stable catalog
 pointer and an unchanged repeat configure with no restart notice; a second case keeps a user-owned
-catalog pointer through configure and revert while revert deletes ug's own catalog. Revert of
-ug's pointer is covered by `test_ug_codex_managed_model_discovery.py`. It does not cover desktop
-tracing (its systemd/launchd service needs a user session), the GUI, or inference.
+catalog pointer through configure and revert. Revert of ug's pointer is covered by
+`test_ug_codex_managed_model_discovery.py`. It does not cover desktop tracing (its systemd/launchd
+service needs a user session), the GUI, or inference.
 
 The separate [dedicated-workspace CUJ](../e2e_cuj/AGENTS.md) lives in `tests/e2e_cuj/`
 and runs directly with pytest. It does not use this suite's runner or config fixtures.

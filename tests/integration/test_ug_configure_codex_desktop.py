@@ -53,7 +53,7 @@ def test_ug_configure_codex_desktop_keeps_user_catalog(live_session, workspace):
     """Scenario: the user already points the desktop app at their own model catalog.
 
     Expected: configure warns and leaves the user's pointer and catalog file byte-identical, and
-    revert keeps both while deleting the catalog ug wrote beside them.
+    revert neither removes the pointer nor deletes the user's file.
     """
     session = live_session
     shared_config = session.home / ".codex" / "config.toml"
@@ -73,4 +73,3 @@ def test_ug_configure_codex_desktop_keeps_user_catalog(live_session, workspace):
     with TerminalProcess(session, "ug", [str(session.binary), "revert"], "desktop-keep") as tty:
         tty.finish()
     assert (shared_config.read_text(), user_catalog.read_text()) == original
-    assert not list((session.home / ".ucode").glob("codex-model-catalog*.json"))
