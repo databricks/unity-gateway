@@ -117,14 +117,16 @@ class TestRenderBudgetLimits:
                 ),
                 BudgetLimitStatus("shared-main", SHARED, "MONTH", Decimal("82")),
                 BudgetLimitStatus(
-                    "other-da",
+                    "b73a5c28-3e91-4a62-9f54-dae1f2348b67",
                     PER_USER,
                     "DAY",
                     Decimal("40"),
                     Decimal("20"),
                     Decimal("50"),
                 ),
-                BudgetLimitStatus("other-sh", SHARED, "MONTH", Decimal("20")),
+                BudgetLimitStatus(
+                    "e42f8d19-6c73-4b05-a128-9f3d7c6e2b41", SHARED, "MONTH", Decimal("20")
+                ),
             ]
         )
 
@@ -140,10 +142,12 @@ class TestRenderBudgetLimits:
         assert "budget" not in summary.lower()
 
         assert "[green][████████████░░░░░░░░░░░░░░░░░░][/green] 40% used" in additional_limits
-        assert "Daily personal limit (budget other-da)" in additional_limits
+        assert "Daily personal limit (budget b73a5c28)" in additional_limits
+        assert "b73a5c28-3e91-4a62-9f54-dae1f2348b67" not in result
         assert "$20.00 of $50.00 used · $30.00 remaining today" in additional_limits
-        assert "Monthly shared limit (budget other-sh)" in additional_limits
-        shared_block = additional_limits.split("Monthly shared limit (budget other-sh)", 1)[1]
+        assert "Monthly shared limit (budget e42f8d19)" in additional_limits
+        assert "e42f8d19-6c73-4b05-a128-9f3d7c6e2b41" not in result
+        shared_block = additional_limits.split("Monthly shared limit (budget e42f8d19)", 1)[1]
         assert "$" not in shared_block
         assert "Showing " not in result
 
@@ -245,7 +249,9 @@ class TestRenderBudgetLimits:
             ("125", "red"),
         ],
     )
-    def test_matches_isaac_meter_colors_using_exact_percentages(self, scope_type, percent, color):
+    def test_meter_colors_follow_exact_80_and_100_percent_thresholds(
+        self, scope_type, percent, color
+    ):
         result = render_budget_limits(
             [BudgetLimitStatus("budget", scope_type, "MONTH", Decimal(percent))]
         )
@@ -288,13 +294,27 @@ class TestRenderBudgetLimits:
 
     def test_omits_additional_limits_when_each_category_has_one_limit(self):
         result = render_budget_limits(
-            [BudgetLimitStatus("only", PER_USER, "DAY", Decimal("10"), threshold=Decimal("50"))]
+            [BudgetLimitStatus("only", PER_USER, "DAY", Decimal("10"), Decimal("5"), Decimal("50"))]
         )
 
         assert "Your AI Gateway spend limits" in result
         assert "Additional limits" not in result
         assert "Showing " not in result
-        assert "$0.00 of $50.00 used · $50.00 remaining today" in result
+        assert "10% used" in result
+        assert "$5.00 of $50.00 used · $45.00 remaining today" in result
+
+    @pytest.mark.parametrize("percent", [None, Decimal("0"), Decimal("90")])
+    def test_shows_only_limit_when_personal_spend_is_not_reported(self, percent):
+        result = render_budget_limits(
+            [BudgetLimitStatus("only", PER_USER, "DAY", percent, threshold=Decimal("50"))]
+        )
+
+        assert "$50.00 limit today" in result
+        assert "$0.00" not in result
+        assert "of $50.00 used" not in result
+        assert "remaining" not in result
+        if percent is not None:
+            assert f"{percent}% used" in result
 
     def test_shows_over_limit_amount_and_clamps_meter(self):
         result = render_budget_limits(
@@ -495,6 +515,35 @@ class TestUsageCommand:
         [
             "HTTP 404 Not Found: FEATURE_DISABLED: AI Gateway budget spend statuses are not enabled.",
             "HTTP 404 Not Found",
+            'HTTP 400 Bad Request: {"error_code": "FEATURE_DISABLED"}',
+        ],
+    )
+    def test_reports_expanded_view_unavailable_when_endpoint_is_missing_or_disabled(
+        self, monkeypatch, reason
+    ):
+        self._stub_auth(monkeypatch, {"workspace": "https://workspace"})
+        notes: list[str] = []
+        monkeypatch.setattr(
+            usage_mod,
+            "list_current_user_budget_spend_statuses",
+            lambda workspace, token: ([], reason),
+        )
+        monkeypatch.setattr(usage_mod, "print_note", notes.append)
+        monkeypatch.setattr(
+            usage_mod,
+            "console",
+            type("Console", (), {"print": lambda *_: pytest.fail("should not print a summary")})(),
+        )
+
+        assert usage() == 0
+        assert notes == [
+            "Expanded budget usage is not available for this workspace. "
+            "Unset ENABLE_UG_USAGE_SPEND_API to use the standard summary."
+        ]
+
+    @pytest.mark.parametrize(
+        "reason",
+        [
             "HTTP 403 Forbidden: permission denied",
             "HTTP 500 Internal Server Error",
             "network error: timed out",

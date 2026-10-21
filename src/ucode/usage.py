@@ -67,9 +67,9 @@ def _personal_spend_line(status: BudgetLimitStatus) -> str | None:
     )
     if status.threshold is None:
         return f"{format_usd(status.spend)} used {period}" if status.spend is not None else None
-    if status.spend is None and status.percent_consumed is None:
+    if status.spend is None:
         return f"{format_usd(status.threshold)} limit {period}"
-    spend = status.spend or Decimal(0)
+    spend = status.spend
     remaining = status.threshold - spend
     if remaining >= 0:
         balance = f"{format_usd(remaining)} remaining {period}"
@@ -162,6 +162,12 @@ def usage() -> int:
     budget_limits, reason = list_current_user_budget_spend_statuses(workspace, token)
     raise_for_invalid_access_token(workspace, reason)
     if reason is not None:
+        if reason.startswith("HTTP 404 ") or "FEATURE_DISABLED" in reason:
+            print_note(
+                "Expanded budget usage is not available for this workspace. "
+                f"Unset {USAGE_SPEND_API_ENV_VAR} to use the standard summary."
+            )
+            return 0
         raise RuntimeError(f"Could not retrieve AI Gateway spend limits: {reason}")
 
     if not budget_limits:

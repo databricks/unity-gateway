@@ -325,8 +325,8 @@ API field. These are unit/component checks; live request-count coverage is not i
 `test_usage.py` and `test_budget.py` cover the standard usage summary and the opt-in
 expanded budget view. Tests check selection of up to five limits across personal/shared
 and daily/monthly budgets, including notices when more limits exist.
-They verify that budgets remain visible when percentages are unavailable and that
-lookup failures are not reported as absent budgets.
+They check missing usage amounts, unavailable expanded views, and lookup errors
+without reporting failures as absent budgets.
 Presentation checks cover spacing, usage colors, over-limit values, and output without colors.
 These are unit/component tests, not live sign-in or end-to-end coverage.
 
