@@ -169,6 +169,8 @@ def add_codex_mcp_server(name: str, argv: list[str]) -> None:
             text=True,
             timeout=30,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Timed out adding MCP server '{name}' via codex CLI.") from exc
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(f"Failed to add MCP server '{name}' via codex CLI.") from exc
 
@@ -200,6 +202,8 @@ def add_codex_http_mcp_server(name: str, url: str, client_id: str) -> None:
             text=True,
             timeout=30,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Timed out adding HTTP MCP server '{name}' via codex CLI.") from exc
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(f"Failed to add HTTP MCP server '{name}' via codex CLI.") from exc
 
@@ -1173,8 +1177,8 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
     fallback_clients = [c for c in clients if c not in _MANAGED_FILE_AGENTS or c in fallback_agents]
     # The managed set can register a whole `system.ai` schema, so batch every agent into one config
     # write each instead of a `claude mcp`/`codex mcp`/`gemini mcp` subprocess (or per-server file
-    # write) per server. Interactive `ug mcp` commands keep the per-server path (they change few
-    # servers and their output narrates each).
+    # write) per server. Client adapters can also require this path when their per-server command is
+    # unsafe during setup.
     apply_mcp_server_changes(
         previous_fallback,
         working_fallback,
@@ -1448,9 +1452,19 @@ def apply_mcp_server_changes(
     # run serially. Agents named in ``batch_agents`` (the workspace-managed path, which can register
     # a whole `system.ai` schema) instead collapse their whole diff into ONE write each via the
     # per-agent ``write_user_mcp_servers`` (the MCP analogue of models' `write_tool_config`). Every
-    # agent by default, and any agent not listed, keeps the per-server CLI/config path.
+    # agent by default, and any agent not listed, keeps the per-server CLI/config path. A client
+    # adapter can opt into batched writes for every user-scope change when its per-server command is
+    # not safe during setup.
     work: dict[str, list[Callable[[], object]]] = {client: [] for client in clients}
-    batched = {c for c in clients if c in batch_agents and c in _MCP_CLIENT_MODULES}
+    batched = {
+        client
+        for client in clients
+        if client in _MCP_CLIENT_MODULES
+        and (
+            client in batch_agents
+            or getattr(_MCP_CLIENT_MODULES[client], "BATCH_USER_MCP_SERVER_WRITES", False)
+        )
+    }
     batch_add: dict[str, dict[str, dict]] = {c: {} for c in batched}
     batch_remove: dict[str, set[str]] = {c: set() for c in batched}
     # The HTTP+OAuth choice is URL-independent, so probe `oauth_client_available` once per batched
