@@ -31,6 +31,11 @@ SMART_ROUTER_RECIPE_HEADER = "Databricks-Smart-Router-Recipe"
 AI_GATEWAY_REQUEST_TAGS_HEADER = "Databricks-Ai-Gateway-Request-Tags"
 AI_GATEWAY_REQUEST_TAGS_ENV_VAR = "AI_GATEWAY_REQUEST_TAGS"
 
+# Routes model requests to a LiteSwap swap of the gateway; takes the swap id or the full traffic id.
+TRAFFIC_ID_HEADER = "x-databricks-traffic-id"
+LITESWAP_ID_ENV_VAR = "UG_LITESWAP_ID"
+LITESWAP_TRAFFIC_ID_PREFIX = "testenv://liteswap/"
+
 
 # MCP server registration scopes. Claude Code supports local/project/user; the
 # other CLIs only take the user-scope name. Kept here (a leaf module) so both

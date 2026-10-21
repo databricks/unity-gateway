@@ -1057,6 +1057,19 @@ class TestCodexLaunch:
         assert os.environ["UG_CODEX_SMART_ROUTER_RECIPE"] == "task_v3"
         assert os.environ["UG_CODEX_REQUEST_TAGS"] == tags
 
+    def test_smart_routing_overlay_adds_liteswap_traffic_id(self, monkeypatch):
+        monkeypatch.setenv("UG_LITESWAP_ID", "xshen-ws-codex")
+        monkeypatch.setattr(
+            codex,
+            "render_overlay",
+            lambda *a, **k: {"model_providers": {"Databricks": {"http_headers": {}}}},
+        )
+
+        overlay = codex._render_launch_overlay(WS)
+
+        headers = overlay["model_providers"]["Databricks"]["http_headers"]
+        assert headers["x-databricks-traffic-id"] == "testenv://liteswap/xshen-ws-codex"
+
     def test_sets_oauth_token(self, tmp_path, monkeypatch):
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         launches = self._patch(tmp_path, monkeypatch)
@@ -1479,6 +1492,44 @@ class TestCodexLaunch:
             arg for arg in launches[0] if arg.startswith("model_providers.Databricks=")
         )
         assert "Databricks-Model-Provider-Service" not in provider_arg
+
+    @pytest.mark.parametrize(
+        ("swap", "traffic_id"),
+        [
+            ("xshen-ws-codex", "testenv://liteswap/xshen-ws-codex"),
+            ("testenv://liteswap/xshen-ws-codex", "testenv://liteswap/xshen-ws-codex"),
+        ],
+    )
+    def test_liteswap_id_adds_traffic_id_header(self, tmp_path, monkeypatch, swap, traffic_id):
+        launches = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setenv("UG_LITESWAP_ID", swap)
+
+        codex.launch({"workspace": WS}, [], options=LaunchOptions())
+
+        provider_arg = next(
+            arg for arg in launches[0] if arg.startswith("model_providers.Databricks=")
+        )
+        assert f'x-databricks-traffic-id = "{traffic_id}"' in provider_arg
+
+    def test_launch_without_liteswap_id_removes_stale_traffic_id_header(
+        self, tmp_path, monkeypatch
+    ):
+        launches = self._patch(tmp_path, monkeypatch)
+        monkeypatch.delenv("UG_LITESWAP_ID", raising=False)
+        profile_path = tmp_path / "ucode.config.toml"
+        profile_path.write_text(
+            profile_path.read_text(encoding="utf-8")
+            + "\n[model_providers.Databricks.http_headers]\n"
+            + 'x-databricks-traffic-id = "testenv://liteswap/old"\n',
+            encoding="utf-8",
+        )
+
+        codex.launch({"workspace": WS}, [], options=LaunchOptions())
+
+        provider_arg = next(
+            arg for arg in launches[0] if arg.startswith("model_providers.Databricks=")
+        )
+        assert "x-databricks-traffic-id" not in provider_arg
 
     def test_provider_discovery_uses_custom_oauth_token(self, tmp_path, monkeypatch):
         self._patch(tmp_path, monkeypatch)
