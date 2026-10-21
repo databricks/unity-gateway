@@ -789,6 +789,8 @@ class TestCodexRevertLegacySharedConfig:
         shared_path.parent.mkdir()
         catalog_path = codex.CODEX_MODEL_CATALOG_PATH
         catalog_path.write_text("{}", encoding="utf-8")
+        launch_catalog = codex._model_catalog_path("https://example.com", "provider")
+        launch_catalog.write_text("{}", encoding="utf-8")
         shared_path.write_text(
             "model_catalog_json = "
             + json.dumps(str(catalog_path))
@@ -799,6 +801,7 @@ class TestCodexRevertLegacySharedConfig:
 
         assert read_toml_safe(shared_path) == {"personality": "friendly"}
         assert not catalog_path.exists()
+        assert not launch_catalog.exists()
         assert "codex app-server daemon restart" in " ".join(capsys.readouterr().err.split())
 
 

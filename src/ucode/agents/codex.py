@@ -401,13 +401,16 @@ def revert_legacy_shared_config() -> bool:
     through the workspace gateway. ``ucode revert`` only restored the
     per-profile file, leaving those edits in place. Surgically strip them here.
 
-    Also remove the shared app catalog reference and desktop trace exporter installed by modern
-    ucode. Returns True if anything was removed.
+    Also remove the shared app catalog reference, the per-launch model catalogs, and the desktop
+    trace exporter installed by modern ucode. Returns True if anything was removed from config.
     """
     legacy_changed = _strip_legacy_ucode_entries(_legacy_config_path())
     app_catalog_changed = detach_app_model_catalog()
     if app_catalog_changed and CODEX_MODEL_CATALOG_PATH.exists():
         CODEX_MODEL_CATALOG_PATH.unlink()
+    # Launch-scoped catalogs from _model_catalog_path; only the reverted ug profile names them.
+    for path in CODEX_MODEL_CATALOG_PATH.parent.glob(f"{CODEX_MODEL_CATALOG_PATH.stem}-*.json"):
+        path.unlink(missing_ok=True)
     desktop_tracing_changed = _sync_desktop_tracing(None)
     return legacy_changed or app_catalog_changed or desktop_tracing_changed
 
