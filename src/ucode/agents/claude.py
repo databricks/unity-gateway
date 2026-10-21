@@ -48,7 +48,6 @@ from ucode.databricks import (
     build_tool_base_url,
     get_databricks_token,
     maybe_add_gpt_1m_suffix,
-    model_display_label,
     ug_binary,
 )
 from ucode.launcher import exec_or_spawn
@@ -603,7 +602,7 @@ def render_overlay(
         overlay["modelPicker"] = {
             "replaceBuiltInOptions": True,
             "options": [
-                {"model": maybe_add_gpt_1m_suffix(m), "label": model_display_label(m)}
+                {"model": maybe_add_gpt_1m_suffix(m), "label": _picker_label(m)}
                 for m in static_models
             ],
         }
@@ -614,8 +613,7 @@ def render_overlay(
             "options": [
                 _picker_option(
                     maybe_add_gpt_1m_suffix(model),
-                    picker_catalog.model_id_to_display_name.get(model)
-                    or model_display_label(model),
+                    picker_catalog.model_id_to_display_name.get(model) or _picker_label(model),
                     picker_catalog.model_id_to_description.get(model),
                 )
                 for model in picker_catalog.model_ids
@@ -634,9 +632,30 @@ def render_overlay(
     return overlay, keys
 
 
+_MODEL_LABEL_ACRONYMS = frozenset({"glm", "gpt"})
 _CLAUDE_PICKER_LABEL_RE = re.compile(
     r"^Claude (Fable|Opus|Sonnet|Haiku) (\d+(?:\.\d+)*)$", re.IGNORECASE
 )
+
+
+def _picker_label(model: str) -> str:
+    """A human-friendly picker label for a model id (e.g. ``system.ai.claude-haiku-4-5`` ->
+    ``Claude Haiku 4.5``): keep the vendor and name words title-cased, uppercase known acronyms,
+    and join a run of numeric segments into a dotted version."""
+    stem = model.removeprefix("system.ai.")
+    parts: list[str] = []
+    version: list[str] = []
+    for token in stem.split("-"):
+        if token.isdigit():
+            version.append(token)
+            continue
+        if version:
+            parts.append(".".join(version))
+            version = []
+        parts.append(token.upper() if token in _MODEL_LABEL_ACRONYMS else token.title())
+    if version:
+        parts.append(".".join(version))
+    return " ".join(parts) if parts else stem
 
 
 def _picker_option(model: str, label: str, description: str | None = None) -> dict[str, str]:
@@ -681,7 +700,7 @@ def default_model_picker_catalog(
     descriptions: dict[str, str] = {}
     for family, raw_model in defaults.items():
         model = raw_model
-        label = model_display_label(model.removesuffix("[1m]"))
+        label = _picker_label(model.removesuffix("[1m]"))
         if provider is not None:
             # Family shortcuts stay distinct from catalog rows for the same target.
             model = family
