@@ -469,7 +469,7 @@ def configure_tool(
             result = omp.write_tool_config(state, model)
         else:
             result = opencode.write_tool_config(state, model)
-    # gemini/opencode/copilot/pi/omp return (state, token); codex/claude return state
+    # gemini/opencode/kilo/pi/omp return (state, token); codex/claude/copilot return state
     if isinstance(result, tuple):
         return result[0]
     return result

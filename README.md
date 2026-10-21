@@ -76,6 +76,13 @@ because it overrides the model sent to the gateway. Restart Copilot through `ug`
 to change the wire model or API; in-session model selection does not rebuild its
 provider configuration.
 
+`ug copilot` runs Copilot against a loopback proxy for the session. Copilot holds only
+a random session secret; the proxy adds a fresh Databricks token to each gateway
+request, so OAuth sessions keep working past token expiry without a restart, and no
+token is written to `~/.copilot/ucode.env`. If the Databricks sign-in itself expires,
+Copilot shows a "Databricks sign-in expired" error; run `databricks auth login` and
+restart `ug copilot`. Proxy errors are logged to `~/.ucode/logs/copilot-proxy.log`.
+
 Without a managed workspace config, `ug claude` automatically discovers gateway
 models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when
 no provider or model location is selected. Use `--provider` or `--model-location`

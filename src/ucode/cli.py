@@ -39,6 +39,7 @@ from ucode.agents import (
 )
 from ucode.agents import claude as claude_agent
 from ucode.agents import codex as codex_agent
+from ucode.agents import copilot as copilot_agent
 from ucode.agents import (
     launch as launch_agent,
 )
@@ -1415,6 +1416,8 @@ def revert() -> int:
     desktop_result = revert_desktop()
     managed_configs = state.get("managed_configs") or {}
     mcp_results = revert_mcp_configs(state)
+    # Before restoring backups: one written by an earlier ug may hold a token.
+    copilot_agent.scrub_stored_credentials()
     claude_managed_result = claude_agent.revert_managed_settings()
     codex_managed_result = codex_agent.revert_managed_config()
 
@@ -3536,7 +3539,7 @@ def _launch_tool(
                 f"{TOOL_SPECS[tool]['display']} may require one-time hook review. Open "
                 "`/hooks` and trust the ug routing hooks if prompted."
             )
-        if tool in ("gemini", "opencode", "kilo", "copilot", "pi", "omp"):
+        if tool in ("gemini", "opencode", "kilo", "pi"):
             print_note(
                 f"{TOOL_SPECS[tool]['display']} token refresh is managed automatically "
                 f"every 30 minutes while the session is running."
