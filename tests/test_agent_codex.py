@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import plistlib
 import re
 import sys
 from pathlib import Path
+from subprocess import CalledProcessError
 from unittest.mock import Mock
 
 import pytest
@@ -2161,6 +2163,131 @@ class TestCodexManagedConfig:
         assert codex.revert_legacy_shared_config() is True
         assert "otel" not in read_toml_safe(app_path)
         assert not unit_path.exists()
+
+    def test_desktop_tracing_launch_agent_lifecycle(self, tmp_path, monkeypatch):
+        self._sudo_counting_env(tmp_path, monkeypatch)
+        app_path = codex._legacy_config_path()
+        plist_path = codex._otel_service_path()
+        ug_path = str(tmp_path / "ug")
+        monkeypatch.setattr(codex, "current_os", lambda: managed_files.OS.MACOS)
+        monkeypatch.setattr(codex.os, "getuid", lambda: 501, raising=False)
+        monkeypatch.setattr(codex, "_allocate_otel_port", lambda: 43199)
+        monkeypatch.setattr(codex, "ug_binary", lambda: ug_path)
+        monkeypatch.setenv("PATH", "/opt/homebrew/bin")
+        for name in (
+            "DATABRICKS_CONFIG_FILE",
+            "DATABRICKS_AUTH_STORAGE",
+            "ENABLE_CUSTOM_OAUTH_FROM_CLI",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        target = f"gui/501/{codex.CODEX_OTEL_SERVICE_LABEL}"
+        loaded = False
+        commands = []
+
+        def launchctl(argv, **_kwargs):
+            nonlocal loaded
+            commands.append(argv[1:])
+            if argv[1] == "bootstrap":
+                loaded = True
+            elif argv[1] == "bootout":
+                loaded = False
+            elif not loaded:
+                raise CalledProcessError(113, argv, stderr="Could not find service")
+
+        monkeypatch.setattr(codex.subprocess_cross_os, "run", Mock(side_effect=launchctl))
+        tracing = {"workspace": WS, "codex_otel_tracing": True}
+
+        codex.write_tool_config(dict(tracing))
+        exporter = codex._otel_proxy_overlay("http://127.0.0.1:43199/v1/traces")["otel"]
+        assert read_toml_safe(app_path)["otel"] == exporter
+        assert plistlib.loads(plist_path.read_bytes()) == {
+            "Label": codex.CODEX_OTEL_SERVICE_LABEL,
+            "ProgramArguments": [ug_path, "otel-proxy", "--host", WS, "--port", "43199"],
+            "EnvironmentVariables": {"PATH": "/opt/homebrew/bin"},
+            "RunAtLoad": True,
+            "KeepAlive": {"SuccessfulExit": False},
+        }
+
+        codex.write_tool_config(dict(tracing))
+        newer = "https://newer.databricks.com"
+        codex.write_tool_config({**tracing, "workspace": newer})
+        assert plistlib.loads(plist_path.read_bytes())["ProgramArguments"][3:] == [
+            newer,
+            "--port",
+            "43199",
+        ]
+        codex.write_tool_config({"workspace": newer})
+        assert "otel" not in read_toml_safe(app_path)
+        assert not plist_path.exists()
+        # An unchanged launch leaves the loaded agent alone; a new plist needs a reload.
+        assert commands == [
+            ["print", target],
+            ["bootstrap", "gui/501", str(plist_path)],
+            ["print", target],
+            ["print", target],
+            ["bootout", target],
+            ["bootstrap", "gui/501", str(plist_path)],
+            ["bootout", target],
+        ]
+
+    def test_desktop_tracing_scheduled_task_lifecycle(self, tmp_path, monkeypatch):
+        self._sudo_counting_env(tmp_path, monkeypatch)
+        app_path = codex._legacy_config_path()
+        task_path = codex._otel_service_path()
+        pythonw = tmp_path / "Scripts" / "pythonw.exe"
+        pythonw.parent.mkdir()
+        pythonw.write_text("")
+        monkeypatch.setattr(codex, "current_os", lambda: managed_files.OS.WINDOWS)
+        monkeypatch.setattr(codex.sys, "executable", str(pythonw.with_name("python.exe")))
+        monkeypatch.setattr(codex, "_allocate_otel_port", lambda: 43199)
+        monkeypatch.setenv("USERDOMAIN", "CORP")
+        monkeypatch.setenv("USERNAME", "dev")
+        registered = running = False
+        verbs = []
+
+        def schtasks(argv, **_kwargs):
+            nonlocal registered, running
+            verb = argv[1]
+            verbs.append(verb)
+            assert argv[2:4] == ["/TN", codex.CODEX_OTEL_SERVICE_LABEL]
+            if verb == "/Create":
+                assert argv[4:] == ["/XML", str(task_path), "/F"]
+                registered = True
+            elif verb == "/Delete":
+                registered = running = False
+            elif not registered or (verb == "/End" and not running):
+                raise CalledProcessError(1, argv, stderr="ERROR:")
+            elif verb in ("/Run", "/End"):
+                running = verb == "/Run"
+
+        monkeypatch.setattr(codex.subprocess_cross_os, "run", Mock(side_effect=schtasks))
+        tracing = {"workspace": WS, "codex_otel_tracing": True}
+
+        codex.write_tool_config(dict(tracing))
+        exporter = codex._otel_proxy_overlay("http://127.0.0.1:43199/v1/traces")["otel"]
+        assert read_toml_safe(app_path)["otel"] == exporter
+        # schtasks reads the UTF-16 that Task Scheduler itself exports.
+        assert task_path.read_bytes().startswith((b"\xff\xfe", b"\xfe\xff"))
+        task = task_path.read_text(encoding="utf-16")
+        assert f"<Command>{pythonw}</Command>" in task
+        assert f"<Arguments>-m ucode.cli otel-proxy --host {WS} --port 43199</Arguments>" in task
+        assert "<UserId>CORP\\dev</UserId>" in task
+
+        codex.write_tool_config(dict(tracing))
+        newer = "https://newer.databricks.com"
+        codex.write_tool_config({**tracing, "workspace": newer})
+        assert f"--host {newer} --port 43199</Arguments>" in task_path.read_text(encoding="utf-16")
+        codex.write_tool_config({"workspace": newer})
+        assert "otel" not in read_toml_safe(app_path)
+        assert not task_path.exists()
+        assert not registered
+        # IgnoreNew makes /Run a no-op for a running proxy; a new definition ends the old one.
+        assert verbs == [
+            *["/End", "/Create", "/Run"],
+            *["/Query", "/Run"],
+            *["/End", "/Create", "/Run"],
+            *["/End", "/Delete"],
+        ]
 
 
 class TestWriteConfigBackup:
