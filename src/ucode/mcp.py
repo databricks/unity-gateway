@@ -379,7 +379,8 @@ def configure_client_mcp_server(
             return [MCP_USER_SCOPE] if removed else []
 
     # Every other case registers the `ug mcp-proxy ...` stdio command; the proxy
-    # forwards to `url` and refreshes the Databricks token itself. Only the
+    # forwards to `url` and refreshes the token through the Databricks CLI profile.
+    # Connection login uses the CLI's own registered OAuth client. Only the
     # per-client registration syntax differs. `always_load` (skills registry) is
     # a Claude-only hint to load the server's tools at session start; other
     # clients don't support it and ignore it.

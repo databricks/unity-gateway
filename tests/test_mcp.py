@@ -36,7 +36,7 @@ class TestMcpChangeSummary:
 # is the resolved `ug` binary path, so tests assert the tail (the stable part).
 GH_URL = f"{WS}/api/2.0/mcp/external/github"
 # A connection-backed AI Gateway MCP service (3-part FQN) — the URL form that
-# registers as direct HTTP for Claude when the claude-code client is available.
+# registers as direct HTTP for Claude when its CIMD client is available.
 AIGW_MCP_URL = f"{WS}/ai-gateway/mcp-services/system.ai.github"
 PROXY_TAIL = ["mcp-proxy", "--url", GH_URL, "--host", WS, "--profile", "p"]
 
@@ -317,7 +317,9 @@ class TestConfigureClientMcpServer:
         http_calls, proxy_calls = self._capture_claude(monkeypatch, claude_code_available=False)
         mcp.configure_client_mcp_server("claude", "github", AIGW_MCP_URL, WS, "p")
         assert http_calls == []
-        assert len(proxy_calls) == 1  # workspaces without claude-code keep the stdio proxy
+        assert proxy_calls == [
+            ("github", mcp.build_mcp_proxy_argv(AIGW_MCP_URL, WS, "p"))
+        ]  # the stdio proxy uses the selected Databricks CLI profile
 
     def test_claude_non_aigw_url_keeps_proxy(self, monkeypatch):
         # External/genie/vector-search/functions MCPs have no per-user connection login.
