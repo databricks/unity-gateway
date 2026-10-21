@@ -63,30 +63,32 @@ rollout setting or the user's explicit `1`/`0` or `true`/`false` override. As wi
 boolean environment flags, `1`, `true`, `yes`, and `on` enable it (case-insensitive,
 with surrounding whitespace ignored); other values disable it. It controls Isaac feedback
 availability, so UG's routing presets and on/off toggles leave it unchanged.
-The native form keeps routing on until Enter accepts a valid reason, then disables
-routing and uploads the exact text in the background with `isaac feedback`. The
-transcript shows the feedback ID the mod passes with `--feedback-id`. When Isaac
-supports `--background`, it saves a bounded local snapshot and detaches the upload.
-The form passes its submission timestamp with `--target-before` so a later task
-cannot become the feedback target. A queued acknowledgement does not trigger a
-success toast: the mod checks local `--status` until delivery or for about a minute.
-Delivery produces both a persistent transcript message and a success toast.
-Longer uploads keep running independently; `/isaac-feedback status <id>` checks
-them and `/isaac-feedback retry <id>` retries the original report. Older Isaac
-versions keep their synchronous CLI call in the mod's background task.
-Cancel or Escape leaves routing on and sends nothing. A missing
+The native form keeps routing on until Enter accepts a valid reason and Isaac saves
+the bounded local snapshot. It uses the existing `--with-evidence --capture-local`
+options, with the Isaac executable resolved at launch. Then it disables routing,
+closes the form, and uploads the saved report with `isaac feedback --retry <id>` in
+the existing native background callback. The transcript shows the sending message
+and feedback ID. Delivery produces both a persistent message and a success toast;
+a failed upload offers `/isaac-feedback retry <id>` for the original snapshot.
+Before submitting, Cancel or Escape leaves routing on and sends nothing. A missing
 `isaac` CLI or an unavailable form leaves routing on. A feedback submission failure after a valid
 reason leaves routing off and reports the failure in the transcript. The form makes no model requests.
 
-With the same feedback flag enabled, `/isaac-feedback` uses these native notifications
-too. After a Bash call returns a background-submission receipt, the mod displays
-"Sending feedback in the background. You can keep working. Feedback ID: ..." and
-attaches the shared delivery monitor. Native clocks keep the monitor running after
-the skill's turn ends. It only confirms delivery when `--status` returns `submitted`
-for that ID; failures retain the original retry ID. The tool result carries
-`delivery_notifications: "native"` so the skill avoids a duplicate acknowledgement.
-Category selection, evidence collection, and Bash permission checks stay with the
-skill and CLI. No extra model turn is needed for a completion notification.
+With the same flag enabled, `/isaac-feedback` keeps the existing skill's category,
+target, exact text, and agent note. The Bash hook recognizes a single literal Isaac
+feedback command, saves evidence locally in the foreground, and submits that
+snapshot. Retries and text-only Other reports use Claude's native
+background Bash task. Both calls retain normal Bash permission checks; local
+previews, target inspection, and compound shell commands pass through unchanged.
+The native task completion event reports success or failure without a model turn
+or status polling. `delivery_notifications: "native"` tells the skill to end without
+duplicating the sending message. Other reports retain their existing text-only
+transport and do not receive an evidence feedback ID.
+
+These uploads belong to the running Claude session. Keep it open until completion;
+if interrupted, retry the saved evidence ID on the same machine. No Isaac background
+worker or new CLI options are required. Saving evidence before returning control
+keeps a later task or file edit out of that snapshot.
 
 `isaac-feedback.ts` owns this Databricks-specific policy, form, and submission.
 `register.ts` binds the routing callbacks before Isaac's command guard, then

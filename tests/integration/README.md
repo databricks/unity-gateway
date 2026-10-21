@@ -95,7 +95,9 @@ TypeScript event-forwarding and launch-option tests in a dedicated CI job. The
 existing Claude skill-toggle journey checks the live recipe payload field across on/off/on.
 The required Isaac feedback form, evidence submission, and background delivery
 notifications need a separate manual Isaac check. The gateway toggle journey does
-not cover the form or notification timing.
+not cover the form or notification timing. Use released Isaac to check background
+completion during another task, immutable evidence, upload permission denials,
+local previews, and text-only Other reports.
 
 The existing unit tests keep their fixtures. Integration has an independent
 pytest configuration and uses `--confcutdir` so those fixtures cannot leak in.

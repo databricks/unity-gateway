@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -340,12 +341,14 @@ def _routed_claude_agent_definitions(model_ids: list[str]) -> dict[str, dict[str
 
 def _claude_mod_launch_options(env: Mapping[str, str] | None = None) -> dict:
     source = resolve_environment(env, agent=AGENT_CLAUDE)
+    isaac = shutil.which("isaac")
     return {
         **{key: source.get(key, "") for key in SMART_ROUTING_ENV_KEYS},
         # Native plugin options cannot represent null; preserve absent versus empty values.
         "unset": [key for key in SMART_ROUTING_ENV_KEYS if key not in source],
         "recipe": source.get(routing.ROUTER_NAME_ENV_VAR, "").strip() or routing.ROUTER_NAME,
         "routeCommand": [],
+        "isaacExecutable": str(Path(isaac).absolute()) if isaac else "",
     }
 
 
@@ -359,6 +362,12 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
             "description": "Launch-scoped agents for Unity Gateway smart routing.",
             "author": {"name": "Databricks"},
             "userConfig": {
+                "isaacExecutable": {
+                    "type": "string",
+                    "default": "",
+                    "title": "Isaac executable",
+                    "description": "Isaac CLI resolved at launch for feedback submission",
+                },
                 "routeCommand": {
                     "type": "string",
                     "multiple": True,

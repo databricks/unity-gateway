@@ -36,8 +36,10 @@ See [the mod guide](../docs/claude-mod.md).
 
 The required Isaac feedback form and background delivery notifications need manual
 validation of the 16-character minimum, cancellation, repeated toggles, and
-submission success/failure. The routing-toggle journeys do not cover the form,
-notification timing, or live evidence uploads.
+submission success/failure. Also check that a new task can run during upload,
+saved evidence stays unchanged, upload permission denials are honored, local
+previews stay local, and Other stays text-only. The routing-toggle journeys do
+not cover the form, notification timing, or live evidence uploads.
 
 `test_claude_answer_delivery.py` covers Claude answer selection, composition, ownership,
 failed tasks and resumed revisions using transcript inputs, plus real subprocess I/O,
