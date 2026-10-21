@@ -1,7 +1,7 @@
 # Claude mod entry point
 
 UG's Claude launcher loads `hooks/register.ts` through the existing launch-scoped
-`ug-smart-router` plugin for smart routing or Isaac feedback. Claude Code 2.1.290 or
+`ug-smart-router` plugin in sessions launched with smart routing. Claude Code 2.1.290 or
 newer is required.
 
 The existing `_write_routed_claude_plugin()` copies the packaged TypeScript entry point
@@ -74,9 +74,10 @@ Before submitting, Cancel or Escape leaves routing on and sends nothing. A missi
 `isaac` executable at launch or an unavailable form leaves routing on. A feedback submission failure after a valid
 reason leaves routing off and reports the failure in the transcript. The form makes no model requests.
 
-With the same flag enabled, `/isaac-feedback` uses the same native form,
-capture, and background uploader as `/smart-router off`. It asks for a category
-when none was supplied, and for feedback text when the invocation is empty.
+In these sessions, with the same flag enabled, `/isaac-feedback` uses the same native
+form, capture, and background uploader as `/smart-router off`. It remains available
+after routing is turned off so users can report on an earlier routed task. It asks
+for a category when none was supplied, and for feedback text when the invocation is empty.
 `/isaac-feedback --category smart-routing <text>` submits directly. Smart-routing
 reports pin the current session's most recent task by its native user-message ID.
 The `session.append` hook remembers that ID; a session with no observed prompt uses
@@ -91,10 +92,7 @@ need no updated Isaac skill instructions. Explicit inspection and local-preview
 requests still use the existing skill. Earlier targets, agent notes, and additional
 files remain available through the existing Isaac CLI options.
 
-Claude launches without smart routing also load the feedback hooks when this flag
-is enabled. Routing stays disabled and the status band stays hidden. UG keeps the
-temporary plugin alive until Claude exits, then removes it. If setup fails, UG warns
-and launches Claude without the feedback hooks.
+Claude sessions launched without smart routing use the existing feedback skill.
 
 Each submission passes Claude's native session ID and the current routing controls
 to Isaac. Valid session-file overrides are copied into that child process's environment,

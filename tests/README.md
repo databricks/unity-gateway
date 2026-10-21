@@ -42,11 +42,11 @@ Also check that the form closes immediately and submission makes no model reques
 Start a new task during capture and confirm the report retains the original task;
 toggle routing during upload and confirm its recorded settings stay fixed. Check that
 saved evidence stays unchanged, upload permission denials are honored, local
-previews stay local, and Other stays text-only. Run `/isaac-feedback` in sessions
-launched with routing both on and off; check that a routing-disabled launch keeps
-the status band hidden and removes its temporary plugin after exit. The
-routing-toggle journeys do not cover the form, notification timing, or live
-evidence uploads.
+previews stay local, and Other stays text-only. In a session launched with routing,
+check `/isaac-feedback` before and after turning routing off. A session launched
+without routing should use the existing feedback skill without loading the router
+plugin. The routing-toggle journeys do not cover the form, notification timing, or
+live evidence uploads.
 
 `test_claude_answer_delivery.py` covers Claude answer selection, composition, ownership,
 failed tasks and resumed revisions using transcript inputs, plus real subprocess I/O,

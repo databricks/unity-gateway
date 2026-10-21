@@ -101,9 +101,9 @@ immediate form dismissal without model requests, and completion during another t
 Verify the original task stays selected when a new prompt precedes capture, and
 routing settings stay fixed across subsequent toggles. Check immutable saved
 evidence, upload permission denials, local previews, and text-only Other reports.
-Also launch with routing disabled:
-`/isaac-feedback` should still submit in the background, the status band should
-stay hidden, and the temporary feedback plugin should be removed after exit.
+In a session launched with routing, check that `/isaac-feedback` remains asynchronous
+after routing is turned off. A session launched without routing should use the
+existing feedback skill without loading the router plugin.
 
 The existing unit tests keep their fixtures. Integration has an independent
 pytest configuration and uses `--confcutdir` so those fixtures cannot leak in.

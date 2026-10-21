@@ -129,7 +129,6 @@ export function register(on: On, options: PluginOptions): void {
     }
     return {text: `Smart Router is ${action}`};
   });
-  // Feedback-only sessions load this plugin but cannot enable Smart Router.
-  if (launchedEnabled) registerStatusBand(on);
+  registerStatusBand(on);
   registerSubagentRouting(on, options);
 }
