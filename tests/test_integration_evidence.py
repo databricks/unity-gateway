@@ -304,3 +304,59 @@ def test_tool_outputs_exclude_user_echoes_and_assistant_claims(agent):
         },
     ]
     assert tool_outputs(agent, records) == []
+
+
+@pytest.mark.parametrize("orchestrator_on", [False, True])
+def test_codex_generic_routing_label_correlates_to_tagged_prompt(orchestrator_on):
+    suffix = " [orchestrator on]" if orchestrator_on else ""
+    panel = (
+        "│ Using Unity Gateway Smart Router - Subagent │\n"
+        f"│ Subagent : subagent{suffix} │\n"
+        "│ Selected Model : gpt-6-luna │\n└──────────┘\n"
+    )
+    prompt = '› Spawn a child with task name "ug_subagent_ab12"\n  and return its answer.\n\n'
+    screen = prompt + panel + "› Ask Codex to do anything\n"
+    assert evidence.codex_routing_display_for_task(
+        screen, "ug_subagent_ab12", orchestrator_on=orchestrator_on
+    )
+    assert not evidence.codex_routing_display_for_task(
+        screen, "ug_subagent_other", orchestrator_on=orchestrator_on
+    )
+    assert not evidence.codex_routing_display_for_task(
+        panel + prompt, "ug_subagent_ab12", orchestrator_on=orchestrator_on
+    )
+    assert not evidence.codex_routing_display_for_task(
+        prompt + "› Another task\n\n" + panel,
+        "ug_subagent_ab12",
+        orchestrator_on=orchestrator_on,
+    )
+    assert not evidence.codex_routing_display_for_task(
+        screen, "ug_subagent_ab12", orchestrator_on=not orchestrator_on
+    )
+
+
+def test_codex_compacted_prompt_uses_adjacent_native_spawn():
+    panel = (
+        "• Context compacted\n\n"
+        "│ Using Unity Gateway Smart Router - Subagent │\n"
+        "│ Subagent : subagent [orchestrator on] │\n"
+        "│ Selected Model : gpt-6-luna │\n└──────────┘\n\n"
+    )
+    spawn = "• Spawned child-id (gpt-6-luna)\n  └ Task name: ug_subagent_ab12. Calculate 2+2.\n\n"
+    assert evidence.codex_routing_display_for_task(
+        panel + spawn, "ug_subagent_ab12", orchestrator_on=True
+    )
+    assert not evidence.codex_routing_display_for_task(
+        panel + spawn, "ug_subagent_other", orchestrator_on=True
+    )
+    assert not evidence.codex_routing_display_for_task(
+        panel + "• Answer: ug_subagent_ab12=4\n", "ug_subagent_ab12", orchestrator_on=True
+    )
+    assert not evidence.codex_routing_display_for_task(
+        panel + "› New prompt\n\n" + spawn, "ug_subagent_ab12", orchestrator_on=True
+    )
+    assert not evidence.codex_routing_display_for_task(
+        panel + "• Spawned other-child\n  └ Another task\n\n" + spawn,
+        "ug_subagent_ab12",
+        orchestrator_on=True,
+    )
