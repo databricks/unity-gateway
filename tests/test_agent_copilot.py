@@ -342,12 +342,12 @@ class TestRenderProvidersConfig:
                 "id": SONNET,
                 "provider": "dbx-anthropic",
                 "wireModel": SONNET,
-                "name": SONNET,
+                "name": "Claude Sonnet 5.5",
                 "modelId": "claude-sonnet-5.5",
                 "maxPromptTokens": 872_000,
                 "maxOutputTokens": 128_000,
             },
-            {"id": GPT, "provider": "dbx-responses", "wireModel": GPT, "name": GPT},
+            {"id": GPT, "provider": "dbx-responses", "wireModel": GPT, "name": "GPT 5.4"},
         ]
 
 
