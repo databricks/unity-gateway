@@ -699,27 +699,6 @@ def main() -> int:
                     *[f"{AGENT_PACKAGES[a]}@{getattr(args, f'{a}_version')}" for a in agents],
                 ],
             )
-
-        def reinstall_agent(agent: str) -> None:
-            # npm can finish without an agent's platform package (an optional dependency), which
-            # leaves a launcher that fails `--version`; force one fresh install of that package.
-            run(
-                [
-                    binaries["npm"],
-                    "install",
-                    "--prefix",
-                    npm_prefix,
-                    "--no-audit",
-                    "--no-fund",
-                    "--save-exact",
-                    "--force",
-                    "--include=optional",
-                    "--registry",
-                    args.npm_registry,
-                    f"{AGENT_PACKAGES[agent]}@{getattr(args, f'{agent}_version')}",
-                ],
-            )
-
         shutil.copyfile(npm_prefix / "package-lock.json", output / "npm-lock.json")
         report["npm_packages"] = json.loads(
             run(
@@ -769,12 +748,9 @@ def main() -> int:
         report["agents"] = {}
         for agent in agents:
             agent_command = npm_executable(agent_bin, agent)
-            try:
-                version_output = run([agent_command, "--version"], env=runtime_env, timeout=30)
-            except RuntimeError:
-                reinstall_agent(agent)
-                version_output = run([agent_command, "--version"], env=runtime_env, timeout=30)
-            version = agent_version_output(agent, version_output)
+            version = agent_version_output(
+                agent, run([agent_command, "--version"], env=runtime_env, timeout=30)
+            )
             expected = getattr(args, f"{agent}_version")
             if not re.search(rf"(?<![\w.]){re.escape(expected)}(?![\w.])", version):
                 raise RuntimeError(f"Expected {agent} {expected}, got {version!r}")
