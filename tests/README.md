@@ -1,5 +1,13 @@
 # Test suites and user journeys
 
+MCP/Skills browsing has component coverage in `tests/test_catalog_browsing.py`
+(repository-relative path): paginated BASIC metadata, streamed rows, missing metadata,
+UTC dates, keyboard selection/filtering/cancellation, loader cancellation, and rendered
+80×24/40×12 table rendering and detail scrolling. Status coverage distinguishes selection
+from configuration/installation, protects read-only managed MCP rows, and checks Skills
+attribution against source identity, target directories, and surviving files. These checks
+do not establish live workspace discovery or agent invocation coverage.
+
 Integration runs a freshly installed ug wheel/release, exact real Claude/Codex
 (and optionally OpenCode) versions, and the existing real e2e workspace. It has no application imports,
 mocks, monkeypatching, fake binaries/services, or fabricated ug state.

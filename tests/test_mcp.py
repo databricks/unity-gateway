@@ -451,7 +451,7 @@ class TestMcpPicker:
         assert "Databricks SQL" not in choice_text
         assert "Built-in AI tools" not in choice_text
         assert checkbox_calls[0]["kwargs"]["instruction"] == (
-            "(space to toggle, ctrl-a all, enter to save, type to filter)"
+            "(space toggle, ^A all, enter save, type filter, pgup/pgdn details)"
         )
 
     def test_prompt_returns_none_when_cancelled(self, monkeypatch):
@@ -608,7 +608,9 @@ def _patch_mcp_choices(monkeypatch, *values: str, categories: set[str] | None = 
     )
     # Stub the always-on discoveries so configure_mcp_command tests don't hit
     # real APIs. Individual tests override these after calling the helper.
-    monkeypatch.setattr(mcp, "discover_mcp_service_names", lambda workspace, profile=None: [])
+    monkeypatch.setattr(
+        mcp, "discover_mcp_service_names", lambda workspace, profile=None, **kwargs: []
+    )
     monkeypatch.setattr(
         mcp,
         "discover_all_mcp_service_names",
@@ -1094,7 +1096,12 @@ class TestConfigureMcpCommand:
         walk_calls: list[str] = []
 
         def fake_walk(
-            workspace, profile=None, on_progress=None, on_services=None, cancel_event=None
+            workspace,
+            profile=None,
+            on_progress=None,
+            on_services=None,
+            cancel_event=None,
+            metadata=None,
         ):
             walk_calls.append(workspace)
             if on_services is not None:
@@ -1114,17 +1121,19 @@ class TestConfigureMcpCommand:
 
     def test_mcp_service_choice_known_vs_unknown(self):
         # Unregistered -> an add-choice; already-registered -> a removable toggle in replace
-        # mode, and hidden (None) under `mcp add` since there is nothing to add.
+        # mode, and read-only under `mcp add` since there is nothing to add.
         add = mcp._mcp_service_choice("mycat.sch.weather", set(), additive=False)
         assert (
             add.value == f"{mcp.MCP_ADD_PREFIX}{mcp.MCP_SERVICE_SELECTION_PREFIX}mycat.sch.weather"
         )
         toggle = mcp._mcp_service_choice("mycat.sch.weather", {"mycat-sch-weather"}, additive=False)
         assert toggle.value == "mycat-sch-weather" and toggle.checked
-        assert (
-            mcp._mcp_service_choice("mycat.sch.weather", {"mycat-sch-weather"}, additive=True)
-            is None
+        readonly = mcp._mcp_service_choice(
+            "mycat.sch.weather", {"mycat-sch-weather"}, additive=True
         )
+        assert readonly.disabled == "Already configured"
+        assert readonly.checked is False
+        assert readonly.status == "✓ Configured"
 
     def test_skips_slow_walks_unless_source_selected(self, monkeypatch):
         """Vector Search and UC functions walk the workspace and are OFF by
@@ -1193,7 +1202,9 @@ class TestConfigureMcpCommand:
         monkeypatch.setattr(mcp, "ensure_databricks_auth", lambda workspace, profile=None: None)
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
         monkeypatch.setattr(mcp, "discover_app_mcp_servers", lambda workspace, profile=None: [])
-        monkeypatch.setattr(mcp, "discover_mcp_service_names", lambda workspace, profile=None: [])
+        monkeypatch.setattr(
+            mcp, "discover_mcp_service_names", lambda workspace, profile=None, **kwargs: []
+        )
         monkeypatch.setattr(
             mcp,
             "prompt_for_mcp_server_choices",
@@ -1418,7 +1429,7 @@ class TestConfigureMcpCommand:
         monkeypatch.setattr(
             mcp,
             "discover_mcp_service_names",
-            lambda workspace, profile=None: (_ for _ in ()).throw(
+            lambda workspace, profile=None, **kwargs: (_ for _ in ()).throw(
                 RuntimeError("permission denied")
             ),
         )
@@ -1449,7 +1460,7 @@ class TestConfigureMcpCommand:
         monkeypatch.setattr(mcp, "ensure_databricks_auth", lambda workspace, profile=None: None)
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
 
-        def fake_services(workspace, profile=None):
+        def fake_services(workspace, profile=None, **kwargs):
             seen_profiles["mcp-services"] = profile
             return []
 
@@ -3820,7 +3831,9 @@ class TestSingleSourceSkipsPrompt:
         monkeypatch.setattr(mcp.shutil, "which", lambda binary: f"/usr/bin/{binary}")
         monkeypatch.setattr(mcp, "ensure_databricks_auth", lambda workspace, profile=None: None)
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
-        monkeypatch.setattr(mcp, "discover_mcp_service_names", lambda workspace, profile=None: [])
+        monkeypatch.setattr(
+            mcp, "discover_mcp_service_names", lambda workspace, profile=None, **kwargs: []
+        )
         monkeypatch.setattr(
             mcp,
             "discover_all_mcp_service_names",
@@ -3859,15 +3872,14 @@ class TestManagedServersAreNotReAdded:
         assert mcp.managed_mcp_server_names(state) == {"from-state", "from-file", "codex-only"}
 
     @pytest.mark.parametrize("additive", [True, False])
-    def test_managed_service_is_hidden_from_the_picker(self, additive):
-        # A managed server is never ug's to add or remove here (it lives in the OS-managed file),
-        # so it's hidden in both modes rather than shown as an inert row.
-        assert (
-            mcp._mcp_service_choice(
-                "system.ai.github", {"system-ai-github"}, additive, {"system-ai-github"}
-            )
-            is None
+    def test_managed_service_is_read_only_in_the_picker(self, additive):
+        # Managed services remain inspectable but cannot be added or removed.
+        choice = mcp._mcp_service_choice(
+            "system.ai.github", {"system-ai-github"}, additive, {"system-ai-github"}
         )
+        assert choice.disabled == "Managed by workspace"
+        assert choice.checked is False
+        assert choice.status == "✓ Managed"
 
     def test_unmanaged_service_is_still_offered_as_an_add(self):
         choice = mcp._mcp_service_choice("system.ai.other", set(), True, {"system-ai-github"})
@@ -3875,9 +3887,8 @@ class TestManagedServersAreNotReAdded:
         assert choice.disabled is None
         assert choice.value.startswith(mcp.MCP_ADD_PREFIX)
 
-    def test_add_picker_shows_only_addable_services(self):
-        # Under `ug mcp add`, the picker lists only what you can add: a managed service and one
-        # ug already configured are both hidden; an unconfigured one is offered.
+    def test_add_picker_shows_status_but_only_unconfigured_services_are_addable(self):
+        # Status is visible for every service; configured and managed rows are read-only.
         choices = mcp.build_mcp_picker_choices(
             [],
             [],
@@ -3893,12 +3904,16 @@ class TestManagedServersAreNotReAdded:
         )
         titles = [c.title for c in choices]
         assert titles == [
-            "MCP: system.ai.web_search"
-        ]  # github (managed) + slack (configured) hidden
+            "system.ai.github",
+            "system.ai.slack",
+            "system.ai.web_search",
+        ]
+        assert [c.status for c in choices] == ["✓ Managed", "✓ Configured", "✗ Not configured"]
+        assert [bool(c.disabled) for c in choices] == [True, True, False]
+        assert all(not c.checked for c in choices)
 
-    def test_replace_picker_hides_managed_but_keeps_own_as_toggle(self):
-        # Replace mode still lets you remove your own servers (pre-checked toggle), but a managed
-        # one stays hidden since ug can't remove it here either.
+    def test_replace_picker_keeps_managed_read_only_and_own_as_toggle(self):
+        # Replace mode keeps managed rows read-only and ug's own rows removable.
         choices = mcp.build_mcp_picker_choices(
             [],
             [],
@@ -3909,8 +3924,9 @@ class TestManagedServersAreNotReAdded:
             managed_names={"system-ai-github"},
         )
         by_title = {c.title: c for c in choices}
-        assert "MCP: system.ai.github" not in by_title  # managed: hidden
-        assert by_title["MCP: system.ai.slack"].checked is True  # own: removable toggle
+        assert by_title["system.ai.github"].disabled == "Managed by workspace"
+        assert by_title["system.ai.github"].checked is False
+        assert by_title["system.ai.slack"].checked is True  # own: removable toggle
 
     def test_drop_managed_servers_reports_what_it_skipped(self, capsys):
         servers = [
