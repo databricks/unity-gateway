@@ -362,12 +362,17 @@ def launch_model(
 ) -> CopilotModel:
     """The model a session starts on: ``requested`` (budget recommendation or managed default),
     then the managed default and list, then the newest Sonnet, Opus or Haiku, then GPT."""
-    static = _string_list(state.get("copilot_static_models"))
-    chosen = _first_available(
-        [requested, state.get("copilot_default_model"), static[0] if static else None],
-        catalog,
-        warn=warn,
+    servable_static = (
+        m for m in _string_list(state.get("copilot_static_models")) if classify_copilot_model(m)
     )
+    managed_models = _string_list(state.get("copilot_models"))
+    candidates = [
+        requested,
+        state.get("copilot_default_model"),
+        next(servable_static, None),
+        managed_models[0] if managed_models else None,
+    ]
+    chosen = _first_available(dict.fromkeys(c for c in candidates if c), catalog, warn=warn)
     if chosen is not None:
         return chosen
     for prefix in ("claude-sonnet-", "claude-opus-", "claude-haiku-"):
@@ -713,6 +718,11 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
     try:
         proxy_base_url = f"http://{LOOPBACK_HOST}:{server.server_address[1]}"
         config = render_providers_config(catalog, proxy_base_url, session_secret)
+        wire_override = os.environ.get("COPILOT_PROVIDER_WIRE_MODEL")
+        if wire_override:
+            for entry in config["models"]:
+                if entry["id"] == start_model.id:
+                    entry["wireModel"] = wire_override
         with session_registry(config) as registry_path:
             env = build_runtime_env(registry_path, start_model)
             proc = subprocess_cross_os.popen(

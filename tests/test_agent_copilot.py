@@ -243,6 +243,22 @@ class TestLaunchModel:
 
     def test_default_model_is_quiet(self, capsys):
         assert copilot.default_model({"copilot_default_model": "missing"}) is None
+
+    def test_a_managed_models_list_picks_the_start_model(self):
+        assert copilot.launch_model({"copilot_models": [GPT]}, self.MODELS).id == GPT
+
+    def test_an_unservable_managed_entry_is_skipped_without_a_second_warning(self, capsys):
+        state = {"copilot_static_models": ["system.ai.gemini-3-flash", GPT]}
+
+        assert copilot.launch_model(state, catalog(GPT)).id == GPT
+        assert "isn't available" not in capsys.readouterr().out
+
+    def test_a_repeated_candidate_warns_once(self, capsys):
+        state = {"copilot_default_model": "system.ai.missing"}
+
+        copilot.launch_model(state, self.MODELS, requested="system.ai.missing")
+
+        assert capsys.readouterr().out.count("isn't available") == 1
         state = {"copilot_default_model": "missing", "codex_models": [GPT]}
         assert copilot.default_model(state) == GPT
         assert capsys.readouterr().out == ""
@@ -764,6 +780,19 @@ class TestLaunch:
             copilot.launch(dict(STATE), [], options=copilot.LaunchOptions(launch_model=GPT))
 
         assert seen["env"]["COPILOT_MODEL"] == f"dbx-responses/{GPT}"
+
+    def test_a_wire_model_override_applies_to_the_start_model(self, tmp_path, monkeypatch):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        monkeypatch.setenv("COPILOT_PROVIDER_WIRE_MODEL", "main.models.my-gpt")
+        seen = _stub_launch(monkeypatch)
+
+        with pytest.raises(SystemExit):
+            copilot.launch(dict(STATE), [], options=copilot.LaunchOptions(launch_model=GPT))
+
+        wire_models = {m["id"]: m["wireModel"] for m in seen["registry"]["models"]}
+        assert wire_models[GPT] == "main.models.my-gpt"
+        assert wire_models[SONNET] == SONNET
+        assert "COPILOT_PROVIDER_WIRE_MODEL" not in seen["env"]
 
     def test_unknown_model_fails_before_starting_copilot(self, tmp_path, monkeypatch):
         isolate_copilot_config_paths(monkeypatch, tmp_path)

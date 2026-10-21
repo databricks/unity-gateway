@@ -110,6 +110,7 @@ from ucode.managed_resolve import (
     managed_launch_model,
     managed_provider_family_models,
     managed_provider_service,
+    managed_static_models,
     managed_supplies_models,
     managed_unity_catalog_location,
     managed_unservable_models,
@@ -1257,7 +1258,7 @@ def _status_default_model(tool: str, state: dict, models: list[str]) -> str | No
         return explicit
     # Claude and Codex deliberately leave the starting model to the agent unless a managed
     # config pins one. The other clients write the first resolved model into their ug config.
-    return models[0] if models and tool in ("gemini", "opencode", "kilo", "copilot", "pi") else None
+    return models[0] if models and tool in ("gemini", "opencode", "kilo", "pi") else None
 
 
 def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
@@ -1454,7 +1455,10 @@ def revert() -> int:
     mcp_results = revert_mcp_configs(state)
     # Before restoring backups: one written by an earlier ug may hold a token.
     copilot_agent.scrub_stored_credentials()
-    copilot_agent.sweep_session_registries()
+    try:
+        copilot_agent.sweep_session_registries()
+    except OSError as exc:
+        print_warning(f"Could not remove leftover Copilot session files: {exc}")
     claude_managed_result = claude_agent.revert_managed_settings()
     codex_managed_result = codex_agent.revert_managed_config()
 
@@ -3149,7 +3153,9 @@ def _skip_model_discovery(
     """
     if tool == "copilot":
         # Copilot registers its discovered catalog, so a managed default alone still needs it.
-        return False
+        return bool(
+            provider or managed_parent_schema or (managed and managed_static_models(managed, tool))
+        )
     return (
         bool(provider)
         or bool(managed_parent_schema)

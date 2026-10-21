@@ -3407,6 +3407,26 @@ class TestRevert:
         revert.assert_called_once_with()
         assert dict(os.environ) == previous
 
+    def test_a_failed_copilot_session_sweep_does_not_stop_revert(self):
+        cleared: list[bool] = []
+
+        with (
+            patch("ucode.cli.load_state", return_value=dict(MINIMAL_STATE)),
+            patch("ucode.cli.restore_file", return_value=False),
+            patch("ucode.cli.revert_mcp_configs", return_value={}),
+            patch.object(
+                cli_mod.copilot_agent,
+                "sweep_session_registries",
+                side_effect=PermissionError("read-only"),
+            ),
+            patch("ucode.cli.clear_state", side_effect=lambda: cleared.append(True)),
+        ):
+            result = runner.invoke(app, ["revert"])
+
+        assert result.exit_code == 0, result.output
+        assert "Could not remove leftover Copilot session files" in _strip_ansi(result.output)
+        assert cleared == [True]
+
     def test_reverts_mcp_configs_before_clearing_state(self):
         state = {
             **MINIMAL_STATE,
@@ -3524,6 +3544,31 @@ class TestCopilotLaunchModel:
     def test_a_managed_default_still_discovers_the_catalog(self):
         assert not cli_mod._skip_model_discovery(
             self.MANAGED, "copilot", provider=None, managed_parent_schema=None, family_defaults=None
+        )
+
+    @pytest.mark.parametrize(
+        ("managed", "provider", "parent_schema"),
+        [
+            (None, "main.default.mps", None),
+            (None, None, "main.models"),
+            (
+                {
+                    "enabled_agents": {
+                        "copilot": {"model_config": {"model_services": ["system.ai.gpt-5-4"]}}
+                    }
+                },
+                None,
+                None,
+            ),
+        ],
+    )
+    def test_a_named_model_source_skips_discovery(self, managed, provider, parent_schema):
+        assert cli_mod._skip_model_discovery(
+            managed,
+            "copilot",
+            provider=provider,
+            managed_parent_schema=parent_schema,
+            family_defaults=None,
         )
 
 
