@@ -38,7 +38,8 @@ CURSOR_OAUTH_CLIENT_ID = "cursor-desktop"
 # (`/callback/<hash>`) that can't be pre-registered on a shared app, so `/oidc` gates
 # it behind the `enableCodexLoopbackRedirectExemption` SAFE flag: for this client on a
 # loopback host it accepts any path (RFC 8252 already waives the port; the flag waives
-# the path). `databricks-cli` does not get that exemption.
+# the path). The ChatGPT/Codex CIMD document lists only ChatGPT's hosted redirect,
+# so it cannot replace this client for Codex CLI's loopback callback.
 CODEX_CLI_OAUTH_CLIENT_ID = "codex-cli"
 
 # Published apps rarely appear/disappear, so a per-workspace probe result is good
