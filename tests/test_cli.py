@@ -24,6 +24,7 @@ from typer.testing import CliRunner
 import ucode.cli as cli_mod
 import ucode.databricks as db_mod
 import ucode.managed_files as managed_files
+from ucode.agents import SmartRouterLaunch
 from ucode.cli import app
 from ucode.databricks import GatewayProbe
 from ucode.managed_config import ManagedConfigResult, normalize_managed_config
@@ -707,7 +708,7 @@ class TestSubcommandRouting:
             provider=provider,
         )
 
-        assert options.launch_smart_routing is expected
+        assert (options.smart_router is not None) is expected
 
     @pytest.mark.parametrize(
         ("tool_args", "expected"),
@@ -731,7 +732,42 @@ class TestSubcommandRouting:
             provider=None,
         )
 
-        assert options.launch_smart_routing is expected
+        assert (options.smart_router is not None) is expected
+
+    @pytest.mark.parametrize("tool", ["codex", "claude"])
+    @pytest.mark.parametrize(
+        ("routing_env", "first_prompt"),
+        [
+            ({"ENABLE_SMART_ROUTING_V2": "1"}, True),
+            ({"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1"}, False),
+            ({"ENABLE_SMART_ROUTING_V2": "1", "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1"}, False),
+        ],
+    )
+    def test_only_first_prompt_routing_needs_its_own_launcher(
+        self, monkeypatch, tool, routing_env, first_prompt
+    ):
+        for key, value in routing_env.items():
+            monkeypatch.setenv(key, value)
+
+        options = cli_mod._launch_options(
+            tool,
+            [],
+            smart_routing_enabled=True,
+            explicit_prompt=False,
+            user_pinned_model=None,
+            provider=None,
+        )
+
+        assert options.smart_router == SmartRouterLaunch(first_prompt=first_prompt)
+
+    def test_managed_smart_routing_routes_the_first_prompt(self):
+        managed = {"enabled_agents": {"codex": {"smart_routing_enabled": True}}}
+        with _launch_policy_patches(managed) as calls:
+            result = runner.invoke(app, ["codex"])
+
+        assert result.exit_code == 0, result.output
+        options = calls["launch"].call_args.kwargs["options"]
+        assert options.smart_router == SmartRouterLaunch(first_prompt=True)
 
     def test_managed_claude_smart_routing_remains_enabled_on_windows(self, monkeypatch):
         monkeypatch.setattr(cli_mod.os, "name", "nt")
@@ -1095,7 +1131,9 @@ class TestSubcommandRouting:
 
         assert result.exit_code == 0, result.output
         assert mock_configure.call_args.kwargs["route_root_model"] is None
-        assert mock_launch.call_args.kwargs["options"].launch_smart_routing is True
+        assert mock_launch.call_args.kwargs["options"].smart_router == SmartRouterLaunch(
+            first_prompt=True
+        )
 
     def test_claude_v2_first_prompt_hook_is_disabled_without_flag(self, monkeypatch):
         monkeypatch.delenv("ENABLE_SMART_ROUTING_V2", raising=False)
@@ -1743,7 +1781,7 @@ class TestClaudeModelFlag:
             result = runner.invoke(app, ["claude", *model_args])
 
         assert result.exit_code == 0, result.output
-        assert calls["launch"].call_args.kwargs["options"].launch_smart_routing is False
+        assert calls["launch"].call_args.kwargs["options"].smart_router is None
         assert "_claude_launch_picker_models" not in calls["launch"].call_args.args[1]
         assert "claude_static_models" not in calls["launch"].call_args.args[1]
         assert calls["configure"].call_args.kwargs["custom_model"] is None
@@ -1772,7 +1810,7 @@ class TestClaudeModelFlag:
 
         assert result.exit_code == 0, result.output
         assert mock_launch.call_args.kwargs["options"].user_pinned_model == "system.ai.glm-5-2"
-        assert mock_launch.call_args.kwargs["options"].launch_smart_routing is False
+        assert mock_launch.call_args.kwargs["options"].smart_router is None
 
     @staticmethod
     def _provider_launch(monkeypatch, argv, provider_models, relayed=False):

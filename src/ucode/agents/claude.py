@@ -16,6 +16,7 @@ import traceback
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 
+from ucode import claude_answer_delivery
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -99,11 +100,12 @@ from ucode.smart_routing.claude_hooks import (
     remove_smart_routing_hooks,
     sync_smart_routing_hooks,
 )
+from ucode.smart_routing.session_env import session_env_path
 from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
 from ucode.ui import print_note, print_success, print_warning
 
-from .args import LaunchOptions, has_explicit_model_arg
+from .args import LaunchOptions, SmartRouterLaunch, has_explicit_model_arg
 from .request_tags import request_tags_header_value
 
 GATEWAY_MODEL_DISCOVERY_ENV_VAR = "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"
@@ -2295,6 +2297,25 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     raise SystemExit(returncode)
 
 
+def _supported_smart_router(
+    smart_router: SmartRouterLaunch | None, tool_args: list[str]
+) -> SmartRouterLaunch | None:
+    """Fall back to subagent-only routing where Claude's first-prompt PTY wrapper is unavailable."""
+    if (
+        smart_router is None
+        or not smart_router.first_prompt
+        or os.name != "nt"
+        or smart_routing_v2.claude_print_mode(tool_args)
+    ):
+        return smart_router
+    # TODO: Restore first-prompt routing on Windows after replacing the Unix-only PTY wrapper:
+    # https://databricks.atlassian.net/browse/AIGTWY-4385
+    print_warning(
+        "Claude first-prompt smart routing is unavailable on Windows; using subagent-only routing."
+    )
+    return SmartRouterLaunch(first_prompt=False)
+
+
 def launch(
     state: dict,
     tool_args: list[str],
@@ -2319,8 +2340,9 @@ def launch(
     pinned_model = (
         maybe_add_gpt_1m_suffix(options.user_pinned_model) if options.user_pinned_model else None
     )
+    smart_router = _supported_smart_router(options.smart_router, tool_args)
     routing_setup_failed = False
-    if options.launch_smart_routing:
+    if smart_router is not None and smart_router.first_prompt:
         try:
             smart_routing_v2.launch_claude(
                 state,
@@ -2367,6 +2389,16 @@ def launch(
                 # overwriting the user's saved selection. This also prevents Claude from appending
                 # that stale built-in selection to an otherwise replaced picker.
                 settings_override = {"model": picker_models[0]}
+    if smart_router is not None and not smart_router.first_prompt:
+        routing_settings: dict = {}
+        try:
+            plugin_args = smart_routing_v2.add_claude_smart_router(state, routing_settings)
+        except smart_routing_v2.ClaudeRoutingSetupError:
+            _debug("Claude smart-routing setup failed; launching normally", traceback.format_exc())
+            routing_setup_failed = True
+        else:
+            settings_override = _merge_claude_settings(settings_override or {}, routing_settings)
+            launch_args = [*plugin_args, *launch_args]
     if routing_setup_failed:
         # Override inherited and saved routing flags for this launch only. Older
         # saved hooks must not route to agents whose plugin could not be written.
@@ -2377,7 +2409,16 @@ def launch(
         }
         settings_override = _merge_claude_settings(settings_override or {}, {"env": fallback_env})
         os.environ.update(fallback_env)
-    exec_or_spawn(_build_claude_argv(binary, launch_args, settings_override=settings_override))
+    argv = _build_claude_argv(binary, launch_args, settings_override=settings_override)
+    if (
+        smart_router is not None
+        and not routing_setup_failed
+        and smart_routing_v2.delivers_claude_child_answers(tool_args)
+    ):
+        sys.exit(
+            claude_answer_delivery.run(argv, session_path=session_env_path(), stdin_prompt=None)
+        )
+    exec_or_spawn(argv)
 
 
 def validate_cmd(binary: str) -> list[str]:

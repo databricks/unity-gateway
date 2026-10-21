@@ -1,15 +1,17 @@
 # Claude mod entry point
 
 UG's smart-routed Claude launcher loads `hooks/register.ts` through the existing
-launch-scoped `ug-smart-router` plugin. Claude Code 2.1.290 or newer is required.
+`ug-smart-router` plugin that each routed launch passes with `--plugin-dir`. Claude Code
+2.1.290 or newer is required.
 
 The existing `_write_routed_claude_plugin()` copies the packaged TypeScript entry point
 from `src/ucode/agents/claude_mods/` and writes `hooks/hooks.json` into that plugin.
 Every routed launch includes the status band above the prompt. It shows at launch and after
 each `/smart-router on|off`, and hides once the next prompt's turn completes. The prompt hint row (the line under the
 input with the permission mode) always ends with `smart router ON` or `smart router OFF`. Both full and subagent-only smart
-routing launches use this path, and the existing temporary-directory lifecycle
-cleans up the files when Claude exits.
+routing launches use this path. The plugin lives in `~/.ucode/claude-routing-plugin/<digest>/`,
+named after its contents, because a subagent-only launch hands the terminal to Claude and
+leaves nothing behind to remove it.
 
 The same entry point routes Agent/Task calls in a native `tool.call` hook. It pipes the
 call as JSON to `ug claude-router-hook route-subagent-mod`, whose argument list arrives in

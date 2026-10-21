@@ -15,7 +15,7 @@ import pytest
 
 from ucode import databricks as db_mod
 from ucode import gateway_proxy, managed_files
-from ucode.agents import LaunchOptions, claude
+from ucode.agents import LaunchOptions, SmartRouterLaunch, claude
 from ucode.smart_routing import claude_routing, v2
 from ucode.state import MANAGED_OVERLAY_KEY
 
@@ -3192,16 +3192,20 @@ class TestClaudeLaunch:
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(claude.os, "name", "nt")
         monkeypatch.setattr(claude.shutil, "which", lambda _binary: str(shim))
-        launch_v2 = Mock()
-        monkeypatch.setattr(claude.smart_routing_v2, "launch_claude", launch_v2)
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(
+            claude.smart_routing_v2, "add_claude_smart_router", lambda _state, _settings: []
+        )
+        launches: list[list[str]] = []
+        monkeypatch.setattr(claude, "exec_or_spawn", launches.append)
 
         claude.launch(
             {"workspace": WS, "profile": "test"},
             ["--debug"],
-            options=LaunchOptions(launch_smart_routing=True),
+            options=LaunchOptions(smart_router=SmartRouterLaunch(first_prompt=True)),
         )
 
-        assert launch_v2.call_args.kwargs["binary"] == str(native_binary)
+        assert launches[0][0] == str(native_binary)
 
     def test_default_launch_keeps_existing_auth_path(self, monkeypatch):
         calls: list[list[str]] = []
@@ -3337,6 +3341,7 @@ class TestClaudeLaunch:
         assert json.loads(settings_path.read_text()) == original_settings
         assert calls[0][-2:] == ["--model", custom_model]
 
+    @pytest.mark.skipif(os.name == "nt", reason="First-prompt routing needs a Unix PTY")
     def test_launch_default_model_is_inherited_by_smart_routing(self, monkeypatch):
         monkeypatch.delenv("ANTHROPIC_DEFAULT_MODEL", raising=False)
         monkeypatch.setattr(v2, "launch_claude", Mock())
@@ -3347,7 +3352,7 @@ class TestClaudeLaunch:
                 "_claude_launch_default_model": "main.default.claude-sonnet-5",
             },
             ["fix this bug"],
-            options=LaunchOptions(launch_smart_routing=True),
+            options=LaunchOptions(smart_router=SmartRouterLaunch(first_prompt=True)),
         )
 
         assert os.environ["ANTHROPIC_DEFAULT_MODEL"] == "main.default.claude-sonnet-5"
@@ -3483,6 +3488,7 @@ class TestClaudeLaunch:
         assert calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), *tool_args]]
         v2.launch_claude.assert_not_called()
 
+    @pytest.mark.skipif(os.name == "nt", reason="First-prompt routing needs a Unix PTY")
     @pytest.mark.parametrize("tool_args", [["fix this bug"], ["--", "fix this bug"]])
     def test_v2_positional_prompt_uses_first_prompt_routing(self, monkeypatch, tool_args):
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
@@ -3492,7 +3498,7 @@ class TestClaudeLaunch:
         claude.launch(
             {"workspace": WS},
             tool_args,
-            options=LaunchOptions(launch_smart_routing=True),
+            options=LaunchOptions(smart_router=SmartRouterLaunch(first_prompt=True)),
         )
 
         launch_v2.assert_called_once_with(

@@ -17,6 +17,7 @@ from ucode.agents import (
     DEFAULT_TOOL,
     TOOL_SPECS,
     LaunchOptions,
+    SmartRouterLaunch,
     check_gateway_endpoint,
     configure_selected_tools,
     default_model_for_tool,
@@ -70,7 +71,7 @@ class TestToolSpecs:
 
 def test_launch_dispatches_invocation_options(monkeypatch):
     calls = []
-    options = LaunchOptions(launch_smart_routing=True)
+    options = LaunchOptions(smart_router=SmartRouterLaunch())
     monkeypatch.setattr(
         agents_mod.codex,
         "launch",

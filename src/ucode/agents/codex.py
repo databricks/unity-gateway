@@ -1467,8 +1467,9 @@ def launch(
     *,
     options: LaunchOptions,
 ) -> None:
-    if options.launch_smart_routing:
-        _launch_smart_routing(state, tool_args)
+    smart_router = options.smart_router
+    if smart_router is not None and smart_router.first_prompt:
+        _launch_first_prompt_routing(state, tool_args)
         return
     clear_model_preferences(state)
     binary = SPEC["binary"]
@@ -1503,6 +1504,8 @@ def launch(
             f"{LEGACY_LAYOUT_CODEX_VERSION_TEXT} or newer, then run `codex --version` to verify "
             "the active installation."
         )
+        if smart_router is not None:
+            print_warning_err("Smart routing is unavailable on this Codex version.")
         _run_codex(
             state,
             [binary, "--profile", CODEX_PROFILE_NAME],
@@ -1566,6 +1569,8 @@ def launch(
                 slugs = catalog_slugs(catalog)
                 if slugs:
                     profile_doc["model"] = slugs[0]
+    if smart_router is not None:
+        smart_routing_v2.add_codex_smart_router(state, profile_doc)
     _run_codex(
         state,
         [binary, *codex_config_args(profile_doc)],
@@ -1575,7 +1580,7 @@ def launch(
     )
 
 
-def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
+def _launch_first_prompt_routing(state: dict, tool_args: list[str]) -> None:
     """Launch the Codex TUI through the smart-routing interposer."""
     binary = SPEC["binary"]
 

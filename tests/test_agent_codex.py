@@ -14,9 +14,9 @@ from unittest.mock import Mock
 import pytest
 
 from ucode import custom_oauth, gateway_proxy, managed_files
-from ucode.agents import LaunchOptions, codex
+from ucode.agents import LaunchOptions, SmartRouterLaunch, codex
 from ucode.config_io import read_toml_safe
-from ucode.smart_routing import codex_routing
+from ucode.smart_routing import codex_routing, v2
 
 WS = "https://example.databricks.com"
 
@@ -1608,6 +1608,82 @@ class TestCodexLaunch:
         codex.launch({"workspace": WS}, ["exec", "hi"], options=LaunchOptions())
 
         assert not any(arg.startswith("otel=") for arg in launches[0])
+
+    def test_subagent_routing_adds_hooks_to_the_profile_launch(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+        monkeypatch.setattr(
+            v2, "launch_codex", Mock(side_effect=AssertionError("used the first-prompt launcher"))
+        )
+
+        codex.launch(
+            {"workspace": WS, "codex_models": ["system.ai.gpt-5-6-sol"]},
+            ["--search"],
+            options=LaunchOptions(smart_router=SmartRouterLaunch()),
+        )
+
+        (argv,) = launches
+        assert argv[-1] == "--search"
+        assert 'model_provider="Databricks"' in argv
+        assert "features.hooks=true" in argv
+        hook_override = next(arg for arg in argv if arg.startswith("hooks.PreToolUse="))
+        assert "codex-router-hook route-subagent" in hook_override
+        assert "--model system.ai.gpt-5-6-sol" in hook_override
+        for key in (v2.SESSION_ENV_VAR, v2.SESSION_PYTHON_ENV_VAR):
+            assert f"shell_environment_policy.set.{key}={json.dumps(os.environ[key])}" in argv
+
+    def test_subagent_routing_keeps_the_tracing_proxy(self, tmp_path, monkeypatch):
+        self._patch(tmp_path, monkeypatch)
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+        server = Mock(server_address=("127.0.0.1", 54321))
+        monkeypatch.setattr(
+            gateway_proxy, "start_otel_proxy", lambda workspace, provider: (server, Mock(), Mock())
+        )
+        popen = Mock(return_value=Mock(wait=Mock(return_value=0)))
+        monkeypatch.setattr(codex.subprocess_cross_os, "popen", popen)
+
+        with pytest.raises(SystemExit):
+            codex.launch(
+                {"workspace": WS, "codex_otel_tracing": True},
+                [],
+                options=LaunchOptions(smart_router=SmartRouterLaunch()),
+            )
+
+        argv = popen.call_args.args[0]
+        assert any(arg.startswith("otel=") for arg in argv)
+        assert any(arg.startswith("hooks.PreToolUse=") for arg in argv)
+
+    def test_subagent_routing_keeps_the_model_location(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+        monkeypatch.setattr(
+            codex, "_model_catalog_path", lambda workspace, scope: tmp_path / "models.json"
+        )
+        monkeypatch.setattr(
+            codex,
+            "_fetch_codex_model_catalog",
+            lambda *_args, **_kwargs: {"models": [{"slug": "gpt-parent"}]},
+        )
+
+        codex.launch(
+            {"workspace": WS, "_codex_launch_parent_schema": "main.default"},
+            [],
+            options=LaunchOptions(smart_router=SmartRouterLaunch()),
+        )
+
+        (argv,) = launches
+        provider_arg = next(arg for arg in argv if arg.startswith("model_providers.Databricks="))
+        assert 'Databricks-Model-Service-Parent-Schema = "main.default"' in provider_arg
+        assert any(arg.startswith("hooks.PreToolUse=") for arg in argv)
+
+    def test_subagent_routing_is_skipped_on_legacy_codex(self, tmp_path, monkeypatch, capsys):
+        launches = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.133.0")
+
+        codex.launch({"workspace": WS}, [], options=LaunchOptions(smart_router=SmartRouterLaunch()))
+
+        assert launches == [["codex", "--profile", codex.CODEX_PROFILE_NAME]]
+        assert "Smart routing is unavailable" in capsys.readouterr().err
 
     @pytest.mark.parametrize(
         "tool_args",

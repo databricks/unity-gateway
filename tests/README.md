@@ -361,11 +361,15 @@ Codex, and submitting an empty selection installs nothing. Rendering checks cove
 the selected and empty checkboxes. These are local component checks, not live gateway tests.
 
 `test_claude_smart_routing_v2.py` checks plugin-qualified names, exact model
-definitions, and temporary plugin loading in both routing modes. The GLM-to-Haiku
+definitions, and plugin loading in both routing modes. Subagent-only launches go through
+Claude's normal launcher with the plugin folder reused for identical contents, and a failed
+plugin write launches without routing. The GLM-to-Haiku
 notice regression verifies that both hook messages name the routed agent with
 orchestration on and off. It mocks the router response, not native Claude rendering.
-Existing launch tests cover caller argument preservation and file removal after exit. These checks
-do not cover plugin-write/process-start failures, native plugin refresh, or daemon behavior.
+Existing launch tests cover caller argument preservation. These checks do not cover
+process-start failures, native plugin refresh, or daemon behavior.
+`test_agent_codex.py` checks that subagent-only Codex launches keep the normal launcher's
+tracing proxy and `--model-location`, and skip routing on legacy-layout Codex.
 
 `test_claude_routing.py` checks that the decision log retains the exact candidate
 models and router name sent in the request. `test_codex_routing.py` checks that
