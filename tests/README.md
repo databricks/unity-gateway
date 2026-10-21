@@ -35,9 +35,10 @@ skill-toggle integration journey checks the live recipe payload field across on/
 See [the mod guide](../docs/claude-mod.md).
 
 The required Isaac feedback form and background delivery notifications need manual
-validation using Isaac's background-submission skill instructions and existing
-capture/retry CLI. Check the 16-character minimum, cancellation, repeated toggles,
-and submission success/failure. Also check that a new task can run during upload,
+validation using the released Isaac skill and existing capture/retry CLI. Check
+category selection, empty and inline feedback, native retries, the off form's
+16-character minimum, cancellation, repeated toggles, and submission success/failure.
+Also check that submission makes no model request and a new task can run during upload,
 saved evidence stays unchanged, upload permission denials are honored, local
 previews stay local, and Other stays text-only. Run `/isaac-feedback` in sessions
 launched with routing both on and off; check that a routing-disabled launch keeps

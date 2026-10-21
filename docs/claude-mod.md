@@ -75,18 +75,19 @@ Before submitting, Cancel or Escape leaves routing on and sends nothing. A missi
 `isaac` CLI or an unavailable form leaves routing on. A feedback submission failure after a valid
 reason leaves routing off and reports the failure in the transcript. The form makes no model requests.
 
-With the same flag enabled, `/isaac-feedback` keeps the skill's category, target,
-exact text, and agent note. The skill saves evidence locally in the foreground,
-then calls `isaac feedback --retry <id>` using Claude's native background Bash
-task. Retries and text-only Other reports also use background Bash. This requires
-Isaac's background-submission skill instructions; the CLI commands already exist.
+With the same flag enabled, `/isaac-feedback` uses the same native form,
+capture, and background uploader as `/smart-router off`. It asks for a category
+when none was supplied, and for feedback text when the invocation is empty.
+`/isaac-feedback --category smart-routing <text>` submits directly. Smart-routing
+reports capture the current session's most recent task; the native flow does not
+generate an agent note. Other reports retain their text-only transport and do not
+receive an evidence feedback ID. `/isaac-feedback retry <id>` uploads the saved
+snapshot in the background without capturing it again.
 
-The hook observes background tasks with the description `Isaac feedback upload <id>`
-(or `Isaac feedback upload` for Other). It leaves commands and Bash permission
-checks unchanged. Native task completion reports success or failure without a
-model turn or status polling. `delivery_notifications: "native"` tells the skill
-to end without duplicating the sending message. Other reports retain their
-text-only transport and do not receive an evidence feedback ID.
+The submission and its sending/completion messages make no model requests and
+need no updated Isaac skill instructions. Explicit inspection and local-preview
+requests still use the existing skill. Earlier targets, agent notes, and additional
+files remain available through the existing Isaac CLI options.
 
 Claude launches without smart routing also load the feedback hooks when this flag
 is enabled. Routing stays disabled and the status band stays hidden. UG keeps the
