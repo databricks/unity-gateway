@@ -93,6 +93,15 @@ class TestOauthClientAvailableCache:
 
         assert mcp_oauth.oauth_client_available(WS, "new-client") is True
 
+    def test_newly_published_client_is_available_on_next_run(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(mcp_oauth, "_CACHE_PATH", tmp_path / "cache.json")
+        results = iter((False, True))
+        monkeypatch.setattr(mcp_oauth, "_probe_oauth_client", lambda ws, cid: next(results))
+
+        assert mcp_oauth.oauth_client_available(WS, mcp_oauth.CLAUDE_CODE_CIMD_CLIENT_ID) is False
+        assert mcp_oauth.oauth_client_available(WS, mcp_oauth.CLAUDE_CODE_CIMD_CLIENT_ID) is True
+        assert mcp_oauth.oauth_client_available(WS, mcp_oauth.CLAUDE_CODE_CIMD_CLIENT_ID) is True
+
     def test_inconclusive_probe_falls_back_and_is_not_cached(self, monkeypatch, tmp_path):
         # An inconclusive probe (None) => oauth_client_available returns False (proxy),
         # and nothing is cached, so a transient failure isn't sticky for the TTL.
