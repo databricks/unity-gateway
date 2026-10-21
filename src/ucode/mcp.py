@@ -484,22 +484,26 @@ def discover_all_mcp_service_names(
     on_progress: Callable[[int, int, int], None] | None = None,
     on_services: Callable[[list[str]], None] | None = None,
     cancel_event: threading.Event | None = None,
+    on_timeout: Callable[[], None] | None = None,
 ) -> list[str]:
     """All MCP services across every `<catalog>.<schema>` in the workspace. This
     walks the workspace (see `list_all_mcp_services`) and is the workspace-wide
     counterpart to `discover_mcp_service_names`. `on_progress` is forwarded to
     the walk for live count reporting, and `on_services` to stream newly-found
-    service names into the picker as the walk progresses."""
+    service names into the picker as the walk progresses. `on_timeout` is called when the walk's
+    deadline cut it short (partial results were already streamed via `on_services`)."""
     token = get_databricks_token(workspace, profile)
-    names, reason = list_all_mcp_services(
+    walk = list_all_mcp_services(
         workspace,
         token,
         on_progress=on_progress,
         on_services=on_services,
         cancel_event=cancel_event,
     )
-    raise_for_invalid_access_token(workspace, reason)
-    return names
+    raise_for_invalid_access_token(workspace, walk.error)
+    if walk.timed_out and on_timeout is not None:
+        on_timeout()
+    return walk.names
 
 
 def _normalize_workspace_title(text: str) -> str:
@@ -808,7 +812,9 @@ def prompt_for_mcp_server_choices(
     allow_back: bool = False,
     additive: bool = False,
     managed_names: set[str] | None = None,
-    background_loader: Callable[[Callable[[list[questionary.Choice]], None], threading.Event], None]
+    background_loader: Callable[
+        [Callable[[list[questionary.Choice]], None], threading.Event], str | None
+    ]
     | None = None,
 ) -> list[str] | None | _Back:
     """Show the MCP server picker. Returns the list of selected values, `None`
@@ -1317,15 +1323,23 @@ def _mcp_services_background_loader(
     known_names: set[str],
     additive: bool,
     managed_names: set[str] | None = None,
-) -> Callable[[Callable[[list[questionary.Choice]], None], threading.Event], None]:
+) -> Callable[[Callable[[list[questionary.Choice]], None], threading.Event], str | None]:
     """Return a picker `background_loader` that runs the workspace-wide MCP-services walk and
     streams each schema's newly-found services into the open picker as choices, so the walk
     never blocks the picker from opening. Deduping against already-shown rows (e.g. the fast
-    `system.ai` list) is handled by the picker's append."""
+    `system.ai` list) is handled by the picker's append. The walk is bounded by a wall-clock
+    deadline; on a timeout or error the picker keeps what streamed in (at least `system.ai`), and
+    only a timeout adds a footer warning that the list may be incomplete (other errors stay silent)."""
 
     def loader(
         append: Callable[[list[questionary.Choice]], None], cancel_event: threading.Event
-    ) -> None:
+    ) -> str | None:
+        timed_out = False
+
+        def on_timeout() -> None:
+            nonlocal timed_out
+            timed_out = True
+
         def on_services(new_names: list[str]) -> None:
             # A streamed service can be hidden (managed, or already configured under `mcp add`),
             # in which case its choice is None — drop those so only real rows reach the picker.
@@ -1339,8 +1353,18 @@ def _mcp_services_background_loader(
                 append(new_choices)
 
         discover_all_mcp_service_names(
-            workspace, profile, on_services=on_services, cancel_event=cancel_event
+            workspace,
+            profile,
+            on_services=on_services,
+            cancel_event=cancel_event,
+            on_timeout=on_timeout,
         )
+        if timed_out:
+            return (
+                "⚠ Timed out listing your MCP services; to add one not shown, use "
+                "`ug mcp add --names <catalog.schema.name>`"
+            )
+        return None
 
     return loader
 

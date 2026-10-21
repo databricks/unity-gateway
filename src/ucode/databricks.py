@@ -3108,6 +3108,10 @@ _PROBE_FAILED = object()
 # enough time to enumerate them; a slow workspace still degrades to partial
 # results once the budget is exceeded instead of hanging indefinitely.
 _MCP_SERVICES_WALK_DEADLINE_SECONDS = 30.0
+# Reasons the walk reports when the deadline cuts it short before any schema is probed. Callers
+# learn about a timeout from `on_incomplete(True)` / `McpServicesWalk.timed_out`, not these strings.
+_WALK_TIMEOUT_CATALOGS_REASON = "deadline exceeded while listing UC catalogs"
+_WALK_TIMEOUT_SCHEMAS_REASON = "deadline exceeded while listing UC schemas"
 # Skip UC catalogs whose schemas almost never carry user-callable functions
 # you'd want to expose as agent tools.
 _UC_FUNCTIONS_SKIP_CATALOGS = frozenset(
@@ -3122,10 +3126,11 @@ def _collect_concurrently[T, R](
     *,
     max_workers: int,
     should_stop: Callable[[], bool],
-) -> None:
+) -> bool:
     """Run `run` over `items` on daemon workers that are never joined, so a slow or stuck
     call can't block process exit. Results go to `on_result` on the calling thread until
-    every item is drained or `should_stop()` returns True."""
+    every item is drained or `should_stop()` returns True. Returns True if every item
+    finished, False if it stopped with items left unprobed."""
     pending: queue.Queue[T] = queue.Queue()
     for item in items:
         pending.put(item)
@@ -3154,6 +3159,7 @@ def _collect_concurrently[T, R](
         remaining -= 1
         if result is not _PROBE_FAILED:
             on_result(result, item)
+    return remaining == 0
 
 
 def _paginated_json_items(
@@ -3209,6 +3215,7 @@ def walk_catalog_schemas[T](
     skip_catalogs: frozenset[str] = _UC_FUNCTIONS_SKIP_CATALOGS,
     max_workers: int = _SCHEMA_PROBE_WORKERS,
     cancel_event: threading.Event | None = None,
+    on_incomplete: Callable[[bool], None] | None = None,
 ) -> str | None:
     """Discover every user `<catalog>.<schema>` in the workspace and probe each one in parallel.
 
@@ -3220,6 +3227,11 @@ def walk_catalog_schemas[T](
       - `probe(catalog, schema) -> result`: fetch one schema's data (e.g. its MCP services).
       - `collect(result, done, total)`: handle each probe result as it lands — accumulating,
         de-duping, streaming — where `done`/`total` are the completed and total schema counts.
+
+    `on_incomplete(timed_out)`, if given, is called when the deadline or `cancel_event` stopped the
+    walk before every schema was probed (including before any probe ran), so callers can flag partial results without re-checking the clock. `timed_out` is
+    True when the deadline passed and False when `cancel_event` stopped the walk (e.g. the picker
+    closed), so a cancel is not reported as a timeout.
 
     Returns None once the probes run, or a short reason string if there are no catalogs or schemas
     to probe."""
@@ -3247,7 +3259,9 @@ def walk_catalog_schemas[T](
     if not catalog_names:
         return "no user UC catalogs found"
     if time.monotonic() > deadline:
-        return "deadline exceeded while listing UC catalogs"
+        if on_incomplete is not None:
+            on_incomplete(True)
+        return _WALK_TIMEOUT_CATALOGS_REASON
 
     schema_refs: list[tuple[str, str]] = []
 
@@ -3274,8 +3288,15 @@ def walk_catalog_schemas[T](
 
     if not schema_refs:
         if time.monotonic() > deadline:
-            return "deadline exceeded while listing UC schemas"
+            if on_incomplete is not None:
+                on_incomplete(True)
+            return _WALK_TIMEOUT_SCHEMAS_REASON
         return "no UC schemas found"
+
+    # Probe the likeliest homes of a user's own services first: the `main` catalog and any
+    # `default` schema (where `CREATE MCP SERVICE` lands by default). Under the wall-clock
+    # deadline a big workspace returns partial results, so order decides what is found.
+    schema_refs.sort(key=lambda ref: (ref[0] != "main", ref[1] != "default"))
 
     schemas_total = len(schema_refs)
     schemas_done = 0
@@ -3285,15 +3306,30 @@ def walk_catalog_schemas[T](
         schemas_done += 1
         collect(result, schemas_done, schemas_total)
 
-    _collect_concurrently(
+    drained = _collect_concurrently(
         schema_refs,
         lambda ref: probe(*ref),
         collect_probe,
         max_workers=max_workers,
         should_stop=should_stop,
     )
+    if not drained and on_incomplete is not None:
+        on_incomplete(time.monotonic() > deadline)
 
     return None
+
+
+@dataclass(frozen=True)
+class McpServicesWalk:
+    """Result of `list_all_mcp_services`.
+
+    `names`: sorted unique service full names found (possibly partial).
+    `error`: why the walk failed outright (no catalogs, bad token, early deadline); None otherwise.
+    `timed_out`: the deadline cut the probe phase short, so `names` may be incomplete."""
+
+    names: list[str]
+    error: str | None = None
+    timed_out: bool = False
 
 
 def list_all_mcp_services(
@@ -3304,7 +3340,7 @@ def list_all_mcp_services(
     on_progress: Callable[[int, int, int], None] | None = None,
     on_services: Callable[[list[str]], None] | None = None,
     cancel_event: threading.Event | None = None,
-) -> tuple[list[str], str | None]:
+) -> McpServicesWalk:
     """Return sorted unique MCP-service full names across every `<catalog>.<schema>`
     in the workspace. The mcp-services API is one-schema-per-call, so this walks
     catalogs -> schemas -> mcp-services in parallel under a wall-clock budget,
@@ -3321,6 +3357,11 @@ def list_all_mcp_services(
     (single schema)."""
     deadline = time.monotonic() + deadline_seconds
     names: set[str] = set()
+    timed_out = False
+
+    def mark_incomplete(deadline_passed: bool) -> None:
+        nonlocal timed_out
+        timed_out = deadline_passed
 
     def probe(catalog, schema):
         return list_mcp_services(workspace, token, f"{catalog}.{schema}")
@@ -3334,16 +3375,23 @@ def list_all_mcp_services(
         if on_services is not None and new:
             on_services(sorted(new))
 
-    reason = walk_catalog_schemas(
-        workspace, token, deadline=deadline, probe=probe, collect=collect, cancel_event=cancel_event
+    error = walk_catalog_schemas(
+        workspace,
+        token,
+        deadline=deadline,
+        probe=probe,
+        collect=collect,
+        cancel_event=cancel_event,
+        on_incomplete=mark_incomplete,
     )
-    if reason is not None:
-        return [], reason
-    if not names:
-        if time.monotonic() > deadline:
-            return [], "deadline exceeded while listing MCP services"
-        return [], "no MCP services found"
-    return sorted(names), None
+    if error is not None:
+        return McpServicesWalk([], error=error, timed_out=timed_out)
+    # Partial results are still returned, flagged so callers can say the list is incomplete.
+    return McpServicesWalk(
+        sorted(names),
+        error=None if names or timed_out else "no MCP services found",
+        timed_out=timed_out,
+    )
 
 
 def _get_anthropic_models_json(
