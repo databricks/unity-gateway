@@ -18,6 +18,14 @@ Claude answer delivery has offline transcript and subprocess coverage in
 streaming JSON when UG redirects diagnostics to stderr. Live model/gateway selection
 and capability-hook activation are not covered here; interactive selection is unsupported.
 
+Claude Desktop has installed-CLI profile lifecycle coverage in the existing Linux and
+Windows lanes. It configures twice and reverts against each platform's isolated native
+profile path, checking the fixed profile, gateway/helper/model fields, metadata, prior
+selection, and an unrelated profile. It does not launch Desktop. The
+[native testing plan](../../docs/claude-desktop-integration-testing.md) covers the remaining
+macOS/Windows GUI, Cowork, model-switching, and browser-authentication work; those GUI and
+virtualization prerequisites are not satisfied by the headless suite.
+
 The separate [dedicated-workspace CUJ](../e2e_cuj/AGENTS.md) lives in `tests/e2e_cuj/`
 and runs directly with pytest. It does not use this suite's runner or config fixtures.
 It reuses the session, terminal, file-task, and transcript helpers in `utils/`.
@@ -436,6 +444,7 @@ test_ug_codex_commands.py               # command help and parser error forwardi
 test_ug_codex_app_server.py             # actual client/server initialize exchange
 test_ug_smart_routing_hooks.py           # live hook contract plus skill-driven subagent toggles
 test_ug_configure_claude_lifecycle.py   # repeat setup, revert, rejected credentials
+test_ug_configure_claude_desktop.py     # native-path Desktop profile lifecycle, no GUI
 test_ug_configure_claude_workspace_switch.py # real skills MCP cleanup across two workspaces
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
 test_ug_claude_managed_model_discovery.py # Claude MPS policy cases (claude_mps.json)

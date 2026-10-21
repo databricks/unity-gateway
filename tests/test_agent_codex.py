@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import plistlib
 import re
 import sys
 from pathlib import Path
+from subprocess import CalledProcessError
 from unittest.mock import Mock
 
 import pytest
@@ -2161,6 +2163,72 @@ class TestCodexManagedConfig:
         assert codex.revert_legacy_shared_config() is True
         assert "otel" not in read_toml_safe(app_path)
         assert not unit_path.exists()
+
+    def test_desktop_tracing_launch_agent_lifecycle(self, tmp_path, monkeypatch):
+        self._sudo_counting_env(tmp_path, monkeypatch)
+        app_path = codex._legacy_config_path()
+        plist_path = codex._otel_service_path()
+        ug_path = str(tmp_path / "ug")
+        monkeypatch.setattr(codex, "current_os", lambda: managed_files.OS.MACOS)
+        monkeypatch.setattr(codex.os, "getuid", lambda: 501, raising=False)
+        monkeypatch.setattr(codex, "_allocate_otel_port", lambda: 43199)
+        monkeypatch.setattr(codex, "ug_binary", lambda: ug_path)
+        monkeypatch.setenv("PATH", "/opt/homebrew/bin")
+        for name in (
+            "DATABRICKS_CONFIG_FILE",
+            "DATABRICKS_AUTH_STORAGE",
+            "ENABLE_CUSTOM_OAUTH_FROM_CLI",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        target = f"gui/501/{codex.CODEX_OTEL_SERVICE_LABEL}"
+        loaded = False
+        commands = []
+
+        def launchctl(argv, **_kwargs):
+            nonlocal loaded
+            commands.append(argv[1:])
+            if argv[1] == "bootstrap":
+                loaded = True
+            elif argv[1] == "bootout":
+                loaded = False
+            elif not loaded:
+                raise CalledProcessError(113, argv, stderr="Could not find service")
+
+        monkeypatch.setattr(codex.subprocess_cross_os, "run", Mock(side_effect=launchctl))
+        tracing = {"workspace": WS, "codex_otel_tracing": True}
+
+        codex.write_tool_config(dict(tracing))
+        exporter = codex._otel_proxy_overlay("http://127.0.0.1:43199/v1/traces")["otel"]
+        assert read_toml_safe(app_path)["otel"] == exporter
+        assert plistlib.loads(plist_path.read_bytes()) == {
+            "Label": codex.CODEX_OTEL_SERVICE_LABEL,
+            "ProgramArguments": [ug_path, "otel-proxy", "--host", WS, "--port", "43199"],
+            "EnvironmentVariables": {"PATH": "/opt/homebrew/bin"},
+            "RunAtLoad": True,
+            "KeepAlive": {"SuccessfulExit": False},
+        }
+
+        codex.write_tool_config(dict(tracing))
+        newer = "https://newer.databricks.com"
+        codex.write_tool_config({**tracing, "workspace": newer})
+        assert plistlib.loads(plist_path.read_bytes())["ProgramArguments"][3:] == [
+            newer,
+            "--port",
+            "43199",
+        ]
+        codex.write_tool_config({"workspace": newer})
+        assert "otel" not in read_toml_safe(app_path)
+        assert not plist_path.exists()
+        # An unchanged launch leaves the loaded agent alone; a new plist needs a reload.
+        assert commands == [
+            ["print", target],
+            ["bootstrap", "gui/501", str(plist_path)],
+            ["print", target],
+            ["print", target],
+            ["bootout", target],
+            ["bootstrap", "gui/501", str(plist_path)],
+            ["bootout", target],
+        ]
 
 
 class TestWriteConfigBackup:

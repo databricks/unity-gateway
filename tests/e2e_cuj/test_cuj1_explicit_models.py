@@ -26,6 +26,7 @@ from .helpers.constants import (
     INFERENCE_PATHS,
     RUN_HEADER,
 )
+from .helpers.desktop import assert_claude_desktop_profile, enable_claude_desktop
 from .helpers.evidence import SessionEvidence
 from .helpers.poll import poll
 from .helpers.tui_request_recorder import TuiRequestRecorder
@@ -385,9 +386,11 @@ class TestCujManagedConfiguration(BaseCujTest):
     def test_cuj_managed_configuration(self, cuj):
         """Scenario: configure a fresh session against the published two-agent policy.
 
-        Expected: configure selects both agents without a picker and writes their managed settings.
+        Expected: configure selects both agents without a picker and writes their managed settings
+        and a Desktop profile containing the policy's Databricks-hosted Claude models.
         """
         session, workspace, _ = cuj
+        config_library = enable_claude_desktop(session, workspace.url)
         configured = session.run(
             "configure",
             "--workspace",
@@ -401,6 +404,16 @@ class TestCujManagedConfiguration(BaseCujTest):
         entries = _managed_entries(raw)
         claude_headers = _assert_published_config(raw, entries)
         _assert_generated_configs(session, claude_headers, workspace.url)
+        assert_claude_desktop_profile(
+            session,
+            config_library,
+            workspace.url,
+            model_ids=CLAUDE_MODELS,
+            custom_headers={
+                "x-databricks-use-coding-agent-mode": "true",
+                **claude_headers,
+            },
+        )
         codex_models = session.codex_model_ids(
             ["app-server", "--listen", "stdio://"], name="managed-sentinel-codex-models"
         )

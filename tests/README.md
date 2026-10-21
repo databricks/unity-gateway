@@ -203,6 +203,12 @@ metadata, and previous-selection state, and verify subsequent configure is a no-
 Existing CLI URL normalization is unchanged. Native Desktop activation,
 GUI/helper/browser behavior, and inference remain untested by these component checks;
 they do not establish native Windows or Linux support.
+The installed-CLI integration suite also configures twice and reverts against isolated
+native Linux and Windows profile paths. It verifies the fixed profile, gateway/helper/model
+fields, metadata selection, and preservation of an unrelated profile. It does not launch
+Desktop or establish GUI, Cowork, helper execution, browser authentication, or inference.
+The [native integration plan](../docs/claude-desktop-integration-testing.md) defines the
+separate interactive macOS and Windows coverage needed for those claims.
 
 `test_desktop_setup.py` exercises configure, refresh, deleted-profile recovery,
 successful setup without the default-model warning, recoverable setup failures that still warn,
@@ -530,7 +536,10 @@ it again during teardown. The TUI cases forward agent requests through the share
 loopback recorder to the real workspace and assert the provider-service header, model,
 paired HTTP 200 response, and final answer. The configuration case verifies sandbox MCP
 selection and generated client listings; live sandbox execution remains deferred because
-MAS cannot downscope the CI service principal. Failed TUI runs
+MAS cannot downscope the CI service principal. CUJ1 and CUJ2 also initialize Claude Desktop's
+Linux profile path and verify that its profile uses, respectively, the published Databricks-hosted
+Claude models or Anthropic provider service and model. This is installed-CLI coverage of real
+published managed configs, not Desktop GUI or helper execution. Failed TUI runs
 retain terminal output/actions/screen and best-effort agent transcript snapshots under the
 runner artifact directory before the temporary homes are deleted. The suite requires
 `UG_CUJ_SP_CLIENT_ID` and `UG_CUJ_SP_CLIENT_SECRET`, with `ug`, `claude`, `codex`, and
@@ -674,10 +683,11 @@ and real-shell copy/rename failure handling in temporary directories.
 `test_cli.py` covers the workspace configure session boundary.
 These are unit/component checks; they do not establish live sudo password-prompt behavior.
 
-Codex desktop OTEL component tests cover the startup unit, reuse of CLI proxy/auth,
+Codex desktop OTEL component tests cover the systemd unit and the macOS LaunchAgent
+(`launchctl` is simulated), reuse of CLI proxy/auth,
 fixed-port collisions, setup failures that only warn, unchanged launches that keep the
 service running, and leaving another exporter alone. They do not establish a live
-desktop GUI or systemd login/reboot pass.
+desktop GUI, a real `launchctl` run, or a login/reboot pass.
 
 | Scenario | Status / requirement |
 | --- | --- |
