@@ -684,7 +684,9 @@ def _mcp_service_choice(
     )
     location, _, leaf = name.rpartition(".")
     return CatalogChoice(
-        title=f"MCP: {name}",
+        # The title is the filter corpus in table mode. Avoid a common "MCP:" prefix,
+        # which would make searches such as "mcp" match every service.
+        title=name,
         value=registered_as
         if configured
         else f"{MCP_ADD_PREFIX}{MCP_SERVICE_SELECTION_PREFIX}{name}",

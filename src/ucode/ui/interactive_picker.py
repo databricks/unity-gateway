@@ -17,7 +17,6 @@ from typing import Any
 
 import questionary
 from prompt_toolkit.application import Application, get_app
-from prompt_toolkit.data_structures import Point
 from prompt_toolkit.filters import Condition, IsDone
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
@@ -81,9 +80,9 @@ def picker_details(
 
     def date(value: object) -> str:
         parsed = parse_update_time(value) if isinstance(value, str) else None
-        return parsed.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC") if parsed else "Not available"
+        return parsed.astimezone(UTC).strftime("%Y-%m-%d") if parsed else "Not available"
 
-    lines = [f"Location: {text(name)}"]
+    lines = [f"Full name: {text(name)}"]
     if bundle_name:
         lines.append(f"Bundle: {text(bundle_name)}")
     lines.extend(
@@ -162,6 +161,9 @@ def _table_cell(value: str, width: int) -> str:
 
 
 def _table_columns(width: int) -> tuple[int, int, int]:
+    # Keep the table compact on wide terminals. Stretching short values across the full
+    # viewport makes related cells harder to scan and leaves the status far from the name.
+    width = min(width, 96)
     status = 16 if width >= 60 else 6
     remaining = max(2, width - 9 - 4 - status)
     return remaining // 2, remaining - remaining // 2, status
@@ -253,11 +255,32 @@ class StreamingInquirerControl(InquirerControl):
 def merge_new_choices(
     existing: list[questionary.Choice | questionary.Separator],
     new_choices: list[questionary.Choice],
-) -> list[questionary.Choice]:
-    """Return the choices from ``new_choices`` not already present in ``existing`` (compared by
-    Choice value). Used to dedupe background-streamed picker rows against what's already shown."""
-    shown = {c.value for c in existing if isinstance(c, questionary.Choice)}
-    return [c for c in new_choices if isinstance(c, questionary.Choice) and c.value not in shown]
+) -> tuple[list[questionary.Choice | questionary.Separator], int]:
+    """Merge streamed choices by value and return the rows plus the number newly discovered.
+
+    A rich catalog row replaces a plain initial row with the same value. This preserves the
+    selection (which is value-based) while adding the streamed location and detail metadata.
+    """
+    incoming = {choice.value: choice for choice in new_choices}
+    merged: list[questionary.Choice | questionary.Separator] = []
+    seen: set[Any] = set()
+    added = 0
+    for choice in existing:
+        if isinstance(choice, questionary.Choice) and choice.value in incoming:
+            replacement = incoming[choice.value]
+            if isinstance(replacement, CatalogChoice) and not isinstance(choice, CatalogChoice):
+                merged.append(replacement)
+            else:
+                merged.append(choice)
+            seen.add(choice.value)
+        else:
+            merged.append(choice)
+    for choice in new_choices:
+        if choice.value not in seen:
+            merged.append(choice)
+            seen.add(choice.value)
+            added += 1
+    return merged, added
 
 
 def scrolling_checkbox(
@@ -369,7 +392,7 @@ def scrolling_checkbox(
         description = pointed_description()
         if description is None:
             return []
-        return _detail_tokens(description)
+        return _detail_tokens("\n".join(description.splitlines()[detail_line["offset"] :]))
 
     @Condition
     def has_description() -> bool:
@@ -457,7 +480,6 @@ def scrolling_checkbox(
                                 ),
                                 content=FormattedTextControl(
                                     description_tokens,
-                                    get_cursor_position=lambda: Point(0, detail_line["offset"]),
                                     show_cursor=False,
                                 ),
                                 wrap_lines=True,
@@ -609,10 +631,10 @@ def scrolling_checkbox(
             def apply() -> None:
                 # On the UI thread: rebind choices (atomic; render reads the list live) and repaint.
                 # Selections track by value, so appended rows never disturb checkboxes/scroll/filter.
-                additions = merge_new_choices(control.choices, new_choices)
-                if additions:
-                    control.choices = [*control.choices, *additions]
-                    loading["found"] += len(additions)
+                merged, added = merge_new_choices(control.choices, new_choices)
+                if merged != control.choices:
+                    control.choices = merged
+                    loading["found"] += added
                     app.invalidate()
 
             run_on_loop(apply)

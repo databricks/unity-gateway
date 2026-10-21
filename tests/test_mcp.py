@@ -3904,9 +3904,9 @@ class TestManagedServersAreNotReAdded:
         )
         titles = [c.title for c in choices]
         assert titles == [
-            "MCP: system.ai.github",
-            "MCP: system.ai.slack",
-            "MCP: system.ai.web_search",
+            "system.ai.github",
+            "system.ai.slack",
+            "system.ai.web_search",
         ]
         assert [c.status for c in choices] == ["✓ Managed", "✓ Configured", "✗ Not configured"]
         assert [bool(c.disabled) for c in choices] == [True, True, False]
@@ -3924,9 +3924,9 @@ class TestManagedServersAreNotReAdded:
             managed_names={"system-ai-github"},
         )
         by_title = {c.title: c for c in choices}
-        assert by_title["MCP: system.ai.github"].disabled == "Managed by workspace"
-        assert by_title["MCP: system.ai.github"].checked is False
-        assert by_title["MCP: system.ai.slack"].checked is True  # own: removable toggle
+        assert by_title["system.ai.github"].disabled == "Managed by workspace"
+        assert by_title["system.ai.github"].checked is False
+        assert by_title["system.ai.slack"].checked is True  # own: removable toggle
 
     def test_drop_managed_servers_reports_what_it_skipped(self, capsys):
         servers = [

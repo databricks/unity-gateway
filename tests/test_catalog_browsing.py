@@ -106,12 +106,12 @@ def test_skill_metadata_survives_parsing_and_choice_construction(tmp_path):
     assert ref is not None
     choice = skills_download._skill_download_choice(ref, [tmp_path])
     assert choice.value == "cat.sch.securable"
-    assert "Location: cat.sch.securable" in choice.description
+    assert "Full name: cat.sch.securable" in choice.description
     assert "Bundle: bundle" in choice.description
     assert "Description: Analyze tickets" in choice.description
     assert "Created by: creator@example.com" in choice.description
-    assert "Created: 2026-08-01 00:00 UTC" in choice.description
-    assert "Updated: 2026-09-01 00:00 UTC" in choice.description
+    assert "Created: 2026-08-01" in choice.description
+    assert "Updated: 2026-09-01" in choice.description
 
 
 def test_initial_and_streamed_mcp_choices_have_identical_details(monkeypatch):
@@ -161,7 +161,7 @@ def test_details_preserve_fields_and_normalize_dates():
     )
     rendered = "".join(token for _, token in _detail_tokens(details))
     assert "…\nCreated by: creator @example.com" in rendered
-    assert "Created: 2026-09-01 00:00 UTC" in rendered
+    assert "Created: 2026-09-01" in rendered
     assert "Updated: Not available" in rendered
     missing = picker_details("cat.sch.tool", {"unexpected": "value"}, created_by=123)
     assert "Description: No description provided" in missing
@@ -304,14 +304,14 @@ def test_rendered_browser_scrolls_details_in_small_terminals(columns, rows):
                 assert "tool0" in rendered()
                 assert "[ ]" in rendered()
                 assert "✗" in rendered()
-                pipe.send_text("\x1b[6~\x1b[6~")  # Page Down to audit fields
+                pipe.send_text("\x1b[6~")  # One Page Down visibly moves the detail pane
                 await asyncio.sleep(0.1)
                 text = rendered()
                 assert "Updated:" in text
-                assert "2026-10-15 12:30 UTC" in text
+                assert "2026-10-15" in text
                 pipe.send_text("\x1b[B")  # Next choice resets details to the top
                 await asyncio.sleep(0.1)
-                assert "Location: cat.sch.tool1" in rendered()
+                assert "Full name: cat.sch.tool1" in rendered()
                 pipe.send_text(" \r")
                 assert await asyncio.wait_for(task, 2) == ["1"]
             finally:

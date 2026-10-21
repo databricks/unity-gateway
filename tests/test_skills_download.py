@@ -1006,7 +1006,7 @@ class TestSkillDownloadPicker:
         fresh = sd._skill_download_choice(ref("triage", description="Routes tickets."), roots)
         assert fresh.value == "main.default.triage"
         assert fresh.status == "✗ Not installed"
-        assert "Location: main.default.triage" in fresh.description
+        assert "Full name: main.default.triage" in fresh.description
         assert "Bundle: triage" in fresh.description
         assert "Description: Routes tickets." in fresh.description
 
