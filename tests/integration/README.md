@@ -97,7 +97,9 @@ The required Isaac feedback form, evidence submission, and background delivery
 notifications need a separate manual Isaac check. The gateway toggle journey does
 not cover the form or notification timing. Use released Isaac to check background
 completion during another task, immutable evidence, upload permission denials,
-local previews, and text-only Other reports.
+local previews, and text-only Other reports. Also launch with routing disabled:
+`/isaac-feedback` should still submit in the background, the status band should
+stay hidden, and the temporary feedback plugin should be removed after exit.
 
 The existing unit tests keep their fixtures. Integration has an independent
 pytest configuration and uses `--confcutdir` so those fixtures cannot leak in.

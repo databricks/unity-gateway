@@ -129,6 +129,6 @@ export function register(on: On, options: PluginOptions): void {
     }
     return {text: `Smart Router is ${action}`};
   });
-  registerStatusBand(on);
+  if (launchedEnabled) registerStatusBand(on);
   registerSubagentRouting(on, options);
 }

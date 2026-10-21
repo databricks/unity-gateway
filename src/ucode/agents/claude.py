@@ -13,8 +13,10 @@ import subprocess
 import sys
 import threading
 import traceback
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from ucode.config_io import (
     APP_DIR,
@@ -27,6 +29,7 @@ from ucode.config_io import (
 )
 from ucode.constants import (
     AI_GATEWAY_REQUEST_TAGS_HEADER,
+    ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
     LOOPBACK_HOST,
     MCP_CLEANUP_SCOPES,
     MCP_USER_SCOPE,
@@ -50,6 +53,7 @@ from ucode.databricks import (
     maybe_add_gpt_1m_suffix,
     ug_binary,
 )
+from ucode.env import env_bool
 from ucode.launcher import exec_or_spawn
 from ucode.managed_config import refresh_managed_config
 from ucode.managed_files import (
@@ -2259,6 +2263,30 @@ def _rewrite_relayed_port(state: dict, port: int) -> None:
         write_json_file(CLAUDE_SETTINGS_PATH, settings)
 
 
+@contextmanager
+def _feedback_launch_args(
+    tool_args: list[str], settings_override: dict | None = None
+) -> Iterator[tuple[list[str], dict | None]]:
+    if not env_bool(ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR):
+        yield tool_args, settings_override
+        return
+    APP_DIR.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(prefix="claude-feedback-", dir=APP_DIR) as directory:
+        plugin_dir = Path(directory) / "plugin"
+        smart_routing_v2._write_routed_claude_plugin(plugin_dir, [])
+        feedback_settings = {
+            "pluginConfigs": {
+                smart_routing_v2.CLAUDE_ROUTING_PLUGIN_NAME: {
+                    "options": smart_routing_v2._claude_mod_launch_options({})
+                }
+            }
+        }
+        yield (
+            ["--plugin-dir", str(plugin_dir), *tool_args],
+            _merge_claude_settings(settings_override or {}, feedback_settings),
+        )
+
+
 def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     """Relayed launch: sign into the Claude subscription, start the loopback
     refresh proxy, then run Claude Code alongside it (the proxy must outlive the
@@ -2288,16 +2316,21 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
 
-    proc = subprocess_cross_os.popen(_build_claude_argv(binary, tool_args, relayed=True))
-    try:
-        returncode = proc.wait()
-    except KeyboardInterrupt:
-        proc.send_signal(signal.SIGINT)
-        returncode = proc.wait()
-    finally:
-        cache.stop()
-        server.shutdown()
-        client.close()
+    with _feedback_launch_args(tool_args) as (launch_args, settings_override):
+        proc = subprocess_cross_os.popen(
+            _build_claude_argv(
+                binary, launch_args, relayed=True, settings_override=settings_override
+            )
+        )
+        try:
+            returncode = proc.wait()
+        except KeyboardInterrupt:
+            proc.send_signal(signal.SIGINT)
+            returncode = proc.wait()
+        finally:
+            cache.stop()
+            server.shutdown()
+            client.close()
     raise SystemExit(returncode)
 
 
@@ -2383,6 +2416,12 @@ def launch(
         }
         settings_override = _merge_claude_settings(settings_override or {}, {"env": fallback_env})
         os.environ.update(fallback_env)
+    if env_bool(ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR):
+        with _feedback_launch_args(launch_args, settings_override) as (args, override):
+            exec_or_spawn(
+                _build_claude_argv(binary, args, settings_override=override), wait_for_child=True
+            )
+        return
     exec_or_spawn(_build_claude_argv(binary, launch_args, settings_override=settings_override))
 
 

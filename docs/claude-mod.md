@@ -1,7 +1,8 @@
 # Claude mod entry point
 
-UG's smart-routed Claude launcher loads `hooks/register.ts` through the existing
-launch-scoped `ug-smart-router` plugin. Claude Code 2.1.290 or newer is required.
+UG's Claude launcher loads `hooks/register.ts` through the existing launch-scoped
+`ug-smart-router` plugin for smart routing or Isaac feedback. Claude Code 2.1.290 or
+newer is required.
 
 The existing `_write_routed_claude_plugin()` copies the packaged TypeScript entry point
 from `src/ucode/agents/claude_mods/` and writes `hooks/hooks.json` into that plugin.
@@ -84,6 +85,10 @@ The native task completion event reports success or failure without a model turn
 or status polling. `delivery_notifications: "native"` tells the skill to end without
 duplicating the sending message. Other reports retain their existing text-only
 transport and do not receive an evidence feedback ID.
+
+Claude launches without smart routing also load the feedback hooks when this flag
+is enabled. Routing stays disabled and the status band stays hidden. UG keeps the
+temporary plugin alive until Claude exits, then removes it.
 
 These uploads belong to the running Claude session. Keep it open until completion;
 if interrupted, retry the saved evidence ID on the same machine. No Isaac background
