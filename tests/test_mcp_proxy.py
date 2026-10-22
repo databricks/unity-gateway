@@ -425,6 +425,38 @@ class TestMcpBridgeConnectionLogin:
         anyio.run(scenario)
         assert logins == [(CONN_URL, "p")]
 
+    def test_non_tool_auth_error_is_forwarded_without_login(self, monkeypatch):
+        monkeypatch.setattr(
+            mcp_proxy,
+            "run_connection_login",
+            lambda *a, **k: pytest.fail("non-tool requests must not open a browser"),
+        )
+
+        async def scenario():
+            from_upstream, upstream_read = anyio.create_memory_object_stream(1)
+            to_client, client_receive = anyio.create_memory_object_stream(1)
+            to_upstream, upstream_receive = anyio.create_memory_object_stream(1)
+            bridge = mcp_proxy._McpBridge(mcp_proxy._ConnectionLogin(CONN_URL, WS, "p"))
+            bridge.pending_requests[1] = mcp_proxy.SessionMessage(
+                mcp_proxy.JSONRPCRequest(
+                    jsonrpc="2.0",
+                    id=1,
+                    method="resources/list",
+                )
+            )
+            error = self._error()
+
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(bridge.pump_upstream, upstream_read, to_client, to_upstream)
+                with anyio.fail_after(1):
+                    await from_upstream.send(error)
+                    assert await client_receive.receive() is error
+                    with pytest.raises(anyio.WouldBlock):
+                        upstream_receive.receive_nowait()
+                tg.cancel_scope.cancel()
+
+        anyio.run(scenario)
+
     def test_tools_list_auth_error_returns_authentication_tool_without_login(self, monkeypatch):
         monkeypatch.setattr(
             mcp_proxy,

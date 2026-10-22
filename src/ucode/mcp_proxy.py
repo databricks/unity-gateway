@@ -468,8 +468,9 @@ class _McpBridge:
                             await dest.send(self._authentication_tool_list_response(request_id))
                             continue
                         if (
-                            original is not None
+                            isinstance(request, JSONRPCRequest)
                             and request_id is not None
+                            and request.method == "tools/call"
                             and request_id not in self.retried_requests
                             and payload.error.code == CONNECTION_AUTH_REQUIRED_ERROR_CODE
                             and self.connection_login.connection is not None
