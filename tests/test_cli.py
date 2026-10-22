@@ -6070,7 +6070,9 @@ class TestConfigureSharedStateUsePat:
     ):
         cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
         response_iter = iter(responses)
-        monkeypatch.setattr(db_mod, "_http_get_json", lambda url, token: next(response_iter))
+        monkeypatch.setattr(
+            db_mod, "_http_get_json", lambda url, token, **kwargs: next(response_iter)
+        )
         monkeypatch.setattr(
             cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
         )
@@ -6108,7 +6110,9 @@ class TestConfigureSharedStateUsePat:
     ):
         cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
         response_iter = iter(responses)
-        monkeypatch.setattr(db_mod, "_http_get_json", lambda url, token: next(response_iter))
+        monkeypatch.setattr(
+            db_mod, "_http_get_json", lambda url, token, **kwargs: next(response_iter)
+        )
         monkeypatch.setattr(
             cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
         )

@@ -3574,7 +3574,7 @@ class TestProbeUnityGatewayCapabilities:
     def test_probe_preserves_workspace_scheme_and_port(self, monkeypatch):
         calls = []
 
-        def fake_get(url, token):
+        def fake_get(url, token, **kwargs):
             calls.append(url)
             return {"model_services": [{"name": "model-services/system.ai.gpt-5"}]}, None
 
@@ -3587,7 +3587,7 @@ class TestProbeUnityGatewayCapabilities:
     def test_model_service_resource_returns_success(self, monkeypatch):
         calls: list[str] = []
 
-        def fake_get(url, token):
+        def fake_get(url, token, **kwargs):
             calls.append(url)
             return {"model_services": [{"name": "model-services/system.ai.gpt-5"}]}, None
 
@@ -3611,7 +3611,7 @@ class TestProbeUnityGatewayCapabilities:
             ]
         )
 
-        def fake_get(url, token):
+        def fake_get(url, token, **kwargs):
             calls.append(url)
             return next(responses)
 
@@ -3637,7 +3637,7 @@ class TestProbeUnityGatewayCapabilities:
             ]
         )
 
-        def fake_get(url, token):
+        def fake_get(url, token, **kwargs):
             calls.append(url)
             return next(responses)
 
@@ -3660,7 +3660,7 @@ class TestProbeUnityGatewayCapabilities:
         monkeypatch.setattr(
             db_mod,
             "_http_get_json",
-            lambda url, token: ({}, None),
+            lambda url, token, **kwargs: ({}, None),
         )
 
         model_service_probe = db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
@@ -3674,7 +3674,7 @@ class TestProbeUnityGatewayCapabilities:
     def test_model_service_unavailable_raises(self, monkeypatch):
         calls: list[str] = []
 
-        def fake_get(url, token):
+        def fake_get(url, token, **kwargs):
             calls.append(url)
             return None, "HTTP 404: model services unavailable"
 
@@ -3694,7 +3694,7 @@ class TestProbeUnityGatewayCapabilities:
     def test_model_service_auth_failure_raises(self, monkeypatch):
         calls: list[str] = []
 
-        def fake_get(url, token):
+        def fake_get(url, token, **kwargs):
             calls.append(url)
             return None, "HTTP 401: Unauthorized"
 
@@ -3708,7 +3708,7 @@ class TestProbeUnityGatewayCapabilities:
     def test_missing_scope_403_routes_to_reauth_not_grants(self, monkeypatch):
         calls: list[str] = []
 
-        def fake_get(url, token):
+        def fake_get(url, token, **kwargs):
             calls.append(url)
             return None, (
                 "HTTP 403 Forbidden: Provided OAuth token does not have required "
@@ -3733,7 +3733,7 @@ class TestProbeUnityGatewayCapabilities:
                 (None, "HTTP 500: Internal Server Error"),
             ]
         )
-        monkeypatch.setattr(db_mod, "_http_get_json", lambda url, token: next(responses))
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda url, token, **kwargs: next(responses))
 
         assert db_mod._probe_model_services(WS, "fake-token") == db_mod.GatewayProbe(
             True, "reachable", conclusive=False
@@ -3744,7 +3744,7 @@ class TestProbeUnityGatewayCapabilities:
     ):
         calls: list[str] = []
 
-        def fake_get(url, token):
+        def fake_get(url, token, **kwargs):
             calls.append(url)
             return {"next_page_token": "more"}, None
 
@@ -3763,7 +3763,7 @@ class TestProbeUnityGatewayCapabilities:
             ]
         )
 
-        monkeypatch.setattr(db_mod, "_http_get_json", lambda url, token: next(responses))
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda url, token, **kwargs: next(responses))
 
         assert db_mod.probe_unity_gateway_capabilities(WS, "fake-token") == db_mod.GatewayProbe(
             True, "reachable", conclusive=False
@@ -3805,7 +3805,7 @@ class TestProbeUnityGatewayCapabilities:
         monkeypatch.setattr(
             db_mod,
             "_http_get_json",
-            lambda url, token: (None, "HTTP 403 Forbidden: Invalid access token."),
+            lambda url, token, **kwargs: (None, "HTTP 403 Forbidden: Invalid access token."),
         )
         with pytest.raises(RuntimeError, match="rejected the access token"):
             db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
@@ -3813,7 +3813,7 @@ class TestProbeUnityGatewayCapabilities:
     def test_model_service_forbidden_reports_permission_error(self, monkeypatch):
         calls: list[str] = []
 
-        def fake_get(url, token):
+        def fake_get(url, token, **kwargs):
             calls.append(url)
             return None, "HTTP 403: Missing Unity Catalog grants"
 
@@ -3831,6 +3831,87 @@ class TestProbeUnityGatewayCapabilities:
         assert "rejected the access token" not in message
         assert "not enabled" not in message
         assert calls == [f"https://{WS_HOST}/api/2.1/unity-catalog/model-services?page_size=50"]
+
+    def test_probe_retries_transient_499_then_succeeds(self, monkeypatch):
+        sleeps: list[float] = []
+        outcomes = iter(
+            [
+                TestHttpGetJsonRetries._http_error(499, "Unknown"),
+                _FakeResponse({"model_services": [{"name": "model-services/system.ai.gpt-5"}]}),
+            ]
+        )
+
+        def fake_urlopen(request, timeout=None):
+            outcome = next(outcomes)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod.time, "sleep", sleeps.append)
+
+        assert db_mod.probe_unity_gateway_capabilities(WS, "fake-token") == db_mod.GatewayProbe(
+            True, "reachable, accessible model service returned", True
+        )
+        assert len(sleeps) == 1
+
+    def test_probe_requests_bounded_retries(self, monkeypatch):
+        seen: list[int] = []
+
+        def fake_get(url, token, **kwargs):
+            seen.append(kwargs.get("max_retries"))
+            return {"model_services": [{"name": "model-services/system.ai.gpt-5"}]}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+        db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
+        assert seen == [db_mod._MODEL_SERVICE_PROBE_MAX_RETRIES]
+
+    @pytest.mark.parametrize(
+        "reason",
+        [
+            "HTTP 499 Unknown",
+            "HTTP 504 Gateway Timeout",
+            "HTTP 503 Service Unavailable: try later",
+            "network error: timed out",
+        ],
+    )
+    def test_persistent_transient_failure_is_not_reported_as_not_enabled(self, monkeypatch, reason):
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda url, token, **kwargs: (None, reason))
+
+        with pytest.raises(RuntimeError) as excinfo:
+            db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
+
+        message = str(excinfo.value)
+        assert "is not enabled on this workspace" not in message
+        assert reason in message
+        assert "retry" in message
+        assert "--skip-preflight" in message
+
+    def test_persistent_499_after_retries_is_transient_error(self, monkeypatch):
+        calls: list[object] = []
+
+        def fake_urlopen(request, timeout=None):
+            calls.append(request)
+            raise TestHttpGetJsonRetries._http_error(499, "Unknown")
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod.time, "sleep", lambda s: None)
+
+        with pytest.raises(RuntimeError, match="Could not verify") as excinfo:
+            db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
+
+        assert "HTTP 499 Unknown" in str(excinfo.value)
+        assert len(calls) == db_mod._MODEL_SERVICE_PROBE_MAX_RETRIES + 1
+
+    def test_404_still_reports_not_enabled(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda url, token, **kwargs: (None, "HTTP 404 Not Found: NOT_FOUND"),
+        )
+
+        with pytest.raises(RuntimeError, match="is not enabled on this workspace"):
+            db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
 
 
 class TestHttpGetJsonReason:
@@ -3927,6 +4008,46 @@ class TestHttpGetJsonRetries:
         assert payload == {"ok": True}
         assert reason is None
         assert sleeps == [1.25]
+
+    @pytest.mark.parametrize("code", [499, 504])
+    def test_retries_transient_gateway_status_then_succeeds(self, monkeypatch, code):
+        outcomes = iter([self._http_error(code, "Unknown"), _FakeResponse({"ok": True})])
+        sleeps = []
+
+        def fake_urlopen(request, timeout=None):
+            outcome = next(outcomes)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod.random, "uniform", lambda low, high: high)
+        monkeypatch.setattr(db_mod.time, "sleep", sleeps.append)
+
+        payload, reason = db_mod._http_get_json("https://x/y", "tok", max_retries=2)
+
+        assert payload == {"ok": True}
+        assert reason is None
+        assert sleeps == [1.25]
+
+    @pytest.mark.parametrize("code", [400, 404, 500, 502, 503])
+    def test_does_not_retry_other_statuses(self, monkeypatch, code):
+        calls = []
+        sleeps = []
+
+        def fake_urlopen(request, timeout=None):
+            calls.append(request)
+            raise self._http_error(code, "Nope")
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod.time, "sleep", sleeps.append)
+
+        payload, reason = db_mod._http_get_json("https://x/y", "tok", max_retries=2)
+
+        assert payload is None
+        assert reason == f"HTTP {code} Nope"
+        assert len(calls) == 1
+        assert sleeps == []
 
     def test_stops_after_configured_retries(self, monkeypatch):
         calls = []
