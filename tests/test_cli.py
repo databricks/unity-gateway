@@ -203,6 +203,7 @@ class TestHelp:
         assert "dollars spent and total budget" in output
         assert "Unity Gateway" in output
         assert "--all" in output
+        assert "Show all applicable budget limits." in output
         assert "--warehouse-id" not in output
 
 

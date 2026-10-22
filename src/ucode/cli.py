@@ -4485,9 +4485,9 @@ def doctor_cmd() -> None:
 
 @app.command("usage", rich_help_panel="Usage")
 def usage_cmd(
-    show_all: bool = typer.Option(
-        False, "--all", help="Show all budget limits in the expanded view."
-    ),
+    show_all: Annotated[
+        bool, typer.Option("--all", help="Show all applicable budget limits.")
+    ] = False,
 ) -> None:
     """Show Unity Gateway dollars spent and total budget."""
     try:
