@@ -96,6 +96,7 @@ from ucode.managed_budget import (
 from ucode.managed_config import (
     AGENT_ENUM_TO_TOOL,
     ManagedConfigResult,
+    ManagedPolicyInstallDenied,
     get_managed_config,
     get_model_recommendation,
     load_managed_state,
@@ -808,7 +809,7 @@ def _refresh_configured_policy(state: dict) -> ManagedConfigResult:
     """
     try:
         return refresh_managed_config(state, force_refresh=True)
-    except RuntimeError:
+    except ManagedPolicyInstallDenied:
         installed = managed_state_workspace()
         if installed and normalize_workspace_url(installed) != normalize_workspace_url(
             state["workspace"]

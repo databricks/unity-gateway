@@ -6239,6 +6239,27 @@ class TestDeniedMachineWorkspaceSwitch:
         }
 
 
+class TestUnrelatedConfigureFailure:
+    def test_other_errors_leave_the_saved_workspace_alone(self, monkeypatch):
+        """Only a denied policy install moves the selection back to the installed workspace."""
+        from ucode.managed_config import save_managed_state
+        from ucode.state import load_state
+
+        save_managed_state("https://installed.example.com", {"default_agent": "claude"})
+        cli_mod.set_current_workspace("https://selected.example.com")
+
+        def boom(*_a, **_k):
+            raise RuntimeError("could not write ~/.ucode/refresh_ts.json")
+
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", boom)
+        with pytest.raises(RuntimeError, match="refresh_ts"):
+            cli_mod._refresh_configured_policy(
+                {"workspace": "https://selected.example.com", "profile": None}
+            )
+
+        assert load_state().get("workspace") == "https://selected.example.com"
+
+
 class TestInstalledMachineWorkspace:
     INSTALLED = "https://installed.example.com"
     SELECTED = "https://selected.example.com"

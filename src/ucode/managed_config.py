@@ -53,8 +53,8 @@ from ucode.time_utils import parse_update_time
 from ucode.ui import console, normalize_workspace_url, print_warning
 
 MANAGED_CONFIG_PATH = UNITY_GATEWAY_MANAGED_SETTINGS_PATH
-# Where the machine cannot hold that file (Windows, UG_SKIP_OS_SETTINGS, `--user` scope), ug keeps
-# main's per-user cache of the fetched policy instead, unchanged.
+# Per-user policy cache for platforms or modes without machine installation (Windows,
+# UG_SKIP_OS_SETTINGS, `--user` scope).
 USER_MANAGED_CONFIG_PATH = config_io.APP_DIR / "managed-config.json"
 REFRESH_TS_PATH = config_io.APP_DIR / "refresh_ts.json"
 
@@ -389,6 +389,10 @@ class FetchedManagedConfig(NamedTuple):
 
     manifest: dict | None
     reason: str | None
+
+
+class ManagedPolicyInstallDenied(RuntimeError):
+    """``ug configure`` could not install, replace, or remove the machine policy (e.g. no sudo)."""
 
 
 class ManagedConfigResult(NamedTuple):
@@ -730,10 +734,21 @@ def load_managed_configuration(workspace: str | None) -> dict | None:
     """
     if not workspace:
         return None
-    installed = _stored_config(MANAGED_CONFIG_PATH, workspace)
+    installed = _installed_config(workspace)
     if installed is not None or _machine_policy_installable():
         return installed
     return _stored_config(USER_MANAGED_CONFIG_PATH, workspace)
+
+
+def _installed_config(workspace: str) -> dict | None:
+    """The installed machine policy for ``workspace``, read only where ug installs one.
+
+    On Windows the POSIX path resolves under the current drive's root, which a standard user may be
+    able to create, so it is never trusted there.
+    """
+    if not _machine_policy_supported():
+        return None
+    return _stored_config(MANAGED_CONFIG_PATH, workspace)
 
 
 def _stored_config(path: Path, workspace: str) -> dict | None:
@@ -750,14 +765,21 @@ def _stored_config(path: Path, workspace: str) -> dict | None:
     return config if isinstance(config, dict) else None
 
 
-def managed_state_workspace() -> str | None:
-    """The workspace the on-disk managed config was authored/pulled for, or None when there is none.
+def managed_state_workspace(*, include_user_cache: bool = False) -> str | None:
+    """The workspace the installed machine policy belongs to, or None when there is none.
 
-    Lets a caller that has no workspace in local ucode state (e.g. ``ucode setup --show`` before
-    ``ucode configure``) still find the manifest on disk and report which workspace it belongs to.
+    Launches enforce this workspace. ``include_user_cache`` also accepts the per-user cache's
+    workspace where no machine policy is possible, for a caller with no workspace in local state
+    (e.g. ``ug export`` before ``ug configure``) that only needs to find a saved policy.
     """
-    workspace = config_io.read_json_safe(MANAGED_CONFIG_PATH).get("workspace")
-    return workspace if isinstance(workspace, str) and workspace else None
+    paths = [MANAGED_CONFIG_PATH] if _machine_policy_supported() else []
+    if include_user_cache and not _machine_policy_installable():
+        paths.append(USER_MANAGED_CONFIG_PATH)
+    for path in paths:
+        workspace = config_io.read_json_safe(path).get("workspace")
+        if isinstance(workspace, str) and workspace:
+            return workspace
+    return None
 
 
 def managed_launch_workspace(workspace: str | None) -> str | None:
@@ -790,7 +812,10 @@ def _cached_result_if_fresh(workspace: str) -> ManagedConfigResult | None:
     outcome = entry.get("outcome")
     raw = load_managed_configuration(workspace)
     if raw:
-        return ManagedConfigResult(normalize_managed_config(raw), False)
+        # A disabled feature whose installed policy couldn't be removed still reports disabled.
+        return ManagedConfigResult(
+            normalize_managed_config(raw), outcome == _OUTCOME_FEATURE_DISABLED
+        )
     if outcome == _OUTCOME_FEATURE_DISABLED:
         return ManagedConfigResult(None, True)
     if outcome == _OUTCOME_NONE:
@@ -806,11 +831,12 @@ def _record_refresh(
     data = config_io.read_json_safe(REFRESH_TS_PATH)
     data[normalize_workspace_url(workspace)] = {
         "last_checked_at": _utcnow().isoformat(),
+        # Disabled first: an installed policy whose removal failed still replays as disabled.
         "outcome": (
-            _OUTCOME_PUBLISHED
-            if result.manifest is not None
-            else _OUTCOME_FEATURE_DISABLED
+            _OUTCOME_FEATURE_DISABLED
             if result.feature_disabled
+            else _OUTCOME_PUBLISHED
+            if result.manifest is not None
             else _OUTCOME_NONE
         ),
         "policy_fingerprint": managed_file_fingerprint(MANAGED_CONFIG_PATH),
@@ -847,7 +873,7 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
     )
     if not workspace:
         return ManagedConfigResult(None, False)
-    if not _machine_policy_installable() and _stored_config(MANAGED_CONFIG_PATH, workspace) is None:
+    if not _machine_policy_installable() and _installed_config(workspace) is None:
         return _refresh_user_cache(state, workspace, force_refresh=force_refresh)
     if config_io.is_dry_run() and not force_refresh:
         return ManagedConfigResult(load_managed_state(workspace), False)
@@ -890,7 +916,7 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
                 "This machine-wide file needs sudo. Rerun `ug configure` from a terminal where you "
                 "can use sudo, or ask your IT team or an administrator to run it."
             )
-            raise RuntimeError(message) from exc
+            raise ManagedPolicyInstallDenied(message) from exc
         installed = load_managed_state(workspace)
         if installed is not None:
             result = ManagedConfigResult(
@@ -927,10 +953,15 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
     return result
 
 
+def _machine_policy_supported() -> bool:
+    """Whether ug installs a machine policy on this OS at all (Linux and macOS)."""
+    return current_os() in (OS.LINUX, OS.MACOS)
+
+
 def _machine_policy_installable() -> bool:
     """Whether this machine can hold the installed workspace policy (Linux or macOS, not opted out
     with ``UG_SKIP_OS_SETTINGS``)."""
-    return not managed_settings_skipped() and current_os() in (OS.LINUX, OS.MACOS)
+    return not managed_settings_skipped() and _machine_policy_supported()
 
 
 def _can_install_policy(explicit_configure: bool) -> bool:

@@ -77,7 +77,8 @@ replace_one() (
         else
             source_owner=$(stat -c %u "$source_path" 2>/dev/null) || return 1
         fi
-        [ "$source_owner" = "${SUDO_UID:-0}" ]
+        [ -n "${SUDO_UID:-}" ] || return 1
+        [ "$source_owner" = "$SUDO_UID" ]
     }
 
     clear_staging_flags() {
@@ -234,7 +235,7 @@ remove_one() (
     else
         source_owner=$(stat -c %u "$source_path")
     fi
-    if [ "$source_owner" != "${SUDO_UID:-0}" ] || ! cmp -s "$source_path" "$target"; then
+    if [ -z "${SUDO_UID:-}" ] || [ "$source_owner" != "$SUDO_UID" ] || ! cmp -s "$source_path" "$target"; then
         printf '%s\n' "Workspace policy changed before removal: $target" >&2
         exit 1
     fi

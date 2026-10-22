@@ -638,7 +638,7 @@ class TestWorkspacePolicyWriter:
             path.write_text(desired_text)
 
         monkeypatch.setattr(managed_files, "_sudo_replace", write)
-        managed_files.update_workspace_policy(policy_path, "new", interactive=True)
+        managed_files.update_workspace_policy(policy_path, "new", interactive=True, allow_sudo=True)
         assert calls == [(policy_path, "new")]
 
     @pytest.mark.skipif(sys.platform == "win32", reason="The workspace-policy writer is Unix-only")
@@ -653,7 +653,7 @@ class TestWorkspacePolicyWriter:
             return subprocess.CompletedProcess(command, 0)
 
         monkeypatch.setattr(managed_files.subprocess_cross_os, "run", run)
-        managed_files.update_workspace_policy(policy_path, "new", interactive=True)
+        managed_files.update_workspace_policy(policy_path, "new", interactive=True, allow_sudo=True)
         assert calls[0][:2] == [managed_files._SUDO, "-n"]
         assert policy_path.read_text() == "new"
         assert not Path(calls[0][-2]).exists()
@@ -681,7 +681,7 @@ class TestWorkspacePolicyWriter:
             return subprocess.CompletedProcess(command, 0)
 
         monkeypatch.setattr(managed_files.subprocess_cross_os, "run", remove)
-        managed_files.update_workspace_policy(policy_path, None, interactive=True)
+        managed_files.update_workspace_policy(policy_path, None, interactive=True, allow_sudo=True)
         assert calls[0][0:2] == [managed_files._SUDO, "/bin/sh"]
         assert "remove" in calls[0]
 
@@ -700,7 +700,9 @@ class TestWorkspacePolicyWriter:
             return subprocess.CompletedProcess(command, 0)
 
         monkeypatch.setattr(managed_files.subprocess_cross_os, "run", remove)
-        managed_files.update_workspace_policy(policy_path, None, interactive=interactive)
+        managed_files.update_workspace_policy(
+            policy_path, None, interactive=interactive, allow_sudo=True
+        )
         assert seen["timeout"] == timeout
 
     @pytest.mark.skipif(sys.platform == "win32", reason="The workspace-policy writer is Unix-only")
@@ -712,8 +714,23 @@ class TestWorkspacePolicyWriter:
 
         monkeypatch.setattr(managed_files.subprocess_cross_os, "run", denied)
         with pytest.raises(managed_files.ManagedFileWriteUnavailable) as error:
-            managed_files.update_workspace_policy(policy_path, None, interactive=False)
+            managed_files.update_workspace_policy(
+                policy_path, None, interactive=False, allow_sudo=True
+            )
         assert "sudo: a password is required" in str(error.value)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="The workspace-policy writer is Unix-only")
+    def test_timed_out_policy_update_decodes_sudo_output(self, policy_path, monkeypatch):
+        policy_path.write_text("old")
+
+        def slow(command, **kwargs):
+            raise subprocess.TimeoutExpired(command, 30, stderr=b"sudo: still waiting\n")
+
+        monkeypatch.setattr(managed_files.subprocess_cross_os, "run", slow)
+        with pytest.raises(managed_files.ManagedFileWriteUnavailable) as error:
+            managed_files.update_workspace_policy(policy_path, None, allow_sudo=True)
+        assert "sudo: still waiting" in str(error.value)
+        assert "b'" not in str(error.value)
 
     @pytest.mark.skipif(sys.platform == "win32", reason="The workspace-policy writer is Unix-only")
     def test_root_policy_update_does_not_need_sudo(self, policy_path, monkeypatch):

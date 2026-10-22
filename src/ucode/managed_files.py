@@ -1210,7 +1210,7 @@ def update_workspace_policy(
     desired_text: str | None,
     *,
     interactive: bool = False,
-    allow_sudo: bool = True,
+    allow_sudo: bool = False,
 ) -> None:
     """Install or remove changed policy; unprivileged launches never invoke sudo."""
     if path != UNITY_GATEWAY_MANAGED_SETTINGS_PATH:
@@ -1261,7 +1261,11 @@ def update_workspace_policy(
                     env=script_env,
                 )
     except (OSError, subprocess.SubprocessError) as exc:
-        detail = (getattr(exc, "stderr", None) or "").strip()
+        stderr = getattr(exc, "stderr", None)
+        if isinstance(stderr, bytes):
+            # TimeoutExpired carries bytes even when the run used text mode.
+            stderr = stderr.decode("utf-8", "replace")
+        detail = (stderr or "").strip()
         raise ManagedFileWriteUnavailable(
             f"Could not update workspace policy at {path}." + (f" {detail}" if detail else "")
         ) from exc

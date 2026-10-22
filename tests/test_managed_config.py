@@ -1116,6 +1116,31 @@ class TestMachinePolicyRefresh:
         assert load_managed_configuration(WORKSPACE) == RAW_MANIFEST
         assert warnings
 
+    def test_cached_feature_disabled_read_keeps_its_flag_when_removal_failed(self, monkeypatch):
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        monkeypatch.setattr(
+            mc_mod, "get_managed_config", lambda ws, token: (None, "FEATURE_DISABLED")
+        )
+
+        def denied(*args, **kwargs):
+            raise RuntimeError("sudo permission denied")
+
+        monkeypatch.setattr(mc_mod, "update_workspace_policy", denied)
+        monkeypatch.setattr(mc_mod, "print_warning", lambda *_a: None)
+        first = refresh_managed_config(_state())
+        monkeypatch.setattr(
+            mc_mod, "get_managed_config", lambda *_a: pytest.fail("a fresh stamp must be reused")
+        )
+
+        assert (
+            refresh_managed_config(_state())
+            == first
+            == (
+                normalize_managed_config(RAW_MANIFEST),
+                True,
+            )
+        )
+
     def test_configure_for_a_workspace_without_policy_removes_another_workspaces(self, monkeypatch):
         """`ug configure` decides the machine's workspace, even when it publishes no policy."""
         save_managed_state("https://other.example.com", RAW_MANIFEST)
@@ -1397,6 +1422,23 @@ class TestPolicyWithoutInstallation:
         refresh_managed_config(_state())
 
         assert stat.S_IMODE(mc_mod.USER_MANAGED_CONFIG_PATH.stat().st_mode) == 0o600
+
+    def test_windows_ignores_a_planted_posix_policy_file(self, monkeypatch):
+        """On Windows the POSIX path sits under a drive root a standard user may create."""
+        save_managed_state("https://planted.example.com", {"default_agent": "CODING_AGENT_CODEX"})
+        monkeypatch.setattr(mc_mod, "current_os", lambda: mc_mod.OS.WINDOWS)
+
+        result = refresh_managed_config(_state())
+
+        assert result.manifest == normalize_managed_config(RAW_MANIFEST)
+        assert mc_mod.managed_state_workspace() is None
+        assert load_managed_configuration("https://planted.example.com") is None
+
+    def test_export_finds_the_per_user_cache_without_a_saved_workspace(self, not_installable):
+        refresh_managed_config(_state())
+
+        assert mc_mod.managed_state_workspace() is None
+        assert mc_mod.managed_state_workspace(include_user_cache=True) == WORKSPACE
 
     def test_installed_policy_still_wins_with_skip(self, monkeypatch, capsys):
         save_managed_state(WORKSPACE, RAW_MANIFEST)
