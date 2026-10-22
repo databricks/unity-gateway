@@ -20,7 +20,7 @@ flowchart LR
 	native --> own
 ```
 
-Each lane runs its tasks for Claude and for Codex. The Harbor lane also runs Claude with `--model system.ai.gpt-6-luna` and with `--model system.ai.gpt-6-1-sol`, which sends GPT through the gateway's Messages-to-Responses translation. [TASKS.md](TASKS.md) describes the task format and lists every task.
+Each lane runs its tasks for Claude and for Codex. [TASKS.md](TASKS.md) describes the task format and lists every task.
 
 ## Why there are two lanes
 
