@@ -133,6 +133,7 @@ def test_windows_policy_paths_match_pinned_agent_locations():
     )
 
     assert paths == (
+        Path("C:/ProgramData/UnityGateway/managed-settings.json"),
         Path("C:/ProgramData/OpenAI/Codex/requirements.toml"),
         Path("C:/ProgramData/OpenAI/Codex/config.toml"),
         Path("C:/Program Files/ClaudeCode/managed-settings.json"),
@@ -162,3 +163,5 @@ def test_posix_policy_paths_include_the_installed_workspace_policy(system_platfo
 def test_windows_policy_preflight_fails_closed_without_required_roots():
     with pytest.raises(RuntimeError, match="PROGRAMDATA"):
         runner.managed_policy_paths(["codex"], {}, platform_name="nt", system_platform="win32")
+    with pytest.raises(RuntimeError, match="PROGRAMDATA"):
+        runner.managed_policy_paths(["claude"], {}, platform_name="nt", system_platform="win32")

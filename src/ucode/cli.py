@@ -103,6 +103,7 @@ from ucode.managed_config import (
     managed_state_workspace,
     normalize_managed_config,
     refresh_managed_config,
+    reject_foreign_machine_policy_after_configure,
 )
 from ucode.managed_files import managed_write_session, set_config_scope
 from ucode.managed_resolve import (
@@ -799,6 +800,15 @@ def _configure_shared_workspace_states(
     return states
 
 
+def _keep_installed_workspace_selected(state: dict) -> None:
+    """Put the saved selection back on the machine's installed workspace after a failed switch."""
+    installed = managed_state_workspace()
+    if installed and normalize_workspace_url(installed) != normalize_workspace_url(
+        state["workspace"]
+    ):
+        set_current_workspace(normalize_workspace_url(installed))
+
+
 def _refresh_configured_policy(state: dict) -> ManagedConfigResult:
     """Read and install the workspace policy for an explicit configure.
 
@@ -809,11 +819,19 @@ def _refresh_configured_policy(state: dict) -> ManagedConfigResult:
     try:
         return refresh_managed_config(state, force_refresh=True)
     except RuntimeError:
-        installed = managed_state_workspace()
-        if installed and normalize_workspace_url(installed) != normalize_workspace_url(
-            state["workspace"]
-        ):
-            set_current_workspace(normalize_workspace_url(installed))
+        _keep_installed_workspace_selected(state)
+        raise
+
+
+def _reject_foreign_machine_after_configure(state: dict) -> None:
+    """Stop configure when the machine is still managed for another workspace after the policy step.
+
+    Restores the saved selection to the installed workspace first, as an install failure does.
+    """
+    try:
+        reject_foreign_machine_policy_after_configure(state["workspace"])
+    except RuntimeError:
+        _keep_installed_workspace_selected(state)
         raise
 
 
@@ -830,6 +848,21 @@ def _launch_workspace_state(workspace: str | None) -> dict:
         set_current_workspace(current)
         state = load_state()
     return state
+
+
+def _apply_managed_agent_policy(managed: dict, state: dict, tool: str) -> tuple[dict, str | None]:
+    """Layer ``tool``'s managed policy onto ``state`` and return its managed Unity Catalog location.
+
+    Shared by ``ug configure --agent`` and a first launch's auto-configure, which must write the
+    same agent settings (a mismatch makes ``UG_SKIP_OS_SETTINGS`` refuse the OS-managed file).
+    Only Claude and Codex take a managed source; other agents are self-managed alongside it.
+    """
+    if tool not in ("claude", "codex"):
+        return state, None
+    state = resolve_state(managed, state, tool)
+    if managed_provider_service(managed, tool):
+        return state, None
+    return state, managed_unity_catalog_location(managed, tool)
 
 
 def _setup_single_agent(
@@ -863,12 +896,11 @@ def _setup_single_agent(
     if apply_managed:
         # Explicit configure always reads the workspace policy fresh, so it can install it.
         managed, _ = _refresh_configured_policy(state)
+        _reject_foreign_machine_after_configure(state)
         if tool in ("claude", "codex"):
             _reject_disabled_agent(managed, tool)
-            if managed is not None:
-                state = resolve_state(managed, state, tool)
-                if not managed_provider_service(managed, tool):
-                    parent_schema = managed_unity_catalog_location(managed, tool)
+        if managed is not None:
+            state, parent_schema = _apply_managed_agent_policy(managed, state, tool)
     state = configure_single_tool(tool, state, parent_schema=parent_schema)
     if apply_managed and not managed_enabled_tools(managed or {}):
         state = _record_unmanaged_configured_agents(state, [tool])
@@ -1081,6 +1113,7 @@ def _configure_workspace_command(
     # now rather than prompting the developer to pick. Configure always reads fresh so it never
     # applies a config the admin has since changed.
     managed, _ = _refresh_configured_policy(state)
+    _reject_foreign_machine_after_configure(state)
     managed_tools = managed_enabled_tools(managed) if managed is not None else []
     if managed is not None and managed_tools:
         refuse_user_scope_over_managed_files(managed_tools)
@@ -2813,14 +2846,22 @@ def _auto_configure_tool(
         workspace, profile = _prompt_for_configuration(tool)
     configure_kwargs = {"custom_oauth": custom_oauth} if custom_oauth is not None else {}
     state = configure_shared_state(workspace, profile=profile, tools=[tool], **configure_kwargs)
-    # A managed config rejects --provider later in the launch; resolving it here would replace that
-    # error with a lookup failure.
-    if provider is not None:
-        managed, _ = _fetch_managed_config(state)
-        if managed is not None:
-            provider = None
+    # Apply the managed policy here as `ug configure --agent` does, so a first launch writes the
+    # same agent settings the administrator's configure wrote (a mismatch makes UG_SKIP_OS_SETTINGS
+    # refuse the OS-managed file as stale).
+    managed, _ = _fetch_managed_config(state)
+    if _launches_self_managed(managed, state, tool):
+        managed = None
+    managed_kwargs: dict = {}
+    if managed is not None:
+        # A managed config rejects --provider later in the launch; resolving it here would replace
+        # that error with a lookup failure.
+        provider = None
+        state, location = _apply_managed_agent_policy(managed, state, tool)
+        if location:
+            managed_kwargs["parent_schema"] = location
 
-    state = configure_single_tool(tool, state, provider=provider)
+    state = configure_single_tool(tool, state, provider=provider, **managed_kwargs)
 
     spec = TOOL_SPECS[tool]
     console.print(

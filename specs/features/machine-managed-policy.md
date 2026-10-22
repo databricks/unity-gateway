@@ -40,7 +40,7 @@ The existing privileged writer atomically installs allowlisted Claude/Codex sett
 ## Clarifications
 
 - Q1: Which platforms are supported?
-  A1: Linux and macOS use `/etc/unitygateway/managed-settings.json`. Unsupported-platform writes fail explicitly; do not introduce a user-cache policy fallback.
+  A1: Linux and macOS use `/etc/unitygateway/managed-settings.json`; Windows uses `%ProgramData%\UnityGateway\managed-settings.json`, written only by an elevated process and refused otherwise. Unsupported-platform writes fail explicitly; do not introduce a user-cache policy fallback except under `UG_SKIP_OS_SETTINGS` or `--user`.
 - Q2: How many workspaces does the machine file hold?
   A2: One active workspace. Explicit administrator configure can replace it for all users. Launch refuses a mismatched workspace and never uses unmanaged fallback to escape the installed policy.
 - Q3: What if sudo is unavailable?

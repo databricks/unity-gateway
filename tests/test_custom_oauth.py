@@ -379,6 +379,7 @@ class TestLaunchCustomOAuth:
         with (
             patch("ucode.cli.load_state", return_value=state),
             patch("ucode.cli.configure_shared_state", return_value=state) as configure_shared,
+            patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
             patch("ucode.cli.configure_single_tool", return_value=state),
         ):
             cli_mod._auto_configure_tool("codex", custom_oauth=custom_oauth)
@@ -395,6 +396,7 @@ class TestLaunchCustomOAuth:
         with (
             patch("ucode.cli.load_state", return_value=state),
             patch("ucode.cli.configure_shared_state", return_value=state) as configure_shared,
+            patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
             patch("ucode.cli.configure_single_tool", return_value=state),
         ):
             cli_mod._auto_configure_tool("claude")

@@ -1036,6 +1036,69 @@ class TestManagedSettingsSkipped:
         with pytest.raises(ValueError, match="Unknown config scope"):
             managed_files.set_config_scope("system")
 
+    def _check_skipped(self, tmp_path, existing: dict, written: dict):
+        """Run the skip-mode check for an OS-managed file holding ``existing``; ug writes ``written``
+        over it and drops the leaves it owns but no longer writes."""
+        path = tmp_path / "managed-settings.json"
+        path.write_text(json.dumps(existing), encoding="utf-8")
+        owned = [["apiKeyHelper"], ["otelHeadersHelper"], ["env", "OTEL_TRACES_EXPORTER"]]
+
+        def compose(doc: dict) -> dict:
+            doc.pop("otelHeadersHelper", None)
+            doc.get("env", {}).pop("OTEL_TRACES_EXPORTER", None)
+            doc.update(written)
+            return doc
+
+        managed_files.check_skipped_managed_overrides(
+            path, parser=json.loads, compose=compose, owned_paths=owned, display="Claude Code"
+        )
+
+    def test_skipped_check_ignores_leaves_ug_does_not_write(self, tmp_path):
+        """Another writer's tracing (or one the admin's configure preserved) isn't stale."""
+        self._check_skipped(
+            tmp_path,
+            {
+                "apiKeyHelper": "ug auth-token --host h",
+                "otelHeadersHelper": "other-tool otel-headers",
+                "env": {"OTEL_TRACES_EXPORTER": "otlp"},
+            },
+            {"apiKeyHelper": "ug auth-token --host h"},
+        )
+
+    def test_skipped_check_still_flags_a_value_ug_writes_differently(self, tmp_path):
+        with pytest.raises(RuntimeError, match="stale"):
+            self._check_skipped(
+                tmp_path,
+                {"apiKeyHelper": "ug auth-token --host old-workspace"},
+                {"apiKeyHelper": "ug auth-token --host h"},
+            )
+
+    def test_skipped_check_allows_other_writers_entries_in_merged_lists(self):
+        existing = {"permissions": {"deny": ["WebSearch", "Artifact"]}}
+        owned = [["permissions", "deny"]]
+
+        assert (
+            managed_files.managed_file_conflicts(
+                existing, {"permissions": {"deny": ["WebSearch"]}}, owned, written_only=True
+            )
+            == []
+        )
+        assert managed_files.managed_file_conflicts(
+            existing, {"permissions": {"deny": ["WebSearch", "WebFetch"]}}, owned, written_only=True
+        ) == ["permissions.deny"]
+
+    def test_strict_conflicts_still_count_dropped_leaves(self):
+        existing = {"apiKeyHelper": "x", "otelHeadersHelper": "y"}
+        desired = {"apiKeyHelper": "x"}
+        owned = [["apiKeyHelper"], ["otelHeadersHelper"]]
+
+        assert managed_files.managed_file_conflicts(existing, desired, owned) == [
+            "otelHeadersHelper"
+        ]
+        assert (
+            managed_files.managed_file_conflicts(existing, desired, owned, written_only=True) == []
+        )
+
     def test_raise_on_skipped_managed_overrides_silent_without_conflicts(self):
         # No conflicts means nothing stale overrides the user config, so this must not raise.
         managed_files.raise_on_skipped_managed_overrides(
@@ -1251,6 +1314,128 @@ class TestWindowsManagedWrites:
             self._reconcile_codex(path, 'model_provider = "Databricks"\n')
 
         assert not any(elsewhere.iterdir())
+
+
+class TestWindowsWorkspacePolicy:
+    """The installed workspace policy lives under ProgramData, written only by an administrator."""
+
+    POLICY = '{"workspace": "https://ws.example.com", "config": {}}\n'
+
+    @pytest.fixture
+    def policy(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ProgramData", str(tmp_path / "ProgramData"))
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.WINDOWS)
+        path = tmp_path / "ProgramData" / "UnityGateway" / "managed-settings.json"
+        monkeypatch.setattr(managed_files, "UNITY_GATEWAY_MANAGED_SETTINGS_PATH", path)
+        monkeypatch.setattr(managed_files, "_windows_replace", _REAL_WINDOWS_REPLACE)
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
+        calls = []
+
+        def run(args, **kwargs):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        monkeypatch.setattr(managed_files.subprocess_cross_os, "run", run)
+        return path, calls
+
+    def test_path_is_under_program_data(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("ProgramData", str(tmp_path / "ProgramData"))
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.WINDOWS)
+
+        assert managed_files.unity_gateway_managed_settings_path() == (
+            tmp_path / "ProgramData" / "UnityGateway" / "managed-settings.json"
+        )
+
+    def test_path_is_unchanged_on_posix(self, monkeypatch):
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
+
+        assert managed_files.unity_gateway_managed_settings_path() == Path(
+            "/etc/unitygateway/managed-settings.json"
+        )
+
+    def test_elevated_install_replace_and_remove(self, policy):
+        path, calls = policy
+
+        managed_files.update_workspace_policy(path, self.POLICY)
+        assert path.read_text(encoding="utf-8") == self.POLICY
+        assert [entry.name for entry in path.parent.iterdir()] == [path.name]
+        # The folder is secured like the Codex folders: Administrators own it, users only read.
+        assert any(call[1] == str(path.parent) and "/inheritance:r" in call for call in calls), (
+            calls
+        )
+
+        replaced = self.POLICY.replace("ws.example", "other.example")
+        managed_files.update_workspace_policy(path, replaced)
+        assert path.read_text(encoding="utf-8") == replaced
+
+        managed_files.update_workspace_policy(path, None)
+        assert not path.exists()
+
+    def test_non_elevated_configure_fails_with_admin_hint(self, policy, monkeypatch):
+        path, calls = policy
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: False)
+
+        with pytest.raises(
+            managed_files.ManagedFileWriteUnavailable,
+            match="requires administrator rights.*ug configure",
+        ):
+            managed_files.update_workspace_policy(path, self.POLICY, allow_sudo=True)
+
+        assert not path.exists()
+        assert calls == []
+
+    def test_launch_never_writes_without_elevation(self, policy, monkeypatch):
+        path, calls = policy
+        path.parent.mkdir(parents=True)
+        path.write_text(self.POLICY, encoding="utf-8")
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: False)
+        replaced = self.POLICY.replace("ws.example", "other.example")
+
+        with pytest.raises(managed_files.ManagedFileWriteUnavailable):
+            managed_files.update_workspace_policy(path, replaced, allow_sudo=False)
+        with pytest.raises(managed_files.ManagedFileWriteUnavailable):
+            managed_files.update_workspace_policy(path, None, allow_sudo=False)
+
+        assert path.read_text(encoding="utf-8") == self.POLICY
+        assert calls == []
+
+    def test_refuses_linked_policy_folder(self, policy, tmp_path):
+        path, _calls = policy
+        elsewhere = tmp_path / "user-folder"
+        elsewhere.mkdir()
+        path.parent.parent.mkdir()
+        try:
+            path.parent.symlink_to(elsewhere, target_is_directory=True)
+        except OSError:
+            pytest.skip("creating a directory link needs extra privileges here")
+
+        with pytest.raises(RuntimeError, match="through link"):
+            managed_files.update_workspace_policy(path, self.POLICY)
+
+        assert not any(elsewhere.iterdir())
+
+    def test_unsecured_folder_blocks_the_write(self, policy, monkeypatch):
+        path, _calls = policy
+        monkeypatch.setattr(
+            managed_files.subprocess_cross_os,
+            "run",
+            lambda args, **kwargs: subprocess.CompletedProcess(args, 5, "", "Access is denied."),
+        )
+
+        with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="could not secure"):
+            managed_files.update_workspace_policy(path, self.POLICY)
+
+        assert not path.exists()
+
+    def test_skip_os_settings_refuses_the_policy_writer(self, policy, monkeypatch):
+        path, calls = policy
+        monkeypatch.setattr(managed_files, "managed_files_supported", _REAL_MANAGED_FILES_SUPPORTED)
+        monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
+
+        with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="supported only"):
+            managed_files.update_workspace_policy(path, self.POLICY)
+
+        assert calls == []
 
 
 class TestManagedWriteSkippedWarning:
