@@ -1,9 +1,11 @@
-"""Resolve external smart-routing versions into backward-compatible feature flags."""
+"""Smart-routing versions, and the routing decision each launch makes from them."""
 
 from __future__ import annotations
 
 import os
 from collections.abc import Mapping, MutableMapping
+from dataclasses import dataclass
+from enum import StrEnum
 
 from ucode.constants import (
     AGENT_CLAUDE,
@@ -37,6 +39,8 @@ SUBAGENT_ORCH_V0_CLAUDE_ONLY = "subagent_orch_v0_claude_only"
 DEFAULT_ENABLED_VERSION = SUBAGENT_ORCH_V0
 
 _RESTORE_KEYS = (*SMART_ROUTING_ENV_KEYS, SMART_ROUTER_CONFIG_VERSION_ENV_VAR)
+
+ROUTING_AGENTS = frozenset({AGENT_CLAUDE, AGENT_CODEX})
 
 _BASE_VERSIONS = {
     FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0: {
@@ -137,38 +141,83 @@ def resolve_environment(env: Mapping[str, str] | None = None, *, agent: str) -> 
     return resolved
 
 
-def apply_config(
-    env: MutableMapping[str, str] | None = None, *, agent: str
+class RoutingSource(StrEnum):
+    """The input that decided a launch's routing switches."""
+
+    UNSUPPORTED_AGENT = "agent without smart routing"
+    NATIVE_SUBCOMMAND = "native agent subcommand"
+    CLI_DISABLE = "--disable-smart-routing"
+    ENV_VERSION = SMART_ROUTER_CONFIG_VERSION_ENV_VAR
+    CLI_ENABLE = "--enable-smart-routing"
+    ADMIN_CONFIG = "admin smart_routing.enabled"
+    ENV_SWITCHES = "routing env vars"
+
+
+@dataclass(frozen=True)
+class LaunchRouting:
+    # The routing env vars the agent starts with; None leaves a var unset.
+    switches: dict[str, str | None]
+    source: RoutingSource
+    # The switches route the first prompt or subagents.
+    routing_on: bool
+    # ug starts the agent through the smart-routing launcher.
+    routed_launch: bool
+
+
+def decide_launch_routing(
+    *,
+    agent: str,
+    cli_flag: bool | None,
+    env_version: str,
+    env_switches: Mapping[str, str | None],
+    admin_enabled: bool,
+    native_subcommand: bool,
+    pinned_model: bool,
+) -> LaunchRouting:
+    """Decide a launch's smart routing from every input. The first matching rule wins."""
+    if agent not in ROUTING_AGENTS:
+        return LaunchRouting(
+            dict(env_switches),
+            RoutingSource.UNSUPPORTED_AGENT,
+            routing_on=False,
+            routed_launch=False,
+        )
+    if native_subcommand:
+        switches, source = dict.fromkeys(SMART_ROUTING_ENV_KEYS), RoutingSource.NATIVE_SUBCOMMAND
+    elif cli_flag is False:
+        switches, source = dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"), RoutingSource.CLI_DISABLE
+    elif env_version.strip() in _VERSIONS:
+        switches, source = _VERSIONS[env_version.strip()][agent], RoutingSource.ENV_VERSION
+    elif cli_flag:
+        switches, source = _VERSIONS[DEFAULT_ENABLED_VERSION][agent], RoutingSource.CLI_ENABLE
+    elif admin_enabled:
+        switches, source = _VERSIONS[DEFAULT_ENABLED_VERSION][agent], RoutingSource.ADMIN_CONFIG
+    else:
+        switches, source = env_switches, RoutingSource.ENV_SWITCHES
+    routing_on = "1" in (
+        switches.get(ENABLE_SMART_ROUTING_ENV_VAR),
+        switches.get(ENABLE_SUBAGENT_ROUTING_ENV_VAR),
+    )
+    # Only a developer's explicit model skips the routed launcher; a managed default model is the
+    # starting model of a routed session.
+    return LaunchRouting(
+        dict(switches),
+        source,
+        routing_on=routing_on,
+        routed_launch=routing_on and not pinned_model,
+    )
+
+
+def apply_launch_switches(
+    switches: Mapping[str, str | None], env: MutableMapping[str, str] | None = None
 ) -> dict[str, str | None]:
-    """Consume the launch selector, returning the values needed to restore its input."""
+    """Replace the selector with the launch's switches, returning the values needed to restore."""
     target = os.environ if env is None else env
-    version = target.get(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, "").strip()
-    preset = _VERSIONS.get(version, {}).get(agent)
-    if preset is None:
-        return {}
     previous = {key: target.get(key) for key in _RESTORE_KEYS}
-    target.update(preset)
     target.pop(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, None)
-    return previous
-
-
-def known_version(env: Mapping[str, str] | None = None) -> bool:
-    """Whether the launch selector names a version, which then decides the launch's routing."""
-    source = os.environ if env is None else env
-    return source.get(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, "").strip() in _VERSIONS
-
-
-def apply_enabled_version(
-    env: MutableMapping[str, str] | None = None, *, agent: str
-) -> dict[str, str | None]:
-    """Turn routing on through a version, returning the values needed to restore the input.
-
-    A known version is kept; otherwise the selector is set to ``DEFAULT_ENABLED_VERSION``. Either
-    way the version then overwrites every routing env var.
-    """
-    target = os.environ if env is None else env
-    previous = {key: target.get(key) for key in _RESTORE_KEYS}
-    if not known_version(target):
-        target[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = DEFAULT_ENABLED_VERSION
-    apply_config(target, agent=agent)
+    for key, value in switches.items():
+        if value is None:
+            target.pop(key, None)
+        else:
+            target[key] = value
     return previous

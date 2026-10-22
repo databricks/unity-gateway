@@ -6,8 +6,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-from collections.abc import Iterator
-from contextlib import contextmanager, redirect_stdout
+from contextlib import redirect_stdout
 from enum import StrEnum
 from importlib import metadata
 from typing import Annotated, Any
@@ -52,6 +51,7 @@ from ucode.constants import (
     AGENT_CLAUDE,
     AGENT_CODEX,
     ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
+    SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
 )
 from ucode.custom_oauth import (
@@ -2801,27 +2801,6 @@ def _auto_configure_tool(
     )
 
 
-CAN_USE_CACHED_CONFIG_AGENTS = frozenset({"claude", "codex"})
-
-
-@contextmanager
-def _smart_routing_v2_flag(enabled: bool | None, *, agent: str) -> Iterator[bool]:
-    """Apply an explicit routing choice without leaking into an embedding process.
-
-    Yields whether the flag or a known version already chose this launch's routing.
-    """
-    routing_chosen = enabled is not None or smart_routing_config.known_version()
-    previous = (
-        smart_routing_v2.apply_config(agent=agent)
-        if enabled is None
-        else smart_routing_v2.override_smart_routing(enabled, agent=agent)
-    )
-    try:
-        yield routing_chosen
-    finally:
-        smart_routing_v2.restore_smart_routing_env(previous)
-
-
 def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | None = None) -> bool:
     if enabled is None:
         return False
@@ -2847,25 +2826,6 @@ def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | No
         raise typer.Exit(1) from None
     print_success(f"Smart Router is {'on' if enabled else 'off'} for this session")
     return True
-
-
-@contextmanager
-def _disable_smart_routing_for_subcommand(tool: str, ctx: Any) -> Iterator[None]:
-    """Keep native agent subcommands out of every smart-routing path.
-
-    The environment flag is also consulted during bootstrap/version checks,
-    before the final launch options are built. Native positional subcommands
-    must therefore suppress the flag for the whole ucode launch flow. An
-    explicit prompt after `--` remains eligible for routing.
-    """
-    if _smart_routing_launch_shape(tool, ctx.args, _has_explicit_prompt(ctx)):
-        yield
-        return
-    previous = smart_routing_v2.disable_smart_routing()
-    try:
-        yield
-    finally:
-        smart_routing_v2.restore_smart_routing_env(previous)
 
 
 def _migrate_legacy_smart_routing(state: dict) -> dict:
@@ -3083,55 +3043,11 @@ def _child_owns_stdout(tool: str, tool_args: list[str]) -> bool:
     return tool == "codex" and any(arg in {"exec", "e", "app-server"} for arg in tool_args)
 
 
-def _should_launch_smart_routing(
-    tool: str,
-    tool_args: list[str],
-    *,
-    explicit_prompt: bool,
-    model: str | None,
-) -> bool:
-    if model is not None or has_explicit_model_arg(tool_args):
-        return False
-    return _smart_routing_launch_shape(tool, tool_args, explicit_prompt)
-
-
 def _smart_routing_launch_shape(tool: str, tool_args: list[str], explicit_prompt: bool) -> bool:
     """Whether the forwarded arguments represent an interactive launch."""
     if not tool_args or explicit_prompt:
         return True
     return tool == "claude" and tool_args[0].startswith("-")
-
-
-def _launch_options(
-    tool: str,
-    tool_args: list[str],
-    *,
-    smart_routing_enabled: bool,
-    explicit_prompt: bool,
-    user_pinned_model: str | None,
-    provider: str | None,
-    launch_model: str | None = None,
-) -> LaunchOptions:
-    return LaunchOptions(
-        launch_model=launch_model,
-        # Pinned models for providers are resolved above through the provider-specific launch path.
-        user_pinned_model=user_pinned_model if provider is None else None,
-        launch_smart_routing=(
-            # Smart routing is enabled globally.
-            smart_routing_enabled
-            # Only Claude Code and Codex currently support smart routing.
-            and tool in CAN_USE_CACHED_CONFIG_AGENTS
-            # Smart routing does not currently support Model Provider Services.
-            and provider is None
-            # Route a supported interactive launch shape.
-            and _should_launch_smart_routing(
-                tool,
-                tool_args,
-                explicit_prompt=explicit_prompt,
-                model=user_pinned_model,
-            )
-        ),
-    )
 
 
 def _managed_smart_routing_enabled(managed: dict | None, tool: str) -> bool:
@@ -3196,13 +3112,11 @@ def _launch_tool(
     model: str | None = None,
     parent_schema: str | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
-    routing_already_chosen: bool = False,
+    smart_routing_flag: bool | None = None,
 ) -> None:
-    previous = {}
+    routing_env_to_restore = {}
     try:
         tool = normalize_tool(tool_name)
-        routing_chosen = routing_already_chosen or smart_routing_config.known_version()
-        previous = smart_routing_v2.apply_config(agent=tool)
         if not custom_oauth_cli_enabled(custom_oauth):
             os.environ.pop(CUSTOM_OAUTH_CLI_ENV_VAR, None)
         # Before any status print: a stdio-protocol subcommand owns stdout, so
@@ -3326,14 +3240,25 @@ def _launch_tool(
             # rewriting it; the admin's location exists only for this launch.
             provider = None
             parent_schema = managed_parent_schema
-        # Managed smart routing overrides individual routing env vars, but not the flag or a known
-        # version. Its version is applied right before launch, after the launch options below.
-        managed_smart_routing_applies = (
-            _managed_smart_routing_enabled(managed, tool) and not routing_chosen
+        # Every routing input is known once the managed config settles `managed` and `provider`, so
+        # routing is decided here, before anything reads the routing env vars.
+        launch_routing = smart_routing_config.decide_launch_routing(
+            agent=tool,
+            cli_flag=smart_routing_flag,
+            env_version=os.environ.get(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, ""),
+            env_switches={key: os.environ.get(key) for key in SMART_ROUTING_ENV_KEYS},
+            admin_enabled=_managed_smart_routing_enabled(managed, tool),
+            native_subcommand=not _smart_routing_launch_shape(tool, ctx.args, explicit_prompt),
+            pinned_model=bool(model) or has_explicit_model_arg(ctx.args),
         )
-        smart_routing_enabled = managed_smart_routing_applies or (
-            smart_routing_v2.smart_routing_enabled(None, default=False, agent=tool)
-        )
+        # An admin-set provider must trip this too, or routing would be persisted as on while a
+        # provider is active.
+        if launch_routing.routing_on and provider:
+            raise RuntimeError(
+                f"{TOOL_SPECS[tool]['display']} smart routing cannot be enabled with "
+                "--provider. Launch without a Model Provider Service and try again."
+            )
+        routing_env_to_restore = smart_routing_config.apply_launch_switches(launch_routing.switches)
         # Re-fetch model lists on every launch so newly-added Databricks
         # endpoints show up without a manual `ug configure` (and so that
         # tools like pi which read multiple model bundles never run on
@@ -3405,13 +3330,6 @@ def _launch_tool(
             }
         if provider and parent_schema is not None:
             raise RuntimeError("--provider and --model-location cannot be used together.")
-        # Checked after the managed config settles `provider`: an admin-set provider must trip this
-        # guard too, or routing would be persisted as on while a provider is active.
-        if tool in CAN_USE_CACHED_CONFIG_AGENTS and smart_routing_enabled and provider:
-            raise RuntimeError(
-                f"{TOOL_SPECS[tool]['display']} smart routing cannot be enabled with "
-                "--provider. Launch without a Model Provider Service and try again."
-            )
         # Validate the provider service before launching — it must exist, be a
         # provider type this tool can route to (e.g. claude can't use an OpenAI
         # or Foundry service), and, for Claude on Bedrock, expose Claude models to pin.
@@ -3614,7 +3532,7 @@ def _launch_tool(
         print_section(_launch_title(tool))
         if provider:
             print_kv("Provider", provider)
-        if tool in CAN_USE_CACHED_CONFIG_AGENTS and smart_routing_enabled and not provider:
+        if launch_routing.routed_launch:
             print_note(
                 f"{TOOL_SPECS[tool]['display']} may require one-time hook review. Open "
                 "`/hooks` and trust the ug routing hooks if prompted."
@@ -3636,21 +3554,15 @@ def _launch_tool(
                 state["_codex_launch_provider"] = provider
             elif parent_schema:
                 state["_codex_launch_parent_schema"] = parent_schema
-        launch_options = _launch_options(
-            tool,
-            ctx.args,
-            smart_routing_enabled=smart_routing_enabled,
-            explicit_prompt=explicit_prompt,
-            # Only a developer's explicit model disables routing. A managed default is the
-            # initial/fallback model and still participates in a routed session.
-            user_pinned_model=model or forwarded_model,
-            provider=provider,
+        launch_options = LaunchOptions(
+            # Pinned models for providers are resolved above through the provider-specific path.
+            user_pinned_model=(model or forwarded_model) if provider is None else None,
+            launch_smart_routing=launch_routing.routed_launch,
             # Copilot picks its start model from its own catalog; the admin's or budget pick leads.
             launch_model=managed_model if tool == "copilot" else None,
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
-        with _smart_routing_v2_flag(True if managed_smart_routing_applies else None, agent=tool):
-            launch_agent(tool, state, ctx.args, options=launch_options)
+        launch_agent(tool, state, ctx.args, options=launch_options)
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
@@ -3658,7 +3570,7 @@ def _launch_tool(
         print_err("Interrupted.")
         raise typer.Exit(130) from None
     finally:
-        smart_routing_v2.restore_smart_routing_env(previous)
+        smart_routing_v2.restore_smart_routing_env(routing_env_to_restore)
 
 
 # Launch-only escape hatch for managed/headless launchers (e.g. omnigent) that
@@ -3891,21 +3803,17 @@ def codex_cmd(
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from exc
-    with _smart_routing_v2_flag(
-        enable_smart_routing_flag, agent=AGENT_CODEX
-    ) as routing_already_chosen:
-        with _disable_smart_routing_for_subcommand("codex", ctx):
-            _launch_tool(
-                "codex",
-                ctx,
-                routing_already_chosen=routing_already_chosen,
-                provider=provider,
-                refresh=refresh,
-                skip_preflight=skip_preflight,
-                workspace_url=workspace,
-                parent_schema=model_location,
-                custom_oauth=custom_oauth,
-            )
+    _launch_tool(
+        "codex",
+        ctx,
+        smart_routing_flag=enable_smart_routing_flag,
+        provider=provider,
+        refresh=refresh,
+        skip_preflight=skip_preflight,
+        workspace_url=workspace,
+        parent_schema=model_location,
+        custom_oauth=custom_oauth,
+    )
 
 
 @app.command(
@@ -3987,22 +3895,18 @@ def claude_cmd(
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from exc
-    with _smart_routing_v2_flag(
-        enable_smart_routing_flag, agent=AGENT_CLAUDE
-    ) as routing_already_chosen:
-        with _disable_smart_routing_for_subcommand("claude", ctx):
-            _launch_tool(
-                "claude",
-                ctx,
-                routing_already_chosen=routing_already_chosen,
-                provider=provider,
-                model=model,
-                refresh=refresh,
-                skip_preflight=skip_preflight,
-                workspace_url=workspace,
-                parent_schema=model_location,
-                custom_oauth=custom_oauth,
-            )
+    _launch_tool(
+        "claude",
+        ctx,
+        smart_routing_flag=enable_smart_routing_flag,
+        provider=provider,
+        model=model,
+        refresh=refresh,
+        skip_preflight=skip_preflight,
+        workspace_url=workspace,
+        parent_schema=model_location,
+        custom_oauth=custom_oauth,
+    )
 
 
 @app.command(

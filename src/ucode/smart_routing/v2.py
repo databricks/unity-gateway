@@ -34,7 +34,6 @@ from ucode.constants import (
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
     LOOPBACK_HOST,
-    SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
 )
 from ucode.custom_oauth import custom_oauth_cli_enabled, get_custom_client_token
@@ -67,7 +66,7 @@ from ucode.smart_routing.claude_hooks import (
     sync_smart_routing_hooks,
 )
 from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
-from ucode.smart_routing.config import apply_config, apply_enabled_version, resolve_environment
+from ucode.smart_routing.config import resolve_environment
 from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
 from ucode.ui import print_note, print_warning
 
@@ -196,22 +195,6 @@ def first_prompt_routing_enabled(
     )
 
 
-def override_smart_routing(
-    enabled: bool,
-    env: MutableMapping[str, str] | None = None,
-    *,
-    agent: str,
-) -> dict[str, str | None]:
-    """Set an explicit launch-scoped routing choice and return the prior values."""
-    if enabled:
-        return apply_enabled_version(env, agent=agent)
-    target = os.environ if env is None else env
-    previous = {var: target.get(var) for var in SMART_ROUTING_ENV_KEYS}
-    previous.update(apply_config(target, agent=agent))
-    target.update(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
-    return previous
-
-
 def restore_smart_routing_env(
     previous: dict[str, str | None], env: MutableMapping[str, str] | None = None
 ) -> None:
@@ -222,19 +205,6 @@ def restore_smart_routing_env(
             target.pop(var, None)
         else:
             target[var] = value
-
-
-def disable_smart_routing(
-    env: MutableMapping[str, str] | None = None,
-) -> dict[str, str | None]:
-    """Temporarily remove the smart-routing env vars and return their prior values."""
-    target = os.environ if env is None else env
-    previous = {var: target.pop(var, None) for var in SMART_ROUTING_ENV_KEYS}
-    if SMART_ROUTER_CONFIG_VERSION_ENV_VAR in target:
-        previous[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = target.pop(
-            SMART_ROUTER_CONFIG_VERSION_ENV_VAR
-        )
-    return previous
 
 
 def _loopback_websocket_url(port: int) -> str:

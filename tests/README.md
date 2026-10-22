@@ -435,9 +435,10 @@ shared `SKILL.md` bundles. These are component checks, not live agent execution.
 routing flags take unset, `0`, and `1`, while the selector takes unset or one of the five
 supported presets, including the customer first-prompt-and-subagent mode. It uses the named
 version constants but independently hardcodes each preset's settings and asserts exact
-`resolve_environment` and `apply_config` settings, true-unset omission, unrelated-key and
+`resolve_environment` and launch-applied settings, true-unset omission, unrelated-key and
 input preservation, valid-selector consumption, and environment restoration.
-Absent/unknown selectors are no-ops; CLI checks cover auth, revert, and launch dispatch.
+Absent/unknown selectors keep the env switches and are removed at launch; CLI checks cover auth,
+revert, and launch dispatch.
 These component checks do not establish live agent, hook, or gateway behavior.
 Three additional component cases compare the legacy flags with `subagent_only_v1`,
 `subagent_orch_v1`, and `first_prompt_and_subagent_no_orch_v0`, including first-prompt,
