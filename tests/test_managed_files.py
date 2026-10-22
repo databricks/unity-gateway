@@ -568,6 +568,7 @@ class TestSudoReplace:
         monkeypatch.setattr(codex_config, "current_os", lambda: os_enum)
         allowed = managed_files._SUDO_REPLACE_TARGETS[os_enum]
         assert claude_agent._managed_settings_path() in allowed
+        assert claude_agent._credentials_dropin_path() in allowed
         assert codex_config.codex_managed_config_path() in allowed
 
 
@@ -821,6 +822,15 @@ class TestWindowsManagedWrites:
 
         assert windows.read_text(encoding="utf-8") == '{"apiKeyHelper": "ug"}\n'
         assert [entry.name for entry in windows.parent.iterdir()] == [windows.name]
+
+    def test_elevated_run_creates_credential_dropin_folder(self, windows, monkeypatch):
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
+        dropin = managed_files.windows_claude_credentials_dropin_path()
+        assert dropin == windows.parent / "managed-settings.d" / "50-ug-credentials.json"
+
+        assert self._reconcile(dropin, '{"env": {"ANTHROPIC_API_KEY": ""}}\n') == "created"
+
+        assert dropin.read_text(encoding="utf-8") == '{"env": {"ANTHROPIC_API_KEY": ""}}\n'
 
     def test_non_admin_update_quits_with_admin_hint(self, windows, monkeypatch):
         windows.parent.mkdir(parents=True)

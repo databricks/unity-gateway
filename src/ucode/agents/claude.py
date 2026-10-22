@@ -53,6 +53,7 @@ from ucode.databricks import (
 from ucode.launcher import exec_or_spawn
 from ucode.managed_config import refresh_managed_config
 from ucode.managed_files import (
+    CLAUDE_CREDENTIALS_DROPIN,
     OS,
     ManagedFileSnapshots,
     ManagedFileWriteUnavailable,
@@ -68,6 +69,7 @@ from ucode.managed_files import (
     managed_file_status,
     managed_files_supported,
     managed_settings_skipped,
+    managed_write_session,
     managed_writes_allowed,
     mark_managed_file_verified,
     plan_settings_passthrough,
@@ -75,6 +77,7 @@ from ucode.managed_files import (
     reconcile_managed_file,
     record_settings_passthrough,
     record_ug_picker,
+    remove_empty_dropin_folder,
     revert_managed_file,
     warn_managed_write_skipped,
     warn_skipped_settings_passthrough,
@@ -112,6 +115,9 @@ GATEWAY_MODEL_DISCOVERY_ENV_VAR = "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"
 CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR = "CLAUDE_CODE_OAUTH_TOKEN"
 # Blank inherited credentials so Claude uses ug's configured authentication.
 SHADOWING_CREDENTIAL_ENV_VARS = ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY")
+_SHADOWING_CREDENTIAL_PATHS = [["env", name] for name in SHADOWING_CREDENTIAL_ENV_VARS]
+# Backup-manifest key for ug's managed drop-in, kept apart from managed-settings.json's "claude".
+CREDENTIALS_DROPIN_MANIFEST_KEY = "claude-credentials"
 CLAUDE_CONFIG_DIR = Path.home() / ".claude"
 CLAUDE_SETTINGS_PATH = CLAUDE_CONFIG_DIR / "ucode-settings.json"
 CLAUDE_MCP_CONFIG_PATH = Path.home() / ".claude.json"
@@ -297,6 +303,12 @@ def _managed_settings_path() -> Path | None:
     return None
 
 
+def _credentials_dropin_path() -> Path | None:
+    """ug's managed drop-in, beside managed-settings.json, that blanks inherited credentials."""
+    path = _managed_settings_path()
+    return None if path is None else path.parent / CLAUDE_CREDENTIALS_DROPIN
+
+
 def _parse_managed_settings(text: str) -> dict:
     try:
         settings = json.loads(text)
@@ -396,12 +408,22 @@ def managed_settings_status(state: dict) -> tuple[Path | None, str, str]:
 
 
 def revert_managed_settings() -> str:
-    return revert_managed_file(
+    result = revert_managed_file(
         "claude",
         display="Claude Code",
         parser=_parse_managed_settings,
         dumper=_dump_managed_settings,
     )
+    dropin_result = revert_managed_file(
+        CREDENTIALS_DROPIN_MANIFEST_KEY,
+        display="Claude Code",
+        parser=_parse_managed_settings,
+        dumper=_dump_managed_settings,
+    )
+    dropin = _credentials_dropin_path()
+    if dropin_result == "removed" and dropin is not None:
+        remove_empty_dropin_folder(dropin)
+    return result
 
 
 def _managed_relayed_conflicts(path: Path) -> list[str]:
@@ -1606,9 +1628,9 @@ def write_tool_config(
     )
     previous_leaves = (managed_snapshots.settings_passthrough if managed_snapshots else None) or []
     _warn_if_settings_disable_smart_routing(passthrough, previous_leaves)
-    _reconcile_managed_settings(
-        state,
-        lambda base: _allow_ug_mcp_servers(
+
+    def compose_managed(base: dict) -> dict:
+        return _allow_ug_mcp_servers(
             apply_settings_passthrough(
                 _compose(
                     base,
@@ -1631,8 +1653,17 @@ def write_tool_config(
                 base.get(MANAGED_MCP_SETTINGS_KEY),
                 web_search=bool(web_search_model and not external_search),
             ),
-        ),
-        [*managed_file_keys, *passthrough.paths],
+        )
+
+    _reconcile_managed_settings(
+        state,
+        _keep_managed_file_credentials(compose_managed),
+        # ug's drop-in owns the blank credentials, so managed-settings.json doesn't.
+        [
+            path
+            for path in [*managed_file_keys, *passthrough.paths]
+            if path not in _SHADOWING_CREDENTIAL_PATHS
+        ],
         relayed,
         [key for key in CLAUDE_MANAGED_PICKER_KEYS if key in overlay],
         withdrawn_denies=withdrawn_list_items(
@@ -1932,27 +1963,82 @@ def _reconcile_managed_settings(
         warn_managed_write_skipped(path, managed_before, desired_settings)
         mark_managed_file_verified(state, "claude", path, scope="local-compatible")
         return
-    try:
-        reconcile_managed_file(
-            path,
-            _dump_managed_settings(desired_settings),
-            tool="claude",
-            display="Claude Code",
-            owned_paths=owned_paths,
-            parser=_parse_managed_settings,
-        )
-    except ManagedFileWriteUnavailable:
-        if conflicts:
-            raise
-        print_warning(
-            f"Claude Code OS-managed settings could not be updated at {path}; continuing with "
-            f"local settings at {CLAUDE_SETTINGS_PATH}."
-        )
-        mark_managed_file_verified(state, "claude", path, scope="local-compatible")
-        return
+    # One privileged session for both files, so the drop-in never costs a second sudo prompt.
+    with managed_write_session():
+        try:
+            reconcile_managed_file(
+                path,
+                _dump_managed_settings(desired_settings),
+                tool="claude",
+                display="Claude Code",
+                owned_paths=owned_paths,
+                parser=_parse_managed_settings,
+            )
+        except ManagedFileWriteUnavailable:
+            if conflicts:
+                raise
+            print_warning(
+                f"Claude Code OS-managed settings could not be updated at {path}; continuing "
+                f"with local settings at {CLAUDE_SETTINGS_PATH}."
+            )
+            mark_managed_file_verified(state, "claude", path, scope="local-compatible")
+            return
+        _reconcile_credentials_dropin()
     mark_managed_file_verified(state, "claude", path)
     record_ug_picker("claude", {key: desired_settings[key] for key in picker_keys})
     record_settings_passthrough("claude", passthrough_leaves or [])
+
+
+def _reconcile_credentials_dropin() -> None:
+    """Blank inherited Anthropic credentials for every Claude Code session on the machine.
+
+    The blanks live in ug's own drop-in rather than managed-settings.json: Claude Code merges
+    `managed-settings.d/*.json` after that file, `env` key by key, so another program that templates
+    managed-settings.json neither removes them nor makes ug rewrite them on every launch. A failure
+    only leaves a bare `claude` uncovered; `ug claude` gets the same blanks from ucode-settings.json.
+    Runs that can't prompt skip it quietly rather than warn on every non-interactive launch.
+    """
+    path = _credentials_dropin_path()
+    if path is None or not managed_writes_allowed():
+        return
+    try:
+        reconcile_managed_file(
+            path,
+            _dump_managed_settings({"env": dict.fromkeys(SHADOWING_CREDENTIAL_ENV_VARS, "")}),
+            tool=CREDENTIALS_DROPIN_MANIFEST_KEY,
+            display="Claude Code",
+            owned_paths=_SHADOWING_CREDENTIAL_PATHS,
+            parser=_parse_managed_settings,
+        )
+    except RuntimeError as exc:
+        print_warning(f"Could not update Claude Code's credential drop-in at {path}: {exc}")
+
+
+def _keep_managed_file_credentials(compose: Callable[[dict], dict]) -> Callable[[dict], dict]:
+    """Compose managed-settings.json without ug's blank credentials, which its drop-in carries.
+
+    Values the file already holds for those variables are kept as they are.
+    """
+
+    def composed(base: dict) -> dict:
+        base_env = base.get("env")
+        # Read before composing: the compose step merges ug's overlay into ``base`` in place.
+        kept = {
+            name: base_env[name]
+            for name in SHADOWING_CREDENTIAL_ENV_VARS
+            if isinstance(base_env, dict) and name in base_env
+        }
+        settings = compose(base)
+        env = settings.get("env")
+        if isinstance(env, dict):
+            for name in SHADOWING_CREDENTIAL_ENV_VARS:
+                if name in kept:
+                    env[name] = kept[name]
+                else:
+                    env.pop(name, None)
+        return settings
+
+    return composed
 
 
 def _preserve_permission_denies(

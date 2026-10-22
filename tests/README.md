@@ -181,9 +181,13 @@ These are component checks, not live Windows coverage for every agent.
 Agent configuration tests also verify `ug` auth/MCP helper commands, including
 quoted executable paths and replacement of legacy `ucode` routing/web-search helpers.
 `test_agent_claude.py` also checks that ug's Claude settings blank `ANTHROPIC_AUTH_TOKEN` and
-`ANTHROPIC_API_KEY` as ug-owned keys in the private and OS-managed files, for default and relayed
-setups, and that launches leave the user's environment unchanged, warn only on stderr, and stay
-silent for empty values. These component checks replace the exec, relay proxy and privileged write.
+`ANTHROPIC_API_KEY` as ug-owned keys in the private file, for default and relayed setups, and in
+ug's `managed-settings.d/50-ug-credentials.json` drop-in rather than `managed-settings.json`. The
+drop-in shares the managed file's password prompt, is skipped when privileged writes are
+unavailable, is not rewritten after another program rewrites `managed-settings.json`, and is
+removed by revert. Launches leave the user's environment unchanged, warn only on stderr, and stay
+silent for empty values. These component checks replace the exec, relay proxy and privileged
+write; `test_managed_files.py` covers the drop-in in both sudo allowlists and its Windows folder.
 
 `test_desktop_auth.py`, `test_desktop_auth_cli.py`, and `test_file_lock_cross_os.py`
 cover Desktop token-only stdout, explicit workspace/profile arguments, interactive-only
