@@ -73,10 +73,14 @@ They do not launch Desktop or execute the credential helper.
 
 `test_cuj4_smart_routing.py` uses its own read-only workspace with managed smart routing enabled.
 It runs the managed-default and explicit-model journeys and six
-`SMART_ROUTER_CONFIG_VERSION` cases using the shared version constants; each launches Claude
-and Codex once. With no selector, managed smart routing leaves the first prompt unrouted: the
-admin's default model completes the file task, no `routes:select` request is sent, and the
-Smart Router Orchestrator context reaches that inference request.
+`SMART_ROUTER_CONFIG_VERSION` presets using the shared version constants. With no selector,
+managed smart routing leaves the first prompt unrouted: the admin's default model completes the
+file task, no `routes:select` request is sent, and the Smart Router Orchestrator context reaches
+that inference request. Each preset runs as independent tests so a slow live subagent call
+cannot fail unrelated assertions: one first-prompt-then-explicit-subagent journey per agent
+(12 cases, with Claude ending in the native background-task wait) and one Claude-only status
+band/hint row/toggle journey per preset (6 cases, which needs no delegation or background-task
+wait).
 The CUJ derives routing and orchestration assertions from each agent's resolved preset flags.
 Component tests independently verify the preset values. The resulting expectations are:
 
@@ -137,5 +141,5 @@ With the same live prerequisites:
 ```bash
 uv run --with pexpect==4.9.0 --with pyte==0.8.2 pytest \
   --confcutdir=tests/e2e_cuj tests/e2e_cuj/test_cuj4_smart_routing.py \
-  -k test_smart_router_config_version -v
+  -k test_smart_router_preset -v
 ```
