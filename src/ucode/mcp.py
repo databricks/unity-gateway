@@ -1487,6 +1487,7 @@ def apply_mcp_server_changes(
         if client in clients
     }
     deprecated_entries = {
+        "claude": claude.deprecated_oauth_mcp_servers() if "claude" in unchanged_clients else {},
         "cursor": cursor.deprecated_oauth_mcp_servers() if "cursor" in unchanged_clients else {},
         "codex": codex.deprecated_oauth_mcp_servers() if "codex" in unchanged_clients else {},
     }

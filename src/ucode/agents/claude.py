@@ -902,6 +902,22 @@ def claude_mcp_config_path() -> Path:
     return Path(config_dir) / ".claude.json" if config_dir else CLAUDE_MCP_CONFIG_PATH
 
 
+def deprecated_oauth_mcp_servers() -> dict[str, str]:
+    """Return old user-scope OAuth entries by name and URL for a scoped migration."""
+    servers = read_json_safe(claude_mcp_config_path()).get("mcpServers")
+    if not isinstance(servers, dict):
+        return {}
+    return {
+        name: entry["url"]
+        for name, entry in servers.items()
+        if isinstance(name, str)
+        and isinstance(entry, dict)
+        and isinstance(entry.get("url"), str)
+        and isinstance(entry.get("oauth"), dict)
+        and entry["oauth"].get("clientId") == "claude-code"
+    }
+
+
 def _read_claude_config_for_rewrite(path: Path) -> dict | None:
     """Read ``path`` for a full rewrite: ``{}`` when absent, the parsed object when present and
     valid, and ``None`` when present but not a parseable JSON object — so a caller never overwrites

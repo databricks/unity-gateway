@@ -747,6 +747,22 @@ class TestApplyMcpServerChanges:
             )
         )
         monkeypatch.setattr(mcp.cursor, "CURSOR_MCP_CONFIG_PATH", cursor_config)
+        claude_dir = tmp_path / "claude"
+        claude_dir.mkdir()
+        (claude_dir / ".claude.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "first": {"url": first["url"], "oauth": {"clientId": "claude-code"}},
+                        "second": {
+                            "url": "https://elsewhere/mcp",
+                            "oauth": {"clientId": "claude-code"},
+                        },
+                    }
+                }
+            )
+        )
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_dir))
         codex_home = tmp_path / "codex"
         codex_home.mkdir()
         (codex_home / "config.toml").write_text(
@@ -766,7 +782,11 @@ class TestApplyMcpServerChanges:
         assert mcp.apply_mcp_server_changes(
             [first, second], [first, second], ["cursor", "codex", "claude"], WS
         )
-        assert set(configured) == {("cursor", "first"), ("codex", "first")}
+        assert set(configured) == {
+            ("claude", "first"),
+            ("cursor", "first"),
+            ("codex", "first"),
+        }
 
     def test_batch_agents_collapse_to_one_write_each(self, monkeypatch):
         # With batch_agents, each listed agent (any client, not just claude/codex) gets ONE file
