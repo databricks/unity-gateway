@@ -28,6 +28,8 @@ def _clean_auth_environment(monkeypatch):
     monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
     monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
     monkeypatch.delenv(desktop_auth.CLAUDE_HELPER_CONTEXT_ENV, raising=False)
+    monkeypatch.delenv(desktop_auth.CLAUDE_CODE_OAUTH_TOKEN_ENV, raising=False)
+    monkeypatch.delenv(desktop_auth.CLAUDE_CONFIG_DIR_ENV, raising=False)
 
 
 @pytest.fixture
@@ -451,6 +453,84 @@ def test_relay_credential_combines_keychain_and_databricks_tokens(monkeypatch):
         "Claude Code-credentials",
         "-w",
     ]
+
+
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+@pytest.mark.parametrize("custom_config_dir", [False, True])
+def test_relay_credential_reads_file_credentials_on_linux_and_windows(
+    monkeypatch, tmp_path, platform, custom_config_dir
+):
+    monkeypatch.setattr(desktop_auth.sys, "platform", platform)
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    if custom_config_dir:
+        config_dir = tmp_path / "custom claude config"
+        monkeypatch.setenv(desktop_auth.CLAUDE_CONFIG_DIR_ENV, str(config_dir))
+    else:
+        config_dir = home / ".claude"
+    config_dir.mkdir(parents=True)
+    (config_dir / ".credentials.json").write_text(
+        json.dumps(
+            {
+                "claudeAiOauth": {
+                    "accessToken": "anthropic-token",
+                    "expiresAt": int((time.time() + 3600) * 1000),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        desktop_auth,
+        "get_claude_desktop_token",
+        lambda host, profile: "databricks-token",
+    )
+    run = Mock()
+    monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", run)
+
+    credential = desktop_auth.get_claude_desktop_relay_credential(
+        HOST, PROFILE, "/opt/claude/bin/claude"
+    )
+
+    assert credential == {
+        "token": "anthropic-token",
+        "headers": {
+            desktop_auth.AI_GATEWAY_TOKEN_HEADER: "Bearer databricks-token",
+        },
+    }
+    run.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "expires_at",
+    [None, "1770000000000", True, float("nan"), float("inf")],
+)
+def test_subscription_credential_rejects_invalid_expiry(monkeypatch, expires_at):
+    monkeypatch.setattr(
+        desktop_auth,
+        "_read_claude_credentials",
+        lambda: {
+            "claudeAiOauth": {
+                "accessToken": "anthropic-token",
+                "expiresAt": expires_at,
+            }
+        },
+    )
+
+    with pytest.raises(desktop_auth.ClaudeDesktopAuthError, match="credentials are invalid"):
+        desktop_auth._claude_subscription_token()
+
+
+def test_subscription_credential_rejects_missing_expiry(monkeypatch):
+    monkeypatch.setattr(
+        desktop_auth,
+        "_read_claude_credentials",
+        lambda: {"claudeAiOauth": {"accessToken": "anthropic-token"}},
+    )
+
+    with pytest.raises(desktop_auth.ClaudeDesktopAuthError, match="credentials are invalid"):
+        desktop_auth._claude_subscription_token()
 
 
 def test_relay_credential_uses_explicit_claude_oauth_token(monkeypatch):

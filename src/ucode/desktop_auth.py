@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import sys
@@ -34,6 +35,7 @@ CLAUDE_DESKTOP_AUTH_SILENT_REFRESH = True
 CLAUDE_HELPER_CONTEXT_ENV = "CLAUDE_HELPER_CONTEXT"
 CLAUDE_HELPER_INTERACTIVE_CONTEXT = "interactive"
 CLAUDE_CODE_OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
+CLAUDE_CONFIG_DIR_ENV = "CLAUDE_CONFIG_DIR"
 
 AI_GATEWAY_TOKEN_HEADER = "X-Databricks-AI-Gateway-Token"
 
@@ -41,6 +43,7 @@ _TOKEN_TIMEOUT_SECONDS = 15
 _HELPER_BUDGET_SECONDS = 270
 _AUTH_LOCK_PATH = APP_DIR / "claude-desktop-auth.lock"
 _CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials"
+_CLAUDE_CREDENTIALS_FILENAME = ".credentials.json"
 _NETWORK_MARKERS = (
     "network",
     "timed out",
@@ -318,6 +321,12 @@ def get_claude_desktop_token(
             ) from None
 
 
+def _claude_credentials_path() -> Path:
+    if config_dir := os.environ.get(CLAUDE_CONFIG_DIR_ENV):
+        return Path(config_dir).expanduser() / _CLAUDE_CREDENTIALS_FILENAME
+    return Path.home() / ".claude" / _CLAUDE_CREDENTIALS_FILENAME
+
+
 def _read_claude_credentials() -> dict:
     if sys.platform == "darwin":
         account = os.environ.get("USER")
@@ -349,13 +358,17 @@ def _read_claude_credentials() -> dict:
             raise ClaudeDesktopAuthError(
                 "Claude subscription authentication is required.", kind="auth"
             )
-    else:
+    elif sys.platform in ("linux", "win32"):
         try:
-            raw = (Path.home() / ".claude" / ".credentials.json").read_text(encoding="utf-8")
+            raw = _claude_credentials_path().read_text(encoding="utf-8")
         except OSError as exc:
             raise ClaudeDesktopAuthError(
                 "Claude subscription authentication is required.", kind="auth"
             ) from exc
+    else:
+        raise ClaudeDesktopAuthError(
+            "Claude subscription authentication is unavailable on this platform.", kind="cli"
+        )
 
     try:
         payload = json.loads(raw)
@@ -386,8 +399,12 @@ def _claude_subscription_token() -> str:
     token = token.strip()
     if not token or any(character.isspace() or ord(character) < 0x20 for character in token):
         raise ClaudeDesktopAuthError("Claude subscription authentication is invalid.", kind="auth")
+    if isinstance(expires_at, bool) or not isinstance(expires_at, (int, float)):
+        raise ClaudeDesktopAuthError("Claude subscription credentials are invalid.", kind="auth")
+    if isinstance(expires_at, float) and not math.isfinite(expires_at):
+        raise ClaudeDesktopAuthError("Claude subscription credentials are invalid.", kind="auth")
     minimum_expiry = (time.time() + CLAUDE_DESKTOP_AUTH_TTL_SECONDS) * 1000
-    if isinstance(expires_at, (int, float)) and expires_at <= minimum_expiry:
+    if expires_at <= minimum_expiry:
         raise ClaudeDesktopAuthError("Claude subscription authentication expired.", kind="auth")
     return token
 
@@ -437,6 +454,7 @@ __all__ = [
     "CLAUDE_HELPER_CONTEXT_ENV",
     "CLAUDE_HELPER_INTERACTIVE_CONTEXT",
     "CLAUDE_CODE_OAUTH_TOKEN_ENV",
+    "CLAUDE_CONFIG_DIR_ENV",
     "ClaudeDesktopAuthError",
     "get_claude_desktop_relay_credential",
     "get_claude_desktop_token",

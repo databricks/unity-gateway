@@ -639,8 +639,9 @@ def test_unsupported_auth_warns_without_modifying_profiles(desktop, capsys, key,
     assert "Could not configure Claude Desktop" in capsys.readouterr().out
 
 
-def test_subscription_relay_uses_direct_gateway_and_combined_helper(desktop, monkeypatch, capsys):
-    monkeypatch.setattr(desktop_setup.shutil, "which", lambda binary: "/opt/claude/bin/claude")
+def test_subscription_relay_uses_direct_gateway_and_combined_helper(desktop, monkeypatch):
+    claude_binary = os.path.abspath(os.path.join("bin", "claude"))
+    monkeypatch.setattr(desktop_setup.shutil, "which", lambda binary: claude_binary)
     state = {
         "workspace": "https://workspace.example",
         "profile": "chosen-profile",
@@ -650,17 +651,12 @@ def test_subscription_relay_uses_direct_gateway_and_combined_helper(desktop, mon
 
     desktop_setup.configure_claude_desktop(state)
 
-    if desktop_setup.sys.platform != "darwin":
-        assert list(desktop.glob("*.json")) == [desktop / "_meta.json"]
-        output = " ".join(capsys.readouterr().out.split())
-        assert "only supported on macOS Desktop" in output
-        return
     profile = configured_profile(desktop)
     assert profile["inferenceGatewayBaseUrl"] == ("https://workspace.example/ai-gateway/anthropic")
     assert profile["inferenceCredentialHelperArgs"][-3:] == [
         "--relay",
         "--claude-binary",
-        "/opt/claude/bin/claude",
+        claude_binary,
     ]
     assert profile["inferenceCustomHeaders"][MODEL_PROVIDER_SERVICE_HEADER] == (
         "main.models.subscription"

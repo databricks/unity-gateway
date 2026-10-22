@@ -70,8 +70,6 @@ def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
     relayed = bool(state.get("claude_relayed"))
     claude_binary = None
     if relayed:
-        if sys.platform != "darwin":
-            raise RuntimeError("Anthropic subscription relay is only supported on macOS Desktop.")
         claude_binary = shutil.which("claude")
         if not claude_binary or not os.path.isabs(claude_binary):
             raise RuntimeError("Install Claude Code before configuring subscription relay.")

@@ -13,6 +13,8 @@ headers as Claude Code. There is no separate Desktop checkbox or managed field.
 - A named Databricks CLI OAuth profile with gateway/model access. A bearer token
   alone is not enough for Desktop's credential helper.
 - At least one Claude-named model in the configured static list or gateway catalog.
+- For an Anthropic subscription relay, Claude Code installed and signed in on the
+  same OS user account.
 
 Quit Claude Desktop, configure Claude Code, then reopen Desktop normally:
 
@@ -93,6 +95,14 @@ If authentication is missing, it opens browser login only when Desktop supplies
 `CLAUDE_HELPER_CONTEXT=interactive`. Other contexts fail with instructions to start
 a new Cowork task. Browser login has a bounded timeout and concurrent sign-ins are
 serialized. If the original message failed during login, resend it.
+
+For an Anthropic subscription relay, the same helper returns the Claude subscription
+token as Desktop's bearer token and the Databricks token in
+`X-Databricks-AI-Gateway-Token`. On macOS it reads the Claude credential from Keychain.
+On Linux and Windows it reads `.claude/.credentials.json` from the user's home directory,
+or `.credentials.json` under `CLAUDE_CONFIG_DIR` when set. Missing, malformed, expired, or
+soon-to-expire timestamps trigger `claude auth login --claudeai` in an interactive helper
+context. The profile stores neither credential, and no proxy or background service is needed.
 
 ## OpenTelemetry tracing
 
@@ -228,11 +238,13 @@ orchestration; they do not prove GUI inference on every app version.
   not remove this client restriction. UG filters Desktop's catalog to Claude-named
   models without renaming them; that name filter does not reproduce every native
   validation rule.
-- Anthropic subscription relay, custom OAuth/PAT profiles, Desktop Smart Routing,
-  and third-party connectors outside UG's generated Cowork plugin are not implemented here.
-  Cowork's MCP proxy supports saved PAT mode but not custom OAuth. Native OTEL settings are
-  generated, but native export and ingestion remain unverified; session auth limits are
-  described above.
+- Custom OAuth/PAT profiles, Desktop Smart Routing, and third-party connectors outside
+  UG's generated Cowork plugin are not implemented here. Cowork's MCP proxy supports saved
+  PAT mode but not custom OAuth. Native OTEL settings are generated, but native export and
+  ingestion remain unverified; session auth limits are described above.
+- Anthropic subscription relay has native macOS proof-of-concept validation. Windows and
+  Linux credential-file handling has component coverage, but native Desktop login, refresh,
+  and inference remain rollout gates.
 - Observed inference applies to Cowork. Ordinary Chat is not claimed to use the
   same gateway path.
 

@@ -146,6 +146,8 @@ without failing Claude Code configuration. See [Claude Desktop setup](docs/claud
 for authentication, profile preservation, and native validation limits.
 When managed Claude tracing is enabled, the same profile configures Desktop's native
 OTLP trace export with a refreshing headers helper; no background service is needed.
+Anthropic subscription relay profiles use one helper to supply the short-lived Claude
+subscription token and Databricks gateway token on macOS, Windows, and Linux.
 
 ## MCP Servers
 
