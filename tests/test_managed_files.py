@@ -18,6 +18,7 @@ import ucode.agents.claude as claude_agent
 import ucode.codex_config as codex_config
 import ucode.config_io as config_io
 from ucode import managed_files
+from ucode.env import NONINTERACTIVE_ENV
 
 _REAL_SUDO_REPLACE = managed_files._sudo_replace
 # Captured before the autouse ``_supported`` fixture pins the module attribute to True.
@@ -1651,7 +1652,7 @@ def test_sudo_command_derives_prompt_policy(monkeypatch, interactive):
 def test_noninteractive_env_never_lets_sudo_prompt(monkeypatch, value):
     """A wrapper's unattended terminal gets sudo's non-prompting mode, as if no terminal were attached."""
     monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: True)
-    monkeypatch.setenv(managed_files.NONINTERACTIVE_ENV, value)
+    monkeypatch.setenv(NONINTERACTIVE_ENV, value)
 
     assert managed_files._sudo_may_prompt() is False
     assert managed_files.managed_writes_allowed() is False
@@ -1661,6 +1662,6 @@ def test_noninteractive_env_never_lets_sudo_prompt(monkeypatch, value):
 
 def test_noninteractive_env_unset_keeps_the_interactive_prompt(monkeypatch):
     monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: True)
-    monkeypatch.delenv(managed_files.NONINTERACTIVE_ENV, raising=False)
+    monkeypatch.delenv(NONINTERACTIVE_ENV, raising=False)
 
     assert managed_files._sudo_may_prompt() is True
