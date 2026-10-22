@@ -1,5 +1,6 @@
 import type { EngineInterface, On, PluginOptions } from 'claude-code';
 import { registerStatusBand, showStatusBand } from './smart-routing-status.ts';
+import { registerOrchestrationDecision } from './orchestration-decision.ts';
 import { registerSubagentRouting } from './subagent-routing.ts';
 import {
   CLI_AGENT,
@@ -92,14 +93,7 @@ async function setRouting(
 export function register(on: On, options: PluginOptions): void {
   const feedback = createIsaacFeedbackState();
   const launchedEnabled = isRoutingEnabled(options);
-
-  on('session.start', async ($, e, next) => {
-    if (launchedEnabled) {
-      const current = await readEnvironment($);
-      await setRouting($, options, isRoutingEnabled(current), false);
-    }
-    return next(e);
-  });
+  const ownershipStatus: { value?: string } = {};
 
   // The installed smart-router skill already supplies the slash command.
   on('command.run', {command: 'smart-router'}, async ($, e, next) => {
@@ -129,6 +123,7 @@ export function register(on: On, options: PluginOptions): void {
     }
     return {text: `Smart Router is ${action}`};
   });
-  registerStatusBand(on);
+  registerOrchestrationDecision(on, options, ownershipStatus);
+  registerStatusBand(on, () => ownershipStatus.value);
   registerSubagentRouting(on, options);
 }

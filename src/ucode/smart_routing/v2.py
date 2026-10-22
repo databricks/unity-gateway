@@ -8,12 +8,15 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
-from collections.abc import Callable, Mapping, MutableMapping
+from collections.abc import Callable, Iterator, Mapping, MutableMapping
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import NoReturn, TextIO
+from typing import TYPE_CHECKING, NoReturn, TextIO
+from urllib.parse import urlsplit
 
 from ucode import claude_answer_delivery, config_io
 from ucode.codex_config import (
@@ -31,6 +34,7 @@ from ucode.constants import (
     AGENT_CLAUDE,
     AGENT_CODEX,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
+    ENABLE_SMART_ROUTER_OWNERSHIP_DECISION_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
     LOOPBACK_HOST,
@@ -56,6 +60,7 @@ from ucode.skills import (
     SMART_ROUTER_ORCHESTRATOR_SKILL,
     SMART_ROUTER_SKILL,
     install_skill,
+    remove_managed_agent_skill_if_unmodified,
     uninstall_agent_skill,
 )
 from ucode.smart_routing import claude_routing, orchestrator, routing
@@ -70,6 +75,13 @@ from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_mo
 from ucode.smart_routing.config import apply_config, resolve_environment
 from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
 from ucode.ui import print_note, print_warning
+
+if TYPE_CHECKING:
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    import httpx
+
+    from ucode.gateway_proxy import TokenCache
 
 LEGACY_STATE_KEY = "smart_routing_enabled"
 
@@ -86,10 +98,42 @@ HEALTH_POLL_INTERVAL_SECONDS = 0.25
 CLAUDE_ROUTE_SELECTION_TIMEOUT_S = 20.0
 CLAUDE_ROUTED_AGENT_PREFIX = "ucode-route-"
 CLAUDE_ROUTING_PLUGIN_NAME = "ug-smart-router"
+CLAUDE_CODE_ENABLE_FUNCTION_HOOKS_ENV_VAR = "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS"
+CLAUDE_CODE_GATEWAY_HINT_HEADERS_ENV_VAR = "CLAUDE_CODE_GATEWAY_HINT_HEADERS"
 CLAUDE_ROUTED_AGENT_PROMPT = (
     "Complete the delegated task exactly as requested. Follow the parent agent's instructions and "
     "return a concise report of your findings or changes."
 )
+
+
+@contextmanager
+def _claude_function_hooks_enabled(*, gateway_hints: bool = False) -> Iterator[None]:
+    """Expose Claude's native hook and optional request-identity gates to the child."""
+    previous = os.environ.get(CLAUDE_CODE_ENABLE_FUNCTION_HOOKS_ENV_VAR)
+    if previous is not None and previous != "1":
+        raise RuntimeError(
+            f"{CLAUDE_CODE_ENABLE_FUNCTION_HOOKS_ENV_VAR} must be '1' to load the Claude plugin."
+        )
+    previous_hints = os.environ.get(CLAUDE_CODE_GATEWAY_HINT_HEADERS_ENV_VAR)
+    if gateway_hints and previous_hints is not None and previous_hints != "1":
+        raise RuntimeError(
+            f"{CLAUDE_CODE_GATEWAY_HINT_HEADERS_ENV_VAR} must be '1' for ownership capture."
+        )
+    os.environ[CLAUDE_CODE_ENABLE_FUNCTION_HOOKS_ENV_VAR] = "1"
+    if gateway_hints:
+        os.environ[CLAUDE_CODE_GATEWAY_HINT_HEADERS_ENV_VAR] = "1"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(CLAUDE_CODE_ENABLE_FUNCTION_HOOKS_ENV_VAR, None)
+        else:
+            os.environ[CLAUDE_CODE_ENABLE_FUNCTION_HOOKS_ENV_VAR] = previous
+        if gateway_hints:
+            if previous_hints is None:
+                os.environ.pop(CLAUDE_CODE_GATEWAY_HINT_HEADERS_ENV_VAR, None)
+            else:
+                os.environ[CLAUDE_CODE_GATEWAY_HINT_HEADERS_ENV_VAR] = previous_hints
 
 
 class ClaudeRoutingSetupError(RuntimeError):
@@ -97,14 +141,29 @@ class ClaudeRoutingSetupError(RuntimeError):
 
 
 def _prepare_smart_router_session(agent: str) -> Path:
+    ownership_mode = orchestrator.ownership_decision_enabled(agent=agent)
     skills = [SMART_ROUTER_SKILL]
-    if orchestrator.feature_enabled(agent=agent):
+    if orchestrator.feature_enabled(agent=agent) and not ownership_mode:
         skills.append(SMART_ROUTER_ORCHESTRATOR_SKILL)
     for skill in skills:
         try:
             install_skill(skill, agent, config_io.APP_DIR.parent)
         except (OSError, RuntimeError) as exc:
             print_warning(f"Could not install the {skill} skill: {exc}")
+    if ownership_mode:
+        try:
+            removed = remove_managed_agent_skill_if_unmodified(
+                SMART_ROUTER_ORCHESTRATOR_SKILL, agent, config_io.APP_DIR.parent
+            )
+            if removed is False:
+                print_warning(
+                    "Preserving the custom or modified Smart Router Orchestrator skill for this "
+                    "Claude profile."
+                )
+        except (OSError, RuntimeError, ValueError) as exc:
+            print_warning(
+                f"Could not safely check the {SMART_ROUTER_ORCHESTRATOR_SKILL} skill: {exc}"
+            )
     return start_session()
 
 
@@ -117,9 +176,18 @@ def remove_smart_router_session_skills(agent: str) -> None:
             print_warning(f"Could not remove the {skill} skill: {exc}")
 
 
-def _launch_token(state: dict, workspace: str) -> str:
+def _launch_token(state: dict, workspace: str, *, force_refresh: bool = False) -> str:
     custom_oauth = state.get("custom_oauth")
     if custom_oauth_cli_enabled(custom_oauth) and isinstance(custom_oauth, dict):
+        if force_refresh:
+            return get_custom_client_token(
+                workspace,
+                custom_oauth["client_id"],
+                custom_oauth["redirect_url"],
+                scopes=custom_oauth["scopes"],
+                profile=custom_oauth.get("profile"),
+                force_refresh=True,
+            )
         return get_custom_client_token(
             workspace,
             custom_oauth["client_id"],
@@ -127,7 +195,102 @@ def _launch_token(state: dict, workspace: str) -> str:
             scopes=custom_oauth["scopes"],
             profile=custom_oauth.get("profile"),
         )
+    if force_refresh:
+        return get_databricks_token(workspace, state.get("profile"), force_refresh=True)
     return get_databricks_token(workspace, state.get("profile"))
+
+
+def _ownership_capture_transform(
+    workspace: str, env: Mapping[str, str]
+) -> Callable[[BaseHTTPRequestHandler, bytes | None], bytes | None]:
+    """Bind native ownership only to complete Claude message requests."""
+    from ucode import gateway_proxy
+    from ucode.smart_routing import ownership, ownership_transport
+
+    def transform(handler: BaseHTTPRequestHandler, body: bytes | None) -> bytes | None:
+        path = urlsplit(getattr(handler, "path", "")).path
+        if path != "/v1/messages":
+            return body
+        if body is None:
+            raise gateway_proxy.RequestTransformRejected(
+                400, {"error": "Claude message request is missing its JSON body."}
+            )
+        try:
+            request = ownership._json_loads(body, max_bytes=len(body))
+        except ownership.OwnershipProtocolError as exc:
+            raise gateway_proxy.RequestTransformRejected(
+                400, {"error": "Claude message request contains invalid JSON."}
+            ) from exc
+        if not isinstance(request, dict):
+            raise gateway_proxy.RequestTransformRejected(
+                400, {"error": "Claude message request must be a JSON object."}
+            )
+
+        cache = getattr(type(handler), "cache", None)
+        if cache is None:
+            raise RuntimeError("ownership proxy token cache is unavailable")
+        headers = dict(handler.headers.items())
+        try:
+            transformed = ownership_transport.capture_request(
+                request,
+                headers,
+                workspace=workspace,
+                env=env,
+                token=cache.token,
+            )
+        except ownership.OwnershipProtocolError as exc:
+            error: dict[str, object] = {
+                "error_code": "INVALID_ORCHESTRATION_DECISION_RESPONSE",
+                "error": str(exc),
+            }
+            if exc.usage_receipt is not None:
+                error["usage_receipt"] = exc.usage_receipt
+            raise gateway_proxy.RequestTransformRejected(400, error) from exc
+        except ownership.OwnershipServiceError as exc:
+            raise gateway_proxy.RequestTransformRejected(
+                503,
+                {"error_code": "ORCHESTRATION_DECISION_FAILED", "error": str(exc)},
+            ) from exc
+        except ownership.OwnershipStateError as exc:
+            raise gateway_proxy.RequestTransformRejected(
+                409,
+                {"error_code": "OWNERSHIP_STATE_CONFLICT", "error": str(exc)},
+            ) from exc
+
+        if transformed == request:
+            return body
+        try:
+            return json.dumps(
+                transformed,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        except (TypeError, ValueError, UnicodeError) as exc:
+            raise gateway_proxy.RequestTransformRejected(
+                400, {"error": "Transformed Claude request is not valid JSON."}
+            ) from exc
+
+    return transform
+
+
+def start_ownership_capture_proxy(
+    workspace: str,
+    *,
+    token_provider: Callable[[bool], str],
+    env: Mapping[str, str] | None = None,
+    port: int = 0,
+) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
+    """Start the model-aware gateway proxy with capture bound to actual request bodies."""
+    from ucode import gateway_proxy
+
+    capture_env = dict(os.environ if env is None else env)
+    return gateway_proxy.start_ownership_proxy(
+        workspace,
+        token_provider,
+        _ownership_capture_transform(workspace, capture_env),
+        port=port,
+    )
 
 
 def _model_picker_catalog() -> AnthropicModelCatalog | None:
@@ -353,7 +516,109 @@ def _claude_mod_launch_options(env: Mapping[str, str] | None = None) -> dict:
     }
 
 
-def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
+def configure_claude_mod_settings(
+    settings: dict,
+    *,
+    workspace: str,
+    env: Mapping[str, str] | None = None,
+    answer_delivery: bool = False,
+) -> None:
+    """Configure this plugin's launch options without touching other settings."""
+    if not isinstance(settings, dict):
+        raise TypeError("Claude settings must be an object")
+    if type(answer_delivery) is not bool:
+        raise TypeError("answer_delivery must be a boolean")
+    source = resolve_environment(env, agent=AGENT_CLAUDE)
+    settings_env = settings.get("env", {})
+    if not isinstance(settings_env, dict):
+        raise RuntimeError("Claude settings 'env' must be an object for native plugins.")
+    for configured_env in (source, settings_env, os.environ):
+        if (
+            CLAUDE_CODE_ENABLE_FUNCTION_HOOKS_ENV_VAR in configured_env
+            and configured_env[CLAUDE_CODE_ENABLE_FUNCTION_HOOKS_ENV_VAR] != "1"
+        ):
+            raise RuntimeError(
+                f"{CLAUDE_CODE_ENABLE_FUNCTION_HOOKS_ENV_VAR} must be '1' to load the Claude plugin."
+            )
+    settings_env[CLAUDE_CODE_ENABLE_FUNCTION_HOOKS_ENV_VAR] = "1"
+    ownership_mode = source.get(ENABLE_SMART_ROUTER_OWNERSHIP_DECISION_ENV_VAR) == "1"
+    if ownership_mode:
+        for configured_env in (source, settings_env, os.environ):
+            if (
+                CLAUDE_CODE_GATEWAY_HINT_HEADERS_ENV_VAR in configured_env
+                and configured_env[CLAUDE_CODE_GATEWAY_HINT_HEADERS_ENV_VAR] != "1"
+            ):
+                raise RuntimeError(
+                    f"{CLAUDE_CODE_GATEWAY_HINT_HEADERS_ENV_VAR} must be '1' for ownership capture."
+                )
+        settings_env[CLAUDE_CODE_GATEWAY_HINT_HEADERS_ENV_VAR] = "1"
+    settings["env"] = settings_env
+    plugin_configs = settings.setdefault("pluginConfigs", {})
+    if not isinstance(plugin_configs, dict):
+        raise RuntimeError("Claude settings 'pluginConfigs' must be an object.")
+    plugin_config = plugin_configs.setdefault(CLAUDE_ROUTING_PLUGIN_NAME, {})
+    if not isinstance(plugin_config, dict):
+        raise RuntimeError("Claude Smart Router plugin config must be an object.")
+    options = plugin_config.setdefault("options", {})
+    if not isinstance(options, dict):
+        raise RuntimeError("Claude Smart Router plugin options must be an object.")
+
+    route_command = options.get("routeCommand")
+    if route_command is not None and (
+        not isinstance(route_command, list)
+        or not all(isinstance(argument, str) for argument in route_command)
+    ):
+        raise RuntimeError("Claude Smart Router 'routeCommand' must be a list of strings.")
+
+    launch_options = _claude_mod_launch_options(source)
+    launch_options.pop("routeCommand")
+    options.update(launch_options)
+    if route_command is None:
+        settings_env = settings.get("env")
+        settings_env = settings_env if isinstance(settings_env, dict) else {}
+        profile = source.get("DATABRICKS_CONFIG_PROFILE") or settings_env.get(
+            "DATABRICKS_CONFIG_PROFILE"
+        )
+        model_overrides = settings.get("modelOverrides")
+        route_state = {
+            "workspace": workspace,
+            "profile": profile,
+            "claude_models": model_overrides if isinstance(model_overrides, dict) else {},
+        }
+        options["routeCommand"] = routing_hook_argv(route_state, ROUTE_SUBAGENT_MOD_EVENT)
+    else:
+        options["routeCommand"] = route_command
+
+    if source.get(ENABLE_SMART_ROUTER_OWNERSHIP_DECISION_ENV_VAR) == "1":
+        from ucode.smart_routing import ownership
+
+        options.update(
+            {
+                "ownershipCommand": [
+                    os.path.abspath(sys.executable),
+                    "-m",
+                    "ucode.smart_routing.ownership",
+                    "--workspace",
+                    workspace,
+                ],
+                "ownershipPolicyVersion": ownership.POLICY_VERSION,
+                "ownershipPolicySha256": ownership.policy_sha256(),
+                "ownershipAnswerDelivery": answer_delivery,
+            }
+        )
+    else:
+        for key in (
+            "ownershipCommand",
+            "ownershipPolicyVersion",
+            "ownershipPolicySha256",
+            "ownershipAnswerDelivery",
+        ):
+            options.pop(key, None)
+
+
+def _write_routed_claude_plugin(
+    plugin_dir: Path, model_ids: list[str], *, env: Mapping[str, str] | None = None
+) -> None:
     """Write exact-model agents for launch-scoped loading through --plugin-dir."""
     write_json_file(
         plugin_dir / ".claude-plugin" / "plugin.json",
@@ -381,6 +646,31 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
                     "default": [],
                     "title": "Subagent router",
                     "description": "CLI argument list for a subagent routing decision",
+                },
+                "ownershipCommand": {
+                    "type": "string",
+                    "multiple": True,
+                    "default": [],
+                    "title": "Ownership decision bridge",
+                    "description": "Absolute Python argv for the ownership decision bridge",
+                },
+                "ownershipPolicyVersion": {
+                    "type": "string",
+                    "default": "",
+                    "title": "Ownership policy version",
+                    "description": "Pinned local ownership policy version",
+                },
+                "ownershipPolicySha256": {
+                    "type": "string",
+                    "default": "",
+                    "title": "Ownership policy SHA-256",
+                    "description": "Pinned local ownership policy digest",
+                },
+                "ownershipAnswerDelivery": {
+                    "type": "boolean",
+                    "default": False,
+                    "title": "Buffered answer delivery",
+                    "description": "Whether this launch can select an explicit child answer",
                 },
                 **{
                     key: {"type": "string", "title": key, "description": "Original routing flag"}
@@ -419,10 +709,10 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
                 ]
             ),
         )
-    orchestrator.add_claude_agents(plugin_dir)
+    orchestrator.add_claude_agents(plugin_dir, env=env)
     mods = Path(__file__).parents[1] / "agents" / "claude_mods"
     # These are imported by the entry point, so they ship beside it rather than as modules.
-    for name in (
+    module_names = [
         "register.ts",
         "constants.ts",
         "extra-body.ts",
@@ -430,7 +720,15 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
         "routing-state.ts",
         "smart-routing-status.ts",
         "subagent-routing.ts",
-    ):
+    ]
+    ownership_module = mods / "orchestration-decision.ts"
+    if ownership_module.is_file():
+        module_names.append(ownership_module.name)
+    elif orchestrator.ownership_decision_enabled(env, agent=AGENT_CLAUDE):
+        raise ClaudeRoutingSetupError(
+            "The native Claude ownership decision module is missing from this UG package."
+        )
+    for name in module_names:
         write_text_file(plugin_dir / "hooks" / name, (mods / name).read_text(encoding="utf-8"))
     write_json_file(plugin_dir / "hooks" / "hooks.json", {"modules": ["./register.ts"]})
 
@@ -716,7 +1014,11 @@ def launch_claude(
     sync_smart_routing_hooks(settings, routing_state, enabled=True)
     if route_first_prompt:
         sync_first_prompt_hook(settings, hook_executable)
-    orchestrator.sync_hooks(settings, agent="claude")
+    resolved_hook_env = {**resolve_environment(agent=AGENT_CLAUDE), **env}
+    ownership_capture_enabled = orchestrator.ownership_decision_enabled(
+        resolved_hook_env, agent=AGENT_CLAUDE
+    )
+    orchestrator.sync_hooks(settings, agent="claude", env=resolved_hook_env)
     model_setting = _ClaudeModelSettingGuard(user_settings_path)
 
     def route_prompt(prompt: str) -> claude_pty.FirstPromptRoute:
@@ -727,6 +1029,8 @@ def launch_claude(
             rationale=decision.rationale,
         )
 
+    ownership_proxy: tuple[ThreadingHTTPServer, TokenCache, httpx.Client] | None = None
+    ownership_proxy_thread: threading.Thread | None = None
     try:
         APP_DIR.mkdir(parents=True, exist_ok=True)
         with TemporaryDirectory(prefix="claude-v2-", dir=APP_DIR) as directory:
@@ -742,12 +1046,46 @@ def launch_claude(
             settings.setdefault("pluginConfigs", {}).setdefault(CLAUDE_ROUTING_PLUGIN_NAME, {})[
                 "options"
             ] = {
-                **_claude_mod_launch_options({**resolve_environment(agent=AGENT_CLAUDE), **env}),
                 "routeCommand": routing_hook_argv(routing_state, ROUTE_SUBAGENT_MOD_EVENT),
             }
+            configure_claude_mod_settings(
+                settings,
+                workspace=workspace,
+                env={**resolve_environment(agent=AGENT_CLAUDE), **env},
+                answer_delivery=(
+                    _claude_print_mode(remaining)
+                    and not claude_answer_delivery.has_streaming_input(remaining)
+                    and orchestrator.enabled(agent=AGENT_CLAUDE)
+                ),
+            )
             try:
+                _write_routed_claude_plugin(plugin_dir, model_ids, env=resolved_hook_env)
+                if ownership_capture_enabled:
+                    settings_env = settings["env"]
+                    capture_env = {
+                        **os.environ,
+                        **resolve_environment(agent=AGENT_CLAUDE),
+                        **env,
+                        **settings_env,
+                    }
+
+                    def token_provider(force_refresh: bool) -> str:
+                        return _launch_token(state, workspace, force_refresh=force_refresh)
+
+                    ownership_proxy = start_ownership_capture_proxy(
+                        workspace,
+                        token_provider=token_provider,
+                        env=capture_env,
+                    )
+                    proxy_server, _, _ = ownership_proxy
+                    settings_env["ANTHROPIC_BASE_URL"] = (
+                        f"http://127.0.0.1:{proxy_server.server_address[1]}"
+                    )
+                    ownership_proxy_thread = threading.Thread(
+                        target=proxy_server.serve_forever, daemon=True
+                    )
+                    ownership_proxy_thread.start()
                 write_json_file(settings_path, settings)
-                _write_routed_claude_plugin(plugin_dir, model_ids)
             except Exception as exc:  # noqa: BLE001 - optional setup must not block normal launch
                 raise ClaudeRoutingSetupError("Failed to write Claude smart-routing files") from exc
             model_args = launch_model_args(remaining, routed_model or launch_model)
@@ -760,37 +1098,47 @@ def launch_claude(
                 str(plugin_dir),
                 *remaining,
             ]
-            if _claude_print_mode(remaining) and orchestrator.enabled(agent=AGENT_CLAUDE):
-                returncode = claude_answer_delivery.run(
-                    argv, session_path=session_path, stdin_prompt=stdin_prompt
-                )
-            elif route_first_prompt:
-                returncode = claude_pty.run_claude_pty(
-                    argv,
-                    route_prompt=route_prompt,
-                    socket_path=socket_path,
-                    prepare_model_switch=model_setting.begin,
-                    model_switch_persisted=model_setting.is_routed,
-                    restore_model_setting=model_setting.restore,
-                    log_path=CLAUDE_PTY_LOG,
-                )
-            else:
-                proc = subprocess_cross_os.popen(
-                    argv, stdin=subprocess.PIPE if stdin_prompt is not None else None
-                )
-                if stdin_prompt is not None and proc.stdin is not None:
-                    # ug consumed stdin to route the prompt, so hand Claude the same bytes.
+            with _claude_function_hooks_enabled(gateway_hints=ownership_capture_enabled):
+                if _claude_print_mode(remaining) and orchestrator.enabled(agent=AGENT_CLAUDE):
+                    returncode = claude_answer_delivery.run(
+                        argv, session_path=session_path, stdin_prompt=stdin_prompt
+                    )
+                elif route_first_prompt:
+                    returncode = claude_pty.run_claude_pty(
+                        argv,
+                        route_prompt=route_prompt,
+                        socket_path=socket_path,
+                        prepare_model_switch=model_setting.begin,
+                        model_switch_persisted=model_setting.is_routed,
+                        restore_model_setting=model_setting.restore,
+                        log_path=CLAUDE_PTY_LOG,
+                    )
+                else:
+                    proc = subprocess_cross_os.popen(
+                        argv, stdin=subprocess.PIPE if stdin_prompt is not None else None
+                    )
+                    if stdin_prompt is not None and proc.stdin is not None:
+                        # ug consumed stdin to route the prompt, so hand Claude the same bytes.
+                        try:
+                            proc.stdin.write(stdin_prompt)
+                            proc.stdin.close()
+                        except BrokenPipeError:
+                            pass
                     try:
-                        proc.stdin.write(stdin_prompt)
-                        proc.stdin.close()
-                    except BrokenPipeError:
-                        pass
-                try:
-                    returncode = proc.wait()
-                except KeyboardInterrupt:
-                    proc.send_signal(signal.SIGINT)
-                    returncode = proc.wait()
+                        returncode = proc.wait()
+                    except KeyboardInterrupt:
+                        proc.send_signal(signal.SIGINT)
+                        returncode = proc.wait()
     finally:
+        if ownership_proxy is not None:
+            proxy_server, proxy_cache, proxy_client = ownership_proxy
+            if ownership_proxy_thread is not None and ownership_proxy_thread.is_alive():
+                proxy_server.shutdown()
+            proxy_server.server_close()
+            proxy_cache.stop()
+            proxy_client.close()
+            if ownership_proxy_thread is not None:
+                ownership_proxy_thread.join(timeout=2)
         model_setting.restore()
     sys.exit(returncode)
 

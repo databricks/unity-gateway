@@ -183,6 +183,23 @@ def _running_otel_proxy(gateway: _FakeGateway, token_provider=None):
         thread.join(timeout=2)
 
 
+@contextlib.contextmanager
+def _running_ownership_proxy(gateway: _FakeGateway, request_transform, token_provider=None):
+    server, cache, client = gateway_proxy.start_ownership_proxy(
+        gateway.base_url, token_provider or _counting_token(), request_transform
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        cache.stop()
+        client.close()
+        thread.join(timeout=2)
+
+
 class TestRelayedProxyEndToEnd:
     def test_forwards_request_with_swap_header_and_passthrough(self, make_gateway):
         # The whole relayed data-plane over real sockets: the proxy injects a fresh
@@ -209,6 +226,82 @@ class TestRelayedProxyEndToEnd:
         assert req.header("Authorization") == "Bearer anthropic-oauth"
         assert req.header("Databricks-Model-Provider-Service") == "main.mcao.anthropic-mps"
         assert req.body == b'{"model":"claude","stream":true}'
+
+
+class TestOwnershipProxyEndToEnd:
+    def test_transforms_full_large_body_before_forwarding_and_preserves_routing(self, make_gateway):
+        gw = make_gateway()
+        observed: list[tuple[str | None, str | None, str | None, int]] = []
+
+        def transform(handler, body):
+            assert body is not None
+            observed.append(
+                (
+                    handler.headers.get("x-claude-code-session-id"),
+                    handler.headers.get("x-claude-code-prompt-id"),
+                    handler.headers.get("x-claude-code-request-class"),
+                    len(body),
+                )
+            )
+            return body.replace(b"placeholder", b"selected", 1)
+
+        original = (
+            b'{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"'
+            + b"placeholder"
+            + b"x" * (600 * 1024)
+            + b'"}],"stream":true}'
+        )
+        assert len(original) > 512 * 1024
+        with _running_ownership_proxy(gw, transform) as proxy_url:
+            response = httpx.post(
+                f"{proxy_url}/v1/messages",
+                headers={
+                    "Authorization": "Bearer caller-auth",
+                    "Databricks-Model-Provider-Service": "main.user.claude",
+                    "x-claude-code-session-id": "session-1",
+                    "x-claude-code-prompt-id": "prompt-1",
+                    "x-claude-code-request-class": "main",
+                },
+                content=original,
+                timeout=10,
+            )
+        assert response.status_code == 200
+        assert observed == [("session-1", "prompt-1", "main", len(original))]
+        request = gw.requests[-1]
+        assert request.path == "/ai-gateway/anthropic/v1/messages"
+        assert request.header("Authorization") == "Bearer caller-auth"
+        assert request.header("Databricks-Model-Provider-Service") == "main.user.claude"
+        assert request.header("X-Databricks-AI-Gateway-Token") == "Bearer dbx-swap-token"
+        assert request.body == original.replace(b"placeholder", b"selected", 1)
+        assert len(request.body) > 512 * 1024
+
+    def test_transform_rejection_keeps_receipt_and_never_calls_upstream(self, make_gateway):
+        gw = make_gateway()
+        receipt = {
+            "operation": "orchestration_decision",
+            "request_id": "request-1",
+            "classifier_id": "orchestration_v1/classifier",
+            "provider_request_id": "provider-1",
+            "usage": {"input_tokens": 1234, "output_tokens": 21},
+            "finish_reason": "length",
+            "status": "truncated",
+        }
+
+        def transform(_handler, _body):
+            raise gateway_proxy.RequestTransformRejected(
+                400,
+                {
+                    "error_code": "INVALID_ORCHESTRATION_DECISION_RESPONSE",
+                    "error": "The classifier response failed validation.",
+                    "usage_receipt": receipt,
+                },
+            )
+
+        with _running_ownership_proxy(gw, transform) as proxy_url:
+            response = httpx.post(f"{proxy_url}/v1/messages", content=b"{}", timeout=10)
+        assert response.status_code == 400
+        assert response.json()["usage_receipt"] == receipt
+        assert gw.requests == []
 
     def test_streams_sse_chunks_back_in_order(self, make_gateway):
         # A relayed model turn streams SSE; the proxy must relay chunks through

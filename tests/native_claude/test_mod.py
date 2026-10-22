@@ -50,7 +50,15 @@ def test_mod_validation_and_event_forwarding(native_binary, tmp_path):
         )
         assert result.returncode == 0, result.stdout + result.stderr
         if command == "validate":
-            assert "./register.ts hooks: session.start" in result.stdout
+            hook_line = next(
+                (
+                    line
+                    for line in result.stdout.splitlines()
+                    if line.startswith("  ❯ ./register.ts hooks:")
+                ),
+                "",
+            )
+            assert "session.start" in hook_line, result.stdout
 
 
 def test_native_options_are_launch_local(native_binary, tmp_path):
@@ -62,8 +70,13 @@ def test_native_options_are_launch_local(native_binary, tmp_path):
         Session(native_binary, tmp_path / "a", env) as a,
         Session(native_binary, tmp_path / "b", {}) as b,
     ):
-        assert a.observe()["options"] == _claude_mod_launch_options(env)
-        assert b.observe()["options"] == _claude_mod_launch_options({})
+        options_a = a.observe()["options"]
+        options_b = b.observe()["options"]
+        expected_a = _claude_mod_launch_options(env)
+        expected_b = _claude_mod_launch_options({})
+        assert {key: options_a[key] for key in expected_a} == expected_a
+        assert {key: options_b[key] for key in expected_b} == expected_b
+        assert options_a != options_b
         assert not (a.plugin / "hooks/launch.json").exists()
 
 
@@ -89,3 +102,20 @@ def test_native_process_inherits_settings_and_runs_python_cli(native_binary, tmp
         result = session.observe()["route"]
         assert result["exitCode"] == 0, result
         assert result["stdout"] == result["stderr"] == "", result
+
+
+def test_ownership_lifecycle_boundaries():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node 24 is required for the offline TypeScript lifecycle check")
+    result = subprocess.run(
+        [
+            node,
+            "--experimental-strip-types",
+            str(Path(__file__).with_name("ownership_lifecycle.mjs")),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

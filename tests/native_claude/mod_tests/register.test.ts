@@ -2,6 +2,11 @@ import type { On } from 'claude-code';
 import { expect, test } from 'claude-code/testing';
 import { RECIPE_FIELD } from '../hooks/constants.ts';
 import { mergeExtraBody } from '../hooks/extra-body.ts';
+import {
+  availableOwnersForDecision,
+  shouldGrantNotificationContinuation,
+  successfulNativeOwnerResume,
+} from '../hooks/orchestration-decision.ts';
 
 const RECIPE = 'task_v3';
 const CALLER_BODY = '{"caller_field":"keep"}';
@@ -13,6 +18,35 @@ const ROUTED = {
   recipe: RECIPE,
 };
 const start = { surface: 'terminal', isInteractive: true, cwd: '/work' } as const;
+
+test('a completed native owner survives resume when the live roster omits it', async () => {
+  const completed = { agent_id: 'native-owner', scope: 'Inspect parser', state: 'completed' } as const;
+  const running = { ...completed, state: 'running' } as const;
+  expect(availableOwnersForDecision([completed], [])).toEqual([completed]);
+  expect(availableOwnersForDecision([running], [])).toEqual([]);
+});
+
+test('SendMessage continuation must confirm the same native owner ID', async () => {
+  expect(successfulNativeOwnerResume(
+    { result: { success: true, resumedAgentId: 'native-owner' } },
+    'native-owner',
+  )).toBe(true);
+  expect(successfulNativeOwnerResume(
+    { result: { success: true, resumedAgentId: 'other-owner' } },
+    'native-owner',
+  )).toBe(false);
+  expect(successfulNativeOwnerResume(
+    { isError: true, result: { success: true, resumedAgentId: 'native-owner' } },
+    'native-owner',
+  )).toBe(false);
+});
+
+test('task-notification origin can grant continuation without a prompt-submit item', async () => {
+  expect(shouldGrantNotificationContinuation('task-notification', undefined, false)).toBe(true);
+  expect(shouldGrantNotificationContinuation('task-notification', 'task-notification', false)).toBe(true);
+  expect(shouldGrantNotificationContinuation('composer', undefined, false)).toBe(false);
+  expect(shouldGrantNotificationContinuation('task-notification', undefined, true)).toBe(false);
+});
 
 // A pinned environment variable is the policy refusal the managed security default
 // raises; only the extra body may carry the recipe.

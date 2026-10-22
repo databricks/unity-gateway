@@ -42,6 +42,30 @@ TypeScript event-forwarding and launch-option tests in CI. The existing Claude
 skill-toggle integration journey checks the live recipe payload field across on/off/on.
 See [the mod guide](../docs/claude-mod.md).
 
+`test_orchestration_decision.py` exercises the strict decision wire, pinned policy and classifier
+receipt, bounded mocked HTTP transport, errors for unreachable or failing service calls, and
+per-native-session state across resumed processes. Its CLI cases verify that `prepare` returns the
+request ID and an opaque marker without classifying partial hook context, even when that envelope
+exceeds the service request limit. `test_ownership_transport.py` binds that marker to the assembled Claude request,
+including system/context/tool content, and covers retries, native continuation permits, receipt
+preservation, and service errors. `test_claude_smart_routing_v2.py` covers launch-scoped
+capture proxy wiring and verifies `/v1/messages/count_tokens` passes through unchanged without
+reading headers or consuming an intent. `test_claude_mod.py` checks the shared settings helper's
+ownership command, policy pins, route-command preservation, native function-hook and gateway-hint
+gates, and preservation of unrelated settings and plugin options. `test_skills.py` covers policy role
+bytes, single-owner initial workflow injection, restoration of a pending marker or resolved action
+after compaction, disabled context when routing is off, safe removal of only an unchanged managed
+orchestration Skill, and legacy prompt/compaction positive controls.
+
+On a host with `/etc/claude-code`, the offline native Claude fixtures run Claude inside a
+private user and mount namespace that hides that directory, so machine-managed settings do not
+affect them. The host's managed files are not modified. This isolates local process runs; it does
+not cover live agent behavior.
+
+The registered ownership lifecycle fixture also checks that an owned child's resumed first
+model step clears stale completion, prevents early parent stopping, and returns to completed
+on native completion. A foreign child is a negative control.
+
 The required Isaac feedback form and background delivery notifications need manual
 validation using the released Isaac skill and existing capture/retry CLI. Check
 category selection, empty and inline feedback, native retries, the off form's
@@ -59,8 +83,15 @@ live evidence uploads.
 `test_claude_answer_delivery.py` covers Claude answer selection, composition, ownership,
 failed tasks and resumed revisions using transcript inputs, plus real subprocess I/O,
 stream-input bypass and capability lifetime. Text, JSON and streaming JSON results
-stay on stdout when UG redirects its diagnostics to stderr. Live model/gateway
-selection and hook activation remain uncovered.
+stay on stdout when UG redirects its diagnostics to stderr. The ownership bridge tests
+also exercise the shared selector parser before stopping, including malformed and duplicate
+selectors. Parser checks preserve complete JSON examples followed by prose without resolving
+their child references, while malformed terminal directives and multiple standalone selections
+(including multiline JSON objects) remain rejected. Native component
+tests cover one Stop-hook correction opportunity per request on the supported print surface,
+including after coordination feedback, repeat suppression, and reset across requests and
+routing toggles; final transcript ownership checks remain authoritative. Live model/gateway
+selection and hook activation remain separate checks.
 
 The **harness-latest** workflow runs every six hours on `main` and currently covers
 smart routing only.
@@ -430,9 +461,9 @@ PowerShell execution.
 and matching prompt/compaction hook content for Claude and Codex. It also covers
 shared `SKILL.md` bundles. These are component checks, not live agent execution.
 
-`test_smart_routing_config.py` includes a 162-case Cartesian component oracle: all three legacy
-routing flags take unset, `0`, and `1`, while the selector takes unset or one of the five
-supported presets, including the customer first-prompt-and-subagent mode. It uses the named
+`test_smart_routing_config.py` includes a 648-case Cartesian component oracle: all four
+managed routing flags take unset, `0`, and `1`, while the selector takes unset or one of the
+seven supported presets, including the Claude-only ownership decision mode. It uses the named
 version constants but independently hardcodes each preset's settings and asserts exact
 `resolve_environment` and `apply_config` settings, true-unset omission, unrelated-key and
 input preservation, valid-selector consumption, and environment restoration.
@@ -810,3 +841,7 @@ rejects stale or unrelated panels. Live audit correlation and child answers rema
 After Codex compaction removes a prompt, display correlation may instead use the
 native Spawned row immediately following the routing box. Unit checks reject later
 answer text, intervening prompts, and nonadjacent or unrelated spawn rows.
+
+The offline ownership lifecycle regression in `tests/native_claude/ownership_lifecycle.mjs` runs through the registered production hooks with simulated host/process boundaries. It requires Node 24 for TypeScript stripping and is invoked by `test_ownership_lifecycle_boundaries`; the pinned Claude plugin tests separately verify native compilation and event behavior.
+
+Ownership request projection preserves native Claude system messages and message-level output settings. `tests/test_ownership_request.py` covers their complete projection and malformed-setting errors without model calls.

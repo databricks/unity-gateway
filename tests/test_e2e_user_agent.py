@@ -24,6 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+from tests.claude_isolation import isolate_claude_command
 from ucode.telemetry import agent_version, ug_version
 
 
@@ -200,12 +201,18 @@ class TestClaudeUserAgent:
         claude.CLAUDE_SETTINGS_PATH.write_text(json.dumps(overlay), encoding="utf-8")
         env = {
             **os.environ,
+            "HOME": str(tmp_path),
+            "XDG_CONFIG_HOME": str(tmp_path / "xdg"),
             "CLAUDE_CONFIG_DIR": str(config_dir),
             "ANTHROPIC_API_KEY": "test-key-not-real",
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+            "DISABLE_AUTOUPDATER": "1",
             **overlay["env"],
         }
 
-        result = _run_until_first_request(claude.validate_cmd("claude"), env)
+        result = _run_until_first_request(
+            isolate_claude_command(claude.validate_cmd("claude"), tmp_path), env
+        )
 
         req = capture_server.first_request_with_path_prefix("/ai-gateway/anthropic")
         assert req is not None, _no_request_msg(capture_server, result)
@@ -230,12 +237,18 @@ class TestClaudeUserAgent:
         claude.CLAUDE_SETTINGS_PATH.write_text(json.dumps(overlay), encoding="utf-8")
         env = {
             **os.environ,
+            "HOME": str(tmp_path),
+            "XDG_CONFIG_HOME": str(tmp_path / "xdg"),
             "CLAUDE_CONFIG_DIR": str(config_dir),
             "ANTHROPIC_API_KEY": "test-key-not-real",
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+            "DISABLE_AUTOUPDATER": "1",
             **overlay["env"],
         }
 
-        result = _run_until_first_request(claude.validate_cmd("claude"), env)
+        result = _run_until_first_request(
+            isolate_claude_command(claude.validate_cmd("claude"), tmp_path), env
+        )
 
         req = capture_server.first_request_with_path_prefix("/ai-gateway/anthropic")
         assert req is not None, _no_request_msg(capture_server, result)

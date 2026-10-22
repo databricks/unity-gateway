@@ -8,6 +8,7 @@ from ucode.constants import (
     AGENT_CLAUDE,
     AGENT_CODEX,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
+    ENABLE_SMART_ROUTER_OWNERSHIP_DECISION_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
@@ -19,26 +20,43 @@ _EXPECTED_PRESETS = {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        ENABLE_SMART_ROUTER_OWNERSHIP_DECISION_ENV_VAR: "0",
     },
     config.SUBAGENT_ONLY_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        ENABLE_SMART_ROUTER_OWNERSHIP_DECISION_ENV_VAR: "0",
     },
     config.SUBAGENT_ONLY_V1: {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        ENABLE_SMART_ROUTER_OWNERSHIP_DECISION_ENV_VAR: "0",
     },
     config.SUBAGENT_ORCH_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+        ENABLE_SMART_ROUTER_OWNERSHIP_DECISION_ENV_VAR: "0",
     },
     config.SUBAGENT_ORCH_V1: {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+        ENABLE_SMART_ROUTER_OWNERSHIP_DECISION_ENV_VAR: "0",
+    },
+    config.SUBAGENT_ORCH_V0_CLAUDE_ONLY: {
+        ENABLE_SMART_ROUTING_ENV_VAR: "0",
+        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+        ENABLE_SMART_ROUTER_OWNERSHIP_DECISION_ENV_VAR: "0",
+    },
+    config.SUBAGENT_ORCH_DECISION_V1_CLAUDE_ONLY: {
+        ENABLE_SMART_ROUTING_ENV_VAR: "1",
+        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+        ENABLE_SMART_ROUTER_OWNERSHIP_DECISION_ENV_VAR: "1",
     },
 }
 
@@ -67,6 +85,7 @@ def test_absent_or_unknown_selector_is_a_no_op(selector):
 @pytest.mark.parametrize("ENABLE_SMART_ROUTING_V2", [None, "0", "1"])
 @pytest.mark.parametrize("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", [None, "0", "1"])
 @pytest.mark.parametrize("ENABLE_SMART_ROUTER_ORCHESTRATOR", [None, "0", "1"])
+@pytest.mark.parametrize("ENABLE_SMART_ROUTER_OWNERSHIP_DECISION", [None, "0", "1"])
 @pytest.mark.parametrize(
     "SMART_ROUTER_CONFIG_VERSION",
     [
@@ -76,12 +95,15 @@ def test_absent_or_unknown_selector_is_a_no_op(selector):
         config.SUBAGENT_ONLY_V1,
         config.SUBAGENT_ORCH_V0,
         config.SUBAGENT_ORCH_V1,
+        config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+        config.SUBAGENT_ORCH_DECISION_V1_CLAUDE_ONLY,
     ],
 )
 def test_smart_routing_config_cartesian_grid(
     ENABLE_SMART_ROUTING_V2,
     ENABLE_SMART_ROUTING_SUBAGENT_ONLY,
     ENABLE_SMART_ROUTER_ORCHESTRATOR,
+    ENABLE_SMART_ROUTER_OWNERSHIP_DECISION,
     SMART_ROUTER_CONFIG_VERSION,
 ):
     source = {
@@ -90,6 +112,10 @@ def test_smart_routing_config_cartesian_grid(
             (ENABLE_SMART_ROUTING_ENV_VAR, ENABLE_SMART_ROUTING_V2),
             (ENABLE_SUBAGENT_ROUTING_ENV_VAR, ENABLE_SMART_ROUTING_SUBAGENT_ONLY),
             (ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR, ENABLE_SMART_ROUTER_ORCHESTRATOR),
+            (
+                ENABLE_SMART_ROUTER_OWNERSHIP_DECISION_ENV_VAR,
+                ENABLE_SMART_ROUTER_OWNERSHIP_DECISION,
+            ),
         )
         if value is not None
     }
@@ -166,9 +192,25 @@ def test_agent_presets_require_complete_valid_configuration(failure):
 
 
 def test_codex_uses_existing_presets():
+    claude_only_versions = (
+        config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+        config.SUBAGENT_ORCH_DECISION_V1_CLAUDE_ONLY,
+    )
     for version, expected in _EXPECTED_PRESETS.items():
+        if version in claude_only_versions:
+            continue
         source = {SMART_ROUTER_CONFIG_VERSION_ENV_VAR: version}
         assert config.resolve_environment(source, agent=AGENT_CODEX) == expected
+
+    codex_fallback = {
+        ENABLE_SMART_ROUTING_ENV_VAR: "0",
+        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        ENABLE_SMART_ROUTER_OWNERSHIP_DECISION_ENV_VAR: "0",
+    }
+    for version in claude_only_versions:
+        source = {SMART_ROUTER_CONFIG_VERSION_ENV_VAR: version}
+        assert config.resolve_environment(source, agent=AGENT_CODEX) == codex_fallback
 
 
 @pytest.mark.parametrize("agent, enabled", [(AGENT_CLAUDE, "1"), (AGENT_CODEX, "0")])
@@ -180,6 +222,7 @@ def test_agent_config_selection_and_session_precedence(monkeypatch, agent, enabl
             "ENABLE_SMART_ROUTING_V2": "0",
             "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0",
             "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
+            "ENABLE_SMART_ROUTER_OWNERSHIP_DECISION": "0",
         },
     )
     source = {"SMART_ROUTER_CONFIG_VERSION": "subagent_orch_v0"}
@@ -187,6 +230,7 @@ def test_agent_config_selection_and_session_precedence(monkeypatch, agent, enabl
         "ENABLE_SMART_ROUTING_V2": "0",
         "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": enabled,
         "ENABLE_SMART_ROUTER_ORCHESTRATOR": enabled,
+        "ENABLE_SMART_ROUTER_OWNERSHIP_DECISION": "0",
     }
     assert config.resolve_environment(source, agent=agent) == expected
     assert v2.smart_routing_enabled(source, default=True, agent=agent) == (enabled == "1")

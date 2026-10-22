@@ -143,3 +143,21 @@ UG passes the resolved routing flags and recipe in the existing launch settings 
 `pluginConfigs["ug-smart-router"].options`. Claude supplies these to `register(on, options)`.
 `unset` lists originally absent flags because native options cannot carry null values.
 The source remains static; no additional launch snapshot file is created.
+
+Ownership decisions include system messages and their output settings from the captured native request. Unsupported or malformed content stops the prompt with an error; there is no fallback.
+
+For supported orchestration print sessions, the Stop hook checks terminal answer-selection
+syntax with the same parser used by final delivery. A parser error returns one correction
+opportunity per request to the same parent conversation, including after a coordination Stop
+block. The request-scoped feedback guard prevents repeating that answer correction when
+`stop_hook_active` is set; a still-invalid correction is rejected
+by final delivery. Interactive and streaming-input surfaces remain outside this capability.
+Ownership, completion and session checks still run against the full terminal transcript.
+A complete JSON example followed by prose remains part of the parent-written answer;
+only an exact terminal selection resolves a child reference. Malformed directives still fail.
+The print-session instructions explain that the terminal result uses the last root final answer,
+so a background notification must not replace a complete answer with an acknowledgment.
+
+The first native model step of a known child marks it running again after a resume.
+This also covers ordinary parent messages to a completed child; native completion restores
+the completed state. Unknown child identities cannot change the selected owner.

@@ -352,16 +352,17 @@ The generated shell hooks expect Git Bash; PowerShell-only setups are not covere
 
 Use `SMART_ROUTER_CONFIG_VERSION` at launch to select a smart-routing configuration.
 Each version defines separate Claude Code and Codex flag mappings; the existing versions
-use identical mappings for both agents. The Claude-only version disables routing for Codex:
+use identical mappings for both agents. Claude-only versions disable routing for Codex:
 
-| Version | Routed agents | Subagent routing | First-prompt routing | Orchestrator |
-| --- | --- | --- | --- | --- |
-| `first_prompt_and_subagent_no_orch_v0` | Claude, Codex | On | On | Off |
-| `subagent_only_v0` | Claude, Codex | On | Off | Off |
-| `subagent_only_v1` | Claude, Codex | On | Off | Off |
-| `subagent_orch_v0` | Claude, Codex | On | Off | On |
-| `subagent_orch_v1` | Claude, Codex | On | Off | On |
-| `subagent_orch_v0_claude_only` | Claude | On | Off | On |
+| Version | Routed agents | Subagent routing | First-prompt routing | Orchestrator | Ownership decision |
+| --- | --- | --- | --- | --- | --- |
+| `first_prompt_and_subagent_no_orch_v0` | Claude, Codex | On | On | Off | Off |
+| `subagent_only_v0` | Claude, Codex | On | Off | Off | Off |
+| `subagent_only_v1` | Claude, Codex | On | Off | Off | Off |
+| `subagent_orch_v0` | Claude, Codex | On | Off | On | Off |
+| `subagent_orch_v1` | Claude, Codex | On | Off | On | Off |
+| `subagent_orch_v0_claude_only` | Claude | On | Off | On | Off |
+| `subagent_orch_decision_v1_claude_only` | Claude | On | Off | On | On |
 
 `first_prompt_and_subagent_no_orch_v0` is the customer configuration for first-prompt
 and subagent routing without orchestration: `ENABLE_SMART_ROUTING_V2=1`,
@@ -375,14 +376,26 @@ so first-prompt routing remains off; orchestration is also off.
 subagents rather than the first prompt, and it additionally enables orchestration.
 
 `subagent_orch_v0_claude_only` keeps Claude's `subagent_orch_v0` flags (`0`, `1`, `1`)
-and sets all three flags to `"0"` for Codex. Codex uses its ordinary launch and
+and sets all four managed flags to `"0"` for Codex. Codex uses its ordinary launch and
 managed default model, without routing or orchestration. Explicit launch/session
 on/off controls retain their existing precedence over presets.
 
+`subagent_orch_decision_v1_claude_only` enables the native ownership decision for Claude
+with the pinned `orchestration_v1` policy bundle and stable classifier binding
+`orchestration_v1/classifier`. All four managed flags are `"0"` for Codex.
+Existing presets keep ownership decisions off.
+
 `SMART_ROUTER_NAME` still selects the router independently of the preset.
 
-Smart-routed Claude and Codex sessions install `smart-router`. The `subagent_orch_v0`
-and `subagent_orch_v1` versions also install and activate the bundled `smart-router-orchestrator` skill.
+Smart-routed Claude and Codex sessions install `smart-router`. The
+`subagent_orch_v0`, `subagent_orch_v1`, and `subagent_orch_v0_claude_only` versions
+also install and activate the bundled `smart-router-orchestrator` skill. The
+ownership-decision version loads its role files from the pinned local policy bundle
+and does not install that Skill. It removes an existing copy only when its bytes still
+match the UG-managed bundle, preserving custom or modified copies.
+Each launch also sets the native `ownershipAnswerDelivery` option from the existing
+answer delivery support: it is true only for buffered print mode without streaming input when
+the orchestrator is enabled. Prompt text and prompt events cannot infer this capability.
 For example:
 
 ```bash
@@ -391,8 +404,9 @@ SMART_ROUTER_CONFIG_VERSION=subagent_orch_v0 ug claude
 
 The version takes precedence over conflicting legacy flags. Once the agent is selected,
 UG expands its mapping into
-`ENABLE_SMART_ROUTING_V2`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY`, and
-`ENABLE_SMART_ROUTER_ORCHESTRATOR` for the launched session. When the version is
+`ENABLE_SMART_ROUTING_V2`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY`,
+`ENABLE_SMART_ROUTER_ORCHESTRATOR`, and `ENABLE_SMART_ROUTER_OWNERSHIP_DECISION`
+for the launched session. When the version is
 unset or empty, these legacy flags retain their existing behavior, including
 first-prompt routing through `ENABLE_SMART_ROUTING_V2=1`. Unknown versions are ignored:
 no preset is applied, the inherited environment is unchanged, and commands continue normally.
@@ -425,9 +439,26 @@ Stored skill files do not activate orchestration without an opted-in configurati
 or in non-routed sessions. Existing Isaac pilot gating
 and UG launch exclusions still apply.
 
-Hooks refresh orchestration state before each prompt and after compaction. A
-state change made outside the conversation is observed at the next hook; model
-routing still checks the controls for each subagent.
+The ownership-decision version injects its initial workflow once through the native
+`prompt.submit` hook. The classic `UserPromptSubmit` hook is suppressed for that
+version. Compaction restoration reads the pinned local policy bundle and private
+native ownership state; it never reads the installed orchestration Skill. Legacy
+versions retain their existing prompt and compaction hooks. A state change made
+outside the conversation is observed at the next hook; model routing still checks
+the controls for each subagent.
+
+Ownership state is stored under the active Claude configuration directory and keyed
+by the native session ID, so a resumed session keeps its owner record across UG
+process restarts while a cleared session starts with isolated state. UG enables
+Claude's function-hook gate only in the child launch settings and process environment;
+an explicit disabled value stops the launch with an error instead of silently skipping
+the native plugin.
+
+The ownership decision has no fallback. An unreachable service, an HTTP error, an
+unsupported attachment or content type, or a request over the service size limit stops
+the prompt with an error that names the cause. If a gateway error includes a usage
+receipt, UG validates it against the captured request and pinned classifier identity,
+then preserves it beside the HTTP error so accounting survives a rejected response.
 
 UG supplies its own hooks; Codex combines them with existing hooks and applies
 project trust. Smart routing selects subagent models; separate role-model

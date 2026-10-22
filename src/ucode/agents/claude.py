@@ -13,7 +13,7 @@ import subprocess
 import sys
 import threading
 import traceback
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 
 from ucode.config_io import (
@@ -892,13 +892,26 @@ def user_stdio_mcp_entry(argv: list[str], *, always_load: bool = False) -> dict:
     return entry
 
 
-def claude_mcp_config_path() -> Path:
+def claude_mcp_config_path(env: Mapping[str, str] | None = None) -> Path:
     """The file Claude Code reads user-scope ``mcpServers`` from: ``$CLAUDE_CONFIG_DIR/.claude.json``
     when that env var is set (the ``claude`` CLI honors it), else the default ``~/.claude.json``. ug
     elsewhere shells out to the CLI, which resolves this itself; a direct write must resolve the same
     path or it silently writes to a file Claude never reads."""
-    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
-    return Path(config_dir) / ".claude.json" if config_dir else CLAUDE_MCP_CONFIG_PATH
+    source = os.environ if env is None else env
+    config_dir = source.get("CLAUDE_CONFIG_DIR")
+    if config_dir:
+        return Path(config_dir) / ".claude.json"
+    return CLAUDE_MCP_CONFIG_PATH
+
+
+def claude_config_dir(env: Mapping[str, str] | None = None) -> Path:
+    """Resolve the persistent Claude profile directory used for session-owned data."""
+    source = os.environ if env is None else env
+    config_dir = source.get("CLAUDE_CONFIG_DIR")
+    if config_dir:
+        return Path(config_dir)
+    home = source.get("HOME")
+    return (Path(home) if home else Path.home()) / ".claude"
 
 
 def _read_claude_config_for_rewrite(path: Path) -> dict | None:

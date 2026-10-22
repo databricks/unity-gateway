@@ -2,19 +2,23 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import sys
 import threading
+import urllib.error
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
+from ucode import gateway_proxy
 from ucode.agents import LaunchOptions, claude
 from ucode.constants import AGENT_CLAUDE
 from ucode.databricks import AnthropicModelCatalog
-from ucode.smart_routing import claude_hooks, routing, v2
+from ucode.smart_routing import claude_hooks, config, ownership, ownership_transport, routing, v2
 
 if sys.platform != "win32":
     from ucode.smart_routing import claude_pty
@@ -998,6 +1002,8 @@ class TestV2HeadlessClaude:
 
     @staticmethod
     def _launch(monkeypatch, tmp_path, tool_args, *, stdin=None, route=None):
+        monkeypatch.delenv(v2.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS_ENV_VAR, raising=False)
+        monkeypatch.delenv(v2.CLAUDE_CODE_GATEWAY_HINT_HEADERS_ENV_VAR, raising=False)
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(v2, "APP_DIR", tmp_path)
         monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
@@ -1036,6 +1042,12 @@ class TestV2HeadlessClaude:
         class FakeProc:
             def __init__(self, argv, **kwargs):
                 launched["argv"] = argv
+                launched["function_hooks_process_env"] = os.environ.get(
+                    v2.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS_ENV_VAR
+                )
+                launched["gateway_hints_process_env"] = os.environ.get(
+                    v2.CLAUDE_CODE_GATEWAY_HINT_HEADERS_ENV_VAR
+                )
                 launched["settings"] = json.loads(
                     Path(argv[argv.index("--settings") + 1]).read_text()
                 )
@@ -1073,6 +1085,9 @@ class TestV2HeadlessClaude:
         argv = launched["argv"]
         assert argv[argv.index("--model") + 1] == "system.ai.claude-sonnet-5[1m]"
         assert launched["stdin_bytes"] == b"fix the parser\n"
+        assert launched["function_hooks_process_env"] == "1"
+        assert launched["settings"]["env"][v2.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS_ENV_VAR] == "1"
+        assert v2.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS_ENV_VAR not in os.environ
         # Subagents still route; the PTY's first-prompt hook isn't installed.
         assert launched["settings"]["env"][v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
         assert v2.FIRST_PROMPT_SOCKET_ENV not in launched["settings"]["env"]
@@ -1106,6 +1121,68 @@ class TestV2HeadlessClaude:
         assert prompts == ["fix the parser"]
         assert "--model" not in launched["argv"]
 
+    @pytest.mark.parametrize(
+        ("tool_args", "expected"),
+        [
+            (["-p", "fix the parser"], True),
+            (["-p", "--input-format", "stream-json"], False),
+        ],
+    )
+    def test_ownership_answer_delivery_option_matches_buffered_delivery_support(
+        self, tmp_path, monkeypatch, tool_args, expected
+    ):
+        session_env = tmp_path / "session" / "env.json"
+        session_env.parent.mkdir()
+        session_env.write_text("{}")
+        monkeypatch.setenv(
+            config.SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
+            config.SUBAGENT_ORCH_DECISION_V1_CLAUDE_ONLY,
+        )
+        monkeypatch.setenv(v2.SESSION_ENV_VAR, str(session_env))
+        monkeypatch.setenv(v2.SESSION_PYTHON_ENV_VAR, sys.executable)
+        monkeypatch.delenv("ISAAC_LAUNCH_MODE", raising=False)
+        monkeypatch.setattr(v2, "_prepare_smart_router_session", lambda _agent: session_env)
+        monkeypatch.setattr(v2, "_write_routed_claude_plugin", lambda *_args, **_kwargs: None)
+        delivery_launch: dict = {}
+
+        def capture_delivery_launch(argv, **_kwargs):
+            delivery_launch["function_hooks_process_env"] = os.environ.get(
+                v2.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS_ENV_VAR
+            )
+            delivery_launch["gateway_hints_process_env"] = os.environ.get(
+                v2.CLAUDE_CODE_GATEWAY_HINT_HEADERS_ENV_VAR
+            )
+            delivery_launch["settings"] = json.loads(
+                Path(argv[argv.index("--settings") + 1]).read_text()
+            )
+            return 0
+
+        monkeypatch.setattr(v2.claude_answer_delivery, "run", capture_delivery_launch)
+
+        configured: dict = {}
+        configure = v2.configure_claude_mod_settings
+
+        def capture_settings(settings, **kwargs):
+            configure(settings, **kwargs)
+            configured["answer_delivery"] = kwargs["answer_delivery"]
+            configured["options"] = settings["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME][
+                "options"
+            ]
+
+        monkeypatch.setattr(v2, "configure_claude_mod_settings", capture_settings)
+        launched, _ = self._launch(monkeypatch, tmp_path, tool_args)
+        launched.update(delivery_launch)
+
+        assert configured["answer_delivery"] is expected
+        assert configured["options"]["ownershipAnswerDelivery"] is expected
+        assert launched["function_hooks_process_env"] == "1"
+        assert launched["settings"]["env"][v2.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS_ENV_VAR] == "1"
+        assert launched["gateway_hints_process_env"] == "1"
+        assert launched["settings"]["env"][v2.CLAUDE_CODE_GATEWAY_HINT_HEADERS_ENV_VAR] == "1"
+        assert v2.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS_ENV_VAR not in os.environ
+        assert v2.CLAUDE_CODE_GATEWAY_HINT_HEADERS_ENV_VAR not in os.environ
+        assert launched["settings"]["env"]["ANTHROPIC_BASE_URL"].startswith("http://127.0.0.1:")
+
 
 def test_routing_hook_command_keeps_posix_quoting_on_windows(monkeypatch):
     """Claude Code runs hooks through Git Bash on Windows, which strips unquoted backslashes."""
@@ -1115,3 +1192,124 @@ def test_routing_hook_command_keeps_posix_quoting_on_windows(monkeypatch):
     monkeypatch.setattr(subprocess_cross_os.platform, "system", lambda: "Windows")
     hook = claude_hooks._routing_command_hook([r"C:\Users\me\.local\bin\ug.EXE", "route-subagent"])
     assert hook["command"] == r"'C:\Users\me\.local\bin\ug.EXE' route-subagent"
+
+
+def test_ownership_capture_proxy_leaves_count_tokens_preflight_untouched(monkeypatch):
+    capture = Mock(side_effect=AssertionError("token-count preflight must not capture ownership"))
+    monkeypatch.setattr(ownership_transport, "capture_request", capture)
+    transform = v2._ownership_capture_transform("https://workspace.example", {})
+    body = b"not a Claude messages request"
+
+    transformed = transform(
+        SimpleNamespace(path="/v1/messages/count_tokens", headers={}),
+        body,
+    )
+
+    assert transformed == body
+    capture.assert_not_called()
+
+
+def test_ownership_capture_transform_preserves_validated_hard_error_receipt(monkeypatch, tmp_path):
+    session_id = "capture-receipt-session"
+    request = {
+        "schema_version": 1,
+        "policy_version": ownership.POLICY_VERSION,
+        "request_id": "capture-receipt-request",
+        "task": {
+            "prompt": "Inspect this function.",
+            "context": [],
+            "context_complete": False,
+            "attachments": [],
+        },
+        "constraints": {
+            "root_session": True,
+            "subagents_allowed": True,
+            "externally_assigned": False,
+            "routing_enabled": True,
+            "answer_delivery": False,
+            "available_tools": ["Read"],
+        },
+        "existing_owners": [],
+    }
+    env = {
+        "CLAUDE_CONFIG_DIR": str(tmp_path / "claude-profile"),
+        "ENABLE_SMART_ROUTER_ORCHESTRATOR": "1",
+        "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1",
+    }
+    prepared = ownership_transport.prepare_request(request, session_id, env=env)
+    ownership.write_state(
+        session_id,
+        {
+            "schema_version": 1,
+            "session_id": session_id,
+            "generation": 1,
+            "current": {
+                "request_id": request["request_id"],
+                "input_sha256": None,
+                "policy_version": ownership.POLICY_VERSION,
+                "policy_sha256": ownership.policy_sha256(),
+                "decision_status": "undecided",
+                "ownership": None,
+                "dispatch": None,
+                "owner_agent_id": None,
+                "dispatch_status": "undecided",
+            },
+            "owners": [],
+        },
+        env=env,
+    )
+    receipt = {
+        "operation": "orchestration_decision",
+        "request_id": request["request_id"],
+        "classifier_id": ownership.load_policy()["classifier_id"],
+        "provider_request_id": "provider-request-capture",
+        "usage": {"input_tokens": 100, "output_tokens": 20},
+        "finish_reason": "length",
+        "status": "truncated",
+    }
+    response = {
+        "error_code": "INVALID_ORCHESTRATION_DECISION_RESPONSE",
+        "message": "invalid structured response",
+        "usage_receipt": receipt,
+    }
+
+    class Opener:
+        def open(self, http_request, timeout):
+            assert http_request.full_url == "https://workspace.example" + ownership.DECISION_PATH
+            raise urllib.error.HTTPError(
+                http_request.full_url,
+                400,
+                "invalid orchestration response",
+                None,
+                io.BytesIO(json.dumps(response).encode("utf-8")),
+            )
+
+    monkeypatch.setattr(ownership.urllib.request, "build_opener", lambda *_handlers: Opener())
+
+    class Handler:
+        path = "/v1/messages"
+        cache = SimpleNamespace(token="fixture-token")
+        headers = {
+            "x-claude-code-request-class": "main",
+            "x-claude-code-session-id": session_id,
+            "x-claude-code-prompt-id": "native-prompt-1",
+        }
+
+    body = {
+        "model": "fixture-model",
+        "max_tokens": 2048,
+        "system": [{"type": "text", "text": prepared["instructions"]}],
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": request["task"]["prompt"]}]}
+        ],
+        "tools": [],
+    }
+    transform = v2._ownership_capture_transform("https://workspace.example", env)
+
+    with pytest.raises(gateway_proxy.RequestTransformRejected) as raised:
+        transform(Handler(), json.dumps(body).encode("utf-8"))
+
+    assert raised.value.status == 400
+    error = json.loads(raised.value.body)
+    assert error["error_code"] == "INVALID_ORCHESTRATION_DECISION_RESPONSE"
+    assert error["usage_receipt"] == receipt
