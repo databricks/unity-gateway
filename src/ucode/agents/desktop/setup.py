@@ -1,4 +1,4 @@
-"""Best-effort Desktop setup after successful Claude Code configuration."""
+"""Best-effort Desktop configuration and cleanup for CLI commands."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from ucode.agents.desktop.claude import (
 from ucode.agents.desktop.claude import (
     configure_claude_desktop as write_claude_desktop_profile,
 )
+from ucode.agents.desktop.cowork import configure_cowork, revert_cowork
 from ucode.config_io import is_dry_run
 from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER, MODEL_SERVICE_PARENT_SCHEMA_HEADER
 from ucode.databricks import build_tool_base_url, get_databricks_token, list_anthropic_model_catalog
@@ -32,6 +33,31 @@ def configure_claude_desktop(state: dict, *, parent_schema: str | None = None) -
         _configure_desktop(state, parent_schema=parent_schema)
     except Exception as exc:  # noqa: BLE001 -- Desktop must not block Claude Code setup
         print_warning(f"Could not configure Claude Desktop: {exc}. Claude Code setup is unchanged.")
+
+
+def configure_claude_cowork(state: dict, mcp_servers: list[dict]) -> None:
+    if sys.platform not in ("darwin", "win32", "linux"):
+        return
+    if is_dry_run():
+        print_note("Would configure Claude Cowork workspace skills and MCP servers.")
+        return
+    try:
+        configured = configure_cowork(state, mcp_servers)
+    except Exception as exc:  # noqa: BLE001 -- Cowork must not block Claude Code setup
+        print_warning(f"Could not configure Claude Cowork: {exc}. Claude Code setup is unchanged.")
+        return
+    if configured:
+        print_success("Claude Cowork workspace plugin configured. Start a new Cowork session.")
+
+
+def revert_claude_cowork() -> str:
+    if sys.platform not in ("darwin", "win32", "linux") or is_dry_run():
+        return "unchanged"
+    try:
+        return "removed" if revert_cowork() else "unchanged"
+    except Exception as exc:  # noqa: BLE001 -- Preserve other cleanup operations on failure
+        print_warning(f"Could not revert Claude Cowork: {exc}. Cowork setup was retained.")
+        return "failed"
 
 
 def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
@@ -122,11 +148,17 @@ def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
 def revert_desktop() -> str:
     if sys.platform not in ("darwin", "win32", "linux") or is_dry_run():
         return "unchanged"
+    cowork_result = revert_claude_cowork()
     if claude_desktop_directory() is None:
-        return "unchanged"
+        return cowork_result
     try:
         result = revert_claude_desktop()
     except Exception as exc:  # noqa: BLE001 -- Preserve other revert operations on failure
         print_warning(f"Could not revert Claude Desktop: {exc}. Desktop setup was retained.")
         return "failed"
-    return "removed" if result.changed else "unchanged"
+    native_result = "removed" if result.changed else "unchanged"
+    if cowork_result == "failed":
+        return "failed"
+    if "removed" in (native_result, cowork_result):
+        return "removed"
+    return "unchanged"

@@ -7,13 +7,13 @@
       "config": {
         "models": {
           "model_services": [
-            "system.ai.claude-sonnet-5",
-            "system.ai.claude-haiku-4-5",
-            "system.ai.claude-opus-4-8"
+            "system.ai.claude-opus-4-8",
+            "system.ai.claude-sonnet-4-6",
+            "system.ai.claude-haiku-4-5"
           ]
         },
         "default_models": {
-          "default_model": "system.ai.claude-sonnet-5"
+          "default_model": "system.ai.claude-sonnet-4-6"
         },
         "smart_routing": {
           "enabled": true

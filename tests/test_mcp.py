@@ -36,7 +36,7 @@ class TestMcpChangeSummary:
 # is the resolved `ug` binary path, so tests assert the tail (the stable part).
 GH_URL = f"{WS}/api/2.0/mcp/external/github"
 # A connection-backed AI Gateway MCP service (3-part FQN) — the URL form that
-# registers as direct HTTP for Claude when the claude-code client is available.
+# registers as direct HTTP for Claude when its CIMD client is available.
 AIGW_MCP_URL = f"{WS}/ai-gateway/mcp-services/system.ai.github"
 PROXY_TAIL = ["mcp-proxy", "--url", GH_URL, "--host", WS, "--profile", "p"]
 
@@ -247,6 +247,17 @@ class TestKiloMcpClient:
 
 
 class TestConfigureClientMcpServer:
+    def test_claude_does_not_probe_legacy_client_when_cimd_is_absent(self, monkeypatch):
+        probed: list[str] = []
+        monkeypatch.setattr(
+            mcp,
+            "first_available_oauth_client",
+            lambda ws, client_ids: probed.extend(client_ids) or None,
+        )
+
+        assert mcp._oauth_http_client("claude", WS, use_pat=False) is None
+        assert probed == [mcp.CLAUDE_CODE_CIMD_CLIENT_ID]
+
     def test_configures_copilot_with_proxy_argv(self, monkeypatch):
         calls: list[tuple[str, list[str]]] = []
 
@@ -266,7 +277,9 @@ class TestConfigureClientMcpServer:
         http_calls: list[tuple[str, str]] = []
         proxy_calls: list[tuple[str, list[str]]] = []
         monkeypatch.setattr(
-            mcp, "oauth_client_available", lambda ws, client_id: claude_code_available
+            mcp,
+            "first_available_oauth_client",
+            lambda ws, client_ids: client_ids[0] if claude_code_available else None,
         )
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
@@ -304,7 +317,9 @@ class TestConfigureClientMcpServer:
         http_calls, proxy_calls = self._capture_claude(monkeypatch, claude_code_available=False)
         mcp.configure_client_mcp_server("claude", "github", AIGW_MCP_URL, WS, "p")
         assert http_calls == []
-        assert len(proxy_calls) == 1  # workspaces without claude-code keep the stdio proxy
+        assert proxy_calls == [
+            ("github", mcp.build_mcp_proxy_argv(AIGW_MCP_URL, WS, "p"))
+        ]  # the stdio proxy uses the selected Databricks CLI profile
 
     def test_claude_non_aigw_url_keeps_proxy(self, monkeypatch):
         # External/genie/vector-search/functions MCPs have no per-user connection login.
@@ -324,7 +339,9 @@ class TestConfigureClientMcpServer:
         http_calls: list[tuple[str, str, str]] = []
         proxy_calls: list[tuple[str, list[str]]] = []
         monkeypatch.setattr(
-            mcp, "oauth_client_available", lambda ws, client_id: cursor_client_available
+            mcp,
+            "first_available_oauth_client",
+            lambda ws, client_ids: client_ids[0] if cursor_client_available else None,
         )
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
@@ -363,7 +380,9 @@ class TestConfigureClientMcpServer:
         http_calls: list[tuple[str, str, str]] = []
         proxy_calls: list[tuple[str, list[str]]] = []
         monkeypatch.setattr(
-            mcp, "oauth_client_available", lambda ws, client_id: codex_client_available
+            mcp,
+            "first_available_oauth_client",
+            lambda ws, client_ids: client_ids[0] if codex_client_available else None,
         )
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
@@ -412,7 +431,9 @@ class TestConfigureClientMcpServer:
         probed: list[str] = []
         proxy_calls: list[tuple[str, list[str]]] = []
         monkeypatch.setattr(
-            mcp, "oauth_client_available", lambda ws, client_id: probed.append(client_id) or True
+            mcp,
+            "first_available_oauth_client",
+            lambda ws, client_ids: probed.append(client_ids) or client_ids[0],
         )
         monkeypatch.setattr(
             mcp, "add_gemini_mcp_server", lambda name, argv: proxy_calls.append((name, argv))
@@ -451,7 +472,7 @@ class TestMcpPicker:
         assert "Databricks SQL" not in choice_text
         assert "Built-in AI tools" not in choice_text
         assert checkbox_calls[0]["kwargs"]["instruction"] == (
-            "(space to toggle, ctrl-a all, enter to save, type to filter)"
+            "(space toggle, ^A all, enter save, type filter, pgup/pgdn details)"
         )
 
     def test_prompt_returns_none_when_cancelled(self, monkeypatch):
@@ -608,7 +629,9 @@ def _patch_mcp_choices(monkeypatch, *values: str, categories: set[str] | None = 
     )
     # Stub the always-on discoveries so configure_mcp_command tests don't hit
     # real APIs. Individual tests override these after calling the helper.
-    monkeypatch.setattr(mcp, "discover_mcp_service_names", lambda workspace, profile=None: [])
+    monkeypatch.setattr(
+        mcp, "discover_mcp_service_names", lambda workspace, profile=None, **kwargs: []
+    )
     monkeypatch.setattr(
         mcp,
         "discover_all_mcp_service_names",
@@ -692,7 +715,7 @@ class TestApplyMcpServerChanges:
             "configure_client_mcp_server",
             lambda c, n, *a, **k: per_server.append((c, n)) or [],
         )
-        monkeypatch.setattr(mcp, "oauth_client_available", lambda *a, **k: False)
+        monkeypatch.setattr(mcp, "first_available_oauth_client", lambda *a, **k: None)
         working = [
             self._server("a", ["claude", "codex", "gemini", "cursor"]),
             self._server("b", ["claude", "codex", "gemini", "cursor"]),
@@ -735,7 +758,7 @@ class TestApplyMcpServerChanges:
         monkeypatch.setattr(
             mcp.claude, "write_user_mcp_servers", lambda a, r: writes.append((a, r))
         )
-        monkeypatch.setattr(mcp, "oauth_client_available", lambda ws, cid: True)
+        monkeypatch.setattr(mcp, "first_available_oauth_client", lambda ws, cids: cids[0])
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
         url = f"{WS}/ai-gateway/mcp-services/system.ai.github"
@@ -778,7 +801,7 @@ class TestManagedMcpEntry:
             None,
             use_pat=False,
             always_load=False,
-            http_client="claude-code",
+            http_client=mcp.CLAUDE_CODE_CIMD_CLIENT_ID,
         )
         assert e == mcp.claude.managed_mcp_entry(self.MCP_URL)
         assert e["type"] == "http" and e["url"] == self.MCP_URL
@@ -787,7 +810,13 @@ class TestManagedMcpEntry:
         # http_client set, but a non-connection URL still uses the stdio proxy.
         url = f"{WS}/api/2.0/mcp/vector-search/main.docs"
         e = mcp._managed_mcp_entry(
-            "claude", url, WS, None, use_pat=False, always_load=False, http_client="claude-code"
+            "claude",
+            url,
+            WS,
+            None,
+            use_pat=False,
+            always_load=False,
+            http_client=mcp.CLAUDE_CODE_CIMD_CLIENT_ID,
         )
         assert e["type"] == "stdio"
 
@@ -798,7 +827,13 @@ class TestManagedMcpEntry:
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: False)
         url = f"{WS}/ai-gateway/mcp-services/system.ai.web_search"
         e = mcp._managed_mcp_entry(
-            "claude", url, WS, None, use_pat=False, always_load=False, http_client="claude-code"
+            "claude",
+            url,
+            WS,
+            None,
+            use_pat=False,
+            always_load=False,
+            http_client=mcp.CLAUDE_CODE_CIMD_CLIENT_ID,
         )
         assert e["type"] == "stdio"
 
@@ -1094,7 +1129,12 @@ class TestConfigureMcpCommand:
         walk_calls: list[str] = []
 
         def fake_walk(
-            workspace, profile=None, on_progress=None, on_services=None, cancel_event=None
+            workspace,
+            profile=None,
+            on_progress=None,
+            on_services=None,
+            cancel_event=None,
+            metadata=None,
         ):
             walk_calls.append(workspace)
             if on_services is not None:
@@ -1114,17 +1154,19 @@ class TestConfigureMcpCommand:
 
     def test_mcp_service_choice_known_vs_unknown(self):
         # Unregistered -> an add-choice; already-registered -> a removable toggle in replace
-        # mode, and hidden (None) under `mcp add` since there is nothing to add.
+        # mode, and read-only under `mcp add` since there is nothing to add.
         add = mcp._mcp_service_choice("mycat.sch.weather", set(), additive=False)
         assert (
             add.value == f"{mcp.MCP_ADD_PREFIX}{mcp.MCP_SERVICE_SELECTION_PREFIX}mycat.sch.weather"
         )
         toggle = mcp._mcp_service_choice("mycat.sch.weather", {"mycat-sch-weather"}, additive=False)
         assert toggle.value == "mycat-sch-weather" and toggle.checked
-        assert (
-            mcp._mcp_service_choice("mycat.sch.weather", {"mycat-sch-weather"}, additive=True)
-            is None
+        readonly = mcp._mcp_service_choice(
+            "mycat.sch.weather", {"mycat-sch-weather"}, additive=True
         )
+        assert readonly.disabled == "Already configured"
+        assert readonly.checked is False
+        assert readonly.status == "✓ Configured"
 
     def test_skips_slow_walks_unless_source_selected(self, monkeypatch):
         """Vector Search and UC functions walk the workspace and are OFF by
@@ -1193,7 +1235,9 @@ class TestConfigureMcpCommand:
         monkeypatch.setattr(mcp, "ensure_databricks_auth", lambda workspace, profile=None: None)
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
         monkeypatch.setattr(mcp, "discover_app_mcp_servers", lambda workspace, profile=None: [])
-        monkeypatch.setattr(mcp, "discover_mcp_service_names", lambda workspace, profile=None: [])
+        monkeypatch.setattr(
+            mcp, "discover_mcp_service_names", lambda workspace, profile=None, **kwargs: []
+        )
         monkeypatch.setattr(
             mcp,
             "prompt_for_mcp_server_choices",
@@ -1418,7 +1462,7 @@ class TestConfigureMcpCommand:
         monkeypatch.setattr(
             mcp,
             "discover_mcp_service_names",
-            lambda workspace, profile=None: (_ for _ in ()).throw(
+            lambda workspace, profile=None, **kwargs: (_ for _ in ()).throw(
                 RuntimeError("permission denied")
             ),
         )
@@ -1449,7 +1493,7 @@ class TestConfigureMcpCommand:
         monkeypatch.setattr(mcp, "ensure_databricks_auth", lambda workspace, profile=None: None)
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
 
-        def fake_services(workspace, profile=None):
+        def fake_services(workspace, profile=None, **kwargs):
             seen_profiles["mcp-services"] = profile
             return []
 
@@ -3474,6 +3518,11 @@ class TestReconcileManagedMcpServers:
             mcp.claude, "managed_mcp_uses_managed_file", lambda ws, *, use_pat: claude_eligible
         )
         monkeypatch.setattr(mcp.codex, "managed_mcp_uses_managed_file", lambda: codex_eligible)
+        monkeypatch.setattr(
+            mcp,
+            "first_available_oauth_client",
+            lambda ws, client_ids: client_ids[0],
+        )
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
 
@@ -3820,7 +3869,9 @@ class TestSingleSourceSkipsPrompt:
         monkeypatch.setattr(mcp.shutil, "which", lambda binary: f"/usr/bin/{binary}")
         monkeypatch.setattr(mcp, "ensure_databricks_auth", lambda workspace, profile=None: None)
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
-        monkeypatch.setattr(mcp, "discover_mcp_service_names", lambda workspace, profile=None: [])
+        monkeypatch.setattr(
+            mcp, "discover_mcp_service_names", lambda workspace, profile=None, **kwargs: []
+        )
         monkeypatch.setattr(
             mcp,
             "discover_all_mcp_service_names",
@@ -3859,15 +3910,14 @@ class TestManagedServersAreNotReAdded:
         assert mcp.managed_mcp_server_names(state) == {"from-state", "from-file", "codex-only"}
 
     @pytest.mark.parametrize("additive", [True, False])
-    def test_managed_service_is_hidden_from_the_picker(self, additive):
-        # A managed server is never ug's to add or remove here (it lives in the OS-managed file),
-        # so it's hidden in both modes rather than shown as an inert row.
-        assert (
-            mcp._mcp_service_choice(
-                "system.ai.github", {"system-ai-github"}, additive, {"system-ai-github"}
-            )
-            is None
+    def test_managed_service_is_read_only_in_the_picker(self, additive):
+        # Managed services remain inspectable but cannot be added or removed.
+        choice = mcp._mcp_service_choice(
+            "system.ai.github", {"system-ai-github"}, additive, {"system-ai-github"}
         )
+        assert choice.disabled == "Managed by workspace"
+        assert choice.checked is False
+        assert choice.status == "✓ Managed"
 
     def test_unmanaged_service_is_still_offered_as_an_add(self):
         choice = mcp._mcp_service_choice("system.ai.other", set(), True, {"system-ai-github"})
@@ -3875,9 +3925,8 @@ class TestManagedServersAreNotReAdded:
         assert choice.disabled is None
         assert choice.value.startswith(mcp.MCP_ADD_PREFIX)
 
-    def test_add_picker_shows_only_addable_services(self):
-        # Under `ug mcp add`, the picker lists only what you can add: a managed service and one
-        # ug already configured are both hidden; an unconfigured one is offered.
+    def test_add_picker_shows_status_but_only_unconfigured_services_are_addable(self):
+        # Status is visible for every service; configured and managed rows are read-only.
         choices = mcp.build_mcp_picker_choices(
             [],
             [],
@@ -3893,12 +3942,16 @@ class TestManagedServersAreNotReAdded:
         )
         titles = [c.title for c in choices]
         assert titles == [
-            "MCP: system.ai.web_search"
-        ]  # github (managed) + slack (configured) hidden
+            "system.ai.github",
+            "system.ai.slack",
+            "system.ai.web_search",
+        ]
+        assert [c.status for c in choices] == ["✓ Managed", "✓ Configured", "✗ Not configured"]
+        assert [bool(c.disabled) for c in choices] == [True, True, False]
+        assert all(not c.checked for c in choices)
 
-    def test_replace_picker_hides_managed_but_keeps_own_as_toggle(self):
-        # Replace mode still lets you remove your own servers (pre-checked toggle), but a managed
-        # one stays hidden since ug can't remove it here either.
+    def test_replace_picker_keeps_managed_read_only_and_own_as_toggle(self):
+        # Replace mode keeps managed rows read-only and ug's own rows removable.
         choices = mcp.build_mcp_picker_choices(
             [],
             [],
@@ -3909,8 +3962,9 @@ class TestManagedServersAreNotReAdded:
             managed_names={"system-ai-github"},
         )
         by_title = {c.title: c for c in choices}
-        assert "MCP: system.ai.github" not in by_title  # managed: hidden
-        assert by_title["MCP: system.ai.slack"].checked is True  # own: removable toggle
+        assert by_title["system.ai.github"].disabled == "Managed by workspace"
+        assert by_title["system.ai.github"].checked is False
+        assert by_title["system.ai.slack"].checked is True  # own: removable toggle
 
     def test_drop_managed_servers_reports_what_it_skipped(self, capsys):
         servers = [
