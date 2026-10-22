@@ -111,7 +111,7 @@ _UNSUPPORTED_MODELS = {
     "claude-opus-4-1": "the gateway rejects the thinking settings Copilot sends for it",
 }
 _GATEWAY_ALIAS_PREFIX = "anthropic-aigw-"
-_GPT_MODEL_MAJOR_PATTERN = re.compile(r"^gpt-(\d+)(?=$|[.-])")
+_GPT_MODEL_MAJOR_PATTERN = re.compile(r"^gpt-(\d+)o?(?=$|[.-])")
 _CLAUDE_DASHED_VERSION_PATTERN = re.compile(r"-(\d+)-(\d+)$")
 _CLAUDE_HAIKU_MAJOR_PATTERN = re.compile(r"^claude-haiku-(\d+)")
 _CLAUDE_CATALOG_VERSION_PATTERN = re.compile(r"^claude-([a-z]+)-(\d+)(?:\.(\d+))?$")
@@ -259,10 +259,14 @@ def catalog_from_listings(
     the per-family gateway listings found instead. None when neither answered, so the caller keeps
     the saved catalog; an empty catalog when they answered with nothing Copilot can use."""
     listed = list(entries or ())
-    if listed:
-        return build_copilot_catalog(listed)
-    fallback_ids = list(fallback)
-    return build_copilot_catalog(fallback_ids) if fallback_ids else None
+    fallback_catalog = build_copilot_catalog(list(fallback))
+    if not listed:
+        return fallback_catalog or None
+    catalog = build_copilot_catalog(listed)
+    # A family the UC listing lacks keeps the models its gateway listing found.
+    families = {model.wire == "anthropic" for model in catalog}
+    missing = [model for model in fallback_catalog if (model.wire == "anthropic") not in families]
+    return sorted([*catalog, *missing], key=_catalog_sort_key)
 
 
 def catalog_state(models: list[CopilotModel]) -> dict:
@@ -538,10 +542,13 @@ def session_registry(config: dict) -> Iterator[Path]:
     try:
         yield path
     finally:
-        release_file_lock(lock_file)
-        lock_file.close()
-        path.unlink(missing_ok=True)
-        lock_path.unlink(missing_ok=True)
+        # Under the mutex, so a concurrent sweep can't reopen the lock file before it's deleted
+        # (Windows refuses to delete an open file).
+        with _registries_lock():
+            release_file_lock(lock_file)
+            lock_file.close()
+            path.unlink(missing_ok=True)
+            lock_path.unlink(missing_ok=True)
 
 
 def _parse_version(value: str) -> tuple[int, int, int] | None:

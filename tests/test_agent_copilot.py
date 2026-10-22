@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+from pathlib import Path
 
 import httpx
 import pytest
@@ -49,6 +51,8 @@ class TestClassifyCopilotModel:
             ("databricks-gpt-5-3-codex", "responses"),
             ("system.ai.gpt-4-1", "completions"),
             ("system.ai.gpt-6.1-sol", "responses"),
+            ("databricks-gpt-4o", "completions"),
+            ("system.ai.gpt-4o-mini", "completions"),
             ("gpt-5.4", "responses"),
             ("claude-sonnet-4.5", "anthropic"),
         ],
@@ -117,9 +121,16 @@ class TestBuildCopilotCatalog:
 
 
 class TestCatalogFromListings:
-    def test_prefers_the_model_services_listing(self):
+    def test_prefers_the_model_services_listing_per_family(self):
         entries = [ModelServiceEntry(GPT), ModelServiceEntry("system.ai.gemini-3-flash")]
-        assert copilot.catalog_from_listings(entries, [SONNET]) == catalog(GPT)
+        fallback = [SONNET, "databricks-gpt-5-5"]
+
+        assert copilot.catalog_from_listings(entries, fallback) == catalog(SONNET, GPT)
+
+    def test_a_listing_with_only_unusable_models_keeps_the_gateway_families(self):
+        entries = [ModelServiceEntry("system.ai.gemini-3-flash")]
+
+        assert copilot.catalog_from_listings(entries, [SONNET, GPT]) == catalog(SONNET, GPT)
 
     def test_falls_back_to_the_gateway_listings(self):
         assert copilot.catalog_from_listings(None, ["databricks-claude-sonnet-4-6"]) == catalog(
@@ -408,6 +419,34 @@ class TestSessionRegistry:
 
         assert not path.exists()
         assert not path.with_suffix(".lock").exists()
+
+    def test_cleanup_holds_the_registries_mutex(self, tmp_path, monkeypatch):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        real_lock, real_release = copilot._registries_lock, copilot.release_file_lock
+        held: list[bool] = []
+        released_under_mutex: list[bool] = []
+
+        @contextlib.contextmanager
+        def tracking_lock():
+            with real_lock():
+                held.append(True)
+                try:
+                    yield
+                finally:
+                    held.pop()
+
+        def tracking_release(lock_file):
+            if Path(lock_file.name).name.startswith(copilot._REGISTRY_PREFIX):
+                released_under_mutex.append(bool(held))
+            real_release(lock_file)
+
+        monkeypatch.setattr(copilot, "_registries_lock", tracking_lock)
+        monkeypatch.setattr(copilot, "release_file_lock", tracking_release)
+
+        with copilot.session_registry({}):
+            pass
+
+        assert released_under_mutex == [True]
 
     def test_removed_when_the_session_fails(self, tmp_path, monkeypatch):
         isolate_copilot_config_paths(monkeypatch, tmp_path)
