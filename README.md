@@ -145,6 +145,16 @@ OTLP trace export with a refreshing headers helper; no background service is nee
 Register Databricks MCP servers for configured MCP-capable agents. Cursor Agent
 is MCP-only and is included when `cursor-agent` is installed:
 
+Run `ug mcp add` without selectors to browse a table of services by name, UC location,
+and status. ✓ means configured (or managed by the workspace); ✗ means not configured.
+Configured and managed services stay visible as read-only rows. `[ ]`/`[x]` indicate
+what you select for this operation; `[-]` marks a read-only row.
+
+Highlight a service to see its description, creator, and creation/update dates. Type
+to filter names or UC locations, use Space to select, and Enter to save. Page Up/Down
+scrolls the detail pane. Narrow terminals shorten cells and show status symbols;
+the detail pane retains the full location and status.
+
 Use `ug mcp add` to add servers without removing existing registrations:
 
 ```bash
@@ -173,9 +183,12 @@ ug mcp list
 ug mcp list --agents claude,codex
 ```
 
-Every Databricks MCP server is registered as a local stdio server that runs
-`ug mcp-proxy`; the proxy refreshes Databricks OAuth tokens from your CLI
-profile. V2 AI Gateway servers can be added with typed selectors such as
+Connection-backed AI Gateway MCP services use native HTTP OAuth in Claude Code,
+Codex, and Cursor when the workspace publishes a compatible client. Claude Code
+uses its URL-based client ID metadata document; if it is unavailable, `ug` uses
+the local `ug mcp-proxy` stdio server with the Databricks CLI's OAuth client.
+Other servers and agents also use that proxy. V2 AI
+Gateway servers can be added with typed selectors such as
 `vector-search:main.docs`, `uc-functions:main.tools`, `external:<name>`,
 `genie-space:<space-id>`, or `app:<name>`.
 
@@ -226,7 +239,15 @@ this contract does not make shared setup transactional.
 ## Skills
 
 Unity Catalog Skills can be registered as MCP tools or downloaded into local
-agent skill directories.
+agent skill directories. Run `ug skills add` without selectors to browse individual
+skills in the same table and metadata pane as the MCP browser, plus the bundle name.
+✓ Installed requires a recorded download of that exact UC skill with `SKILL.md` still
+present at every target agent directory (`--path`, or your home directory). A matching
+bundle name from another schema or metastore does not qualify. Unattributed local
+bundles and incomplete installations show ✗ Not installed, with an explanation in the
+detail pane. Installed skills remain selectable for updates.
+Missing metadata is shown explicitly. `Created by` is the UC creator, which may
+differ from the author of the bundle.
 
 ```bash
 # Set up the Databricks skills MCP so your agents can create and manage skills through ug.
@@ -273,9 +294,20 @@ ug skills remove --location main.default --via mcp
 | `ug skills remove` | Remove skill MCP scopes or downloaded skills |
 | `ug export` | Print or write portable managed config JSON |
 | `ug doctor` | Diagnose local setup and offer fixes |
-| `ug usage` | Show AI Gateway spend and budget |
+| `ug usage` | Show Unity Gateway spend and budget |
 | `ug revert` | Clear saved state and restore backed-up config files |
 | `ug upgrade` | Upgrade Unity Gateway |
+
+`ug usage` shows your Unity Gateway budget usage. To try the expanded budget view:
+
+```bash
+ENABLE_UG_USAGE_SPEND_API=1 ug usage
+```
+
+The expanded view shows up to five budget limits, prioritizing the most-used limits
+across personal/shared and daily/monthly budgets. It tells you when more limits exist.
+It uses your configured workspace login; no separate login is needed.
+Leave `ENABLE_UG_USAGE_SPEND_API` unset to keep the standard summary.
 
 Databricks AI Tools are installed only by `ug configure`, never by agent launch
 commands. Use `--enable-databricks-ai-tools` or `--disable-databricks-ai-tools`

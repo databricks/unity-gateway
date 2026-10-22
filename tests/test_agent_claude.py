@@ -4086,7 +4086,11 @@ class TestManagedMcpUsesManagedFile:
     def _wire(self, monkeypatch, *, supported=True, interactive=True, oauth=True):
         monkeypatch.setattr(claude, "managed_files_supported", lambda: supported)
         monkeypatch.setattr(claude, "managed_writes_allowed", lambda: interactive)
-        monkeypatch.setattr(claude, "oauth_client_available", lambda ws, client_id: oauth)
+        monkeypatch.setattr(
+            claude,
+            "first_available_oauth_client",
+            lambda ws, client_ids: client_ids[0] if oauth else None,
+        )
 
     def test_true_when_all_conditions_hold(self, monkeypatch):
         self._wire(monkeypatch)
@@ -4130,7 +4134,10 @@ class TestClaudeReconcileManagedMcp:
         doc = json.loads(captured["text"])
         assert doc["managedMcpServers"]["system-ai-github"]["url"] == GH_URL
         assert doc["managedMcpServers"]["system-ai-github"]["type"] == "http"
-        assert doc["managedMcpServers"]["system-ai-github"]["oauth"]["clientId"] == "claude-code"
+        assert (
+            doc["managedMcpServers"]["system-ai-github"]["oauth"]["clientId"]
+            == claude.CLAUDE_CODE_CIMD_CLIENT_ID
+        )
         assert doc["env"] == {"X": "1"}
         assert doc["apiKeyHelper"] == "ug auth-token"
         assert captured["owned_paths"] == [["managedMcpServers"]]

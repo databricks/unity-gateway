@@ -82,9 +82,9 @@ from ucode.managed_files import (
     withdrawn_list_items,
 )
 from ucode.mcp_oauth import (
-    CLAUDE_CODE_OAUTH_CLIENT_ID,
+    CLAUDE_CODE_CIMD_CLIENT_ID,
     MCP_OAUTH_CALLBACK_PORT,
-    oauth_client_available,
+    first_available_oauth_client,
 )
 from ucode.mcp_web_search import (
     AUTOMATIC_PROVIDER,
@@ -816,7 +816,7 @@ def add_claude_http_mcp_server(
     url: str,
     scope: str = MCP_USER_SCOPE,
     *,
-    client_id: str = CLAUDE_CODE_OAUTH_CLIENT_ID,
+    client_id: str = CLAUDE_CODE_CIMD_CLIENT_ID,
     callback_port: int = MCP_OAUTH_CALLBACK_PORT,
 ) -> None:
     """Register a Databricks MCP endpoint as a **direct HTTP** server so Claude
@@ -827,8 +827,8 @@ def add_claude_http_mcp_server(
     against ``/oidc`` with the ``resource`` indicator: on a missing/expired
     connection credential, ``/mcp`` shows "needs authentication" and Authenticate
     runs the login (``/oidc`` -> ``/mcp-service-login``). ``client_id`` is the
-    published ``claude-code`` app (it has the loopback ``/callback`` redirect
-    registered); the callback port is arbitrary because ``/oidc`` ignores the port
+    published CIMD URL client ID. It has the loopback ``/callback`` redirect registered; the port
+    is arbitrary because ``/oidc`` ignores the port
     for loopback redirects."""
     cmd = [
         "claude",
@@ -938,7 +938,7 @@ def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
                 add_claude_http_mcp_server(
                     name,
                     entry["url"],
-                    client_id=oauth.get("clientId", CLAUDE_CODE_OAUTH_CLIENT_ID),
+                    client_id=oauth.get("clientId", CLAUDE_CODE_CIMD_CLIENT_ID),
                     callback_port=oauth.get("callbackPort", MCP_OAUTH_CALLBACK_PORT),
                 )
             else:
@@ -964,25 +964,25 @@ def managed_mcp_uses_managed_file(workspace: str, *, use_pat: bool) -> bool:
     servers) but Claude Code reads it only from a real managed source, and only as a remote HTTP
     server it can drive OAuth against itself. So it fits only when the platform supports the sudo
     reconcile, the run is interactive, the developer is not on PAT auth (which needs the stdio
-    proxy), and the workspace publishes the ``claude-code`` OAuth client. Every other case falls back to the user-scope registration."""
+    proxy), and the workspace publishes a Claude Code OAuth client. Every other case falls back to the user-scope registration."""
     return (
         managed_files_supported()
         and managed_writes_allowed()
         and not use_pat
-        and oauth_client_available(workspace, CLAUDE_CODE_OAUTH_CLIENT_ID)
+        and first_available_oauth_client(workspace, (CLAUDE_CODE_CIMD_CLIENT_ID,)) is not None
     )
 
 
-def managed_mcp_entry(url: str) -> dict:
+def managed_mcp_entry(url: str, *, client_id: str = CLAUDE_CODE_CIMD_CLIENT_ID) -> dict:
     """A ``managedMcpServers`` entry: a direct HTTP server Claude Code drives OAuth against itself.
 
-    Mirrors :func:`add_claude_http_mcp_server`: the published ``claude-code`` OAuth client and an
+    Mirrors :func:`add_claude_http_mcp_server`: a published Claude Code OAuth client and an
     arbitrary loopback callback port, which ``/oidc`` ignores for loopback redirects."""
     return {
         "type": "http",
         "url": url,
         "oauth": {
-            "clientId": CLAUDE_CODE_OAUTH_CLIENT_ID,
+            "clientId": client_id,
             "callbackPort": MCP_OAUTH_CALLBACK_PORT,
         },
     }

@@ -6,6 +6,7 @@ import questionary
 
 from ucode.ui.interactive_picker import (
     _DESCRIPTION_PREVIEW_CHARS,
+    CatalogChoice,
     StreamingInquirerControl,
     _description_footer_tokens,
     _description_preview,
@@ -18,8 +19,25 @@ def test_merge_new_choices_dedupes_by_value():
     # listed (e.g. from a fast up-front pass) isn't added twice.
     a = questionary.Choice(title="A", value="cat.sch.a")
     b = questionary.Choice(title="B", value="cat.sch.b")
-    merged = merge_new_choices([a], [a, b])
-    assert [c.value for c in merged] == ["cat.sch.b"]
+    merged, added = merge_new_choices([a], [a, b])
+    assert [c.value for c in merged] == ["cat.sch.a", "cat.sch.b"]
+    assert added == 1
+
+
+def test_merge_new_choices_enriches_plain_row_without_losing_its_value():
+    plain = questionary.Choice(title="cat-sch-a", value="cat-sch-a", checked=True)
+    rich = CatalogChoice(
+        "cat.sch.a",
+        value="cat-sch-a",
+        name="a",
+        location="cat.sch",
+        status="✓ Configured",
+        checked=True,
+        description="Full name: cat.sch.a",
+    )
+    merged, added = merge_new_choices([plain], [rich])
+    assert merged == [rich]
+    assert added == 0
 
 
 class TestStreamingInquirerControl:
