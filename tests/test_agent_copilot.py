@@ -475,14 +475,24 @@ class TestProviderCatalog:
         assert [m.id for m in models] == ["gpt-5.5"]
         assert "HTTP 503" in capsys.readouterr().out
 
-    def test_allow_all_without_a_start_model_asks_for_one(self, monkeypatch):
+    def test_allow_all_without_a_start_model_registers_the_listing(self, monkeypatch):
         _stub_provider_service(
             monkeypatch,
             {"provider_type": "anthropic", "targets": [], "allow_all_targets": True},
-            listed=["claude-sonnet-5"],
+            listed=["claude-opus-5", "claude-sonnet-5"],
         )
 
-        with pytest.raises(RuntimeError, match="allows any model.*--model"):
+        models = copilot.provider_catalog({"workspace": WS}, MPS, None)
+
+        assert [m.id for m in models] == ["claude-opus-5", "claude-sonnet-5"]
+        assert copilot.launch_model({}, models, warn=False).id == "claude-sonnet-5"
+
+    def test_allow_all_with_an_empty_listing_asks_for_a_model(self, monkeypatch):
+        _stub_provider_service(
+            monkeypatch, {"provider_type": "anthropic", "targets": [], "allow_all_targets": True}
+        )
+
+        with pytest.raises(RuntimeError, match="it lists none.*--model"):
             copilot.provider_catalog({"workspace": WS}, MPS, None)
 
     def test_no_usable_model_lists_the_reasons(self, monkeypatch):

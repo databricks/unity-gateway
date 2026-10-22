@@ -334,9 +334,8 @@ def _without_provider_prefix(model: str) -> str:
 def provider_catalog(state: dict, service_name: str, requested: str | None) -> list[CopilotModel]:
     """The models of Model Provider Service ``service_name`` that this launch registers.
 
-    A service that allows every model must be given the model to start on, ``requested`` (the
-    launch's ``--model``) or the managed default: the gateway lists a fixed catalog for it, not what
-    the provider account serves. That catalog is added for ``/model``."""
+    A service that allows every model registers what the gateway lists for it, plus ``requested``
+    (the launch's ``--model``) or the managed default, so a model the listing omits can be named."""
     workspace = state["workspace"]
     token = launch_token(state, workspace)
     service, error = resolve_provider_service("copilot", service_name, workspace, token)
@@ -345,35 +344,40 @@ def provider_catalog(state: dict, service_name: str, requested: str | None) -> l
     provider_type = service["provider_type"]
     models = list(service.get("targets") or [])
     listed: list[str] = []
-    if service.get("allow_all_targets"):
+    allow_all = bool(service.get("allow_all_targets"))
+    if allow_all:
         start = _without_provider_prefix(requested) if requested else None
         managed_default = state.get("copilot_default_model")
         start = start or (managed_default if isinstance(managed_default, str) else None)
-        if not start:
-            raise RuntimeError(
-                f"Model provider service '{service_name}' allows any model, so name the one to "
-                "start on with `ug copilot --model <id>`."
-            )
-        models.append(start)
         listed, reason = list_provider_service_models(workspace, token, service_name, provider_type)
+        if start:
+            models.append(start)
         if reason:
+            if not start:
+                raise RuntimeError(
+                    f"Could not list the models of '{service_name}': {reason}. Name the one to "
+                    "start on with `ug copilot --model <id>`."
+                )
             print_warning(f"Could not list the models of {service_name}: {reason}.")
     target_api_types = service.get("target_api_types") or {}
     catalog, skipped = build_provider_catalog(models, provider_type, target_api_types)
+    if listed:
+        catalog, _ = build_provider_catalog(
+            [m.id for m in catalog] + listed, provider_type, target_api_types
+        )
     if not catalog:
-        detail = "; ".join(f"{model} ({reason})" for model, reason in skipped) or "none declared"
+        detail = "; ".join(f"{model} ({reason})" for model, reason in skipped)
+        if not detail:
+            detail = "it lists none" if allow_all else "none declared"
         raise RuntimeError(
             f"Model provider service '{service_name}' has no models ug copilot can use: {detail}."
+            + (" Name one it serves with `ug copilot --model <id>`." if allow_all else "")
         )
     if skipped:
         print_warning(
             f"Skipping models of {service_name} that ug copilot can't use: "
             + "; ".join(f"{model} ({reason})" for model, reason in skipped)
             + "."
-        )
-    if listed:
-        catalog, _ = build_provider_catalog(
-            [m.id for m in catalog] + listed, provider_type, target_api_types
         )
     return catalog
 
