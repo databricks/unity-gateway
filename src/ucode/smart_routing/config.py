@@ -33,6 +33,11 @@ SUBAGENT_ORCH_V1 = "subagent_orch_v1"
 # Preserve subagent_orch_v0 for Claude, with all Codex routing flags disabled.
 SUBAGENT_ORCH_V0_CLAUDE_ONLY = "subagent_orch_v0_claude_only"
 
+# Selected by --enable-smart-routing and managed smart routing when no known version is set.
+DEFAULT_ENABLED_VERSION = SUBAGENT_ORCH_V0
+
+_RESTORE_KEYS = (*SMART_ROUTING_ENV_KEYS, SMART_ROUTER_CONFIG_VERSION_ENV_VAR)
+
 _BASE_VERSIONS = {
     FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
@@ -141,8 +146,29 @@ def apply_config(
     preset = _VERSIONS.get(version, {}).get(agent)
     if preset is None:
         return {}
-    keys = (*SMART_ROUTING_ENV_KEYS, SMART_ROUTER_CONFIG_VERSION_ENV_VAR)
-    previous = {key: target.get(key) for key in keys}
+    previous = {key: target.get(key) for key in _RESTORE_KEYS}
     target.update(preset)
     target.pop(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, None)
+    return previous
+
+
+def known_version(env: Mapping[str, str] | None = None) -> bool:
+    """Whether the launch selector names a version, which then decides the launch's routing."""
+    source = os.environ if env is None else env
+    return source.get(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, "").strip() in _VERSIONS
+
+
+def apply_enabled_version(
+    env: MutableMapping[str, str] | None = None, *, agent: str
+) -> dict[str, str | None]:
+    """Turn routing on through a version, returning the values needed to restore the input.
+
+    A known version is kept; otherwise the selector is set to ``DEFAULT_ENABLED_VERSION``. Either
+    way the version then overwrites every routing env var.
+    """
+    target = os.environ if env is None else env
+    previous = {key: target.get(key) for key in _RESTORE_KEYS}
+    if not known_version(target):
+        target[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = DEFAULT_ENABLED_VERSION
+    apply_config(target, agent=agent)
     return previous

@@ -67,7 +67,7 @@ from ucode.smart_routing.claude_hooks import (
     sync_smart_routing_hooks,
 )
 from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
-from ucode.smart_routing.config import apply_config, resolve_environment
+from ucode.smart_routing.config import apply_config, apply_enabled_version, resolve_environment
 from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
 from ucode.ui import print_note, print_warning
 
@@ -196,13 +196,6 @@ def first_prompt_routing_enabled(
     )
 
 
-def enable_smart_routing(
-    env: MutableMapping[str, str] | None = None, *, agent: str
-) -> dict[str, str | None]:
-    """Set the full smart-routing env var and return the prior value of every routing var."""
-    return override_smart_routing(True, env, agent=agent)
-
-
 def override_smart_routing(
     enabled: bool,
     env: MutableMapping[str, str] | None = None,
@@ -210,13 +203,12 @@ def override_smart_routing(
     agent: str,
 ) -> dict[str, str | None]:
     """Set an explicit launch-scoped routing choice and return the prior values."""
+    if enabled:
+        return apply_enabled_version(env, agent=agent)
     target = os.environ if env is None else env
     previous = {var: target.get(var) for var in SMART_ROUTING_ENV_KEYS}
     previous.update(apply_config(target, agent=agent))
-    if enabled:
-        target[ENABLE_SMART_ROUTING_ENV_VAR] = "1"
-    else:
-        target.update(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
+    target.update(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
     return previous
 
 

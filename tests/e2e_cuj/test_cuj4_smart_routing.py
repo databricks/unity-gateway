@@ -75,15 +75,6 @@ class SessionCase:
     requests: tuple[RecordedRequest, ...]
     inference_request: RecordedRequest
     inference_response: RecordedResponse
-    route_request: RecordedRequest | None = None
-    route_response: RecordedResponse | None = None
-
-    @property
-    def selected_model(self):
-        assert self.route_response is not None
-        selections = self.route_response.payload["route_selection"]
-        assert len(selections) == 1
-        return canonical_model(selections[0]["route_option"]["model"])
 
 
 @dataclass(frozen=True)
@@ -231,12 +222,6 @@ def run_smart_routing_journeys(cuj) -> SmartRoutingSessionResults:
     for agent in AGENTS:
         task = _file_task(session, agent)
         observation, requests = _run_session(session, recorder, agent, task, (agent,))
-        route_request = next(
-            request
-            for request in requests
-            if request.method == "POST" and request.path == ROUTING_PATH
-        )
-        route_response = recorder.response_for(route_request)
         inference_request = _task_inference_request(requests, agent, task.prompt)
         inference_request = served_inference_request(recorder, requests, inference_request, agent)
         no_model_override[agent] = SessionCase(
@@ -245,8 +230,6 @@ def run_smart_routing_journeys(cuj) -> SmartRoutingSessionResults:
             task=task,
             observation=observation,
             requests=requests,
-            route_request=route_request,
-            route_response=route_response,
             inference_request=inference_request,
             inference_response=recorder.response_for(inference_request),
         )
@@ -366,6 +349,12 @@ class TestCujSmartRouting(BaseCujTest):
                         selections = response.payload["route_selection"]
                         assert len(selections) == 1
                         expected_model = selections[0]["route_option"]["model"]
+                        options = routes[0].payload["route_options"]
+                        offered = {canonical_model(option["model"]) for option in options}
+                        assert options and all(option["harness"] == agent for option in options)
+                        assert offered <= {canonical_model(model) for model in supported}
+                        selected = canonical_model(expected_model)
+                        assert selected in offered and selected.startswith("system.ai."), selected
                     inference = _task_inference_request(requests, agent, task.prompt)
                     inference = served_inference_request(recorder, requests, inference, agent)
                     assert canonical_model(inference.payload["model"]) == canonical_model(
@@ -537,61 +526,25 @@ class TestCujSmartRouting(BaseCujTest):
         assert case.task.value in case.observation.turn.answer
 
     @pytest.mark.parametrize("agent", AGENTS)
-    def test_router_decision_exists_and_is_correlated_to_the_prompt(
+    def test_managed_smart_routing_orchestrates_without_routing_the_first_prompt(
         self, completed_smart_routing_runs, agent
     ):
         case = completed_smart_routing_runs.no_model_override[agent]
-        decisions = [request for request in case.requests if request.path == ROUTING_PATH]
-        assert decisions == [case.route_request]
-        assert case.route_request.payload["task"]["prompt"] == case.task.prompt
-        assert case.route_request.payload["route_selector"]["router_name"]
-        assert case.route_response.status_code == 200
+        assert not [request for request in case.requests if request.path == ROUTING_PATH]
+        assert ORCHESTRATOR_CONTEXT.encode() in case.inference_request.body
 
     @pytest.mark.parametrize("agent", AGENTS)
-    def test_selected_model_is_used_for_inference_and_the_task_completes(
-        self, completed_smart_routing_runs, agent
-    ):
+    def test_admin_default_model_serves_the_first_prompt(self, completed_smart_routing_runs, agent):
         case = completed_smart_routing_runs.no_model_override[agent]
-        inference_model = case.inference_request.payload["model"]
-        if agent == CLAUDE:
-            assert inference_model == case.selected_model
-        else:
-            assert canonical_model(inference_model) == case.selected_model
+        expected = completed_smart_routing_runs.defaults[agent]
+        assert canonical_model(case.inference_request.payload["model"]) == canonical_model(expected)
         assert case.inference_response.status_code == 200
         result = case.observation.assert_applied(
             case.task,
             completed_smart_routing_runs.supported[agent],
-            expected=case.selected_model,
+            expected=expected,
         )
         assert case.task.value in result["answer"]
-
-    @pytest.mark.parametrize("agent", AGENTS)
-    def test_selected_model_is_a_supported_system_ai_target_in_the_live_router_contract(
-        self, completed_smart_routing_runs, agent
-    ):
-        case = completed_smart_routing_runs.no_model_override[agent]
-        live_supported = {
-            canonical_model(model) for model in completed_smart_routing_runs.supported[agent]
-        }
-        options = case.route_request.payload["route_options"]
-        offered = {canonical_model(option["model"]) for option in options}
-        assert options and all(option["harness"] == agent for option in options)
-        assert offered <= live_supported
-        assert case.selected_model in offered
-        assert case.selected_model.startswith("system.ai.")
-
-    def test_routing_assertions_accept_each_agents_independent_supported_selection(
-        self, completed_smart_routing_runs
-    ):
-        # There is deliberately no expected winner and no cross-agent comparison.
-        for agent, case in completed_smart_routing_runs.no_model_override.items():
-            response_model = canonical_model(
-                case.route_response.payload["route_selection"][0]["route_option"]["model"]
-            )
-            assert case.selected_model == response_model
-            assert response_model in {
-                canonical_model(model) for model in completed_smart_routing_runs.supported[agent]
-            }
 
     @pytest.mark.parametrize("agent", AGENTS)
     def test_with_model_override_bypasses_router_and_uses_requested_model(

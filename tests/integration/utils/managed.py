@@ -50,11 +50,14 @@ def is_managed_config_control_plane_cache(home: Path, path: Path) -> bool:
     )
 
 
-def use_smart_routing_fixture(session, agent: str, workspace: str) -> Path:
+def use_smart_routing_fixture(
+    session, agent: str, workspace: str, *, smart_routing: bool = True
+) -> Path:
     """Select the checked-in scenario input for the two configured CI workspaces.
 
     The regions publish different GPT generations. This chooses no workspace and
     retries no request; unsupported workspaces need an explicit fixture assignment.
+    ``smart_routing=False`` selects the same models without ``smart_routing.enabled``.
     """
     if agent == "claude":
         name = "claude_smart_routing"
@@ -72,4 +75,4 @@ def use_smart_routing_fixture(session, agent: str, workspace: str) -> Path:
         )
     else:
         raise AssertionError(f"No routing fixture for {agent}")
-    return use_managed_config_fixture(session, name)
+    return use_managed_config_fixture(session, name if smart_routing else f"{name}_off")
