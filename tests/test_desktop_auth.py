@@ -418,7 +418,7 @@ def test_budget_exhausted_after_login_stops_before_final_fetch(cli, monkeypatch,
 
 
 def test_relay_credential_combines_keychain_and_databricks_tokens(monkeypatch):
-    monkeypatch.setattr(desktop_auth.sys, "platform", "darwin")
+    monkeypatch.setattr(desktop_auth, "_credential_storage_platform", lambda: "darwin")
     monkeypatch.setenv("USER", "desktop-user")
     monkeypatch.setattr(
         desktop_auth,
@@ -456,7 +456,7 @@ def test_relay_credential_combines_keychain_and_databricks_tokens(monkeypatch):
 
 
 def test_relay_credential_uses_custom_config_keychain_service(monkeypatch):
-    monkeypatch.setattr(desktop_auth.sys, "platform", "darwin")
+    monkeypatch.setattr(desktop_auth, "_credential_storage_platform", lambda: "darwin")
     monkeypatch.setenv("USER", "desktop-user")
     monkeypatch.setenv(desktop_auth.CLAUDE_CONFIG_DIR_ENV, "/custom/claude")
     monkeypatch.setattr(
@@ -487,7 +487,7 @@ def test_relay_credential_uses_custom_config_keychain_service(monkeypatch):
 def test_relay_credential_reads_file_credentials_on_linux_and_windows(
     monkeypatch, tmp_path, platform, custom_config_dir
 ):
-    monkeypatch.setattr(desktop_auth.sys, "platform", platform)
+    monkeypatch.setattr(desktop_auth, "_credential_storage_platform", lambda: platform)
     home = tmp_path / "home"
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
@@ -593,7 +593,7 @@ def _subscription_credentials(expires_in_seconds: int, token: str) -> str:
 
 
 def test_relay_credential_silently_refreshes_expiring_token(monkeypatch, tmp_path):
-    monkeypatch.setattr(desktop_auth.sys, "platform", "darwin")
+    monkeypatch.setattr(desktop_auth, "_credential_storage_platform", lambda: "darwin")
     monkeypatch.setenv("USER", "desktop-user")
     monkeypatch.setattr(desktop_auth, "_AUTH_LOCK_PATH", tmp_path / "auth.lock")
     monkeypatch.setattr(
@@ -634,7 +634,7 @@ def test_relay_credential_silently_refreshes_expiring_token(monkeypatch, tmp_pat
 def test_relay_credential_noninteractive_refresh_failure_does_not_open_browser(
     monkeypatch, tmp_path
 ):
-    monkeypatch.setattr(desktop_auth.sys, "platform", "darwin")
+    monkeypatch.setattr(desktop_auth, "_credential_storage_platform", lambda: "darwin")
     monkeypatch.setenv("USER", "desktop-user")
     monkeypatch.setattr(desktop_auth, "_AUTH_LOCK_PATH", tmp_path / "auth.lock")
     monkeypatch.setattr(
@@ -662,7 +662,7 @@ def test_relay_credential_noninteractive_refresh_failure_does_not_open_browser(
 
 
 def test_relay_credential_logs_in_when_silent_refresh_does_not_renew(monkeypatch, tmp_path):
-    monkeypatch.setattr(desktop_auth.sys, "platform", "darwin")
+    monkeypatch.setattr(desktop_auth, "_credential_storage_platform", lambda: "darwin")
     monkeypatch.setenv("USER", "desktop-user")
     monkeypatch.setenv(desktop_auth.CLAUDE_HELPER_CONTEXT_ENV, "interactive")
     monkeypatch.setattr(desktop_auth, "_AUTH_LOCK_PATH", tmp_path / "auth.lock")
@@ -698,7 +698,7 @@ def test_relay_credential_logs_in_when_silent_refresh_does_not_renew(monkeypatch
 
 
 def test_relay_claude_refresh_and_login_share_helper_budget(monkeypatch, tmp_path):
-    monkeypatch.setattr(desktop_auth.sys, "platform", "darwin")
+    monkeypatch.setattr(desktop_auth, "_credential_storage_platform", lambda: "darwin")
     monkeypatch.setenv("USER", "desktop-user")
     monkeypatch.setenv(desktop_auth.CLAUDE_HELPER_CONTEXT_ENV, "interactive")
     monkeypatch.setattr(desktop_auth, "_AUTH_LOCK_PATH", tmp_path / "auth.lock")
@@ -741,7 +741,7 @@ def test_relay_claude_refresh_and_login_share_helper_budget(monkeypatch, tmp_pat
 
 
 def test_relay_credential_reports_failed_claude_login(monkeypatch, tmp_path):
-    monkeypatch.setattr(desktop_auth.sys, "platform", "darwin")
+    monkeypatch.setattr(desktop_auth, "_credential_storage_platform", lambda: "darwin")
     monkeypatch.setenv("USER", "desktop-user")
     monkeypatch.setenv(desktop_auth.CLAUDE_HELPER_CONTEXT_ENV, "interactive")
     monkeypatch.setattr(desktop_auth, "_AUTH_LOCK_PATH", tmp_path / "auth.lock")

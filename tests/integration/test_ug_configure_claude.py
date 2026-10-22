@@ -54,7 +54,9 @@ def test_ug_configure_claude_databricks(live_session, workspace):
         tui.boot()
         tui.submit(task.prompt)
         tui.wait_for_task(task)
-        screen = tui.open_model_picker()
+        screen = tui.open_model_picker(
+            model_visible=lambda _text: session.claude_gateway_cache_ready()
+        )
         cache = json.loads((session.home / ".claude/cache/gateway-models.json").read_text())
         assert cache["baseUrl"] == workspace.rstrip("/") + "/ai-gateway/anthropic", cache
         models = cache["models"]

@@ -330,6 +330,10 @@ def _claude_credentials_path() -> Path:
     return Path.home() / ".claude" / _CLAUDE_CREDENTIALS_FILENAME
 
 
+def _credential_storage_platform() -> str:
+    return sys.platform
+
+
 def _claude_keychain_service() -> str:
     if not (config_dir := os.environ.get(CLAUDE_CONFIG_DIR_ENV)):
         return _CLAUDE_KEYCHAIN_SERVICE
@@ -348,7 +352,8 @@ def _clean_token(value: object) -> str | None:
 
 
 def _read_claude_credentials() -> dict:
-    if sys.platform == "darwin":
+    platform = _credential_storage_platform()
+    if platform == "darwin":
         account = os.environ.get("USER")
         command = [
             "/usr/bin/security",
@@ -379,7 +384,7 @@ def _read_claude_credentials() -> dict:
                 "Claude subscription authentication is required. Run `claude auth login`, then start a new Cowork task.",
                 kind="auth",
             )
-    elif sys.platform in ("linux", "win32"):
+    elif platform in ("linux", "win32"):
         try:
             raw = _claude_credentials_path().read_text(encoding="utf-8")
         except OSError as exc:
