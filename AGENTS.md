@@ -39,15 +39,15 @@ are registered in `SMART_ROUTING_ENV_KEYS` in `src/ucode/constants.py`.
 An unset or empty selector preserves legacy environment-flag behavior.
 A valid nonempty selector overrides every conflicting legacy value in that registry.
 Do not use `setdefault` or preserve inherited values for version-owned parameters.
-Resolve and materialize valid selectors at the CLI boundary before argument parsing or callbacks.
-Unknown selectors are a no-op: do not apply a preset, mutate the inherited environment, or raise
-an error. Existing legacy flags and explicit launch/session controls retain their behavior.
-Restore the inherited environment on every exit.
-`--disable-smart-routing` and session on/off controls still apply after version expansion.
-`--enable-smart-routing` and managed smart routing turn routing on only through
-`apply_enabled_version` in `config.py`: keep a known version, otherwise select
-`DEFAULT_ENABLED_VERSION` (an unknown selector is replaced for that launch). Neither may rewrite
-already-resolved version flags.
+A launch decides its routing once, in `decide_launch_routing` in `config.py`, after the admin
+config is known and before anything reads the routing env vars. Its inputs are named by source
+(`cli_flag`, `env_version`, `env_switches`, `admin_enabled`, `native_subcommand`, `pinned_model`)
+and the first matching rule wins: native subcommand (unset), `--disable-smart-routing`, a known
+version, `--enable-smart-routing` or the admin config (`DEFAULT_ENABLED_VERSION`), then the env
+switches. Put any new launch-time routing rule there, not in the launch flow.
+`apply_launch_switches` writes the decided switches and removes the selector, so an unknown
+selector is never passed on and never raises. Restore the inherited environment on every exit.
+Session on/off controls apply after the launch's switches.
 
 Every new `smart_routing` or `smart_router` environment variable must be registered in
 `SMART_ROUTING_ENV_KEYS` in the same change, including orchestration controls.
@@ -64,7 +64,7 @@ atomically; the mod itself still writes no file.
    Choose values that preserve existing versions' behavior. Current parameters accept only
    the strings `"0"` and `"1"`; do not use booleans, empty strings, or omitted keys.
 3. Add its consumer in the appropriate routing module. Use `resolve_environment` for
-   config-aware reads, or the legacy flags materialized by `apply_config` at launch.
+   config-aware reads, or the switches `apply_launch_switches` writes at launch.
    Keep launch-scoped changes restorable and preserve legacy behavior without a selector.
 4. `SMART_ROUTING_ENV_KEYS` controls environment snapshots, restoration, and launch/session
    off overrides. Keep routing activation limited to the V2 and subagent-only flags:

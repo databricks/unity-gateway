@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import pytest
 
 from ucode.constants import (
@@ -11,6 +13,7 @@ from ucode.constants import (
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
+    SMART_ROUTING_ENV_KEYS,
 )
 from ucode.smart_routing import config, orchestrator, session_env, v2
 
@@ -43,10 +46,23 @@ _EXPECTED_PRESETS = {
 }
 
 
+def _plain_launch_switches(env: Mapping[str, str], agent: str = AGENT_CLAUDE) -> dict:
+    """The switches a launch without the flag or an admin config decides for ``env``."""
+    return config.decide_launch_routing(
+        agent=agent,
+        cli_flag=None,
+        env_version=env.get(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, ""),
+        env_switches={key: env.get(key) for key in SMART_ROUTING_ENV_KEYS},
+        admin_enabled=False,
+        native_subcommand=False,
+        pinned_model=False,
+    ).switches
+
+
 @pytest.mark.parametrize(
     "selector", [None, "", "   ", "unsupported_version", " unsupported_version "]
 )
-def test_absent_or_unknown_selector_is_a_no_op(selector):
+def test_absent_or_unknown_selector_keeps_the_switches(selector):
     applied = {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
@@ -60,7 +76,9 @@ def test_absent_or_unknown_selector_is_a_no_op(selector):
 
     assert config.resolve_environment(applied, agent=AGENT_CLAUDE) == expected
     assert applied == original
-    assert config.apply_config(applied, agent=AGENT_CLAUDE) == {}
+    previous = config.apply_launch_switches(_plain_launch_switches(applied), applied)
+    assert applied == expected
+    v2.restore_smart_routing_env(previous, applied)
     assert applied == original
 
 
@@ -109,7 +127,7 @@ def test_smart_routing_config_cartesian_grid(
     assert source == original
 
     applied = source.copy()
-    previous = config.apply_config(applied, agent=AGENT_CLAUDE)
+    previous = config.apply_launch_switches(_plain_launch_switches(source), applied)
 
     assert applied == expected
     v2.restore_smart_routing_env(previous, applied)
@@ -133,7 +151,7 @@ def test_legacy_preset_equivalence(version, expected_routing):
     }
     resolved = config.resolve_environment(preset_env, agent=AGENT_CLAUDE)
     applied = preset_env.copy()
-    config.apply_config(applied, agent=AGENT_CLAUDE)
+    config.apply_launch_switches(_plain_launch_switches(preset_env), applied)
     assert applied == resolved
     for environment in (legacy_env, preset_env, resolved, applied):
         assert environment["SMART_ROUTER_NAME"] == legacy_env["SMART_ROUTER_NAME"]
@@ -171,54 +189,127 @@ def test_codex_uses_existing_presets():
         assert config.resolve_environment(source, agent=AGENT_CODEX) == expected
 
 
-@pytest.mark.parametrize(
-    ("selector", "expected"),
-    [
-        (None, False),
-        ("", False),
-        ("   ", False),
-        ("unsupported_version", False),
-        (f" {config.SUBAGENT_ONLY_V0} ", True),
-        *((version, True) for version in sorted(config._VERSIONS)),
-    ],
-)
-def test_known_version(selector, expected):
-    env = {} if selector is None else {SMART_ROUTER_CONFIG_VERSION_ENV_VAR: selector}
-    assert config.known_version(env) is expected
+_HAND_SET_SWITCHES = {
+    ENABLE_SMART_ROUTING_ENV_VAR: "1",
+    ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+    ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+}
+
+
+def _decide(agent: str = AGENT_CLAUDE, **inputs) -> config.LaunchRouting:
+    defaults = {
+        "cli_flag": None,
+        "env_version": "",
+        "env_switches": _HAND_SET_SWITCHES,
+        "admin_enabled": False,
+        "native_subcommand": False,
+        "pinned_model": False,
+    }
+    return config.decide_launch_routing(agent=agent, **{**defaults, **inputs})
 
 
 @pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
-@pytest.mark.parametrize("selector", [None, "", "   ", "unsupported_version"])
-def test_enabled_version_selects_subagent_orch_v0_over_legacy_flags(agent, selector):
+@pytest.mark.parametrize(
+    ("inputs", "source", "switches"),
+    [
+        (
+            {"native_subcommand": True, "cli_flag": True, "admin_enabled": True},
+            config.RoutingSource.NATIVE_SUBCOMMAND,
+            dict.fromkeys(_HAND_SET_SWITCHES),
+        ),
+        (
+            {"cli_flag": False, "env_version": config.SUBAGENT_ORCH_V0, "admin_enabled": True},
+            config.RoutingSource.CLI_DISABLE,
+            dict.fromkeys(_HAND_SET_SWITCHES, "0"),
+        ),
+        (
+            {
+                "cli_flag": True,
+                "env_version": f" {config.SUBAGENT_ONLY_V0} ",
+                "admin_enabled": True,
+            },
+            config.RoutingSource.ENV_VERSION,
+            _EXPECTED_PRESETS[config.SUBAGENT_ONLY_V0],
+        ),
+        (
+            {"cli_flag": True, "env_version": "unsupported_version", "admin_enabled": True},
+            config.RoutingSource.CLI_ENABLE,
+            _EXPECTED_PRESETS[config.SUBAGENT_ORCH_V0],
+        ),
+        (
+            {"admin_enabled": True},
+            config.RoutingSource.ADMIN_CONFIG,
+            _EXPECTED_PRESETS[config.SUBAGENT_ORCH_V0],
+        ),
+        ({}, config.RoutingSource.ENV_SWITCHES, _HAND_SET_SWITCHES),
+    ],
+    ids=["native-subcommand", "cli-disable", "env-version", "cli-enable", "admin", "env-switches"],
+)
+def test_decide_launch_routing_first_matching_rule_wins(agent, inputs, source, switches):
+    routing = _decide(agent, **inputs)
+
+    assert routing.source is source
+    assert routing.switches == switches
+
+
+@pytest.mark.parametrize(
+    ("switches", "pinned_model", "routing_on", "routed_launch"),
+    [
+        ({ENABLE_SMART_ROUTING_ENV_VAR: "1"}, False, True, True),
+        ({ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1"}, False, True, True),
+        ({ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1"}, True, True, False),
+        ({ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1"}, False, False, False),
+        (
+            {ENABLE_SMART_ROUTING_ENV_VAR: "0", ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0"},
+            False,
+            False,
+            False,
+        ),
+    ],
+    ids=["v2", "subagent-only", "pinned-model", "orchestrator-alone", "off"],
+)
+def test_decide_launch_routing_reports_whether_the_launch_routes(
+    switches, pinned_model, routing_on, routed_launch
+):
+    routing = _decide(
+        env_switches={**dict.fromkeys(_HAND_SET_SWITCHES), **switches}, pinned_model=pinned_model
+    )
+
+    assert (routing.routing_on, routing.routed_launch) == (routing_on, routed_launch)
+
+
+def test_decide_launch_routing_leaves_agents_without_smart_routing_alone():
+    routing = _decide("gemini", env_version=config.SUBAGENT_ORCH_V0, admin_enabled=True)
+
+    assert routing.source is config.RoutingSource.UNSUPPORTED_AGENT
+    assert routing.switches == _HAND_SET_SWITCHES
+    assert not routing.routing_on
+    assert not routing.routed_launch
+
+
+def test_apply_launch_switches_replaces_the_selector_and_restores_its_input():
     inherited = {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
-        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
-        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+        SMART_ROUTER_CONFIG_VERSION_ENV_VAR: config.SUBAGENT_ORCH_V0,
         "INHERITED_SETTING": "preserved",
     }
-    if selector is not None:
-        inherited[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = selector
     applied = inherited.copy()
 
-    previous = config.apply_enabled_version(applied, agent=agent)
+    previous = config.apply_launch_switches(
+        {
+            ENABLE_SMART_ROUTING_ENV_VAR: "0",
+            ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
+            ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: None,
+        },
+        applied,
+    )
 
     assert applied == {
-        **_EXPECTED_PRESETS[config.SUBAGENT_ORCH_V0],
+        ENABLE_SMART_ROUTING_ENV_VAR: "0",
+        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         "INHERITED_SETTING": "preserved",
     }
-    v2.restore_smart_routing_env(previous, applied)
-    assert applied == inherited
-
-
-@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
-@pytest.mark.parametrize("version", sorted(config._VERSIONS))
-def test_enabled_version_keeps_a_known_version(agent, version):
-    inherited = {ENABLE_SMART_ROUTING_ENV_VAR: "1", SMART_ROUTER_CONFIG_VERSION_ENV_VAR: version}
-    applied = inherited.copy()
-
-    previous = config.apply_enabled_version(applied, agent=agent)
-
-    assert applied == config.resolve_environment(inherited, agent=agent)
     v2.restore_smart_routing_env(previous, applied)
     assert applied == inherited
 

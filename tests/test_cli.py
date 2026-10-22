@@ -25,6 +25,7 @@ import ucode.cli as cli_mod
 import ucode.databricks as db_mod
 import ucode.managed_files as managed_files
 from ucode.cli import app
+from ucode.config_io import read_toml_safe
 from ucode.databricks import GatewayProbe
 from ucode.managed_config import ManagedConfigResult, normalize_managed_config
 from ucode.smart_routing import config as smart_routing_config
@@ -670,16 +671,13 @@ class TestSubcommandRouting:
         env_before = _routing_env()
         observed = []
 
-        with patch(
-            "ucode.cli._launch_tool",
-            side_effect=lambda *_args, **_kwargs: observed.append(_routing_env()),
-        ) as mock_launch:
+        with _launch_policy_patches(None) as calls:
+            calls["launch"].side_effect = lambda *_args, **_kwargs: observed.append(_routing_env())
             result = runner.invoke(app, [tool, "--enable-smart-routing"])
 
         assert result.exit_code == 0, result.output
         assert observed == [_version_routing_env(expected_version, tool)]
-        assert mock_launch.call_args.kwargs["routing_already_chosen"] is True
-        assert mock_launch.call_args.args[1].args == []
+        assert calls["launch"].call_args.args[2] == []
         assert _routing_env() == env_before
 
     @pytest.mark.parametrize("tool, subcommand", [("codex", "app"), ("claude", "update")])
@@ -689,12 +687,10 @@ class TestSubcommandRouting:
         monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
         observed = []
 
-        with patch(
-            "ucode.cli._launch_tool",
-            side_effect=lambda *_args, **_kwargs: observed.append(
+        with _launch_policy_patches(None) as calls:
+            calls["launch"].side_effect = lambda *_args, **_kwargs: observed.append(
                 os.environ.get(cli_mod.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR)
-            ),
-        ):
+            )
             result = runner.invoke(app, [tool, subcommand])
 
         assert result.exit_code == 0, result.output
@@ -708,12 +704,10 @@ class TestSubcommandRouting:
         monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "1")
         observed = []
 
-        with patch(
-            "ucode.cli._launch_tool",
-            side_effect=lambda *_args, **_kwargs: observed.append(
+        with _launch_policy_patches(None) as calls:
+            calls["launch"].side_effect = lambda *_args, **_kwargs: observed.append(
                 os.environ.get(cli_mod.smart_routing_v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR)
-            ),
-        ):
+            )
             result = runner.invoke(app, [tool, subcommand])
 
         assert result.exit_code == 0, result.output
@@ -723,15 +717,16 @@ class TestSubcommandRouting:
     def test_claude_enable_smart_routing_forwards_positional_prompt_to_v2(self):
         captured = []
 
-        def capture(_tool, ctx, **_kwargs):
+        def capture(_tool, _state, tool_args, **_kwargs):
             captured.append(
                 (
                     os.environ.get(cli_mod.smart_routing_v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR),
-                    ctx.args,
+                    tool_args,
                 )
             )
 
-        with patch("ucode.cli._launch_tool", side_effect=capture):
+        with _launch_policy_patches(None) as calls:
+            calls["launch"].side_effect = capture
             result = runner.invoke(
                 app, ["claude", "--enable-smart-routing", "--", "fix the parser"]
             )
@@ -763,33 +758,35 @@ class TestSubcommandRouting:
 
     @pytest.mark.parametrize("tool", ["codex", "claude"])
     @pytest.mark.parametrize(
-        ("tool_args", "explicit_prompt", "model", "provider", "expected"),
+        ("launch_args", "expected"),
         [
-            ([], False, None, None, True),
-            (["fix this"], True, None, None, True),
-            (["fix this"], False, None, None, False),
-            (["update"], False, None, None, False),
-            (["--model", "fixed"], False, None, None, False),
-            ([], False, "fixed", None, False),
-            ([], False, None, "catalog.schema.service", False),
+            ([], True),
+            (["--", "fix this"], True),
+            (["fix this"], False),
+            (["update"], False),
+            (["--model", "fixed"], False),
         ],
     )
-    def test_codex_and_claude_share_smart_routing_policy(
-        self, tool, tool_args, explicit_prompt, model, provider, expected
-    ):
-        options = cli_mod._launch_options(
-            tool,
-            tool_args,
-            smart_routing_enabled=True,
-            explicit_prompt=explicit_prompt,
-            user_pinned_model=model,
-            provider=provider,
-        )
+    def test_codex_and_claude_share_smart_routing_policy(self, tool, launch_args, expected):
+        with _launch_policy_patches(None) as calls:
+            result = runner.invoke(app, [tool, "--enable-smart-routing", *launch_args])
 
-        assert options.launch_smart_routing is expected
+        assert result.exit_code == 0, result.output
+        assert calls["launch"].call_args.kwargs["options"].launch_smart_routing is expected
+
+    @pytest.mark.parametrize("tool", ["codex", "claude"])
+    def test_smart_routing_rejects_a_provider(self, tool):
+        with _launch_policy_patches(None) as calls:
+            result = runner.invoke(
+                app, [tool, "--enable-smart-routing", "--provider", "catalog.schema.service"]
+            )
+
+        assert result.exit_code == 1
+        assert "smart routing cannot be enabled with --provider" in " ".join(result.output.split())
+        calls["launch"].assert_not_called()
 
     @pytest.mark.parametrize(
-        ("tool_args", "expected"),
+        ("launch_args", "expected"),
         [
             (["--session-id"], True),
             (["--session-id", "--verbose"], True),
@@ -800,17 +797,12 @@ class TestSubcommandRouting:
             (["--session-id", "session-123", "--model", "fixed"], False),
         ],
     )
-    def test_claude_options_allow_smart_routing_except_model(self, tool_args, expected):
-        options = cli_mod._launch_options(
-            "claude",
-            tool_args,
-            smart_routing_enabled=True,
-            explicit_prompt=False,
-            user_pinned_model=None,
-            provider=None,
-        )
+    def test_claude_options_allow_smart_routing_except_model(self, launch_args, expected):
+        with _launch_policy_patches(None) as calls:
+            result = runner.invoke(app, ["claude", "--enable-smart-routing", *launch_args])
 
-        assert options.launch_smart_routing is expected
+        assert result.exit_code == 0, result.output
+        assert calls["launch"].call_args.kwargs["options"].launch_smart_routing is expected
 
     def test_managed_claude_smart_routing_remains_enabled_on_windows(self, monkeypatch):
         monkeypatch.setattr(cli_mod.os, "name", "nt")
@@ -919,6 +911,37 @@ class TestSubcommandRouting:
         assert result.exit_code == 0, result.output
         assert observed == [(tool in routed_tools, expected_env)]
         assert _routing_env() == env_before
+
+    @pytest.mark.parametrize(
+        ("launch_args", "smart_routing_admin"),
+        [(["--enable-smart-routing"], False), ([], True)],
+        ids=["flag", "admin"],
+    )
+    def test_codex_config_is_written_with_the_launch_routing(
+        self, tmp_path, monkeypatch, launch_args, smart_routing_admin
+    ):
+        from ucode.agents import codex as codex_mod
+        from ucode.agents import configure_tool
+
+        monkeypatch.setattr(codex_mod, "CODEX_BACKUP_PATH", tmp_path / "backup.toml")
+        monkeypatch.setattr(codex_mod, "LEGACY_CODEX_CONFIG_PATH", tmp_path / "config.toml")
+        monkeypatch.setattr(codex_mod, "LEGACY_CODEX_BACKUP_PATH", tmp_path / "legacy-backup.toml")
+        monkeypatch.setattr(codex_mod, "agent_version", lambda binary: "0.134.0")
+        monkeypatch.setattr(codex_mod, "save_state", lambda state: None)
+        codex_mod.CODEX_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        codex_mod.CODEX_CONFIG_PATH.write_text('model = "gpt-saved-in-ug-profile"\n')
+        managed = {"enabled_agents": {"codex": {"smart_routing_enabled": smart_routing_admin}}}
+
+        with _launch_policy_patches(managed) as calls:
+            calls["configure"].side_effect = configure_tool
+            result = runner.invoke(app, ["codex", *launch_args])
+
+        assert result.exit_code == 0, result.output
+        assert calls["launch"].call_args.kwargs["options"].launch_smart_routing is True
+        written = read_toml_safe(codex_mod.CODEX_CONFIG_PATH)
+        assert written.get("model") == "gpt-saved-in-ug-profile"
+        headers = written["model_providers"]["Databricks"]["http_headers"]
+        assert codex_mod.SMART_ROUTER_RECIPE_HEADER in headers
 
     def test_bare_launch_keeps_a_known_version_over_managed_smart_routing(self, monkeypatch):
         monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", smart_routing_config.SUBAGENT_ONLY_V0)

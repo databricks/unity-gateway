@@ -599,9 +599,10 @@ The unit/component `../test_smart_routing_config.py` includes a 162-case Cartesi
 three legacy routing flags (`None`, `0`, `1`) and six selector forms (`None` plus the five
 supported presets, including the internal first-prompt-and-subagent mode). It independently
 hardcodes preset values and asserts exact
-`resolve_environment` and `apply_config` settings, true-unset omission, unrelated-key and
+`resolve_environment` and launch-applied settings, true-unset omission, unrelated-key and
 input preservation, valid-selector consumption, and environment restoration.
-Absent/unknown selectors are no-ops; CLI checks cover auth, revert, and launch dispatch.
+Absent/unknown selectors keep the env switches and are removed at launch; CLI checks cover auth,
+revert, and launch dispatch.
 These component checks do not establish live agent, hook, or gateway behavior.
 Three component cases additionally compare the equivalent legacy flags and presets for
 `subagent_only_v1`, `subagent_orch_v1`, and `first_prompt_and_subagent_no_orch_v0`;
