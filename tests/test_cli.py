@@ -3407,6 +3407,26 @@ class TestRevert:
         revert.assert_called_once_with()
         assert dict(os.environ) == previous
 
+    def test_a_failed_copilot_session_sweep_does_not_stop_revert(self):
+        cleared: list[bool] = []
+
+        with (
+            patch("ucode.cli.load_state", return_value=dict(MINIMAL_STATE)),
+            patch("ucode.cli.restore_file", return_value=False),
+            patch("ucode.cli.revert_mcp_configs", return_value={}),
+            patch.object(
+                cli_mod.copilot_agent,
+                "sweep_session_registries",
+                side_effect=PermissionError("read-only"),
+            ),
+            patch("ucode.cli.clear_state", side_effect=lambda: cleared.append(True)),
+        ):
+            result = runner.invoke(app, ["revert"])
+
+        assert result.exit_code == 0, result.output
+        assert "Could not remove leftover Copilot session files" in _strip_ansi(result.output)
+        assert cleared == [True]
+
     def test_reverts_mcp_configs_before_clearing_state(self):
         state = {
             **MINIMAL_STATE,
@@ -3507,6 +3527,49 @@ class TestDoctorCommand:
             result = runner.invoke(app, ["doctor"])
         assert result.exit_code == 1
         assert "boom" in _strip_ansi(result.output)
+
+
+class TestCopilotLaunchModel:
+    MANAGED = {
+        "enabled_agents": {"copilot": {"model_config": {"default_model": "system.ai.gpt-5-4"}}}
+    }
+
+    def test_managed_default_is_the_launch_model(self):
+        with _launch_policy_patches(self.MANAGED) as calls:
+            result = runner.invoke(app, ["copilot"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["launch"].call_args.kwargs["options"].launch_model == "system.ai.gpt-5-4"
+
+    def test_a_managed_default_still_discovers_the_catalog(self):
+        assert not cli_mod._skip_model_discovery(
+            self.MANAGED, "copilot", provider=None, managed_parent_schema=None, family_defaults=None
+        )
+
+    @pytest.mark.parametrize(
+        ("managed", "provider", "parent_schema"),
+        [
+            (None, "main.default.mps", None),
+            (None, None, "main.models"),
+            (
+                {
+                    "enabled_agents": {
+                        "copilot": {"model_config": {"model_services": ["system.ai.gpt-5-4"]}}
+                    }
+                },
+                None,
+                None,
+            ),
+        ],
+    )
+    def test_a_named_model_source_skips_discovery(self, managed, provider, parent_schema):
+        assert cli_mod._skip_model_discovery(
+            managed,
+            "copilot",
+            provider=provider,
+            managed_parent_schema=parent_schema,
+            family_defaults=None,
+        )
 
 
 class TestOpenCodeModelFlag:
@@ -5935,6 +5998,87 @@ class TestConfigureSharedStateSkipDiscovery:
         assert state["claude_models"] == {"opus": "databricks-claude-opus-4-8"}
 
 
+class TestConfigureSharedStateCopilotCatalog:
+    """Copilot's catalog comes from the same listings as the other agents' models."""
+
+    WS = "https://copilot.databricks.com"
+
+    def _configure(self, monkeypatch, *, listed, saved=None, previous_ws=None, dest_saved=None):
+        import ucode.cli as cli_mod
+        import ucode.databricks as db_mod
+
+        TestConfigureSharedStateSkipDiscovery._stub(monkeypatch)
+        previous = {"workspace": previous_ws or self.WS}
+        if saved is not None:
+            previous["copilot_catalog"] = saved
+        monkeypatch.setattr(cli_mod, "load_state", lambda: dict(previous))
+        dest_block = {} if dest_saved is None else {"copilot_catalog": dest_saved}
+        monkeypatch.setattr(
+            cli_mod, "load_full_state", lambda: {"workspaces": {self.WS: dest_block}}
+        )
+        if listed is not None:
+            db_mod._MODEL_SERVICES_CACHE[self.WS] = [db_mod.ModelServiceEntry(m) for m in listed]
+        reason = None if listed else "HTTP 503"
+        sonnet = "system.ai.claude-sonnet-4-6"
+        monkeypatch.setattr(
+            cli_mod,
+            "discover_model_services",
+            lambda w, t: (
+                ({"sonnet": sonnet}, [], [], [], None) if listed else ({}, [], [], [], reason)
+            ),
+        )
+        monkeypatch.setattr(cli_mod, "discover_claude_models", lambda w, t: ({}, reason))
+        monkeypatch.setattr(cli_mod, "discover_codex_models", lambda w, t: ([], reason))
+        return cli_mod.configure_shared_state(self.WS, tools=["copilot"])
+
+    def test_saves_the_classified_catalog(self, monkeypatch):
+        state = self._configure(
+            monkeypatch,
+            listed=["system.ai.claude-sonnet-4-6", "system.ai.gpt-5-4", "system.ai.gemini-3-flash"],
+        )
+
+        assert state["copilot_catalog"]["models"] == [
+            "system.ai.claude-sonnet-4-6",
+            "system.ai.gpt-5-4",
+        ]
+
+    def test_failed_listing_keeps_the_saved_catalog(self, monkeypatch, capsys):
+        saved = {"models": ["system.ai.gpt-5-4"], "discovered_at": "2026-10-01T00:00:00+00:00"}
+
+        state = self._configure(monkeypatch, listed=None, saved=saved)
+
+        assert state["copilot_catalog"] == saved
+        assert state["_discovery_reasons"]["copilot"] == "HTTP 503"
+        assert "Copilot model discovery failed (HTTP 503)" in capsys.readouterr().out
+
+    def test_failed_listing_after_a_workspace_switch_drops_the_other_workspace_catalog(
+        self, monkeypatch
+    ):
+        saved = {"models": ["system.ai.gpt-5-4"], "discovered_at": "2026-10-01T00:00:00+00:00"}
+
+        state = self._configure(
+            monkeypatch, listed=None, saved=saved, previous_ws="https://other.databricks.com"
+        )
+
+        assert "copilot_catalog" not in state
+
+    def test_failed_listing_after_a_workspace_switch_keeps_that_workspace_catalog(
+        self, monkeypatch
+    ):
+        other = {"models": ["system.ai.gpt-5-4"], "discovered_at": "2026-10-01T00:00:00+00:00"}
+        own = {"models": ["system.ai.gpt-5-5"], "discovered_at": "2026-10-02T00:00:00+00:00"}
+
+        state = self._configure(
+            monkeypatch,
+            listed=None,
+            saved=other,
+            previous_ws="https://other.databricks.com",
+            dest_saved=own,
+        )
+
+        assert state["copilot_catalog"] == own
+
+
 class TestConfigureSharedStateSkipPreflight:
     """With skip_preflight (--skip-preflight), a prior configure is trusted:
     no auth login, token fetch, gateway probe, or model discovery runs — but the
@@ -6606,6 +6750,8 @@ class TestChildStdoutLaunch:
         ("tool", "tool_args", "display"),
         [
             ("claude", ["-p", "say hello", "--output-format", "json"], "Claude Code"),
+            ("copilot", ["-p", "say hello", "--output-format", "json"], "GitHub Copilot CLI"),
+            ("copilot", ["--prompt=say hello"], "GitHub Copilot CLI"),
             (
                 "claude",
                 ["--output-format", "stream-json", "--verbose", "--print", "say hello"],
@@ -6685,6 +6831,7 @@ class TestChildStdoutLaunch:
         [
             ("claude", ["-p", "hello"]),
             ("claude", ["--print", "hello"]),
+            ("copilot", ["-p", "hello"]),
             ("codex", ["app-server"]),
             ("codex", ["exec", "hello"]),
             ("codex", ["exec", "--json", "hello"]),
@@ -6718,6 +6865,8 @@ class TestChildStdoutLaunch:
         [
             ("claude", [], "Claude Code"),
             ("claude", ["explain --print and -p"], "Claude Code"),
+            ("copilot", [], "GitHub Copilot CLI"),
+            ("copilot", ["--", "-p"], "GitHub Copilot CLI"),
             ("claude", ["--", "-p"], "Claude Code"),
             ("codex", [], "Codex"),
             ("codex", ["explain exec and e"], "Codex"),
@@ -6751,6 +6900,19 @@ class TestChildStdoutLaunch:
     def test_other_agent_commands_keep_stdout(self):
         assert cli_mod._child_owns_stdout("claude", ["app-server"]) is False
         assert cli_mod._child_owns_stdout("gemini", []) is False
+
+    @pytest.mark.parametrize(
+        ("tool_args", "expected"),
+        [
+            (["-p", "hi"], True),
+            (["--prompt", "hi"], True),
+            (["--prompt=hi"], True),
+            ([], False),
+            (["--", "-p", "hi"], False),
+        ],
+    )
+    def test_copilot_prompt_mode_owns_stdout(self, tool_args, expected):
+        assert cli_mod._child_owns_stdout("copilot", tool_args) is expected
 
     @pytest.mark.parametrize(
         "option",

@@ -229,7 +229,7 @@ class TerminalProcess:
                 "normal_exit_observed": self.ended and self.child.exitstatus == 0,
                 "routing_log": routing_log.read_text() if routing_log.is_file() else None,
                 "agent_sessions": agent_sessions(self.session, self.agent)
-                if self.agent in ("claude", "codex")
+                if self.agent in ("claude", "codex", "copilot")
                 else {},
             },
         )
@@ -404,6 +404,14 @@ class AgentTerminal(TerminalProcess):
                     "\r",
                 ),
                 (
+                    "copilot-folder-trust",
+                    self.agent == "copilot"
+                    and "Confirm folder trust" in text
+                    and self.session.cwd.name in text
+                    and bool(re.search(r"❯\s*1[.)]\s+Yes\b", text)),
+                    "\r",
+                ),
+                (
                     "trust-directory",
                     self.agent == "codex"
                     and bool(
@@ -444,9 +452,10 @@ class AgentTerminal(TerminalProcess):
                 "Configured ug launched Codex's account-login flow instead of its gateway session:\n"
                 + text
             )
-            title = "Claude Code" if self.agent == "claude" else "Codex"
+            title = {"claude": "Claude Code", "copilot": "Copilot v"}.get(self.agent, "Codex")
             if (
                 title in text
+                and "Confirm folder trust" not in text
                 and "loading" not in text.lower()
                 and not re.search(r"(?m)^\s*>\s+You are in\b", text)
                 and re.search(r"(?m)^\s*[❯›>]\s*(?!\d+[.)])", text)

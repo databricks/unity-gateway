@@ -99,7 +99,7 @@ def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
                 overrides["opencode_models"] = buckets
         else:
             overrides[f"{tool}_models"] = models
-    if tool in ("claude", "codex"):
+    if tool in ("claude", "codex", "copilot"):
         static_models = managed_static_models(managed, tool)
         if static_models:
             overrides[f"{tool}_static_models"] = static_models
@@ -123,8 +123,13 @@ def managed_unservable_models(managed: dict, tool: str) -> list[str]:
     Only non-empty when *every* named model is unservable, which is when the translation yields
     nothing and the developer's own models stand — so the caller can say why the admin's list had no
     effect. opencode has no OpenAI provider and pi has no OSS provider, so each can be handed a
-    valid model FQN it cannot route.
+    valid model FQN it cannot route, and copilot serves only Claude and GPT.
     """
+    if tool == "copilot":
+        from ucode.agents.copilot import classify_copilot_model
+
+        listed = managed_static_models(managed, tool) or []
+        return [] if any(classify_copilot_model(m) for m in listed) else listed
     if tool not in ("opencode", "pi"):
         return []
     models = _manifest_models(managed, tool)
