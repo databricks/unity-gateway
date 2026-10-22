@@ -56,7 +56,6 @@ jobs:
         agent: [claude, codex]
         # The empty model makes each include below a new job rather than pinning the default Claude job.
         model: ['']
-        # GPT in Claude Code goes through the gateway's Messages-to-Responses translation.
         include:
           - agent: claude
             model: system.ai.gpt-6-luna
