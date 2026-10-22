@@ -25,6 +25,7 @@ mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 workspace URL/token reuse without account discovery or account CLI authentication,
 personal/shared decimal parsing, optional percentages, pagination through empty pages,
 invalid/repeated tokens, malformed responses, and discarding partial results after failures.
+Budget IDs come from resource names, including when the deprecated ID field is absent or differs.
 Future nonempty scope/period strings are preserved, alone or alongside known values.
 Decimal checks cover negative and nonfinite values for all three numeric fields,
 valid zero/fractional strings such as `"85.25"`, and explicit nulls treated like missing

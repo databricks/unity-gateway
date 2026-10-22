@@ -12,6 +12,11 @@ import ucode.databricks as db_mod
 from ucode.budget import BudgetLimitStatus, list_current_user_budget_spend_statuses
 
 WS = "https://example.databricks.com"
+ACCOUNT_ID = "11d77e21-5e05-4196-af72-423257f74974"
+BUDGET_ID = "c6563b45-df9a-4b19-afb2-d42dc2b52576"
+SECOND_BUDGET_ID = "8fe84d4d-ed51-4a44-8ec3-b688717366c6"
+BUDGET_NAME = f"accounts/{ACCOUNT_ID}/budget-spend-statuses/{BUDGET_ID}"
+SECOND_BUDGET_NAME = f"accounts/{ACCOUNT_ID}/budget-spend-statuses/{SECOND_BUDGET_ID}"
 
 
 class TestListCurrentUserBudgetSpendStatuses:
@@ -30,7 +35,7 @@ class TestListCurrentUserBudgetSpendStatuses:
             return {
                 "budget_spend_statuses": [
                     {
-                        "budget_id": "budget-1",
+                        "name": BUDGET_NAME,
                         "alert_spend_statuses": [
                             {
                                 "scope_type": "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER",
@@ -56,7 +61,7 @@ class TestListCurrentUserBudgetSpendStatuses:
         assert reason is None
         assert statuses == [
             BudgetLimitStatus(
-                budget_id="budget-1",
+                budget_id=BUDGET_ID,
                 scope_type="ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER",
                 time_period="DAY",
                 percent_consumed=Decimal("87"),
@@ -64,7 +69,7 @@ class TestListCurrentUserBudgetSpendStatuses:
                 threshold=Decimal("50"),
             ),
             BudgetLimitStatus(
-                budget_id="budget-1",
+                budget_id=BUDGET_ID,
                 scope_type="ALERT_CONFIGURATION_SCOPE_TYPE_SHARED",
                 time_period="MONTH",
                 percent_consumed=Decimal("82.25"),
@@ -76,6 +81,52 @@ class TestListCurrentUserBudgetSpendStatuses:
         params = parse_qs(request_url.split("?", 1)[1])
         assert params == {"page_size": ["100"]}
         assert request_token == "workspace-token"
+
+    @pytest.mark.parametrize("deprecated_budget_id", [None, SECOND_BUDGET_ID])
+    def test_extracts_the_id_from_name_and_ignores_deprecated_budget_id(
+        self, monkeypatch, deprecated_budget_id
+    ):
+        payload = {
+            "budget_spend_statuses": [
+                {
+                    "name": BUDGET_NAME,
+                    "budget_id": deprecated_budget_id,
+                    "alert_spend_statuses": [
+                        {
+                            "scope_type": "ALERT_CONFIGURATION_SCOPE_TYPE_SHARED",
+                            "time_period": "DAY",
+                            "percent_consumed": "85.25",
+                        }
+                    ],
+                }
+            ]
+        }
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args, **kwargs: (payload, None))
+
+        statuses, reason = list_current_user_budget_spend_statuses(WS, "workspace-token")
+
+        assert reason is None
+        assert statuses == [
+            BudgetLimitStatus(
+                BUDGET_ID, "ALERT_CONFIGURATION_SCOPE_TYPE_SHARED", "DAY", Decimal("85.25")
+            )
+        ]
+
+    @pytest.mark.parametrize(
+        "name", [None, "", 42, [], {}, f"accounts/{ACCOUNT_ID}/budget-spend-statuses/"]
+    )
+    def test_rejects_invalid_names_or_empty_budget_ids(self, monkeypatch, name):
+        payload = {
+            "budget_spend_statuses": [
+                {"name": name, "budget_id": BUDGET_ID, "alert_spend_statuses": []}
+            ]
+        }
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args, **kwargs: (payload, None))
+
+        statuses, reason = list_current_user_budget_spend_statuses(WS, "workspace-token")
+
+        assert statuses == []
+        assert reason == "budget spend status listing returned a malformed budget status"
 
     @pytest.mark.parametrize("last_token", [None, ""])
     def test_pages_through_empty_pages_until_the_token_is_absent_or_empty(
@@ -90,7 +141,7 @@ class TestListCurrentUserBudgetSpendStatuses:
                 {
                     "budget_spend_statuses": [
                         {
-                            "budget_id": "budget-2",
+                            "name": SECOND_BUDGET_NAME,
                             "alert_spend_statuses": [
                                 {
                                     "scope_type": "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER",
@@ -117,7 +168,7 @@ class TestListCurrentUserBudgetSpendStatuses:
         statuses, reason = list_current_user_budget_spend_statuses(WS, "workspace-token")
 
         assert reason is None
-        assert [status.budget_id for status in statuses] == ["budget-2"]
+        assert [status.budget_id for status in statuses] == [SECOND_BUDGET_ID]
         assert len(urls) == 2
         assert parse_qs(urls[1].split("?", 1)[1]) == {
             "page_size": ["100"],
@@ -165,7 +216,7 @@ class TestListCurrentUserBudgetSpendStatuses:
         payload = {
             "budget_spend_statuses": [
                 {
-                    "budget_id": "budget-1",
+                    "name": BUDGET_NAME,
                     "alert_spend_statuses": [
                         {"scope_type": scope_type, "time_period": "MONTH", **amounts}
                     ],
@@ -178,7 +229,7 @@ class TestListCurrentUserBudgetSpendStatuses:
 
         assert reason is None
         assert statuses == [
-            BudgetLimitStatus("budget-1", scope_type, "MONTH", None, spend, threshold)
+            BudgetLimitStatus(BUDGET_ID, scope_type, "MONTH", None, spend, threshold)
         ]
 
     @pytest.mark.parametrize(
@@ -203,7 +254,7 @@ class TestListCurrentUserBudgetSpendStatuses:
         payload = {
             "budget_spend_statuses": [
                 {
-                    "budget_id": "budget-1",
+                    "name": BUDGET_NAME,
                     "alert_spend_statuses": [complete, missing, explicit_nulls],
                 }
             ]
@@ -217,7 +268,7 @@ class TestListCurrentUserBudgetSpendStatuses:
             for key in ("percent_consumed", "spend", "threshold")
         }
         expected = BudgetLimitStatus(
-            "budget-1",
+            BUDGET_ID,
             "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER",
             "MONTH",
             **expected_optional,
@@ -225,7 +276,7 @@ class TestListCurrentUserBudgetSpendStatuses:
         assert reason is None
         assert statuses == [
             BudgetLimitStatus(
-                "budget-1",
+                BUDGET_ID,
                 "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER",
                 "MONTH",
                 Decimal("85.25"),
@@ -261,7 +312,7 @@ class TestListCurrentUserBudgetSpendStatuses:
         payload = {
             "budget_spend_statuses": [
                 {
-                    "budget_id": "budget-1",
+                    "name": BUDGET_NAME,
                     "alert_spend_statuses": (
                         [known_status, future_status] if include_known else [future_status]
                     ),
@@ -273,12 +324,12 @@ class TestListCurrentUserBudgetSpendStatuses:
         statuses, reason = list_current_user_budget_spend_statuses(WS, "workspace-token")
 
         assert reason is None
-        expected = [BudgetLimitStatus("budget-1", scope_type, time_period, Decimal("85.25"))]
+        expected = [BudgetLimitStatus(BUDGET_ID, scope_type, time_period, Decimal("85.25"))]
         if include_known:
             expected.insert(
                 0,
                 BudgetLimitStatus(
-                    "budget-1", "ALERT_CONFIGURATION_SCOPE_TYPE_SHARED", "DAY", Decimal("0")
+                    BUDGET_ID, "ALERT_CONFIGURATION_SCOPE_TYPE_SHARED", "DAY", Decimal("0")
                 ),
             )
         assert statuses == expected
@@ -293,9 +344,7 @@ class TestListCurrentUserBudgetSpendStatuses:
             field: invalid_value,
         }
         payload = {
-            "budget_spend_statuses": [
-                {"budget_id": "budget-1", "alert_spend_statuses": [alert_status]}
-            ]
+            "budget_spend_statuses": [{"name": BUDGET_NAME, "alert_spend_statuses": [alert_status]}]
         }
         monkeypatch.setattr(db_mod, "_http_get_json", lambda *args, **kwargs: (payload, None))
 
@@ -319,7 +368,7 @@ class TestListCurrentUserBudgetSpendStatuses:
         payload = {
             "budget_spend_statuses": [
                 {
-                    "budget_id": "budget-1",
+                    "name": BUDGET_NAME,
                     "alert_spend_statuses": [
                         valid_status,
                         {**valid_status, field: invalid_value},
@@ -339,7 +388,7 @@ class TestListCurrentUserBudgetSpendStatuses:
         payload = {
             "budget_spend_statuses": [
                 {
-                    "budget_id": "budget-1",
+                    "name": BUDGET_NAME,
                     "alert_spend_statuses": [
                         {
                             "scope_type": "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER",
@@ -359,7 +408,7 @@ class TestListCurrentUserBudgetSpendStatuses:
         assert reason is None
         assert statuses == [
             BudgetLimitStatus(
-                "budget-1",
+                BUDGET_ID,
                 "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER",
                 "DAY",
                 Decimal(amount),
@@ -398,7 +447,7 @@ class TestListCurrentUserBudgetSpendStatuses:
         def fake_get(url, token, timeout=10):
             return {
                 "budget_spend_statuses": [
-                    {"budget_id": "budget-1", "alert_spend_statuses": [alert_status]}
+                    {"name": BUDGET_NAME, "alert_spend_statuses": [alert_status]}
                 ]
             }, None
 
@@ -473,7 +522,11 @@ class TestListCurrentUserBudgetSpendStatuses:
             ([], "an unexpected response shape"),
             ({"budget_spend_statuses": {}}, "no status collection"),
             ({"budget_spend_statuses": [None]}, "a malformed budget status"),
-            ({"budget_spend_statuses": [{"budget_id": "budget-1"}]}, "a malformed budget status"),
+            ({"budget_spend_statuses": [{"name": BUDGET_NAME}]}, "a malformed budget status"),
+            (
+                {"budget_spend_statuses": [{"budget_id": BUDGET_ID, "alert_spend_statuses": []}]},
+                "a malformed budget status",
+            ),
         ],
     )
     def test_rejects_malformed_responses(self, monkeypatch, payload, failure):
@@ -492,7 +545,7 @@ class TestListCurrentUserBudgetSpendStatuses:
                     {
                         "budget_spend_statuses": [
                             {
-                                "budget_id": "budget-1",
+                                "name": BUDGET_NAME,
                                 "alert_spend_statuses": [
                                     {
                                         "scope_type": "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER",
@@ -514,5 +567,5 @@ class TestListCurrentUserBudgetSpendStatuses:
         statuses, reason = list_current_user_budget_spend_statuses(WS, "workspace-token")
 
         assert reason == failure
-        assert [status.budget_id for status in statuses] == ([] if failure else ["budget-1"])
+        assert [status.budget_id for status in statuses] == ([] if failure else [BUDGET_ID])
         assert next(pages, None) is None
