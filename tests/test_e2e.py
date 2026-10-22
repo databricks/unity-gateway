@@ -11,6 +11,7 @@ installed or no models are available.
 from __future__ import annotations
 
 import atexit
+import dataclasses
 import json
 import os
 import secrets
@@ -26,6 +27,7 @@ from urllib import request as urllib_request
 import httpx
 import pytest
 
+from tests.conftest import e2e_state_for
 from ucode.agents import resolve_provider_models
 from ucode.databricks import (
     build_shared_base_urls,
@@ -34,6 +36,7 @@ from ucode.databricks import (
     fetch_ai_gateway_claude_models,
     fetch_codex_models,
     fetch_gemini_models,
+    get_databricks_token,
     has_valid_databricks_auth,
     is_model_provider_feature_unavailable,
     list_model_provider_services,
@@ -465,26 +468,123 @@ def _require_binary(binary: str):
         pytest.skip(f"`{binary}` is not installed")
 
 
+# ---------------------------------------------------------------------------
+# Per-model parametrization
+# ---------------------------------------------------------------------------
+# The live catalog is shared by every PR, so one misbehaving model must fail only its own case.
+# Each ``*_per_model`` launch test is parametrized over its catalog at collection time via
+# ``pytest_generate_tests``; ``e2e_state_for`` caches the fetch so the fixture reuses it.
+
+
+@dataclasses.dataclass(frozen=True)
+class _CatalogFetchError:
+    """Placeholder case for a catalog that could not be fetched; the test body fails with it."""
+
+    message: str
+
+
+def _codex_launch_models(state: dict) -> list[str]:
+    return [m for m in (state.get("codex_models") or []) if not _model_is_skipped(m, "codex")]
+
+
+def _claude_launch_models(state: dict) -> list[tuple[str, str]]:
+    return _launchable_model_items(state.get("claude_models") or {})
+
+
+def _gemini_launch_models(state: dict) -> list[str]:
+    models: list = state.get("gemini_models") or []
+    # Image-only models can't serve Gemini CLI's tool calls.
+    if os.name == "nt":
+        models = [m for m in models if not m.endswith("-image")]
+    return models
+
+
+def _opencode_launch_models(state: dict) -> list[tuple[str, str]]:
+    return TestOpencodeLaunch()._all_models(state)
+
+
+def _copilot_launch_models(state: dict) -> list[tuple[str, str]]:
+    from ucode.agents import copilot
+
+    # Models Copilot has no wire API for are left out of the catalog, as the launch always did.
+    return [
+        (family, model)
+        for family, model in TestCopilotLaunch()._all_models(state)
+        if copilot.build_copilot_catalog([model])
+    ]
+
+
+def _pi_launch_models(state: dict) -> list[tuple[str, str]]:
+    return TestPiLaunch()._all_models(state)
+
+
+# test function name -> (catalog -> model cases, "No ..." message when the catalog is empty)
+_PER_MODEL_CASES = {
+    "test_launch_codex_per_model": (_codex_launch_models, "No Codex models available"),
+    "test_launch_claude_per_model": (
+        _claude_launch_models,
+        "No launchable Claude models available",
+    ),
+    "test_launch_gemini_per_model": (_gemini_launch_models, "No Gemini models available"),
+    "test_launch_opencode_per_model": (_opencode_launch_models, "No OpenCode models available"),
+    "test_launch_copilot_per_model": (
+        _copilot_launch_models,
+        "No Copilot-compatible models available",
+    ),
+    "test_launch_pi_per_model": (_pi_launch_models, "No Pi-compatible models available"),
+}
+
+
+def _case_id(case) -> str:
+    return "-".join(case) if isinstance(case, tuple) else case
+
+
+def _per_model_params(lister, empty_message: str) -> list:
+    workspace = _ws()
+    if not workspace:
+        return [
+            pytest.param(
+                None,
+                id="no-workspace",
+                marks=pytest.mark.skip(
+                    reason="Set UCODE_TEST_WORKSPACE=https://... to run E2E tests"
+                ),
+            )
+        ]
+    try:
+        cases = lister(e2e_state_for(workspace, get_databricks_token(workspace)))
+    except Exception as exc:  # an auth/catalog outage must stay red, not vanish at collection
+        error = _CatalogFetchError(f"{type(exc).__name__}: {exc}")
+        return [pytest.param(error, id="catalog-fetch-error")]
+    if not cases:
+        return [pytest.param(None, id="no-models", marks=pytest.mark.skip(reason=empty_message))]
+    return [pytest.param(case, id=_case_id(case)) for case in cases]
+
+
+def pytest_generate_tests(metafunc):
+    entry = _PER_MODEL_CASES.get(metafunc.function.__name__)
+    if entry is not None and "model_case" in metafunc.fixturenames:
+        metafunc.parametrize("model_case", _per_model_params(*entry))
+
+
+def _fail_on_catalog_error(model_case) -> None:
+    if isinstance(model_case, _CatalogFetchError):
+        pytest.fail(f"Could not fetch the model catalog for this workspace: {model_case.message}")
+
+
 class TestCodexLaunch:
     """Run codex against every available codex model."""
 
-    def _codex_models(self, e2e_state: dict) -> list[str]:
-        models = [
-            model
-            for model in (e2e_state.get("codex_models") or [])
-            if not _model_is_skipped(model, "codex")
-        ]
-        if not models:
-            pytest.skip("No Codex models available on this workspace")
-        return models
-
-    def test_launch_codex_per_model(self, tmp_path, monkeypatch, e2e_state, e2e_workspace):
-        """Parametrized inline — iterates over all codex models and asserts each works."""
+    def test_launch_codex_per_model(
+        self, model_case, tmp_path, monkeypatch, e2e_state, e2e_workspace
+    ):
+        """One case per codex model (see ``_PER_MODEL_CASES``)."""
         import ucode.config_io as config_io_mod
         from ucode.agents import codex
 
+        _fail_on_catalog_error(model_case)
+        model = model_case
         _require_binary("codex")
-        models = self._codex_models(e2e_state)
 
         monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
         config_dir = _codex_home_outside_tmp() / ".codex"
@@ -494,60 +594,51 @@ class TestCodexLaunch:
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", config_path)
         monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", backup_path)
 
-        failures = []
         timeout_seconds = int(os.environ.get("UCODE_E2E_AGENT_TIMEOUT", "60"))
-        for model in models:
-            state = {**e2e_state, "workspace": e2e_workspace}
-            with pytest.MonkeyPatch().context() as mp:
-                mp.setattr("ucode.state.save_state", lambda s: None)
-                codex.write_tool_config(state, model)
+        state = {**e2e_state, "workspace": e2e_workspace}
+        with pytest.MonkeyPatch().context() as mp:
+            mp.setattr("ucode.state.save_state", lambda s: None)
+            codex.write_tool_config(state, model)
 
-            cmd = codex.validate_cmd("codex")
-            # By default, ug uses the default model of the harness.
-            # Instead, pin Codex to use the specified model.
-            cmd[1:1] = ["--model", codex.codex_model_id(model)]
-            try:
-                result = _run_agent(
-                    cmd,
-                    env={**os.environ, "CODEX_HOME": str(config_dir)},
-                    timeout=timeout_seconds,
-                )
-            except subprocess.TimeoutExpired:
-                failures.append(f"model={model} timed out after {timeout_seconds}s")
-                continue
+        cmd = codex.validate_cmd("codex")
+        # By default, ug uses the default model of the harness.
+        # Instead, pin Codex to use the specified model.
+        cmd[1:1] = ["--model", codex.codex_model_id(model)]
+        try:
+            result = _run_agent(
+                cmd,
+                env={**os.environ, "CODEX_HOME": str(config_dir)},
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            pytest.fail(f"model={model} timed out after {timeout_seconds}s")
 
-            if (
-                result.returncode != 0
-                or not result.stdout.strip()
-                or f"model: {codex.codex_model_id(model)}\n" not in result.stderr
-            ):
-                # Keep a generous tail of stderr. codex-cli logs a non-fatal model-listing error
-                # first and the actual cause last, so a short prefix reports the wrong problem —
-                # at 200 chars the geography failure above read as a `/v1/models` routing error.
-                failures.append(
-                    f"model={model} rc={result.returncode} "
-                    f"stdout={result.stdout[-500:]!r} stderr={result.stderr[-1500:]!r}"
-                )
-
-        assert not failures, "Codex launch failures:\n" + "\n".join(failures)
+        if (
+            result.returncode != 0
+            or not result.stdout.strip()
+            or f"model: {codex.codex_model_id(model)}\n" not in result.stderr
+        ):
+            # Keep a generous tail of stderr. codex-cli logs a non-fatal model-listing error
+            # first and the actual cause last, so a short prefix reports the wrong problem —
+            # at 200 chars the geography failure above read as a `/v1/models` routing error.
+            pytest.fail(
+                f"Codex launch failure: model={model} rc={result.returncode} "
+                f"stdout={result.stdout[-500:]!r} stderr={result.stderr[-1500:]!r}"
+            )
 
 
 class TestClaudeLaunch:
     """Run claude against every available claude model (sonnet, opus, haiku)."""
 
     def test_launch_claude_per_model(
-        self, tmp_path, monkeypatch, e2e_state, e2e_workspace, e2e_token
+        self, model_case, tmp_path, monkeypatch, e2e_state, e2e_workspace, e2e_token
     ):
         import ucode.config_io as config_io_mod
         from ucode.agents import claude
 
+        _fail_on_catalog_error(model_case)
+        family, model_id = model_case
         _require_binary("claude")
-        claude_models: dict = e2e_state.get("claude_models") or {}
-        if not claude_models:
-            pytest.skip("No Claude models available on this workspace")
-        launchable_models = _launchable_model_items(claude_models)
-        if not launchable_models:
-            pytest.skip("No launchable Claude models available on this workspace")
 
         # Use an isolated config dir so the claude subprocess never reads or
         # writes ~/.claude/settings.json during this test.
@@ -559,29 +650,25 @@ class TestClaudeLaunch:
 
         base_url = build_tool_base_url("claude", e2e_workspace)
 
-        failures = []
-        for family, model_id in launchable_models:
-            with pytest.MonkeyPatch().context() as mp:
-                mp.setattr("ucode.state.save_state", lambda s: None)
-                claude.write_tool_config({**e2e_state, "workspace": e2e_workspace}, model_id)
+        with pytest.MonkeyPatch().context() as mp:
+            mp.setattr("ucode.state.save_state", lambda s: None)
+            claude.write_tool_config({**e2e_state, "workspace": e2e_workspace}, model_id)
 
-            env = {
-                **os.environ,
-                "CLAUDE_CONFIG_DIR": str(config_dir),
-                "ANTHROPIC_MODEL": model_id,
-                "ANTHROPIC_BASE_URL": base_url,
-                "ANTHROPIC_API_KEY": e2e_token,
-            }
-            cmd = claude.validate_cmd("claude")
-            result = _run_agent(cmd, env=env, timeout=90)
-            combined = (result.stdout + result.stderr).strip()
-            if result.returncode != 0 or not combined:
-                failures.append(
-                    f"family={family} model={model_id} rc={result.returncode} "
-                    f"stdout={result.stdout[:300]!r} stderr={result.stderr[:300]!r}"
-                )
-
-        assert not failures, "Claude launch failures:\n" + "\n".join(failures)
+        env = {
+            **os.environ,
+            "CLAUDE_CONFIG_DIR": str(config_dir),
+            "ANTHROPIC_MODEL": model_id,
+            "ANTHROPIC_BASE_URL": base_url,
+            "ANTHROPIC_API_KEY": e2e_token,
+        }
+        cmd = claude.validate_cmd("claude")
+        result = _run_agent(cmd, env=env, timeout=90)
+        combined = (result.stdout + result.stderr).strip()
+        if result.returncode != 0 or not combined:
+            pytest.fail(
+                f"Claude launch failure: family={family} model={model_id} rc={result.returncode} "
+                f"stdout={result.stdout[:300]!r} stderr={result.stderr[:300]!r}"
+            )
 
 
 class TestModelProviderLaunch:
@@ -765,11 +852,13 @@ class TestGeminiLaunch:
     """Run the real Gemini CLI against every available gemini model."""
 
     def test_launch_gemini_per_model(
-        self, tmp_path, monkeypatch, e2e_state, e2e_workspace, e2e_token
+        self, model_case, tmp_path, monkeypatch, e2e_state, e2e_workspace, e2e_token
     ):
         import ucode.config_io as config_io_mod
         from ucode.agents import gemini
 
+        _fail_on_catalog_error(model_case)
+        model = model_case
         _require_binary("gemini")
         # Gemini CLI >= 0.45 rewrites forced flash model ids (e.g.
         # 'databricks-gemini-3-5-flash') to 'gemini-3.5-flash', which Unity
@@ -782,12 +871,6 @@ class TestGeminiLaunch:
                 f"Installed Gemini CLI {too_new} is past the supported ceiling "
                 f"({gemini.MAX_GEMINI_VERSION_TEXT}); run `ucode gemini` to downgrade."
             )
-        gemini_models: list = e2e_state.get("gemini_models") or []
-        # Image-only models can't serve Gemini CLI's tool calls.
-        if os.name == "nt":
-            gemini_models = [m for m in gemini_models if not m.endswith("-image")]
-        if not gemini_models:
-            pytest.skip("No Gemini models available on this workspace")
 
         monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
         monkeypatch.setattr(gemini, "GEMINI_ENV_PATH", tmp_path / "ucode.env")
@@ -802,32 +885,27 @@ class TestGeminiLaunch:
         monkeypatch.chdir(tmp_path)
 
         timeout_seconds = int(os.environ.get("UCODE_E2E_AGENT_TIMEOUT", "60"))
-        failures = []
-        for model in gemini_models:
-            with pytest.MonkeyPatch().context() as mp:
-                mp.setattr("ucode.state.save_state", lambda s: None)
-                mp.setattr(
-                    "ucode.agents.gemini.get_databricks_token",
-                    lambda ws, profile=None, **kwargs: e2e_token,
-                )
-                state = {**e2e_state, "workspace": e2e_workspace}
-                gemini.write_tool_config(state, model, token=e2e_token)
-            # Launch the real Gemini CLI with the exact command ucode uses,
-            # against the just-written config, to keep actual CLI smoke coverage
-            # without bringing a validation probe back into `ucode configure`.
-            env = gemini.build_runtime_env(e2e_workspace, model, e2e_token)
-            try:
-                result = _run_agent(gemini.validate_cmd("gemini"), env=env, timeout=timeout_seconds)
-            except subprocess.TimeoutExpired:
-                failures.append(f"model={model} timed out after {timeout_seconds}s")
-                continue
-            if result.returncode != 0 or not result.stdout.strip():
-                failures.append(
-                    f"model={model} rc={result.returncode} "
-                    f"stdout={result.stdout[-500:]!r} stderr={result.stderr[-1500:]!r}"
-                )
-
-        assert not failures, "Gemini launch failures:\n" + "\n".join(failures)
+        with pytest.MonkeyPatch().context() as mp:
+            mp.setattr("ucode.state.save_state", lambda s: None)
+            mp.setattr(
+                "ucode.agents.gemini.get_databricks_token",
+                lambda ws, profile=None, **kwargs: e2e_token,
+            )
+            state = {**e2e_state, "workspace": e2e_workspace}
+            gemini.write_tool_config(state, model, token=e2e_token)
+        # Launch the real Gemini CLI with the exact command ucode uses,
+        # against the just-written config, to keep actual CLI smoke coverage
+        # without bringing a validation probe back into `ucode configure`.
+        env = gemini.build_runtime_env(e2e_workspace, model, e2e_token)
+        try:
+            result = _run_agent(gemini.validate_cmd("gemini"), env=env, timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            pytest.fail(f"model={model} timed out after {timeout_seconds}s")
+        if result.returncode != 0 or not result.stdout.strip():
+            pytest.fail(
+                f"Gemini launch failure: model={model} rc={result.returncode} "
+                f"stdout={result.stdout[-500:]!r} stderr={result.stderr[-1500:]!r}"
+            )
 
 
 class TestGeminiFreshInstall:
@@ -872,15 +950,16 @@ class TestOpencodeLaunch:
         return out
 
     def test_launch_opencode_per_model(
-        self, tmp_path, monkeypatch, e2e_state, e2e_workspace, e2e_token
+        self, model_case, tmp_path, monkeypatch, e2e_state, e2e_workspace, e2e_token
     ):
+        import time
+
         import ucode.config_io as config_io_mod
         from ucode.agents import opencode
 
+        _fail_on_catalog_error(model_case)
+        provider, model = model_case
         _require_binary("opencode")
-        models = self._all_models(e2e_state)
-        if not models:
-            pytest.skip("No OpenCode models available on this workspace")
 
         monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
         xdg = tmp_path / "opencode-xdg"
@@ -890,60 +969,48 @@ class TestOpencodeLaunch:
         monkeypatch.setattr(opencode, "OPENCODE_CONFIG_PATH", config_path)
         monkeypatch.setattr(opencode, "OPENCODE_BACKUP_PATH", backup_path)
 
-        import time
+        with pytest.MonkeyPatch().context() as mp:
+            mp.setattr("ucode.state.save_state", lambda s: None)
+            mp.setattr(
+                "ucode.agents.opencode.get_databricks_token",
+                lambda ws, profile=None, **kwargs: e2e_token,
+            )
+            opencode.write_tool_config(
+                {**e2e_state, "workspace": e2e_workspace},
+                model,
+                token=e2e_token,
+            )
 
-        print(f"\n[opencode-per-model] {len(models)} models to test", flush=True)
-        failures = []
-        for provider, model in models:
-            # Reset config file before each model so configs don't bleed together
-            if config_path.exists():
-                config_path.unlink()
-
-            with pytest.MonkeyPatch().context() as mp:
-                mp.setattr("ucode.state.save_state", lambda s: None)
-                mp.setattr(
-                    "ucode.agents.opencode.get_databricks_token",
-                    lambda ws, profile=None, **kwargs: e2e_token,
-                )
-                opencode.write_tool_config(
-                    {**e2e_state, "workspace": e2e_workspace},
-                    model,
-                    token=e2e_token,
-                )
-
-            cmd = opencode.validate_cmd("opencode")
-            print(f"[opencode-per-model] -> {provider}/{model}", flush=True)
-            t0 = time.monotonic()
-            try:
-                result = _run_agent(cmd, env=opencode.build_runtime_env(e2e_token), timeout=180)
-            except subprocess.TimeoutExpired as exc:
-                elapsed = time.monotonic() - t0
-                partial_stdout = _timeout_output(exc.stdout)
-                partial_stderr = _timeout_output(exc.stderr)
-                print(
-                    f"[opencode-per-model] {provider}/{model} TIMEOUT after {elapsed:.1f}s\n"
-                    f"  partial stdout: {partial_stdout[:500]!r}\n"
-                    f"  partial stderr: {partial_stderr[:500]!r}",
-                    flush=True,
-                    file=sys.stderr,
-                )
-                failures.append(
-                    f"provider={provider} model={model} TIMEOUT after {elapsed:.1f}s "
-                    f"stderr={partial_stderr[:300]!r}"
-                )
-                continue
+        cmd = opencode.validate_cmd("opencode")
+        print(f"[opencode-per-model] -> {provider}/{model}", flush=True)
+        t0 = time.monotonic()
+        try:
+            result = _run_agent(cmd, env=opencode.build_runtime_env(e2e_token), timeout=180)
+        except subprocess.TimeoutExpired as exc:
             elapsed = time.monotonic() - t0
-            combined = (result.stdout + result.stderr).strip()
-            status = "OK" if result.returncode == 0 and combined else f"FAIL rc={result.returncode}"
-            print(f"[opencode-per-model] {provider}/{model} {status} ({elapsed:.1f}s)", flush=True)
-            if result.returncode != 0 or not combined:
-                failures.append(
-                    f"provider={provider} model={model} rc={result.returncode} "
-                    f"elapsed={elapsed:.1f}s "
-                    f"stdout={result.stdout[:300]!r} stderr={result.stderr[:300]!r}"
-                )
-
-        assert not failures, "OpenCode launch failures:\n" + "\n".join(failures)
+            partial_stdout = _timeout_output(exc.stdout)
+            partial_stderr = _timeout_output(exc.stderr)
+            print(
+                f"[opencode-per-model] {provider}/{model} TIMEOUT after {elapsed:.1f}s\n"
+                f"  partial stdout: {partial_stdout[:500]!r}\n"
+                f"  partial stderr: {partial_stderr[:500]!r}",
+                flush=True,
+                file=sys.stderr,
+            )
+            pytest.fail(
+                f"OpenCode launch failure: provider={provider} model={model} "
+                f"TIMEOUT after {elapsed:.1f}s stderr={partial_stderr[:300]!r}"
+            )
+        elapsed = time.monotonic() - t0
+        combined = (result.stdout + result.stderr).strip()
+        status = "OK" if result.returncode == 0 and combined else f"FAIL rc={result.returncode}"
+        print(f"[opencode-per-model] {provider}/{model} {status} ({elapsed:.1f}s)", flush=True)
+        if result.returncode != 0 or not combined:
+            pytest.fail(
+                f"OpenCode launch failure: provider={provider} model={model} "
+                f"rc={result.returncode} elapsed={elapsed:.1f}s "
+                f"stdout={result.stdout[:300]!r} stderr={result.stderr[:300]!r}"
+            )
 
     def test_launch_deepseek_v4_pro(
         self, tmp_path, monkeypatch, e2e_state, e2e_workspace, e2e_token
@@ -1084,19 +1151,19 @@ class TestCopilotLaunch:
         ]
 
     def test_launch_copilot_per_model(
-        self, tmp_path, monkeypatch, e2e_state, e2e_workspace, e2e_token
+        self, model_case, tmp_path, monkeypatch, e2e_state, e2e_workspace, e2e_token
     ):
         import ucode.config_io as config_io_mod
         from ucode.agents import copilot
 
+        _fail_on_catalog_error(model_case)
+        _family, model_id = model_case
         _require_binary("copilot")
-        models = self._all_models(e2e_state)
-        if not models:
-            pytest.skip("No Copilot-compatible models available on this workspace")
 
         monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
         monkeypatch.setattr(copilot, "COPILOT_CONFIG_DIR", tmp_path / ".copilot")
-        catalog = copilot.build_copilot_catalog([model for _, model in models])
+        catalog = copilot.build_copilot_catalog([model_id])
+        model = catalog[0]
 
         from ucode import gateway_proxy
 
@@ -1113,27 +1180,23 @@ class TestCopilotLaunch:
         threading.Thread(target=server.serve_forever, daemon=True).start()
         proxy_base_url = f"http://127.0.0.1:{server.server_address[1]}"
 
-        failures = []
         config = copilot.render_providers_config(catalog, proxy_base_url, session_secret)
         try:
             with copilot.session_registry(config) as registry_path:
-                for model in catalog:
-                    env = copilot.build_runtime_env(registry_path, model)
-                    cmd = [*copilot.validate_cmd("copilot"), "--model", model.ref]
-                    result = _run_agent(cmd, env=env, timeout=120)
-                    combined = (result.stdout + result.stderr).strip()
-                    if result.returncode != 0 or not combined:
-                        failures.append(
-                            f"model={model.ref} rc={result.returncode} "
-                            f"stdout={result.stdout[:300]!r} stderr={result.stderr[:300]!r}"
-                        )
+                env = copilot.build_runtime_env(registry_path, model)
+                cmd = [*copilot.validate_cmd("copilot"), "--model", model.ref]
+                result = _run_agent(cmd, env=env, timeout=120)
+                combined = (result.stdout + result.stderr).strip()
+                if result.returncode != 0 or not combined:
+                    pytest.fail(
+                        f"Copilot launch failure: model={model.ref} rc={result.returncode} "
+                        f"stdout={result.stdout[:300]!r} stderr={result.stderr[:300]!r}"
+                    )
         finally:
             cache.stop()
             server.shutdown()
             server.server_close()
             client.close()
-
-        assert not failures, "Copilot launch failures:\n" + "\n".join(failures)
 
 
 class TestPiLaunch:
@@ -1168,14 +1231,15 @@ class TestPiLaunch:
         }
         assert self._all_models(state) == [("codex", "databricks-gpt-5-4")]
 
-    def test_launch_pi_per_model(self, tmp_path, monkeypatch, e2e_state, e2e_workspace, e2e_token):
+    def test_launch_pi_per_model(
+        self, model_case, tmp_path, monkeypatch, e2e_state, e2e_workspace, e2e_token
+    ):
         import ucode.config_io as config_io_mod
         from ucode.agents import pi
 
+        _fail_on_catalog_error(model_case)
+        family, model = model_case
         _require_binary("pi")
-        models = self._all_models(e2e_state)
-        if not models:
-            pytest.skip("No Pi-compatible models available on this workspace")
 
         monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
         # Point PI_CODING_AGENT_DIR and ucode's config writer at the same
@@ -1191,34 +1255,27 @@ class TestPiLaunch:
         monkeypatch.setattr(pi, "PI_SETTINGS_BACKUP_PATH", tmp_path / "pi-settings.backup.json")
         monkeypatch.setattr(pi, "PI_BACKUP_PATH", backup_path)
 
-        failures = []
-        for family, model in models:
-            if config_path.exists():
-                config_path.unlink()
+        with pytest.MonkeyPatch().context() as mp:
+            mp.setattr("ucode.state.save_state", lambda s: None)
+            mp.setattr(
+                "ucode.agents.pi.get_databricks_token",
+                lambda ws, profile=None, **kwargs: e2e_token,
+            )
+            pi.write_tool_config(
+                {**e2e_state, "workspace": e2e_workspace},
+                model,
+                token=e2e_token,
+            )
 
-            with pytest.MonkeyPatch().context() as mp:
-                mp.setattr("ucode.state.save_state", lambda s: None)
-                mp.setattr(
-                    "ucode.agents.pi.get_databricks_token",
-                    lambda ws, profile=None, **kwargs: e2e_token,
-                )
-                pi.write_tool_config(
-                    {**e2e_state, "workspace": e2e_workspace},
-                    model,
-                    token=e2e_token,
-                )
-
-            env = pi.build_runtime_env(e2e_token)
-            cmd = pi.validate_cmd("pi")
-            result = _run_agent(cmd, env=env, timeout=120)
-            combined = (result.stdout + result.stderr).strip()
-            if result.returncode != 0 or not combined:
-                failures.append(
-                    f"family={family} model={model} rc={result.returncode} "
-                    f"stdout={result.stdout[:300]!r} stderr={result.stderr[:300]!r}"
-                )
-
-        assert not failures, "Pi launch failures:\n" + "\n".join(failures)
+        env = pi.build_runtime_env(e2e_token)
+        cmd = pi.validate_cmd("pi")
+        result = _run_agent(cmd, env=env, timeout=120)
+        combined = (result.stdout + result.stderr).strip()
+        if result.returncode != 0 or not combined:
+            pytest.fail(
+                f"Pi launch failure: family={family} model={model} rc={result.returncode} "
+                f"stdout={result.stdout[:300]!r} stderr={result.stderr[:300]!r}"
+            )
 
 
 # ---------------------------------------------------------------------------
