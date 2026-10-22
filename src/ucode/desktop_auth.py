@@ -418,7 +418,9 @@ def _claude_subscription_token() -> str:
         if token := _clean_token(configured_token):
             return token
         raise ClaudeDesktopAuthError(
-            "CLAUDE_CODE_OAUTH_TOKEN is invalid. Unset or replace it, then start a new Cowork task.",
+            "CLAUDE_CODE_OAUTH_TOKEN is invalid. Unset it to use Claude's normal sign-in flow, "
+            "or replace it with a valid token to continue using the environment override. "
+            "Then start a new Cowork task.",
             kind="config",
         )
 

@@ -580,7 +580,10 @@ def test_relay_credential_rejects_invalid_explicit_claude_oauth_token(monkeypatc
     run = Mock()
     monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", run)
 
-    with pytest.raises(desktop_auth.ClaudeDesktopAuthError, match="Unset or replace it") as raised:
+    with pytest.raises(
+        desktop_auth.ClaudeDesktopAuthError,
+        match="Unset it to use Claude's normal sign-in flow",
+    ) as raised:
         desktop_auth.get_claude_desktop_relay_credential(HOST, PROFILE, "/opt/claude/bin/claude")
 
     assert raised.value.kind == "config"
