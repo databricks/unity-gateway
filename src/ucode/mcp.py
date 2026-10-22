@@ -37,10 +37,10 @@ from ucode.databricks import (
 )
 from ucode.mcp_connection_login import connection_from_url
 from ucode.mcp_oauth import (
-    CLAUDE_CODE_OAUTH_CLIENT_ID,
+    CLAUDE_CODE_CIMD_CLIENT_ID,
     CODEX_CLI_OAUTH_CLIENT_ID,
     CURSOR_OAUTH_CLIENT_ID,
-    oauth_client_available,
+    first_available_oauth_client,
 )
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.skills_api import (
@@ -63,6 +63,7 @@ from ucode.ui import (
     scrolling_checkbox,
     spinner,
 )
+from ucode.ui.interactive_picker import CatalogChoice, picker_details
 
 # Workspace-relative path fragments for the V2 AI Gateway MCP endpoints, shared by the URL-shape
 # checks (`_is_app_mcp_server`, `_mcp_server_location`) so the set stays in one place.
@@ -76,10 +77,11 @@ MCP_SQL_PATH = "/api/2.0/mcp/sql"
 # These agents can pin a pre-registered OAuth client and drive the `/oidc` login
 # themselves (so `/mcp` shows "needs authentication" / Cursor shows a login), which
 # is a much better experience than the stdio proxy for a connection-backed service:
-#   - Claude Code: `claude mcp add --transport http --client-id <app>`.
+#   - Claude Code: `claude mcp add --transport http --client-id <app>` with its
+#     published CIMD URL client ID.
 #   - Cursor: a `url` server with an `auth.CLIENT_ID` in ~/.cursor/mcp.json.
 # Both need the app *published on the workspace* (checked per-workspace via
-# `oauth_client_available`) and its loopback `/callback` redirect registered on
+# `first_available_oauth_client`) and its loopback `/callback` redirect registered on
 # `/oidc` — which lacks dynamic client registration, so a pre-registered client is
 # required.
 #   - Codex: a `url` server with `oauth.client_id` (`codex mcp add --oauth-client-id
@@ -89,10 +91,10 @@ MCP_SQL_PATH = "/api/2.0/mcp/sql"
 # Agents whose `mcp add` accepts only a static bearer, not an OAuth client — gemini
 # (`--header`) — stay on the stdio proxy even where their apps exist; add one here
 # (with its registration branch below) once its CLI can pin a client.
-AGENT_OAUTH_CLIENT = {
-    "claude": CLAUDE_CODE_OAUTH_CLIENT_ID,
-    "cursor": CURSOR_OAUTH_CLIENT_ID,
-    "codex": CODEX_CLI_OAUTH_CLIENT_ID,
+AGENT_OAUTH_CLIENTS = {
+    "claude": (CLAUDE_CODE_CIMD_CLIENT_ID,),
+    "cursor": (CURSOR_OAUTH_CLIENT_ID,),
+    "codex": (CODEX_CLI_OAUTH_CLIENT_ID,),
 }
 
 MCP_CLIENTS = {
@@ -306,16 +308,14 @@ def _oauth_http_client(client: str, workspace: str, *, use_pat: bool) -> str | N
     """The published OAuth app id to register a **native HTTP+OAuth** MCP entry against for
     ``client`` (Claude Code / Cursor), or ``None`` to use the stdio ``ug mcp-proxy`` instead.
 
-    Native HTTP+OAuth fits only an agent that pins an OAuth client (``AGENT_OAUTH_CLIENT``), on a
+    Native HTTP+OAuth fits only an agent that pins an OAuth client (``AGENT_OAUTH_CLIENTS``), on a
     non-PAT run (PAT has no interactive OAuth), whose workspace actually publishes that client.
     This is the client-level half of the choice, shared by the per-server
     (:func:`configure_client_mcp_server`) and batched (:func:`_managed_mcp_entry`) paths. It is
     URL-independent, so callers can compute it once per (client, workspace); the per-server half
     (:func:`_native_oauth_http_entry`) decides whether a *specific* URL warrants the native entry."""
-    oauth_client = AGENT_OAUTH_CLIENT.get(client)
-    if oauth_client is not None and not use_pat and oauth_client_available(workspace, oauth_client):
-        return oauth_client
-    return None
+    clients = AGENT_OAUTH_CLIENTS.get(client)
+    return first_available_oauth_client(workspace, clients) if clients and not use_pat else None
 
 
 def _native_oauth_http_entry(
@@ -380,7 +380,8 @@ def configure_client_mcp_server(
             return [MCP_USER_SCOPE] if removed else []
 
     # Every other case registers the `ug mcp-proxy ...` stdio command; the proxy
-    # forwards to `url` and refreshes the Databricks token itself. Only the
+    # forwards to `url` and refreshes the token through the Databricks CLI profile.
+    # Connection login uses the CLI's own registered OAuth client. Only the
     # per-client registration syntax differs. `always_load` (skills registry) is
     # a Claude-only hint to load the server's tools at session start; other
     # clients don't support it and ignore it.
@@ -464,7 +465,9 @@ def revert_mcp_configs(state: dict) -> dict[str, bool]:
     return results
 
 
-def discover_mcp_service_names(workspace: str, profile: str | None = None) -> list[str]:
+def discover_mcp_service_names(
+    workspace: str, profile: str | None = None, *, metadata: dict[str, dict] | None = None
+) -> list[str]:
     """Curated `system.ai.*` MCP services. Empty list if discovery fails so
     callers can fall back to legacy connection discovery without surfacing
     every error to the picker.
@@ -473,7 +476,8 @@ def discover_mcp_service_names(workspace: str, profile: str | None = None) -> li
     expired/invalid credential surfaces loudly instead of masquerading as an empty
     workspace (AIGTWY-4843)."""
     token = get_databricks_token(workspace, profile)
-    names, reason = list_mcp_services(workspace, token)
+    kwargs = {"metadata": metadata} if metadata is not None else {}
+    names, reason = list_mcp_services(workspace, token, **kwargs)
     raise_for_invalid_access_token(workspace, reason)
     return names
 
@@ -484,6 +488,7 @@ def discover_all_mcp_service_names(
     on_progress: Callable[[int, int, int], None] | None = None,
     on_services: Callable[[list[str]], None] | None = None,
     cancel_event: threading.Event | None = None,
+    metadata: dict[str, dict] | None = None,
 ) -> list[str]:
     """All MCP services across every `<catalog>.<schema>` in the workspace. This
     walks the workspace (see `list_all_mcp_services`) and is the workspace-wide
@@ -491,12 +496,14 @@ def discover_all_mcp_service_names(
     the walk for live count reporting, and `on_services` to stream newly-found
     service names into the picker as the walk progresses."""
     token = get_databricks_token(workspace, profile)
+    kwargs = {"metadata": metadata} if metadata is not None else {}
     names, reason = list_all_mcp_services(
         workspace,
         token,
         on_progress=on_progress,
         on_services=on_services,
         cancel_event=cancel_event,
+        **kwargs,
     )
     raise_for_invalid_access_token(workspace, reason)
     return names
@@ -653,21 +660,47 @@ def _mcp_service_choice(
     known_names: set[str],
     additive: bool,
     managed_names: set[str] | None = None,
-) -> questionary.Choice | None:
-    """Picker choice for one MCP-service full name (`<catalog>.<schema>.<id>`), or None to hide it.
+    metadata: dict | None = None,
+) -> CatalogChoice:
+    """Picker choice for one MCP-service full name (`<catalog>.<schema>.<id>`).
 
-    Shared by the initial `build_mcp_picker_choices` render and the background walk that streams
-    more services in, so a streamed row is built identically to an up-front one. The picker only
-    shows rows you can act on, so two kinds are hidden: a managed service (never ug's to add or
-    remove) and, under `mcp add`, an already-configured one (nothing to add). Replace mode still
-    lists ug's own as a removable toggle; an unregistered service is an add-choice."""
+    Shared by initial and streamed rows. Configured services stay visible with their
+    status. In add mode they are read-only; managed services are always read-only.
+    Replace mode keeps ug's own registrations checked so they can still be removed."""
     registered_as = name.replace(".", "-")
-    display_title = f"MCP: {name}"
-    if registered_as in (managed_names or set()):
-        return None
-    if registered_as in known_names:
-        return None if additive else _server_choice(registered_as, True, display_title)
-    return _add_choice(f"{MCP_SERVICE_SELECTION_PREFIX}{name}", display_title)
+    managed = registered_as in (managed_names or set())
+    configured = registered_as in known_names or managed
+    status = "✓ Managed" if managed else "✓ Configured" if configured else "✗ Not configured"
+    details = metadata or {}
+    description = (
+        picker_details(
+            name,
+            details.get("comment"),
+            created_by=details.get("created_by"),
+            create_time=details.get("create_time"),
+            update_time=details.get("update_time"),
+        )
+        + f"\nStatus: {status}"
+    )
+    location, _, leaf = name.rpartition(".")
+    return CatalogChoice(
+        # The title is the filter corpus in table mode. Avoid a common "MCP:" prefix,
+        # which would make searches such as "mcp" match every service.
+        title=name,
+        value=registered_as
+        if configured
+        else f"{MCP_ADD_PREFIX}{MCP_SERVICE_SELECTION_PREFIX}{name}",
+        name=leaf,
+        location=location,
+        status=status,
+        checked=configured and not additive and not managed,
+        disabled="Managed by workspace"
+        if managed
+        else "Already configured"
+        if configured and additive
+        else None,
+        description=description,
+    )
 
 
 def build_mcp_picker_choices(
@@ -680,6 +713,7 @@ def build_mcp_picker_choices(
     available_uc_functions_servers: list[dict] | None = None,
     additive: bool = False,
     managed_names: set[str] | None = None,
+    service_metadata: dict[str, dict] | None = None,
 ) -> list[questionary.Choice | questionary.Separator]:
     original_by_name = _servers_by_name(original_servers)
     managed = managed_names or set()
@@ -711,7 +745,11 @@ def build_mcp_picker_choices(
         # Picker shows the dotted UC name; state/agents store the dashed form
         # (see resolver). The shared helper is also used by the background walk that
         # streams more services in, so up-front and streamed rows match exactly.
-        push(_mcp_service_choice(name, known_names, additive, managed))
+        push(
+            _mcp_service_choice(
+                name, known_names, additive, managed, (service_metadata or {}).get(name)
+            )
+        )
         displayed_names.add(name.replace(".", "-"))
 
     for name in available_external_names:
@@ -808,6 +846,7 @@ def prompt_for_mcp_server_choices(
     allow_back: bool = False,
     additive: bool = False,
     managed_names: set[str] | None = None,
+    service_metadata: dict[str, dict] | None = None,
     background_loader: Callable[[Callable[[list[questionary.Choice]], None], threading.Event], None]
     | None = None,
 ) -> list[str] | None | _Back:
@@ -815,8 +854,8 @@ def prompt_for_mcp_server_choices(
     if cancelled (Ctrl-C), or `_BACK` if `allow_back` and the user pressed Left
     to return to the previous wizard step.
 
-    ``additive`` (``ucode mcp add``) shows already-configured servers as
-    non-toggleable notes instead of pre-checked, removable boxes.
+    ``additive`` (``ug mcp add``) shows configured services as read-only table rows
+    instead of pre-checked, removable boxes.
 
     ``managed_names`` are servers managed configuration already provides; they show as
     non-toggleable in either mode, since there is nothing to add and ug can't remove them here.
@@ -824,7 +863,7 @@ def prompt_for_mcp_server_choices(
     ``background_loader`` streams more choices in after the picker opens (see
     `scrolling_checkbox`) — used to load the workspace-wide MCP-services walk without
     blocking on it up front."""
-    instruction = "(space to toggle, ctrl-a all, enter to save, type to filter)"
+    instruction = "(space toggle, ^A all, enter save, type filter, pgup/pgdn details)"
     if allow_back:
         instruction = "(space to toggle, ctrl-a all, ← back, enter to save, type to filter)"
     selection = scrolling_checkbox(
@@ -839,11 +878,14 @@ def prompt_for_mcp_server_choices(
             available_uc_functions_servers,
             additive=additive,
             managed_names=managed_names,
+            service_metadata=service_metadata,
         ),
         style=picker_style(),
         instruction=instruction,
         allow_back=allow_back,
         background_loader=background_loader,
+        show_description=True,
+        table=True,
     ).ask()
     if selection is None:
         return None
@@ -1037,9 +1079,10 @@ def _agent_managed_file_entries(
             # Native HTTP+OAuth only for a connection-backed mcp-service; a no-login service
             # (web_search) or non-mcp-services URL stays on the stdio proxy, so both delivery
             # paths resolve identically and no-login services aren't forced into an OAuth flow.
-            if _native_oauth_http_entry(claude_oauth, url, workspace, profile) is None:
+            native_client = _native_oauth_http_entry(claude_oauth, url, workspace, profile)
+            if native_client is None:
                 continue
-            entries[name] = claude.managed_mcp_entry(url)
+            entries[name] = claude.managed_mcp_entry(url, client_id=native_client)
         elif agent == "codex":
             entries[name] = codex.managed_mcp_entry(
                 build_mcp_proxy_argv(url, workspace, profile, use_pat=use_pat)
@@ -1323,23 +1366,27 @@ def _mcp_services_background_loader(
     never blocks the picker from opening. Deduping against already-shown rows (e.g. the fast
     `system.ai` list) is handled by the picker's append."""
 
+    metadata: dict[str, dict] = {}
+
     def loader(
         append: Callable[[list[questionary.Choice]], None], cancel_event: threading.Event
     ) -> None:
         def on_services(new_names: list[str]) -> None:
-            # A streamed service can be hidden (managed, or already configured under `mcp add`),
-            # in which case its choice is None — drop those so only real rows reach the picker.
-            new_choices = [
-                choice
-                for name in new_names
-                if (choice := _mcp_service_choice(name, known_names, additive, managed_names))
-                is not None
-            ]
-            if new_choices:
-                append(new_choices)
+            append(
+                [
+                    _mcp_service_choice(
+                        name, known_names, additive, managed_names, metadata.get(name)
+                    )
+                    for name in new_names
+                ]
+            )
 
         discover_all_mcp_service_names(
-            workspace, profile, on_services=on_services, cancel_event=cancel_event
+            workspace,
+            profile,
+            on_services=on_services,
+            cancel_event=cancel_event,
+            metadata=metadata,
         )
 
     return loader
@@ -1347,22 +1394,24 @@ def _mcp_services_background_loader(
 
 def _discover_selected_mcp_sources(
     workspace: str, profile: str | None, sources: set[str]
-) -> dict[str, list]:
+) -> dict[str, Any]:
     """Discover the picker's sources. The picker searches a single source — MCP services — so
     this fetches the fast curated `system.ai` list synchronously (the slow workspace-wide walk
     streams in afterward via the picker's background loader). The other keys stay in the returned
     dict as empty lists so the picker call is unchanged and can still render/remove
     already-registered servers of any type."""
     services: list[str] = []
+    metadata: dict[str, dict] = {}
     if MCP_SERVICES_SOURCE in sources:
         services = _discover_mcp_source(
             "MCP services",
-            lambda: discover_mcp_service_names(workspace, profile),
+            lambda: discover_mcp_service_names(workspace, profile, metadata=metadata),
         )
     return {
         "external": [],
         "apps": [],
         "services": services,
+        "service_metadata": metadata,
         "genie": [],
         "vector_search": [],
         "uc_functions": [],
@@ -1405,7 +1454,7 @@ def _managed_mcp_entry(
     native_client = _native_oauth_http_entry(http_client, url, workspace, profile)
     if client == "claude":
         if native_client is not None:
-            return claude.managed_mcp_entry(url)
+            return claude.managed_mcp_entry(url, client_id=native_client)
         argv = build_mcp_proxy_argv(url, workspace, profile, use_pat=use_pat)
         return claude.user_stdio_mcp_entry(argv, always_load=always_load)
     if client == "cursor" and native_client is not None:
@@ -2060,6 +2109,7 @@ def configure_mcp_command(
         additive=append,
         managed_names=managed_names,
         background_loader=services_loader,
+        service_metadata=discovered.get("service_metadata"),
     )
     if selections is None or isinstance(selections, _Back):
         # No back-navigation without the source step; `_Back` can't occur, but keep the guard
