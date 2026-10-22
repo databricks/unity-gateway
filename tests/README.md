@@ -305,6 +305,11 @@ Codex browser-login component tests cover invalid refresh tokens, token-only std
 network errors, and reuse of a concurrent sign-in within the timeout. Codex config
 tests cover the helper flag; real browser consent and desktop behavior are not covered.
 
+`test_custom_oauth.py` covers custom-client CLI login timeouts, nonzero exits, and
+process-start failures returning actionable errors. Cached grants and successful logins
+still return the selected profile's token; keyboard interrupts still cancel login.
+These tests replace the CLI boundary and do not establish live browser consent.
+
 Claude catalog selection with a custom OAuth CLI profile needs a live Isaac check,
 including default discovery, model locations, and providers when the ordinary profile
 has expired. The automated suite does not cover this combination.
