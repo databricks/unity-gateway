@@ -47,22 +47,28 @@ env:
 jobs:
   # Real TB2 tasks run in Harbor's Linux containers, with ug installed inside each one.
   harbor:
-    name: Harbor · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}${{ matrix.label && format(' · {0}', matrix.label) || '' }} · Linux
+    name: Harbor · ${{ matrix.label }} · Linux
     runs-on: ubuntu-latest
     timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix:
-        agent: [claude, codex]
-        # The empty model makes each include below a new job rather than pinning the default Claude job.
-        model: ['']
+        # Each entry is one job. An entry without a model uses the dispatch input or ug's default.
         include:
           - agent: claude
+            label: Claude
+            artifact: claude
+          - agent: codex
+            label: Codex
+            artifact: codex
+          - agent: claude
             model: system.ai.gpt-6-luna
-            label: gpt-6-luna
+            label: Claude · gpt-6-luna
+            artifact: claude-gpt-6-luna
           - agent: claude
             model: system.ai.gpt-6-1-sol
-            label: gpt-6-1-sol
+            label: Claude · gpt-6-1-sol
+            artifact: claude-gpt-6-1-sol
     env:
       UV_INDEX_URL: https://pypi.org/simple
       # bench_auth.py mints a fresh token per task from the CUJ service principal when
@@ -138,7 +144,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
-          name: terminal-bench-harbor-${{ matrix.agent }}${{ matrix.label && format('-{0}', matrix.label) || '' }}
+          name: terminal-bench-harbor-${{ matrix.artifact }}
           path: ${{ runner.temp }}/harbor-jobs/
 
   # Windows runners can't run Linux containers, so ug's own tasks also run on the host.
