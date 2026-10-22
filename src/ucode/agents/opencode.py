@@ -304,7 +304,7 @@ def render_overlay(
     # provider `options`), since OpenCode's per-model `headers` win over the
     # provider-level ones after its own UA injection.
     ua_header = {
-        "User-Agent": ucode_user_agent(ug_version(), "opencode", agent_version("opencode")),
+        "User-Agent": ucode_user_agent(ug_version(), f"opencode/{agent_version('opencode')}"),
     }
     request_tags = request_tags_header_value()
     if request_tags:

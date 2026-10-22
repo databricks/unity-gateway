@@ -127,7 +127,7 @@ def capture_server():
 
 
 def _expected_ua(agent_name: str, binary: str) -> str:
-    return ucode_user_agent(ug_version(), agent_name, agent_version(binary))
+    return ucode_user_agent(ug_version(), f"{agent_name}/{agent_version(binary)}")
 
 
 def _assert_ua(req: _CapturedRequest, expected: str) -> None:

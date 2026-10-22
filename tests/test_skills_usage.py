@@ -16,6 +16,7 @@ import pytest
 
 import ucode.skills_usage as su
 from ucode.skills_api import SkillRef
+from ucode.telemetry import client_platform
 
 WS = "https://example.databricks.com"
 TOKEN = "secret-token"
@@ -206,7 +207,7 @@ class TestReporterMain:
                 "token": TOKEN,
                 "payload": {"skills": skills},
                 "timeout": 10,
-                "headers": {"User-Agent": "ucode/1.2.3"},
+                "headers": {"User-Agent": f"ucode/1.2.3 {client_platform()}"},
             }
         ]
 

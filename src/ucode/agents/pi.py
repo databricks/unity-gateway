@@ -120,7 +120,7 @@ def render_overlay(
     keys: list[list[str]] = [["model"]]
     # Pi expands header values that match an env var name. Our UA contains
     # `/` and a space so it can never collide — safe to pass as a literal.
-    ua_headers = {"User-Agent": ucode_user_agent(ug_version(), "pi", agent_version("pi"))}
+    ua_headers = {"User-Agent": ucode_user_agent(ug_version(), f"pi/{agent_version('pi')}")}
     request_tags = request_tags_header_value()
     if request_tags:
         # Similarly to UA, request_tags is a JSON object (validated in `request_tags_header_value()`)

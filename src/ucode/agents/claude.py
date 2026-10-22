@@ -510,9 +510,10 @@ def render_overlay(
     # newlines (Anthropic SDK convention). Setting User-Agent here overrides
     # the SDK's default UA on outbound requests so the gateway can attribute
     # traffic to ucode.
+    user_agent = ucode_user_agent(ug_version(), f"claude/{agent_version('claude')}")
     header_lines = [
         "x-databricks-use-coding-agent-mode: true",
-        f"User-Agent: {ucode_user_agent(ug_version(), 'claude', agent_version('claude'))}",
+        f"User-Agent: {user_agent}",
     ]
     if provider:
         header_lines.append(f"{MODEL_PROVIDER_SERVICE_HEADER}: {provider}")

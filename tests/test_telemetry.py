@@ -128,6 +128,6 @@ class TestClientPlatform:
     def test_user_agent_keeps_gateway_prefix_and_appends_platform(self, monkeypatch):
         monkeypatch.setattr(sys, "platform", "darwin")
         monkeypatch.setattr(telemetry.platform, "machine", lambda: "arm64")
-        ua = telemetry.ucode_user_agent("0.9.1", "claude", "2.1.300")
+        ua = telemetry.ucode_user_agent("0.9.1", "claude/2.1.300")
         assert ua == "ucode/0.9.1 claude/2.1.300 (macos; arm64)"
         assert ua.startswith("ucode/0.9.1 claude/2.1.300")

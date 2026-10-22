@@ -274,7 +274,7 @@ def _token_provider(state: dict) -> Callable[[bool], str]:
 def proxy_headers(state: dict) -> dict[str, str]:
     """Headers the proxy adds to every gateway request; admin-managed headers win by name."""
     headers = {
-        "User-Agent": ucode_user_agent(ug_version(), "copilot", agent_version(SPEC["binary"]))
+        "User-Agent": ucode_user_agent(ug_version(), f"copilot/{agent_version(SPEC['binary'])}")
     }
     request_tags = request_tags_header_value()
     if request_tags:

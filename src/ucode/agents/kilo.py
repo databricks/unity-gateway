@@ -256,7 +256,7 @@ def render_overlay(
     # The User-Agent must be set on each per-model `headers` entry; a
     # provider-level `headers["User-Agent"]` does not take effect.
     ua_header = {
-        "User-Agent": ucode_user_agent(ug_version(), "kilo", agent_version("kilo")),
+        "User-Agent": ucode_user_agent(ug_version(), f"kilo/{agent_version('kilo')}"),
     }
 
     anthropic_models = opencode_models.get("anthropic") or []

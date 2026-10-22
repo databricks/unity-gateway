@@ -39,7 +39,7 @@ from ucode.constants import (
 )
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock
-from ucode.telemetry import ug_version
+from ucode.telemetry import ucode_user_agent, ug_version
 from ucode.ui import (
     err_console,
     normalize_workspace_url,
@@ -2384,14 +2384,15 @@ _CODING_AGENT_CONFIGS_API_PATH = "/api/ai-gateway/v2/coding-agent-configs"
 
 
 def _managed_config_user_agent() -> str:
-    """``ucode/<v>`` plus each ``<agent>/<v>`` ug already wrote into the OS-managed files.
+    """``ucode/<v>`` plus each ``<agent>/<v>`` ug already wrote into the OS-managed files, then the
+    client platform.
 
     The fetch serves every agent, so it reports what ug configured on this machine; reading the
     managed files avoids probing each agent's ``--version`` on every fetch."""
     from ucode.agents import claude, codex  # the agent modules import this one
     from ucode.managed_files import ug_agent_token
 
-    tokens = [f"ucode/{ug_version()}"]
+    tokens: list[str] = []
     for agent, user_agent in (
         ("claude", claude.managed_user_agent()),
         ("codex", codex.managed_user_agent()),
@@ -2399,7 +2400,7 @@ def _managed_config_user_agent() -> str:
         token = ug_agent_token(user_agent or "", agent)
         if token:
             tokens.append(token)
-    return " ".join(tokens)
+    return ucode_user_agent(ug_version(), *tokens)
 
 
 def fetch_managed_coding_agent_configs(workspace: str, token: str) -> tuple[list[dict], str | None]:

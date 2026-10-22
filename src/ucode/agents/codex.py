@@ -231,7 +231,7 @@ def _provider_block(
             auth_argv.append("--browser-login")
     base_url = build_tool_base_url("codex", workspace)
     http_headers = {
-        "User-Agent": ucode_user_agent(ug_version(), "codex", agent_version("codex")),
+        "User-Agent": ucode_user_agent(ug_version(), f"codex/{agent_version('codex')}"),
     }
     if provider:
         http_headers[MODEL_PROVIDER_SERVICE_HEADER] = provider

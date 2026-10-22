@@ -97,5 +97,6 @@ def client_platform() -> str:
         return "(unknown; unknown)"
 
 
-def ucode_user_agent(ug_ver: str, agent: str, agent_ver: str) -> str:
-    return f"ucode/{ug_ver} {agent}/{agent_ver} {client_platform()}"
+def ucode_user_agent(ug_ver: str, *agent_tokens: str) -> str:
+    """`ucode/<v> [<agent>/<v> ...] (<os>; <arch>)`; agent tokens are `<agent>/<v>`."""
+    return " ".join([f"ucode/{ug_ver}", *agent_tokens, client_platform()])
