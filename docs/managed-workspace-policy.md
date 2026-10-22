@@ -115,6 +115,11 @@ installed applies the fetched policy to that run without installing or caching i
 launch before any `ug configure` is still managed. An installed policy still wins: with `UG_SKIP_OS_SETTINGS=1`
 a developer's launch reads it read-only, never writes OS-managed files, and builds only user-owned
 settings. That is the supported developer mode on an MDM machine whose administrator ran `ug configure`.
+A developer's first launch applies the installed policy as `ug configure` does, and the skip check
+compares only the values ug writes for that developer: another writer's settings in the OS-managed
+files, and other entries in merged lists such as `permissions.deny`, are not stale. The developer's
+`ug` path, Databricks profile name, auth mode, and smart-routing choice must still match the
+administrator's, since those values are written into the shared files.
 
 There is no refresh-interval setting in the currently supported `CodingAgentConfig` shape.
 The five-minute launch-check default is retained; the installed workspace selects the remote source.

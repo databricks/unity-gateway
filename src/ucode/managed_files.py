@@ -430,9 +430,14 @@ def record_settings_passthrough(tool: str, leaves: list) -> None:
 
 
 def managed_file_conflicts(
-    existing: dict, desired: dict, owned_paths: list[list[str]]
+    existing: dict, desired: dict, owned_paths: list[list[str]], *, written_only: bool = False
 ) -> list[str]:
-    """Return managed leaves that would override ucode's local settings."""
+    """Return managed leaves that would override ucode's local settings.
+
+    With ``written_only``, a leaf counts only when ``desired`` sets it: a value ug won't write this
+    run (another writer's tracing, an administrator's own setting) isn't a conflict, and a merged
+    list only needs ug's own entries, whatever else other writers added.
+    """
     conflicts: list[str] = []
     existing = cast(dict, mask_user_agent_versions(existing))
     desired = cast(dict, mask_user_agent_versions(desired))
@@ -440,7 +445,16 @@ def managed_file_conflicts(
         existing_value = _path_value(existing, path)
         if existing_value is _MISSING:
             continue
-        if existing_value != _path_value(desired, path):
+        desired_value = _path_value(desired, path)
+        if written_only:
+            if desired_value is _MISSING:
+                continue
+            if isinstance(existing_value, list) and isinstance(desired_value, list):
+                # A merged list (deny rules, hook handlers): only ug's own entries must be there.
+                if any(item not in existing_value for item in desired_value):
+                    conflicts.append(".".join(path))
+                continue
+        if existing_value != desired_value:
             conflicts.append(".".join(path))
     return conflicts
 
@@ -489,7 +503,10 @@ def check_skipped_managed_overrides(
     managed_before = deepcopy(existing)
     raise_on_skipped_managed_overrides(
         path,
-        managed_file_conflicts(managed_before, compose(existing), owned_paths),
+        # Only what ug writes this run can conflict. Telling ug's earlier writes apart from another
+        # writer's needs the snapshots in the writer's own ~/.ucode, which another user lacks, so a
+        # value ug no longer writes is left to `ug configure` from an administrator.
+        managed_file_conflicts(managed_before, compose(existing), owned_paths, written_only=True),
         display=display,
     )
 

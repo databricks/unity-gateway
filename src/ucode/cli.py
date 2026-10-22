@@ -832,6 +832,21 @@ def _launch_workspace_state(workspace: str | None) -> dict:
     return state
 
 
+def _apply_managed_agent_policy(managed: dict, state: dict, tool: str) -> tuple[dict, str | None]:
+    """Layer ``tool``'s managed policy onto ``state`` and return its managed Unity Catalog location.
+
+    Shared by ``ug configure --agent`` and a first launch's auto-configure, which must write the
+    same agent settings (a mismatch makes ``UG_SKIP_OS_SETTINGS`` refuse the OS-managed file).
+    Only Claude and Codex take a managed source; other agents are self-managed alongside it.
+    """
+    if tool not in ("claude", "codex"):
+        return state, None
+    state = resolve_state(managed, state, tool)
+    if managed_provider_service(managed, tool):
+        return state, None
+    return state, managed_unity_catalog_location(managed, tool)
+
+
 def _setup_single_agent(
     workspace_entries: list[tuple[str, str | None]],
     tool: str,
@@ -865,10 +880,8 @@ def _setup_single_agent(
         managed, _ = _refresh_configured_policy(state)
         if tool in ("claude", "codex"):
             _reject_disabled_agent(managed, tool)
-            if managed is not None:
-                state = resolve_state(managed, state, tool)
-                if not managed_provider_service(managed, tool):
-                    parent_schema = managed_unity_catalog_location(managed, tool)
+        if managed is not None:
+            state, parent_schema = _apply_managed_agent_policy(managed, state, tool)
     state = configure_single_tool(tool, state, parent_schema=parent_schema)
     if apply_managed and not managed_enabled_tools(managed or {}):
         state = _record_unmanaged_configured_agents(state, [tool])
@@ -2813,14 +2826,22 @@ def _auto_configure_tool(
         workspace, profile = _prompt_for_configuration(tool)
     configure_kwargs = {"custom_oauth": custom_oauth} if custom_oauth is not None else {}
     state = configure_shared_state(workspace, profile=profile, tools=[tool], **configure_kwargs)
-    # A managed config rejects --provider later in the launch; resolving it here would replace that
-    # error with a lookup failure.
-    if provider is not None:
-        managed, _ = _fetch_managed_config(state)
-        if managed is not None:
-            provider = None
+    # Apply the managed policy here as `ug configure --agent` does, so a first launch writes the
+    # same agent settings the administrator's configure wrote (a mismatch makes UG_SKIP_OS_SETTINGS
+    # refuse the OS-managed file as stale).
+    managed, _ = _fetch_managed_config(state)
+    if _launches_self_managed(managed, state, tool):
+        managed = None
+    managed_kwargs: dict = {}
+    if managed is not None:
+        # A managed config rejects --provider later in the launch; resolving it here would replace
+        # that error with a lookup failure.
+        provider = None
+        state, location = _apply_managed_agent_policy(managed, state, tool)
+        if location:
+            managed_kwargs["parent_schema"] = location
 
-    state = configure_single_tool(tool, state, provider=provider)
+    state = configure_single_tool(tool, state, provider=provider, **managed_kwargs)
 
     spec = TOOL_SPECS[tool]
     console.print(

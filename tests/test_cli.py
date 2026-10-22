@@ -3786,6 +3786,39 @@ class TestAutoConfigureOnFirstRun:
 
         mock_configure.assert_called_once_with("claude", MINIMAL_STATE, provider=expected_provider)
 
+    @pytest.mark.parametrize(
+        ("model_config", "expected_kwargs"),
+        [
+            ({"model_services": ["system.ai.claude-opus-5"]}, {}),
+            ({"unity_catalog_location": "main.models"}, {"parent_schema": "main.models"}),
+        ],
+        ids=["static-list", "uc-location"],
+    )
+    def test_first_run_applies_the_managed_policy(self, model_config, expected_kwargs):
+        """A first launch writes what `ug configure` would, so skip mode finds no stale file."""
+        managed = normalize_managed_config(
+            {
+                "enabled_agents": [
+                    {"agent": "CODING_AGENT_CLAUDE_CODE", "config": {"models": model_config}}
+                ]
+            }
+        )
+        with (
+            patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
+            patch("ucode.cli.configure_shared_state", return_value=MINIMAL_STATE),
+            patch(
+                "ucode.cli._fetch_managed_config", return_value=ManagedConfigResult(managed, False)
+            ),
+            patch("ucode.cli.configure_single_tool", return_value=MINIMAL_STATE) as mock_configure,
+        ):
+            cli_mod._auto_configure_tool("claude")
+
+        args, kwargs = mock_configure.call_args
+        resolved = args[1]
+        if "model_services" in model_config:
+            assert resolved["claude_static_models"] == ["system.ai.claude-opus-5"]
+        assert {k: v for k, v in kwargs.items() if k != "provider"} == expected_kwargs
+
     def test_skipped_when_already_configured(self):
         """Auto-configure is skipped when workspace and tool are already set up."""
         with (

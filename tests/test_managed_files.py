@@ -1036,6 +1036,69 @@ class TestManagedSettingsSkipped:
         with pytest.raises(ValueError, match="Unknown config scope"):
             managed_files.set_config_scope("system")
 
+    def _check_skipped(self, tmp_path, existing: dict, written: dict):
+        """Run the skip-mode check for an OS-managed file holding ``existing``; ug writes ``written``
+        over it and drops the leaves it owns but no longer writes."""
+        path = tmp_path / "managed-settings.json"
+        path.write_text(json.dumps(existing), encoding="utf-8")
+        owned = [["apiKeyHelper"], ["otelHeadersHelper"], ["env", "OTEL_TRACES_EXPORTER"]]
+
+        def compose(doc: dict) -> dict:
+            doc.pop("otelHeadersHelper", None)
+            doc.get("env", {}).pop("OTEL_TRACES_EXPORTER", None)
+            doc.update(written)
+            return doc
+
+        managed_files.check_skipped_managed_overrides(
+            path, parser=json.loads, compose=compose, owned_paths=owned, display="Claude Code"
+        )
+
+    def test_skipped_check_ignores_leaves_ug_does_not_write(self, tmp_path):
+        """Another writer's tracing (or one the admin's configure preserved) isn't stale."""
+        self._check_skipped(
+            tmp_path,
+            {
+                "apiKeyHelper": "ug auth-token --host h",
+                "otelHeadersHelper": "other-tool otel-headers",
+                "env": {"OTEL_TRACES_EXPORTER": "otlp"},
+            },
+            {"apiKeyHelper": "ug auth-token --host h"},
+        )
+
+    def test_skipped_check_still_flags_a_value_ug_writes_differently(self, tmp_path):
+        with pytest.raises(RuntimeError, match="stale"):
+            self._check_skipped(
+                tmp_path,
+                {"apiKeyHelper": "ug auth-token --host old-workspace"},
+                {"apiKeyHelper": "ug auth-token --host h"},
+            )
+
+    def test_skipped_check_allows_other_writers_entries_in_merged_lists(self):
+        existing = {"permissions": {"deny": ["WebSearch", "Artifact"]}}
+        owned = [["permissions", "deny"]]
+
+        assert (
+            managed_files.managed_file_conflicts(
+                existing, {"permissions": {"deny": ["WebSearch"]}}, owned, written_only=True
+            )
+            == []
+        )
+        assert managed_files.managed_file_conflicts(
+            existing, {"permissions": {"deny": ["WebSearch", "WebFetch"]}}, owned, written_only=True
+        ) == ["permissions.deny"]
+
+    def test_strict_conflicts_still_count_dropped_leaves(self):
+        existing = {"apiKeyHelper": "x", "otelHeadersHelper": "y"}
+        desired = {"apiKeyHelper": "x"}
+        owned = [["apiKeyHelper"], ["otelHeadersHelper"]]
+
+        assert managed_files.managed_file_conflicts(existing, desired, owned) == [
+            "otelHeadersHelper"
+        ]
+        assert (
+            managed_files.managed_file_conflicts(existing, desired, owned, written_only=True) == []
+        )
+
     def test_raise_on_skipped_managed_overrides_silent_without_conflicts(self):
         # No conflicts means nothing stale overrides the user config, so this must not raise.
         managed_files.raise_on_skipped_managed_overrides(
