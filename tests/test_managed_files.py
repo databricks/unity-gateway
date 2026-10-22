@@ -1645,3 +1645,22 @@ def test_sudo_command_derives_prompt_policy(monkeypatch, interactive):
 
     expected = ["/usr/bin/sudo", *([] if interactive else ["-n"]), "cp", "a", "b"]
     assert managed_files._sudo_command("cp", "a", "b") == expected
+
+
+@pytest.mark.parametrize("value", ["1", "true"])
+def test_noninteractive_env_never_lets_sudo_prompt(monkeypatch, value):
+    """A wrapper's unattended terminal gets sudo's non-prompting mode, as if no terminal were attached."""
+    monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setenv(managed_files.NONINTERACTIVE_ENV, value)
+
+    assert managed_files._sudo_may_prompt() is False
+    assert managed_files.managed_writes_allowed() is False
+    assert managed_files.managed_writes_allowed(repair_existing=True) is True
+    assert managed_files._sudo_command("cp", "a", "b") == ["/usr/bin/sudo", "-n", "cp", "a", "b"]
+
+
+def test_noninteractive_env_unset_keeps_the_interactive_prompt(monkeypatch):
+    monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: True)
+    monkeypatch.delenv(managed_files.NONINTERACTIVE_ENV, raising=False)
+
+    assert managed_files._sudo_may_prompt() is True

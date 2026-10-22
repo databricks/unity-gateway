@@ -131,6 +131,10 @@ ug configure --user
 precedence; later launches use whatever files are present.
 The choice is saved for launches after a successful configure; `ug configure` without `--user`
 and `ug revert` return to `--global`.
+A wrapper that starts `ug` in a terminal nobody watches (an unattended relaunch) can set
+`UG_NONINTERACTIVE=1`: sudo then never prompts for a password, as when no terminal is attached, and
+a launch whose managed file can't be updated continues with the per-user settings when they are
+compatible.
 
 Available coding agents are `codex`, `claude`, `gemini`, `opencode`,
 `copilot`, and `pi`. `cursor` can be included in `--agents` for MCP-only setup;

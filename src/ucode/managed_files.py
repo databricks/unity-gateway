@@ -36,6 +36,9 @@ from ucode.ui import console, print_note, print_success, print_warning
 _SUDO = "/usr/bin/sudo"
 # Opt out of all OS-managed settings work (read, conflict check, and the privileged sudo write).
 SKIP_OS_SETTINGS_ENV = "UG_SKIP_OS_SETTINGS"
+# Set by a wrapper that starts ug in a terminal nobody watches (e.g. an unattended relaunch): sudo
+# then runs without prompting, exactly as when no terminal is attached.
+NONINTERACTIVE_ENV = "UG_NONINTERACTIVE"
 CONFIG_SCOPES = ("global", "user")
 DEFAULT_CONFIG_SCOPE = "global"
 _config_scope = DEFAULT_CONFIG_SCOPE
@@ -222,8 +225,13 @@ def managed_file_scope(state: dict, tool: str) -> str:
 
 
 def _sudo_may_prompt() -> bool:
-    """A terminal is attached, so sudo can prompt and the persistent worker is usable."""
-    return current_os() is not OS.WINDOWS and sys.stdin.isatty()
+    """A person is at an attached terminal, so sudo can prompt and the persistent worker is usable.
+
+    ``UG_NONINTERACTIVE`` marks a terminal nobody watches: a password prompt there would block the
+    launch until its caller gives up."""
+    return (
+        current_os() is not OS.WINDOWS and sys.stdin.isatty() and not env_bool(NONINTERACTIVE_ENV)
+    )
 
 
 def managed_writes_allowed(*, repair_existing: bool = False) -> bool:
