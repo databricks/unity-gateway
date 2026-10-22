@@ -2756,9 +2756,10 @@ def build_skills_mcp_url(workspace: str, locations: list[str]) -> str:
 # the `openai`, `azure_openai`, `microsoft_foundry`, `amazon_bedrock`, and
 # `bedrock_mantle` provider types all serve (the gateway fronts them with the
 # OpenAI surface); gemini speaks Google's, served by a Gemini Enterprise
-# provider. copilot speaks both: Anthropic's for Claude targets and OpenAI's for
-# the rest, on each provider's native route. Tags are the short form produced by
-# `_provider_type_tag` (e.g. `amazon_bedrock`).
+# provider. copilot speaks Anthropic's for the Claude targets of anthropic and
+# Bedrock services, and OpenAI's for openai and azure_openai services, on each
+# provider's native route. Tags are the short form produced by `_provider_type_tag`
+# (e.g. `amazon_bedrock`).
 _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
     "claude": ("anthropic", "amazon_bedrock", "bedrock_mantle"),
     "codex": ("openai", "azure_openai", "microsoft_foundry", "amazon_bedrock", "bedrock_mantle"),
@@ -2990,11 +2991,11 @@ def list_tool_provider_services(
 def service_usable_for_tool(tool: str, service: dict) -> bool:
     """True when ``tool`` can actually route through ``service``.
 
-    Beyond the provider-type match, a relayed (subscription) service is Claude Code only, and a
-    Bedrock service is only usable for claude or copilot if it exposes at least one Claude model in its targets — otherwise there's no
-    routable model id to pin — or is ``allow_all_targets``, in which case the model
-    id comes from elsewhere (e.g. the managed config's authored default). (Anthropic
-    services use canonical names, so any match is usable.)
+    Beyond the provider-type match, copilot can't use a relayed (subscription) service, and
+    claude and copilot can use a Bedrock service only if it has a Claude target — otherwise
+    there's no routable model id to pin — or is ``allow_all_targets``, in which case the model id
+    comes from elsewhere (the managed config's default or ``--model``). (Anthropic services use
+    canonical names, so any match is usable.)
     """
     provider_type = service.get("provider_type", "")
     if not tool_supports_provider_type(tool, provider_type):

@@ -92,8 +92,8 @@ restart `ug copilot`. Proxy errors are logged to `~/.ucode/logs/copilot-proxy.lo
 `ug copilot --provider <catalog>.<schema>.<name>` routes the session through a Model Provider
 Service instead, and `/model` lists that service's models: Claude models of an Anthropic or
 Bedrock service, and the chat models of an OpenAI or Azure OpenAI service. For a service that
-allows every model, ug lists what the gateway reports; name any other model it serves with
-`--model`. Services that relay a Claude subscription work only with Claude Code. Interactive
+allows every model, name the model to start on with `--model`; `/model` also lists the models
+the gateway reports for it, which the provider account may not serve. Services that relay a Claude subscription work only with Claude Code. Interactive
 `ug configure` offers the matching services under **External Models**, and a managed workspace
 config can set one for Copilot.
 

@@ -313,6 +313,8 @@ class TestCopilotCatalogModelId:
             ("us.anthropic.claude-sonnet-4-6", "claude-sonnet-4.6"),
             ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", "claude-sonnet-4.5"),
             ("global.anthropic.claude-opus-4-8", "claude-opus-4.8"),
+            ("anthropic.claude-opus-4-8", "claude-opus-4.8"),
+            ("anthropic.claude-sonnet-4-5-20250929-v1:0", "claude-sonnet-4.5"),
         ],
     )
     def test_maps_claude_ids(self, model, expected):
@@ -371,10 +373,18 @@ class TestBuildProviderCatalog:
 
     def test_orders_dotted_provider_versions_newest_first(self):
         models, _ = copilot.build_provider_catalog(
-            ["gpt-5", "gpt-5.6", "gpt-5.1", "gpt-5.5"], "openai"
+            ["gpt-5", "gpt-5.6", "gpt-5.1", "gpt-5.5", "o1", "o4-mini", "o3"], "openai"
         )
 
-        assert [m.id for m in models] == ["gpt-5.6", "gpt-5.5", "gpt-5.1", "gpt-5"]
+        assert [m.id for m in models] == [
+            "gpt-5.6",
+            "gpt-5.5",
+            "gpt-5.1",
+            "gpt-5",
+            "o4-mini",
+            "o3",
+            "o1",
+        ]
 
 
 def _stub_provider_service(monkeypatch, service, *, anthropic_ids=(), codex_slugs=None):
@@ -417,31 +427,37 @@ class TestProviderCatalog:
         assert seen["resolve"] == ("copilot", MPS, WS, "dbx-token")
         assert "anthropic_listing" not in seen
 
-    def test_allow_all_lists_through_the_gateway(self, monkeypatch):
+    def test_allow_all_adds_the_gateway_listing_to_the_start_model(self, monkeypatch):
         seen = _stub_provider_service(
             monkeypatch,
             {"provider_type": "amazon_bedrock", "targets": [], "allow_all_targets": True},
-            anthropic_ids=["us.anthropic.claude-sonnet-4-6"],
+            anthropic_ids=["anthropic.claude-opus-4-8"],
         )
 
-        models = copilot.provider_catalog({"workspace": WS}, MPS, None)
+        models = copilot.provider_catalog({"workspace": WS}, MPS, "us.anthropic.claude-sonnet-4-6")
 
-        assert [m.id for m in models] == ["us.anthropic.claude-sonnet-4-6"]
+        assert [m.id for m in models] == [
+            "anthropic.claude-opus-4-8",
+            "us.anthropic.claude-sonnet-4-6",
+        ]
         assert seen["anthropic_listing"] == MPS
 
-    def test_allow_all_openai_lists_the_codex_catalog(self, monkeypatch):
+    def test_allow_all_openai_takes_a_provider_ref_as_the_start_model(self, monkeypatch):
         seen = _stub_provider_service(
             monkeypatch,
             {"provider_type": "openai", "targets": [], "allow_all_targets": True},
-            codex_slugs=["gpt-5.5"],
+            codex_slugs=["gpt-5.5", "gpt-4o"],
         )
 
-        models = copilot.provider_catalog({"workspace": WS}, MPS, None)
+        models = copilot.provider_catalog({"workspace": WS}, MPS, "dbx-responses/gpt-5.5")
 
-        assert [(m.id, m.wire) for m in models] == [("gpt-5.5", "responses")]
+        assert [(m.id, m.wire) for m in models] == [
+            ("gpt-5.5", "responses"),
+            ("gpt-4o", "completions"),
+        ]
         assert seen["codex_listing"][1] == MPS
 
-    def test_allow_all_accepts_a_requested_model_the_listing_omits(self, monkeypatch):
+    def test_allow_all_starts_on_the_requested_model_when_listing_fails(self, monkeypatch, capsys):
         _stub_provider_service(
             monkeypatch, {"provider_type": "openai", "targets": [], "allow_all_targets": True}
         )
@@ -449,13 +465,16 @@ class TestProviderCatalog:
         models = copilot.provider_catalog({"workspace": WS}, MPS, "gpt-5.5")
 
         assert [m.id for m in models] == ["gpt-5.5"]
+        assert "Could not list the models" in capsys.readouterr().out
 
-    def test_an_empty_listing_asks_for_a_model(self, monkeypatch):
+    def test_allow_all_without_a_start_model_asks_for_one(self, monkeypatch):
         _stub_provider_service(
-            monkeypatch, {"provider_type": "anthropic", "targets": [], "allow_all_targets": True}
+            monkeypatch,
+            {"provider_type": "anthropic", "targets": [], "allow_all_targets": True},
+            anthropic_ids=["claude-sonnet-5"],
         )
 
-        with pytest.raises(RuntimeError, match="lists no models.*--model"):
+        with pytest.raises(RuntimeError, match="allows any model.*--model"):
             copilot.provider_catalog({"workspace": WS}, MPS, None)
 
     def test_no_usable_model_lists_the_reasons(self, monkeypatch):

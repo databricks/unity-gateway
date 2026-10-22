@@ -132,8 +132,10 @@ _CLAUDE_DASHED_VERSION_PATTERN = re.compile(r"-(\d+)-(\d+)$")
 # Provider-side Claude ids end in a release date and, on Bedrock, a version: `-20250929-v1:0`.
 _CLAUDE_RELEASE_SUFFIX_PATTERN = re.compile(r"(?:-\d{8})?(?:-v\d+(?::\d+)?)?$")
 _CLAUDE_HAIKU_MAJOR_PATTERN = re.compile(r"^claude-haiku-(\d+)")
-# Provider ids write versions with dots (`gpt-5.6`); the version sort reads dash-separated digits.
+# Provider ids write versions with dots (`gpt-5.6`) or no separator (`o3`); the version sort reads
+# dash-separated digits.
 _DOTTED_VERSION_PATTERN = re.compile(r"(?<=\d)\.(?=\d)")
+_O_SERIES_VERSION_PATTERN = re.compile(r"^o(?=\d)")
 _CLAUDE_CATALOG_VERSION_PATTERN = re.compile(r"^claude-([a-z]+)-(\d+)(?:\.(\d+))?$")
 
 # (maxPromptTokens, maxOutputTokens) by Copilot catalog id. Copilot assumes a 128K prompt for
@@ -155,6 +157,9 @@ _CLAUDE_LIMITS: dict[str, tuple[int, int]] = {
 }
 _CLAUDE_1M_LIMITS = (936_000, 32_000)
 _CLAUDE_200K_LIMITS = (168_000, 32_000)
+_CLAUDE_200K_WINDOW = 200_000
+# How the gateway listings report a successful listing with no models.
+_EMPTY_LISTING_REASONS = ("returned no Anthropic model ids", "returned no Codex models")
 
 _ANTHROPIC_PROVIDER_TYPES = ("anthropic", *BEDROCK_PROVIDER_TYPES)
 _NON_CHAT_MODEL_PATTERN = re.compile(
@@ -168,7 +173,7 @@ def _model_tail(model: str) -> str:
     """The model name without its ``<catalog>.<schema>.`` and ``databricks-`` prefixes or ``[...]`` suffix."""
     name = model.split("[", 1)[0].lower()
     tail = name.split(".", 2)[-1] if name.count(".") >= 2 else name
-    return tail.removeprefix("databricks-")
+    return tail.removeprefix("anthropic.").removeprefix("databricks-")
 
 
 def copilot_exclusion_reason(model: str, api_types: Iterable[str] = ()) -> str | None:
@@ -264,7 +269,8 @@ def _catalog_sort_key(model: CopilotModel) -> tuple:
         ),
         len(ANTHROPIC_FAMILIES),
     )
-    version_key = model_version_sort_key(_DOTTED_VERSION_PATTERN.sub("-", model.id))
+    sort_name = _O_SERIES_VERSION_PATTERN.sub("o-", _DOTTED_VERSION_PATTERN.sub("-", model.id))
+    version_key = model_version_sort_key(sort_name)
     return (tuple(PROVIDER_NAMES).index(model.wire), family, version_key)
 
 
@@ -314,28 +320,44 @@ def build_provider_catalog(
 
 def _listed_provider_models(
     workspace: str, token: str, service_name: str, provider_type: str
-) -> list[str]:
-    """The models the gateway lists for an ``allow_all_targets`` service."""
+) -> tuple[list[str], str | None]:
+    """The models the gateway lists for an ``allow_all_targets`` service, and why listing failed.
+
+    An empty listing is not a failure."""
     if provider_type in _ANTHROPIC_PROVIDER_TYPES:
-        return list_anthropic_model_catalog(workspace, token, provider=service_name).model_ids
-    try:
-        catalog = _fetch_codex_model_catalog(
-            workspace, token, source=CodexCatalogSource.PROVIDER, identifier=service_name
-        )
-    except RuntimeError:
-        return []
-    return [
-        model["slug"]
-        for model in catalog["models"]
-        if isinstance(model, dict) and isinstance(model.get("slug"), str) and model["slug"]
-    ]
+        listing = list_anthropic_model_catalog(workspace, token, provider=service_name)
+        reason = listing.error_msg
+    else:
+        try:
+            catalog = _fetch_codex_model_catalog(
+                workspace, token, source=CodexCatalogSource.PROVIDER, identifier=service_name
+            )
+        except RuntimeError as exc:
+            return [], None if _is_empty_listing(str(exc)) else str(exc)
+        return [
+            model["slug"]
+            for model in catalog["models"]
+            if isinstance(model, dict) and isinstance(model.get("slug"), str) and model["slug"]
+        ], None
+    return listing.model_ids, None if reason is None or _is_empty_listing(reason) else reason
+
+
+def _is_empty_listing(reason: str) -> bool:
+    return any(phrase in reason for phrase in _EMPTY_LISTING_REASONS)
+
+
+def _without_provider_prefix(model: str) -> str:
+    """``model`` without Copilot's ``<provider>/`` prefix, e.g. ``dbx-responses/gpt-5.5`` -> ``gpt-5.5``."""
+    provider, separator, rest = model.partition("/")
+    return rest if separator and provider in PROVIDER_NAMES.values() else model
 
 
 def provider_catalog(state: dict, service_name: str, requested: str | None) -> list[CopilotModel]:
     """The models of Model Provider Service ``service_name`` that this launch registers.
 
-    A service that allows every model lists them through the gateway; ``requested`` (the launch's
-    ``--model``) is added to it, so a model the listing omits can still be named."""
+    A service that allows every model must be given the model to start on, ``requested`` (the
+    launch's ``--model``) or the managed default: the gateway lists a fixed catalog for it, not what
+    the provider account serves. That catalog is added for ``/model``."""
     workspace = state["workspace"]
     token = launch_token(state, workspace)
     service, error = resolve_provider_service("copilot", service_name, workspace, token)
@@ -343,19 +365,22 @@ def provider_catalog(state: dict, service_name: str, requested: str | None) -> l
         raise RuntimeError(error or f"Model provider service '{service_name}' was not found.")
     provider_type = service["provider_type"]
     models = list(service.get("targets") or [])
-    allow_all = bool(service.get("allow_all_targets"))
-    if allow_all:
-        models += _listed_provider_models(workspace, token, service_name, provider_type)
-        if requested:
-            models.append(requested)
+    listed: list[str] = []
+    if service.get("allow_all_targets"):
+        start = _without_provider_prefix(requested) if requested else None
+        managed_default = state.get("copilot_default_model")
+        start = start or (managed_default if isinstance(managed_default, str) else None)
+        if not start:
+            raise RuntimeError(
+                f"Model provider service '{service_name}' allows any model, so name the one to "
+                "start on with `ug copilot --model <id>`."
+            )
+        models.append(start)
+        listed, reason = _listed_provider_models(workspace, token, service_name, provider_type)
+        if reason:
+            print_warning(f"Could not list the models of {service_name}: {reason}.")
     catalog, skipped = build_provider_catalog(models, provider_type)
     if not catalog:
-        if allow_all and not skipped:
-            # The gateway lists nothing, rather than failing, when the caller can't query the service.
-            raise RuntimeError(
-                f"Model provider service '{service_name}' lists no models. Check that you can "
-                "query it, or name a model it serves with `ug copilot --model <id>`."
-            )
         detail = "; ".join(f"{model} ({reason})" for model, reason in skipped) or "none declared"
         raise RuntimeError(
             f"Model provider service '{service_name}' has no models ug copilot can use: {detail}."
@@ -366,6 +391,8 @@ def provider_catalog(state: dict, service_name: str, requested: str | None) -> l
             + "; ".join(f"{model} ({reason})" for model, reason in skipped)
             + "."
         )
+    if listed:
+        catalog, _ = build_provider_catalog([m.id for m in catalog] + listed, provider_type)
     return catalog
 
 
@@ -600,7 +627,7 @@ def render_providers_config(
         if catalog_id is not None:
             entry["modelId"] = catalog_id
         limits = copilot_model_limits(model.id) if model.wire == "anthropic" else None
-        if limits is not None and provider_service:
+        if limits is not None and provider_service and sum(limits) > _CLAUDE_200K_WINDOW:
             # A provider service may not serve the 1M window.
             limits = _CLAUDE_200K_LIMITS
         if limits is not None:

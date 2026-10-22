@@ -889,7 +889,7 @@ def _provider_summary(tool: str, state: dict) -> str:
 
 
 def _maybe_select_provider_service(tool: str, state: dict) -> dict:
-    """Interactively let the user pick where claude/codex get their models — Databricks hosted
+    """Interactively let the user pick where an agent gets its models — Databricks hosted
     (``system.ai``), a Model Provider Service, or a custom Unity Catalog model location — and
     persist (or clear) the choice.
 
