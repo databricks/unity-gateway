@@ -175,37 +175,6 @@ def add_codex_mcp_server(name: str, argv: list[str]) -> None:
         raise RuntimeError(f"Failed to add MCP server '{name}' via codex CLI.") from exc
 
 
-def add_codex_http_mcp_server(name: str, url: str, client_id: str) -> None:
-    """Register a Databricks MCP endpoint as a **direct HTTP** server so Codex is the OAuth client
-    and drives the RFC 8707 connection login itself, instead of the token-injecting stdio proxy.
-
-    `--oauth-client-id` pins the published `codex-cli` app and `--oauth-resource` sends the
-    connection FQN as the RFC 8707 resource so `/oidc` drives the connection's SaaS login. Codex
-    derives its own per-server loopback `/callback/<hash>` redirect at login time; `/oidc` accepts
-    that unregistered path via the `enableCodexLoopbackRedirectExemption` flag (loopback host only)."""
-    try:
-        subprocess_cross_os.run(
-            [
-                "codex",
-                "mcp",
-                "add",
-                name,
-                "--url",
-                url,
-                "--oauth-client-id",
-                client_id,
-                "--oauth-resource",
-                url,
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except subprocess.CalledProcessError as exc:
-        raise RuntimeError(f"Failed to add HTTP MCP server '{name}' via codex CLI.") from exc
-
-
 def remove_codex_mcp_server(name: str) -> bool:
     try:
         result = subprocess_cross_os.run(
@@ -375,8 +344,12 @@ def configure_client_mcp_server(
             removed = cursor.write_http_mcp_server_config(name, url, client_id=http_client)
             return [MCP_USER_SCOPE] if removed else []
         if client == "codex":
-            removed = remove_codex_mcp_server(name)
-            add_codex_http_mcp_server(name, url, client_id=http_client)
+            # `codex mcp add --url` immediately starts browser OAuth after writing
+            # the entry. Register through the same TOML writer as the batched
+            # path so setup finishes without waiting for an OAuth callback.
+            removed = codex.write_user_mcp_servers(
+                {name: codex.managed_mcp_http_entry(url, http_client)}, {name}
+            )
             return [MCP_USER_SCOPE] if removed else []
 
     # Every other case registers the `ug mcp-proxy ...` stdio command; the proxy

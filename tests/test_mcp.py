@@ -386,11 +386,18 @@ class TestConfigureClientMcpServer:
         )
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
-        monkeypatch.setattr(mcp, "remove_codex_mcp_server", lambda name: False)
+
+        def write_http(add, remove):
+            name, entry = next(iter(add.items()))
+            assert remove == {name}
+            assert entry["oauth_resource"] == entry["url"]
+            http_calls.append((name, entry["url"], entry["oauth"]["client_id"]))
+            return set()
+
         monkeypatch.setattr(
-            mcp,
-            "add_codex_http_mcp_server",
-            lambda name, url, client_id: http_calls.append((name, url, client_id)),
+            mcp.codex,
+            "write_user_mcp_servers",
+            write_http,
         )
         monkeypatch.setattr(
             mcp, "add_codex_mcp_server", lambda name, argv: proxy_calls.append((name, argv))
