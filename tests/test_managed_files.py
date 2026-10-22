@@ -1414,7 +1414,10 @@ class TestManagedFileLifecycle:
             ("ucode/1.0 claude/2.1", "claude/2.1"),
             ("ucode/1.0 claude/2.1 (macos; arm64)", "claude/2.1"),
             ("ucode/1.0 claude/2.1 (windows; x86_64)", "claude/2.1"),
-            ("ucode/1.0 claude/2.1 (mac, os; arm64)", None),
+            ("ucode/1.0 claude/2.1 (macos 15.1; arm64)", "claude/2.1"),
+            ("ucode/1.0 claude/2.1 (linux ubuntu-24.04; x86_64)", "claude/2.1"),
+            ("ucode/1.0 claude/2.1 (anything, new: fields; v2)", "claude/2.1"),
+            ("ucode/1.0 claude/2.1 (a (nested))", None),
             ("ucode/1.0 claude/2.1 (macos; arm64) extra", None),
             ("ucode/1.0 codex/2.1 (macos; arm64)", None),
         ],
@@ -1428,6 +1431,7 @@ class TestManagedFileLifecycle:
             "ucode/0.9 claude/2.1",
             "ucode/1.0 claude/2.2 (macos; arm64)",
             "ucode/1.0 claude/2.2 (linux; x86_64)",
+            "ucode/1.0 claude/2.2 (macos 15.1; arm64)",
         ],
     )
     def test_platform_suffix_is_masked_with_the_versions(self, user_agent):

@@ -496,8 +496,9 @@ def _unwrap(value: object) -> object:
 _VERSION = r"[0-9A-Za-z.+_-]+"
 
 
-# Optional trailing ``(<os>; <arch>)``; absent in User-Agents written by older ug versions.
-_PLATFORM_SUFFIX = r"(?: \([a-z0-9_.-]+; [a-z0-9_.-]+\))?"
+# Optional trailing parenthesized platform; generic so new fields never break matching, and
+# absent in User-Agents written by older ug versions.
+_PLATFORM_SUFFIX = r"(?: \([^()]*\))?"
 
 
 def ug_agent_token(user_agent: str, agent: str) -> str | None:
