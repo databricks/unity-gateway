@@ -393,11 +393,10 @@ class TestPersistence:
         )
 
     @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no POSIX file modes")
-    def test_saved_file_is_0600(self, _managed_path):
+    def test_saved_file_is_0644(self, _managed_path):
         save_managed_state("https://ws.example.com", {"default_agent": "claude"})
         mode = stat.S_IMODE(os.stat(_managed_path).st_mode)
-        # Owner-only read/write; no group/other bits.
-        assert mode == 0o600
+        assert mode == 0o644
 
     def test_load_ignores_other_workspace(self, _managed_path):
         save_managed_state("https://ws-a.example.com", {"default_agent": "claude"})
@@ -409,12 +408,11 @@ class TestPersistence:
     def test_load_none_workspace_returns_none(self, _managed_path):
         assert load_managed_state(None) is None
 
-    def test_empty_config_overwrites_a_previous_one(self, _managed_path):
-        # Saving an empty config is how "the admin removed it" is recorded: the stored config must
-        # be replaced, not left behind for the read-failure fallback to reapply.
+    def test_empty_config_removes_a_matching_policy(self, _managed_path):
         save_managed_state("https://ws.example.com", {"default_agent": "claude"})
         save_managed_state("https://ws.example.com", {})
-        assert load_managed_state("https://ws.example.com") == {}
+        assert load_managed_state("https://ws.example.com") is None
+        assert not _managed_path.exists()
 
     def test_workspace_is_stored_alongside_the_config(self, _managed_path):
         # `ucode setup --show` reads this when local state carries no workspace yet, so the authored
@@ -425,18 +423,10 @@ class TestPersistence:
     def test_workspace_is_none_when_absent(self, _managed_path):
         assert managed_state_workspace() is None
 
-    def test_outcome_stamps_retrieved_at_and_outcome(self, _managed_path, monkeypatch):
-        # A read's outcome carries a retrieved_at stamp so the launch path can reuse it within the
-        # TTL; without an outcome the wrapper stays the bare {workspace, config} shape.
-        monkeypatch.setattr(mc_mod, "_utcnow", lambda: NOW)
-        save_managed_state("https://ws.example.com", RAW_MANIFEST, outcome="published")
+    def test_policy_contains_only_workspace_and_raw_config(self, _managed_path):
+        save_managed_state("https://ws.example.com", RAW_MANIFEST)
         stored = json.loads(_managed_path.read_text(encoding="utf-8"))
-        assert stored["outcome"] == "published"
-        assert stored["retrieved_at"] == NOW.isoformat()
-        save_managed_state("https://ws.example.com", {"default_agent": "claude"})
-        bare = json.loads(_managed_path.read_text(encoding="utf-8"))
-        assert "retrieved_at" not in bare
-        assert "outcome" not in bare
+        assert stored == {"workspace": "https://ws.example.com", "config": RAW_MANIFEST}
 
     def test_dry_run_writes_nothing(self, _managed_path, monkeypatch):
         # Under --dry-run the config writers print instead of touching disk, so a launch that
@@ -777,14 +767,13 @@ class TestRefreshTTL:
 
     @staticmethod
     def _write_cache(*, config, outcome, retrieved_at, workspace=WORKSPACE):
-        payload = {
-            "workspace": workspace,
-            "config": config,
+        save_managed_state(workspace, config)
+        entry = {
             "outcome": outcome,
-            "retrieved_at": retrieved_at.isoformat(),
+            "last_checked_at": retrieved_at.isoformat(),
+            "policy_fingerprint": mc_mod.managed_file_fingerprint(mc_mod.MANAGED_CONFIG_PATH),
         }
-        mc_mod.MANAGED_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        mc_mod.MANAGED_CONFIG_PATH.write_text(json.dumps(payload), encoding="utf-8")
+        mc_mod.REFRESH_TS_PATH.write_text(json.dumps({workspace: entry}), encoding="utf-8")
 
     @staticmethod
     def _no_fetch(monkeypatch):
@@ -846,7 +835,6 @@ class TestRefreshTTL:
         assert calls["n"] == 1
 
     def test_missing_timestamp_refetches(self, monkeypatch):
-        # An old-format file (no retrieved_at) is never treated as a fresh cache.
         save_managed_state(WORKSPACE, RAW_MANIFEST)
         calls = self._counting_fetch(monkeypatch)
         refresh_managed_config(_state())
@@ -871,8 +859,8 @@ class TestRefreshTTL:
 
     def test_other_workspace_cache_refetches(self, monkeypatch):
         self._write_cache(
-            config=RAW_MANIFEST,
-            outcome="published",
+            config={},
+            outcome="none",
             retrieved_at=NOW - timedelta(minutes=1),
             workspace="https://other.example.com",
         )
@@ -908,26 +896,30 @@ class TestRefreshTTL:
         refresh_managed_config(_state())
         stored = json.loads(mc_mod.MANAGED_CONFIG_PATH.read_text(encoding="utf-8"))
         assert stored["config"] == RAW_MANIFEST
-        assert stored["outcome"] == "published"
-        assert stored["retrieved_at"] == NOW.isoformat()
+        assert set(stored) == {"workspace", "config"}
+        entry = json.loads(mc_mod.REFRESH_TS_PATH.read_text())[WORKSPACE]
+        assert entry["outcome"] == "published"
+        assert entry["last_checked_at"] == NOW.isoformat()
+        if sys.platform != "win32":  # Windows has no POSIX file modes
+            assert stat.S_IMODE(mc_mod.REFRESH_TS_PATH.stat().st_mode) == 0o600
 
     def test_no_config_read_caches_none_outcome(self, monkeypatch):
         self._counting_fetch(monkeypatch, result=(None, None))
         refresh_managed_config(_state())
-        stored = json.loads(mc_mod.MANAGED_CONFIG_PATH.read_text(encoding="utf-8"))
-        assert stored["config"] == {}
+        assert not mc_mod.MANAGED_CONFIG_PATH.exists()
+        stored = json.loads(mc_mod.REFRESH_TS_PATH.read_text())[WORKSPACE]
         assert stored["outcome"] == "none"
-        assert stored["retrieved_at"] == NOW.isoformat()
+        assert stored["last_checked_at"] == NOW.isoformat()
 
     def test_feature_disabled_read_caches_feature_disabled_outcome(self, monkeypatch):
         reason = 'HTTP 400 Bad Request: {"error_code":"FEATURE_DISABLED"}'
         self._counting_fetch(monkeypatch, result=(None, reason))
         monkeypatch.setattr(mc_mod, "print_warning", lambda msg: None)
         refresh_managed_config(_state())
-        stored = json.loads(mc_mod.MANAGED_CONFIG_PATH.read_text(encoding="utf-8"))
-        assert stored["config"] == {}
+        assert not mc_mod.MANAGED_CONFIG_PATH.exists()
+        stored = json.loads(mc_mod.REFRESH_TS_PATH.read_text())[WORKSPACE]
         assert stored["outcome"] == "feature_disabled"
-        assert stored["retrieved_at"] == NOW.isoformat()
+        assert stored["last_checked_at"] == NOW.isoformat()
 
     def test_failed_read_does_not_advance_retrieved_at(self, monkeypatch):
         # A transient failure falls back to the last good config and must leave the stamp untouched,
@@ -939,8 +931,546 @@ class TestRefreshTTL:
         result, flag = refresh_managed_config(_state())
         assert result == normalize_managed_config(RAW_MANIFEST)
         assert flag is False
-        stored = json.loads(mc_mod.MANAGED_CONFIG_PATH.read_text(encoding="utf-8"))
-        assert stored["retrieved_at"] == stamped.isoformat()
+        stored = json.loads(mc_mod.REFRESH_TS_PATH.read_text())[WORKSPACE]
+        assert stored["last_checked_at"] == stamped.isoformat()
+
+
+class TestMachinePolicyRefresh:
+    @pytest.fixture(autouse=True)
+    def _stub_clock_and_fetch(self, monkeypatch):
+        monkeypatch.setattr(mc_mod, "_utcnow", lambda: NOW)
+        monkeypatch.setattr(mc_mod, "get_databricks_token", lambda ws, profile: "tok")
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (RAW_MANIFEST, None))
+
+    def test_unchanged_policy_never_invokes_privileged_writer(self, monkeypatch):
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        before = mc_mod.MANAGED_CONFIG_PATH.stat()
+        original = mc_mod.MANAGED_CONFIG_PATH.read_bytes()
+        monkeypatch.setattr(
+            mc_mod,
+            "update_workspace_policy",
+            lambda *args, **kwargs: pytest.fail("unchanged policy must not invoke sudo"),
+        )
+        assert refresh_managed_config(
+            _state(), force_refresh=True
+        ).manifest == normalize_managed_config(RAW_MANIFEST)
+        after = mc_mod.MANAGED_CONFIG_PATH.stat()
+        assert mc_mod.MANAGED_CONFIG_PATH.read_bytes() == original
+        assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
+        entry = json.loads(mc_mod.REFRESH_TS_PATH.read_text())[WORKSPACE]
+        assert entry["last_checked_at"] == NOW.isoformat()
+        assert set(entry) == {"last_checked_at", "outcome", "policy_fingerprint"}
+
+    def test_expired_unchanged_policy_advances_only_user_timestamp(self, monkeypatch):
+        refresh_managed_config(_state())
+        original = mc_mod.managed_file_fingerprint(mc_mod.MANAGED_CONFIG_PATH)
+        later = NOW + timedelta(minutes=6)
+        monkeypatch.setattr(mc_mod, "_utcnow", lambda: later)
+        monkeypatch.setattr(
+            mc_mod,
+            "update_workspace_policy",
+            lambda *args, **kwargs: pytest.fail("refresh must not rewrite unchanged policy"),
+        )
+        refresh_managed_config(_state())
+        assert mc_mod.managed_file_fingerprint(mc_mod.MANAGED_CONFIG_PATH) == original
+        assert (
+            json.loads(mc_mod.REFRESH_TS_PATH.read_text())[WORKSPACE]["last_checked_at"]
+            == later.isoformat()
+        )
+
+    def test_server_retrieval_time_change_does_not_trigger_sudo(self, monkeypatch):
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        checked = {**RAW_MANIFEST, "retrieved_time": NOW.isoformat()}
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (checked, None))
+        monkeypatch.setattr(
+            mc_mod,
+            "update_workspace_policy",
+            lambda *args, **kwargs: pytest.fail("server retrieval metadata is not policy drift"),
+        )
+        assert refresh_managed_config(_state()).manifest == normalize_managed_config(checked)
+        assert load_managed_configuration(WORKSPACE) == RAW_MANIFEST
+
+    @pytest.mark.parametrize("force_refresh", [False, True])
+    def test_only_explicit_configure_allows_policy_elevation(self, monkeypatch, force_refresh):
+        writes = []
+        installer = mc_mod.update_workspace_policy
+
+        def install(path, desired_text, *, interactive=False, allow_sudo=True):
+            writes.append((interactive, allow_sudo))
+            installer(path, desired_text, interactive=interactive, allow_sudo=allow_sudo)
+
+        monkeypatch.setattr(mc_mod, "update_workspace_policy", install)
+        refresh_managed_config(_state(), force_refresh=force_refresh)
+        assert writes == [(force_refresh, force_refresh)]
+
+    def test_denied_changed_policy_warns_and_reuses_installed_policy(self, monkeypatch):
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        changed = {**RAW_MANIFEST, "default_agent": "CODING_AGENT_CODEX"}
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (changed, None))
+        warnings = []
+
+        def denied(*args, **kwargs):
+            raise RuntimeError("sudo permission denied")
+
+        monkeypatch.setattr(mc_mod, "update_workspace_policy", denied)
+        monkeypatch.setattr(mc_mod, "print_warning", warnings.append)
+        result = refresh_managed_config(_state())
+        assert result == (normalize_managed_config(RAW_MANIFEST), False)
+        assert load_managed_configuration(WORKSPACE) == RAW_MANIFEST
+        assert "Ask your IT team or an administrator" in warnings[0]
+        assert "Continuing with the installed policy" in warnings[0]
+        assert "run `ug configure`" not in warnings[0]
+        monkeypatch.setattr(
+            mc_mod,
+            "get_managed_config",
+            lambda *args: pytest.fail("a checked-but-uninstalled change must still be throttled"),
+        )
+        assert refresh_managed_config(_state()) == result
+
+    def test_denied_initial_install_warns_and_applies_the_fetched_policy(self, monkeypatch):
+        """A root run that cannot install still governs this run with the fetched policy."""
+        warnings = []
+
+        def denied(*args, **kwargs):
+            raise RuntimeError("sudo permission denied")
+
+        monkeypatch.setattr(mc_mod, "update_workspace_policy", denied)
+        monkeypatch.setattr(mc_mod, "print_warning", warnings.append)
+        assert refresh_managed_config(_state()) == (normalize_managed_config(RAW_MANIFEST), False)
+        assert not mc_mod.MANAGED_CONFIG_PATH.exists()
+        assert "Continuing with the fetched policy for this run" in warnings[0]
+        assert "Ask your IT team or an administrator" in warnings[0]
+
+    def test_non_root_launch_applies_the_fetched_policy_without_installing(self, monkeypatch):
+        """A first launch before any configure is managed, as on main, and installs nothing."""
+        monkeypatch.setattr(mc_mod, "is_admin", lambda: False)
+        warnings = []
+        monkeypatch.setattr(mc_mod, "print_warning", warnings.append)
+        monkeypatch.setattr(
+            mc_mod,
+            "update_workspace_policy",
+            lambda *a, **k: pytest.fail("a non-root launch must not install the machine policy"),
+        )
+
+        result = refresh_managed_config(_state())
+
+        assert result.manifest == normalize_managed_config(RAW_MANIFEST)
+        assert not mc_mod.MANAGED_CONFIG_PATH.exists()
+        assert warnings == []
+
+    def test_non_root_configure_installs_the_policy(self, monkeypatch):
+        monkeypatch.setattr(mc_mod, "is_admin", lambda: False)
+
+        refresh_managed_config(_state(), force_refresh=True)
+
+        assert load_managed_configuration(WORKSPACE) == RAW_MANIFEST
+
+    def test_configure_reports_failed_install_and_preserves_policy(self, monkeypatch):
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        changed = {**RAW_MANIFEST, "default_agent": "CODING_AGENT_CODEX"}
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (changed, None))
+
+        def denied(*args, **kwargs):
+            raise RuntimeError("sudo permission denied")
+
+        monkeypatch.setattr(mc_mod, "update_workspace_policy", denied)
+        with pytest.raises(RuntimeError, match="run `ug configure`"):
+            refresh_managed_config(_state(), force_refresh=True)
+        assert load_managed_configuration(WORKSPACE) == RAW_MANIFEST
+        assert not mc_mod.REFRESH_TS_PATH.exists()
+
+    def test_no_remote_policy_never_creates_machine_file(self, monkeypatch):
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (None, None))
+        monkeypatch.setattr(
+            mc_mod,
+            "update_workspace_policy",
+            lambda *args, **kwargs: pytest.fail("no policy must not invoke sudo"),
+        )
+        assert refresh_managed_config(_state()) == (None, False)
+        assert not mc_mod.MANAGED_CONFIG_PATH.parent.exists()
+        assert json.loads(mc_mod.REFRESH_TS_PATH.read_text())[WORKSPACE]["outcome"] == "none"
+
+    def test_removed_policy_is_deleted_instead_of_replaced_with_empty_file(self, monkeypatch):
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (None, None))
+        assert refresh_managed_config(_state()) == (None, False)
+        assert not mc_mod.MANAGED_CONFIG_PATH.exists()
+
+    @pytest.mark.parametrize("reason", [None, "FEATURE_DISABLED"])
+    def test_failed_policy_removal_warns_and_preserves_installed_policy(self, monkeypatch, reason):
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (None, reason))
+        warnings = []
+
+        def denied(*args, **kwargs):
+            raise RuntimeError("sudo permission denied")
+
+        monkeypatch.setattr(mc_mod, "update_workspace_policy", denied)
+        monkeypatch.setattr(mc_mod, "print_warning", warnings.append)
+        # A disabled feature stays reported, so callers still skip the setup recommendation.
+        feature_disabled = reason is not None and "FEATURE_DISABLED" in reason
+        assert refresh_managed_config(_state()) == (
+            normalize_managed_config(RAW_MANIFEST),
+            feature_disabled,
+        )
+        assert load_managed_configuration(WORKSPACE) == RAW_MANIFEST
+        assert warnings
+
+    def test_configure_for_a_workspace_without_policy_removes_another_workspaces(self, monkeypatch):
+        """`ug configure` decides the machine's workspace, even when it publishes no policy."""
+        save_managed_state("https://other.example.com", RAW_MANIFEST)
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (None, None))
+
+        assert refresh_managed_config(_state(), force_refresh=True) == (None, False)
+
+        assert not mc_mod.MANAGED_CONFIG_PATH.exists()
+        assert managed_state_workspace() is None
+
+    def test_launch_never_removes_another_workspaces_policy(self):
+        """Only `ug configure` changes the machine's workspace; a launch is refused instead."""
+        save_managed_state("https://other.example.com", RAW_MANIFEST)
+
+        with pytest.raises(RuntimeError, match="Launch refused"):
+            refresh_managed_config(_state())
+
+        assert load_managed_configuration("https://other.example.com") == RAW_MANIFEST
+
+    def test_launch_for_another_workspace_without_policy_keeps_it(self):
+        """Only an explicit configure may remove another workspace's policy."""
+        save_managed_state("https://other.example.com", RAW_MANIFEST)
+
+        save_managed_state(WORKSPACE, {}, allow_sudo=False)
+
+        assert load_managed_configuration("https://other.example.com") == RAW_MANIFEST
+
+    def test_timestamps_are_keyed_by_workspace_without_policy_copies(self, monkeypatch):
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (None, None))
+        refresh_managed_config(_state())
+        refresh_managed_config({"workspace": "https://other.example.com"})
+        entries = json.loads(mc_mod.REFRESH_TS_PATH.read_text())
+        assert set(entries) == {WORKSPACE, "https://other.example.com"}
+        assert all("config" not in entry for entry in entries.values())
+
+    def test_workspace_urls_with_trailing_slash_share_policy_and_timestamp(self, monkeypatch):
+        refresh_managed_config(_state())
+        monkeypatch.setattr(
+            mc_mod,
+            "get_managed_config",
+            lambda *args: pytest.fail("canonical workspace should reuse the check"),
+        )
+        assert refresh_managed_config({"workspace": WORKSPACE + "/"}) == (
+            normalize_managed_config(RAW_MANIFEST),
+            False,
+        )
+
+    def test_external_policy_change_invalidates_recent_stamp(self, monkeypatch):
+        refresh_managed_config(_state())
+        changed = {**RAW_MANIFEST, "default_agent": "CODING_AGENT_CODEX"}
+        save_managed_state(WORKSPACE, changed)
+        fetches = []
+
+        def fetch(*args):
+            fetches.append(args)
+            return changed, None
+
+        monkeypatch.setattr(mc_mod, "get_managed_config", fetch)
+        assert refresh_managed_config(_state()).manifest == normalize_managed_config(changed)
+        assert len(fetches) == 1
+
+    def test_legacy_home_cache_is_not_a_policy_fallback(self, monkeypatch):
+        legacy = config_io_mod.APP_DIR / "managed-config.json"
+        legacy.write_text(json.dumps({"workspace": WORKSPACE, "config": RAW_MANIFEST}))
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (None, "HTTP 503"))
+        assert refresh_managed_config(_state()) == (None, False)
+        assert not mc_mod.MANAGED_CONFIG_PATH.exists()
+
+    def test_launch_dry_run_does_not_fetch_or_stamp(self, monkeypatch):
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        monkeypatch.setattr(config_io_mod, "is_dry_run", lambda: True)
+        monkeypatch.setattr(
+            mc_mod, "get_managed_config", lambda *args: pytest.fail("dry run must be offline")
+        )
+        assert refresh_managed_config(_state()) == (normalize_managed_config(RAW_MANIFEST), False)
+        assert not mc_mod.REFRESH_TS_PATH.exists()
+
+    @staticmethod
+    def _deny_policy_updates(monkeypatch):
+        warnings = []
+
+        def denied(*args, **kwargs):
+            raise RuntimeError("administrator update required")
+
+        monkeypatch.setattr(mc_mod, "update_workspace_policy", denied)
+        monkeypatch.setattr(mc_mod, "print_warning", warnings.append)
+        return warnings
+
+    def test_same_pending_change_warns_once_across_expired_checks(self, monkeypatch):
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        original = mc_mod.managed_file_fingerprint(mc_mod.MANAGED_CONFIG_PATH)
+        changed = {**RAW_MANIFEST, "default_agent": "CODING_AGENT_CODEX"}
+        fetches = []
+
+        def fetch(workspace, token):
+            fetches.append(workspace)
+            return changed, None
+
+        monkeypatch.setattr(mc_mod, "get_managed_config", fetch)
+        warnings = self._deny_policy_updates(monkeypatch)
+        for minutes in (0, 6, 12, 24 * 60):
+            checked_at = NOW + timedelta(minutes=minutes)
+            monkeypatch.setattr(mc_mod, "_utcnow", lambda checked_at=checked_at: checked_at)
+            assert refresh_managed_config(_state()) == (
+                normalize_managed_config(RAW_MANIFEST),
+                False,
+            )
+            entry = json.loads(mc_mod.REFRESH_TS_PATH.read_text())[WORKSPACE]
+            assert entry["last_checked_at"] == checked_at.isoformat()
+            assert len(entry["pending_config_hash"]) == 64
+            assert "config" not in entry
+        assert fetches == [WORKSPACE] * 4
+        assert len(warnings) == 1
+        assert mc_mod.managed_file_fingerprint(mc_mod.MANAGED_CONFIG_PATH) == original
+        if sys.platform != "win32":  # Windows has no POSIX file modes
+            assert stat.S_IMODE(mc_mod.REFRESH_TS_PATH.stat().st_mode) == 0o600
+
+    def test_distinct_pending_change_warns_again(self, monkeypatch):
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        warnings = self._deny_policy_updates(monkeypatch)
+        hashes = []
+        for index, default_agent in enumerate(("CODING_AGENT_CODEX", "CODING_AGENT_GEMINI")):
+            changed = {**RAW_MANIFEST, "default_agent": default_agent}
+            monkeypatch.setattr(
+                mc_mod, "get_managed_config", lambda *args, changed=changed: (changed, None)
+            )
+            checked_at = NOW + timedelta(minutes=index * 6)
+            monkeypatch.setattr(mc_mod, "_utcnow", lambda checked_at=checked_at: checked_at)
+            refresh_managed_config(_state())
+            hashes.append(
+                json.loads(mc_mod.REFRESH_TS_PATH.read_text())[WORKSPACE]["pending_config_hash"]
+            )
+        assert len(warnings) == 2
+        assert hashes[0] != hashes[1]
+
+    def test_pending_hash_ignores_retrieval_time_and_object_key_order(self, monkeypatch):
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        changed = {**RAW_MANIFEST, "default_agent": "CODING_AGENT_CODEX"}
+        warnings = self._deny_policy_updates(monkeypatch)
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda *args: (changed, None))
+        refresh_managed_config(_state())
+        first_hash = json.loads(mc_mod.REFRESH_TS_PATH.read_text())[WORKSPACE][
+            "pending_config_hash"
+        ]
+        checked = dict(reversed(list({**changed, "retrieved_time": NOW.isoformat()}.items())))
+        monkeypatch.setattr(mc_mod, "_utcnow", lambda: NOW + timedelta(minutes=6))
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda *args: (checked, None))
+        refresh_managed_config(_state())
+        assert len(warnings) == 1
+        assert (
+            json.loads(mc_mod.REFRESH_TS_PATH.read_text())[WORKSPACE]["pending_config_hash"]
+            == first_hash
+        )
+
+    @pytest.mark.parametrize("reason", [None, "FEATURE_DISABLED"])
+    def test_pending_removal_warns_once_across_expired_checks(self, monkeypatch, reason):
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        warnings = self._deny_policy_updates(monkeypatch)
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda *args: (None, reason))
+        for minutes in (0, 6, 12):
+            checked_at = NOW + timedelta(minutes=minutes)
+            monkeypatch.setattr(mc_mod, "_utcnow", lambda checked_at=checked_at: checked_at)
+            assert refresh_managed_config(_state()).manifest == normalize_managed_config(
+                RAW_MANIFEST
+            )
+        assert len(warnings) == 1
+        assert "pending_config_hash" in json.loads(mc_mod.REFRESH_TS_PATH.read_text())[WORKSPACE]
+
+    @pytest.mark.parametrize("reconciled_by", ["remote", "mdm", "configure"])
+    def test_reconciliation_clears_pending_hash(self, monkeypatch, reconciled_by):
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        installer = mc_mod.update_workspace_policy
+        changed = {**RAW_MANIFEST, "default_agent": "CODING_AGENT_CODEX"}
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda *args: (changed, None))
+        warnings = self._deny_policy_updates(monkeypatch)
+        refresh_managed_config(_state())
+        assert "pending_config_hash" in json.loads(mc_mod.REFRESH_TS_PATH.read_text())[WORKSPACE]
+        monkeypatch.setattr(mc_mod, "_utcnow", lambda: NOW + timedelta(minutes=6))
+        if reconciled_by == "remote":
+            monkeypatch.setattr(mc_mod, "get_managed_config", lambda *args: (RAW_MANIFEST, None))
+        elif reconciled_by == "mdm":
+            installer(
+                mc_mod.MANAGED_CONFIG_PATH,
+                json.dumps({"workspace": WORKSPACE, "config": changed}),
+            )
+        else:
+            monkeypatch.setattr(mc_mod, "update_workspace_policy", installer)
+        refresh_managed_config(_state(), force_refresh=reconciled_by == "configure")
+        assert len(warnings) == 1
+        assert (
+            "pending_config_hash" not in json.loads(mc_mod.REFRESH_TS_PATH.read_text())[WORKSPACE]
+        )
+
+    def test_reintroduced_change_warns_after_remote_reverts(self, monkeypatch):
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        changed = {**RAW_MANIFEST, "default_agent": "CODING_AGENT_CODEX"}
+        warnings = self._deny_policy_updates(monkeypatch)
+        for index, remote in enumerate((changed, RAW_MANIFEST, changed)):
+            checked_at = NOW + timedelta(minutes=index * 6)
+            monkeypatch.setattr(mc_mod, "_utcnow", lambda checked_at=checked_at: checked_at)
+            monkeypatch.setattr(
+                mc_mod, "get_managed_config", lambda *args, remote=remote: (remote, None)
+            )
+            refresh_managed_config(_state())
+        assert len(warnings) == 2
+
+    def test_fetch_failure_preserves_pending_hash_and_check_time(self, monkeypatch):
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        changed = {**RAW_MANIFEST, "default_agent": "CODING_AGENT_CODEX"}
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda *args: (changed, None))
+        self._deny_policy_updates(monkeypatch)
+        refresh_managed_config(_state())
+        original = mc_mod.REFRESH_TS_PATH.read_bytes()
+        monkeypatch.setattr(mc_mod, "_utcnow", lambda: NOW + timedelta(minutes=6))
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda *args: (None, "HTTP 503"))
+        refresh_managed_config(_state())
+        assert mc_mod.REFRESH_TS_PATH.read_bytes() == original
+
+
+class TestPolicyWithoutInstallation:
+    """Windows and UG_SKIP_OS_SETTINGS can't hold an installed policy."""
+
+    @pytest.fixture(autouse=True)
+    def _stub_clock_and_fetch(self, monkeypatch):
+        monkeypatch.setattr(mc_mod, "_utcnow", lambda: NOW)
+        monkeypatch.setattr(mc_mod, "get_databricks_token", lambda ws, profile: "tok")
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (RAW_MANIFEST, None))
+
+    @pytest.fixture(params=["skip_os_settings", "windows"])
+    def not_installable(self, request, monkeypatch):
+        if request.param == "skip_os_settings":
+            monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
+        else:
+            monkeypatch.setattr(mc_mod, "current_os", lambda: mc_mod.OS.WINDOWS)
+        monkeypatch.setattr(
+            mc_mod,
+            "update_workspace_policy",
+            lambda *a, **k: pytest.fail("nothing may be installed where policy can't be"),
+        )
+
+    @pytest.mark.parametrize("force_refresh", [False, True])
+    def test_fetched_policy_applies_without_installing(self, not_installable, force_refresh):
+        result = refresh_managed_config(_state(), force_refresh=force_refresh)
+
+        assert result.manifest == normalize_managed_config(RAW_MANIFEST)
+        assert not mc_mod.MANAGED_CONFIG_PATH.exists()
+
+    def test_installed_policy_still_wins_with_skip(self, monkeypatch, capsys):
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
+        changed = {**RAW_MANIFEST, "default_agent": "CODING_AGENT_CODEX"}
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (changed, None))
+
+        def unavailable(*_a, **_k):
+            raise RuntimeError(
+                "Machine-wide workspace policy is supported only on Linux and macOS."
+            )
+
+        monkeypatch.setattr(mc_mod, "update_workspace_policy", unavailable)
+
+        result = refresh_managed_config(_state())
+
+        assert result.manifest == normalize_managed_config(RAW_MANIFEST)
+        assert load_managed_configuration(WORKSPACE) == RAW_MANIFEST
+        output = " ".join(capsys.readouterr().out.split())
+        assert "UG_SKIP_OS_SETTINGS is set" in output
+        assert "Continuing with the installed policy" in output
+
+    def test_configure_with_skip_degrades_like_a_launch(self, monkeypatch, capsys):
+        """The installed policy can't be updated with the opt-out, so configure warns, not fails."""
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
+        changed = {**RAW_MANIFEST, "default_agent": "CODING_AGENT_CODEX"}
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (changed, None))
+
+        def unavailable(*_a, **_k):
+            raise RuntimeError(
+                "Machine-wide workspace policy is supported only on Linux and macOS."
+            )
+
+        monkeypatch.setattr(mc_mod, "update_workspace_policy", unavailable)
+
+        result = refresh_managed_config(_state(), force_refresh=True)
+
+        assert result.manifest == normalize_managed_config(RAW_MANIFEST)
+        assert "UG_SKIP_OS_SETTINGS is set" in " ".join(capsys.readouterr().out.split())
+
+
+class TestInstalledWorkspaceLaunch:
+    @pytest.mark.parametrize("dry_run", [False, True])
+    def test_mismatched_launch_is_refused_before_cache_auth_fetch_or_write(
+        self, monkeypatch, dry_run
+    ):
+        save_managed_state("https://installed.example.com", RAW_MANIFEST)
+        original = mc_mod.MANAGED_CONFIG_PATH.read_bytes()
+        monkeypatch.setattr(config_io_mod, "is_dry_run", lambda: dry_run)
+        for helper in (
+            "_cached_result_if_fresh",
+            "get_databricks_token",
+            "get_managed_config",
+            "save_managed_state",
+        ):
+            monkeypatch.setattr(
+                mc_mod, helper, lambda *args, **kwargs: pytest.fail("mismatch must fail first")
+            )
+        with pytest.raises(RuntimeError, match="Launch refused") as error:
+            refresh_managed_config(_state())
+        assert "https://installed.example.com" in str(error.value)
+        assert WORKSPACE in str(error.value)
+        assert "IT team or an administrator" in str(error.value)
+        assert mc_mod.MANAGED_CONFIG_PATH.read_bytes() == original
+        assert not mc_mod.REFRESH_TS_PATH.exists()
+
+    @pytest.mark.parametrize(
+        "selected", [None, WORKSPACE, WORKSPACE + "/", WORKSPACE.removeprefix("https://")]
+    )
+    def test_installed_workspace_is_the_refresh_source(self, monkeypatch, selected):
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        calls = []
+
+        def token(workspace, profile):
+            assert workspace == WORKSPACE
+            assert profile == "developer"
+            return "tok"
+
+        def fetch(workspace, token):
+            calls.append(workspace)
+            return RAW_MANIFEST, None
+
+        monkeypatch.setattr(mc_mod, "get_databricks_token", token)
+        monkeypatch.setattr(mc_mod, "get_managed_config", fetch)
+        assert refresh_managed_config({"workspace": selected, "profile": "developer"}).manifest == (
+            normalize_managed_config(RAW_MANIFEST)
+        )
+        assert calls == [WORKSPACE]
+
+    def test_foreign_warm_unmanaged_stamp_cannot_bypass_installed_workspace(self, monkeypatch):
+        mc_mod._record_refresh(WORKSPACE, mc_mod.ManagedConfigResult(None, False))
+        save_managed_state("https://installed.example.com", RAW_MANIFEST)
+        entry = json.loads(mc_mod.REFRESH_TS_PATH.read_text())
+        entry[WORKSPACE]["policy_fingerprint"] = mc_mod.managed_file_fingerprint(
+            mc_mod.MANAGED_CONFIG_PATH
+        )
+        mc_mod.REFRESH_TS_PATH.write_text(json.dumps(entry))
+        with pytest.raises(RuntimeError, match="Launch refused"):
+            refresh_managed_config(_state())
+
+    def test_explicit_configure_can_replace_the_machine_workspace(self, monkeypatch):
+        save_managed_state("https://installed.example.com", RAW_MANIFEST)
+        monkeypatch.setattr(mc_mod, "get_databricks_token", lambda *args: "tok")
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda *args: (RAW_MANIFEST, None))
+        assert refresh_managed_config(_state(), force_refresh=True).manifest == (
+            normalize_managed_config(RAW_MANIFEST)
+        )
+        assert managed_state_workspace() == WORKSPACE
 
 
 class TestManagedUpdateTime:

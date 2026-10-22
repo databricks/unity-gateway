@@ -163,6 +163,12 @@ def session(request, installed_binary):
                     # Installation checks are noninteractive; if a regression
                     # creates state, still clean it through the installed CLI.
                     user.run("revert", timeout=120)
+            # `ug revert` keeps the machine's workspace policy; remove it like an uninstall so a
+            # later fresh-home case, or the next run's policy preflight, starts clean.
+            policy = Path("/etc/unitygateway/managed-settings.json")
+            sudo = shutil.which("sudo")
+            if os.name == "posix" and policy.exists() and sudo:
+                user.run("-n", "rm", "-f", str(policy), binary=Path(sudo), timeout=30)
 
 
 @pytest.fixture

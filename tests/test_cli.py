@@ -6206,6 +6206,127 @@ class TestSkipPreflightFlag:
         assert cfg.call_args.kwargs["skip_preflight"] is False
 
 
+class TestDeniedMachineWorkspaceSwitch:
+    INSTALLED = "https://installed.example.com"
+    SELECTED = "https://selected.example.com"
+
+    @pytest.mark.parametrize("published", [True, False], ids=["replace", "remove"])
+    def test_denied_switch_keeps_the_saved_workspace_on_the_installed_one(
+        self, monkeypatch, published
+    ):
+        """Configure saves B first; when it can't replace or remove A's policy, launches stay on A."""
+        import ucode.managed_config as mc_mod
+        from ucode.managed_config import load_managed_configuration, save_managed_state
+        from ucode.state import load_state
+
+        save_managed_state(self.INSTALLED, {"default_agent": "CODING_AGENT_CLAUDE_CODE"})
+        cli_mod.set_current_workspace(self.SELECTED)
+        monkeypatch.setattr(mc_mod, "get_databricks_token", lambda *_a: "tok")
+        raw = {"default_agent": "CODING_AGENT_CODEX"} if published else None
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda *_a: (raw, None))
+
+        def denied(*_a, **_k):
+            raise RuntimeError("sudo: a password is required")
+
+        monkeypatch.setattr(mc_mod, "update_workspace_policy", denied)
+
+        with pytest.raises(RuntimeError, match="needs sudo"):
+            cli_mod._refresh_configured_policy({"workspace": self.SELECTED, "profile": None})
+
+        assert load_state().get("workspace") == self.INSTALLED
+        assert load_managed_configuration(self.INSTALLED) == {
+            "default_agent": "CODING_AGENT_CLAUDE_CODE"
+        }
+
+
+class TestInstalledMachineWorkspace:
+    INSTALLED = "https://installed.example.com"
+    SELECTED = "https://selected.example.com"
+
+    # Every agent takes the same `_launch_tool` path, so Claude stands in for the agents next to
+    # the bare launch.
+    @pytest.mark.parametrize(
+        ("selection", "tool"),
+        [("state", None), ("state", "claude"), ("flag", None), ("flag", "claude")],
+    )
+    @pytest.mark.parametrize("dry_run", [False, True])
+    def test_foreign_workspace_launch_fails_before_setup(
+        self, monkeypatch, tool, selection, dry_run
+    ):
+        from ucode.managed_config import save_managed_state
+
+        cli_mod.set_dry_run(False)
+        save_managed_state(self.INSTALLED, {"default_agent": "CODING_AGENT_CLAUDE_CODE"})
+        monkeypatch.setattr(
+            cli_mod,
+            "load_state",
+            lambda: {
+                **MINIMAL_STATE,
+                "workspace": self.SELECTED if selection == "state" else self.INSTALLED,
+            },
+        )
+        for helper in (
+            "set_current_workspace",
+            "apply_pat_environment",
+            "install_databricks_cli",
+            "ensure_bootstrap_dependencies",
+            "ensure_provider_state",
+            "refresh_managed_config",
+            "launch_agent",
+        ):
+            monkeypatch.setattr(
+                cli_mod,
+                helper,
+                lambda *args, **kwargs: pytest.fail("mismatch must fail before setup"),
+            )
+        args = [tool] if tool else []
+        args += ["--skip-preflight"]
+        if selection == "flag":
+            args += ["--workspace", self.SELECTED]
+        if dry_run:
+            args = ["--dry-run", *args]
+        result = runner.invoke(app, args)
+        assert result.exit_code == 1, result.output
+        output = " ".join(_strip_ansi(result.output).split())
+        assert "Launch refused" in output
+        assert self.INSTALLED in output
+        assert self.SELECTED in output
+        assert "IT team or an administrator" in output
+
+    def test_bare_launch_without_user_workspace_uses_installed_workspace(self, monkeypatch):
+        from ucode.managed_config import save_managed_state
+
+        cli_mod.set_dry_run(False)
+        save_managed_state(self.INSTALLED, {"default_agent": "CODING_AGENT_CLAUDE_CODE"})
+        state = {}
+        selected = []
+        refreshed = []
+        launched = []
+        managed = {"default_agent": "claude", "enabled_agents": {"claude": {}}}
+
+        def select(workspace):
+            selected.append(workspace)
+            state["workspace"] = workspace
+
+        def refresh(current):
+            refreshed.append(current["workspace"])
+            return managed, False
+
+        monkeypatch.setattr(cli_mod, "load_state", lambda: state.copy())
+        monkeypatch.setattr(cli_mod, "set_current_workspace", select)
+        monkeypatch.setattr(cli_mod, "install_databricks_cli", lambda **kwargs: None)
+        monkeypatch.setattr(cli_mod, "apply_pat_environment", lambda *args: None)
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", refresh)
+        monkeypatch.setattr(cli_mod, "_fetch_budget_recommendation", lambda *args: None)
+        monkeypatch.setattr(
+            cli_mod, "_launch_tool", lambda tool, ctx, **kwargs: launched.append(tool)
+        )
+        result = runner.invoke(app, [])
+        assert result.exit_code == 0, result.output
+        assert selected == refreshed == [self.INSTALLED]
+        assert launched == ["claude"]
+
+
 class TestRejectDisabledAgent:
     """`enabled_agents` is an allowlist: an agent the admin didn't enable would launch unmanaged."""
 
