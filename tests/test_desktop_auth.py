@@ -320,7 +320,7 @@ def test_waiting_for_login_lock_stops_at_deadline(cli, monkeypatch, tmp_path):
         desktop_auth.acquire_exclusive_file_lock(held_lock)
         try:
             with pytest.raises(
-                desktop_auth.ClaudeDesktopAuthError, match="another Databricks sign-in"
+                desktop_auth.ClaudeDesktopAuthError, match="another sign-in"
             ) as raised:
                 desktop_auth.get_claude_desktop_token(HOST, PROFILE)
             assert raised.value.kind == "network"
@@ -407,7 +407,7 @@ def test_budget_exhausted_after_login_stops_before_final_fetch(cli, monkeypatch,
 
     monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", run)
 
-    with pytest.raises(desktop_auth.ClaudeDesktopAuthError, match="sign-in timed out") as raised:
+    with pytest.raises(desktop_auth.ClaudeDesktopAuthError, match="refresh timed out") as raised:
         desktop_auth.get_claude_desktop_token(HOST, PROFILE)
 
     assert raised.value.kind == "network"
@@ -453,6 +453,33 @@ def test_relay_credential_combines_keychain_and_databricks_tokens(monkeypatch):
         "Claude Code-credentials",
         "-w",
     ]
+
+
+def test_relay_credential_uses_custom_config_keychain_service(monkeypatch):
+    monkeypatch.setattr(desktop_auth.sys, "platform", "darwin")
+    monkeypatch.setenv("USER", "desktop-user")
+    monkeypatch.setenv(desktop_auth.CLAUDE_CONFIG_DIR_ENV, "/custom/claude")
+    monkeypatch.setattr(
+        desktop_auth,
+        "get_claude_desktop_token",
+        lambda host, profile: "databricks-token",
+    )
+    credentials = {
+        "claudeAiOauth": {
+            "accessToken": "anthropic-token",
+            "expiresAt": int((time.time() + 3600) * 1000),
+        }
+    }
+    run = Mock(
+        return_value=subprocess.CompletedProcess([], 0, stdout=json.dumps(credentials), stderr="")
+    )
+    monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", run)
+
+    desktop_auth.get_claude_desktop_relay_credential(
+        HOST, PROFILE, "/Applications/Claude Code.app/Contents/MacOS/claude"
+    )
+
+    assert run.call_args.args[0][5] == "Claude Code-credentials-7427f042"
 
 
 @pytest.mark.parametrize("platform", ["linux", "win32"])
@@ -502,10 +529,7 @@ def test_relay_credential_reads_file_credentials_on_linux_and_windows(
     run.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    "expires_at",
-    [None, "1770000000000", True, float("nan"), float("inf")],
-)
+@pytest.mark.parametrize("expires_at", [None, "1770000000000", True, float("nan"), float("inf")])
 def test_subscription_credential_rejects_invalid_expiry(monkeypatch, expires_at):
     monkeypatch.setattr(
         desktop_auth,
@@ -516,17 +540,6 @@ def test_subscription_credential_rejects_invalid_expiry(monkeypatch, expires_at)
                 "expiresAt": expires_at,
             }
         },
-    )
-
-    with pytest.raises(desktop_auth.ClaudeDesktopAuthError, match="credentials are invalid"):
-        desktop_auth._claude_subscription_token()
-
-
-def test_subscription_credential_rejects_missing_expiry(monkeypatch):
-    monkeypatch.setattr(
-        desktop_auth,
-        "_read_claude_credentials",
-        lambda: {"claudeAiOauth": {"accessToken": "anthropic-token"}},
     )
 
     with pytest.raises(desktop_auth.ClaudeDesktopAuthError, match="credentials are invalid"):
@@ -551,33 +564,55 @@ def test_relay_credential_uses_explicit_claude_oauth_token(monkeypatch):
     run.assert_not_called()
 
 
-def test_relay_credential_logs_in_when_keychain_token_will_expire(monkeypatch):
-    monkeypatch.setattr(desktop_auth.sys, "platform", "darwin")
-    monkeypatch.setenv("USER", "desktop-user")
-    monkeypatch.setenv(desktop_auth.CLAUDE_HELPER_CONTEXT_ENV, "interactive")
+def test_relay_credential_rejects_invalid_explicit_claude_oauth_token(monkeypatch):
+    monkeypatch.setenv(desktop_auth.CLAUDE_CODE_OAUTH_TOKEN_ENV, "invalid token")
     monkeypatch.setattr(
         desktop_auth,
         "get_claude_desktop_token",
         lambda host, profile: "databricks-token",
     )
-    now = time.time()
-    expired = {
-        "claudeAiOauth": {
-            "accessToken": "old-token",
-            "expiresAt": int((now + 60) * 1000),
+    run = Mock()
+    monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", run)
+
+    with pytest.raises(desktop_auth.ClaudeDesktopAuthError, match="Unset or replace it") as raised:
+        desktop_auth.get_claude_desktop_relay_credential(HOST, PROFILE, "/opt/claude/bin/claude")
+
+    assert raised.value.kind == "config"
+    run.assert_not_called()
+
+
+def _subscription_credentials(expires_in_seconds: int, token: str) -> str:
+    return json.dumps(
+        {
+            "claudeAiOauth": {
+                "accessToken": token,
+                "expiresAt": int((time.time() + expires_in_seconds) * 1000),
+            }
         }
-    }
-    fresh = {
-        "claudeAiOauth": {
-            "accessToken": "fresh-token",
-            "expiresAt": int((now + 3600) * 1000),
-        }
-    }
+    )
+
+
+def test_relay_credential_silently_refreshes_expiring_token(monkeypatch, tmp_path):
+    monkeypatch.setattr(desktop_auth.sys, "platform", "darwin")
+    monkeypatch.setenv("USER", "desktop-user")
+    monkeypatch.setattr(desktop_auth, "_AUTH_LOCK_PATH", tmp_path / "auth.lock")
+    monkeypatch.setattr(
+        desktop_auth,
+        "get_claude_desktop_token",
+        lambda host, profile: "databricks-token",
+    )
     run = Mock(
         side_effect=[
-            subprocess.CompletedProcess([], 0, stdout=json.dumps(expired), stderr=""),
+            subprocess.CompletedProcess(
+                [], 0, stdout=_subscription_credentials(60, "old-token"), stderr=""
+            ),
+            subprocess.CompletedProcess(
+                [], 0, stdout=_subscription_credentials(60, "old-token"), stderr=""
+            ),
             subprocess.CompletedProcess([], 0, stdout="", stderr=""),
-            subprocess.CompletedProcess([], 0, stdout=json.dumps(fresh), stderr=""),
+            subprocess.CompletedProcess(
+                [], 0, stdout=_subscription_credentials(3600, "fresh-token"), stderr=""
+            ),
         ]
     )
     monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", run)
@@ -587,8 +622,145 @@ def test_relay_credential_logs_in_when_keychain_token_will_expire(monkeypatch):
     )
 
     assert credential["token"] == "fresh-token"
-    assert [call.args[0][1:3] for call in run.call_args_list] == [
-        ["find-generic-password", "-a"],
-        ["auth", "login"],
-        ["find-generic-password", "-a"],
+    assert [call.args[0][1] for call in run.call_args_list] == [
+        "find-generic-password",
+        "find-generic-password",
+        "auth",
+        "find-generic-password",
     ]
+    assert run.call_args_list[2].args[0][1:3] == ["auth", "status"]
+
+
+def test_relay_credential_noninteractive_refresh_failure_does_not_open_browser(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(desktop_auth.sys, "platform", "darwin")
+    monkeypatch.setenv("USER", "desktop-user")
+    monkeypatch.setattr(desktop_auth, "_AUTH_LOCK_PATH", tmp_path / "auth.lock")
+    monkeypatch.setattr(
+        desktop_auth,
+        "get_claude_desktop_token",
+        lambda host, profile: "databricks-token",
+    )
+    expired = _subscription_credentials(60, "old-token")
+    run = Mock(
+        side_effect=[
+            subprocess.CompletedProcess([], 0, stdout=expired, stderr=""),
+            subprocess.CompletedProcess([], 0, stdout=expired, stderr=""),
+            subprocess.CompletedProcess([], 1, stdout="", stderr="not refreshed"),
+            subprocess.CompletedProcess([], 0, stdout=expired, stderr=""),
+        ]
+    )
+    monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", run)
+
+    with pytest.raises(desktop_auth.ClaudeDesktopAuthError, match="expired"):
+        desktop_auth.get_claude_desktop_relay_credential(HOST, PROFILE, "/opt/claude/bin/claude")
+
+    assert [call.args[0][1:3] for call in run.call_args_list if call.args[0][1] == "auth"] == [
+        ["auth", "status"]
+    ]
+
+
+def test_relay_credential_logs_in_when_silent_refresh_does_not_renew(monkeypatch, tmp_path):
+    monkeypatch.setattr(desktop_auth.sys, "platform", "darwin")
+    monkeypatch.setenv("USER", "desktop-user")
+    monkeypatch.setenv(desktop_auth.CLAUDE_HELPER_CONTEXT_ENV, "interactive")
+    monkeypatch.setattr(desktop_auth, "_AUTH_LOCK_PATH", tmp_path / "auth.lock")
+    monkeypatch.setattr(
+        desktop_auth,
+        "get_claude_desktop_token",
+        lambda host, profile: "databricks-token",
+    )
+    expired = _subscription_credentials(60, "old-token")
+    run = Mock(
+        side_effect=[
+            subprocess.CompletedProcess([], 0, stdout=expired, stderr=""),
+            subprocess.CompletedProcess([], 0, stdout=expired, stderr=""),
+            subprocess.CompletedProcess([], 1, stdout="", stderr="not refreshed"),
+            subprocess.CompletedProcess([], 0, stdout=expired, stderr=""),
+            subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+            subprocess.CompletedProcess(
+                [], 0, stdout=_subscription_credentials(3600, "fresh-token"), stderr=""
+            ),
+        ]
+    )
+    monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", run)
+
+    credential = desktop_auth.get_claude_desktop_relay_credential(
+        HOST, PROFILE, "/opt/claude/bin/claude"
+    )
+
+    assert credential["token"] == "fresh-token"
+    assert [call.args[0][1:3] for call in run.call_args_list if call.args[0][1] == "auth"] == [
+        ["auth", "status"],
+        ["auth", "login"],
+    ]
+
+
+def test_relay_claude_refresh_and_login_share_helper_budget(monkeypatch, tmp_path):
+    monkeypatch.setattr(desktop_auth.sys, "platform", "darwin")
+    monkeypatch.setenv("USER", "desktop-user")
+    monkeypatch.setenv(desktop_auth.CLAUDE_HELPER_CONTEXT_ENV, "interactive")
+    monkeypatch.setattr(desktop_auth, "_AUTH_LOCK_PATH", tmp_path / "auth.lock")
+    monkeypatch.setattr(
+        desktop_auth,
+        "get_claude_desktop_token",
+        lambda host, profile: "databricks-token",
+    )
+    now = 0.0
+    monkeypatch.setattr(desktop_auth.time, "monotonic", lambda: now)
+    expired = _subscription_credentials(60, "old-token")
+    fresh = _subscription_credentials(3600, "fresh-token")
+    responses = iter(
+        [
+            subprocess.CompletedProcess([], 0, stdout=expired, stderr=""),
+            subprocess.CompletedProcess([], 0, stdout=expired, stderr=""),
+            subprocess.CompletedProcess([], 1, stdout="", stderr="not refreshed"),
+            subprocess.CompletedProcess([], 0, stdout=expired, stderr=""),
+            subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+            subprocess.CompletedProcess([], 0, stdout=fresh, stderr=""),
+        ]
+    )
+    auth_timeouts = []
+
+    def run(argv, **kwargs):
+        nonlocal now
+        now += 10
+        if argv[1] == "auth":
+            auth_timeouts.append((argv[2], kwargs["timeout"]))
+        return next(responses)
+
+    monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", run)
+
+    credential = desktop_auth.get_claude_desktop_relay_credential(
+        HOST, PROFILE, "/opt/claude/bin/claude"
+    )
+
+    assert credential["token"] == "fresh-token"
+    assert auth_timeouts == [("status", 15), ("login", 230)]
+
+
+def test_relay_credential_reports_failed_claude_login(monkeypatch, tmp_path):
+    monkeypatch.setattr(desktop_auth.sys, "platform", "darwin")
+    monkeypatch.setenv("USER", "desktop-user")
+    monkeypatch.setenv(desktop_auth.CLAUDE_HELPER_CONTEXT_ENV, "interactive")
+    monkeypatch.setattr(desktop_auth, "_AUTH_LOCK_PATH", tmp_path / "auth.lock")
+    monkeypatch.setattr(
+        desktop_auth,
+        "get_claude_desktop_token",
+        lambda host, profile: "databricks-token",
+    )
+    expired = _subscription_credentials(60, "old-token")
+    run = Mock(
+        side_effect=[
+            subprocess.CompletedProcess([], 0, stdout=expired, stderr=""),
+            subprocess.CompletedProcess([], 0, stdout=expired, stderr=""),
+            subprocess.CompletedProcess([], 1, stdout="", stderr="not refreshed"),
+            subprocess.CompletedProcess([], 0, stdout=expired, stderr=""),
+            subprocess.CompletedProcess([], 1, stdout="", stderr="cancelled"),
+        ]
+    )
+    monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", run)
+
+    with pytest.raises(desktop_auth.ClaudeDesktopAuthError, match="sign-in failed"):
+        desktop_auth.get_claude_desktop_relay_credential(HOST, PROFILE, "/opt/claude/bin/claude")

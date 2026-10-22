@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
 import subprocess
 import sys
 import time
+import unicodedata
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -63,7 +65,7 @@ _NETWORK_MARKERS = (
     "status code 5",
 )
 
-TokenFailureKind = Literal["auth", "network", "cli"]
+TokenFailureKind = Literal["auth", "network", "cli", "config"]
 _FAILURE_MESSAGES = {
     "auth": "Databricks authentication expired. Start a new Cowork task to sign in, then retry.",
     "network": (
@@ -71,6 +73,7 @@ _FAILURE_MESSAGES = {
         "retry the Cowork task."
     ),
     "cli": "Databricks CLI could not be run. Install or repair it, then start a new Cowork task.",
+    "config": "Credential helper configuration is invalid.",
 }
 
 
@@ -203,7 +206,7 @@ def _run_login(
 
 
 @contextmanager
-def _interactive_login_lock(deadline: float) -> Iterator[None]:
+def _auth_lock(deadline: float) -> Iterator[None]:
     try:
         _AUTH_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
         with _AUTH_LOCK_PATH.open("a+b") as lock_file:
@@ -214,7 +217,7 @@ def _interactive_login_lock(deadline: float) -> Iterator[None]:
                 )
             except TimeoutError as exc:
                 raise ClaudeDesktopAuthError(
-                    "Timed out waiting for another Databricks sign-in. Start a new Cowork task and try again.",
+                    "Timed out waiting for another sign-in. Start a new Cowork task and try again.",
                     kind="network",
                 ) from exc
             try:
@@ -223,7 +226,7 @@ def _interactive_login_lock(deadline: float) -> Iterator[None]:
                 release_file_lock(lock_file)
     except OSError as exc:
         raise ClaudeDesktopAuthError(
-            "Could not coordinate Databricks sign-in. Start a new Cowork task and try again.",
+            "Could not coordinate sign-in. Start a new Cowork task and try again.",
             kind="cli",
         ) from exc
 
@@ -238,7 +241,7 @@ def _remaining_budget(deadline: float, requested: float) -> float:
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise ClaudeDesktopAuthError(
-            "Databricks sign-in timed out. Start a new Cowork task and try again.",
+            "Credential refresh timed out. Start a new Cowork task and try again.",
             kind="network",
         )
     return min(requested, remaining)
@@ -285,7 +288,7 @@ def get_claude_desktop_token(
         if exc.kind != "auth" or not _interactive_context():
             raise
 
-    with _interactive_login_lock(deadline):
+    with _auth_lock(deadline):
         # Another helper may have completed sign-in while we waited for the lock.
         try:
             return _fetch_token(
@@ -327,6 +330,23 @@ def _claude_credentials_path() -> Path:
     return Path.home() / ".claude" / _CLAUDE_CREDENTIALS_FILENAME
 
 
+def _claude_keychain_service() -> str:
+    if not (config_dir := os.environ.get(CLAUDE_CONFIG_DIR_ENV)):
+        return _CLAUDE_KEYCHAIN_SERVICE
+    normalized = unicodedata.normalize("NFC", config_dir)
+    suffix = hashlib.sha256(normalized.encode()).hexdigest()[:8]
+    return f"{_CLAUDE_KEYCHAIN_SERVICE}-{suffix}"
+
+
+def _clean_token(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    token = value.strip()
+    if not token or any(character.isspace() or ord(character) < 0x20 for character in token):
+        return None
+    return token
+
+
 def _read_claude_credentials() -> dict:
     if sys.platform == "darwin":
         account = os.environ.get("USER")
@@ -334,7 +354,7 @@ def _read_claude_credentials() -> dict:
             "/usr/bin/security",
             "find-generic-password",
             "-s",
-            _CLAUDE_KEYCHAIN_SERVICE,
+            _claude_keychain_service(),
             "-w",
         ]
         if account:
@@ -356,14 +376,16 @@ def _read_claude_credentials() -> dict:
         raw = _as_text(result.stdout)
         if result.returncode != 0:
             raise ClaudeDesktopAuthError(
-                "Claude subscription authentication is required.", kind="auth"
+                "Claude subscription authentication is required. Run `claude auth login`, then start a new Cowork task.",
+                kind="auth",
             )
     elif sys.platform in ("linux", "win32"):
         try:
             raw = _claude_credentials_path().read_text(encoding="utf-8")
         except OSError as exc:
             raise ClaudeDesktopAuthError(
-                "Claude subscription authentication is required.", kind="auth"
+                "Claude subscription authentication is required. Run `claude auth login`, then start a new Cowork task.",
+                kind="auth",
             ) from exc
     else:
         raise ClaudeDesktopAuthError(
@@ -374,42 +396,76 @@ def _read_claude_credentials() -> dict:
         payload = json.loads(raw)
     except (TypeError, ValueError):
         raise ClaudeDesktopAuthError(
-            "Claude subscription credentials are invalid.", kind="auth"
+            "Claude subscription credentials are invalid. Run `claude auth login`, then start a new Cowork task.",
+            kind="auth",
         ) from None
     if not isinstance(payload, dict):
-        raise ClaudeDesktopAuthError("Claude subscription credentials are invalid.", kind="auth")
+        raise ClaudeDesktopAuthError(
+            "Claude subscription credentials are invalid. Run `claude auth login`, then start a new Cowork task.",
+            kind="auth",
+        )
     return payload
 
 
 def _claude_subscription_token() -> str:
-    if token := os.environ.get(CLAUDE_CODE_OAUTH_TOKEN_ENV):
-        token = token.strip()
-        if token and not any(character.isspace() or ord(character) < 0x20 for character in token):
+    if (configured_token := os.environ.get(CLAUDE_CODE_OAUTH_TOKEN_ENV)) is not None:
+        if token := _clean_token(configured_token):
             return token
-        raise ClaudeDesktopAuthError("Claude subscription authentication is invalid.", kind="auth")
+        raise ClaudeDesktopAuthError(
+            "CLAUDE_CODE_OAUTH_TOKEN is invalid. Unset or replace it, then start a new Cowork task.",
+            kind="config",
+        )
 
     payload = _read_claude_credentials()
     oauth = payload.get("claudeAiOauth")
     if not isinstance(oauth, dict):
-        raise ClaudeDesktopAuthError("Claude subscription authentication is required.", kind="auth")
-    token = oauth.get("accessToken")
+        raise ClaudeDesktopAuthError(
+            "Claude subscription authentication is required. Run `claude auth login`, then start a new Cowork task.",
+            kind="auth",
+        )
+    token = _clean_token(oauth.get("accessToken"))
     expires_at = oauth.get("expiresAt")
-    if not isinstance(token, str):
-        raise ClaudeDesktopAuthError("Claude subscription authentication is required.", kind="auth")
-    token = token.strip()
-    if not token or any(character.isspace() or ord(character) < 0x20 for character in token):
-        raise ClaudeDesktopAuthError("Claude subscription authentication is invalid.", kind="auth")
+    if token is None:
+        raise ClaudeDesktopAuthError(
+            "Claude subscription authentication is invalid. Run `claude auth login`, then start a new Cowork task.",
+            kind="auth",
+        )
     if isinstance(expires_at, bool) or not isinstance(expires_at, (int, float)):
-        raise ClaudeDesktopAuthError("Claude subscription credentials are invalid.", kind="auth")
+        raise ClaudeDesktopAuthError(
+            "Claude subscription credentials are invalid. Run `claude auth login`, then start a new Cowork task.",
+            kind="auth",
+        )
     if isinstance(expires_at, float) and not math.isfinite(expires_at):
-        raise ClaudeDesktopAuthError("Claude subscription credentials are invalid.", kind="auth")
+        raise ClaudeDesktopAuthError(
+            "Claude subscription credentials are invalid. Run `claude auth login`, then start a new Cowork task.",
+            kind="auth",
+        )
     minimum_expiry = (time.time() + CLAUDE_DESKTOP_AUTH_TTL_SECONDS) * 1000
     if expires_at <= minimum_expiry:
-        raise ClaudeDesktopAuthError("Claude subscription authentication expired.", kind="auth")
+        raise ClaudeDesktopAuthError(
+            "Claude subscription authentication expired. Start a new Cowork task to refresh it.",
+            kind="auth",
+        )
     return token
 
 
-def _run_claude_login(claude_binary: str) -> None:
+def _run_claude_status(claude_binary: str, *, timeout: float) -> None:
+    try:
+        subprocess_cross_os.run(
+            [claude_binary, "auth", "status", "--json"],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=sys.stderr,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ClaudeDesktopAuthError(
+            "Claude Code could not refresh subscription authentication.", kind="cli"
+        ) from exc
+
+
+def _run_claude_login(claude_binary: str, *, timeout: float) -> None:
     try:
         result = subprocess_cross_os.run(
             [claude_binary, "auth", "login", "--claudeai"],
@@ -417,12 +473,18 @@ def _run_claude_login(claude_binary: str) -> None:
             stdin=subprocess.DEVNULL,
             stdout=sys.stderr,
             stderr=sys.stderr,
-            timeout=CLAUDE_DESKTOP_AUTH_TIMEOUT_SECONDS,
+            timeout=timeout,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise ClaudeDesktopAuthError("Claude subscription sign-in failed.", kind="auth") from exc
+        raise ClaudeDesktopAuthError(
+            "Claude subscription sign-in failed. Run `claude auth login`, then start a new Cowork task.",
+            kind="auth",
+        ) from exc
     if result.returncode != 0:
-        raise ClaudeDesktopAuthError("Claude subscription sign-in failed.", kind="auth")
+        raise ClaudeDesktopAuthError(
+            "Claude subscription sign-in failed. Run `claude auth login`, then start a new Cowork task.",
+            kind="auth",
+        )
 
 
 def get_claude_desktop_relay_credential(
@@ -431,14 +493,44 @@ def get_claude_desktop_relay_credential(
     claude_binary: str,
 ) -> dict[str, object]:
     """Return both credentials required by an Anthropic subscription relay."""
+    deadline = time.monotonic() + _HELPER_BUDGET_SECONDS
     databricks_token = get_claude_desktop_token(host, profile)
     try:
         anthropic_token = _claude_subscription_token()
     except ClaudeDesktopAuthError as exc:
-        if exc.kind != "auth" or not _interactive_context():
+        if exc.kind != "auth":
             raise
-        _run_claude_login(claude_binary)
-        anthropic_token = _claude_subscription_token()
+    else:
+        return {
+            "token": anthropic_token,
+            "headers": {AI_GATEWAY_TOKEN_HEADER: f"Bearer {databricks_token}"},
+        }
+    with _auth_lock(deadline):
+        try:
+            anthropic_token = _claude_subscription_token()
+        except ClaudeDesktopAuthError as exc:
+            if exc.kind != "auth":
+                raise
+        else:
+            return {
+                "token": anthropic_token,
+                "headers": {AI_GATEWAY_TOKEN_HEADER: f"Bearer {databricks_token}"},
+            }
+
+        _run_claude_status(
+            claude_binary,
+            timeout=_remaining_budget(deadline, _TOKEN_TIMEOUT_SECONDS),
+        )
+        try:
+            anthropic_token = _claude_subscription_token()
+        except ClaudeDesktopAuthError as exc:
+            if exc.kind != "auth" or not _interactive_context():
+                raise
+            _run_claude_login(
+                claude_binary,
+                timeout=_remaining_budget(deadline, CLAUDE_DESKTOP_AUTH_TIMEOUT_SECONDS),
+            )
+            anthropic_token = _claude_subscription_token()
     return {
         "token": anthropic_token,
         "headers": {AI_GATEWAY_TOKEN_HEADER: f"Bearer {databricks_token}"},

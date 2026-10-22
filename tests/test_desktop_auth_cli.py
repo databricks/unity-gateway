@@ -1,6 +1,7 @@
 """Desktop credential command output, argument isolation, and failure behavior."""
 
 import json
+from unittest.mock import Mock
 
 import pytest
 from click import unstyle
@@ -69,6 +70,31 @@ def test_desktop_auth_emits_relay_credential_json(monkeypatch, runner):
     assert json.loads(result.stdout) == credential(
         "https://workspace.example", "selected-profile", "/opt/claude/bin/claude"
     )
+
+
+@pytest.mark.parametrize("claude_binary", [None, "claude"])
+def test_desktop_auth_relay_requires_absolute_claude_binary(monkeypatch, runner, claude_binary):
+    from ucode import desktop_auth
+
+    credential = Mock()
+    monkeypatch.setattr(desktop_auth, "get_claude_desktop_relay_credential", credential)
+    args = [
+        "claude-desktop-auth",
+        "--host",
+        "https://workspace.example",
+        "--profile",
+        "selected-profile",
+        "--relay",
+    ]
+    if claude_binary is not None:
+        args += ["--claude-binary", claude_binary]
+
+    result = runner.invoke(app, args)
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert "absolute Claude Code executable path" in result.stderr
+    credential.assert_not_called()
 
 
 @pytest.mark.parametrize("missing", ["host", "profile"])

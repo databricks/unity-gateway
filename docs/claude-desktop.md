@@ -100,9 +100,12 @@ For an Anthropic subscription relay, the same helper returns the Claude subscrip
 token as Desktop's bearer token and the Databricks token in
 `X-Databricks-AI-Gateway-Token`. On macOS it reads the Claude credential from Keychain.
 On Linux and Windows it reads `.claude/.credentials.json` from the user's home directory,
-or `.credentials.json` under `CLAUDE_CONFIG_DIR` when set. Missing, malformed, expired, or
-soon-to-expire timestamps trigger `claude auth login --claudeai` in an interactive helper
-context. The profile stores neither credential, and no proxy or background service is needed.
+or `.credentials.json` under `CLAUDE_CONFIG_DIR` when set; macOS selects the matching custom
+Keychain entry. An expired or soon-to-expire token first runs `claude auth status --json` so
+Claude Code can use its refresh token without opening a browser. If silent refresh does not
+produce a valid token, browser login remains limited to an interactive helper context. Claude
+refresh and login share the helper time budget and lock. The profile stores neither credential,
+and no proxy or background service is needed.
 
 ## OpenTelemetry tracing
 

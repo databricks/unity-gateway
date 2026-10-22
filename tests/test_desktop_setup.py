@@ -663,6 +663,23 @@ def test_subscription_relay_uses_direct_gateway_and_combined_helper(desktop, mon
     )
 
 
+def test_subscription_relay_without_claude_code_preserves_profiles(desktop, monkeypatch, capsys):
+    before = (desktop / "_meta.json").read_bytes()
+    monkeypatch.setattr(desktop_setup.shutil, "which", lambda binary: None)
+
+    desktop_setup.configure_claude_desktop(
+        {
+            "workspace": "https://workspace.example",
+            "profile": "chosen-profile",
+            "claude_relayed": True,
+        }
+    )
+
+    assert (desktop / "_meta.json").read_bytes() == before
+    assert list(desktop.glob("*.json")) == [desktop / "_meta.json"]
+    assert "Install Claude Code" in capsys.readouterr().out
+
+
 def test_discovery_failure_is_warning_and_preserves_profile(desktop, monkeypatch, capsys):
     state = {"workspace": "https://workspace.example", "profile": "chosen-profile"}
     desktop_setup.configure_claude_desktop(state)

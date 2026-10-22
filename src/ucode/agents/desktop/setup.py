@@ -130,7 +130,7 @@ def _configure_desktop(state: dict, *, parent_schema: str | None) -> None:
             workspace,
             "--profile",
             profile,
-            *(["--relay", "--claude-binary", claude_binary] if relayed and claude_binary else []),
+            *(["--relay", "--claude-binary", claude_binary] if claude_binary else []),
         ],
         custom_headers=headers,
         otel_endpoint=(

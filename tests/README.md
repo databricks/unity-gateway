@@ -244,8 +244,10 @@ changing profile or selection-state files. An existing reserved UUID without rec
 is replaced on configure and deleted on revert. Workspace changes reuse the same file.
 Subscription-relay component coverage configures the combined credential helper on all
 three platforms. Helper tests cover macOS Keychain, Linux and Windows credential files,
-`CLAUDE_CONFIG_DIR`, finite required expiry timestamps, proactive refresh, and credential
-separation. Native Windows/Linux Desktop helper execution and inference remain unverified.
+`CLAUDE_CONFIG_DIR`, custom macOS Keychain entries, finite required expiry timestamps, silent
+refresh before interactive login, shared login budgets, malformed environment tokens, and
+credential separation. Native Windows/Linux Desktop helper execution and inference remain
+unverified.
 CLI revert clears workspace state even when Desktop cleanup fails. A lock-failure
 regression invokes the Typer CLI and checks exit code 1, one warning, and a failed
 Desktop summary while profile and previous-selection files survive. Retry returns
