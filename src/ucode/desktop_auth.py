@@ -413,6 +413,7 @@ def _read_claude_credentials() -> dict:
 
 
 def _claude_subscription_token() -> str:
+    # Support headless, managed, and automated setups that cannot use interactive local login.
     if (configured_token := os.environ.get(CLAUDE_CODE_OAUTH_TOKEN_ENV)) is not None:
         if token := _clean_token(configured_token):
             return token
