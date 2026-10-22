@@ -149,6 +149,7 @@ from ucode.skills_download import (
 )
 from ucode.skills_list import configured_skill_counts_by_agent, list_configured_skills_command
 from ucode.skills_state import records_for_scope
+from ucode.smart_routing import config as smart_routing_config
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
@@ -2804,15 +2805,19 @@ CAN_USE_CACHED_CONFIG_AGENTS = frozenset({"claude", "codex"})
 
 
 @contextmanager
-def _smart_routing_v2_flag(enabled: bool | None, *, agent: str) -> Iterator[None]:
-    """Apply an explicit routing choice without leaking into an embedding process."""
+def _smart_routing_v2_flag(enabled: bool | None, *, agent: str) -> Iterator[bool]:
+    """Apply an explicit routing choice without leaking into an embedding process.
+
+    Yields whether the flag or a known version already chose this launch's routing.
+    """
+    routing_chosen = enabled is not None or smart_routing_config.known_version()
     previous = (
         smart_routing_v2.apply_config(agent=agent)
         if enabled is None
         else smart_routing_v2.override_smart_routing(enabled, agent=agent)
     )
     try:
-        yield
+        yield routing_chosen
     finally:
         smart_routing_v2.restore_smart_routing_env(previous)
 
@@ -3191,10 +3196,12 @@ def _launch_tool(
     model: str | None = None,
     parent_schema: str | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
+    routing_already_chosen: bool = False,
 ) -> None:
     previous = {}
     try:
         tool = normalize_tool(tool_name)
+        routing_chosen = routing_already_chosen or smart_routing_config.known_version()
         previous = smart_routing_v2.apply_config(agent=tool)
         if not custom_oauth_cli_enabled(custom_oauth):
             os.environ.pop(CUSTOM_OAUTH_CLI_ENV_VAR, None)
@@ -3319,11 +3326,13 @@ def _launch_tool(
             # rewriting it; the admin's location exists only for this launch.
             provider = None
             parent_schema = managed_parent_schema
-        # The environment switch remains a developer override; managed config is the workspace
-        # policy equivalent and must take effect before launch options are computed.
-        managed_smart_routing_enabled = _managed_smart_routing_enabled(managed, tool)
-        smart_routing_enabled = smart_routing_v2.smart_routing_enabled(
-            None, default=managed_smart_routing_enabled, agent=tool
+        # Managed smart routing overrides individual routing env vars, but not the flag or a known
+        # version. Its version is applied right before launch, after the launch options below.
+        managed_smart_routing_applies = (
+            _managed_smart_routing_enabled(managed, tool) and not routing_chosen
+        )
+        smart_routing_enabled = managed_smart_routing_applies or (
+            smart_routing_v2.smart_routing_enabled(None, default=False, agent=tool)
         )
         # Re-fetch model lists on every launch so newly-added Databricks
         # endpoints show up without a manual `ug configure` (and so that
@@ -3640,14 +3649,7 @@ def _launch_tool(
             launch_model=managed_model if tool == "copilot" else None,
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
-        with _smart_routing_v2_flag(
-            True
-            if managed_smart_routing_enabled
-            and smart_routing_enabled
-            and not smart_routing_v2.smart_routing_enabled(None, default=False, agent=tool)
-            else None,
-            agent=tool,
-        ):
+        with _smart_routing_v2_flag(True if managed_smart_routing_applies else None, agent=tool):
             launch_agent(tool, state, ctx.args, options=launch_options)
     except RuntimeError as exc:
         print_err(str(exc))
@@ -3872,7 +3874,8 @@ def codex_cmd(
         bool | None,
         typer.Option(
             "--enable-smart-routing/--disable-smart-routing",
-            help="Enable or disable AI Gateway model routing for this Codex launch or session.",
+            help="Enable or disable AI Gateway subagent model routing and Smart Router "
+            "Orchestrator for this Codex launch or session.",
         ),
     ] = None,
     smart_router_feedback: Annotated[
@@ -3888,11 +3891,14 @@ def codex_cmd(
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from exc
-    with _smart_routing_v2_flag(enable_smart_routing_flag, agent=AGENT_CODEX):
+    with _smart_routing_v2_flag(
+        enable_smart_routing_flag, agent=AGENT_CODEX
+    ) as routing_already_chosen:
         with _disable_smart_routing_for_subcommand("codex", ctx):
             _launch_tool(
                 "codex",
                 ctx,
+                routing_already_chosen=routing_already_chosen,
                 provider=provider,
                 refresh=refresh,
                 skip_preflight=skip_preflight,
@@ -3964,7 +3970,8 @@ def claude_cmd(
         bool | None,
         typer.Option(
             "--enable-smart-routing/--disable-smart-routing",
-            help="Enable or disable AI Gateway model routing for this Claude Code launch or session.",
+            help="Enable or disable AI Gateway subagent model routing and Smart Router "
+            "Orchestrator for this Claude Code launch or session.",
         ),
     ] = None,
     smart_router_feedback: Annotated[
@@ -3980,11 +3987,14 @@ def claude_cmd(
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from exc
-    with _smart_routing_v2_flag(enable_smart_routing_flag, agent=AGENT_CLAUDE):
+    with _smart_routing_v2_flag(
+        enable_smart_routing_flag, agent=AGENT_CLAUDE
+    ) as routing_already_chosen:
         with _disable_smart_routing_for_subcommand("claude", ctx):
             _launch_tool(
                 "claude",
                 ctx,
+                routing_already_chosen=routing_already_chosen,
                 provider=provider,
                 model=model,
                 refresh=refresh,

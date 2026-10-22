@@ -349,6 +349,13 @@ is enabled, ug warns and falls back to subagent routing because the first-prompt
 wrapper requires a Unix terminal.
 The generated shell hooks expect Git Bash; PowerShell-only setups are not covered.
 
+`--enable-smart-routing` and a workspace config with `smart_routing.enabled` turn routing on
+through `SMART_ROUTER_CONFIG_VERSION`: they keep a known version and otherwise select
+`subagent_orch_v0`, which routes subagents and turns on Smart Router Orchestrator while the
+main session stays on its default model.
+Like any version, it overrides individually set routing env vars. `--disable-smart-routing`
+turns routing off for the launch, including over a workspace config.
+
 ### Smart Router Orchestrator
 
 Use `SMART_ROUTER_CONFIG_VERSION` at launch to select a smart-routing configuration.
@@ -364,26 +371,21 @@ use identical mappings for both agents. The Claude-only version disables routing
 | `subagent_orch_v1` | Claude, Codex | On | Off | On |
 | `subagent_orch_v0_claude_only` | Claude | On | Off | On |
 
-`first_prompt_and_subagent_no_orch_v0` is the customer configuration for first-prompt
-and subagent routing without orchestration: `ENABLE_SMART_ROUTING_V2=1`,
-`ENABLE_SMART_ROUTING_SUBAGENT_ONLY=0`, and `ENABLE_SMART_ROUTER_ORCHESTRATOR=0`.
-
-`subagent_only_v1` sets both `ENABLE_SMART_ROUTING_V2` and
-`ENABLE_SMART_ROUTING_SUBAGENT_ONLY` to `"1"`. Subagent-only takes precedence,
-so first-prompt routing remains off; orchestration is also off.
-
-`subagent_orch_v1` enables all three legacy flags. Like `subagent_only_v1`, it routes
-subagents rather than the first prompt, and it additionally enables orchestration.
+`first_prompt_and_subagent_no_orch_v0` routes the first prompt and subagents without
+orchestration: `ENABLE_SMART_ROUTING_V2=1`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY=0`, and
+`ENABLE_SMART_ROUTER_ORCHESTRATOR=0`. Every other version routes subagents only;
+`subagent_only_v1` and `subagent_orch_v1` route the same way as their `_v0` versions.
 
 `subagent_orch_v0_claude_only` keeps Claude's `subagent_orch_v0` flags (`0`, `1`, `1`)
 and sets all three flags to `"0"` for Codex. Codex uses its ordinary launch and
-managed default model, without routing or orchestration. Explicit launch/session
-on/off controls retain their existing precedence over presets.
+managed default model, without routing or orchestration. `--enable-smart-routing` and
+workspace smart routing keep this version, so Codex stays unrouted.
 
 `SMART_ROUTER_NAME` still selects the router independently of the preset.
 
 Smart-routed Claude and Codex sessions install `smart-router`. The `subagent_orch_v0`
-and `subagent_orch_v1` versions also install and activate the bundled `smart-router-orchestrator` skill.
+and `subagent_orch_v1` versions also install and activate the bundled `smart-router-orchestrator` skill,
+as do `--enable-smart-routing` and workspace smart routing when they select `subagent_orch_v0`.
 For example:
 
 ```bash
@@ -397,8 +399,10 @@ UG expands its mapping into
 unset or empty, these legacy flags retain their existing behavior, including
 first-prompt routing through `ENABLE_SMART_ROUTING_V2=1`. Unknown versions are ignored:
 no preset is applied, the inherited environment is unchanged, and commands continue normally.
-Explicit launch/session on/off controls apply after expansion. Orchestration remains off by default.
-Workspace smart-routing defaults do not rewrite the selected version's flags.
+`--disable-smart-routing` and session on/off controls apply after expansion;
+`--enable-smart-routing` and workspace smart routing keep a known version.
+Orchestration is off by default unless `--enable-smart-routing` or workspace smart routing
+selects `subagent_orch_v0`.
 
 Version names require an explicit suffix. Future revisions use new `_v1`, `_v2`,
 etc. names without changing existing versions.
