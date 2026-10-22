@@ -11,7 +11,7 @@ import re
 import pytest
 from utils.constants import MANAGED_CLAUDE_PROVIDER_SERVICE
 from utils.evidence import FileTask
-from utils.managed import use_managed_config_fixture
+from utils.managed import use_managed_config_fixture, use_smart_routing_fixture
 from utils.provider_catalog import fetch_anthropic_parent_catalog, fetch_anthropic_provider_catalog
 from utils.terminal import AgentTerminal, TerminalProcess
 
@@ -245,7 +245,7 @@ def test_managed_fixture_claude_smart_routing_banner(
     """
     session = live_session
     task = FileTask(session)
-    use_managed_config_fixture(session, "claude_smart_routing")
+    use_smart_routing_fixture(session, "claude", workspace)
     result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
     assert "Select coding agents to configure:" not in result.stdout, result.stdout
     if SMART_ROUTER_CONFIG_VERSION is not None:
@@ -291,7 +291,7 @@ def test_managed_fixture_codex_smart_routing_banner(
     """
     session = live_session
     task = FileTask(session)
-    use_managed_config_fixture(session, "codex_smart_routing")
+    use_smart_routing_fixture(session, "codex", workspace)
     result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
     assert "Select coding agents to configure:" not in result.stdout, result.stdout
     if SMART_ROUTER_CONFIG_VERSION is not None:

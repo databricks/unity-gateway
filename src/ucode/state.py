@@ -17,9 +17,11 @@ from ucode.databricks import (
     build_auth_token_argv,
     build_shared_base_urls,
 )
+from ucode.managed_files import CONFIG_SCOPES, DEFAULT_CONFIG_SCOPE
 
 STATE_PATH = APP_DIR / "state.json"
 STATE_VERSION = 3
+CONFIG_SCOPE_KEY = "config_scope"
 # Transient key holding the developer's own values for whatever a managed config layered over them.
 # Present only in memory: the layered values render the agent settings files, while `save_state`
 # restores what's under it so `state.json` keeps recording the developer's own configuration.
@@ -39,6 +41,23 @@ def load_full_state() -> dict:
     if not isinstance(data, dict) or data.get("state_version") != STATE_VERSION:
         return {"state_version": STATE_VERSION, "current_workspace": None, "workspaces": {}}
     return data
+
+
+def load_config_scope() -> str:
+    scope = load_full_state().get(CONFIG_SCOPE_KEY)
+    return scope if scope in CONFIG_SCOPES else DEFAULT_CONFIG_SCOPE
+
+
+def save_config_scope(scope: str) -> None:
+    if is_dry_run() or load_config_scope() == scope:
+        return
+    full = load_full_state()
+    full[CONFIG_SCOPE_KEY] = scope
+    try:
+        APP_DIR.mkdir(parents=True, exist_ok=True)
+        STATE_PATH.write_text(json.dumps(full, indent=2), encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(f"Failed to write state file: {STATE_PATH}") from exc
 
 
 def load_state() -> dict:
@@ -240,8 +259,9 @@ def build_agent_state(state: dict) -> dict[str, dict]:
 
 
 def clear_state() -> None:
-    """Remove the current workspace entry from state."""
+    """Remove the current workspace entry and the config scope from state."""
     full = load_full_state()
+    full.pop(CONFIG_SCOPE_KEY, None)
     workspace = full.get("current_workspace")
     if workspace:
         full.get("workspaces", {}).pop(workspace, None)

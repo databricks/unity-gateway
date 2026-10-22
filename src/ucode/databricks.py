@@ -2097,6 +2097,24 @@ def model_token_limits(model_id: str) -> dict[str, int] | None:
     return None
 
 
+@dataclass(frozen=True)
+class ModelServiceEntry:
+    """One ``system.ai.*`` model service and the API types it advertises.
+
+    ``api_types`` is advisory: the gateway serves some models on routes they don't list, so callers
+    use it to exclude non-chat models, never to pick a route."""
+
+    id: str
+    api_types: tuple[str, ...] = ()
+
+
+def _model_service_api_types(service: dict) -> tuple[str, ...]:
+    api_types = service.get("supported_api_types")
+    if not isinstance(api_types, list):
+        return ()
+    return tuple(t for t in api_types if isinstance(t, str))
+
+
 def _model_service_id(service: dict) -> str | None:
     """Extract the `system.ai.<model-name>` id from one model-service entry.
 
@@ -2150,13 +2168,19 @@ def _get_model_services_page(
 # Claude ids), so a single `ucode setup` run would otherwise page it twice. Cached per process, not
 # persisted: a long-lived process is not a thing here, and a new model appearing mid-command is not
 # worth a second walk. Failures are never cached, so a transient error still retries.
-_MODEL_SERVICES_CACHE: dict[str, list[str]] = {}
+_MODEL_SERVICES_CACHE: dict[str, list[ModelServiceEntry]] = {}
 
 # Same idea for the Model Provider Service listing (a different endpoint). It is workspace-wide and
 # filtered per agent afterwards, so `ucode setup` would otherwise re-list it once per MPS-capable
 # agent. Keyed by ``(workspace, parent)`` — a schema-scoped listing is a different result set than
 # the metastore-wide one, so they must not share an entry.
 _MODEL_PROVIDER_SERVICES_CACHE: dict[tuple[str, str], list[dict]] = {}
+
+
+def cached_model_service_entries(workspace: str) -> list[ModelServiceEntry] | None:
+    """The model services this process already listed for ``workspace``, without a request."""
+    cached = _MODEL_SERVICES_CACHE.get(workspace)
+    return list(cached) if cached is not None else None
 
 
 def clear_model_services_cache() -> None:
@@ -2183,16 +2207,32 @@ def list_model_services(
     max_pages: int = 100,
     use_cache: bool = True,
 ) -> tuple[list[str], str | None]:
-    """List all `system.ai.*` model ids via the UC model-services API.
+    """List all `system.ai.*` model ids via the UC model-services API (see
+    :func:`list_model_service_entries`)."""
+    entries, reason = list_model_service_entries(
+        workspace, token, page_size=page_size, max_pages=max_pages, use_cache=use_cache
+    )
+    return [entry.id for entry in entries], reason
+
+
+def list_model_service_entries(
+    workspace: str,
+    token: str,
+    *,
+    page_size: int = _MODEL_SERVICES_PAGE_SIZE,
+    max_pages: int = 100,
+    use_cache: bool = True,
+) -> tuple[list[ModelServiceEntry], str | None]:
+    """List all `system.ai.*` model services via the UC model-services API.
 
     Pages through ``/api/2.1/unity-catalog/model-services`` scoped to the
     ``system.ai`` schema (``parent=schemas/system.ai``) with a bounded
-    ``page_size`` (the endpoint 499s without one) and returns the de-duplicated,
-    sorted list of ``system.ai.<model-name>`` ids. Returns (ids, reason); reason
-    is None on success, otherwise it describes why the list is empty (HTTP/network
-    error or no services). Scoping matters: the unscoped metastore listing walks
-    every schema across dozens of ~2s pages (~50s on a busy workspace) only to
-    keep the same ``system.ai.*`` subset — see ``_MODEL_SERVICE_PARENT_SCHEMA``.
+    ``page_size`` (the endpoint 499s without one) and returns the de-duplicated
+    entries sorted by id. Returns (entries, reason); reason is None on success,
+    otherwise it describes why the list is empty (HTTP/network error or no
+    services). Scoping matters: the unscoped metastore listing walks every schema
+    across dozens of ~2s pages (~50s on a busy workspace) only to keep the same
+    ``system.ai.*`` subset — see ``_MODEL_SERVICE_PARENT_SCHEMA``.
 
     A successful result is memoized per workspace for the life of the process; pass
     ``use_cache=False`` to force a fresh walk.
@@ -2203,7 +2243,7 @@ def list_model_services(
             return list(cached), None
 
     origin = workspace_origin(workspace)
-    ids: list[str] = []
+    entries: dict[str, ModelServiceEntry] = {}
     page_token: str | None = None
     seen_tokens: set[str] = set()
     last_reason: str | None = None
@@ -2225,8 +2265,10 @@ def list_model_services(
         for service in data.get("model_services", []):
             if isinstance(service, dict):
                 model_id = _model_service_id(service)
-                if model_id:
-                    ids.append(model_id)
+                if model_id and model_id not in entries:
+                    entries[model_id] = ModelServiceEntry(
+                        model_id, _model_service_api_types(service)
+                    )
         page_token = data.get("next_page_token") or None
         if not page_token:
             last_reason = None
@@ -2235,11 +2277,11 @@ def list_model_services(
             break
         seen_tokens.add(page_token)
 
-    deduped = sorted(set(ids))
-    if deduped:
+    listed = [entries[model_id] for model_id in sorted(entries)]
+    if listed:
         if use_cache:
-            _MODEL_SERVICES_CACHE[workspace] = list(deduped)
-        return deduped, None
+            _MODEL_SERVICES_CACHE[workspace] = list(listed)
+        return listed, None
     return [], last_reason or "model-services listing returned no models"
 
 
@@ -2599,9 +2641,17 @@ def _mcp_service_full_name(service: dict, required_prefix: str) -> str | None:
 
 
 def list_mcp_services(
-    workspace: str, token: str, parent: str = "system.ai", *, max_pages: int = 100
+    workspace: str,
+    token: str,
+    parent: str = "system.ai",
+    *,
+    max_pages: int = 100,
+    metadata: dict[str, dict] | None = None,
 ) -> tuple[list[str], str | None]:
     """List UC MCP services under ``parent`` (a ``<catalog>.<schema>`` ref).
+
+    ``metadata``, when provided, receives each accepted service's description and audit
+    fields from the same list response. No per-service requests are made.
 
     Requests the ``BASIC`` view explicitly: only service names are needed to build
     the deterministic proxy URLs, and ``BASIC`` omits the source-connection
@@ -2639,6 +2689,11 @@ def list_mcp_services(
             full_name = _mcp_service_full_name(service, expected_prefix)
             if full_name:
                 names.append(full_name)
+                if metadata is not None:
+                    metadata[full_name] = {
+                        key: service.get(key)
+                        for key in ("comment", "created_by", "create_time", "update_time")
+                    }
         page_token = data.get("next_page_token") or None
         if not page_token or page_token in seen_tokens:
             break
@@ -3304,6 +3359,7 @@ def list_all_mcp_services(
     on_progress: Callable[[int, int, int], None] | None = None,
     on_services: Callable[[list[str]], None] | None = None,
     cancel_event: threading.Event | None = None,
+    metadata: dict[str, dict] | None = None,
 ) -> tuple[list[str], str | None]:
     """Return sorted unique MCP-service full names across every `<catalog>.<schema>`
     in the workspace. The mcp-services API is one-schema-per-call, so this walks
@@ -3323,10 +3379,15 @@ def list_all_mcp_services(
     names: set[str] = set()
 
     def probe(catalog, schema):
-        return list_mcp_services(workspace, token, f"{catalog}.{schema}")
+        details: dict[str, dict] = {}
+        kwargs = {"metadata": details} if metadata is not None else {}
+        result = list_mcp_services(workspace, token, f"{catalog}.{schema}", **kwargs)
+        return result, details
 
     def collect(result, schemas_done, schemas_total):
-        found, _ = result
+        (found, _), details = result
+        if metadata is not None:
+            metadata.update(details)
         new = [n for n in found if n not in names]
         names.update(found)
         if on_progress is not None:

@@ -5,9 +5,9 @@ import re
 import uuid
 from pathlib import Path
 
-from .agents import _evidence_id, claude, codex
+from .agents import _evidence_id, claude, codex, copilot
 
-_AGENT_HELPERS = {"claude": claude, "codex": codex}
+_AGENT_HELPERS = {"claude": claude, "codex": codex, "copilot": copilot}
 
 
 def assert_no_terminal_api_error(screen: str) -> None:
@@ -132,6 +132,36 @@ def assistant_answer_contains(session, agent: str, value: str, *, child: bool = 
     )
 
 
+def assert_no_bearer_on_disk(session) -> None:
+    """No file under the session home holds the Databricks bearer."""
+    bearer = session.env.get("DATABRICKS_BEARER")
+    assert bearer, "The live suite authenticates with DATABRICKS_BEARER."
+    encoded = bearer.encode()
+    for path in session.home.rglob("*"):
+        if path.is_file() and not path.is_symlink():
+            assert encoded not in path.read_bytes(), f"{path} holds the Databricks credential"
+    env_file = session.home / ".copilot/ucode.env"
+    if env_file.exists():
+        text = env_file.read_text(encoding="utf-8")
+        assert "COPILOT_PROVIDER_BEARER_TOKEN" not in text
+        assert "OAUTH_TOKEN" not in text
+
+
+def copilot_selected_models(session) -> list[str]:
+    """Every registry ref Copilot sessions under this home started on or switched to."""
+    return [
+        ref
+        for records in agent_sessions(session, "copilot").values()
+        for ref in copilot.selected_models(records)
+    ]
+
+
+def assert_no_session_registry_left(session) -> None:
+    """`ug copilot` removes its per-session registry, which holds the proxy secret, on exit."""
+    leftovers = sorted(session.home.glob(".copilot/ug-providers-*"))
+    assert not leftovers, f"Session registries left behind: {leftovers}"
+
+
 def fresh_id():
     """Return a 12-hex-char id; models drop characters when copying longer ones."""
     return uuid.uuid4().hex[:12]
@@ -152,6 +182,11 @@ class FileTask:
         # Say "local file" so agents with MCP fixture tools (read_fixture) don't pick those.
         self.prompt = (
             f"Read the local file {self.filename} in the current directory using a tool. "
+            "Reply with only its contents."
+        )
+        # Small models can drop path segments after a space when rebuilding the absolute path.
+        self.prompt_with_path = (
+            f"Read the local file {session.cwd / self.filename} using a tool. "
             "Reply with only its contents."
         )
         self.delegate_prompt = (
@@ -215,6 +250,15 @@ class FileTask:
                 if row.get("type") == "text"
             )
             assert self.value in answer, result.stdout
+        elif agent == "copilot":
+            assert result.returncode == 0, result.stdout
+            assert any(row.get("type") == "assistant.turn_end" for row in payloads), result.stdout
+            answers = [
+                (row.get("data") or {}).get("content", "")
+                for row in payloads
+                if row.get("type") == "assistant.message"
+            ]
+            assert any(self.value in answer for answer in answers), result.stdout
         else:
             raise AssertionError(f"Unknown agent: {agent}")
 
@@ -337,3 +381,45 @@ def assert_subagent_routed(
     # Some agent versions omit the child's model from SubagentStart. The report
     # preserves that unknown value; this test claims decision + spawn + task,
     # not model-identity verification when the agent did not expose it.
+
+
+def codex_routing_display_for_task(screen: str, marker: str, *, orchestrator_on: bool) -> bool:
+    """Match a routing box to its tagged prompt or immediately following native spawn.
+
+    Compaction can remove the prompt; the adjacent Spawned row still identifies
+    the child. Live audit and child-answer assertions verify the actual decision.
+    """
+    lines = screen.splitlines()
+    prompts = [index for index, line in enumerate(lines) if line.lstrip().startswith("›")]
+    for index, line in enumerate(lines):
+        if "Using Unity Gateway Smart Router - Subagent" not in line:
+            continue
+        end = index + 1
+        while end < min(index + 12, len(lines)) and "└" not in lines[end]:
+            end += 1
+        if end >= len(lines) or "└" not in lines[end]:
+            continue
+        text = "".join("".join(lines[index : end + 1]).split())
+        if "SelectedModel:" not in text or ("[orchestratoron]" in text) != orchestrator_on:
+            continue
+        preceding = [start for start in prompts if start < index]
+        if preceding:
+            start = preceding[-1]
+            prompt_end = start + 1
+            while prompt_end < index and lines[prompt_end].strip():
+                prompt_end += 1
+            if marker in "".join("".join(lines[start:prompt_end]).split()):
+                return True
+        # A compacted prompt is unavailable, but its native spawn remains directly
+        # after the routing box. Do not accept later echoed answers or tool results.
+        spawn = end + 1
+        while spawn < len(lines) and not lines[spawn].strip():
+            spawn += 1
+        if spawn >= len(lines) or not lines[spawn].lstrip().startswith("• Spawned "):
+            continue
+        spawn_end = spawn + 1
+        while spawn_end < len(lines) and lines[spawn_end].strip():
+            spawn_end += 1
+        if marker in "".join("".join(lines[spawn:spawn_end]).split()):
+            return True
+    return False

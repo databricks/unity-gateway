@@ -13,6 +13,7 @@ import pytest
 
 import ucode.agents as agents_mod
 import ucode.databricks as db_mod
+from ucode import managed_files
 from ucode.agents import (
     DEFAULT_TOOL,
     TOOL_SPECS,
@@ -287,10 +288,11 @@ class TestCheckGatewayEndpoint:
         assert check_gateway_endpoint(state, "opencode") is True
 
     def test_copilot_available_with_claude(self):
-        assert check_gateway_endpoint({"claude_models": {"sonnet": "s4"}}, "copilot") is True
+        state = {"claude_models": {"sonnet": "system.ai.claude-sonnet-4-6"}}
+        assert check_gateway_endpoint(state, "copilot") is True
 
     def test_copilot_available_with_codex(self):
-        assert check_gateway_endpoint({"codex_models": ["m"]}, "copilot") is True
+        assert check_gateway_endpoint({"codex_models": ["system.ai.gpt-5-4"]}, "copilot") is True
 
     def test_copilot_unavailable_with_only_gemini(self):
         # Gemini is intentionally excluded from Copilot.
@@ -1090,9 +1092,9 @@ def test_fable_only_workspace_has_a_default(tool):
 def test_fable_does_not_displace_existing_default(tool):
     state = {
         "claude_models": {"fable": "system.ai.claude-fable-5"},
-        "codex_models": ["existing-gpt"],
+        "codex_models": ["system.ai.gpt-5-4"],
     }
-    assert default_model_for_tool(tool, state) == "existing-gpt"
+    assert default_model_for_tool(tool, state) == "system.ai.gpt-5-4"
 
 
 class TestConfigureSelectedTools:
@@ -1211,3 +1213,59 @@ class TestConfiguredPaths:
         paths = configured_paths("codex", state)
         assert str(CODEX_CONFIG_PATH).replace(str(CODEX_CONFIG_PATH.home()), "~", 1) in paths
         assert "/etc/codex/managed_config.toml" in paths
+
+
+class TestConfigureToolUserScope:
+    @pytest.mark.parametrize(
+        "tool,path_attr",
+        [("claude", "_managed_settings_path"), ("codex", "codex_managed_config_path")],
+    )
+    @pytest.mark.parametrize("exists", [True, False])
+    def test_managed_file_blocks_user_scope(self, monkeypatch, tmp_path, tool, path_attr, exists):
+        managed = tmp_path / "managed"
+        if exists:
+            managed.write_text("x", encoding="utf-8")
+        module = getattr(agents_mod, tool)
+        monkeypatch.setattr(module, path_attr, lambda: managed)
+        managed_files.set_config_scope("user")
+
+        if exists:
+            with pytest.raises(RuntimeError, match=r"--user.*managed settings exist.*--global"):
+                agents_mod.refuse_user_scope_over_managed_files([tool])
+        else:
+            agents_mod.refuse_user_scope_over_managed_files([tool])
+
+    def test_windows_codex_requirements_blocks_user_scope(self, monkeypatch, tmp_path):
+        import ucode.codex_config as codex_config
+        from ucode.os_compatibility import system_cross_os
+
+        requirements = tmp_path / "OpenAI" / "Codex" / managed_files.CODEX_REQUIREMENTS_FILE
+        requirements.parent.mkdir(parents=True)
+        requirements.write_text('model_provider = "Databricks"\n', encoding="utf-8")
+        monkeypatch.setattr(codex_config, "current_os", lambda: managed_files.OS.WINDOWS)
+        monkeypatch.setattr(system_cross_os, "windows_program_data_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            agents_mod.codex, "codex_managed_config_path", codex_config.codex_managed_config_path
+        )
+        managed_files.set_config_scope("user")
+        with pytest.raises(RuntimeError, match="requirements.toml"):
+            agents_mod.refuse_user_scope_over_managed_files(["codex"])
+
+    def test_no_managed_path_is_not_checked(self, monkeypatch):
+        monkeypatch.setattr(agents_mod.codex, "codex_managed_config_path", lambda: None)
+        managed_files.set_config_scope("user")
+        agents_mod.refuse_user_scope_over_managed_files(["codex"])
+
+    def test_launch_does_not_refuse_over_managed_file(self, monkeypatch, tmp_path):
+        managed = tmp_path / "managed"
+        managed.write_text("x", encoding="utf-8")
+        monkeypatch.setattr(agents_mod.claude, "_managed_settings_path", lambda: managed)
+        written: list = []
+        monkeypatch.setattr(
+            agents_mod.claude,
+            "write_tool_config",
+            lambda state, *a, **kw: written.append(1) or state,
+        )
+        managed_files.set_config_scope("user")
+        agents_mod.configure_tool("claude", {}, "m")
+        assert written == [1]

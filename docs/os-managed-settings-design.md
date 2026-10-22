@@ -27,6 +27,17 @@ for a password. If that repair is denied, the agent does not launch.
 The local file is always written. The OS-managed file is additionally reconciled during interactive
 configuration, except for Claude subscription relay.
 
+## Per-user Scope
+
+`ug configure --user` (saved as `config_scope` in `~/.ucode/state.json`, default `global`) skips the
+OS-managed files like `UG_SKIP_OS_SETTINGS`: no administrator permission, and managed MCP servers
+register in user scope. Because OS-managed settings take precedence over user settings,
+`ug configure --user` fails before configuring any agent while a selected agent's OS-managed file
+exists (including Windows `requirements.toml`), whoever wrote it; `ug revert`, removal, or
+`--global` resolves it. Launches don't check: a managed file added later simply takes precedence,
+without the `UG_SKIP_OS_SETTINGS` stale-override error. `ug configure` without `--user` and
+`ug revert` reset the scope to `global`.
+
 ## Interactive Detection
 
 Standard input determines whether UG may request administrator permission interactively. Standard

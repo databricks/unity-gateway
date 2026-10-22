@@ -5,7 +5,7 @@ import json
 import pytest
 
 from tests.integration.utils import evidence
-from tests.integration.utils.agents import claude, codex
+from tests.integration.utils.agents import claude, codex, copilot
 from tests.integration.utils.evidence import (
     FileTask,
     SubagentCalculation,
@@ -155,6 +155,42 @@ def test_codex_model_identity_rejects_prompt_only_evidence():
     assert codex.completed_task_models(records, "withheld-file-value") == set()
 
 
+def test_copilot_model_identity_uses_only_answering_assistant_messages():
+    records = [
+        {"type": "user.message", "data": {"content": "withheld-file-value"}},
+        {
+            "type": "assistant.message",
+            "data": {"content": "Reading the file.", "model": "system.ai.claude-haiku-4-5"},
+        },
+        {
+            "type": "assistant.message",
+            "data": {"content": "withheld-file-value", "model": "system.ai.gpt-5-4-nano"},
+        },
+        {"type": "assistant.message"},
+        {"type": "assistant.message", "data": {"content": None, "model": "system.ai.gpt-5"}},
+    ]
+    assert copilot.completed_task_models(records, "withheld-file-value") == {
+        "system.ai.gpt-5-4-nano"
+    }
+    assert copilot.assistant_answers(records) == ["Reading the file.", "withheld-file-value"]
+
+
+def test_copilot_model_identity_rejects_an_answer_without_a_model():
+    records = [{"type": "assistant.message", "data": {"content": "withheld-file-value"}}]
+    with pytest.raises(AssertionError, match="completed-task model"):
+        copilot.completed_task_models(records, "withheld-file-value")
+
+
+def test_copilot_selected_models_follow_start_then_switches():
+    records = [
+        {"type": "session.start", "data": {"selectedModel": "dbx-anthropic/claude"}},
+        {"type": "session.model_change", "data": {"newModel": "dbx-responses/gpt"}},
+        {"type": "session.model_change", "data": {}},
+        {"type": "assistant.message", "data": {"model": "system.ai.gpt"}},
+    ]
+    assert copilot.selected_models(records) == ["dbx-anthropic/claude", "dbx-responses/gpt"]
+
+
 def test_claude_model_identity_uses_assistant_answer_not_tool_output():
     records = [
         {
@@ -174,6 +210,50 @@ def test_claude_model_identity_uses_assistant_answer_not_tool_output():
         },
     ]
     assert claude.completed_task_models(records, "value") == {"catalog.models.claude_sonnet"}
+
+
+def test_claude_assistant_answers_include_subagent_handback():
+    records = [
+        {
+            "type": "assistant",
+            "isSidechain": True,
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-use",
+                        "name": "SubagentHandback",
+                        "input": {"message": "child answer"},
+                    }
+                ],
+            },
+        }
+    ]
+
+    assert claude.assistant_answers(records) == ["child answer"]
+
+
+def test_claude_assistant_answers_ignore_parent_handback():
+    records = [
+        {
+            "type": "assistant",
+            "isSidechain": False,
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-use",
+                        "name": "SubagentHandback",
+                        "input": {"message": "not a child answer"},
+                    }
+                ],
+            },
+        }
+    ]
+
+    assert claude.assistant_answers(records) == []
 
 
 def completed_records(agent, model, answer="value", turn_id="matching"):
@@ -304,3 +384,59 @@ def test_tool_outputs_exclude_user_echoes_and_assistant_claims(agent):
         },
     ]
     assert tool_outputs(agent, records) == []
+
+
+@pytest.mark.parametrize("orchestrator_on", [False, True])
+def test_codex_generic_routing_label_correlates_to_tagged_prompt(orchestrator_on):
+    suffix = " [orchestrator on]" if orchestrator_on else ""
+    panel = (
+        "│ Using Unity Gateway Smart Router - Subagent │\n"
+        f"│ Subagent : subagent{suffix} │\n"
+        "│ Selected Model : gpt-6-luna │\n└──────────┘\n"
+    )
+    prompt = '› Spawn a child with task name "ug_subagent_ab12"\n  and return its answer.\n\n'
+    screen = prompt + panel + "› Ask Codex to do anything\n"
+    assert evidence.codex_routing_display_for_task(
+        screen, "ug_subagent_ab12", orchestrator_on=orchestrator_on
+    )
+    assert not evidence.codex_routing_display_for_task(
+        screen, "ug_subagent_other", orchestrator_on=orchestrator_on
+    )
+    assert not evidence.codex_routing_display_for_task(
+        panel + prompt, "ug_subagent_ab12", orchestrator_on=orchestrator_on
+    )
+    assert not evidence.codex_routing_display_for_task(
+        prompt + "› Another task\n\n" + panel,
+        "ug_subagent_ab12",
+        orchestrator_on=orchestrator_on,
+    )
+    assert not evidence.codex_routing_display_for_task(
+        screen, "ug_subagent_ab12", orchestrator_on=not orchestrator_on
+    )
+
+
+def test_codex_compacted_prompt_uses_adjacent_native_spawn():
+    panel = (
+        "• Context compacted\n\n"
+        "│ Using Unity Gateway Smart Router - Subagent │\n"
+        "│ Subagent : subagent [orchestrator on] │\n"
+        "│ Selected Model : gpt-6-luna │\n└──────────┘\n\n"
+    )
+    spawn = "• Spawned child-id (gpt-6-luna)\n  └ Task name: ug_subagent_ab12. Calculate 2+2.\n\n"
+    assert evidence.codex_routing_display_for_task(
+        panel + spawn, "ug_subagent_ab12", orchestrator_on=True
+    )
+    assert not evidence.codex_routing_display_for_task(
+        panel + spawn, "ug_subagent_other", orchestrator_on=True
+    )
+    assert not evidence.codex_routing_display_for_task(
+        panel + "• Answer: ug_subagent_ab12=4\n", "ug_subagent_ab12", orchestrator_on=True
+    )
+    assert not evidence.codex_routing_display_for_task(
+        panel + "› New prompt\n\n" + spawn, "ug_subagent_ab12", orchestrator_on=True
+    )
+    assert not evidence.codex_routing_display_for_task(
+        panel + "• Spawned other-child\n  └ Another task\n\n" + spawn,
+        "ug_subagent_ab12",
+        orchestrator_on=True,
+    )

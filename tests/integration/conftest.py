@@ -27,7 +27,8 @@ def pytest_collection_modifyitems(config, items):
         if "monkeypatch" in item.fixturenames:
             raise pytest.UsageError("Use the integration runner; unit fixtures were inherited.")
         if any(
-            item.get_closest_marker(a) and a not in agents for a in ("claude", "codex", "opencode")
+            item.get_closest_marker(a) and a not in agents
+            for a in ("claude", "codex", "opencode", "copilot")
         ):
             deselected.append(item)
         else:
@@ -222,6 +223,26 @@ def codex_provider():
 @pytest.fixture(scope="session")
 def codex_provider_model():
     return os.environ["UG_INTEGRATION_CODEX_PROVIDER_MODEL"]
+
+
+@pytest.fixture(scope="session")
+def codex_azure_provider():
+    return os.environ["UG_INTEGRATION_CODEX_AZURE_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def codex_azure_provider_model():
+    return os.environ["UG_INTEGRATION_CODEX_AZURE_PROVIDER_MODEL"]
+
+
+@pytest.fixture(scope="session")
+def codex_foundry_provider():
+    return os.environ["UG_INTEGRATION_CODEX_FOUNDRY_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def codex_foundry_provider_model():
+    return os.environ["UG_INTEGRATION_CODEX_FOUNDRY_PROVIDER_MODEL"]
 
 
 @pytest.fixture(scope="session")

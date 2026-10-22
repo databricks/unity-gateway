@@ -504,3 +504,21 @@ def test_decision_record_persists_rationale(tmp_path, monkeypatch):
     # returned none" from a display-placement bug.
     record = json.loads(decisions.read_text().strip())
     assert record["rationale"] == "Cross-cutting refactor needs the strongest model."
+
+
+def test_failed_subagent_routing_reports_reason_without_hook_response(monkeypatch, caplog):
+    monkeypatch.setattr(
+        codex_routing,
+        "request_routing_decision",
+        lambda *args, **kwargs: (None, "router returned HTTP 400: unsupported model"),
+    )
+    output = codex_routing.route_pre_tool_use(
+        {"tool_name": "spawn_agent", "tool_input": {"message": "Review the parser"}},
+        workspace=WS,
+        token="private-bearer",
+        available_models=["system.ai.gpt-5-6-sol"],
+    )
+    assert output is None
+    assert "router returned HTTP 400: unsupported model" in caplog.text
+    assert "private-bearer" not in caplog.text
+    assert "Review the parser" not in caplog.text

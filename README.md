@@ -68,12 +68,26 @@ model for one launch. OpenCode's `provider/model` form is also accepted.
 Unknown Databricks models produce an error; this option does not add models
 to discovery or change ug's saved default.
 
-`ug copilot` uses the Anthropic Messages API for Claude model IDs, the Responses
-API for GPT-5 and newer model IDs, and Chat Completions for other models. The
-model selected at launch (including `--model`) determines the API. An inherited `COPILOT_PROVIDER_WIRE_MODEL` takes precedence
-because it overrides the model sent to the gateway. Restart Copilot through `ug`
-to change the wire model or API; in-session model selection does not rebuild its
-provider configuration.
+`ug copilot` lists every Claude and GPT model you can use on the workspace in
+Copilot's `/model` picker, and you can switch between them mid-session. Claude
+models use the Anthropic Messages API, GPT-5 and newer use Responses, and older
+GPT models use Chat Completions. Gemini and open-source models aren't offered.
+`ug copilot --model claude-opus-5-5` (or `system.ai.claude-opus-5-5`, or Copilot's
+own `dbx-anthropic/system.ai.claude-opus-5-5`) picks the model a session starts on;
+an unknown or unsupported model fails before Copilot starts and lists the
+available ones. ug passes Copilot a per-session model registry, so your own
+`~/.copilot/providers.json` and `COPILOT_PROVIDER_*` settings apply only to plain
+`copilot`. Use plain `/model`, not `/model --global`, inside `ug copilot`: a
+global choice is saved for plain `copilot` too, where the Databricks models don't
+exist. Requires Copilot CLI 1.0.91 or newer.
+
+`ug copilot` runs Copilot against a loopback proxy for the session. Copilot holds only
+a random session secret, kept in the session's `~/.copilot/ug-providers-<id>.json`
+registry (readable only by you, deleted when the session ends); the proxy adds a fresh Databricks token to
+each gateway request, so OAuth sessions keep working past token expiry without a
+restart, and no Databricks token is written to disk. If the Databricks sign-in itself expires,
+Copilot shows a "Databricks sign-in expired" error; run `databricks auth login` and
+restart `ug copilot`. Proxy errors are logged to `~/.ucode/logs/copilot-proxy.log`.
 
 Without a managed workspace config, `ug claude` automatically discovers gateway
 models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when
@@ -108,7 +122,15 @@ ug configure
 ug configure --agents claude,codex
 ug configure --workspace https://first.databricks.com
 ug configure --profile DEFAULT --agents claude,codex
+ug configure --user
 ```
+
+`--global` (the default) writes the machine-wide Claude Code and Codex managed settings with sudo.
+`--user` skips them, like `UG_SKIP_OS_SETTINGS`, and needs no sudo; use it when you launch through
+`ug`. Configure fails while a managed file for the agent exists, since managed settings take
+precedence; later launches use whatever files are present.
+The choice is saved for launches after a successful configure; `ug configure` without `--user`
+and `ug revert` return to `--global`.
 
 Available coding agents are `codex`, `claude`, `gemini`, `opencode`,
 `copilot`, and `pi`. `cursor` can be included in `--agents` for MCP-only setup;
@@ -129,6 +151,16 @@ OTLP trace export with a refreshing headers helper; no background service is nee
 
 Register Databricks MCP servers for configured MCP-capable agents. Cursor Agent
 is MCP-only and is included when `cursor-agent` is installed:
+
+Run `ug mcp add` without selectors to browse a table of services by name, UC location,
+and status. ✓ means configured (or managed by the workspace); ✗ means not configured.
+Configured and managed services stay visible as read-only rows. `[ ]`/`[x]` indicate
+what you select for this operation; `[-]` marks a read-only row.
+
+Highlight a service to see its description, creator, and creation/update dates. Type
+to filter names or UC locations, use Space to select, and Enter to save. Page Up/Down
+scrolls the detail pane. Narrow terminals shorten cells and show status symbols;
+the detail pane retains the full location and status.
 
 Use `ug mcp add` to add servers without removing existing registrations:
 
@@ -158,9 +190,12 @@ ug mcp list
 ug mcp list --agents claude,codex
 ```
 
-Every Databricks MCP server is registered as a local stdio server that runs
-`ug mcp-proxy`; the proxy refreshes Databricks OAuth tokens from your CLI
-profile. V2 AI Gateway servers can be added with typed selectors such as
+Connection-backed AI Gateway MCP services use native HTTP OAuth in Claude Code,
+Codex, and Cursor when the workspace publishes a compatible client. Claude Code
+uses its URL-based client ID metadata document; if it is unavailable, `ug` uses
+the local `ug mcp-proxy` stdio server with the Databricks CLI's OAuth client.
+Other servers and agents also use that proxy. V2 AI
+Gateway servers can be added with typed selectors such as
 `vector-search:main.docs`, `uc-functions:main.tools`, `external:<name>`,
 `genie-space:<space-id>`, or `app:<name>`.
 
@@ -211,7 +246,15 @@ this contract does not make shared setup transactional.
 ## Skills
 
 Unity Catalog Skills can be registered as MCP tools or downloaded into local
-agent skill directories.
+agent skill directories. Run `ug skills add` without selectors to browse individual
+skills in the same table and metadata pane as the MCP browser, plus the bundle name.
+✓ Installed requires a recorded download of that exact UC skill with `SKILL.md` still
+present at every target agent directory (`--path`, or your home directory). A matching
+bundle name from another schema or metastore does not qualify. Unattributed local
+bundles and incomplete installations show ✗ Not installed, with an explanation in the
+detail pane. Installed skills remain selectable for updates.
+Missing metadata is shown explicitly. `Created by` is the UC creator, which may
+differ from the author of the bundle.
 
 ```bash
 # Set up the Databricks skills MCP so your agents can create and manage skills through ug.
@@ -258,9 +301,20 @@ ug skills remove --location main.default --via mcp
 | `ug skills remove` | Remove skill MCP scopes or downloaded skills |
 | `ug export` | Print or write portable managed config JSON |
 | `ug doctor` | Diagnose local setup and offer fixes |
-| `ug usage` | Show AI Gateway spend and budget |
+| `ug usage` | Show Unity Gateway spend and budget |
 | `ug revert` | Clear saved state and restore backed-up config files |
 | `ug upgrade` | Upgrade Unity Gateway |
+
+`ug usage` shows your Unity Gateway budget usage. To try the expanded budget view:
+
+```bash
+ENABLE_UG_USAGE_SPEND_API=1 ug usage
+```
+
+The expanded view shows up to five budget limits, prioritizing the most-used limits
+across personal/shared and daily/monthly budgets. It tells you when more limits exist.
+It uses your configured workspace login; no separate login is needed.
+Leave `ENABLE_UG_USAGE_SPEND_API` unset to keep the standard summary.
 
 Databricks AI Tools are installed only by `ug configure`, never by agent launch
 commands. Use `--enable-databricks-ai-tools` or `--disable-databricks-ai-tools`
@@ -395,14 +449,19 @@ preferences are ignored and their files are left untouched. See the bundled
 | Cursor Agent | `~/.cursor/mcp.json` |
 | Unity Gateway | `~/.ucode/managed-state.json`, `~/.ucode/managed-backups/` |
 
-### Codex desktop tracing on Linux
+### Codex desktop tracing
 
-With workspace tracing enabled, run `ug configure --agents codex` on the
-app-server's Linux host, then restart the app-server once. This points Codex's
-trace exporter in `~/.codex/config.toml` at the existing CLI OTEL proxy, run as a
-systemd user service that starts at login; `ug codex` sessions keep their own proxy.
+With workspace tracing enabled, run `ug configure --agents codex` on the machine
+where Codex desktop's app server runs, then restart the app server once. This points
+Codex's trace exporter in `~/.codex/config.toml` at the existing CLI OTEL proxy, run
+as a per-user service that starts at login; `ug codex` sessions keep their own proxy.
 An exporter you already set is left alone. Disabling tracing or `ug revert` removes both.
-Diagnostics: `journalctl --user -u ug-codex-otel.service`.
+
+| OS | Service | Diagnostics |
+|----|---------|-------------|
+| Linux | systemd user service `ug-codex-otel.service` | `journalctl --user -u ug-codex-otel.service` |
+| macOS | LaunchAgent `com.databricks.ug-codex-otel` | `launchctl print gui/$(id -u)/com.databricks.ug-codex-otel` |
+| Windows | Scheduled task `com.databricks.ug-codex-otel` | `schtasks /Query /TN com.databricks.ug-codex-otel /V /FO LIST` |
 
 ## Development
 
