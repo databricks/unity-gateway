@@ -1476,6 +1476,20 @@ def apply_mcp_server_changes(
     # The HTTP+OAuth choice is URL-independent, so probe `oauth_client_available` once per batched
     # client here rather than once per server inside the entry-building loop below.
     batch_http_client = {c: _oauth_http_client(c, workspace, use_pat=use_pat) for c in batched}
+    # State records the MCP server but not its OAuth client ID. Refresh an unchanged
+    # server when an agent config still carries a deprecated client, so upgrades
+    # migrate existing registrations without rewriting unrelated MCP entries.
+    unchanged_clients = {
+        client
+        for name, server in working_by_name.items()
+        if original_by_name.get(name) == server
+        for client in _mcp_server_clients(server)
+        if client in clients
+    }
+    deprecated_entries = {
+        "cursor": cursor.deprecated_oauth_mcp_servers() if "cursor" in unchanged_clients else {},
+        "codex": codex.deprecated_oauth_mcp_servers() if "codex" in unchanged_clients else {},
+    }
     changed = False
 
     for name, server in original_by_name.items():
@@ -1491,15 +1505,25 @@ def apply_mcp_server_changes(
 
     for name, server in working_by_name.items():
         original = original_by_name.get(name)
-        if original == server:
-            continue
         url = server.get("url")
         if not isinstance(url, str) or not url:
+            continue
+        unchanged = original == server
+        if unchanged and not any(
+            deprecated_entries.get(client, {}).get(name) == url
+            for client in _mcp_server_clients(server)
+            if client in clients
+        ):
             continue
         # alwaysLoad (Claude-only) keeps the skills registry's utility tools
         # discoverable without an explicit mention; other clients ignore it.
         always_load = server.get("kind") == SKILLS_MCP_KIND
         for client in clients:
+            if unchanged and (
+                client not in _mcp_server_clients(server)
+                or deprecated_entries.get(client, {}).get(name) != url
+            ):
+                continue
             if client in batched:
                 batch_add[client][name] = _managed_mcp_entry(
                     client,

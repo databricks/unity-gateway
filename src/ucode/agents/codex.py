@@ -1021,6 +1021,22 @@ def user_mcp_config_path() -> Path:
     return Path(codex_home) / "config.toml" if codex_home else LEGACY_CODEX_CONFIG_PATH
 
 
+def deprecated_oauth_mcp_servers() -> dict[str, str]:
+    """Return old OAuth entries by name and URL for a scoped migration."""
+    servers = read_toml_safe(user_mcp_config_path()).get(MANAGED_MCP_CONFIG_KEY)
+    if not isinstance(servers, dict):
+        return {}
+    return {
+        name: entry["url"]
+        for name, entry in servers.items()
+        if isinstance(name, str)
+        and isinstance(entry, dict)
+        and isinstance(entry.get("url"), str)
+        and isinstance(entry.get("oauth"), dict)
+        and entry["oauth"].get("client_id") == "codex-cli"
+    }
+
+
 def _read_user_config_for_rewrite(path: Path) -> tomlkit.TOMLDocument | None:
     """Read ``path`` for a full rewrite: an empty document when absent, the parsed document when
     present and valid, and ``None`` when present but unparseable — so a caller never overwrites a

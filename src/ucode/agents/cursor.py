@@ -81,6 +81,22 @@ def write_http_mcp_server_config(name: str, url: str, client_id: str) -> bool:
     return _upsert_mcp_server(name, build_http_mcp_server_entry(url, client_id))
 
 
+def deprecated_oauth_mcp_servers() -> dict[str, str]:
+    """Return old OAuth entries by name and URL for a scoped migration."""
+    servers = read_json_safe(CURSOR_MCP_CONFIG_PATH).get("mcpServers")
+    if not isinstance(servers, dict):
+        return {}
+    return {
+        name: entry["url"]
+        for name, entry in servers.items()
+        if isinstance(name, str)
+        and isinstance(entry, dict)
+        and isinstance(entry.get("url"), str)
+        and isinstance(entry.get("auth"), dict)
+        and entry["auth"].get("CLIENT_ID") == "cursor-desktop"
+    }
+
+
 def remove_mcp_server_config(name: str) -> bool:
     """Surgically remove one MCP server entry from ~/.cursor/mcp.json.
 
