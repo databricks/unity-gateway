@@ -1,5 +1,7 @@
 """Desktop credential command output, argument isolation, and failure behavior."""
 
+import json
+
 import pytest
 from click import unstyle
 from typer import rich_utils
@@ -36,6 +38,37 @@ def test_desktop_auth_emits_only_token_and_keeps_diagnostics_on_stderr(monkeypat
     assert result.exit_code == 0
     assert result.stdout == "test-access-token\n"
     assert "Sign-in diagnostic" in result.stderr
+
+
+def test_desktop_auth_emits_relay_credential_json(monkeypatch, runner):
+    from ucode import desktop_auth
+
+    def credential(host, profile, claude_binary):
+        assert claude_binary == "/opt/claude/bin/claude"
+        return {
+            "token": "anthropic-token",
+            "headers": {"X-Databricks-AI-Gateway-Token": "Bearer databricks-token"},
+        }
+
+    monkeypatch.setattr(desktop_auth, "get_claude_desktop_relay_credential", credential)
+    result = runner.invoke(
+        app,
+        [
+            "claude-desktop-auth",
+            "--host",
+            "https://workspace.example",
+            "--profile",
+            "selected-profile",
+            "--relay",
+            "--claude-binary",
+            "/opt/claude/bin/claude",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == credential(
+        "https://workspace.example", "selected-profile", "/opt/claude/bin/claude"
+    )
 
 
 @pytest.mark.parametrize("missing", ["host", "profile"])

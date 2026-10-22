@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import time
 from unittest.mock import Mock
 
 import pytest
@@ -412,3 +413,102 @@ def test_budget_exhausted_after_login_stops_before_final_fetch(cli, monkeypatch,
     with lock_path.open("a+b") as lock_file:
         desktop_auth.acquire_exclusive_file_lock(lock_file, timeout=0)
         desktop_auth.release_file_lock(lock_file)
+
+
+def test_relay_credential_combines_keychain_and_databricks_tokens(monkeypatch):
+    monkeypatch.setattr(desktop_auth.sys, "platform", "darwin")
+    monkeypatch.setenv("USER", "desktop-user")
+    monkeypatch.setattr(
+        desktop_auth,
+        "get_claude_desktop_token",
+        lambda host, profile: "databricks-token",
+    )
+    credentials = {
+        "claudeAiOauth": {
+            "accessToken": "anthropic-token",
+            "expiresAt": int((time.time() + 3600) * 1000),
+        }
+    }
+    run = Mock(
+        return_value=subprocess.CompletedProcess([], 0, stdout=json.dumps(credentials), stderr="")
+    )
+    monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", run)
+
+    assert desktop_auth.get_claude_desktop_relay_credential(
+        HOST, PROFILE, "/Applications/Claude Code.app/Contents/MacOS/claude"
+    ) == {
+        "token": "anthropic-token",
+        "headers": {
+            desktop_auth.AI_GATEWAY_TOKEN_HEADER: "Bearer databricks-token",
+        },
+    }
+    assert run.call_args.args[0] == [
+        "/usr/bin/security",
+        "find-generic-password",
+        "-a",
+        "desktop-user",
+        "-s",
+        "Claude Code-credentials",
+        "-w",
+    ]
+
+
+def test_relay_credential_uses_explicit_claude_oauth_token(monkeypatch):
+    monkeypatch.setenv(desktop_auth.CLAUDE_CODE_OAUTH_TOKEN_ENV, "anthropic-token")
+    monkeypatch.setattr(
+        desktop_auth,
+        "get_claude_desktop_token",
+        lambda host, profile: "databricks-token",
+    )
+    run = Mock()
+    monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", run)
+
+    credential = desktop_auth.get_claude_desktop_relay_credential(
+        HOST, PROFILE, "/opt/claude/bin/claude"
+    )
+
+    assert credential["token"] == "anthropic-token"
+    run.assert_not_called()
+
+
+def test_relay_credential_logs_in_when_keychain_token_will_expire(monkeypatch):
+    monkeypatch.setattr(desktop_auth.sys, "platform", "darwin")
+    monkeypatch.setenv("USER", "desktop-user")
+    monkeypatch.setenv(desktop_auth.CLAUDE_HELPER_CONTEXT_ENV, "interactive")
+    monkeypatch.setattr(
+        desktop_auth,
+        "get_claude_desktop_token",
+        lambda host, profile: "databricks-token",
+    )
+    now = time.time()
+    expired = {
+        "claudeAiOauth": {
+            "accessToken": "old-token",
+            "expiresAt": int((now + 60) * 1000),
+        }
+    }
+    fresh = {
+        "claudeAiOauth": {
+            "accessToken": "fresh-token",
+            "expiresAt": int((now + 3600) * 1000),
+        }
+    }
+    run = Mock(
+        side_effect=[
+            subprocess.CompletedProcess([], 0, stdout=json.dumps(expired), stderr=""),
+            subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+            subprocess.CompletedProcess([], 0, stdout=json.dumps(fresh), stderr=""),
+        ]
+    )
+    monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", run)
+
+    credential = desktop_auth.get_claude_desktop_relay_credential(
+        HOST, PROFILE, "/opt/claude/bin/claude"
+    )
+
+    assert credential["token"] == "fresh-token"
+    assert [call.args[0][1:3] for call in run.call_args_list] == [
+        ["find-generic-password", "-a"],
+        ["auth", "login"],
+        ["find-generic-password", "-a"],
+    ]
