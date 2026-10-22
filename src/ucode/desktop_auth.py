@@ -9,6 +9,7 @@ import sys
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Literal
 
 from ucode.config_io import APP_DIR
@@ -32,10 +33,14 @@ CLAUDE_DESKTOP_AUTH_TIMEOUT_MS = CLAUDE_DESKTOP_AUTH_TIMEOUT_SECONDS * 1000
 CLAUDE_DESKTOP_AUTH_SILENT_REFRESH = True
 CLAUDE_HELPER_CONTEXT_ENV = "CLAUDE_HELPER_CONTEXT"
 CLAUDE_HELPER_INTERACTIVE_CONTEXT = "interactive"
+CLAUDE_CODE_OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
+
+AI_GATEWAY_TOKEN_HEADER = "X-Databricks-AI-Gateway-Token"
 
 _TOKEN_TIMEOUT_SECONDS = 15
 _HELPER_BUDGET_SECONDS = 270
 _AUTH_LOCK_PATH = APP_DIR / "claude-desktop-auth.lock"
+_CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials"
 _NETWORK_MARKERS = (
     "network",
     "timed out",
@@ -313,6 +318,116 @@ def get_claude_desktop_token(
             ) from None
 
 
+def _read_claude_credentials() -> dict:
+    if sys.platform == "darwin":
+        account = os.environ.get("USER")
+        command = [
+            "/usr/bin/security",
+            "find-generic-password",
+            "-s",
+            _CLAUDE_KEYCHAIN_SERVICE,
+            "-w",
+        ]
+        if account:
+            command[2:2] = ["-a", account]
+        try:
+            result = subprocess_cross_os.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                timeout=_TOKEN_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ClaudeDesktopAuthError(
+                "Could not read the Claude subscription credential from macOS Keychain.",
+                kind="cli",
+            ) from exc
+        raw = _as_text(result.stdout)
+        if result.returncode != 0:
+            raise ClaudeDesktopAuthError(
+                "Claude subscription authentication is required.", kind="auth"
+            )
+    else:
+        try:
+            raw = (Path.home() / ".claude" / ".credentials.json").read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ClaudeDesktopAuthError(
+                "Claude subscription authentication is required.", kind="auth"
+            ) from exc
+
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        raise ClaudeDesktopAuthError(
+            "Claude subscription credentials are invalid.", kind="auth"
+        ) from None
+    if not isinstance(payload, dict):
+        raise ClaudeDesktopAuthError("Claude subscription credentials are invalid.", kind="auth")
+    return payload
+
+
+def _claude_subscription_token() -> str:
+    if token := os.environ.get(CLAUDE_CODE_OAUTH_TOKEN_ENV):
+        token = token.strip()
+        if token and not any(character.isspace() or ord(character) < 0x20 for character in token):
+            return token
+        raise ClaudeDesktopAuthError("Claude subscription authentication is invalid.", kind="auth")
+
+    payload = _read_claude_credentials()
+    oauth = payload.get("claudeAiOauth")
+    if not isinstance(oauth, dict):
+        raise ClaudeDesktopAuthError("Claude subscription authentication is required.", kind="auth")
+    token = oauth.get("accessToken")
+    expires_at = oauth.get("expiresAt")
+    if not isinstance(token, str):
+        raise ClaudeDesktopAuthError("Claude subscription authentication is required.", kind="auth")
+    token = token.strip()
+    if not token or any(character.isspace() or ord(character) < 0x20 for character in token):
+        raise ClaudeDesktopAuthError("Claude subscription authentication is invalid.", kind="auth")
+    minimum_expiry = (time.time() + CLAUDE_DESKTOP_AUTH_TTL_SECONDS) * 1000
+    if isinstance(expires_at, (int, float)) and expires_at <= minimum_expiry:
+        raise ClaudeDesktopAuthError("Claude subscription authentication expired.", kind="auth")
+    return token
+
+
+def _run_claude_login(claude_binary: str) -> None:
+    try:
+        result = subprocess_cross_os.run(
+            [claude_binary, "auth", "login", "--claudeai"],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=sys.stderr,
+            stderr=sys.stderr,
+            timeout=CLAUDE_DESKTOP_AUTH_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ClaudeDesktopAuthError("Claude subscription sign-in failed.", kind="auth") from exc
+    if result.returncode != 0:
+        raise ClaudeDesktopAuthError("Claude subscription sign-in failed.", kind="auth")
+
+
+def get_claude_desktop_relay_credential(
+    host: str,
+    profile: str,
+    claude_binary: str,
+) -> dict[str, object]:
+    """Return both credentials required by an Anthropic subscription relay."""
+    databricks_token = get_claude_desktop_token(host, profile)
+    try:
+        anthropic_token = _claude_subscription_token()
+    except ClaudeDesktopAuthError as exc:
+        if exc.kind != "auth" or not _interactive_context():
+            raise
+        _run_claude_login(claude_binary)
+        anthropic_token = _claude_subscription_token()
+    return {
+        "token": anthropic_token,
+        "headers": {AI_GATEWAY_TOKEN_HEADER: f"Bearer {databricks_token}"},
+    }
+
+
 __all__ = [
     "CLAUDE_DESKTOP_AUTH_SILENT_REFRESH",
     "CLAUDE_DESKTOP_AUTH_TIMEOUT_MS",
@@ -321,6 +436,8 @@ __all__ = [
     "CLAUDE_DESKTOP_AUTH_TTL_SECONDS",
     "CLAUDE_HELPER_CONTEXT_ENV",
     "CLAUDE_HELPER_INTERACTIVE_CONTEXT",
+    "CLAUDE_CODE_OAUTH_TOKEN_ENV",
     "ClaudeDesktopAuthError",
+    "get_claude_desktop_relay_credential",
     "get_claude_desktop_token",
 ]
