@@ -46,6 +46,10 @@ _HELPER_BUDGET_SECONDS = 270
 _AUTH_LOCK_PATH = APP_DIR / "claude-desktop-auth.lock"
 _CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials"
 _CLAUDE_CREDENTIALS_FILENAME = ".credentials.json"
+_CLAUDE_AUTH_INVALID_MESSAGE = (
+    "Claude subscription authentication is invalid. "
+    "Run `claude auth login`, then start a new Cowork task."
+)
 _NETWORK_MARKERS = (
     "network",
     "timed out",
@@ -434,10 +438,7 @@ def _claude_subscription_token() -> str:
     token = _clean_token(oauth.get("accessToken"))
     expires_at = oauth.get("expiresAt")
     if token is None:
-        raise ClaudeDesktopAuthError(
-            "Claude subscription authentication is invalid. Run `claude auth login`, then start a new Cowork task.",
-            kind="auth",
-        )
+        raise ClaudeDesktopAuthError(_CLAUDE_AUTH_INVALID_MESSAGE, kind="auth")
     if isinstance(expires_at, bool) or not isinstance(expires_at, (int, float)):
         raise ClaudeDesktopAuthError(
             "Claude subscription credentials are invalid. Run `claude auth login`, then start a new Cowork task.",
