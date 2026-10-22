@@ -496,6 +496,7 @@ def _try_claude_auth_token() -> str | ClaudeDesktopAuthError:
     try:
         return _claude_subscription_token()
     except ClaudeDesktopAuthError as exc:
+        # Only authentication failures can be fixed by refreshing or signing in.
         if exc.kind != "auth":
             raise
         return exc
