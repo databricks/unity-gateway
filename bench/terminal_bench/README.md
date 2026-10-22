@@ -20,7 +20,7 @@ flowchart LR
 	native --> own
 ```
 
-Each lane runs its tasks for Claude and for Codex, each on ug's default model and pinned to GPT-6 (`system.ai.gpt-6-luna`). The GPT-6 runs launch `ug claude --model system.ai.gpt-6-luna`, which is GPT in Claude Code through the gateway's Messages-to-Responses translation, and `ug codex --model system.ai.gpt-6-luna`. That makes four Harbor jobs and eight native jobs. [TASKS.md](TASKS.md) describes the task format and lists every task.
+Each lane runs its tasks for Claude and for Codex, once on ug's default model and once with `--model system.ai.gpt-6-luna`. [TASKS.md](TASKS.md) describes the task format and lists every task.
 
 ## Why there are two lanes
 
@@ -55,8 +55,6 @@ sequenceDiagram
 
 Every launch runs with smart routing on (`ENABLE_SMART_ROUTING_V2=1`). ug routes Claude's prompt before launch, because print mode (`-p`) has no terminal UI to switch models in, and it routes Claude's subagents. Codex sends ug's router header on every model call.
 
-An explicit `--model` turns off ug's prompt and subagent routing for that launch, so a GPT-6 job isn't switched to another model. Codex still sends the router header. Claude's log names the model that answered, and the results tables show it in a Models column. Codex's log doesn't name one.
-
 The Harbor lane runs `ug configure` in each container. The native lane runs it once at the start of the job.
 
 A multi-step task launches the agent again for each step, with that step's instruction and a new token. The new launch resumes the previous session with `--continue` for Claude or `exec resume --last` for Codex, and the verifier runs after each step. All TB2 tasks have one step. `resume-session` is the only multi-step task here.
@@ -79,9 +77,7 @@ To change the TB2 tasks or pin a model, dispatch the workflow with inputs:
 gh workflow run terminal-bench.yml -f tb2_tasks=fix-git,code-from-image -f model=<model>
 ```
 
-`model` applies to the default-model jobs only. The GPT-6 jobs always use `system.ai.gpt-6-luna`. To pin another model in the GPT-6 jobs, change the `model` matrix entry in the workflow.
-
-The workflow also takes `tb2_dataset`, `claude_version`, and `codex_version`. GitHub can dispatch the workflow only from a file that is already on `main`.
+`model` applies only to the default-model jobs. The workflow also takes `tb2_dataset`, `claude_version`, and `codex_version`. GitHub can dispatch the workflow only from a file that is already on `main`.
 
 ## Read the results
 
@@ -91,7 +87,7 @@ Every task must pass 2 of up to 3 attempts. A task stops after 2 passes, so the 
 
 The default TB2 subset holds only tasks that both agents pass reliably, so a miss points at ug rather than task difficulty. `kv-store-grpc` and `chess-best-move` were dropped because agents solve them too rarely. A trial that hits a harness error, such as a failed agent install or an API error, counts as a failed attempt.
 
-Each job uploads its files as an artifact named `terminal-bench-harbor-<agent>` or `terminal-bench-native-<agent>-<os>`. The GPT-6 jobs add `-gpt-6` after the agent, such as `terminal-bench-harbor-claude-gpt-6`, and their summary titles carry the same name. `scrub_secrets.py` replaces bearer tokens in those files before upload.
+Each job uploads its files as an artifact named `terminal-bench-harbor-<agent>` or `terminal-bench-native-<agent>-<os>`. GPT-6 jobs add `-gpt-6` after the agent. `scrub_secrets.py` replaces bearer tokens in those files before upload.
 
 To tell a ug problem from an agent mistake, read the verifier output first and the agent log second:
 
@@ -114,8 +110,6 @@ To run the tasks through ug, export credentials as described in [Credentials](#c
 uv run python bench/terminal_bench/run_native.py --agent claude --output /tmp/tb
 ```
 
-Add `--model system.ai.gpt-6-luna` to pin GPT-6.
-
 To run in Harbor, you need Docker. Build a ug wheel, point `UG_BENCH_WHEEL` at it, and start a job:
 
 ```sh
@@ -125,7 +119,7 @@ PYTHONPATH=bench/terminal_bench uvx --python 3.12 --from harbor==0.23.0 harbor r
 	-d terminal-bench@2.0 -i fix-git -a ug_agent:UgClaude -o /tmp/harbor-jobs
 ```
 
-For Codex, use `ug_agent:UgCodex`. Add `-m system.ai.gpt-6-luna` to pin GPT-6. To run ug's own tasks, replace `-d terminal-bench@2.0` with `-p bench/terminal_bench/tasks --resume-trajectory`.
+For Codex, use `ug_agent:UgCodex`. To run ug's own tasks, replace `-d terminal-bench@2.0` with `-p bench/terminal_bench/tasks --resume-trajectory`.
 
 ## Credentials
 

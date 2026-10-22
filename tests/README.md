@@ -179,12 +179,6 @@ Claude's native resolver tests remain in
 `test_agent_claude.py`; installation failures are covered in `test_agents_init.py`.
 These are component checks, not live Windows coverage for every agent.
 
-`test_terminal_bench.py` covers the Terminal Bench pieces that need no gateway: the model
-names read from Claude's stream-json log, the `--model` pin in the native launch command, the
-Models column in the native and Harbor summaries, and the workflow's default and GPT-6 lanes
-(matrix, `MODEL`, job names, and artifact names). It does not run an agent, so it does not show
-that GPT-6 answered or that the CUJ1 workspace's model policy allows it.
-
 Agent configuration tests also verify `ug` auth/MCP helper commands, including
 quoted executable paths and replacement of legacy `ucode` routing/web-search helpers.
 

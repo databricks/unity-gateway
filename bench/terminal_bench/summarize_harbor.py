@@ -12,20 +12,14 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-from stream_models import models_in_log
-
 
 def main(jobs_dir: Path, title: str, min_passes: int, undecided: bool, max_attempts: int) -> int:
     attempts: dict[str, list[tuple[object, str]]] = defaultdict(list)
-    models: dict[str, dict[str, None]] = defaultdict(dict)
     for path in sorted(jobs_dir.glob("*/*/result.json")):
         result = json.loads(path.read_text())
         rewards = (result.get("verifier_result") or {}).get("rewards") or {}
         error = (result.get("exception_info") or {}).get("exception_type", "")
         attempts[result["task_name"]].append((rewards.get("reward", "-"), error or "-"))
-        # Claude's log names the model that answered. It shows whether a pinned -m took effect.
-        for log in sorted(path.parent.glob("agent/ug-*.txt")):
-            models[result["task_name"]].update(dict.fromkeys(models_in_log(log)))
 
     passes = {task: sum(reward == 1 for reward, _ in runs) for task, runs in attempts.items()}
     failing = [task for task, n in passes.items() if n < min_passes]
@@ -38,11 +32,11 @@ def main(jobs_dir: Path, title: str, min_passes: int, undecided: bool, max_attem
         f"### {title}: {len(attempts) - len(failing)}/{len(attempts)} tasks passed"
         f" (each needs {min_passes} passing attempts)",
         "",
-        "| Task | Passed | Rewards | Errors | Models |",
-        "|------|--------|---------|--------|--------|",
+        "| Task | Passed | Rewards | Errors |",
+        "|------|--------|---------|--------|",
         *(
             f"| {task} | {passes[task]}/{len(runs)} | {', '.join(str(r) for r, _ in runs)} "
-            f"| {', '.join(e for _, e in runs)} | {', '.join(models[task]) or '-'} |"
+            f"| {', '.join(e for _, e in runs)} |"
             for task, runs in sorted(attempts.items())
         ),
     ]

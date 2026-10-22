@@ -14,7 +14,7 @@ on:
         default: terminal-bench@2.0
         required: true
       model:
-        description: Optional model passed to ug --model in the default-model lanes (blank uses ug's default). The GPT-6 lanes always use system.ai.gpt-6-luna
+        description: Optional model passed to ug --model in the default-model jobs (blank uses ug's default)
         default: ''
         required: false
       claude_version:
@@ -45,7 +45,6 @@ env:
 
 jobs:
   # Real TB2 tasks run in Harbor's Linux containers, with ug installed inside each one.
-  # Each agent runs once on ug's default model and once pinned to GPT-6 (`ug <agent> --model`).
   harbor:
     name: Harbor · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}${{ matrix.model && ' · GPT-6' || '' }} · Linux
     runs-on: ubuntu-latest
@@ -54,7 +53,6 @@ jobs:
       fail-fast: false
       matrix:
         agent: [claude, codex]
-        # An empty model keeps ug's default, or the dispatch input's model.
         model: ['', system.ai.gpt-6-luna]
     env:
       UV_INDEX_URL: https://pypi.org/simple
@@ -66,8 +64,6 @@ jobs:
       UG_BENCH_CLIENT_ID: ${{ secrets.UG_CUJ_SP_CLIENT_ID }}
       UG_BENCH_CLIENT_SECRET: ${{ secrets.UG_CUJ_SP_CLIENT_SECRET }}
       MODEL: ${{ matrix.model || inputs.model }}
-      # Names the summaries and artifacts: claude, or claude-gpt-6 for the GPT-6 lane.
-      LANE: ${{ matrix.agent }}${{ matrix.model && '-gpt-6' || '' }}
       PYTHONPATH: ${{ github.workspace }}/bench/terminal_bench
       AGENT_CLASS: ${{ matrix.agent == 'claude' && 'UgClaude' || 'UgCodex' }}
     steps:
@@ -123,8 +119,8 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           status=0
-          python3 bench/terminal_bench/summarize_harbor.py "$RUNNER_TEMP/harbor-jobs/tb2" "TB2 · $LANE" --min-passes 2 || status=1
-          python3 bench/terminal_bench/summarize_harbor.py "$RUNNER_TEMP/harbor-jobs/ug" "ug tasks in Harbor · $LANE" --min-passes 2 || status=1
+          python3 bench/terminal_bench/summarize_harbor.py "$RUNNER_TEMP/harbor-jobs/tb2" "TB2 · ${{ matrix.agent }}" --min-passes 2 || status=1
+          python3 bench/terminal_bench/summarize_harbor.py "$RUNNER_TEMP/harbor-jobs/ug" "ug tasks in Harbor · ${{ matrix.agent }}" --min-passes 2 || status=1
           exit $status
       - name: Scrub the bearer token from job output
         if: ${{ !cancelled() }}
@@ -133,7 +129,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
-          name: terminal-bench-harbor-${{ env.LANE }}
+          name: terminal-bench-harbor-${{ matrix.agent }}${{ matrix.model && '-gpt-6' || '' }}
           path: ${{ runner.temp }}/harbor-jobs/
 
   # Windows runners can't run Linux containers, so ug's own tasks also run on the host.
@@ -152,7 +148,6 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-server-latest]
         agent: [claude, codex]
-        # An empty model keeps ug's default, or the dispatch input's model.
         model: ['', system.ai.gpt-6-luna]
     env:
       UV_INDEX_URL: https://pypi.org/simple
@@ -164,8 +159,6 @@ jobs:
       UG_BENCH_CLIENT_ID: ${{ secrets.UG_CUJ_SP_CLIENT_ID }}
       UG_BENCH_CLIENT_SECRET: ${{ secrets.UG_CUJ_SP_CLIENT_SECRET }}
       MODEL: ${{ matrix.model || inputs.model }}
-      # Names the artifacts: claude, or claude-gpt-6 for the GPT-6 lane.
-      LANE: ${{ matrix.agent }}${{ matrix.model && '-gpt-6' || '' }}
       AGENT: ${{ matrix.agent }}
       AGENT_PACKAGE: ${{ matrix.agent == 'claude' && '@anthropic-ai/claude-code' || '@openai/codex' }}
     steps:
@@ -225,7 +218,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
-          name: terminal-bench-native-${{ env.LANE }}-${{ matrix.os }}
+          name: terminal-bench-native-${{ matrix.agent }}${{ matrix.model && '-gpt-6' || '' }}-${{ matrix.os }}
           include-hidden-files: true
           path: |
             ${{ runner.temp }}/tb-native/results.json
