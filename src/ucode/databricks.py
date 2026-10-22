@@ -114,6 +114,10 @@ class CodexMpsModelCatalogUnavailable(RuntimeError):
     """The workspace does not expose the Codex model-catalog route."""
 
 
+class CodexModelCatalogEmpty(RuntimeError):
+    """The Codex model-catalog route answered with no models."""
+
+
 class CodexCatalogSource(Enum):
     PROVIDER = (MODEL_PROVIDER_SERVICE_HEADER, "Provider")
     PARENT_SCHEMA = (MODEL_SERVICE_PARENT_SCHEMA_HEADER, "Parent schema")
@@ -3461,6 +3465,9 @@ def list_anthropic_models(workspace: str, token: str) -> tuple[list[str], str | 
     return catalog.model_ids, catalog.error_msg
 
 
+_NO_ANTHROPIC_MODEL_IDS = "AI Gateway returned no Anthropic model ids"
+
+
 def list_anthropic_model_catalog(
     workspace: str,
     token: str,
@@ -3505,7 +3512,7 @@ def list_anthropic_model_catalog(
     return AnthropicModelCatalog(
         model_ids=[],
         model_id_to_display_name={},
-        error_msg="AI Gateway returned no Anthropic model ids",
+        error_msg=_NO_ANTHROPIC_MODEL_IDS,
     )
 
 
@@ -3883,8 +3890,35 @@ def _fetch_codex_model_catalog(
     if not isinstance(payload, dict) or not isinstance(payload.get("models"), list):
         raise RuntimeError(f"{kind} {identifier} returned an invalid Codex model catalog.")
     if not payload["models"]:
-        raise RuntimeError(f"{kind} {identifier} returned no Codex models.")
+        raise CodexModelCatalogEmpty(f"{kind} {identifier} returned no Codex models.")
     return payload
+
+
+def list_provider_service_models(
+    workspace: str, token: str, service_name: str, provider_type: str
+) -> tuple[list[str], str | None]:
+    """The models the gateway lists for Model Provider Service ``service_name``, and why listing
+    failed. An empty listing is not a failure.
+
+    Anthropic and Bedrock services list through the Anthropic models route, others through the
+    Codex model catalog."""
+    if provider_type in ("anthropic", *BEDROCK_PROVIDER_TYPES):
+        listing = list_anthropic_model_catalog(workspace, token, provider=service_name)
+        reason = listing.error_msg
+        return listing.model_ids, None if reason == _NO_ANTHROPIC_MODEL_IDS else reason
+    try:
+        catalog = _fetch_codex_model_catalog(
+            workspace, token, source=CodexCatalogSource.PROVIDER, identifier=service_name
+        )
+    except CodexModelCatalogEmpty:
+        return [], None
+    except RuntimeError as exc:
+        return [], str(exc)
+    return [
+        model["slug"]
+        for model in catalog["models"]
+        if isinstance(model, dict) and isinstance(model.get("slug"), str) and model["slug"]
+    ], None
 
 
 def build_opencode_base_urls(workspace: str) -> dict[str, str]:

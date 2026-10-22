@@ -12,7 +12,7 @@ import pytest
 
 from ucode import custom_oauth
 from ucode.agents import copilot
-from ucode.databricks import AnthropicModelCatalog, ModelServiceEntry
+from ucode.databricks import ModelServiceEntry
 from ucode.telemetry import client_platform
 
 WS = "https://example.databricks.com"
@@ -400,7 +400,7 @@ class TestBuildProviderCatalog:
         ]
 
 
-def _stub_provider_service(monkeypatch, service, *, anthropic_ids=(), codex_slugs=None):
+def _stub_provider_service(monkeypatch, service, *, listed=(), listing_error=None):
     monkeypatch.setattr(copilot, "launch_token", lambda state, workspace, **_: "dbx-token")
     seen = {}
 
@@ -408,19 +408,12 @@ def _stub_provider_service(monkeypatch, service, *, anthropic_ids=(), codex_slug
         seen["resolve"] = (tool, name, workspace, token)
         return (dict(service, name=name), None) if service else (None, f"'{name}' was not found.")
 
-    def anthropic_catalog(workspace, token, *, provider):
-        seen["anthropic_listing"] = provider
-        return AnthropicModelCatalog(model_ids=list(anthropic_ids), model_id_to_display_name={})
-
-    def codex_catalog(workspace, token, *, source, identifier):
-        seen["codex_listing"] = (source, identifier)
-        if codex_slugs is None:
-            raise RuntimeError("codex/v1/models is not enabled for this workspace")
-        return {"models": [{"slug": slug} for slug in codex_slugs]}
+    def list_models(workspace, token, service_name, provider_type):
+        seen["listing"] = (service_name, provider_type)
+        return list(listed), listing_error
 
     monkeypatch.setattr(copilot, "resolve_provider_service", resolve)
-    monkeypatch.setattr(copilot, "list_anthropic_model_catalog", anthropic_catalog)
-    monkeypatch.setattr(copilot, "_fetch_codex_model_catalog", codex_catalog)
+    monkeypatch.setattr(copilot, "list_provider_service_models", list_models)
     return seen
 
 
@@ -444,7 +437,7 @@ class TestProviderCatalog:
         seen = _stub_provider_service(
             monkeypatch,
             {"provider_type": "amazon_bedrock", "targets": [], "allow_all_targets": True},
-            anthropic_ids=["anthropic.claude-opus-4-8"],
+            listed=["anthropic.claude-opus-4-8"],
         )
 
         models = copilot.provider_catalog({"workspace": WS}, MPS, "us.anthropic.claude-sonnet-4-6")
@@ -453,13 +446,13 @@ class TestProviderCatalog:
             "anthropic.claude-opus-4-8",
             "us.anthropic.claude-sonnet-4-6",
         ]
-        assert seen["anthropic_listing"] == MPS
+        assert seen["listing"] == (MPS, "amazon_bedrock")
 
     def test_allow_all_openai_takes_a_provider_ref_as_the_start_model(self, monkeypatch):
         seen = _stub_provider_service(
             monkeypatch,
             {"provider_type": "openai", "targets": [], "allow_all_targets": True},
-            codex_slugs=["gpt-5.5", "gpt-4o"],
+            listed=["gpt-5.5", "gpt-4o"],
         )
 
         models = copilot.provider_catalog({"workspace": WS}, MPS, "dbx-responses/gpt-5.5")
@@ -468,23 +461,25 @@ class TestProviderCatalog:
             ("gpt-5.5", "responses"),
             ("gpt-4o", "completions"),
         ]
-        assert seen["codex_listing"][1] == MPS
+        assert seen["listing"] == (MPS, "openai")
 
     def test_allow_all_starts_on_the_requested_model_when_listing_fails(self, monkeypatch, capsys):
         _stub_provider_service(
-            monkeypatch, {"provider_type": "openai", "targets": [], "allow_all_targets": True}
+            monkeypatch,
+            {"provider_type": "openai", "targets": [], "allow_all_targets": True},
+            listing_error="HTTP 503 Service Unavailable",
         )
 
         models = copilot.provider_catalog({"workspace": WS}, MPS, "gpt-5.5")
 
         assert [m.id for m in models] == ["gpt-5.5"]
-        assert "Could not list the models" in capsys.readouterr().out
+        assert "HTTP 503" in capsys.readouterr().out
 
     def test_allow_all_without_a_start_model_asks_for_one(self, monkeypatch):
         _stub_provider_service(
             monkeypatch,
             {"provider_type": "anthropic", "targets": [], "allow_all_targets": True},
-            anthropic_ids=["claude-sonnet-5"],
+            listed=["claude-sonnet-5"],
         )
 
         with pytest.raises(RuntimeError, match="allows any model.*--model"):

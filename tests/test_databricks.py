@@ -1426,6 +1426,43 @@ class TestResolveProviderService:
         assert service["targets"] == ["gemini-3.5-flash"]
 
 
+class TestListProviderServiceModels:
+    @pytest.mark.parametrize(
+        ("provider_type", "response", "expected"),
+        [
+            (
+                "amazon_bedrock",
+                ({"data": [{"id": "us.anthropic.claude-sonnet-4-6"}]}, None),
+                (["us.anthropic.claude-sonnet-4-6"], None),
+            ),
+            ("anthropic", ({"data": []}, None), ([], None)),
+            ("anthropic", (None, "HTTP 403 Forbidden"), ([], "HTTP 403 Forbidden")),
+            ("openai", ({"models": [{"slug": "gpt-5.5"}]}, None), (["gpt-5.5"], None)),
+            ("openai", ({"models": []}, None), ([], None)),
+        ],
+    )
+    def test_reports_failures_but_not_empty_listings(
+        self, monkeypatch, provider_type, response, expected
+    ):
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda url, token, **kw: response)
+
+        assert (
+            db_mod.list_provider_service_models(WS, "token", "main.a.b", provider_type) == expected
+        )
+
+    def test_reports_a_codex_listing_failure(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda url, token, **kw: (None, "HTTP 503 Service Unavailable"),
+        )
+
+        ids, reason = db_mod.list_provider_service_models(WS, "token", "main.a.b", "openai")
+
+        assert ids == []
+        assert "HTTP 503" in reason
+
+
 class TestServiceUsableForTool:
     def test_bedrock_allow_all_targets_usable_without_targets(self):
         service = {"provider_type": "amazon_bedrock", "targets": [], "allow_all_targets": True}

@@ -55,13 +55,11 @@ from ucode.custom_oauth import launch_token
 from ucode.databricks import (
     ANTHROPIC_FAMILIES,
     BEDROCK_PROVIDER_TYPES,
-    CodexCatalogSource,
     ModelServiceEntry,
-    _fetch_codex_model_catalog,
     build_copilot_base_url,
     build_copilot_provider_base_url,
     build_tool_base_url,
-    list_anthropic_model_catalog,
+    list_provider_service_models,
     model_version_sort_key,
     resolve_provider_service,
 )
@@ -158,8 +156,6 @@ _CLAUDE_LIMITS: dict[str, tuple[int, int]] = {
 _CLAUDE_1M_LIMITS = (936_000, 32_000)
 _CLAUDE_200K_LIMITS = (168_000, 32_000)
 _CLAUDE_200K_WINDOW = 200_000
-# How the gateway listings report a successful listing with no models.
-_EMPTY_LISTING_REASONS = ("returned no Anthropic model ids", "returned no Codex models")
 
 _ANTHROPIC_PROVIDER_TYPES = ("anthropic", *BEDROCK_PROVIDER_TYPES)
 # A provider target that declares its APIs is usable only if one of them is a chat API.
@@ -329,34 +325,6 @@ def build_provider_catalog(
     return sorted(usable.values(), key=_catalog_sort_key), list(skipped.items())
 
 
-def _listed_provider_models(
-    workspace: str, token: str, service_name: str, provider_type: str
-) -> tuple[list[str], str | None]:
-    """The models the gateway lists for an ``allow_all_targets`` service, and why listing failed.
-
-    An empty listing is not a failure."""
-    if provider_type in _ANTHROPIC_PROVIDER_TYPES:
-        listing = list_anthropic_model_catalog(workspace, token, provider=service_name)
-        reason = listing.error_msg
-    else:
-        try:
-            catalog = _fetch_codex_model_catalog(
-                workspace, token, source=CodexCatalogSource.PROVIDER, identifier=service_name
-            )
-        except RuntimeError as exc:
-            return [], None if _is_empty_listing(str(exc)) else str(exc)
-        return [
-            model["slug"]
-            for model in catalog["models"]
-            if isinstance(model, dict) and isinstance(model.get("slug"), str) and model["slug"]
-        ], None
-    return listing.model_ids, None if reason is None or _is_empty_listing(reason) else reason
-
-
-def _is_empty_listing(reason: str) -> bool:
-    return any(phrase in reason for phrase in _EMPTY_LISTING_REASONS)
-
-
 def _without_provider_prefix(model: str) -> str:
     """``model`` without Copilot's ``<provider>/`` prefix, e.g. ``dbx-responses/gpt-5.5`` -> ``gpt-5.5``."""
     provider, separator, rest = model.partition("/")
@@ -387,7 +355,7 @@ def provider_catalog(state: dict, service_name: str, requested: str | None) -> l
                 "start on with `ug copilot --model <id>`."
             )
         models.append(start)
-        listed, reason = _listed_provider_models(workspace, token, service_name, provider_type)
+        listed, reason = list_provider_service_models(workspace, token, service_name, provider_type)
         if reason:
             print_warning(f"Could not list the models of {service_name}: {reason}.")
     target_api_types = service.get("target_api_types") or {}
