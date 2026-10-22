@@ -1363,6 +1363,41 @@ class TestPolicyWithoutInstallation:
         assert result.manifest == normalize_managed_config(RAW_MANIFEST)
         assert not mc_mod.MANAGED_CONFIG_PATH.exists()
 
+    def test_launch_reuses_the_per_user_cache_within_the_ttl(self, not_installable, monkeypatch):
+        """Unchanged from main: a recent read is reused instead of fetching again."""
+        refresh_managed_config(_state())
+        monkeypatch.setattr(
+            mc_mod, "get_managed_config", lambda *_a: pytest.fail("a fresh cache must be reused")
+        )
+
+        result = refresh_managed_config(_state())
+
+        assert result.manifest == normalize_managed_config(RAW_MANIFEST)
+        assert mc_mod.USER_MANAGED_CONFIG_PATH.exists()
+        assert not mc_mod.MANAGED_CONFIG_PATH.exists()
+
+    def test_failed_fetch_falls_back_to_the_per_user_cache(self, not_installable, monkeypatch):
+        """Unchanged from main: an outage keeps the last saved policy in force."""
+        refresh_managed_config(_state())
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda *_a: (None, "503: unavailable"))
+
+        result = refresh_managed_config(_state(), force_refresh=True)
+
+        assert result.manifest == normalize_managed_config(RAW_MANIFEST)
+
+    def test_removed_policy_replaces_the_per_user_cache(self, not_installable, monkeypatch):
+        refresh_managed_config(_state())
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda *_a: (None, None))
+
+        assert refresh_managed_config(_state(), force_refresh=True) == (None, False)
+        assert load_managed_configuration(WORKSPACE) == {}
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no POSIX file modes")
+    def test_per_user_cache_is_private(self, not_installable):
+        refresh_managed_config(_state())
+
+        assert stat.S_IMODE(mc_mod.USER_MANAGED_CONFIG_PATH.stat().st_mode) == 0o600
+
     def test_installed_policy_still_wins_with_skip(self, monkeypatch, capsys):
         save_managed_state(WORKSPACE, RAW_MANIFEST)
         monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")

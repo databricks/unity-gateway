@@ -50,9 +50,12 @@ from ucode.managed_files import (
 )
 from ucode.os_compatibility.system_cross_os import is_admin
 from ucode.time_utils import parse_update_time
-from ucode.ui import normalize_workspace_url, print_warning
+from ucode.ui import console, normalize_workspace_url, print_warning
 
 MANAGED_CONFIG_PATH = UNITY_GATEWAY_MANAGED_SETTINGS_PATH
+# Where the machine cannot hold that file (Windows, UG_SKIP_OS_SETTINGS, `--user` scope), ug keeps
+# main's per-user cache of the fetched policy instead, unchanged.
+USER_MANAGED_CONFIG_PATH = config_io.APP_DIR / "managed-config.json"
 REFRESH_TS_PATH = config_io.APP_DIR / "refresh_ts.json"
 
 # Shown to a developer when their workspace has no admin-defined managed config yet — the normal
@@ -727,7 +730,15 @@ def load_managed_configuration(workspace: str | None) -> dict | None:
     """
     if not workspace:
         return None
-    data = config_io.read_json_safe(MANAGED_CONFIG_PATH)
+    installed = _stored_config(MANAGED_CONFIG_PATH, workspace)
+    if installed is not None or _machine_policy_installable():
+        return installed
+    return _stored_config(USER_MANAGED_CONFIG_PATH, workspace)
+
+
+def _stored_config(path: Path, workspace: str) -> dict | None:
+    """The raw config ``path`` stores for ``workspace``, or None if absent or for another one."""
+    data = config_io.read_json_safe(path)
     stored_workspace = data.get("workspace")
     if (
         not isinstance(stored_workspace, str)
@@ -836,6 +847,8 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
     )
     if not workspace:
         return ManagedConfigResult(None, False)
+    if not _machine_policy_installable() and _stored_config(MANAGED_CONFIG_PATH, workspace) is None:
+        return _refresh_user_cache(state, workspace, force_refresh=force_refresh)
     if config_io.is_dry_run() and not force_refresh:
         return ManagedConfigResult(load_managed_state(workspace), False)
     if not force_refresh:
@@ -852,9 +865,8 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
             fallback = _persisted_fallback(workspace, reason, refused=_is_permission_denied(reason))
             return ManagedConfigResult(fallback, False)
     if not _can_install_policy(force_refresh) and load_managed_configuration(workspace) is None:
-        # Nothing is installed for this workspace and this run can't install it (Windows,
-        # UG_SKIP_OS_SETTINGS, or a non-root launch): apply the fetched policy to this run only,
-        # without installing it, as ug did before the machine policy. An installed policy still
+        # Nothing is installed for this workspace and this non-root launch can't install it: apply
+        # the fetched policy to this run only, without installing it. An installed policy still
         # wins, and only `ug configure` or root can install one.
         result = ManagedConfigResult(
             normalize_managed_config(raw) if raw is not None else None,
@@ -925,6 +937,85 @@ def _can_install_policy(explicit_configure: bool) -> bool:
     """Whether this run may install the machine policy: root, or an explicit ``ug configure``
     (which may use sudo). A non-root launch never does."""
     return _machine_policy_installable() and (explicit_configure or is_admin())
+
+
+def _refresh_user_cache(state: dict, workspace: str, *, force_refresh: bool) -> ManagedConfigResult:
+    """Main's per-user policy cache, for a machine that cannot hold the installed policy.
+
+    Unchanged from before the machine policy: a launch reuses a read younger than
+    :data:`MANAGED_CONFIG_TTL`, ``ug configure`` always reads fresh, a failed read falls back to the
+    last saved config for this workspace, and no-config or ``FEATURE_DISABLED`` replaces it.
+    """
+    if not force_refresh:
+        cached = _cached_user_result_if_fresh(workspace)
+        if cached is not None:
+            return cached
+    try:
+        token = get_databricks_token(workspace, state.get("profile"))
+    except RuntimeError as exc:
+        return ManagedConfigResult(_persisted_fallback(workspace, str(exc)), False)
+    raw, reason = get_managed_config(workspace, token)
+    if reason is not None:
+        if _is_feature_disabled(reason):
+            _save_user_cache(workspace, {}, outcome=_OUTCOME_FEATURE_DISABLED)
+            return ManagedConfigResult(None, True)
+        fallback = _persisted_fallback(workspace, reason, refused=_is_permission_denied(reason))
+        return ManagedConfigResult(fallback, False)
+    if raw is None:
+        # Record that this workspace has no config, so a removed policy can't return as the
+        # fallback after a later outage.
+        _save_user_cache(workspace, {}, outcome=_OUTCOME_NONE)
+        return ManagedConfigResult(None, False)
+    _save_user_cache(workspace, raw, outcome=_OUTCOME_PUBLISHED)
+    return ManagedConfigResult(normalize_managed_config(raw), False)
+
+
+def _save_user_cache(workspace: str, config: dict, *, outcome: str) -> None:
+    """Persist the raw config and its read outcome to the per-user cache at mode 0600."""
+    payload = {
+        "workspace": workspace,
+        "config": config,
+        "retrieved_at": _utcnow().isoformat(),
+        "outcome": outcome,
+    }
+    if config_io.is_dry_run():
+        console.print(
+            f"\n[bold]\\[dry run] {USER_MANAGED_CONFIG_PATH}[/bold]\n"
+            f"{json.dumps(payload, indent=2)}\n"
+        )
+        return
+    config_io.ensure_parent_dir(USER_MANAGED_CONFIG_PATH)
+    try:
+        USER_MANAGED_CONFIG_PATH.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(
+            f"Failed to write managed state file: {USER_MANAGED_CONFIG_PATH}"
+        ) from exc
+    _restrict_permissions(USER_MANAGED_CONFIG_PATH)
+
+
+def _cached_user_result_if_fresh(workspace: str) -> ManagedConfigResult | None:
+    """The per-user cache's read for ``workspace`` replayed as a result, if within the TTL."""
+    data = config_io.read_json_safe(USER_MANAGED_CONFIG_PATH)
+    stored = data.get("workspace")
+    if not isinstance(stored, str) or normalize_workspace_url(stored) != normalize_workspace_url(
+        workspace
+    ):
+        return None
+    retrieved_at = parse_update_time(_str(data.get("retrieved_at")))
+    if retrieved_at is None:
+        return None
+    age = _utcnow() - retrieved_at
+    if age < timedelta(0) or age >= MANAGED_CONFIG_TTL:
+        return None
+    outcome = data.get("outcome")
+    if outcome == _OUTCOME_FEATURE_DISABLED:
+        return ManagedConfigResult(None, True)
+    if outcome == _OUTCOME_NONE:
+        return ManagedConfigResult(None, False)
+    if outcome == _OUTCOME_PUBLISHED and isinstance(data.get("config"), dict):
+        return ManagedConfigResult(normalize_managed_config(data["config"]), False)
+    return None
 
 
 def _is_feature_disabled(reason: str) -> bool:

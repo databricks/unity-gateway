@@ -89,7 +89,8 @@ All other raw fields participate in comparison. Policy is otherwise preserved wh
 
 ## Migration and limits
 
-The legacy `~/.ucode/managed-config.json` is ignored and never promoted to a root-owned policy.
+On Linux and macOS, the per-user `~/.ucode/managed-config.json` is no longer read and is never
+promoted to a root-owned policy.
 Run `ug configure --workspace YOUR_WORKSPACE` to retrieve and install authoritative policy.
 No policy is written when the workspace has none. On MDM machines, ask IT to run root provisioning
 instead of attempting administrator-only configure yourself.
@@ -99,10 +100,13 @@ Warning/fallback prioritizes availability over strict enforcement of the newest 
 Privileged writes are supported on Linux/macOS only. Real sudo/password and ownership integration
 checks require a disposable clean machine, not an existing developer-managed workstation.
 
-Where a run cannot install the policy (Windows, `UG_SKIP_OS_SETTINGS=1`, or a non-root launch) and
-none is installed for its workspace, the freshly fetched policy applies to that run only. A first
-launch before any `ug configure` is therefore still managed. Nothing is installed or cached, so a failed fetch
-then falls back to unmanaged settings. An installed policy still wins: with `UG_SKIP_OS_SETTINGS=1`
+Where the machine cannot hold the policy (Windows, `UG_SKIP_OS_SETTINGS=1`, or `ug configure
+--user`) and none is installed for the workspace, ug keeps its earlier behavior unchanged: the
+fetched policy is cached per user in `~/.ucode/managed-config.json`, a launch reuses it for five
+minutes, and a failed fetch falls back to it. Windows support for the installed policy is a
+follow-up. A non-root Linux or macOS launch with nothing installed applies the fetched policy to
+that run without installing or caching it, so a first launch before any `ug configure` is still
+managed. An installed policy still wins: with `UG_SKIP_OS_SETTINGS=1`
 a developer's launch reads it read-only, never writes OS-managed files, and builds only user-owned
 settings. That is the supported developer mode on an MDM machine whose administrator ran `ug configure`.
 
