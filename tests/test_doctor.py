@@ -248,22 +248,25 @@ class TestDatabricksAuthCheck:
 
 class TestAnthropicEnvCollision:
     def test_none_when_unset(self, monkeypatch):
-        for var in doctor_mod._CLAUDE_TOKEN_ENV_VARS:
+        for var in doctor_mod.SHADOWING_CREDENTIAL_ENV_VARS:
             monkeypatch.delenv(var, raising=False)
         assert _check_anthropic_env_collision() is None
 
     def test_warns_when_set(self, monkeypatch):
-        for var in doctor_mod._CLAUDE_TOKEN_ENV_VARS:
+        for var in doctor_mod.SHADOWING_CREDENTIAL_ENV_VARS:
             monkeypatch.delenv(var, raising=False)
         monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "secret")
         check = _check_anthropic_env_collision()
         assert check.status == "warn"
         assert "ANTHROPIC_AUTH_TOKEN" in check.detail
+        # ug's settings already blank it for Claude Code; point scripts at ug's own override.
+        assert "DATABRICKS_BEARER" in check.detail
+        assert "unset" not in check.detail
         # Advisory only — no auto-fix for a parent shell's env.
         assert check.suggestion is None
 
     def test_blank_value_is_ignored(self, monkeypatch):
-        for var in doctor_mod._CLAUDE_TOKEN_ENV_VARS:
+        for var in doctor_mod.SHADOWING_CREDENTIAL_ENV_VARS:
             monkeypatch.delenv(var, raising=False)
         monkeypatch.setenv("ANTHROPIC_API_KEY", "   ")
         assert _check_anthropic_env_collision() is None

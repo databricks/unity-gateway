@@ -11,10 +11,12 @@ pytestmark = [pytest.mark.live, pytest.mark.claude]
 
 @pytest.mark.smoke
 def test_ug_claude_headless_prompt_argument(live_session, workspace):
-    """Scenario: configure claude and submit a headless prompt via argument.
+    """Scenario: configure claude, then submit a headless prompt via argument from a shell that
+    still exports another LLM gateway's ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY.
 
-    Expected: the real agent reads the fixture and returns its unknown value in
-    its structured completed answer, with exit code zero and JSON-only stdout.
+    Expected: the real agent authenticates through ug's credentials, reads the fixture and returns
+    its unknown value in its structured completed answer, with exit code zero and JSON-only stdout;
+    stderr reports that both shell variables are ignored.
     """
     session = live_session
     task = FileTask(session)
@@ -28,6 +30,9 @@ def test_ug_claude_headless_prompt_argument(live_session, workspace):
         "--skip-upgrade",
         "--disable-databricks-ai-tools",
     )
+    # Scenario input: credentials left in the user's shell by another LLM gateway setup.
+    session.env["ANTHROPIC_AUTH_TOKEN"] = "sk-other-gateway-placeholder"
+    session.env["ANTHROPIC_API_KEY"] = "sk-other-gateway-placeholder"
 
     result = session.run(
         "claude",
@@ -42,6 +47,7 @@ def test_ug_claude_headless_prompt_argument(live_session, workspace):
     )
     assert json.loads(result.stdout)["type"] == "result"
     task.assert_headless_answer("claude", result)
+    assert "ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY" in " ".join(result.stderr.split())
     session.assert_not_routed()
 
 

@@ -180,6 +180,14 @@ These are component checks, not live Windows coverage for every agent.
 
 Agent configuration tests also verify `ug` auth/MCP helper commands, including
 quoted executable paths and replacement of legacy `ucode` routing/web-search helpers.
+`test_agent_claude.py` also checks that ug's Claude settings blank `ANTHROPIC_AUTH_TOKEN` and
+`ANTHROPIC_API_KEY` as ug-owned keys in the private file, for default and relayed setups, and in
+ug's `managed-settings.d/50-ug-credentials.json` drop-in rather than `managed-settings.json`. The
+drop-in shares the managed file's password prompt, is skipped when privileged writes are
+unavailable, is not rewritten after another program rewrites `managed-settings.json`, and is
+removed by revert. Launches leave the user's environment unchanged, warn only on stderr, and stay
+silent for empty values. These component checks replace the exec, relay proxy and privileged
+write; `test_managed_files.py` covers the drop-in in both sudo allowlists and its Windows folder.
 
 `test_desktop_auth.py`, `test_desktop_auth_cli.py`, and `test_file_lock_cross_os.py`
 cover Desktop token-only stdout, explicit workspace/profile arguments, interactive-only
@@ -500,7 +508,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_case_12_*` | Launch configured and fresh Codex with a provider | The provider supplies exactly its model catalog |
 | `test_case_13_*` | Launch configured and fresh Claude with a model location and no managed config | The explicit parent's catalog replaces built-in picker rows and appears in the real picker; Default resolves to the model in the scoped fixture catalog |
 | `test_case_14_*` | Launch configured and fresh Codex with a model location | The app-server list exactly matches the independent API-compatible parent catalog, includes the dedicated Codex service, and contains no out-of-schema models |
-| `test_ug_claude_headless_prompt_argument`, `test_ug_claude_headless_prompt_stdin`, `test_ug_claude_headless_prompt_after_separator` | Run Claude from a script using each prompt form | Structured final answer contains the file value; exit zero; no routing |
+| `test_ug_claude_headless_prompt_argument`, `test_ug_claude_headless_prompt_stdin`, `test_ug_claude_headless_prompt_after_separator` | Run Claude from a script using each prompt form; the argument form runs while the shell exports `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_API_KEY` from another LLM gateway | Structured final answer contains the file value; exit zero; no routing; the argument form's stderr reports both shell variables as ignored |
 | `test_ug_codex_headless_prompt_argument`, `test_ug_codex_headless_prompt_stdin`, `test_ug_codex_headless_prompt_after_separator` | Run Codex from a script using each prompt form | Completed turn and final answer contain the file value; exit zero; no routing |
 | `test_ug_copilot_headless_completes_file_task`, `test_ug_copilot_headless_gpt_responses_task` | Run Copilot CLI from a script (`-p ... --output-format json`) on a Claude model (Anthropic Messages) and a GPT model (Responses) | Completed turn whose assistant message contains the file value and was sent as the requested model; the session started on the matching registry provider; no file under the session home holds the Databricks credential; no session registry left (non-blocking CI lane) |
 | `test_ug_copilot_one_setup_runs_claude_then_gpt_by_provider_ref` | One configure, then headless tasks on a Claude model older than its family's newest (only the full catalog registers it) and a GPT model chosen as `dbx-responses/<model>` | Each answer contains its file value and was sent as the requested model; sessions started on `dbx-anthropic` and `dbx-responses` (non-blocking CI lane) |

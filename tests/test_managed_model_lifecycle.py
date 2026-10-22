@@ -202,6 +202,8 @@ def harness(tmp_path, monkeypatch):
     )
 
     def _write_managed(path, text, **kwargs):
+        # Like the privileged write, create a missing parent such as ug's managed-settings.d.
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
         Path(path).write_text(text)
         return "written"
 

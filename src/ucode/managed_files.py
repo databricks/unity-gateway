@@ -67,16 +67,24 @@ class OS(Enum):
 
 MANAGED_FILES_SUPPORTED_OSES = (OS.LINUX, OS.MACOS, OS.WINDOWS)
 
+# ug's own Claude Code drop-in. Claude Code merges `managed-settings.d/*.json` after
+# managed-settings.json, so another program that templates that file leaves this one alone.
+CLAUDE_CREDENTIALS_DROPIN = Path("managed-settings.d") / "50-ug-credentials.json"
+
 _SUDO_REPLACE_TARGETS = {
     OS.LINUX: frozenset(
         {
             Path("/etc/claude-code/managed-settings.json"),
+            Path("/etc/claude-code/managed-settings.d/50-ug-credentials.json"),
             Path("/etc/codex/managed_config.toml"),
         }
     ),
     OS.MACOS: frozenset(
         {
             Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
+            Path(
+                "/Library/Application Support/ClaudeCode/managed-settings.d/50-ug-credentials.json"
+            ),
             Path("/etc/codex/managed_config.toml"),
         }
     ),
@@ -136,6 +144,11 @@ def managed_files_supported() -> bool:
 def windows_claude_managed_settings_path() -> Path:
     """The only machine-wide settings file Claude Code reads on Windows."""
     return system_cross_os.windows_program_files_dir() / "ClaudeCode" / "managed-settings.json"
+
+
+def windows_claude_credentials_dropin_path() -> Path:
+    """ug's Claude Code drop-in on Windows, beside the managed settings file."""
+    return windows_claude_managed_settings_path().parent / CLAUDE_CREDENTIALS_DROPIN
 
 
 CODEX_REQUIREMENTS_FILE = "requirements.toml"
@@ -1347,8 +1360,41 @@ def _privileged_remove(path: Path) -> None:
     path.unlink(missing_ok=True)
 
 
+def remove_empty_dropin_folder(dropin: Path) -> None:
+    """After ``ug revert`` removes ug's drop-in, remove its folder too if nothing else is in it.
+
+    Leaves the managed directory as ug found it. A folder holding other drop-ins is kept, and a
+    failed removal only leaves an empty folder behind.
+    """
+    folder = dropin.parent
+    if folder.name != CLAUDE_CREDENTIALS_DROPIN.parent.name or folder.is_symlink():
+        return
+    try:
+        if not folder.is_dir() or any(folder.iterdir()):
+            return
+    except OSError:
+        return
+    if current_os() is OS.WINDOWS:
+        with suppress(OSError):
+            folder.rmdir()
+        return
+    _sudo_rmdir(folder)
+
+
+def _sudo_rmdir(folder: Path) -> None:
+    # `rmdir` refuses a non-empty folder, so a drop-in added meanwhile is never lost.
+    subprocess_cross_os.run(
+        _sudo_command("rmdir", str(folder)), capture_output=True, text=True, check=False
+    )
+
+
 def _validate_windows_target(path: Path) -> None:
-    if path not in (windows_claude_managed_settings_path(), windows_codex_managed_settings_path()):
+    allowed = (
+        windows_claude_managed_settings_path(),
+        windows_claude_credentials_dropin_path(),
+        windows_codex_managed_settings_path(),
+    )
+    if path not in allowed:
         raise RuntimeError(f"Refusing unexpected managed-settings target: {path}")
     if path.is_symlink():
         raise RuntimeError(f"Refusing to replace symlinked managed settings: {path}")

@@ -29,8 +29,10 @@ esac
 target_is_allowed() {
     case "$platform:$1" in
         "linux:/etc/claude-code/managed-settings.json"|\
+        "linux:/etc/claude-code/managed-settings.d/50-ug-credentials.json"|\
         "linux:/etc/codex/managed_config.toml"|\
         "macos:/Library/Application Support/ClaudeCode/managed-settings.json"|\
+        "macos:/Library/Application Support/ClaudeCode/managed-settings.d/50-ug-credentials.json"|\
         "macos:/etc/codex/managed_config.toml") return 0 ;;
         *) return 1 ;;
     esac

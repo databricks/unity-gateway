@@ -331,6 +331,8 @@ class TestStateFileIsNotRewritten:
         monkeypatch.setattr(claude, "managed_writes_allowed", lambda: True)
 
         def reconcile_managed_file(path, desired_text, **kwargs):
+            # Like the privileged write, create a missing parent such as ug's managed-settings.d.
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(desired_text, encoding="utf-8")
             return "written"
 

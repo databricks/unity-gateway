@@ -20,6 +20,14 @@ from ucode.smart_routing import claude_routing, v2
 from ucode.state import MANAGED_OVERLAY_KEY
 
 WS = "https://example.databricks.com"
+
+
+def _write_creating_parent(target: Path, text: str) -> None:
+    """Stand-in for the privileged write, which creates a missing parent such as managed-settings.d."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
+
+
 # A connection MCP proxy argv, used by the Claude MCP-registration helper tests.
 # The leading element is the resolved `ug` binary path, so tests assert the tail.
 GH_URL = f"{WS}/api/2.0/mcp/external/github"
@@ -291,6 +299,17 @@ class TestRenderOverlay:
     def test_enables_use_gateway(self):
         overlay, _ = claude.render_overlay(WS, "s4")
         assert overlay["env"]["CLAUDE_CODE_USE_GATEWAY"] == "1"
+
+    @pytest.mark.parametrize("relayed", [False, True])
+    def test_blanks_shadowing_credentials_as_owned_keys(self, relayed):
+        # Claude Code applies settings env over the shell, so these empty values keep a shell
+        # ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY from outranking ug's credential.
+        overlay, keys = claude.render_overlay(
+            WS, "s4", relayed=relayed, relayed_base_url="http://localhost:8000" if relayed else None
+        )
+        for name in claude.SHADOWING_CREDENTIAL_ENV_VARS:
+            assert overlay["env"][name] == ""
+            assert ["env", name] in keys
 
     @pytest.mark.parametrize("env_value", [None, "", "0", "true", "yes"])
     def test_gateway_model_discovery_disabled_unless_opted_in(self, monkeypatch, env_value):
@@ -985,6 +1004,7 @@ class TestWriteToolConfigStripsRemovedEnvKeys:
 
 
 FAKE_MANAGED_PATH = Path("/tmp/ucode-test/managed-settings.json")
+FAKE_DROPIN_PATH = FAKE_MANAGED_PATH.parent / "managed-settings.d" / "50-ug-credentials.json"
 
 
 class TestWriteToolConfigManagedSettings:
@@ -1082,9 +1102,9 @@ class TestWriteToolConfigManagedSettings:
         self._patch(monkeypatch, private_writes, managed_writes)
         state = {"workspace": WS, "codex_models": []}
         claude.write_tool_config(state, "databricks-claude-sonnet-4")
-        # Private file still written; managed file written too.
+        # Private file still written; managed file and ug's credential drop-in written too.
         assert str(claude.CLAUDE_SETTINGS_PATH) in [p for p, _ in private_writes]
-        assert [p for p, _ in managed_writes] == [str(FAKE_MANAGED_PATH)]
+        assert [p for p, _ in managed_writes] == [str(FAKE_MANAGED_PATH), str(FAKE_DROPIN_PATH)]
         assert "modelPicker" not in private_writes[0][1]
         assert "modelPicker" not in json.loads(managed_writes[0][1])
 
@@ -1397,11 +1417,7 @@ class TestWriteToolConfigManagedSettings:
         monkeypatch.setattr(
             managed_files, "MANAGED_BACKUP_MANIFEST_PATH", backup_dir / "manifest.json"
         )
-        monkeypatch.setattr(
-            managed_files,
-            "_sudo_replace",
-            lambda target, text: target.write_text(text, encoding="utf-8"),
-        )
+        monkeypatch.setattr(managed_files, "_sudo_replace", _write_creating_parent)
         monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
         monkeypatch.setattr(claude, "managed_writes_allowed", lambda: True)
         monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: True)
@@ -1459,12 +1475,21 @@ class TestWriteToolConfigManagedSettings:
             managed_files, "MANAGED_BACKUP_MANIFEST_PATH", backup_dir / "manifest.json"
         )
 
+        # Counts managed-settings.json writes only; ug's credential drop-in has its own tests.
         def _write(target, text):
-            sudo_writes.append(text)
-            target.write_text(text, encoding="utf-8")
+            if target == managed_path:
+                sudo_writes.append(text)
+            _write_creating_parent(target, text)
+
+        def _remove(target):
+            if target == managed_path:
+                sudo_writes.append("remove")
+            else:
+                target.unlink(missing_ok=True)
 
         monkeypatch.setattr(managed_files, "_sudo_replace", _write)
-        monkeypatch.setattr(managed_files, "_sudo_remove", lambda *a: sudo_writes.append("remove"))
+        monkeypatch.setattr(managed_files, "_sudo_remove", _remove)
+        monkeypatch.setattr(managed_files, "_sudo_rmdir", lambda folder: folder.rmdir())
         monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
         monkeypatch.setattr(claude, "managed_writes_allowed", lambda: True)
         monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: True)
@@ -1492,6 +1517,90 @@ class TestWriteToolConfigManagedSettings:
         claude.write_tool_config(state, "databricks-claude-sonnet-4")
         assert len(sudo_writes) == 1  # no further privileged writes
         assert managed_path.read_bytes() == first_bytes  # exact bytes preserved
+
+    def test_credential_dropin_is_written_once_and_never_churns(self, tmp_path, monkeypatch):
+        # Another program may rewrite managed-settings.json from its own template on every launch.
+        # It never sees ug's blanks there, so neither file needs rewriting on later launches.
+        managed_path, sudo_writes = self._sudo_counting_env(tmp_path, monkeypatch)
+        dropin = managed_path.parent / managed_files.CLAUDE_CREDENTIALS_DROPIN
+        dropin_writes: list[Path] = []
+        replace = managed_files._sudo_replace
+
+        def counting_replace(target, text):
+            if target == dropin:
+                dropin_writes.append(target)
+            replace(target, text)
+
+        monkeypatch.setattr(managed_files, "_sudo_replace", counting_replace)
+        state = {"workspace": WS, "codex_models": []}
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        assert json.loads(dropin.read_text()) == {
+            "env": dict.fromkeys(claude.SHADOWING_CREDENTIAL_ENV_VARS, "")
+        }
+        template = json.loads(managed_path.read_text())
+        assert not set(claude.SHADOWING_CREDENTIAL_ENV_VARS) & set(template["env"])
+        # The other program writes its template back, as it does on every launch.
+        managed_path.write_text(json.dumps(template, indent=2) + "\n", encoding="utf-8")
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        assert len(sudo_writes) == 1
+        assert dropin_writes == [dropin]
+
+    def test_credential_dropin_shares_the_managed_file_password_prompt(self, tmp_path, monkeypatch):
+        managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
+        notes: list[str] = []
+        monkeypatch.setattr(managed_files, "print_note", notes.append)
+        replace = managed_files._sudo_replace
+
+        class _Worker:
+            usable = True
+
+            def close(self) -> None:
+                pass
+
+        def session_replace(target, text):
+            # A real write inside a session starts the privileged worker that later writes reuse.
+            if managed_files._managed_write_session_depth:
+                managed_files._managed_write_worker = (
+                    managed_files._managed_write_worker or _Worker()
+                )
+            replace(target, text)
+
+        monkeypatch.setattr(managed_files, "_sudo_replace", session_replace)
+        claude.write_tool_config({"workspace": WS, "codex_models": []}, None)
+
+        assert (managed_path.parent / managed_files.CLAUDE_CREDENTIALS_DROPIN).is_file()
+        assert [note for note in notes if note.startswith("Enter password")] == [
+            "Enter password once to configure machine-wide coding agent settings."
+        ]
+
+    def test_revert_removes_the_credential_dropin(self, tmp_path, monkeypatch):
+        managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
+        managed_path.write_text(json.dumps({"env": {"ISAAC_ONLY": "keep"}}), encoding="utf-8")
+        dropin = managed_path.parent / managed_files.CLAUDE_CREDENTIALS_DROPIN
+        claude.write_tool_config({"workspace": WS, "codex_models": []}, None)
+        assert dropin.is_file()
+
+        claude.revert_managed_settings()
+
+        assert not dropin.exists()
+        # The folder ug created goes too, so the managed directory is left as it was.
+        assert not dropin.parent.exists()
+        assert json.loads(managed_path.read_text()) == {"env": {"ISAAC_ONLY": "keep"}}
+
+    def test_revert_keeps_a_dropin_folder_holding_other_files(self, tmp_path, monkeypatch):
+        managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
+        managed_path.write_text(json.dumps({"env": {"ISAAC_ONLY": "keep"}}), encoding="utf-8")
+        dropin = managed_path.parent / managed_files.CLAUDE_CREDENTIALS_DROPIN
+        claude.write_tool_config({"workspace": WS, "codex_models": []}, None)
+        admin_dropin = dropin.parent / "10-admin.json"
+        admin_dropin.write_text('{"env": {"ADMIN": "1"}}', encoding="utf-8")
+
+        claude.revert_managed_settings()
+
+        assert not dropin.exists()
+        assert admin_dropin.read_text(encoding="utf-8") == '{"env": {"ADMIN": "1"}}'
 
     def test_admin_unrelated_edit_invokes_no_sudo(self, tmp_path, monkeypatch):
         # An admin's unrelated edit (a new policy key, keys reordered) is preserved and does not
@@ -2673,6 +2782,40 @@ class TestWriteToolConfigManagedSettings:
         assert "availableModels" not in managed_content
         assert "modelPicker" not in managed_content
 
+    def test_blank_credentials_go_to_private_file_and_dropin_not_managed_file(self, monkeypatch):
+        # A program that templates managed-settings.json would drop blanks written there and make
+        # ug rewrite them (and prompt for sudo) on every launch, so they live in ug's own drop-in.
+        # An existing value in managed-settings.json is left as it is; the later drop-in wins.
+        private_writes: list = []
+        managed_writes: list = []
+        existing = {str(FAKE_MANAGED_PATH): {"env": {"ANTHROPIC_API_KEY": "it-authored"}}}
+        self._patch(monkeypatch, private_writes, managed_writes, existing_by_path=existing)
+
+        state = claude.write_tool_config(
+            {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+        )
+
+        private = next(p for path, p in private_writes if path == str(claude.CLAUDE_SETTINGS_PATH))
+        written = dict(managed_writes)
+        managed = json.loads(written[str(FAKE_MANAGED_PATH)])
+        dropin = json.loads(written[str(FAKE_DROPIN_PATH)])
+        assert managed["env"]["ANTHROPIC_API_KEY"] == "it-authored"
+        assert "ANTHROPIC_AUTH_TOKEN" not in managed["env"]
+        assert dropin == {"env": dict.fromkeys(claude.SHADOWING_CREDENTIAL_ENV_VARS, "")}
+        for name in claude.SHADOWING_CREDENTIAL_ENV_VARS:
+            assert private["env"][name] == ""
+            assert ["env", name] in state["managed_configs"]["claude"]["keys"]
+
+    def test_dropin_is_skipped_when_privileged_writes_are_unavailable(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: False)
+
+        claude.write_tool_config({"workspace": WS, "codex_models": []}, None)
+
+        assert str(FAKE_DROPIN_PATH) not in [p for p, _ in managed_writes]
+
     def test_settings_passthrough_lands_in_managed_file_only(self, monkeypatch):
         private_writes: list = []
         managed_writes: list = []
@@ -3237,6 +3380,37 @@ class TestClaudeLaunch:
         assert os.environ["OAUTH_TOKEN"] == "token"
         assert "ANTHROPIC_DEFAULT_MODEL" not in os.environ
         assert calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), "--debug"]]
+
+    def test_launch_warns_on_shadowing_credentials_and_keeps_env(self, monkeypatch, capsys):
+        # ug's settings blank these for Claude Code; the user's own environment stays as it was.
+        monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
+        monkeypatch.delenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, raising=False)
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "sk-other-gateway")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-other-gateway")
+        # launch() exports the minted token; register it so teardown removes it again.
+        monkeypatch.delenv("OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(claude, "exec_or_spawn", lambda _argv: None)
+
+        claude.launch({"workspace": WS, "profile": "test"}, ["-p", "hi"], options=LaunchOptions())
+
+        assert os.environ["ANTHROPIC_AUTH_TOKEN"] == "sk-other-gateway"
+        assert os.environ["ANTHROPIC_API_KEY"] == "sk-other-gateway"
+        captured = capsys.readouterr()
+        err = " ".join(captured.err.split())
+        assert "ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY" in err
+        # Points scripted PAT users at ug's own bearer override.
+        assert "set DATABRICKS_BEARER instead" in err
+        assert "ANTHROPIC" not in captured.out
+
+    def test_launch_does_not_warn_for_empty_credentials(self, monkeypatch, capsys):
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "  ")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setattr(claude, "_launch_relayed", lambda *_args: None)
+
+        claude.launch({"workspace": WS, "claude_relayed": True}, [], options=LaunchOptions())
+
+        assert "ANTHROPIC" not in capsys.readouterr().err
 
     def test_windows_launch_preserves_prompt_as_literal_argv(self, monkeypatch, tmp_path):
         native_binary = tmp_path / "Claude Code" / "claude.exe"
