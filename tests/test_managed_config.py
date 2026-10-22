@@ -1396,6 +1396,26 @@ class TestPolicyWithoutInstallation:
 
         assert stat.S_IMODE(mc_mod.USER_MANAGED_CONFIG_PATH.stat().st_mode) == 0o600
 
+    def test_uninstalled_published_policy_is_not_stamped(self, monkeypatch):
+        """A non-root launch applies a fetched policy it can't install. The stamp can't replay a
+        policy that lives nowhere on disk, so none is written."""
+        monkeypatch.setattr(mc_mod, "is_admin", lambda: False)
+
+        result = refresh_managed_config(_state())
+
+        assert result.manifest == normalize_managed_config(RAW_MANIFEST)
+        assert not mc_mod.REFRESH_TS_PATH.exists()
+
+    def test_uninstalled_absent_policy_is_still_stamped(self, monkeypatch):
+        """An absent policy is replayable from the stamp, so the throttle keeps working."""
+        monkeypatch.setattr(mc_mod, "is_admin", lambda: False)
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (None, None))
+
+        refresh_managed_config(_state())
+
+        entry = json.loads(mc_mod.REFRESH_TS_PATH.read_text())[WORKSPACE]
+        assert entry["outcome"] == "none"
+
     def test_installed_policy_still_wins_with_skip(self, monkeypatch, capsys):
         save_managed_state(WORKSPACE, RAW_MANIFEST)
         monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
@@ -1544,6 +1564,25 @@ class TestWindowsMachinePolicy:
         assert result.manifest == normalize_managed_config(RAW_MANIFEST)
         assert mc_mod.USER_MANAGED_CONFIG_PATH.exists()
         assert not mc_mod.MANAGED_CONFIG_PATH.exists()
+
+
+class TestConfigureOnAnotherWorkspacesMachine:
+    def test_configure_fails_early_when_the_machine_stays_managed_elsewhere(self):
+        save_managed_state("https://installed.example.com", RAW_MANIFEST)
+
+        with pytest.raises(RuntimeError, match="did not replace") as error:
+            mc_mod.reject_foreign_machine_policy_after_configure(WORKSPACE)
+
+        message = str(error.value)
+        assert "https://installed.example.com" in message
+        assert f"ug configure --workspace {WORKSPACE}" in message
+
+    @pytest.mark.parametrize("installed", [None, WORKSPACE, WORKSPACE + "/"])
+    def test_configure_proceeds_for_its_own_or_no_policy(self, installed):
+        if installed:
+            save_managed_state(installed, RAW_MANIFEST)
+
+        mc_mod.reject_foreign_machine_policy_after_configure(WORKSPACE)
 
 
 class TestInstalledWorkspaceLaunch:

@@ -3670,6 +3670,66 @@ class TestOpenCodeModelFlag:
         assert calls["launch"].call_args.kwargs["options"].user_pinned_model is None
 
 
+class TestConfigureOnAnotherWorkspacesMachine:
+    """`ug configure` for a workspace while the machine stays managed for another one fails early,
+    and puts the saved selection back on the installed workspace."""
+
+    INSTALLED = "https://installed.example.com"
+    SELECTED = "https://example.databricks.com"
+
+    @pytest.fixture
+    def stuck(self, monkeypatch):
+        from ucode.managed_config import save_managed_state
+
+        save_managed_state(self.INSTALLED, {"default_agent": "CODING_AGENT_CLAUDE_CODE"})
+        state = {**MINIMAL_STATE, "workspace": self.SELECTED}
+        selected: list[str] = []
+        monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
+        monkeypatch.setattr(cli_mod, "save_state", lambda s: None)
+        monkeypatch.setattr(cli_mod, "set_current_workspace", selected.append)
+        for name in (
+            "configure_single_tool",
+            "configure_selected_tools",
+            "check_gateway_endpoint",
+            "install_tool_binary",
+        ):
+            monkeypatch.setattr(
+                cli_mod, name, lambda *a, **k: pytest.fail("configure must stop before agents")
+            )
+        return selected
+
+    @pytest.mark.parametrize("single_agent", [False, True])
+    def test_configure_stops_before_agents_when_the_machine_stays_managed_elsewhere(
+        self, monkeypatch, stuck, single_agent
+    ):
+        monkeypatch.setattr(cli_mod, "_refresh_configured_policy", lambda s: (None, False))
+
+        with pytest.raises(RuntimeError, match="did not replace"):
+            if single_agent:
+                cli_mod._configure_workspace_command(
+                    tool="claude", workspaces=[(self.SELECTED, None)]
+                )
+            else:
+                cli_mod._configure_workspace_command(workspaces=[(self.SELECTED, None)])
+
+        assert stuck == [self.INSTALLED]
+
+    def test_skip_mode_configure_cannot_switch_the_machine(self, monkeypatch, stuck):
+        """Under UG_SKIP_OS_SETTINGS the installed policy is never replaced, so configure stops
+        and keeps the installed workspace selected rather than leaving a launch-refused selection."""
+        monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
+        monkeypatch.setattr("ucode.managed_config.get_databricks_token", lambda ws, profile: "tok")
+        monkeypatch.setattr(
+            "ucode.managed_config.get_managed_config",
+            lambda ws, token: ({"default_agent": "CODING_AGENT_CODEX"}, None),
+        )
+
+        with pytest.raises(RuntimeError, match="did not replace"):
+            cli_mod._configure_workspace_command(workspaces=[(self.SELECTED, None)])
+
+        assert stuck == [self.INSTALLED]
+
+
 class TestAutoConfigureOnFirstRun:
     @pytest.mark.parametrize("tool", list(cli_mod.TOOL_SPECS))
     @pytest.mark.parametrize("has_workspace", [False, True])
