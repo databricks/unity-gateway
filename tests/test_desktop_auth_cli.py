@@ -25,7 +25,7 @@ def test_desktop_auth_emits_only_token_and_keeps_diagnostics_on_stderr(monkeypat
         print("Sign-in diagnostic")
         return "test-access-token"
 
-    monkeypatch.setattr(desktop_auth, "get_claude_desktop_token", credential)
+    monkeypatch.setattr(desktop_auth, "get_claude_desktop_databricks_token", credential)
     result = runner.invoke(
         app,
         [
@@ -122,7 +122,7 @@ def test_desktop_auth_failure_is_actionable_and_never_emits_token(monkeypatch, r
     def credential(host, profile):
         raise error
 
-    monkeypatch.setattr(desktop_auth, "get_claude_desktop_token", credential)
+    monkeypatch.setattr(desktop_auth, "get_claude_desktop_databricks_token", credential)
     result = runner.invoke(
         app,
         ["claude-desktop-auth", "--host", "https://workspace.example", "--profile", "selected"],
@@ -138,7 +138,7 @@ def test_desktop_auth_cancelled_login_is_reported_on_stderr(monkeypatch, runner)
     def credential(host, profile):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(desktop_auth, "get_claude_desktop_token", credential)
+    monkeypatch.setattr(desktop_auth, "get_claude_desktop_databricks_token", credential)
     result = runner.invoke(
         app,
         ["claude-desktop-auth", "--host", "https://workspace.example", "--profile", "selected"],

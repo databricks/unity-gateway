@@ -2388,8 +2388,8 @@ def claude_desktop_auth_cmd(
     import sys
 
     from ucode.desktop_auth import (
+        get_claude_desktop_databricks_token,
         get_claude_desktop_relay_credential,
-        get_claude_desktop_token,
     )
 
     try:
@@ -2399,7 +2399,7 @@ def claude_desktop_auth_cmd(
                     raise RuntimeError("An absolute Claude Code executable path is required.")
                 credential = get_claude_desktop_relay_credential(host, profile, claude_binary)
             else:
-                credential = get_claude_desktop_token(host, profile)
+                credential = get_claude_desktop_databricks_token(host, profile)
     except (RuntimeError, ValueError) as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None

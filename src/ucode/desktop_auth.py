@@ -247,13 +247,13 @@ def _remaining_budget(deadline: float, requested: float) -> float:
     return min(requested, remaining)
 
 
-def get_claude_desktop_token(
+def get_claude_desktop_databricks_token(
     host: str,
     profile: str | None = None,
     *,
     force_refresh: bool = False,
 ) -> str:
-    """Return one access token for Claude Desktop's ``apiKeyHelper``.
+    """Return one Databricks access token for Claude Desktop's ``apiKeyHelper``.
 
     ``profile`` comes from configured ucode state and is passed explicitly when
     present.  This function never searches for a profile by host.  It first
@@ -492,6 +492,45 @@ def _run_claude_login(claude_binary: str, *, timeout: float) -> None:
         )
 
 
+def _try_claude_auth_token() -> str | ClaudeDesktopAuthError:
+    try:
+        return _claude_subscription_token()
+    except ClaudeDesktopAuthError as exc:
+        if exc.kind != "auth":
+            raise
+        return exc
+
+
+def get_claude_auth_token(claude_binary: str, *, deadline: float | None = None) -> str:
+    """Return a valid Claude subscription token, refreshing or signing in when needed."""
+    if deadline is None:
+        deadline = time.monotonic() + _HELPER_BUDGET_SECONDS
+    token = _try_claude_auth_token()
+    if isinstance(token, str):
+        return token
+
+    with _auth_lock(deadline):
+        token = _try_claude_auth_token()
+        if isinstance(token, str):
+            return token
+
+        _run_claude_status(
+            claude_binary,
+            timeout=_remaining_budget(deadline, _TOKEN_TIMEOUT_SECONDS),
+        )
+        token = _try_claude_auth_token()
+        if isinstance(token, str):
+            return token
+        if not _interactive_context():
+            raise token
+
+        _run_claude_login(
+            claude_binary,
+            timeout=_remaining_budget(deadline, CLAUDE_DESKTOP_AUTH_TIMEOUT_SECONDS),
+        )
+        return _claude_subscription_token()
+
+
 def get_claude_desktop_relay_credential(
     host: str,
     profile: str,
@@ -499,45 +538,9 @@ def get_claude_desktop_relay_credential(
 ) -> dict[str, object]:
     """Return both credentials required by an Anthropic subscription relay."""
     deadline = time.monotonic() + _HELPER_BUDGET_SECONDS
-    databricks_token = get_claude_desktop_token(host, profile)
-    try:
-        anthropic_token = _claude_subscription_token()
-    except ClaudeDesktopAuthError as exc:
-        if exc.kind != "auth":
-            raise
-    else:
-        return {
-            "token": anthropic_token,
-            "headers": {AI_GATEWAY_TOKEN_HEADER: f"Bearer {databricks_token}"},
-        }
-    with _auth_lock(deadline):
-        try:
-            anthropic_token = _claude_subscription_token()
-        except ClaudeDesktopAuthError as exc:
-            if exc.kind != "auth":
-                raise
-        else:
-            return {
-                "token": anthropic_token,
-                "headers": {AI_GATEWAY_TOKEN_HEADER: f"Bearer {databricks_token}"},
-            }
-
-        _run_claude_status(
-            claude_binary,
-            timeout=_remaining_budget(deadline, _TOKEN_TIMEOUT_SECONDS),
-        )
-        try:
-            anthropic_token = _claude_subscription_token()
-        except ClaudeDesktopAuthError as exc:
-            if exc.kind != "auth" or not _interactive_context():
-                raise
-            _run_claude_login(
-                claude_binary,
-                timeout=_remaining_budget(deadline, CLAUDE_DESKTOP_AUTH_TIMEOUT_SECONDS),
-            )
-            anthropic_token = _claude_subscription_token()
+    databricks_token = get_claude_desktop_databricks_token(host, profile)
     return {
-        "token": anthropic_token,
+        "token": get_claude_auth_token(claude_binary, deadline=deadline),
         "headers": {AI_GATEWAY_TOKEN_HEADER: f"Bearer {databricks_token}"},
     }
 
@@ -553,6 +556,7 @@ __all__ = [
     "CLAUDE_CODE_OAUTH_TOKEN_ENV",
     "CLAUDE_CONFIG_DIR_ENV",
     "ClaudeDesktopAuthError",
+    "get_claude_auth_token",
     "get_claude_desktop_relay_credential",
-    "get_claude_desktop_token",
+    "get_claude_desktop_databricks_token",
 ]
