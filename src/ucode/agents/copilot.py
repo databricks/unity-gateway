@@ -51,7 +51,7 @@ from ucode.databricks import (
 )
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import is_tool_managed, mark_tool_managed, save_state
-from ucode.telemetry import agent_version, ug_version
+from ucode.telemetry import agent_version, ucode_user_agent, ug_version
 
 from .args import LaunchOptions, explicit_model_arg_value
 from .request_tags import request_tags_header_value
@@ -273,7 +273,9 @@ def _token_provider(state: dict) -> Callable[[bool], str]:
 
 def proxy_headers(state: dict) -> dict[str, str]:
     """Headers the proxy adds to every gateway request; admin-managed headers win by name."""
-    headers = {"User-Agent": f"ucode/{ug_version()} copilot/{agent_version(SPEC['binary'])}"}
+    headers = {
+        "User-Agent": ucode_user_agent(ug_version(), "copilot", agent_version(SPEC["binary"]))
+    }
     request_tags = request_tags_header_value()
     if request_tags:
         headers[AI_GATEWAY_REQUEST_TAGS_HEADER] = request_tags

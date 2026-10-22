@@ -9,6 +9,7 @@ import pytest
 
 from ucode import custom_oauth
 from ucode.agents import copilot
+from ucode.telemetry import client_platform
 
 WS = "https://example.databricks.com"
 
@@ -446,7 +447,7 @@ class TestProxyHeaders:
 
         headers = copilot.proxy_headers({})
 
-        assert headers["User-Agent"] == "ucode/0.9.0 copilot/1.0.91"
+        assert headers["User-Agent"] == f"ucode/0.9.0 copilot/1.0.91 {client_platform()}"
 
     def test_adds_request_tags(self, monkeypatch):
         monkeypatch.setattr(copilot, "agent_version", lambda binary: "1")

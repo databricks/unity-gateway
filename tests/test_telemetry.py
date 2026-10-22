@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from importlib.metadata import PackageNotFoundError, version
 from unittest.mock import patch
+
+import pytest
 
 from ucode import telemetry
 
@@ -85,3 +88,46 @@ class TestAgentVersion:
         )
         with patch.object(subprocess, "run", return_value=result):
             assert telemetry.agent_version("foo") == "unknown"
+
+
+class TestClientPlatform:
+    def setup_method(self):
+        telemetry.client_platform.cache_clear()
+
+    def teardown_method(self):
+        telemetry.client_platform.cache_clear()
+
+    @pytest.mark.parametrize(
+        ("platform_name", "machine", "expected"),
+        [
+            ("darwin", "arm64", "(macos; arm64)"),
+            ("darwin", "x86_64", "(macos; x86_64)"),
+            ("win32", "AMD64", "(windows; x86_64)"),
+            ("cygwin", "x64", "(windows; x86_64)"),
+            ("linux", "aarch64", "(linux; arm64)"),
+            ("linux2", "ARM64", "(linux; arm64)"),
+            ("freebsd14", "riscv64", "(freebsd14; riscv64)"),
+            ("linux", "", "(linux; unknown)"),
+            ("sun,os:5", "x86 (64), v2", "(sun-os-5; x86-64-v2)"),
+        ],
+    )
+    def test_maps_os_and_arch(self, monkeypatch, platform_name, machine, expected):
+        monkeypatch.setattr(sys, "platform", platform_name)
+        monkeypatch.setattr(telemetry.platform, "machine", lambda: machine)
+        assert telemetry.client_platform() == expected
+        for forbidden in ",:":
+            assert forbidden not in expected
+
+    def test_never_raises(self, monkeypatch):
+        def boom():
+            raise OSError("no uname")
+
+        monkeypatch.setattr(telemetry.platform, "machine", boom)
+        assert telemetry.client_platform() == "(unknown; unknown)"
+
+    def test_user_agent_keeps_gateway_prefix_and_appends_platform(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setattr(telemetry.platform, "machine", lambda: "arm64")
+        ua = telemetry.ucode_user_agent("0.9.1", "claude", "2.1.300")
+        assert ua == "ucode/0.9.1 claude/2.1.300 (macos; arm64)"
+        assert ua.startswith("ucode/0.9.1 claude/2.1.300")
