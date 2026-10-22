@@ -2,7 +2,8 @@
 
 An org admin defines a ``CodingAgentConfig`` on the Databricks AI Gateway; developers read it
 (non-admin) and ``ucode`` applies it locally. This module owns the fetch/normalize side and the one
-machine-wide file, ``/etc/unitygateway/managed-settings.json`` (root-owned, 0644):
+machine-wide file, ``/etc/unitygateway/managed-settings.json`` (root-owned, 0644), or on Windows
+``%ProgramData%\\UnityGateway\\managed-settings.json`` (administrator-only writes):
 
 - fetching the raw manifest (via :func:`ucode.databricks.fetch_managed_coding_agent_configs`),
 - normalizing the proto-JSON into a stable internal dict keyed by ucode's own tool names,
@@ -12,8 +13,8 @@ machine-wide file, ``/etc/unitygateway/managed-settings.json`` (root-owned, 0644
   re-fetching), falling back to the persisted copy when the read fails.
 
 Refresh timestamps live separately in ``~/.ucode/refresh_ts.json`` (0600), keyed by workspace.
-Unchanged remote reads never rewrite the protected policy. Non-root launches never invoke sudo;
-they retain installed policy and request an administrator update when remote policy changes.
+Unchanged remote reads never rewrite the protected policy. Non-root launches never invoke sudo or
+elevate; they retain installed policy and request an administrator update when remote policy changes.
 
 :func:`refresh_managed_config` is the launch path's entry point. It is called before model discovery,
 because the manifest decides whether that discovery is needed at all; the launch path then hands the
@@ -885,10 +886,18 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
         )
     except RuntimeError as exc:
         if force_refresh and _machine_policy_installable():
+            if current_os() is OS.WINDOWS:
+                hint = (
+                    "Run `ug configure` from an elevated terminal (Run as administrator), or ask "
+                    "your IT team or an administrator to run it."
+                )
+            else:
+                hint = (
+                    "This machine-wide file needs sudo. Rerun `ug configure` from a terminal where "
+                    "you can use sudo, or ask your IT team or an administrator to run it."
+                )
             message = (
-                f"Could not install the workspace policy at {MANAGED_CONFIG_PATH}: {exc} "
-                "This machine-wide file needs sudo. Rerun `ug configure` from a terminal where you "
-                "can use sudo, or ask your IT team or an administrator to run it."
+                f"Could not install the workspace policy at {MANAGED_CONFIG_PATH}: {exc} {hint}"
             )
             raise RuntimeError(message) from exc
         installed = load_managed_state(workspace)
@@ -928,9 +937,9 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
 
 
 def _machine_policy_installable() -> bool:
-    """Whether this machine can hold the installed workspace policy (Linux or macOS, not opted out
-    with ``UG_SKIP_OS_SETTINGS``)."""
-    return not managed_settings_skipped() and current_os() in (OS.LINUX, OS.MACOS)
+    """Whether this machine can hold the installed workspace policy (Linux, macOS, or Windows, not
+    opted out with ``UG_SKIP_OS_SETTINGS``)."""
+    return not managed_settings_skipped() and current_os() in (OS.LINUX, OS.MACOS, OS.WINDOWS)
 
 
 def _can_install_policy(explicit_configure: bool) -> bool:

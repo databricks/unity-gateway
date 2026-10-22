@@ -77,12 +77,14 @@ def managed_policy_paths(
     selected = set(agents)
     paths: list[Path] = []
     if platform_name == "nt":
+        program_data = environment.get("PROGRAMDATA", "").strip()
+        if not program_data:
+            raise RuntimeError(
+                "Cannot verify Unity Gateway workspace policy because PROGRAMDATA is unavailable."
+            )
+        # Unity Gateway's installed workspace policy affects every agent.
+        paths.append(Path(program_data) / "UnityGateway" / "managed-settings.json")
         if "codex" in selected:
-            program_data = environment.get("PROGRAMDATA", "").strip()
-            if not program_data:
-                raise RuntimeError(
-                    "Cannot verify Codex system policy because PROGRAMDATA is unavailable."
-                )
             codex_system = Path(program_data) / "OpenAI" / "Codex"
             paths.extend([codex_system / "requirements.toml", codex_system / "config.toml"])
         if "claude" in selected:
