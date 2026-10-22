@@ -38,6 +38,11 @@ from tests.e2e_cuj.helpers.terminal import Terminal
 from tests.e2e_cuj.helpers.workspace import Workspace
 from tests.e2e_cuj.test_cuj3_models import _catalog_display_names
 from tests.e2e_cuj.test_cuj4_smart_routing import _task_inference_request
+from tests.integration.utils.terminal import (
+    _claude_background_task_view_open,
+    _claude_background_tasks_complete,
+    _claude_prompt_idle,
+)
 
 
 def _client(headers):
@@ -331,6 +336,147 @@ assert sys.stdin.readline().strip() == "/exit"
                 tui.wait_for_background_tasks(timeout=2)
             assert not tui.ended
             assert not any("/exit" in action["keys"] for action in tui.actions)
+
+
+# Final screens captured from failing CI jobs (CUJ 4, "task view reporting no running tasks").
+_CI_PANEL_CLOSED_ON_ITS_OWN = """\
+● ae532c40484b469e89775111d5c14baf
+
+✻ Cooked for 46s · done 3:22 PM
+
+● Agent "Read file and return contents" finished · 11s
+unity gateway smart router  ON  — routing subagents                                                                                     [-]
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+"""
+_CI_PANEL_STILL_RUNNING = """\
+✻ Waiting for 1 background agent to finish
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+   ug-smart-router:ucode-route-claude-haiku-4-5-83f7d1b2 › Read file contents
+   11s · 13.0k tokens · 3 tools · Haiku 4.5
+
+   Progress
+     Read(input-8eafdb0495c6.txt)
+     SubagentHandback
+   › SubagentHandback
+
+   Prompt
+   Please share the contents of the file you read.
+
+   ← to go back · Esc/Enter/Space to close · x to stop · f to foreground
+"""
+_CI_PANEL_COMPLETED = """\
+✻ Waiting for 1 background agent to finish
+
+› Message from @ug-smart-router-ucod… (ctrl+o to expand)
+Background task update waiting while this panel is open
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+   agent › Read file contents
+   ✔ Completed · 11s · 13.0k tokens · 3 tools · Haiku 4.5
+
+
+   Prompt
+   Please share the contents of the file you read.
+
+   ← to go back · Esc/Enter/Space to close · f to foreground
+"""
+
+
+def test_claude_task_view_predicates_on_screens_captured_from_ci():
+    # The view Claude closed on its own is not evidence of completion; it must be reopened.
+    assert not _claude_background_task_view_open(_CI_PANEL_CLOSED_ON_ITS_OWN)
+    assert not _claude_background_tasks_complete(_CI_PANEL_CLOSED_ON_ITS_OWN)
+    assert _claude_prompt_idle(_CI_PANEL_CLOSED_ON_ITS_OWN)
+    # A snapshot held open while the agent had already finished still says "running".
+    assert _claude_background_task_view_open(_CI_PANEL_STILL_RUNNING)
+    assert not _claude_background_tasks_complete(_CI_PANEL_STILL_RUNNING)
+    assert _claude_background_task_view_open(_CI_PANEL_COMPLETED)
+    assert _claude_background_tasks_complete(_CI_PANEL_COMPLETED)
+
+
+def test_claude_prompt_is_not_idle_mid_turn_or_with_pending_input():
+    busy = _CI_PANEL_CLOSED_ON_ITS_OWN.replace(
+        "· ← for agents", "· esc to interrupt · ← for agents"
+    )
+    assert not _claude_prompt_idle(busy)
+    assert not _claude_prompt_idle(_CI_PANEL_CLOSED_ON_ITS_OWN.replace("\n❯\n", "\n❯ /tasks\n"))
+
+
+@requires_pty
+@pytest.mark.parametrize(
+    ("plan", "opens"),
+    [
+        # /tasks is swallowed, then the reopened view reports completion.
+        ([None, "completed"], 2),
+        # The view shows a stale running snapshot until it is closed and reopened.
+        (["running", "completed"], 2),
+        # Both: swallowed, stale, then completed.
+        ([None, "running", "completed"], 3),
+    ],
+)
+def test_claude_task_wait_reopens_the_view_through_the_ui_until_it_reports_completion(
+    tmp_path, plan, opens
+):
+    views = {"running": _CI_PANEL_STILL_RUNNING, "completed": _CI_PANEL_COMPLETED}
+    session = _fake_ug(
+        tmp_path,
+        f"""
+import sys
+import termios
+import tty
+
+CLEAR = "\\x1b[2J\\x1b[H"
+VIEWS = {views!r}
+print("❯", flush=True)
+for view in {plan!r}:
+    assert sys.stdin.readline().strip() == "/tasks"
+    if view is None:
+        print(CLEAR + "❯", flush=True)
+        continue
+    previous = termios.tcgetattr(sys.stdin.fileno())
+    tty.setraw(sys.stdin.fileno())
+    print(CLEAR + VIEWS[view].replace("\\n", "\\r\\n"), flush=True)
+    assert sys.stdin.read(1) == "\\x1b"
+    termios.tcsetattr(sys.stdin.fileno(), termios.TCSANOW, previous)
+    print(CLEAR + "❯", flush=True)
+assert sys.stdin.readline().strip() == "/exit"
+""",
+    )
+    with Terminal(session, "reopens-task-view", [], agent=CLAUDE) as tui:
+        tui.wait_for_background_tasks(timeout=20, reopen_after=0.5, settle=0.5)
+        tui.exit_normally()
+        assert tui.child.exitstatus == 0
+        assert [a["keys"] for a in tui.actions].count("/tasks") == opens
+
+
+@requires_pty
+def test_claude_task_wait_stays_bounded_when_the_view_never_reports_completion(tmp_path):
+    session = _fake_ug(
+        tmp_path,
+        f"""
+import sys
+import termios
+import tty
+
+VIEW = {_CI_PANEL_STILL_RUNNING!r}
+print("❯", flush=True)
+while True:
+    sys.stdin.readline()
+    previous = termios.tcgetattr(sys.stdin.fileno())
+    tty.setraw(sys.stdin.fileno())
+    print("\\x1b[2J\\x1b[H" + VIEW.replace("\\n", "\\r\\n"), flush=True)
+    sys.stdin.read(1)
+    termios.tcsetattr(sys.stdin.fileno(), termios.TCSANOW, previous)
+    print("\\x1b[2J\\x1b[H❯", flush=True)
+""",
+    )
+    with Terminal(session, "task-view-never-completes", [], agent=CLAUDE) as tui:
+        with pytest.raises(AssertionError, match="task view reporting no running tasks"):
+            tui.wait_for_background_tasks(timeout=4, reopen_after=0.5, settle=0.5)
+        assert not any("/exit" in action["keys"] for action in tui.actions)
 
 
 def test_mcp_list_poll_retries_a_failed_probe_until_rows_match(monkeypatch):

@@ -34,10 +34,24 @@ def _claude_background_task_menu(text):
 def _claude_background_task_detail(text):
     # With a single task, /tasks opens that task's detail panel instead of the list.
     return re.search(
-        r"(?ms)^[ \t]*agent › .+?\n[ \t]*(\S.*?)[ \t]*\n.*"
+        r"(?ms)^[ \t]*\S[^\n]* › [^\n]+\n[ \t]*(\S[^\n]*?)[ \t]*\n.*"
         r"^[ \t]*← to go back · Esc/Enter/Space to close.*\Z",
         text,
     )
+
+
+def _claude_background_task_view_open(text):
+    return (
+        re.search(r"(?m)^\s*No tasks currently running\s*$", text) is not None
+        or _claude_background_task_menu(text) is not None
+        # A running task's detail header names its subagent type, so match the footer alone.
+        or re.search(r"(?m)^[ \t]*← to go back · Esc/Enter/Space to close", text) is not None
+    )
+
+
+def _claude_prompt_idle(text):
+    # Claude's own idle state: an empty input line and no "esc to interrupt" footer hint.
+    return "esc to interrupt" not in text and any(line.strip() == "❯" for line in text.splitlines())
 
 
 def _claude_background_tasks_complete(text):
@@ -575,22 +589,58 @@ class AgentTerminal(TerminalProcess):
         )
         task.assert_completed(self.session, self.agent)
 
-    def wait_for_background_tasks(self, timeout=180):
-        """Wait in Claude's native task view without stopping or detaching work."""
+    def wait_for_background_tasks(self, timeout=180, reopen_after=10, settle=3):
+        """Wait in Claude's native task view without stopping or detaching work.
+
+        Success needs Claude's own `/tasks` view to report that nothing is running. Claude can
+        swallow a `/tasks` typed mid-turn, close the view by itself when its last update lands,
+        or hold a running snapshot while the view stays open ("Background task update waiting
+        while this panel is open"). So the view is reopened through the visible UI: when it is
+        absent while the prompt is idle (at most every `settle` seconds), and when it has shown
+        a non-final state for `reopen_after` seconds. Completion is never inferred from
+        Claude's scrolled conversation.
+        """
         assert self.agent == "claude", self.agent
+        deadline = time.monotonic() + timeout
         self.submit("/tasks")
-        self.wait_for(
-            _claude_background_tasks_complete,
-            "Claude's task view reporting no running tasks",
-            timeout=timeout,
-        )
+        opened = time.monotonic()
+        complete_since = None
+        while True:
+            now = time.monotonic()
+            if now >= deadline:
+                raise AssertionError(
+                    "TUI did not show Claude's task view reporting no running tasks "
+                    f"within {timeout}s:\n{self.visible}"
+                )
+            self.read()
+            screen = self.visible
+            now = time.monotonic()
+            if _claude_background_tasks_complete(screen):
+                # A finished process leaves a final, stable screen.
+                complete_since = complete_since or now
+                if self.ended or now - complete_since >= 0.3:
+                    break
+                continue
+            complete_since = None
+            assert not self.ended, (
+                f"TUI exited while waiting for Claude's task view:\n{self.visible}"
+            )
+            if _claude_background_task_view_open(screen):
+                if now - opened >= reopen_after:
+                    self.send("\x1b", "close the background-task view to refresh its snapshot")
+                    self.wait_for(
+                        lambda text: not _claude_background_task_view_open(text),
+                        "the prompt after closing the stale background-task view",
+                        timeout=15,
+                    )
+                    self.submit("/tasks")
+                    opened = time.monotonic()
+            elif now - opened >= settle and _claude_prompt_idle(screen):
+                self.submit("/tasks")
+                opened = time.monotonic()
         self.send("\x1b", "close the completed background-task view")
         self.wait_for(
-            lambda text: (
-                "No tasks currently running" not in text
-                and _claude_background_task_menu(text) is None
-                and _claude_background_task_detail(text) is None
-            ),
+            lambda text: not _claude_background_task_view_open(text),
             "the prompt after closing the background-task view",
         )
 
