@@ -4,11 +4,14 @@ import json
 from pathlib import Path
 
 import pytest
-from utils.evidence import FileTask
+from utils.evidence import FileTask, assert_completed_task_model
 from utils.harness import split_command
 from utils.terminal import AgentTerminal, ConfigureTerminal
 
 pytestmark = [pytest.mark.live, pytest.mark.tui, pytest.mark.claude]
+
+# Bedrock reports the bare Anthropic id, not the us.anthropic.*-v1:0 slug the MPS targets.
+BEDROCK_SONNET_RESPONSE_MODEL = "claude-sonnet-4-5-20250929"
 
 
 @pytest.mark.smoke
@@ -146,4 +149,5 @@ def test_ug_configure_claude_bedrock_mps(live_session, workspace, claude_bedrock
         tui.wait_for_task(task, timeout=300)
         tui.exit_normally()
     task.assert_completed(session, "claude")
+    assert_completed_task_model(session, "claude", task.value, BEDROCK_SONNET_RESPONSE_MODEL)
     session.assert_not_routed()
