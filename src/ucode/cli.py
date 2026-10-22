@@ -22,6 +22,7 @@ from typer.core import HAS_RICH, TyperCommand, TyperGroup, TyperOption
 
 from ucode import custom_oauth
 from ucode.agents import (
+    MODEL_LOCATION_TOOLS,
     TOOL_SPECS,
     LaunchOptions,
     check_gateway_endpoint,
@@ -969,9 +970,9 @@ def _maybe_select_provider_service(tool: str, state: dict) -> dict:
     (``system.ai``), a Model Provider Service, or a custom Unity Catalog model location — and
     persist (or clear) the choice.
 
-    No-op for tools other than claude/codex/gemini/copilot (gemini and copilot have no custom
-    location). Falls back to Databricks when no matching provider services are found or the
-    listing fails and no custom location is offered.
+    No-op for tools other than claude/codex/gemini/copilot (gemini has no custom location). Falls
+    back to Databricks when no matching provider services are found or the listing fails and no
+    custom location is offered.
     """
     if tool not in ("claude", "codex", "gemini", "copilot"):
         return state
@@ -989,7 +990,7 @@ def _maybe_select_provider_service(tool: str, state: dict) -> dict:
     token = get_databricks_token(state["workspace"], state.get("profile"))
     with spinner("Checking for model provider services..."):
         names, reason = list_tool_provider_services(tool, state["workspace"], token)
-    offers_location = tool in ("claude", "codex")
+    offers_location = tool in MODEL_LOCATION_TOOLS
     if reason is not None:
         # Most workspaces don't have the feature enabled — that's the common case,
         # so skip the provider choice silently. Only surface unexpected failures.
@@ -1133,7 +1134,7 @@ def _configure_workspace_command(
             resolved = resolve_state(managed, state, tool_name)
             parent_schema = (
                 managed_unity_catalog_location(managed, tool_name)
-                if tool_name in ("claude", "codex")
+                if tool_name in MODEL_LOCATION_TOOLS
                 and not managed_provider_service(managed, tool_name)
                 else None
             )
@@ -3368,7 +3369,7 @@ def _launch_tool(
             parent_schema is None
             and explicit_provider is None
             and not persisted_provider
-            and tool in {"claude", "codex"}
+            and tool in MODEL_LOCATION_TOOLS
         ):
             parent_schema = get_model_location(state, tool)
         # An explicit --model-location displaces a persisted provider, as --provider displaces a
@@ -3410,7 +3411,7 @@ def _launch_tool(
         managed_provider = managed_provider_service(managed or {}, tool)
         managed_parent_schema = (
             managed_unity_catalog_location(managed or {}, tool)
-            if tool in {"claude", "codex"} and not managed_provider
+            if tool in MODEL_LOCATION_TOOLS and not managed_provider
             else None
         )
         if managed_provider:
@@ -3575,7 +3576,12 @@ def _launch_tool(
         route_root_model = None
         managed_model = None
         relayed_forward_model = None  # forwarded to Claude Code's --model for a relayed provider
-        if provider or managed_parent_schema or picker_catalog:
+        if (
+            provider
+            or managed_parent_schema
+            or picker_catalog
+            or (tool == "copilot" and parent_schema)
+        ):
             # Routing through a Model Provider Service pins no Databricks model;
             # scoped UC discovery likewise lets the agent select from the parent schema. Skip model
             # resolution, which would otherwise fail when global discovery found no models.
@@ -3731,8 +3737,11 @@ def _launch_tool(
                 state["_codex_launch_provider"] = provider
             elif parent_schema:
                 state["_codex_launch_parent_schema"] = parent_schema
-        elif tool == "copilot" and provider:
-            state[copilot_agent.LAUNCH_PROVIDER_SERVICE_KEY] = provider
+        elif tool == "copilot":
+            if provider:
+                state[copilot_agent.LAUNCH_PROVIDER_SERVICE_KEY] = provider
+            elif parent_schema:
+                state[copilot_agent.LAUNCH_MODEL_LOCATION_KEY] = parent_schema
         launch_options = _launch_options(
             tool,
             ctx.args,
@@ -4205,6 +4214,13 @@ def copilot_cmd(
             "(<catalog>.<schema>.<name>); `/model` then lists that service's models.",
         ),
     ] = None,
+    model_location: Annotated[
+        str | None,
+        typer.Option(
+            "--model-location",
+            help="Discover model services in `<catalog>.<schema>`. Example: main.default",
+        ),
+    ] = None,
     skip_preflight: SkipPreflightOption = False,
     workspace: WorkspaceOption = None,
 ) -> None:
@@ -4215,6 +4231,7 @@ def copilot_cmd(
         provider=provider,
         skip_preflight=skip_preflight,
         workspace_url=workspace,
+        parent_schema=model_location,
     )
 
 

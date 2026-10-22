@@ -2188,6 +2188,24 @@ class TestClaudeModelFlag:
         assert result.exit_code == 0, result.output
         assert mock_launch.call_args.args[1]["_codex_launch_parent_schema"] == "main.default"
 
+    def test_model_location_sets_transient_copilot_launch_marker(self):
+        state = dict(MINIMAL_STATE, available_tools=["copilot"])
+        with (
+            patch("ucode.cli.ensure_bootstrap_dependencies"),
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.ensure_provider_state", return_value=state),
+            patch("ucode.cli.configure_shared_state", return_value=state),
+            patch("ucode.cli.configure_tool", return_value=state) as mock_configure,
+            patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
+            patch("ucode.cli.launch_agent") as mock_launch,
+        ):
+            result = runner.invoke(app, ["copilot", "--model-location", "main.default"])
+
+        assert result.exit_code == 0, result.output
+        assert mock_configure.call_args.args[2] is None
+        launch_state = mock_launch.call_args.args[1]
+        assert launch_state[copilot_agent.LAUNCH_MODEL_LOCATION_KEY] == "main.default"
+
 
 class TestGeminiProviderLaunch:
     @staticmethod

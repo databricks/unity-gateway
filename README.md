@@ -95,7 +95,9 @@ Bedrock service, and the chat models of an OpenAI, Azure OpenAI or Microsoft Fou
 allows every model, `/model` lists the models the gateway reports for it, which the provider
 account may not serve; name the one to start on with `--model`. Services that relay a Claude subscription work only with Claude Code. Interactive
 `ug configure` offers the matching services under **External Models**, and a managed workspace
-config can set one for Copilot.
+config can set one for Copilot. `ug copilot --model-location <catalog>.<schema>` uses the model
+services of one schema instead: services named like Claude or GPT models use their usual API, and
+the rest go through the gateway's Anthropic endpoint, as for Claude Code.
 
 Without a managed workspace config, `ug claude` automatically discovers gateway
 models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when
