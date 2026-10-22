@@ -126,7 +126,12 @@ Claude's informational auto-mode classifier billing notice over the transcript. 
 waits for that exact notice to render stably, presses Enter (continue), and observes dismissal
 before continuing. Later occurrences are handled the same way; any other dialog still fails.
 After verifying the delegated task, Claude sessions also wait in the native `/tasks` view
-until no background work remains, including a child resumed after its initial answer.
+until no background work remains, including a child resumed after its initial answer. Claude can
+swallow a `/tasks` typed mid-turn, close the view itself, or hold a stale running snapshot while it
+is open, so the wait reopens `/tasks` through the visible UI (Esc, then `/tasks`) when the view is
+absent at an idle prompt or has not reported completion for 10 seconds; completion is only ever
+read from the task view. The delegation prompt asks for exactly one subagent because the parent
+otherwise sometimes spawns a second "relay" subagent to fetch the first one's result.
 Only then does the test close the task view and submit `/exit`.
 Each preset also runs public `ug revert` in cleanup, including after a failed assertion, so
 interactive launches' OS-managed settings cannot contaminate the next preset's configuration.

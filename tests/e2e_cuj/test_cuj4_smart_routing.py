@@ -415,7 +415,12 @@ class TestCujSmartRouting(BaseCujTest):
                 ), agent
 
                 child_task = FileTask(session)
-                child_task.prompt = child_task.delegate_prompt
+                # Scenario input: Claude's parent otherwise sometimes starts a second "relay"
+                # subagent whose only job is to message the first one for its result.
+                child_task.prompt = (
+                    f"{child_task.delegate_prompt} Use only that one subagent: do not start "
+                    "any other subagent."
+                )
                 decision_count = len(read_jsonl(decisions_path))
                 checkpoint = recorder.checkpoint()
                 existing_sessions = set(agent_sessions(session, agent))
