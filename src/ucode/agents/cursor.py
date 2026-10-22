@@ -3,11 +3,11 @@
 Cursor is an MCP-only integration. `cursor-agent` runs models on the user's own
 Cursor account and exposes no gateway base URL, so ucode configures no models
 for it (it stays out of `agents.__init__._MODULES`). What ucode does is register
-Databricks MCP servers in Cursor's config, using the same uniform mechanism as
-every other client: a local **stdio** server that runs `ug mcp-proxy`, which
-bridges to the Databricks MCP endpoint and mints a fresh OAuth token per request
-(see `ucode.mcp_proxy`). So Cursor needs no token in its config and no launch-
-time token export — `cursor-agent` just spawns the proxy like any stdio server.
+Databricks MCP servers in Cursor's config. Connection-backed services use native
+HTTP OAuth with Cursor's CIMD client ID. Other services use a local **stdio**
+server that runs `ug mcp-proxy`, which bridges to the Databricks MCP endpoint and
+refreshes the workspace token (see `ucode.mcp_proxy`). Neither entry persists a
+bearer token in Cursor's config.
 
 `cursor-agent` reads `~/.cursor/mcp.json` directly, so entries are merged into
 that shared file (preserving anything already there) and removed surgically,

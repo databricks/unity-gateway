@@ -38,6 +38,7 @@ GH_URL = f"{WS}/api/2.0/mcp/external/github"
 # A connection-backed AI Gateway MCP service (3-part FQN) — the URL form that
 # registers as direct HTTP for Claude when its CIMD client is available.
 AIGW_MCP_URL = f"{WS}/ai-gateway/mcp-services/system.ai.github"
+CODEX_TEST_CIMD_CLIENT_ID = "https://example.com/oauth/codex-client-metadata"
 PROXY_TAIL = ["mcp-proxy", "--url", GH_URL, "--host", WS, "--profile", "p"]
 
 
@@ -360,6 +361,7 @@ class TestConfigureClientMcpServer:
     def test_cursor_aigw_service_registers_http_when_client_available(self, monkeypatch):
         http_calls, proxy_calls = self._capture_cursor(monkeypatch, cursor_client_available=True)
         mcp.configure_client_mcp_server("cursor", "github", AIGW_MCP_URL, WS, "p")
+        assert mcp.CURSOR_OAUTH_CLIENT_ID == "https://cursor.com/oauth/mcp-client.json"
         assert http_calls == [("github", AIGW_MCP_URL, mcp.CURSOR_OAUTH_CLIENT_ID)]
         assert proxy_calls == []
 
@@ -367,7 +369,7 @@ class TestConfigureClientMcpServer:
         http_calls, proxy_calls = self._capture_cursor(monkeypatch, cursor_client_available=False)
         mcp.configure_client_mcp_server("cursor", "github", AIGW_MCP_URL, WS, "p")
         assert http_calls == []
-        assert len(proxy_calls) == 1  # workspaces without cursor-desktop keep the stdio proxy
+        assert len(proxy_calls) == 1  # workspaces without Cursor's CIMD client keep the proxy
 
     def test_cursor_aigw_service_with_pat_keeps_proxy(self, monkeypatch):
         # PAT auth has no interactive OAuth, so it can't use the HTTP login path.
@@ -379,6 +381,8 @@ class TestConfigureClientMcpServer:
     def _capture_codex(self, monkeypatch, *, codex_client_available: bool):
         http_calls: list[tuple[str, str, str]] = []
         proxy_calls: list[tuple[str, list[str]]] = []
+        # Exercise the native writer independently of the current release mapping.
+        monkeypatch.setitem(mcp.AGENT_OAUTH_CLIENTS, "codex", (CODEX_TEST_CIMD_CLIENT_ID,))
         monkeypatch.setattr(
             mcp,
             "first_available_oauth_client",
@@ -408,14 +412,14 @@ class TestConfigureClientMcpServer:
     def test_codex_aigw_service_registers_http_when_client_available(self, monkeypatch):
         http_calls, proxy_calls = self._capture_codex(monkeypatch, codex_client_available=True)
         mcp.configure_client_mcp_server("codex", "github", AIGW_MCP_URL, WS, "p")
-        assert http_calls == [("github", AIGW_MCP_URL, mcp.CODEX_CLI_OAUTH_CLIENT_ID)]
+        assert http_calls == [("github", AIGW_MCP_URL, CODEX_TEST_CIMD_CLIENT_ID)]
         assert proxy_calls == []
 
     def test_codex_aigw_service_falls_back_to_proxy_without_client(self, monkeypatch):
         http_calls, proxy_calls = self._capture_codex(monkeypatch, codex_client_available=False)
         mcp.configure_client_mcp_server("codex", "github", AIGW_MCP_URL, WS, "p")
         assert http_calls == []
-        assert len(proxy_calls) == 1  # workspaces without codex-cli keep the stdio proxy
+        assert len(proxy_calls) == 1  # workspaces without a compatible CIMD client use the proxy
 
     def test_codex_aigw_service_with_pat_keeps_proxy(self, monkeypatch):
         # PAT auth has no interactive OAuth, so it can't use the HTTP login path.
@@ -432,6 +436,22 @@ class TestConfigureClientMcpServer:
         mcp.configure_client_mcp_server("codex", "web_search", url, WS, "p")
         assert http_calls == []
         assert len(proxy_calls) == 1
+
+    def test_codex_uses_proxy_without_deprecated_static_client(self, monkeypatch):
+        proxy_calls: list[tuple[str, list[str]]] = []
+        monkeypatch.setattr(
+            mcp,
+            "first_available_oauth_client",
+            lambda *args: pytest.fail("Codex must not probe a deprecated OAuth client"),
+        )
+        monkeypatch.setattr(mcp, "remove_codex_mcp_server", lambda name: False)
+        monkeypatch.setattr(
+            mcp,
+            "add_codex_mcp_server",
+            lambda name, argv: proxy_calls.append((name, argv)),
+        )
+        mcp.configure_client_mcp_server("codex", "github", AIGW_MCP_URL, WS, "p")
+        assert proxy_calls == [("github", mcp.build_mcp_proxy_argv(AIGW_MCP_URL, WS, "p"))]
 
     def test_oauthless_client_keeps_proxy_and_skips_probe(self, monkeypatch):
         # An agent with no mapped OAuth client (gemini) always proxies, and must not
@@ -876,9 +896,9 @@ class TestManagedMcpEntry:
             None,
             use_pat=False,
             always_load=False,
-            http_client="codex-cli",
+            http_client=CODEX_TEST_CIMD_CLIENT_ID,
         )
-        assert e == mcp.codex.managed_mcp_http_entry(self.MCP_URL, "codex-cli")
+        assert e == mcp.codex.managed_mcp_http_entry(self.MCP_URL, CODEX_TEST_CIMD_CLIENT_ID)
 
     def test_other_agents_use_stdio_proxy_entry(self):
         argv = self._argv()

@@ -1007,8 +1007,8 @@ def managed_mcp_entry(argv: list[str]) -> dict:
 def managed_mcp_http_entry(url: str, client_id: str) -> dict:
     """A ``[mcp_servers.<name>]`` **direct HTTP+OAuth** entry: Codex is the OAuth client and drives
     the connection login itself when the agent starts. ``url`` is both the server URL and the RFC
-    8707 ``oauth_resource``; ``client_id`` is the published
-    ``codex-cli`` app. Codex derives its per-server loopback ``/callback/<hash>`` redirect at login,
+    8707 ``oauth_resource``; ``client_id`` is a compatible public OAuth app.
+    Codex derives its per-server loopback ``/callback/<hash>`` redirect at login,
     so no callback need be written here."""
     return {"url": url, "oauth_resource": url, "oauth": {"client_id": client_id}}
 

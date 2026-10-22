@@ -69,15 +69,16 @@ class TestWriteMcpServerConfig:
 
 
 AIGW_URL = f"{WS}/ai-gateway/mcp-services/system.ai.github"
+CURSOR_CLIENT_ID = "https://cursor.com/oauth/mcp-client.json"
 
 
 class TestHttpMcpServerEntry:
     def test_builds_url_plus_auth_entry_with_pinned_client(self):
-        entry = cursor.build_http_mcp_server_entry(AIGW_URL, "cursor-desktop")
+        entry = cursor.build_http_mcp_server_entry(AIGW_URL, CURSOR_CLIENT_ID)
         # A direct OAuth HTTP server: url + auth.CLIENT_ID, no stdio command and no
         # static bearer — Cursor drives the OAuth itself. Scopes come from the MCP
         # protected-resource metadata, so none are hard-coded here.
-        assert entry == {"url": AIGW_URL, "auth": {"CLIENT_ID": "cursor-desktop"}}
+        assert entry == {"url": AIGW_URL, "auth": {"CLIENT_ID": CURSOR_CLIENT_ID}}
         assert "command" not in entry
         assert "headers" not in entry
 
@@ -89,14 +90,14 @@ class TestHttpMcpServerEntry:
             encoding="utf-8",
         )
 
-        removed = cursor.write_http_mcp_server_config("github", AIGW_URL, "cursor-desktop")
+        removed = cursor.write_http_mcp_server_config("github", AIGW_URL, CURSOR_CLIENT_ID)
 
         written = json.loads(config_file.read_text())
         assert removed is False
         assert written["mcpServers"]["proxy"] == {"command": "keep"}
         assert written["mcpServers"]["github"] == {
             "url": AIGW_URL,
-            "auth": {"CLIENT_ID": "cursor-desktop"},
+            "auth": {"CLIENT_ID": CURSOR_CLIENT_ID},
         }
 
 

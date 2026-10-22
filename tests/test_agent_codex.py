@@ -2575,7 +2575,7 @@ class TestWriteUserMcpServers:
             lambda *args: pytest.fail("Codex CLI would start OAuth during registration"),
         )
         url = "https://ws/ai-gateway/mcp-services/system.ai.github"
-        entry = codex.managed_mcp_http_entry(url, "codex-cli")
+        entry = codex.managed_mcp_http_entry(url, "https://example.com/oauth/client.json")
         removed = codex.write_user_mcp_servers({"github": entry}, {"github"})
 
         doc = read_toml_safe(path)
@@ -2664,7 +2664,12 @@ class TestWriteUserMcpServers:
         monkeypatch.setattr(mcp_mod, "remove_codex_mcp_server", unexpected_cli)
         with pytest.raises(RuntimeError, match="invalid Codex config"):
             codex.write_user_mcp_servers(
-                {"gh": codex.managed_mcp_http_entry("https://ws/x", "codex-cli")}, {"old"}
+                {
+                    "gh": codex.managed_mcp_http_entry(
+                        "https://ws/x", "https://example.com/oauth/client.json"
+                    )
+                },
+                {"old"},
             )
         assert path.read_text() == original
 
