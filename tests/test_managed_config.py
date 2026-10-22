@@ -841,18 +841,12 @@ class TestRefreshTTL:
         assert calls["n"] == 1
 
     def test_invalid_timestamp_refetches(self, monkeypatch):
-        mc_mod.MANAGED_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        mc_mod.MANAGED_CONFIG_PATH.write_text(
-            json.dumps(
-                {
-                    "workspace": WORKSPACE,
-                    "config": RAW_MANIFEST,
-                    "outcome": "published",
-                    "retrieved_at": "not-a-timestamp",
-                }
-            ),
-            encoding="utf-8",
+        self._write_cache(
+            config=RAW_MANIFEST, outcome="published", retrieved_at=NOW - timedelta(minutes=1)
         )
+        stamps = json.loads(mc_mod.REFRESH_TS_PATH.read_text())
+        stamps[WORKSPACE]["last_checked_at"] = "not-a-timestamp"
+        mc_mod.REFRESH_TS_PATH.write_text(json.dumps(stamps))
         calls = self._counting_fetch(monkeypatch)
         refresh_managed_config(_state())
         assert calls["n"] == 1

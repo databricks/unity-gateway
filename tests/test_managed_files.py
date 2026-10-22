@@ -755,7 +755,7 @@ class TestWorkspacePolicyWriter:
             "run",
             lambda *args, **kwargs: pytest.fail("dry run must not invoke sudo"),
         )
-        managed_files.update_workspace_policy(policy_path, "new", interactive=True)
+        managed_files.update_workspace_policy(policy_path, "new", interactive=True, allow_sudo=True)
         assert not policy_path.exists()
 
     def test_policy_symlink_is_rejected_before_sudo(self, policy_path, tmp_path, monkeypatch):

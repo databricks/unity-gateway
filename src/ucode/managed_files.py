@@ -1223,16 +1223,17 @@ def update_workspace_policy(
     current_text = read_managed_file(path)
     if current_text == desired_text:
         return
+    # Checked before the dry-run preview, so a dry run never shows a write the real run refuses.
+    if not allow_sudo and os.geteuid() != 0:
+        raise ManagedFileWriteUnavailable(
+            "Workspace policy updates require an administrator or root provisioning run."
+        )
     if is_dry_run():
         console.print(
             f"\n[bold]\\[dry run] {path} (via sudo)[/bold]\n"
             f"{desired_text if desired_text is not None else '(remove)'}"
         )
         return
-    if not allow_sudo and os.geteuid() != 0:
-        raise ManagedFileWriteUnavailable(
-            "Workspace policy updates require an administrator or root provisioning run."
-        )
     running_as_root = os.geteuid() == 0
     can_prompt = interactive and managed_writes_allowed() and not running_as_root
     # Run directly as root (no sudo), the script still checks the temp source's owner against

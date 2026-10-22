@@ -971,9 +971,9 @@ def _can_install_policy(explicit_configure: bool) -> bool:
 
 
 def _refresh_user_cache(state: dict, workspace: str, *, force_refresh: bool) -> ManagedConfigResult:
-    """Main's per-user policy cache, for a machine that cannot hold the installed policy.
+    """Cache policy per user when machine installation is unavailable.
 
-    Unchanged from before the machine policy: a launch reuses a read younger than
+    A launch reuses a read younger than
     :data:`MANAGED_CONFIG_TTL`, ``ug configure`` always reads fresh, a failed read falls back to the
     last saved config for this workspace, and no-config or ``FEATURE_DISABLED`` replaces it.
     """

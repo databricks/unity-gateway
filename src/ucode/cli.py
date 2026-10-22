@@ -824,9 +824,13 @@ def _launch_workspace_state(workspace: str | None) -> dict:
 
     Adopts the installed workspace when none is saved, so a fresh user launches it directly.
     """
-    if workspace:
-        set_current_workspace(managed_launch_workspace(workspace))
+    flag_workspace = managed_launch_workspace(workspace) if workspace else None
+    if flag_workspace:
+        set_current_workspace(flag_workspace)
     state = load_state()
+    if flag_workspace and state.get("workspace") != flag_workspace:
+        # A dry run saves nothing, so carry the requested workspace for this run.
+        state = {**state, "workspace": flag_workspace}
     current = managed_launch_workspace(state.get("workspace"))
     if current and not state.get("workspace"):
         set_current_workspace(current)
@@ -865,15 +869,17 @@ def _setup_single_agent(
     state = states[0]
     parent_schema = None
     managed = None
-    if apply_managed:
+    if apply_managed and tool in ("claude", "codex"):
         # Explicit configure always reads the workspace policy fresh, so it can install it.
         managed, _ = _refresh_configured_policy(state)
-        if tool in ("claude", "codex"):
-            _reject_disabled_agent(managed, tool)
-            if managed is not None:
-                state = resolve_state(managed, state, tool)
-                if not managed_provider_service(managed, tool):
-                    parent_schema = managed_unity_catalog_location(managed, tool)
+        _reject_disabled_agent(managed, tool)
+        if managed is not None:
+            state = resolve_state(managed, state, tool)
+            if not managed_provider_service(managed, tool):
+                parent_schema = managed_unity_catalog_location(managed, tool)
+    elif apply_managed:
+        # Other agents only read the policy (cached, as on main); they never install it.
+        managed, _ = refresh_managed_config(state)
     state = configure_single_tool(tool, state, parent_schema=parent_schema)
     if apply_managed and not managed_enabled_tools(managed or {}):
         state = _record_unmanaged_configured_agents(state, [tool])

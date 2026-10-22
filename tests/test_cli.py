@@ -6445,6 +6445,33 @@ class TestDryRunAdoptsInstalledWorkspace:
         assert state["workspace"] == "https://installed.example.com"
 
 
+class TestConfigureOtherAgentReadsPolicyOnly:
+    @pytest.mark.parametrize(("tool", "forced"), [("opencode", False), ("claude", True)])
+    def test_only_claude_and_codex_force_the_policy_read(self, monkeypatch, tool, forced):
+        """As on main, other agents only read the policy, so they never prompt for sudo."""
+        calls = []
+        monkeypatch.setattr(
+            cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [dict(MINIMAL_STATE)]
+        )
+        monkeypatch.setattr(
+            cli_mod,
+            "refresh_managed_config",
+            lambda state, force_refresh=False: calls.append(force_refresh) or (None, False),
+        )
+        monkeypatch.setattr(cli_mod, "configure_single_tool", lambda tool, state, **k: state)
+        monkeypatch.setattr(cli_mod, "_record_unmanaged_configured_agents", lambda s, t: s)
+        monkeypatch.setattr(cli_mod, "install_databricks_ai_tools_for_agents", lambda *a, **k: None)
+        monkeypatch.setattr(
+            "ucode.agents.desktop.setup.configure_claude_desktop", lambda *a, **k: None
+        )
+
+        cli_mod._setup_single_agent(
+            [("https://example.databricks.com", None)], tool, apply_managed=True
+        )
+
+        assert calls == [forced]
+
+
 class TestInstalledMachineWorkspace:
     INSTALLED = "https://installed.example.com"
     SELECTED = "https://selected.example.com"

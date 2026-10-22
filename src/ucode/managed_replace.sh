@@ -231,9 +231,15 @@ remove_one() (
         exit 1
     fi
     if [ "$platform" = macos ]; then
-        source_owner=$(/usr/bin/stat -f %u "$source_path")
+        source_owner=$(/usr/bin/stat -f %u "$source_path") || {
+            printf '%s\n' "Cannot inspect workspace-policy source: $source_path" >&2
+            exit 1
+        }
     else
-        source_owner=$(stat -c %u "$source_path")
+        source_owner=$(stat -c %u "$source_path") || {
+            printf '%s\n' "Cannot inspect workspace-policy source: $source_path" >&2
+            exit 1
+        }
     fi
     if [ -z "${SUDO_UID:-}" ] || [ "$source_owner" != "$SUDO_UID" ] || ! cmp -s "$source_path" "$target"; then
         printf '%s\n' "Workspace policy changed before removal: $target" >&2
