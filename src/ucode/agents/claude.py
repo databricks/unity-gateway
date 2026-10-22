@@ -108,6 +108,8 @@ from .args import LaunchOptions, has_explicit_model_arg
 from .request_tags import request_tags_header_value
 
 GATEWAY_MODEL_DISCOVERY_ENV_VAR = "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"
+# Newline-separated `Name: value` lines from `ug claude --header`, added to ug's custom headers.
+CUSTOM_HEADERS_ENV_VAR = "UG_CLAUDE_CUSTOM_HEADERS"
 # If set, Claude Code launches in headless mode instead of the interactive login flow.
 CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR = "CLAUDE_CODE_OAUTH_TOKEN"
 CLAUDE_CONFIG_DIR = Path.home() / ".claude"
@@ -249,9 +251,6 @@ CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
         SMART_ROUTER_RECIPE_HEADER.casefold(),  # Remove recipe headers written by older ug versions.
     }
 )
-# ug replaces these only when it emits them (e.g. AI_GATEWAY_REQUEST_TAGS is set); otherwise an
-# existing line, such as Isaac's own request tags, is preserved.
-CLAUDE_OPTIONAL_CUSTOM_HEADER_NAMES = frozenset({AI_GATEWAY_REQUEST_TAGS_HEADER.casefold()})
 # These attribute inference traffic; neither selects the gateway or provider.
 CLAUDE_OPTIONAL_ATTRIBUTION_HEADER_NAMES = frozenset(
     {"user-agent", SMART_ROUTER_RECIPE_HEADER.casefold()}
@@ -521,6 +520,9 @@ def render_overlay(
     request_tags = request_tags_header_value()
     if request_tags:
         header_lines.append(f"{AI_GATEWAY_REQUEST_TAGS_HEADER}: {request_tags}")
+    # shortcut: a header later dropped from `--header` stays in the settings files until `ug
+    # revert`; fine while callers always pass the same headers, fix when ug stops writing them.
+    header_lines.extend(os.environ.get(CUSTOM_HEADERS_ENV_VAR, "").splitlines())
     # Relayed: the X-Databricks-AI-Gateway-Token swap header is added per request
     # by the refresh proxy, not here — a static value would go stale mid-session.
     custom_headers = "\n".join(_apply_managed_header_lines(header_lines, managed_http_headers))
@@ -1681,8 +1683,8 @@ def _merge_anthropic_custom_headers(existing: object, ucode_headers: str) -> str
     1. Split the existing custom headers by newline into individual header items.
     2. Split each item on ``:`` to identify its header name.
     3. Replace headers in ``CLAUDE_MANAGED_CUSTOM_HEADER_NAMES`` with ucode's values in their
-       existing positions, while preserving all other existing headers. Headers in
-       ``CLAUDE_OPTIONAL_CUSTOM_HEADER_NAMES`` are replaced only when ucode supplies a value.
+       existing positions, while preserving all other existing headers. Other headers are
+       replaced only when ucode supplies a value.
     4. Append any ucode-managed headers that were not already present.
 
     Header names are compared case-insensitively. Non-header lines are also preserved to avoid
@@ -1709,10 +1711,7 @@ def _merge_anthropic_custom_headers(existing: object, ucode_headers: str) -> str
         normalized_name = name.strip().casefold()
         if separator and (
             normalized_name in CLAUDE_MANAGED_CUSTOM_HEADER_NAMES
-            or (
-                normalized_name in CLAUDE_OPTIONAL_CUSTOM_HEADER_NAMES
-                and normalized_name in ucode_lines_by_name
-            )
+            or normalized_name in ucode_lines_by_name
         ):
             replacement = ucode_lines_by_name.get(normalized_name)
             if replacement is not None and normalized_name not in replaced_names:
@@ -2314,6 +2313,13 @@ def launch(
         # Discovery is launch-scoped. Pass it in the process environment rather
         # than persisting it in Claude's private or OS-managed settings.
         os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
+    # Redundant while the settings files also set it (their value wins); later ug stops writing it
+    # to the OS-managed file and relies on this.
+    settings_env = read_json_safe(CLAUDE_SETTINGS_PATH).get("env")
+    if isinstance(settings_env, dict) and (
+        custom_headers := settings_env.get(ANTHROPIC_CUSTOM_HEADERS_ENV_KEY)
+    ):
+        os.environ[ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = custom_headers
     if state.get("claude_relayed"):
         _launch_relayed(state, binary, tool_args)
         return

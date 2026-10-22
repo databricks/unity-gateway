@@ -679,6 +679,29 @@ class TestSubcommandRouting:
         assert result.exit_code == 0, result.output
         assert captured == [("1", ["fix the parser"])]
 
+    def test_claude_header_flag_reaches_the_launch(self, monkeypatch):
+        env_var = cli_mod.claude_agent.CUSTOM_HEADERS_ENV_VAR
+        monkeypatch.setenv(env_var, "")  # restored after the CLI overwrites it
+        seen = []
+
+        with patch(
+            "ucode.cli._launch_tool",
+            side_effect=lambda *_args, **_kwargs: seen.append(os.environ[env_var]),
+        ):
+            result = runner.invoke(app, ["claude", "--header", "x-a: 1", "--header", "x-b: 2"])
+
+        assert result.exit_code == 0, result.output
+        assert seen == ["x-a: 1\nx-b: 2"]
+
+    @pytest.mark.parametrize("header", ["no-colon", ": no-name", "x-a: 1\nx-b: 2"])
+    def test_claude_header_flag_rejects_anything_but_one_header(self, header):
+        with patch("ucode.cli._launch_tool") as mock_launch:
+            result = runner.invoke(app, ["claude", "--header", header])
+
+        assert result.exit_code == 1
+        assert "expects one `Name: value` line" in _strip_ansi(result.output)
+        mock_launch.assert_not_called()
+
     @pytest.mark.parametrize(
         ("args", "forwarded", "has_separator"),
         [

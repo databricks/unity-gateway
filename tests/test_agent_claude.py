@@ -275,6 +275,11 @@ class TestRenderOverlay:
             "Databricks-Ai-Gateway-Request-Tags" not in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
         )
 
+    def test_header_flag_lines_are_added(self, monkeypatch):
+        monkeypatch.setenv(claude.CUSTOM_HEADERS_ENV_VAR, "x-a: 1\nx-b: 2")
+        overlay, _ = claude.render_overlay(WS, "s4")
+        assert overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()[-2:] == ["x-a: 1", "x-b: 2"]
+
     def test_does_not_disable_experimental_betas(self):
         # Would suppress the beta header 1h prompt caching needs.
         overlay, _ = claude.render_overlay(WS, "s4")
@@ -773,6 +778,12 @@ class TestMergeAnthropicCustomHeaders:
             'Databricks-Ai-Gateway-Request-Tags: {"team":"infra"}',
             "meep: lala",
         ]
+
+    def test_replaces_an_existing_header_ucode_supplies(self):
+        # A `--header` line from an earlier launch is replaced, not duplicated.
+        merged = claude._merge_anthropic_custom_headers("x-a: old\nmeep: lala", "x-a: new")
+
+        assert merged.splitlines() == ["x-a: new", "meep: lala"]
 
 
 class TestRenderOverlayWebSearchDisable:
@@ -3237,6 +3248,19 @@ class TestClaudeLaunch:
         assert os.environ["OAUTH_TOKEN"] == "token"
         assert "ANTHROPIC_DEFAULT_MODEL" not in os.environ
         assert calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), "--debug"]]
+
+    def test_launch_sets_the_settings_custom_headers_in_its_environment(
+        self, monkeypatch, tmp_path
+    ):
+        settings_path = tmp_path / "ucode-settings.json"
+        settings_path.write_text(json.dumps({"env": {"ANTHROPIC_CUSTOM_HEADERS": "x-a: 1"}}))
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", settings_path)
+        monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", "")  # restored after launch overwrites it
+        monkeypatch.setattr(claude, "exec_or_spawn", lambda _argv: None)
+
+        claude.launch({}, [], options=LaunchOptions())
+
+        assert os.environ["ANTHROPIC_CUSTOM_HEADERS"] == "x-a: 1"
 
     def test_windows_launch_preserves_prompt_as_literal_argv(self, monkeypatch, tmp_path):
         native_binary = tmp_path / "Claude Code" / "claude.exe"
