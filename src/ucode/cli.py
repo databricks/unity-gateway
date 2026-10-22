@@ -4115,9 +4115,16 @@ def copilot_cmd(
         ),
     ] = None,
     skip_preflight: SkipPreflightOption = False,
+    workspace: WorkspaceOption = None,
 ) -> None:
     """Launch GitHub Copilot CLI via Databricks."""
-    _launch_tool("copilot", ctx, provider=provider, skip_preflight=skip_preflight)
+    _launch_tool(
+        "copilot",
+        ctx,
+        provider=provider,
+        skip_preflight=skip_preflight,
+        workspace_url=workspace,
+    )
 
 
 @app.command(

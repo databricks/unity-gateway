@@ -2150,11 +2150,22 @@ class TestClaudeModelFlag:
             ) as mock_resolve,
             patch("ucode.cli.configure_tool", return_value=state) as mock_configure,
             patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
+            patch("ucode.cli.set_current_workspace") as mock_set,
             patch("ucode.cli.launch_agent") as mock_launch,
         ):
-            result = runner.invoke(app, ["copilot", "--provider", "main.default.openai"])
+            result = runner.invoke(
+                app,
+                [
+                    "copilot",
+                    "--workspace",
+                    "https://example.databricks.com/",
+                    "--provider",
+                    "main.default.openai",
+                ],
+            )
 
         assert result.exit_code == 0, result.output
+        mock_set.assert_called_once_with("https://example.databricks.com")
         assert mock_resolve.call_args.args[0] == "copilot"
         assert mock_configure.call_args.args[2] is None
         launch_state = mock_launch.call_args.args[1]
