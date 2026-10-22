@@ -20,7 +20,7 @@ flowchart LR
 	native --> own
 ```
 
-Each lane runs its tasks for Claude and for Codex, once on ug's default model and once with `--model system.ai.gpt-6-luna`. [TASKS.md](TASKS.md) describes the task format and lists every task.
+Each lane runs its tasks for Claude and for Codex. The Harbor lane also runs Claude with `--model system.ai.gpt-6-luna`, which sends GPT through the gateway's Messages-to-Responses translation. [TASKS.md](TASKS.md) describes the task format and lists every task.
 
 ## Why there are two lanes
 
@@ -77,7 +77,7 @@ To change the TB2 tasks or pin a model, dispatch the workflow with inputs:
 gh workflow run terminal-bench.yml -f tb2_tasks=fix-git,code-from-image -f model=<model>
 ```
 
-`model` applies only to the default-model jobs. The workflow also takes `tb2_dataset`, `claude_version`, and `codex_version`. GitHub can dispatch the workflow only from a file that is already on `main`.
+`model` doesn't apply to the GPT-6 job. The workflow also takes `tb2_dataset`, `claude_version`, and `codex_version`. GitHub can dispatch the workflow only from a file that is already on `main`.
 
 ## Read the results
 
@@ -87,7 +87,7 @@ Every task must pass 2 of up to 3 attempts. A task stops after 2 passes, so the 
 
 The default TB2 subset holds only tasks that both agents pass reliably, so a miss points at ug rather than task difficulty. `kv-store-grpc` and `chess-best-move` were dropped because agents solve them too rarely. A trial that hits a harness error, such as a failed agent install or an API error, counts as a failed attempt.
 
-Each job uploads its files as an artifact named `terminal-bench-harbor-<agent>` or `terminal-bench-native-<agent>-<os>`. GPT-6 jobs add `-gpt-6` after the agent. `scrub_secrets.py` replaces bearer tokens in those files before upload.
+Each job uploads its files as an artifact named `terminal-bench-harbor-<agent>` or `terminal-bench-native-<agent>-<os>`. The GPT-6 job's artifact is `terminal-bench-harbor-claude-gpt-6`. `scrub_secrets.py` replaces bearer tokens in those files before upload.
 
 To tell a ug problem from an agent mistake, read the verifier output first and the agent log second:
 
