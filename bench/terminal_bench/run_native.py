@@ -121,7 +121,8 @@ def run_task(args: argparse.Namespace, task_dir: Path, out: Path, attempt: int) 
     logs.mkdir(parents=True, exist_ok=True)
     prepare(task_dir, workdir)
 
-    env = {**os.environ, "TASK_APP_DIR": str(workdir), "IS_SANDBOX": "1"}
+    env = {**os.environ, **config.get("environment", {}).get("env", {})}
+    env.update(TASK_APP_DIR=str(workdir), IS_SANDBOX="1")
     env["ENABLE_SMART_ROUTING_V2"] = "1"
     if args.agent == "oracle":
         # Checks that read the agent transcript have nothing to read for the oracle.

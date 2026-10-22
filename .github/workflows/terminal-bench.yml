@@ -74,6 +74,9 @@ jobs:
         run: |
           uv build --wheel --out-dir "$RUNNER_TEMP/dist"
           echo "UG_BENCH_WHEEL=$(ls "$RUNNER_TEMP"/dist/*.whl)" >> "$GITHUB_ENV"
+      # Harbor gives `docker info` 10 seconds, which a fresh runner's daemon can miss.
+      - name: Wait for the Docker daemon
+        run: timeout 120 bash -c 'until docker info >/dev/null 2>&1; do sleep 2; done'
       - name: Run TB2 tasks
         env:
           AGENT_VERSION: ${{ matrix.agent == 'claude' && env.CLAUDE_VERSION || env.CODEX_VERSION }}
