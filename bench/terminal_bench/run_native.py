@@ -20,6 +20,7 @@ from pathlib import Path
 
 import bench_auth
 from bench_tasks import TASKS_DIR, names_for
+from stream_models import models_in_log
 
 from ucode.os_compatibility.subprocess_cross_os import popen, run
 
@@ -143,6 +144,7 @@ def run_task(args: argparse.Namespace, task_dir: Path, out: Path, attempt: int) 
         "passed": True,
         "agent_exit": None,
         "timed_out": False,
+        "models": [],
     }
     for index, (name, step_dir, agent_timeout) in enumerate(task_steps(task_dir, config)):
         if args.agent != "oracle":
@@ -170,6 +172,8 @@ def run_task(args: argparse.Namespace, task_dir: Path, out: Path, attempt: int) 
         if not timed_out and os.name != "nt":
             kill_tree(proc)
         result.update(agent_exit=proc.returncode, timed_out=timed_out)
+        # Claude's log names the model that answered. It shows whether a pinned --model took effect.
+        result["models"] = list(dict.fromkeys([*result["models"], *models_in_log(log_path)]))
         if not passed:
             result.update(passed=False, failed_step=name)
             break
@@ -190,13 +194,14 @@ def write_summary(args: argparse.Namespace, results: list[dict], out: Path) -> N
     for r in results:
         by_task.setdefault(r["task"], []).append(r)
     failing = failing_tasks(results, args.min_passes)
+    pinned = f" · {args.model}" if args.model else ""
     lines = [
-        f"### Native tasks · {args.agent} · {sys.platform}: "
+        f"### Native tasks · {args.agent}{pinned} · {sys.platform}: "
         f"{len(by_task) - len(failing)}/{len(by_task)} tasks passed"
         f" (each needs {args.min_passes}/{args.attempts} passing attempts)",
         "",
-        "| Task | Passed | Results | Agent exits | Time (s) |",
-        "|------|--------|---------|-------------|----------|",
+        "| Task | Passed | Results | Agent exits | Time (s) | Models |",
+        "|------|--------|---------|-------------|----------|--------|",
     ]
     for task, runs in by_task.items():
         statuses = [
@@ -205,7 +210,8 @@ def write_summary(args: argparse.Namespace, results: list[dict], out: Path) -> N
         lines.append(
             f"| {task} | {sum(r['passed'] for r in runs)}/{len(runs)} | {', '.join(statuses)} "
             f"| {', '.join(str(r['agent_exit']) for r in runs)} "
-            f"| {', '.join(str(r['duration_sec']) for r in runs)} |"
+            f"| {', '.join(str(r['duration_sec']) for r in runs)} "
+            f"| {', '.join(dict.fromkeys(m for r in runs for m in r['models'])) or '-'} |"
         )
     summary = "\n".join(lines) + "\n"
     print(summary)
