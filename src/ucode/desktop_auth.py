@@ -501,15 +501,18 @@ def _try_claude_auth_token() -> str | ClaudeDesktopAuthError:
         return exc
 
 
-def get_claude_auth_token(claude_binary: str, *, deadline: float | None = None) -> str:
+def _get_claude_auth_token(claude_binary: str, *, deadline: float | None = None) -> str:
     """Return a valid Claude subscription token, refreshing or signing in when needed."""
     if deadline is None:
         deadline = time.monotonic() + _HELPER_BUDGET_SECONDS
+
+    # Avoid spawning Claude while its cached token is still valid.
     token = _try_claude_auth_token()
     if isinstance(token, str):
         return token
 
     with _auth_lock(deadline):
+        # Another helper may have refreshed the token while this process waited for the lock.
         token = _try_claude_auth_token()
         if isinstance(token, str):
             return token
@@ -518,6 +521,7 @@ def get_claude_auth_token(claude_binary: str, *, deadline: float | None = None) 
             claude_binary,
             timeout=_remaining_budget(deadline, _TOKEN_TIMEOUT_SECONDS),
         )
+        # `claude auth status` can silently renew an expired token in the shared credential store.
         token = _try_claude_auth_token()
         if isinstance(token, str):
             return token
@@ -540,7 +544,7 @@ def get_claude_desktop_relay_credential(
     deadline = time.monotonic() + _HELPER_BUDGET_SECONDS
     databricks_token = get_claude_desktop_databricks_token(host, profile)
     return {
-        "token": get_claude_auth_token(claude_binary, deadline=deadline),
+        "token": _get_claude_auth_token(claude_binary, deadline=deadline),
         "headers": {AI_GATEWAY_TOKEN_HEADER: f"Bearer {databricks_token}"},
     }
 
@@ -556,7 +560,6 @@ __all__ = [
     "CLAUDE_CODE_OAUTH_TOKEN_ENV",
     "CLAUDE_CONFIG_DIR_ENV",
     "ClaudeDesktopAuthError",
-    "get_claude_auth_token",
     "get_claude_desktop_relay_credential",
     "get_claude_desktop_databricks_token",
 ]
