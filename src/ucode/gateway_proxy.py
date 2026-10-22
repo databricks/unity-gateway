@@ -255,6 +255,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
     cache: TokenCache
     client: httpx.Client
     token_header = AI_GATEWAY_TOKEN_HEADER
+    request_transform: Callable[[BaseHTTPRequestHandler, bytes | None], bytes | None] | None = None
 
     def log_message(self, format: str, *args: object) -> None:
         return
@@ -264,6 +265,16 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         # reporting the error writes to a dead socket and raises again; swallow it.
         try:
             self.send_error(code, message)
+        except OSError:
+            pass
+
+    def _send_transform_error(self, status: int, payload: bytes) -> None:
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
         except OSError:
             pass
 
@@ -283,6 +294,17 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         started = time.monotonic()
         length = int(self.headers.get("Content-Length", 0) or 0)
         body = self.rfile.read(length) if length else None
+        request_transform = type(self).request_transform
+        if request_transform is not None:
+            try:
+                body = request_transform(self, body)
+            except RequestTransformRejected as exc:
+                self._send_transform_error(exc.status, exc.body)
+                return
+            except Exception as exc:  # noqa: BLE001 - a transform failure must fail closed
+                log_proxy_diagnostic("request_transform_error", error_type=type(exc).__name__)
+                self._send_transform_error(500, b'{"error":"request transform failed"}')
+                return
         url = self.path.lstrip("/")
         token_header, extra_strip, route_label = self._forward_target(body)
         log_proxy_diagnostic(
@@ -544,6 +566,28 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
         return True
 
 
+class _OwnershipProxyHandler(_RelayProxyHandler):
+    """Model-aware relay that also repairs Content-Length after body transforms."""
+
+    def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
+        token_header, extra_strip, route_label = super()._forward_target(body)
+        # HTTPX calculates the outbound length from the transformed bytes.
+        return token_header, extra_strip | {"content-length"}, route_label
+
+
+class RequestTransformRejected(RuntimeError):
+    """A request transform refused to forward a request to the upstream gateway."""
+
+    def __init__(self, status: int, payload: Mapping[str, object]):
+        if not 400 <= status < 600:
+            raise ValueError("request transform rejection status must be an HTTP error")
+        self.status = status
+        self.body = json.dumps(
+            payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")
+        ).encode("utf-8")
+        super().__init__("request transform rejected the upstream request")
+
+
 class _LoopbackHTTPServer(ThreadingHTTPServer):
     # Windows permits sharing an active listener when SO_REUSEADDR is enabled.
     allow_reuse_address = ThreadingHTTPServer.allow_reuse_address and os.name != "nt"
@@ -561,6 +605,7 @@ def _start_proxy(
     fallback_on_bind_error: bool = True,
     handler_attrs: Mapping[str, object] | None = None,
     on_refresh_failure: Callable[[BaseException], None] = log_token_refresh_failure,
+    request_transform: Callable[[BaseHTTPRequestHandler, bytes | None], bytes | None] | None = None,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     """Start the loopback refresh proxy + its background token refresher.
 
@@ -595,6 +640,7 @@ def _start_proxy(
                 "client": client,
                 "token_header": token_header,
                 **(handler_attrs or {}),
+                "request_transform": request_transform,
             },
         ),
     )
@@ -628,6 +674,31 @@ def start_relay_proxy(
         token_header=AI_GATEWAY_TOKEN_HEADER,
         handler_type=_RelayProxyHandler,
         force_refresh_near_expiry=False,
+    )
+
+
+def start_ownership_proxy(
+    workspace: str,
+    token_provider: Callable[[bool], str],
+    request_transform: Callable[[BaseHTTPRequestHandler, bytes | None], bytes | None],
+    *,
+    port: int = 0,
+) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
+    """Start a Claude gateway proxy that transforms requests before forwarding.
+
+    It uses the same trusted token cache, model-aware auth, and provider-header
+    handling as the relay proxy while allowing launch-scoped ownership capture on
+    the actual request.
+    """
+    return _start_proxy(
+        workspace,
+        token_provider,
+        port,
+        upstream_path="ai-gateway/anthropic/",
+        token_header=AI_GATEWAY_TOKEN_HEADER,
+        handler_type=_OwnershipProxyHandler,
+        force_refresh_near_expiry=False,
+        request_transform=request_transform,
     )
 
 

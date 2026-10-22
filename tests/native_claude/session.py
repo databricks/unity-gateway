@@ -9,6 +9,7 @@ import threading
 import time
 from pathlib import Path
 
+from tests.claude_isolation import isolate_claude_command
 from ucode.constants import AGENT_CLAUDE
 from ucode.smart_routing.config import resolve_environment
 from ucode.smart_routing.v2 import (
@@ -35,6 +36,7 @@ class Session:
             "env": {
                 **resolve_environment(env, agent=AGENT_CLAUDE),
                 "CLAUDE_CODE_EXTRA_BODY": '{"caller_field":"keep"}',
+                "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1",
             },
             "pluginConfigs": {
                 CLAUDE_ROUTING_PLUGIN_NAME: {
@@ -52,34 +54,37 @@ class Session:
                 if key in os.environ
             },
             "HOME": str(root),
+            "XDG_CONFIG_HOME": str(root / "xdg"),
             "CLAUDE_CONFIG_DIR": str(root / "config"),
             "ANTHROPIC_BASE_URL": api,
             "ANTHROPIC_API_KEY": "fixture-dummy-key",
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+            "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1",
             "DISABLE_AUTOUPDATER": "1",
         }
+        command = [
+            binary,
+            "-p",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--setting-sources",
+            "user",
+            "--settings",
+            json.dumps(settings),
+            "--model",
+            "claude-sonnet-4-6",
+            "--tools",
+            "Agent",
+            "--allowedTools",
+            "Agent",
+            "--plugin-dir",
+            str(self.plugin),
+        ]
         self.proc = subprocess.Popen(
-            [
-                binary,
-                "-p",
-                "--input-format",
-                "stream-json",
-                "--output-format",
-                "stream-json",
-                "--verbose",
-                "--setting-sources",
-                "user",
-                "--settings",
-                json.dumps(settings),
-                "--model",
-                "claude-sonnet-4-6",
-                "--tools",
-                "Agent",
-                "--allowedTools",
-                "Agent",
-                "--plugin-dir",
-                str(self.plugin),
-            ],
+            isolate_claude_command(command, root),
             cwd=root,
             env=process_env,
             stdin=subprocess.PIPE,

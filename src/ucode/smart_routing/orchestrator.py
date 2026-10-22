@@ -17,6 +17,7 @@ from ucode.constants import (
     AGENT_CLAUDE,
     AGENT_CODEX,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
+    ENABLE_SMART_ROUTER_OWNERSHIP_DECISION_ENV_VAR,
 )
 from ucode.smart_routing.config import resolve_environment
 from ucode.smart_routing.hooks import sync_managed_hooks
@@ -34,6 +35,14 @@ DISABLED_CONTEXT = (
 def feature_enabled(env: Mapping[str, str] | None = None, *, agent: str) -> bool:
     source = resolve_environment(env, agent=agent)
     return source.get(ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR) == "1"
+
+
+def ownership_decision_enabled(env: Mapping[str, str] | None = None, *, agent: str) -> bool:
+    """Whether Claude owns orchestration through the pinned local decision bundle."""
+    if agent != AGENT_CLAUDE:
+        return False
+    source = resolve_environment(env, agent=agent)
+    return source.get(ENABLE_SMART_ROUTER_OWNERSHIP_DECISION_ENV_VAR) == "1"
 
 
 def enabled(env: Mapping[str, str] | None = None, *, agent: str) -> bool:
@@ -59,15 +68,37 @@ def skill_directory() -> Path:
     return skills._skills_source() / skills.SMART_ROUTER_ORCHESTRATOR_SKILL
 
 
-def add_claude_agents(plugin_dir: Path) -> None:
+def add_claude_agents(plugin_dir: Path, *, env: Mapping[str, str] | None = None) -> None:
     """Load roles alongside the router's exact-model agents, only for this launch."""
-    if feature_enabled(agent=AGENT_CLAUDE):
+    if ownership_decision_enabled(env, agent=AGENT_CLAUDE):
+        from ucode.config_io import write_text_file
+        from ucode.smart_routing import ownership
+
+        roles = ownership.load_policy().get("roles")
+        expected_roles = {"explorer", "researcher", "worker", "tester", "reviewer"}
+        if not isinstance(roles, dict) or set(roles) != expected_roles:
+            raise ownership.OwnershipSetupError(
+                "ownership policy roles do not match the Claude bundle"
+            )
+        for role, body in roles.items():
+            if not isinstance(body, str) or not body:
+                raise ownership.OwnershipSetupError(f"ownership policy role {role!r} is invalid")
+            write_text_file(plugin_dir / "agents" / f"{role}.md", body)
+    elif feature_enabled(env, agent=AGENT_CLAUDE):
         shutil.copytree(skill_directory() / "agents", plugin_dir / "agents", dirs_exist_ok=True)
 
 
-def sync_hooks(doc: dict, *, agent: str) -> None:
+def sync_hooks(doc: dict, *, agent: str, env: Mapping[str, str] | None = None) -> None:
     groups = {}
-    if feature_enabled(agent=agent):
+    if ownership_decision_enabled(env, agent=agent):
+        argv = [sys.executable, "-m", HOOK_MODULE, "--agent", agent]
+        hook = {
+            "type": "command",
+            "command": shlex.join(argv),
+            "timeout": 5,
+        }
+        groups = {"SessionStart": [{"matcher": "compact", "hooks": [hook]}]}
+    elif feature_enabled(env, agent=agent):
         argv = [sys.executable, "-m", HOOK_MODULE, "--agent", agent]
         hook = {
             "type": "command",
@@ -83,10 +114,61 @@ def sync_hooks(doc: dict, *, agent: str) -> None:
     sync_managed_hooks(doc, HOOK_MODULE, groups)
 
 
+def _compaction_context(payload: Mapping[str, object]) -> str | None:
+    from ucode.smart_routing import ownership
+
+    policy = ownership.load_policy()
+    session_id = payload.get("session_id")
+    state = (
+        ownership.read_state(session_id)
+        if isinstance(session_id, str) and session_id.strip()
+        else None
+    )
+    current = state.get("current") if state is not None else None
+    if (
+        isinstance(session_id, str)
+        and isinstance(current, dict)
+        and current.get("dispatch_status") == "undecided"
+    ):
+        from ucode.smart_routing.ownership_transport import pending_instructions
+
+        return pending_instructions(session_id, current["request_id"])
+    if current is None:
+        return None
+    marker = session_env_path().parent / claude_answer_delivery.CAPABILITY_FILE
+    delivery_available = marker.is_file()
+    context = ownership.instructions_for_decision(
+        current, policy, answer_delivery=delivery_available
+    )
+    if state is not None:
+        summary = [f"Restored native ownership state (generation {state['generation']}):"]
+        if state["owners"]:
+            summary.append(
+                "owners: "
+                + "; ".join(
+                    f"agent_id={owner['agent_id']}, scope={owner['scope']}, state={owner['state']}"
+                    for owner in state["owners"]
+                )
+            )
+        context = f"{context}\n\n" + "\n".join(summary)
+    return context
+
+
 def hook_output(payload: object, *, agent: str) -> dict | None:
     if not isinstance(payload, dict) or payload.get("agent_id"):
         return None
     event = payload.get("hook_event_name")
+    if ownership_decision_enabled(agent=agent):
+        # The native prompt.submit hook is the sole initial workflow injector.
+        if event == "UserPromptSubmit":
+            return None
+        if event != "SessionStart" or payload.get("source") != "compact":
+            return None
+        context = _compaction_context(payload) if enabled(agent=agent) else DISABLED_CONTEXT
+        if context is None:
+            return None
+        return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": context}}
+
     if event != "UserPromptSubmit" and not (
         event == "SessionStart" and payload.get("source") == "compact"
     ):

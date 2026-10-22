@@ -4320,6 +4320,22 @@ class TestWriteUserMcpServers:
 
         assert json.loads(path.read_text())["mcpServers"]["a"] == {"type": "http", "url": "u"}
 
+    def test_legacy_mcp_path_and_ownership_profile_resolve_home_separately(
+        self, tmp_path, monkeypatch
+    ):
+        default_mcp_path = tmp_path / "legacy.claude.json"
+        private_home = tmp_path / "private-home"
+        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", default_mcp_path)
+        env = {"HOME": str(private_home)}
+
+        assert claude.claude_mcp_config_path(env) == default_mcp_path
+        assert claude.claude_config_dir(env) == private_home / ".claude"
+
+    def test_ownership_profile_uses_path_home_when_home_is_absent(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        assert claude.claude_config_dir({}) == tmp_path / ".claude"
+
     def test_unparseable_file_falls_back_to_cli_and_does_not_clobber(self, tmp_path, monkeypatch):
         path = tmp_path / ".claude.json"
         path.write_text("{ this is not valid json")

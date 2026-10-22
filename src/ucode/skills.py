@@ -108,6 +108,36 @@ def uninstall_agent_skill(skill_name: str, agent: str, home: Path | None = None)
     return _remove_skill_path(base / root / skill_name)
 
 
+def remove_managed_agent_skill_if_unmodified(
+    skill_name: str, agent: str, home: Path | None = None
+) -> bool | None:
+    """Remove only an installed bundle that still matches this UG-managed version.
+
+    ``None`` means no installed bundle exists; ``False`` means an existing bundle
+    differs and was preserved.
+    """
+    _validate_skill_name(skill_name)
+    try:
+        root = _SKILL_ROOTS[agent]
+    except KeyError:
+        raise ValueError(f"Unsupported skill agent: {agent!r}") from None
+
+    source = _skills_source() / skill_name
+    entrypoint = skill_entrypoint(source, agent)
+    source_digest = _bundle_digest(source, entrypoint=entrypoint)
+    if source_digest is None:
+        raise RuntimeError(f"Unity Gateway's `{skill_name}` skill resource is invalid.")
+
+    base = Path.home() if home is None else home
+    destination = base / root / skill_name
+    if not destination.exists() and not destination.is_symlink():
+        return None
+    if _bundle_digest(destination) != source_digest:
+        return False
+    _remove_skill_path(destination)
+    return True
+
+
 def uninstall_skill(skill_name: str, home: Path | None = None) -> list[Path]:
     """Remove one skill from current and legacy global skill directories."""
     _validate_skill_name(skill_name)

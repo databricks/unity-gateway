@@ -25,6 +25,11 @@ Claude answer delivery has offline transcript and subprocess coverage in
 `../test_claude_answer_delivery.py`, including stdout preservation for text, JSON and
 streaming JSON when UG redirects diagnostics to stderr. Live model/gateway selection
 and capability-hook activation are not covered here; interactive selection is unsupported.
+Separate native component tests exercise parser feedback through the Stop hook. That feedback
+permits one answer correction per request even after a different Stop block; it does not resolve child references or bypass
+terminal delivery validation.
+The shared parser's offline checks preserve JSON examples followed by prose and reject
+multiple standalone selection objects, including multiline JSON.
 
 Claude Desktop has installed-CLI profile lifecycle coverage in the existing Linux and
 Windows lanes. It configures twice and reverts against each platform's isolated native
@@ -1323,3 +1328,5 @@ For a managed workspace other than the two CI workspaces, set
 `UCODE_TEST_CODEX_ROUTING_FIXTURE` to the basename of a checked-in fixture whose model menu has
 been validated in that workspace. The suite never guesses a model menu or silently changes the
 workspace.
+
+Ownership projection component checks include native system-message context and output settings; these fixtures do not establish live classifier quality.

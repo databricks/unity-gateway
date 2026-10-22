@@ -16,7 +16,12 @@ from ucode.os_compatibility import subprocess_cross_os
 
 CAPABILITY_FILE = "claude-answer-delivery"
 AVAILABLE_CONTEXT = (
-    "This UG print session supports explicit answer delivery. After reviewing the full "
+    "This UG print session buffers output until it ends. Its terminal result uses the last root "
+    "final answer, even when structured output also includes earlier events. The caller has not "
+    "received earlier messages while the session is still running. If a background "
+    "notification continues the session, the last answer must still contain the complete "
+    "deliverable or its explicit selection. Answer-selection JSON belongs in your final reply, "
+    "not in a message to a child. After reviewing the full "
     "caller requirements and completed child answers, end with exactly "
     '{"use_agent_answer":"<actual agentId>"}, or with exactly '
     '{"answer_parts":["literal text",{"use_agent_answer":"<actual agentId>"}]} to join '
@@ -47,23 +52,25 @@ def parse_selection(final_text: str) -> tuple[object | None, str | None]:
     prefix = ""
     try:
         selection = json.loads(final_text, object_pairs_hook=unique_object)
-    except (TypeError, json.JSONDecodeError, ValueError):
+    except (TypeError, json.JSONDecodeError, ValueError) as final_error:
         duplicate_reserved = set(duplicate_keys) & {"use_agent_answer", "answer_parts"}
         if duplicate_reserved:
             return None, "answer selection contains duplicate JSON keys"
         prefix, _, terminal_line = final_text.rstrip().rpartition("\n")
         try:
             selection = json.loads(terminal_line, object_pairs_hook=unique_object)
-        except (TypeError, json.JSONDecodeError, ValueError):
+        except (TypeError, json.JSONDecodeError, ValueError) as terminal_error:
             duplicate_reserved = set(duplicate_keys) & {"use_agent_answer", "answer_parts"}
             if duplicate_reserved:
                 return None, "answer selection contains duplicate JSON keys"
-            if any(
-                text.lstrip().startswith("{")
-                and any(f'"{key}"' in text for key in ("use_agent_answer", "answer_parts"))
-                for text in (terminal_line, final_text)
-            ):
-                return None, "malformed parent answer selection JSON"
+            for text, error in ((terminal_line, terminal_error), (final_text, final_error)):
+                if text.lstrip().startswith("{") and any(
+                    f'"{key}"' in text for key in ("use_agent_answer", "answer_parts")
+                ):
+                    # A complete JSON example followed by prose is not a terminal directive.
+                    if isinstance(error, json.JSONDecodeError) and error.msg == "Extra data":
+                        continue
+                    return None, "malformed parent answer selection JSON"
             return None, None
     if not isinstance(selection, dict):
         return None, None
@@ -71,10 +78,18 @@ def parse_selection(final_text: str) -> tuple[object | None, str | None]:
     reserved = {"use_agent_answer", "answer_parts"} & set(selection)
     if not reserved:
         return None, None
-    for line in prefix.splitlines():
+    decoder = json.JSONDecoder()
+    offset = 0
+    for line in prefix.splitlines(keepends=True):
+        start = offset + len(line) - len(line.lstrip())
+        offset += len(line)
+        if not line.lstrip().startswith("{"):
+            continue
         try:
-            preceding = json.loads(line)
+            preceding, end = decoder.raw_decode(prefix, start)
         except json.JSONDecodeError:
+            continue
+        if prefix[end:].partition("\n")[0].strip():
             continue
         if isinstance(preceding, dict) and ({"use_agent_answer", "answer_parts"} & set(preceding)):
             return None, "parent answer selection is ambiguous across multiple blocks"
@@ -161,8 +176,29 @@ def _resolve_child(
     root_tool_id = start["tool_use_id"]
     if not owned_start(start, root_tool_id):
         raise ValueError("selected agent is not an owned direct local_agent")
+
+    def linked_result(event: dict, result: dict) -> bool:
+        return event.get("session_id") == session_id and (
+            event.get("parent_tool_use_id") == root_tool_id
+            or result.get("tool_use_id") == root_tool_id
+            or any(
+                block.get("type") == "tool_result" and block.get("tool_use_id") == root_tool_id
+                for block in _content(event)
+            )
+        )
+
     tool_input = calls[root_tool_id].get("input")
     background = isinstance(tool_input, dict) and tool_input.get("run_in_background") is True
+    # Fast children may finish before their launch acknowledgment reaches the stream.
+    background = background or any(
+        event.get("type") == "user"
+        and isinstance(result := event.get("tool_use_result"), dict)
+        and result.get("agentId") == agent_id
+        and result.get("isAsync") is True
+        and result.get("status") == "async_launched"
+        and linked_result(event, result)
+        for event in events[start_index + 1 :]
+    )
     tool_id = root_tool_id
     pending_resume = None
     resumed, started, failed = False, True, False
@@ -216,15 +252,7 @@ def _resolve_child(
             result = event.get("tool_use_result")
             if not isinstance(result, dict) or result.get("agentId") != agent_id:
                 continue
-            linked = event.get("session_id") == session_id and (
-                event.get("parent_tool_use_id") == root_tool_id
-                or result.get("tool_use_id") == root_tool_id
-                or any(
-                    block.get("type") == "tool_result" and block.get("tool_use_id") == root_tool_id
-                    for block in _content(event)
-                )
-            )
-            if not linked:
+            if not linked_result(event, result):
                 raise ValueError(
                     "selected foreground result is not linked to its root Agent/Task call"
                 )

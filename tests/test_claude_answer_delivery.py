@@ -140,10 +140,14 @@ def test_rejects_unowned_failed_and_stale_selections(index, field, value):
     [
         '{"use_agent_answer":"foreign"}',
         '{"answer_parts":',
+        'Review\n{"answer_parts":',
+        _SELECTION + '\n{"answer_parts":',
         '{"use_agent_answer":"a","use_agent_answer":"b"}',
         '{"answer_parts":[{"use_agent_answer":"a","extra":1}]}',
         '{"answer_parts":["only literal text"]}',
         _SELECTION + "\n" + _SELECTION,
+        '{\n  "use_agent_answer": "a"\n}\n' + _SELECTION,
+        'Review\n{\n  "answer_parts": [{"use_agent_answer": "a"}]\n}\n' + _SELECTION,
     ],
 )
 def test_rejects_missing_children_and_invalid_selections(final):
@@ -161,11 +165,12 @@ def test_requires_unique_child_and_complete_matching_background_notification():
     assert _deliver(_transcript(children))[2]
 
 
-def test_recognizes_a_foreground_call_that_was_launched_asynchronously():
+@pytest.mark.parametrize("acknowledgment_index", [2, 4])
+def test_recognizes_a_foreground_call_that_was_launched_asynchronously(acknowledgment_index):
     children = _child(background=True)
     children[0]["message"]["content"][0]["input"]["run_in_background"] = False
     children.insert(
-        2,
+        acknowledgment_index,
         _message(
             "user",
             [{"type": "tool_result", "tool_use_id": "tool-a"}],
@@ -175,6 +180,24 @@ def test_recognizes_a_foreground_call_that_was_launched_asynchronously():
     events, receipts, failed = _deliver(_transcript(children))
     assert not failed and events[-1]["result"] == "answer a"
     assert receipts[0]["source"] == "background_task_notification"
+
+
+@pytest.mark.parametrize("invalid", ["foreign_session", "foreign_tool", "partial_summary"])
+def test_late_background_acknowledgment_preserves_ownership_and_complete_answer_checks(invalid):
+    children = _child(background=True)
+    children[0]["message"]["content"][0]["input"].pop("run_in_background")
+    acknowledgment = _message(
+        "user",
+        [{"type": "tool_result", "tool_use_id": "tool-a"}],
+        tool_use_result={"status": "async_launched", "isAsync": True, "agentId": "a"},
+    )
+    if invalid == "foreign_session":
+        acknowledgment["session_id"] = "foreign"
+    elif invalid == "foreign_tool":
+        acknowledgment["message"]["content"][0]["tool_use_id"] = "foreign"
+    else:
+        children[-1]["summary"] = "partial"
+    assert _deliver(_transcript([*children, acknowledgment]))[2]
 
 
 @pytest.mark.parametrize("initial_status", ["completed", "failed"])
@@ -196,6 +219,28 @@ def test_ordinary_final_answer_and_native_errors_are_preserved():
     assert not failed and receipts == [] and events[-1] == source[-1]
     error = _event("result", is_error=True, errors=["API error"], result="")
     assert _deliver([error]) == ([error], [], True)
+
+
+@pytest.mark.parametrize(
+    "final",
+    [
+        'A complete report.\n{"use_agent_answer":"foreign"} is an example only.',
+        '{"answer_parts":[{"use_agent_answer":"foreign"}]} describes the protocol.',
+        '{"use_agent_answer":"foreign"}\nThis is documentation, not a selection.',
+        '{"use_agent_answer":"a"}\n{"use_agent_answer":"b"} are protocol examples.',
+    ],
+)
+def test_selection_examples_with_trailing_prose_preserve_the_complete_answer(final):
+    source = _transcript(final=final)
+    events, receipts, failed = _deliver(source)
+    assert not failed and receipts == [] and events[-1] == source[-1]
+
+
+def test_multiline_example_with_prose_before_exact_selection_is_not_ambiguous():
+    final = '{\n  "use_agent_answer": "foreign"\n} is an example.\n' + _SELECTION
+    events, receipts, failed = _deliver(_transcript(final=final))
+    assert not failed and events[-1]["result"] == "answer a"
+    assert receipts[0]["status"] == "selected"
 
 
 @pytest.mark.parametrize("source", ["broken", "[]", '{"type":"assistant"}'])

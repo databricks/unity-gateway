@@ -13,6 +13,10 @@ export function showStatusBand(): void {
   band.isHideArmed = false
 }
 
+export function armStatusBandForPrompt(): void {
+  if (band.isVisible) band.isHideArmed = true
+}
+
 type RoutingState = { enabled: boolean; firstPrompt: boolean }
 
 // Claude's capability scanner requires literal names in $.env.get calls.
@@ -44,12 +48,10 @@ async function readRoutingState($: any): Promise<RoutingState> {
   }
 }
 
-export const registerStatusBand = (on: On): void => {
-  on('prompt.submit', ($, e, next) => {
-    if (band.isVisible) band.isHideArmed = true
-    return next(e)
-  })
-
+export const registerStatusBand = (
+  on: On,
+  getOwnershipStatus?: () => string | undefined,
+): void => {
   on('turn.complete', ($, e, next) => {
     if (band.isHideArmed) {
       band.isVisible = false
@@ -64,7 +66,8 @@ export const registerStatusBand = (on: On): void => {
   on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
     const { enabled } = await readRoutingState($)
     const state = `smart router ${enabled ? 'ON' : 'OFF'}`
-    const tail = e.props.tail ? `${e.props.tail} · ${state}` : state
+    const ownership = getOwnershipStatus?.()
+    const tail = [e.props.tail, state, ownership].filter(Boolean).join(' · ')
     return next({ ...e, props: { ...e.props, tail } })
   })
 
