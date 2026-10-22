@@ -1005,10 +1005,9 @@ chown() {
         assert result.stdout == "OK 1\n"
         assert target.read_text(encoding="utf-8") == "managed settings\n"
         assert target.stat().st_mode & 0o777 == 0o644
-        expected_chown_calls = []
         for folder in created:
             assert folder.stat().st_mode & 0o777 == 0o755
-            expected_chown_calls.append(f"0:0 {folder}")
+        expected_chown_calls = [f"0:0 {parent}"] if created else []
         chown_calls = chown_log.read_text(encoding="utf-8").splitlines()
         assert chown_calls[: len(expected_chown_calls)] == expected_chown_calls
         assert len(chown_calls) == len(expected_chown_calls) + 1

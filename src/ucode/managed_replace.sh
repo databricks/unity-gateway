@@ -10,6 +10,8 @@ set -u
 set -f
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH
+# Folders `mkdir -p` creates must stay readable to the agents whatever the caller's umask.
+umask 022
 
 mode=$1
 platform=$2
@@ -140,19 +142,10 @@ replace_one() (
         exit 1
     fi
 
-    # `mkdir -p` would leave the folders above `$parent` with the caller's umask (027 makes them
-    # unreadable to the agents), so create each missing folder root-owned and world-readable.
-    make_parent() {
-        [ -n "$1" ] && [ ! -d "$1" ] || return 0
-        if [ -L "$1" ] || [ -e "$1" ]; then
-            return 1
-        fi
-        make_parent "${1%/*}" || return 1
-        mkdir "$1" && chown 0:0 "$1" && chmod 0755 "$1"
-    }
-
     if [ ! -d "$parent" ]; then
-        run_step make_parent "$parent"
+        run_step mkdir -p "$parent"
+        run_step chown 0:0 "$parent"
+        run_step chmod 0755 "$parent"
     fi
     if [ "$target" = /etc/unitygateway/managed-settings.json ]; then
         run_step chown 0:0 "$parent"
