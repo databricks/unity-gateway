@@ -21,6 +21,7 @@ from ucode.config_io import (
     ToolSpec,
     backup_existing_file,
     deep_merge_dict,
+    is_dry_run,
     prune_key_paths,
     read_json_safe,
     write_json_file,
@@ -33,6 +34,7 @@ from ucode.constants import (
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
     SMART_ROUTER_RECIPE_HEADER,
+    UG_HEADERS_ENV_VAR,
 )
 from ucode.custom_oauth import (
     CustomOAuthConfig,
@@ -53,12 +55,14 @@ from ucode.databricks import (
 from ucode.launcher import exec_or_spawn
 from ucode.managed_config import refresh_managed_config
 from ucode.managed_files import (
+    CLAUDE_HEADER_MOD_FILES,
     OS,
     ManagedFileSnapshots,
     ManagedFileWriteUnavailable,
     SettingsPassthrough,
     apply_settings_passthrough,
     check_skipped_managed_overrides,
+    claude_header_mod_root,
     config_scope,
     current_os,
     managed_file_conflicts,
@@ -73,6 +77,7 @@ from ucode.managed_files import (
     plan_settings_passthrough,
     read_managed_file,
     reconcile_managed_file,
+    reconcile_privileged_files,
     record_settings_passthrough,
     record_ug_picker,
     revert_managed_file,
@@ -1755,6 +1760,7 @@ def _required_custom_headers(value: object) -> dict[str, str] | None:
 def _managed_settings_conflicts(
     existing: dict, desired: dict, owned_paths: list[list[str]]
 ) -> list[str]:
+    owned_paths = [path for path in owned_paths if path not in CLAUDE_HEADER_MOD_PATHS]
     conflicts = managed_file_conflicts(existing, desired, owned_paths)
     header_path = f"env.{ANTHROPIC_CUSTOM_HEADERS_ENV_KEY}"
     if header_path in conflicts:
@@ -1818,6 +1824,87 @@ def _allow_ug_mcp_servers(settings: dict, admin_allowlist: list | None, names: s
         *({"serverName": name} for name in sorted(names - listed)),
     ]
     return settings
+
+
+CLAUDE_HEADER_MOD_MARKETPLACE = "ucode-managed"
+CLAUDE_HEADER_MOD_ID = f"ug-headers@{CLAUDE_HEADER_MOD_MARKETPLACE}"
+_CLAUDE_GUARD_MOD_ID = "sec-default@builtin"
+# The header mod's managed-file entries. Revert removes them; they never count as conflicts, since
+# nothing in ug's own settings file can be overridden by them.
+CLAUDE_HEADER_MOD_PATHS = [
+    ["extraKnownMarketplaces", CLAUDE_HEADER_MOD_MARKETPLACE],
+    ["enabledPlugins", CLAUDE_HEADER_MOD_ID],
+    ["prependPlugins"],
+]
+
+
+def _header_mod_files(root: Path) -> dict[Path, str]:
+    """The marketplace and plugin ug installs at ``root`` for its Claude header mod."""
+    description = "Adds `ug --header` / UG_HEADERS to Claude's gateway requests."
+    docs = {
+        ".claude-plugin/marketplace.json": {
+            "name": CLAUDE_HEADER_MOD_MARKETPLACE,
+            "owner": {"name": "Unity Gateway"},
+            # A relative source loads in place, which Claude requires of an organization's mod.
+            "plugins": [
+                {"name": "ug-headers", "source": "./ug-headers", "description": description}
+            ],
+        },
+        "ug-headers/.claude-plugin/plugin.json": {"name": "ug-headers", "description": description},
+        "ug-headers/hooks/hooks.json": {"modules": ["./register.ts"]},
+    }
+    files = {root / name: json.dumps(doc, indent=2) + "\n" for name, doc in docs.items()}
+    mod = Path(__file__).with_name("claude_header_mod") / "register.ts"
+    files[root / "ug-headers/hooks/register.ts"] = mod.read_text(encoding="utf-8")
+    return files
+
+
+def _enable_header_mod(settings: dict, root: Path | None) -> dict:
+    """Enable ug's header mod in the managed file and run it ahead of every user's mod."""
+    if root is None:
+        return settings
+    marketplaces = settings.setdefault("extraKnownMarketplaces", {})
+    plugins = settings.setdefault("enabledPlugins", {})
+    if not isinstance(marketplaces, dict) or not isinstance(plugins, dict):
+        return settings
+    marketplaces[CLAUDE_HEADER_MOD_MARKETPLACE] = {
+        "source": {"source": "directory", "path": str(root)}
+    }
+    plugins[CLAUDE_HEADER_MOD_ID] = True
+    # An unset list means the built-in guard alone, which a set list has to name to keep it.
+    prepend = settings.get("prependPlugins")
+    prepend = prepend if isinstance(prepend, list) else [_CLAUDE_GUARD_MOD_ID]
+    settings["prependPlugins"] = [
+        CLAUDE_HEADER_MOD_ID,
+        *(entry for entry in prepend if entry != CLAUDE_HEADER_MOD_ID),
+    ]
+    return settings
+
+
+def _install_header_mod(root: Path | None) -> None:
+    """Install or update the header mod's files; a failure only costs ``ug --header`` for Claude."""
+    if root is None or is_dry_run():
+        return
+    try:
+        reconcile_privileged_files(_header_mod_files(root))
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+        print_warning(f"Couldn't install ug's Claude header mod at {root}: {exc}")
+
+
+def header_mod_active() -> bool:
+    """Whether ug's header mod is installed and enabled, so ``UG_HEADERS`` reaches Claude."""
+    root = claude_header_mod_root()
+    path = _managed_settings_path()
+    if root is None or path is None:
+        return False
+    try:
+        if not (root / CLAUDE_HEADER_MOD_FILES[-1]).is_file():
+            return False
+        settings = _parse_managed_settings(read_managed_file(path) or "{}")
+    except (OSError, RuntimeError):
+        return False
+    plugins = settings.get("enabledPlugins")
+    return isinstance(plugins, dict) and plugins.get(CLAUDE_HEADER_MOD_ID) is True
 
 
 def _is_shared_claude_list(path: list[str]) -> bool:
@@ -1922,7 +2009,10 @@ def _reconcile_managed_settings(
             "ucode did not modify the file. Repair it or contact your administrator."
         ) from exc
     managed_before = copy.deepcopy(existing)
-    desired_settings = compose(existing)
+    header_mod_root = claude_header_mod_root()
+    desired_settings = _enable_header_mod(compose(existing), header_mod_root)
+    if header_mod_root is not None:
+        owned_paths = [*owned_paths, *CLAUDE_HEADER_MOD_PATHS]
     _preserve_permission_denies(managed_before, desired_settings, withdrawn=withdrawn_denies or [])
     conflicts = _managed_settings_conflicts(managed_before, desired_settings, owned_paths)
     if not managed_writes_allowed() and not conflicts:
@@ -1950,6 +2040,8 @@ def _reconcile_managed_settings(
     mark_managed_file_verified(state, "claude", path)
     record_ug_picker("claude", {key: desired_settings[key] for key in picker_keys})
     record_settings_passthrough("claude", passthrough_leaves or [])
+    # After the settings write, so a first install reuses its sudo session and password notice.
+    _install_header_mod(header_mod_root)
 
 
 def _preserve_permission_denies(
@@ -2311,6 +2403,12 @@ def launch(
     tool_args = _external_web_search_args(state, tool_args)
     binary = SPEC["binary"]
     workspace = state.get("workspace")
+    if os.environ.get(UG_HEADERS_ENV_VAR, "").strip() and not header_mod_active():
+        print_warning(
+            "Claude Code won't send your `ug --header` / UG_HEADERS headers: ug's header mod isn't "
+            "installed. Run `ug configure` from an interactive terminal on Linux or macOS, without "
+            "UG_SKIP_OS_SETTINGS."
+        )
     if workspace and os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) == "1":
         # Discovery is launch-scoped. Pass it in the process environment rather
         # than persisting it in Claude's private or OS-managed settings.

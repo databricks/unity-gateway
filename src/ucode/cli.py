@@ -3841,8 +3841,8 @@ def default(
         list[str] | None,
         typer.Option(
             "--header",
-            help="Extra `Name: value` header for this launch's Codex and ug Databricks requests "
-            "(repeatable). A header already sent keeps its value.",
+            help="Extra `Name: value` header for this launch's Claude Code, Codex, and ug "
+            "Databricks requests (repeatable). A header already sent keeps its value.",
         ),
     ] = None,
 ) -> None:

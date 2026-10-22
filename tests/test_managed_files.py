@@ -958,12 +958,13 @@ mv() {
         assert target.stat().st_mode & 0o777 == 0o640
         assert not list(tmp_path.glob(".managed_config.toml.ucode.*"))
 
-    @pytest.mark.parametrize("parent_exists", [True, False])
-    def test_real_shell_creates_missing_file(self, tmp_path, parent_exists):
+    @pytest.mark.parametrize("missing_parents", [0, 1, 2])
+    def test_real_shell_creates_missing_file(self, tmp_path, missing_parents):
         """The new-file branch installs content, mode, and (root) ownership from scratch."""
         source = tmp_path / "source.json"
         source.write_text("managed settings\n", encoding="utf-8")
-        parent = tmp_path if parent_exists else tmp_path / "codex"
+        created = [tmp_path / "codex", tmp_path / "codex" / "nested"][:missing_parents]
+        parent = created[-1] if created else tmp_path
         target = parent / "managed_config.toml"
         chown_log = tmp_path / "chown.log"
         # Unit-only relocation: production still accepts only its fixed machine-wide targets.
@@ -978,6 +979,8 @@ chown() {
 }
 """
         script = script.replace('\ncase "$mode" in', shim_chown + '\ncase "$mode" in')
+        # A restrictive umask must not leave any created folder unreadable to the agents.
+        script = "umask 027\n" + script
         request = " ".join(
             [
                 "REPLACE",
@@ -1003,9 +1006,9 @@ chown() {
         assert target.read_text(encoding="utf-8") == "managed settings\n"
         assert target.stat().st_mode & 0o777 == 0o644
         expected_chown_calls = []
-        if not parent_exists:
-            assert parent.stat().st_mode & 0o777 == 0o755
-            expected_chown_calls.append(f"0:0 {parent}")
+        for folder in created:
+            assert folder.stat().st_mode & 0o777 == 0o755
+            expected_chown_calls.append(f"0:0 {folder}")
         chown_calls = chown_log.read_text(encoding="utf-8").splitlines()
         assert chown_calls[: len(expected_chown_calls)] == expected_chown_calls
         assert len(chown_calls) == len(expected_chown_calls) + 1

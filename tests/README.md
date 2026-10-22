@@ -48,6 +48,12 @@ ug's own requests carrying them, and `test_agent_codex.py` `UG_HEADERS` reaching
 `-c` headers (plain and smart-routed) without writing its profile. No automated test checks the
 header at the gateway.
 
+`test_claude_header_mod.py` covers installing the Claude header mod's files and managed entries
+(no rewrite when unchanged), keeping an admin's `prependPlugins`, revert, the sudo allowlist, and an
+unreadable mod folder. `native_claude/test_mod.py` validates the mod and runs its merge tests
+(`native_claude/header_mod_tests`). Claude re-reading `ANTHROPIC_CUSTOM_HEADERS` per request was
+checked by hand on Claude 2.1.304; no automated test sends a request through the installed mod.
+
 The required Isaac feedback form and background delivery notifications need manual
 validation using the released Isaac skill and existing capture/retry CLI. Check
 category selection, empty and inline feedback, native retries, the off form's

@@ -37,6 +37,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     import ucode.os_compatibility.subprocess_cross_os as subprocess_cross_os_mod
     import ucode.state as state_mod
     from ucode import desktop_auth as desktop_auth_mod
+    from ucode.agents import claude as claude_mod
     from ucode.agents import codex as codex_mod
     from ucode.agents.desktop import claude as desktop_mod
 
@@ -83,6 +84,8 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(managed_files_mod, "_config_scope", "global")
     monkeypatch.setattr(codex_mod, "codex_managed_config_path", lambda: None)
+    # The header mod installs beside the real managed file; tests opt in with a tmp root.
+    monkeypatch.setattr(claude_mod, "claude_header_mod_root", lambda: None)
     monkeypatch.setattr(
         codex_mod, "CODEX_MODEL_CATALOG_PATH", state_dir / "codex-model-catalog.json"
     )
