@@ -43,6 +43,7 @@ from ucode.constants import (
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock
 from ucode.telemetry import ucode_user_agent, ug_version
+from ucode.ug_headers import ug_headers
 from ucode.ui import (
     err_console,
     normalize_workspace_url,
@@ -341,6 +342,7 @@ def _http_get_bytes(
 
     request_headers = {"Authorization": f"Bearer {token}"}
     request_headers.update(headers or {})
+    request_headers.update(ug_headers())
     request = urllib_request.Request(url, headers=request_headers)
     for attempt in range(max_retries + 1):
         try:
@@ -447,6 +449,7 @@ def _http_send_json(
     if body_bytes is not None:
         request_headers["Content-Type"] = "application/json"
     request_headers.update(headers or {})
+    request_headers.update(ug_headers())
     request = urllib_request.Request(url, data=body_bytes, method=method, headers=request_headers)
     try:
         with urllib_request.urlopen(request, timeout=timeout) as response:
