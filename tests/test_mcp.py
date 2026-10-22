@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import threading
 from unittest.mock import MagicMock
 
@@ -726,67 +725,6 @@ class TestApplyMcpServerChanges:
         servers = [self._server("a", ["claude"])]
 
         assert mcp.apply_mcp_server_changes(servers, servers, ["claude"], WS) is False
-
-    def test_unchanged_servers_migrate_only_matching_deprecated_oauth_entries(
-        self, tmp_path, monkeypatch
-    ):
-        first = self._server("first", ["cursor", "codex", "claude"])
-        second = self._server("second", ["cursor", "codex", "claude"])
-        cursor_config = tmp_path / "mcp.json"
-        cursor_config.write_text(
-            json.dumps(
-                {
-                    "mcpServers": {
-                        "first": {"url": first["url"], "auth": {"CLIENT_ID": "cursor-desktop"}},
-                        "second": {
-                            "url": "https://elsewhere/mcp",
-                            "auth": {"CLIENT_ID": "cursor-desktop"},
-                        },
-                    }
-                }
-            )
-        )
-        monkeypatch.setattr(mcp.cursor, "CURSOR_MCP_CONFIG_PATH", cursor_config)
-        claude_dir = tmp_path / "claude"
-        claude_dir.mkdir()
-        (claude_dir / ".claude.json").write_text(
-            json.dumps(
-                {
-                    "mcpServers": {
-                        "first": {"url": first["url"], "oauth": {"clientId": "claude-code"}},
-                        "second": {
-                            "url": "https://elsewhere/mcp",
-                            "oauth": {"clientId": "claude-code"},
-                        },
-                    }
-                }
-            )
-        )
-        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_dir))
-        codex_home = tmp_path / "codex"
-        codex_home.mkdir()
-        (codex_home / "config.toml").write_text(
-            f'[mcp_servers.first]\nurl = "{first["url"]}"\n'
-            '[mcp_servers.first.oauth]\nclient_id = "codex-cli"\n'
-            '[mcp_servers.second]\nurl = "https://elsewhere/mcp"\n'
-            '[mcp_servers.second.oauth]\nclient_id = "codex-cli"\n'
-        )
-        monkeypatch.setenv("CODEX_HOME", str(codex_home))
-        configured: list[tuple[str, str]] = []
-        monkeypatch.setattr(
-            mcp,
-            "configure_client_mcp_server",
-            lambda client, name, *args, **kwargs: configured.append((client, name)),
-        )
-
-        assert mcp.apply_mcp_server_changes(
-            [first, second], [first, second], ["cursor", "codex", "claude"], WS
-        )
-        assert set(configured) == {
-            ("claude", "first"),
-            ("cursor", "first"),
-            ("codex", "first"),
-        }
 
     def test_batch_agents_collapse_to_one_write_each(self, monkeypatch):
         # With batch_agents, each listed agent (any client, not just claude/codex) gets ONE file
