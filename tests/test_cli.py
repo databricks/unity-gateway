@@ -201,7 +201,25 @@ class TestHelp:
 
         assert result.exit_code == 0
         assert "dollars spent and total budget" in output
+        assert "Unity Gateway" in output
+        assert "--all" in output
         assert "--warehouse-id" not in output
+
+
+class TestUsage:
+    @pytest.mark.parametrize(
+        ("arguments", "show_all"),
+        [([], False), (["--all"], True)],
+    )
+    def test_forwards_all_option(self, monkeypatch, arguments, show_all):
+        report = MagicMock(return_value=0)
+        monkeypatch.setattr(cli_mod, "install_databricks_cli", lambda: None)
+        monkeypatch.setattr(cli_mod, "usage_report", report)
+
+        result = runner.invoke(app, ["usage", *arguments])
+
+        assert result.exit_code == 0, result.output
+        report.assert_called_once_with(show_all=show_all)
 
 
 class TestProjectScripts:

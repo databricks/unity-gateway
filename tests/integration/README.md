@@ -185,8 +185,8 @@ recommendation while its generated `ANTHROPIC_MODEL` setting and native header s
 Sonnet, then exits. It does not verify Claude's inference model. All three cases leave
 workspace and budget configuration unchanged.
 
-`../test_usage.py` and `../test_budget.py` cover budget selection, display, unavailable
-expanded views, and errors.
+`../test_usage.py`, `../test_budget.py`, and `../test_cli.py` cover budget selection,
+`--all`, display, unavailable expanded views, and errors.
 The expanded view has unit/component coverage only; CUJ5 tests the standard summary.
 
 Shared subprocess command resolution is covered by `../test_subprocess_cross_os.py` and

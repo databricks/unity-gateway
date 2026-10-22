@@ -101,8 +101,8 @@ def _render_limit(status: BudgetLimitStatus, *, include_budget_id: bool = False)
     return "\n".join(lines)
 
 
-def render_budget_limits(statuses: list[BudgetLimitStatus]) -> str:
-    """Render up to five limits, prioritizing the highest usage in each category."""
+def render_budget_limits(statuses: list[BudgetLimitStatus], *, show_all: bool = False) -> str:
+    """Render limits with category priority, capped at five unless all are requested."""
     ordered = sorted(
         statuses,
         key=lambda status: (
@@ -121,8 +121,9 @@ def render_budget_limits(statuses: list[BudgetLimitStatus]) -> str:
             featured_categories.add(category)
             featured.append(status)
 
-    featured = featured[:_DEFAULT_LIMIT_COUNT]
-    additional = additional[: _DEFAULT_LIMIT_COUNT - len(featured)]
+    if not show_all:
+        featured = featured[:_DEFAULT_LIMIT_COUNT]
+        additional = additional[: _DEFAULT_LIMIT_COUNT - len(featured)]
     sections = [label("Your Unity Gateway spend limits")]
     sections.extend(_render_limit(status) for status in featured)
     if additional:
@@ -130,15 +131,24 @@ def render_budget_limits(statuses: list[BudgetLimitStatus]) -> str:
         sections.extend(_render_limit(status, include_budget_id=True) for status in additional)
     displayed_count = len(featured) + len(additional)
     if displayed_count < len(statuses):
-        sections.append(muted(f"Showing {displayed_count} of {len(statuses)} spend limits."))
+        sections.append(
+            muted(
+                f"Showing {displayed_count} of {len(statuses)} spend limits. "
+                "Run ug usage --all to see all limits."
+            )
+        )
     return "\n" + "\n\n".join(sections)
 
 
-def usage() -> int:
+def usage(*, show_all: bool = False) -> int:
     state = load_state()
     workspace = state.get("workspace")
     if not workspace:
         raise RuntimeError("Workspace is not configured. Run `ug configure` first.")
+
+    spend_api_enabled = os.environ.get(USAGE_SPEND_API_ENV_VAR) == "1"
+    if show_all and not spend_api_enabled:
+        raise RuntimeError(f"Set {USAGE_SPEND_API_ENV_VAR}=1 to use ug usage --all.")
 
     profile = state.get("profile")
     apply_pat_environment(state)
@@ -146,7 +156,7 @@ def usage() -> int:
     with spinner("Retrieving Databricks access token..."):
         token = get_databricks_token(workspace, profile)
 
-    if os.environ.get(USAGE_SPEND_API_ENV_VAR) != "1":
+    if not spend_api_enabled:
         with spinner("Checking budget spend..."):
             budget_spend, reason = resolve_current_budget_spend(workspace, token)
         raise_for_invalid_access_token(workspace, reason)
@@ -174,5 +184,5 @@ def usage() -> int:
         print_note("No Unity Gateway spend limits found for this workspace.")
         return 0
 
-    console.print(render_budget_limits(budget_limits))
+    console.print(render_budget_limits(budget_limits, show_all=show_all))
     return 0

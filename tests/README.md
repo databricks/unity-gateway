@@ -352,9 +352,9 @@ Managed smart defaults are covered by `test_managed_config.py`, `test_cli.py`,
 without tier rules, applying recommendations when tiers exist, and serializing the current
 API field. These are unit/component checks; live request-count coverage is not included.
 
-`test_usage.py` and `test_budget.py` cover the standard usage summary and the opt-in
-expanded budget view. Tests check selection of up to five limits across personal/shared
-and daily/monthly budgets, including notices when more limits exist.
+`test_usage.py`, `test_budget.py`, and `test_cli.py` cover the standard usage summary
+and the opt-in expanded budget view. Tests check five-limit selection across personal/shared
+and daily/monthly budgets, the full listing with `--all`, and the hint when more limits exist.
 They check missing usage amounts, unavailable expanded views, and lookup errors
 without reporting failures as absent budgets.
 Presentation checks cover spacing, usage colors, over-limit values, and output without colors.

@@ -4484,11 +4484,15 @@ def doctor_cmd() -> None:
 
 
 @app.command("usage", rich_help_panel="Usage")
-def usage_cmd() -> None:
-    """Show AI Gateway dollars spent and total budget."""
+def usage_cmd(
+    show_all: bool = typer.Option(
+        False, "--all", help="Show all budget limits in the expanded view."
+    ),
+) -> None:
+    """Show Unity Gateway dollars spent and total budget."""
     try:
         install_databricks_cli()
-        usage_report()
+        usage_report(show_all=show_all)
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None

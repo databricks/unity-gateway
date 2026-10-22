@@ -306,6 +306,7 @@ ENABLE_UG_USAGE_SPEND_API=1 ug usage
 
 The expanded view shows up to five budget limits, prioritizing the most-used limits
 across personal/shared and daily/monthly budgets. It tells you when more limits exist.
+Add `--all` to show every limit: `ENABLE_UG_USAGE_SPEND_API=1 ug usage --all`.
 It uses your configured workspace login; no separate login is needed.
 Leave `ENABLE_UG_USAGE_SPEND_API` unset to keep the standard summary.
 
