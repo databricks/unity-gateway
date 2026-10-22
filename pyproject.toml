@@ -58,6 +58,7 @@ fallback-version = "0.0.0"
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",
+    "pytest-rerunfailures>=16.7",
     "pexpect>=4.9.0",
     "pyte>=0.8.2",
     "pywinpty==3.0.5; sys_platform == 'win32'",
