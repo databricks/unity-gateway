@@ -58,7 +58,7 @@ _AGENT_MODEL_FAMILIES: dict[str, tuple[str, ...]] = {
     "codex": ("codex", "oss"),
     "opencode": ("claude", "codex", "gemini", "oss"),
     "pi": ("claude", "codex", "gemini", "oss"),
-    "copilot": ("claude", "codex", "gemini", "oss"),
+    "copilot": ("claude", "codex"),
 }
 
 
@@ -102,6 +102,11 @@ def model_options_for_agent(tool: str, state: dict) -> list[str]:
         models = state.get(key)
         if isinstance(models, list):
             options.extend(m for m in models if isinstance(m, str) and m)
+    if tool == "copilot":
+        from ucode.agents.copilot import classify_copilot_model
+
+        # The codex listing also carries models Copilot can't serve, such as gpt-oss.
+        options = [m for m in options if classify_copilot_model(m)]
     # dict.fromkeys de-duplicates while preserving first-seen order (a model can match more than
     # one family bucket, e.g. an OSS id that also appears in the codex listing).
     return list(dict.fromkeys(options))

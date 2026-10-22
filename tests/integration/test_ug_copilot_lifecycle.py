@@ -205,7 +205,7 @@ def test_ug_configure_copilot_repeat_and_revert(live_session, workspace):
         "--model",
         CODEX_TEST_MODEL,
         "-p",
-        task.prompt,
+        task.prompt_with_path,
         *COPILOT_HEADLESS_FLAGS,
         timeout=180,
     )
@@ -261,7 +261,7 @@ def test_ug_copilot_upgrade_scrubs_token_saved_by_older_ug(live_session, workspa
         "--model",
         CODEX_TEST_MODEL,
         "-p",
-        task.prompt,
+        task.prompt_with_path,
         *COPILOT_HEADLESS_FLAGS,
         timeout=180,
     )

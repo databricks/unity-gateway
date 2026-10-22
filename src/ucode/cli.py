@@ -63,6 +63,7 @@ from ucode.databricks import (
     SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION,
     apply_pat_environment,
     build_shared_base_urls,
+    cached_model_service_entries,
     databricks_cli_installed,
     discover_claude_models,
     discover_codex_models,
@@ -109,6 +110,7 @@ from ucode.managed_resolve import (
     managed_launch_model,
     managed_provider_family_models,
     managed_provider_service,
+    managed_static_models,
     managed_supplies_models,
     managed_unity_catalog_location,
     managed_unservable_models,
@@ -551,6 +553,13 @@ def configure_shared_state(
         state[SELF_MANAGED_AGENTS_KEY] = dest_self_managed
     else:
         state.pop(SELF_MANAGED_AGENTS_KEY, None)
+    if previous_workspace != workspace:
+        dest_block = load_full_state().get("workspaces", {}).get(workspace, {})
+        dest_catalog = dest_block.get(copilot_agent.CATALOG_STATE_KEY)
+        if dest_catalog:
+            state[copilot_agent.CATALOG_STATE_KEY] = dest_catalog
+        else:
+            state.pop(copilot_agent.CATALOG_STATE_KEY, None)
     if profile:
         state["profile"] = profile
     else:
@@ -654,11 +663,14 @@ def configure_shared_state(
     # Codex smart routing can select OSS models such as GLM, so a Codex-only
     # configure must persist that discovered family too.
     want_oss = fetch_all or "opencode" in tools or "kilo" in tools or "codex" in tools
+    want_copilot = fetch_all or "copilot" in tools
 
     claude_reason: str | None = None
     gemini_reason: str | None = None
     codex_reason: str | None = None
     oss_reason: str | None = None
+    copilot_reason: str | None = None
+    copilot_models: list[copilot_agent.CopilotModel] | None = None
     claude_models = {}
     gemini_models = []
     codex_models = []
@@ -699,6 +711,12 @@ def configure_shared_state(
                     codex_models, codex_reason = discover_codex_models(workspace, token)
             if want_oss:
                 oss_models, oss_reason = ms_oss, ms_reason
+            if want_copilot:
+                copilot_models = copilot_agent.catalog_from_listings(
+                    cached_model_service_entries(workspace),
+                    [*claude_models.values(), *codex_models],
+                )
+                copilot_reason = ms_reason or claude_reason or codex_reason
         if claude_models:
             opencode_models["anthropic"] = list(claude_models.values())
         if gemini_models:
@@ -721,6 +739,13 @@ def configure_shared_state(
             state["codex_models"] = codex_models
         if want_oss:
             state["oss_models"] = oss_models
+        if want_copilot and copilot_models is not None:
+            state[copilot_agent.CATALOG_STATE_KEY] = copilot_agent.catalog_state(copilot_models)
+        elif want_copilot and state.get(copilot_agent.CATALOG_STATE_KEY):
+            print_warning(
+                f"Copilot model discovery failed ({copilot_reason}); "
+                "using the models found last time."
+            )
         if fetch_all or "opencode" in tools or "kilo" in tools:
             # Kilo is an OpenCode fork and consumes the same discovered view.
             state["opencode_models"] = opencode_models
@@ -736,6 +761,7 @@ def configure_shared_state(
         "gemini": gemini_reason,
         "codex": codex_reason,
         "oss": oss_reason,
+        "copilot": copilot_reason,
     }
     return state
 
@@ -1204,17 +1230,15 @@ def _model_values(value: object) -> list[str]:
 def _status_models(tool: str, state: dict) -> list[str]:
     """Return the effective model allow-list for one configured agent."""
     static_models = _model_values(state.get(f"{tool}_static_models"))
-    if static_models:
+    if tool == "copilot":
+        models = [model.id for model in copilot_agent.copilot_catalog(state)]
+    elif static_models:
         models = static_models
     elif tool in ("claude", "codex", "gemini", "opencode"):
         models = _model_values(state.get(f"{tool}_models"))
     elif tool == "kilo":
         # Kilo shares OpenCode's discovery; its models live under opencode_models.
         models = _model_values(state.get("opencode_models"))
-    elif tool == "copilot":
-        models = _model_values(state.get("copilot_models")) or (
-            _model_values(state.get("claude_models")) + _model_values(state.get("codex_models"))
-        )
     elif tool == "pi":
         models = _model_values(state.get("pi_models")) or (
             _model_values(state.get("claude_models"))
@@ -1227,12 +1251,14 @@ def _status_models(tool: str, state: dict) -> list[str]:
 
 
 def _status_default_model(tool: str, state: dict, models: list[str]) -> str | None:
+    if tool == "copilot":
+        return copilot_agent.default_model(state)
     explicit = state.get(f"{tool}_default_model")
     if isinstance(explicit, str) and explicit:
         return explicit
     # Claude and Codex deliberately leave the starting model to the agent unless a managed
     # config pins one. The other clients write the first resolved model into their ug config.
-    return models[0] if models and tool in ("gemini", "opencode", "kilo", "copilot", "pi") else None
+    return models[0] if models and tool in ("gemini", "opencode", "kilo", "pi") else None
 
 
 def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
@@ -1277,6 +1303,13 @@ def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
     if oss_models:
         opencode_models["oss"] = oss_models
     live["opencode_models"] = opencode_models
+    if "copilot" in tools:
+        copilot_models = copilot_agent.catalog_from_listings(
+            cached_model_service_entries(workspace),
+            [*claude_models.values(), *codex_models],
+        )
+        if copilot_models is not None:
+            live[copilot_agent.CATALOG_STATE_KEY] = copilot_agent.catalog_state(copilot_models)
     live["_status_model_reasons"] = {
         family: reason or shared_reason for family, reason in reasons.items()
     }
@@ -1422,6 +1455,10 @@ def revert() -> int:
     mcp_results = revert_mcp_configs(state)
     # Before restoring backups: one written by an earlier ug may hold a token.
     copilot_agent.scrub_stored_credentials()
+    try:
+        copilot_agent.sweep_session_registries()
+    except OSError as exc:
+        print_warning(f"Could not remove leftover Copilot session files: {exc}")
     claude_managed_result = claude_agent.revert_managed_settings()
     codex_managed_result = codex_agent.revert_managed_config()
 
@@ -3036,6 +3073,8 @@ def _child_owns_stdout(tool: str, tool_args: list[str]) -> bool:
         tool_args = tool_args[: tool_args.index("--")]
     if tool == "claude":
         return any(arg in {"-p", "--print"} for arg in tool_args)
+    if tool == "copilot":
+        return any(arg in {"-p", "--prompt"} or arg.startswith("--prompt=") for arg in tool_args)
     return tool == "codex" and any(arg in {"exec", "e", "app-server"} for arg in tool_args)
 
 
@@ -3066,8 +3105,10 @@ def _launch_options(
     explicit_prompt: bool,
     user_pinned_model: str | None,
     provider: str | None,
+    launch_model: str | None = None,
 ) -> LaunchOptions:
     return LaunchOptions(
+        launch_model=launch_model,
         # Pinned models for providers are resolved above through the provider-specific launch path.
         user_pinned_model=user_pinned_model if provider is None else None,
         launch_smart_routing=(
@@ -3110,6 +3151,11 @@ def _skip_model_discovery(
     (``family_defaults``). In the last case it is also harmful: discovered family defaults would
     overwrite that writer's on every launch, and each rewrite of the managed file costs a sudo prompt.
     """
+    if tool == "copilot":
+        # Copilot registers its discovered catalog, so a managed default alone still needs it.
+        return bool(
+            provider or managed_parent_schema or (managed and managed_static_models(managed, tool))
+        )
     return (
         bool(provider)
         or bool(managed_parent_schema)
@@ -3590,6 +3636,8 @@ def _launch_tool(
             # initial/fallback model and still participates in a routed session.
             user_pinned_model=model or forwarded_model,
             provider=provider,
+            # Copilot picks its start model from its own catalog; the admin's or budget pick leads.
+            launch_model=managed_model if tool == "copilot" else None,
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
         with _smart_routing_v2_flag(

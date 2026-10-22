@@ -5,7 +5,7 @@ import json
 import pytest
 
 from tests.integration.utils import evidence
-from tests.integration.utils.agents import claude, codex
+from tests.integration.utils.agents import claude, codex, copilot
 from tests.integration.utils.evidence import (
     FileTask,
     SubagentCalculation,
@@ -153,6 +153,42 @@ def test_codex_model_identity_rejects_prompt_only_evidence():
         },
     ]
     assert codex.completed_task_models(records, "withheld-file-value") == set()
+
+
+def test_copilot_model_identity_uses_only_answering_assistant_messages():
+    records = [
+        {"type": "user.message", "data": {"content": "withheld-file-value"}},
+        {
+            "type": "assistant.message",
+            "data": {"content": "Reading the file.", "model": "system.ai.claude-haiku-4-5"},
+        },
+        {
+            "type": "assistant.message",
+            "data": {"content": "withheld-file-value", "model": "system.ai.gpt-5-4-nano"},
+        },
+        {"type": "assistant.message"},
+        {"type": "assistant.message", "data": {"content": None, "model": "system.ai.gpt-5"}},
+    ]
+    assert copilot.completed_task_models(records, "withheld-file-value") == {
+        "system.ai.gpt-5-4-nano"
+    }
+    assert copilot.assistant_answers(records) == ["Reading the file.", "withheld-file-value"]
+
+
+def test_copilot_model_identity_rejects_an_answer_without_a_model():
+    records = [{"type": "assistant.message", "data": {"content": "withheld-file-value"}}]
+    with pytest.raises(AssertionError, match="completed-task model"):
+        copilot.completed_task_models(records, "withheld-file-value")
+
+
+def test_copilot_selected_models_follow_start_then_switches():
+    records = [
+        {"type": "session.start", "data": {"selectedModel": "dbx-anthropic/claude"}},
+        {"type": "session.model_change", "data": {"newModel": "dbx-responses/gpt"}},
+        {"type": "session.model_change", "data": {}},
+        {"type": "assistant.message", "data": {"model": "system.ai.gpt"}},
+    ]
+    assert copilot.selected_models(records) == ["dbx-anthropic/claude", "dbx-responses/gpt"]
 
 
 def test_claude_model_identity_uses_assistant_answer_not_tool_output():

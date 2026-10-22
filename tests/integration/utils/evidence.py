@@ -5,9 +5,9 @@ import re
 import uuid
 from pathlib import Path
 
-from .agents import _evidence_id, claude, codex
+from .agents import _evidence_id, claude, codex, copilot
 
-_AGENT_HELPERS = {"claude": claude, "codex": codex}
+_AGENT_HELPERS = {"claude": claude, "codex": codex, "copilot": copilot}
 
 
 def assert_no_terminal_api_error(screen: str) -> None:
@@ -147,6 +147,21 @@ def assert_no_bearer_on_disk(session) -> None:
         assert "OAUTH_TOKEN" not in text
 
 
+def copilot_selected_models(session) -> list[str]:
+    """Every registry ref Copilot sessions under this home started on or switched to."""
+    return [
+        ref
+        for records in agent_sessions(session, "copilot").values()
+        for ref in copilot.selected_models(records)
+    ]
+
+
+def assert_no_session_registry_left(session) -> None:
+    """`ug copilot` removes its per-session registry, which holds the proxy secret, on exit."""
+    leftovers = sorted(session.home.glob(".copilot/ug-providers-*"))
+    assert not leftovers, f"Session registries left behind: {leftovers}"
+
+
 def fresh_id():
     """Return a 12-hex-char id; models drop characters when copying longer ones."""
     return uuid.uuid4().hex[:12]
@@ -167,6 +182,11 @@ class FileTask:
         # Say "local file" so agents with MCP fixture tools (read_fixture) don't pick those.
         self.prompt = (
             f"Read the local file {self.filename} in the current directory using a tool. "
+            "Reply with only its contents."
+        )
+        # Small models can drop path segments after a space when rebuilding the absolute path.
+        self.prompt_with_path = (
+            f"Read the local file {session.cwd / self.filename} using a tool. "
             "Reply with only its contents."
         )
         self.delegate_prompt = (

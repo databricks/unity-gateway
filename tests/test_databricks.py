@@ -707,6 +707,34 @@ class TestDiscoverModelServices:
         assert ids == ["system.ai.gpt-5"]
         assert calls["n"] == 3  # two failures, third succeeds
 
+    def test_entries_keep_the_advertised_api_types(self, monkeypatch):
+        service = {
+            **_model_service("system.ai.gte-large-en"),
+            "supported_api_types": ["mlflow/v1/embeddings", 3],
+        }
+
+        monkeypatch.setattr(
+            db_mod,
+            "_get_model_services_page",
+            lambda url, token: ({"model_services": [service]}, None),
+        )
+
+        entries, reason = db_mod.list_model_service_entries(WS, "token")
+
+        assert reason is None
+        assert entries == [
+            db_mod.ModelServiceEntry("system.ai.gte-large-en", ("mlflow/v1/embeddings",))
+        ]
+        assert db_mod.cached_model_service_entries(WS) == entries
+
+    def test_failed_listing_is_not_cached(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod, "_get_model_services_page", lambda url, token: (None, "HTTP 503")
+        )
+
+        assert db_mod.list_model_service_entries(WS, "token") == ([], "HTTP 503")
+        assert db_mod.cached_model_service_entries(WS) is None
+
 
 class TestModelServiceExists:
     def test_true_when_listed_in_its_schema(self, monkeypatch):

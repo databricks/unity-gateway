@@ -683,6 +683,22 @@ class TestManagedUnservableModels:
     def test_agents_that_pass_models_through_never_warn(self):
         assert managed_unservable_models(self._managed("codex", ["anything"]), "codex") == []
 
+    @staticmethod
+    def _copilot(models):
+        return {"enabled_agents": {"copilot": {"model_config": {"model_services": models}}}}
+
+    def test_copilot_list_with_only_gemini_and_oss_is_unservable(self):
+        models = ["system.ai.gemini-3-flash", "system.ai.kimi-k2-6"]
+        assert managed_unservable_models(self._copilot(models), "copilot") == models
+
+    def test_copilot_list_with_a_claude_model_is_servable(self):
+        models = ["system.ai.gemini-3-flash", "system.ai.claude-opus-4-8"]
+        assert managed_unservable_models(self._copilot(models), "copilot") == []
+
+    def test_copilot_model_list_reaches_state_as_its_static_models(self):
+        overrides = managed_state_overrides(self._copilot(["system.ai.gpt-5-4"]), "copilot")
+        assert overrides["copilot_static_models"] == ["system.ai.gpt-5-4"]
+
 
 class TestRecommendedAgent:
     """A tier can move the org to a cheaper agent; with none named, default_agent stands."""

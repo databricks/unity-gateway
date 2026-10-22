@@ -306,6 +306,26 @@ def arguments(
         help="Model allowed by the OpenAI MPS selected in the configure CUJ.",
     )
     parser.add_argument(
+        "--codex-azure-provider",
+        default="main.ucode.ci_azure_openai_mps",
+        help="Existing Azure OpenAI MPS (reasoning-capable model) for the Codex azure_openai CUJ.",
+    )
+    parser.add_argument(
+        "--codex-azure-provider-model",
+        default="gpt-5-nano",
+        help="Reasoning-capable model allowed by the Azure OpenAI MPS.",
+    )
+    parser.add_argument(
+        "--codex-foundry-provider",
+        default="main.ucode.ci_foundry_mps",
+        help="Existing Microsoft Foundry MPS (reasoning-capable model) for the Codex foundry CUJ.",
+    )
+    parser.add_argument(
+        "--codex-foundry-provider-model",
+        default="gpt-5-nano",
+        help="Reasoning-capable model allowed by the Microsoft Foundry MPS.",
+    )
+    parser.add_argument(
         "--parent-schema",
         default="main.ucode",
         help="Schema containing the dedicated model-discovery Model Services.",
@@ -543,6 +563,10 @@ def main() -> int:
             "claude_bedrock_allow_all_model": args.claude_bedrock_allow_all_model,
             "codex_provider": args.codex_provider,
             "codex_provider_model": args.codex_provider_model,
+            "codex_azure_provider": args.codex_azure_provider,
+            "codex_azure_provider_model": args.codex_azure_provider_model,
+            "codex_foundry_provider": args.codex_foundry_provider,
+            "codex_foundry_provider_model": args.codex_foundry_provider_model,
             "parent_schema": args.parent_schema,
             "claude_parent_model": args.claude_parent_model,
             "codex_parent_model": args.codex_parent_model,
@@ -735,6 +759,13 @@ def main() -> int:
         runtime_paths = [runtime_bin, agent_bin, tool_bin]
         if os.name == "nt":
             system_root = Path(base_env["SYSTEMROOT"])
+            # Copilot's shell tool tries pwsh first; Windows PowerShell alone can miss its 40s
+            # startup probe. pwsh loads pwsh.dll beside it, so it can't go in tool_bin; expose
+            # only a dedicated install dir, never a shared alias dir like WindowsApps.
+            pwsh = shutil.which("pwsh", path=base_env.get("PATH"))
+            pwsh_dir = Path(pwsh).resolve().parent if pwsh else None
+            if "copilot" in agents and pwsh_dir and (pwsh_dir / "pwsh.dll").is_file():
+                runtime_paths.append(pwsh_dir)
             runtime_paths.extend(
                 [
                     system_root / "System32",
@@ -821,6 +852,10 @@ def main() -> int:
                 "UG_INTEGRATION_CLAUDE_BEDROCK_ALLOW_ALL_MODEL": args.claude_bedrock_allow_all_model,
                 "UG_INTEGRATION_CODEX_PROVIDER": args.codex_provider,
                 "UG_INTEGRATION_CODEX_PROVIDER_MODEL": args.codex_provider_model,
+                "UG_INTEGRATION_CODEX_AZURE_PROVIDER": args.codex_azure_provider,
+                "UG_INTEGRATION_CODEX_AZURE_PROVIDER_MODEL": args.codex_azure_provider_model,
+                "UG_INTEGRATION_CODEX_FOUNDRY_PROVIDER": args.codex_foundry_provider,
+                "UG_INTEGRATION_CODEX_FOUNDRY_PROVIDER_MODEL": args.codex_foundry_provider_model,
                 "UG_INTEGRATION_PARENT_SCHEMA": args.parent_schema,
                 "UG_INTEGRATION_CLAUDE_PARENT_MODEL": args.claude_parent_model,
                 "UG_INTEGRATION_CODEX_PARENT_MODEL": args.codex_parent_model,

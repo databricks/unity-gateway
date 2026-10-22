@@ -16,6 +16,7 @@ from dataclasses import dataclass
 
 from ucode.agents import (
     TOOL_SPECS,
+    copilot,
     tool_binary_installed,
     tool_version_error,
     update_tool_binary,
@@ -30,6 +31,8 @@ from ucode.databricks import (
     run_databricks_login,
     upgrade_databricks_cli,
 )
+from ucode.managed_config import load_managed_state
+from ucode.managed_resolve import resolve_state
 from ucode.state import load_state
 from ucode.telemetry import ug_version
 from ucode.ui import (
@@ -184,6 +187,29 @@ def _check_agent_clis() -> list[Check]:
     return checks
 
 
+def _check_copilot_models() -> Check | None:
+    """The models `ug copilot` registers for the current workspace, when Copilot is configured."""
+    state = load_state()
+    if "copilot" not in (state.get("available_tools") or []):
+        return None
+    managed = load_managed_state(state.get("workspace"))
+    if managed:
+        state = resolve_state(managed, state, "copilot")
+    catalog = copilot.copilot_catalog(state)
+    if not catalog:
+        return Check(
+            "Copilot models",
+            "warn",
+            "none Copilot can use — run `ug configure --agents copilot` to rediscover them",
+        )
+    counts = ", ".join(
+        f"{sum(m.provider == provider for m in catalog)} {provider}"
+        for provider in copilot.PROVIDER_NAMES.values()
+        if any(m.provider == provider for m in catalog)
+    )
+    return Check("Copilot models", "ok", f"{len(catalog)} models ({counts})")
+
+
 def _check_databricks_auth() -> Check | None:
     """Validate the configured workspace's Databricks credentials.
 
@@ -256,7 +282,7 @@ def _gather_checks() -> list[Check]:
     checks: list[Check] = [_check_uv(), _check_npm(), _check_databricks_cli(), _check_workspace()]
     # These return None when they don't apply (no workspace, no env collision),
     # so drop the Nones before display.
-    optional = [_check_databricks_auth(), _check_anthropic_env_collision()]
+    optional = [_check_databricks_auth(), _check_anthropic_env_collision(), _check_copilot_models()]
     checks.extend(c for c in optional if c is not None)
     checks.extend(_check_agent_clis())
     checks.append(_check_ug())

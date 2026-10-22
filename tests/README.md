@@ -42,9 +42,19 @@ TypeScript event-forwarding and launch-option tests in CI. The existing Claude
 skill-toggle integration journey checks the live recipe payload field across on/off/on.
 See [the mod guide](../docs/claude-mod.md).
 
-The required Isaac feedback form needs manual validation of the 16-character minimum,
-cancellation, repeated toggles, and submission failures. The existing routing-toggle
-journeys do not cover this form or a live Isaac evidence upload.
+The required Isaac feedback form and background delivery notifications need manual
+validation using the released Isaac skill and existing capture/retry CLI. Check
+category selection, empty and inline feedback, native retries, the off form's
+16-character minimum, cancellation, repeated toggles, and submission success/failure.
+Also check that the form closes immediately and submission makes no model request.
+Start a new task during capture and confirm the report retains the original task;
+toggle routing during upload and confirm its recorded settings stay fixed. Check that
+saved evidence stays unchanged, upload permission denials are honored, local
+previews stay local, and Other stays text-only. In a session launched with routing,
+check `/isaac-feedback` before and after turning routing off. A session launched
+without routing should use the existing feedback skill without loading the router
+plugin. The routing-toggle journeys do not cover the form, notification timing, or
+live evidence uploads.
 
 `test_claude_answer_delivery.py` covers Claude answer selection, composition, ownership,
 failed tasks and resumed revisions using transcript inputs, plus real subprocess I/O,
@@ -493,7 +503,10 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_case_14_*` | Launch configured and fresh Codex with a model location | The app-server list exactly matches the independent API-compatible parent catalog, includes the dedicated Codex service, and contains no out-of-schema models |
 | `test_ug_claude_headless_prompt_argument`, `test_ug_claude_headless_prompt_stdin`, `test_ug_claude_headless_prompt_after_separator` | Run Claude from a script using each prompt form | Structured final answer contains the file value; exit zero; no routing |
 | `test_ug_codex_headless_prompt_argument`, `test_ug_codex_headless_prompt_stdin`, `test_ug_codex_headless_prompt_after_separator` | Run Codex from a script using each prompt form | Completed turn and final answer contain the file value; exit zero; no routing |
-| `test_ug_copilot_headless_completes_file_task`, `test_ug_copilot_headless_gpt_responses_task` | Run Copilot CLI from a script (`-p ... --output-format json`) on a Claude model (Anthropic Messages) and a GPT model (Responses) | Completed turn whose assistant message contains the file value; no file under the session home holds the Databricks credential (non-blocking CI lane) |
+| `test_ug_copilot_headless_completes_file_task`, `test_ug_copilot_headless_gpt_responses_task` | Run Copilot CLI from a script (`-p ... --output-format json`) on a Claude model (Anthropic Messages) and a GPT model (Responses) | Completed turn whose assistant message contains the file value and was sent as the requested model; the session started on the matching registry provider; no file under the session home holds the Databricks credential; no session registry left (non-blocking CI lane) |
+| `test_ug_copilot_one_setup_runs_claude_then_gpt_by_provider_ref` | One configure, then headless tasks on a Claude model older than its family's newest (only the full catalog registers it) and a GPT model chosen as `dbx-responses/<model>` | Each answer contains its file value and was sent as the requested model; sessions started on `dbx-anthropic` and `dbx-responses` (non-blocking CI lane) |
+| `test_ug_copilot_unknown_model_lists_available_models` | Interactive launch with a model the workspace doesn't have | Exit 1 before Copilot starts; stderr names the model and lists the available ones, without `claude-opus-4-1`; no session registry left (non-blocking CI lane) |
+| `test_ug_copilot_tui_switches_from_claude_to_gpt_with_model_command` | TUI: answer folder trust, Claude task, `/model dbx-responses/<model>`, GPT task, `/exit` | Both answers sent as the Claude then GPT model; the session records the switch; normal exit; no session registry left (non-blocking CI lane) |
 | `test_ug_copilot_refreshes_a_revoked_token_mid_session`, `test_ug_copilot_reports_expired_sign_in` | Sign in through `DATABRICKS_BEARER_COMMAND` minting short-lived PATs; mid-task the agent revokes them (or also signs out) | Revoked: a token is minted after the revocation and the task completes without restarting Copilot. Signed out: output shows "Databricks sign-in expired" with `databricks auth login`; the failure is in `~/.ucode/logs/copilot-proxy.log`, not the terminal (non-blocking CI lane) |
 | `test_ug_configure_copilot_repeat_and_revert` | Configure Copilot twice over a user-owned `~/.copilot/mcp-config.json`, run a GPT task, revert twice | Task completes; no file holds the bearer; revert removes `~/.copilot/ucode.env`, leaves the user file byte-identical and reports Not Configured. (non-blocking CI lane) |
 | `test_ug_copilot_upgrade_scrubs_token_saved_by_older_ug` | Configure Copilot with ug v0.2.0 (pinned commit; saves the bearer in `~/.copilot/ucode.env`), then configure with this ug, run a GPT task, revert | v0.2.0 left the bearer; after this ug's configure no file holds it; task completes; revert leaves no token and no `ucode.env` (non-blocking CI lane) |
@@ -739,7 +752,7 @@ desktop GUI, a real `launchctl` or `schtasks` run, or a login/reboot pass.
 | Follow-up turns and conversation resume | Not covered; reopen proves startup, not conversation resume |
 | Claude/Codex interactive smart routing | First-prompt routing is covered by the `managed_fixture` banner journeys and CUJ4. The live subagent-only journeys spawn native children and invoke the installed Smart Router skill to verify routing on -> off -> on within one Claude/Codex session. The scheduled harness-latest workflow repeats CUJ4, routing hooks, skill toggles, and banners with both latest agents. Plugin-refresh survival and native daemon/background dispatch remain deferred. |
 | Full allow/deny tool-permission matrix | Not covered; onboarding/trust uses actual TUI choices |
-| Desktop Codex app, Isaac itself, auto-upgrades | Not covered by command forwarding or pinned-version tests |
+| Desktop Codex app, Isaac itself, auto-upgrades | Not covered by command forwarding or pinned-version tests. Codex desktop's shared-config catalog pointer (repeat configure and a user-owned pointer) is covered by `integration/test_ug_configure_codex_desktop.py`; desktop tracing, GUI, and inference are not |
 | Native macOS/Windows live TUI, managed settings, resize/signals | Windows fresh-install, CLI, local helpers, and the Claude headless gateway journey are advisory; Codex Windows CI is blocked on npm proxy access. Live PTY/TUI, managed settings, and signal behavior still need separate platform implementation and coverage |
 | Other agents | Live scope is Claude Code and Codex, plus a non-blocking OpenCode headless case |
 | OpenCode `--model` / `-m` | Unit/component tests cover raw CLI forwarding, configured model selection, launch arguments, rejection of unknown models before starting the native process, and the existing failure when no default model is available; no dedicated live integration journey |
