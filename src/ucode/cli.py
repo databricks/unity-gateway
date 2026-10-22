@@ -135,6 +135,7 @@ from ucode.mcp import (
     remove_skills_locations_command,
     revert_mcp_configs,
 )
+from ucode.mcp import managed_mcp_servers as load_managed_mcp_servers
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.skills_download import (
     configure_location_skills_download_command,
@@ -814,6 +815,11 @@ def _setup_single_agent(
         from ucode.agents.desktop.setup import configure_claude_desktop
 
         configure_claude_desktop(state, parent_schema=parent_schema)
+        if not is_dry_run():
+            resolved_mcps = _configure_managed_mcp_servers(managed)
+            skills_configured = _configure_managed_skills(managed)
+            if resolved_mcps is not None and skills_configured:
+                _sync_claude_cowork_mcp_servers(state, managed_mcp_servers=resolved_mcps)
     install_databricks_ai_tools_for_agents(
         [tool], state, force_refresh=tool not in ("claude", "codex")
     )
@@ -1062,8 +1068,13 @@ def _configure_workspace_command(
             )
         registered_mcps: list[str] = []
         if not is_dry_run():
-            registered_mcps = _configure_managed_mcp_servers(managed)
-            _configure_managed_skills(managed)
+            resolved_mcps = _configure_managed_mcp_servers(managed)
+            skills_configured = _configure_managed_skills(managed)
+            registered_mcps = [
+                str(server["name"]) for server in (resolved_mcps or []) if server.get("name")
+            ]
+            if "claude" in configured_tools and resolved_mcps is not None and skills_configured:
+                _sync_claude_cowork_mcp_servers(state, managed_mcp_servers=resolved_mcps)
         _summarize_managed_config(managed, configured_tools, registered_mcps)
         return 0
 
@@ -1115,7 +1126,8 @@ def _configure_workspace_command(
         state = configure_selected_tools(state, picked)
 
     # No managed config here: undo what a prior managed workspace left behind (its MCP servers and
-    # skills), so switching workspaces doesn't strand the old registry and skills.
+    # skills), so switching workspaces doesn't strand the old registry and skills. Cowork is synced
+    # below from the current workspace's user-selected MCP servers.
     if not is_dry_run():
         _configure_managed_mcp_servers(None)
         _configure_managed_skills(None)
@@ -1134,6 +1146,8 @@ def _configure_workspace_command(
         from ucode.agents.desktop.setup import configure_claude_desktop
 
         configure_claude_desktop(state)
+        if not is_dry_run():
+            _sync_claude_cowork_mcp_servers(state)
     summary_lines = [f"[bold]Workspace:[/bold] [cyan]{state['workspace']}[/cyan]"]
     for tool_name in picked:
         spec = TOOL_SPECS[tool_name]
@@ -1423,8 +1437,6 @@ def revert() -> int:
     # Older Codex (< 0.134.0) had ucode edit the shared ~/.codex/config.toml in
     # place; restoring the per-profile file above does not undo that.
     legacy_codex_stripped = revert_legacy_shared_config()
-    clear_state()
-
     print_heading("Revert")
     print_kv("Workspace", state.get("workspace") or "none")
     for tool, spec in TOOL_SPECS.items():
@@ -1441,8 +1453,9 @@ def revert() -> int:
             "restored" if mcp_results.get(client) else "unchanged",
         )
     if desktop_result == "failed":
-        print_warning("ug state cleared. Fix the Claude Desktop error and run ug revert again.")
+        print_warning("ug state retained. Fix the Claude Desktop error and run ug revert again.")
         return 1
+    clear_state()
     print_success("ug state cleared")
     return 0
 
@@ -1785,6 +1798,28 @@ def _not_installed_message(agents: list[str]) -> str:
     return f"Not installed or not set up: {names}. Install the CLI on PATH, then rerun."
 
 
+def _sync_claude_cowork_mcp_servers(
+    state: dict | None = None, *, managed_mcp_servers: list[dict] | None = None
+) -> None:
+    """Keep Claude Cowork's generated plugin aligned with Claude-targeted MCP state."""
+    current_state = state if state is not None else load_state()
+    configured_tools = set(current_state.get("available_tools") or []) | set(
+        current_state.get("last_configured_tools") or []
+    )
+    if "claude" not in configured_tools:
+        return
+
+    user_mcp_servers = list(current_state.get("mcp_servers") or [])
+    if managed_mcp_servers is None:
+        managed_mcp_servers = load_managed_mcp_servers(current_state, {"claude"})
+    from ucode.agents.desktop.setup import configure_claude_cowork
+
+    configure_claude_cowork(
+        current_state,
+        [*user_mcp_servers, *managed_mcp_servers],
+    )
+
+
 def _configure_optional_setup(state: dict, tools: list[str]) -> None:
     enabled = prompt_yes_no("Configure MCP servers, skills, and plugins?")
     state["databricks_ai_tools_enabled"] = enabled
@@ -1794,6 +1829,8 @@ def _configure_optional_setup(state: dict, tools: list[str]) -> None:
 
     install_databricks_ai_tools_for_agents(tools, state)
     configure_mcp_command()
+    if "claude" in tools:
+        _sync_claude_cowork_mcp_servers()
 
 
 @mcp_app.command("add")
@@ -1891,6 +1928,7 @@ def mcp_add(
             else None
         )
         add_mcp_command(location=location, services=selected, agents=scope)
+        _sync_claude_cowork_mcp_servers()
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
@@ -1924,6 +1962,7 @@ def mcp_remove(
     )
     try:
         remove_mcp_command(agents=requested_agents)
+        _sync_claude_cowork_mcp_servers()
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
@@ -2933,16 +2972,16 @@ def _print_budget_panel(recommendation: dict, tool: str, managed: dict | None = 
         console.print(panel)
 
 
-def _configure_managed_mcp_servers(managed: dict | None) -> list[str]:
+def _configure_managed_mcp_servers(managed: dict | None) -> list[dict] | None:
     """Register the managed config's MCP servers for every enabled MCP-client agent.
 
     Runs during ``ug configure`` after the enabled agents are configured, so a workspace-published
     server reaches each agent's `/mcp` list without the developer re-adding it. ``managed`` is None
     when the (now-current) workspace has no managed config: the reconcile then unregisters any
     servers a prior managed workspace registered, so switching workspaces resets the MCP registry.
-    Best-effort: a failure warns and leaves the rest of configure intact. Returns the names of the
-    servers registered this run (the completion summary counts them; state alone can't, since #717
-    writes them to agents' OS-managed files rather than ``managed_mcp_servers``).
+    Best-effort: a failure warns and leaves the rest of configure intact. Returns the resolved
+    servers, or ``None`` when reconciliation failed. The full entries also feed Claude Cowork's
+    generated plugin; state alone can't, since #717 writes some servers to OS-managed files.
     """
     managed = managed or {}
     agents = {tool for tool in managed_enabled_tools(managed) if tool in MCP_CLIENTS}
@@ -2956,17 +2995,17 @@ def _configure_managed_mcp_servers(managed: dict | None) -> list[str]:
             "Skipped workspace MCP setup this run — MCP service discovery was rate-limited "
             "(HTTP 429). Existing MCP servers are unchanged; run `ug configure` again to retry."
         )
-        return []
+        return None
     except RuntimeError as exc:
         print_warning(f"Could not register your workspace's MCP servers: {exc}")
-        return []
+        return None
     names = [str(server["name"]) for server in registered if server.get("name")]
     if names:
         print_note(f"Registered workspace MCP server(s): {', '.join(names)}")
-    return names
+    return registered
 
 
-def _configure_managed_skills(managed: dict | None) -> None:
+def _configure_managed_skills(managed: dict | None) -> bool:
     """Download and reconcile the managed config's skills for every agent's ``/skills`` picker.
 
     Mirrors :func:`_configure_managed_mcp_servers`: runs during ``ug configure`` after the enabled
@@ -2979,11 +3018,12 @@ def _configure_managed_skills(managed: dict | None) -> None:
         written, removed = reconcile_managed_skills(managed or {})
     except (RuntimeError, OSError) as exc:
         print_warning(f"Could not sync your workspace's skills: {exc}")
-        return
+        return False
     if written:
         print_note(f"Downloaded workspace skill(s): {', '.join(written)}")
     if removed:
         print_note(f"Removed workspace skill(s) no longer configured: {', '.join(removed)}")
+    return True
 
 
 def _child_owns_stdout(tool: str, tool_args: list[str]) -> bool:
@@ -4358,6 +4398,7 @@ def configure(
                     "interactive picker."
                 )
             configure_mcp_command(services=services)
+            _sync_claude_cowork_mcp_servers()
         if (
             fully_interactive
             and not combined_optional_setup
@@ -4365,6 +4406,7 @@ def configure(
             and prompt_yes_no("Configure MCP servers now?")
         ):
             configure_mcp_command()
+            _sync_claude_cowork_mcp_servers()
         save_config_scope(scope)
     except typer.Exit:
         # `typer.Exit` subclasses RuntimeError, so it has to be re-raised ahead of the handler
@@ -4422,10 +4464,11 @@ def status_cmd() -> None:
 def revert_cmd() -> None:
     """Clear ug state and restore backed-up agent config files."""
     try:
-        revert()
+        result = revert()
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
+    raise typer.Exit(result)
 
 
 @app.command("doctor", rich_help_panel="Manage")

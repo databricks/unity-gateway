@@ -361,3 +361,45 @@ def assert_subagent_routed(
     # Some agent versions omit the child's model from SubagentStart. The report
     # preserves that unknown value; this test claims decision + spawn + task,
     # not model-identity verification when the agent did not expose it.
+
+
+def codex_routing_display_for_task(screen: str, marker: str, *, orchestrator_on: bool) -> bool:
+    """Match a routing box to its tagged prompt or immediately following native spawn.
+
+    Compaction can remove the prompt; the adjacent Spawned row still identifies
+    the child. Live audit and child-answer assertions verify the actual decision.
+    """
+    lines = screen.splitlines()
+    prompts = [index for index, line in enumerate(lines) if line.lstrip().startswith("›")]
+    for index, line in enumerate(lines):
+        if "Using Unity Gateway Smart Router - Subagent" not in line:
+            continue
+        end = index + 1
+        while end < min(index + 12, len(lines)) and "└" not in lines[end]:
+            end += 1
+        if end >= len(lines) or "└" not in lines[end]:
+            continue
+        text = "".join("".join(lines[index : end + 1]).split())
+        if "SelectedModel:" not in text or ("[orchestratoron]" in text) != orchestrator_on:
+            continue
+        preceding = [start for start in prompts if start < index]
+        if preceding:
+            start = preceding[-1]
+            prompt_end = start + 1
+            while prompt_end < index and lines[prompt_end].strip():
+                prompt_end += 1
+            if marker in "".join("".join(lines[start:prompt_end]).split()):
+                return True
+        # A compacted prompt is unavailable, but its native spawn remains directly
+        # after the routing box. Do not accept later echoed answers or tool results.
+        spawn = end + 1
+        while spawn < len(lines) and not lines[spawn].strip():
+            spawn += 1
+        if spawn >= len(lines) or not lines[spawn].lstrip().startswith("• Spawned "):
+            continue
+        spawn_end = spawn + 1
+        while spawn_end < len(lines) and lines[spawn_end].strip():
+            spawn_end += 1
+        if marker in "".join("".join(lines[spawn:spawn_end]).split()):
+            return True
+    return False

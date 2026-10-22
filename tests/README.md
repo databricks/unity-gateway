@@ -1,5 +1,13 @@
 # Test suites and user journeys
 
+MCP/Skills browsing has component coverage in `tests/test_catalog_browsing.py`
+(repository-relative path): paginated BASIC metadata, streamed rows, missing metadata,
+UTC dates, keyboard selection/filtering/cancellation, loader cancellation, and rendered
+80×24/40×12 table rendering and detail scrolling. Status coverage distinguishes selection
+from configuration/installation, protects read-only managed MCP rows, and checks Skills
+attribution against source identity, target directories, and surviving files. These checks
+do not establish live workspace discovery or agent invocation coverage.
+
 Integration runs a freshly installed ug wheel/release, exact real Claude/Codex
 (and optionally OpenCode) versions, and the existing real e2e workspace. It has no application imports,
 mocks, monkeypatching, fake binaries/services, or fabricated ug state.
@@ -168,6 +176,9 @@ cover Desktop token-only stdout, explicit workspace/profile arguments, interacti
 browser recovery, bounded login/lock waits, cancellation, and lock contention.
 Recovery regressions check token recheck before browser login, lock release after
 success/failure, one shared deadline, and network/CLI failures at each recovery stage.
+Proxy bridge coverage also checks that unauthenticated tool discovery exposes a temporary
+authentication tool, advertises dynamic tool-list changes, refreshes the real tools after login,
+and tells the model to retry the original request in the same turn.
 Invalid token output must not appear in helper errors or stdout/stderr.
 Shared CLI discovery selects the newest absolute binary for cached tokens and every
 recovery subprocess; a missing CLI fails before token fetch or browser login.
@@ -222,8 +233,19 @@ changing the UUID, and configure/revert warnings on profile-lock timeout without
 changing profile or selection-state files. An existing reserved UUID without records
 is replaced on configure and deleted on revert. Workspace changes reuse the same file.
 CLI revert clears workspace state even when Desktop cleanup fails. A lock-failure
-regression verifies that Desktop files and previous-selection state survive, then
-retry deletes the UG profile and restores the previous selection without workspace state.
+regression invokes the Typer CLI and checks exit code 1, one warning, and a failed
+Desktop summary while profile and previous-selection files survive. Retry returns
+exit code 0, deletes the UG profile, and restores the previous selection without
+workspace state; a repeated revert also returns 0.
+
+`test_cowork_plugin.py` covers active Cowork-root discovery, ambiguous-profile refusal,
+generated marketplace/plugin/MCP manifests, current-workspace managed-skill selection,
+Claude-only MCP filtering, absolute proxy executables, saved PAT mode, custom-OAuth refusal,
+install/update selection, idempotent cleanup, and saved-root removal. CLI component tests
+cover managed setup after successful skill/MCP reconciliation, preservation after transient
+reconciliation failures, and cleanup for unmanaged or non-Claude configurations. These tests
+mock the Claude plugin CLI and do not establish native Desktop policy, account-feature,
+late MCP connection, tool discovery, or inference behavior.
 
 Model-source tests require Desktop-only, case-insensitive `\bclaude-` filtering
 instead of copying every catalog entry. Mixed static/discovered lists exclude GPT/OSS
@@ -294,7 +316,8 @@ Fake CLI subprocesses check that re-auth runs only when a successful help probe
 advertises `--no-browser`. Search component tests verify token reuse and transient
 timeout retries. `test_mcp_connection_login.py` verifies token/failure invalidation
 after successful and failed login attempts; `test_mcp_proxy.py` checks fresh tokens
-on async post-login retries. These checks do not establish live login or
+on async post-login retries and recovery when a connection-backed service returns
+the MCP authentication-required error. These checks do not establish live login or
 launch-time savings.
 
 `test_mcp_web_search_concurrency.py` drives the real stdio dispatcher with controlled
@@ -328,6 +351,14 @@ Managed smart defaults are covered by `test_managed_config.py`, `test_cli.py`,
 `smart_defaults` wire field, reading older `spend_tiers` caches, skipping recommendations
 without tier rules, applying recommendations when tiers exist, and serializing the current
 API field. These are unit/component checks; live request-count coverage is not included.
+
+`test_usage.py` and `test_budget.py` cover the standard usage summary and the opt-in
+expanded budget view. Tests check selection of up to five limits across personal/shared
+and daily/monthly budgets, including notices when more limits exist.
+They check missing usage amounts, unavailable expanded views, and lookup errors
+without reporting failures as absent budgets.
+Presentation checks cover spacing, usage colors, over-limit values, and output without colors.
+These are unit/component tests, not live sign-in or end-to-end coverage.
 
 `test_codex_smart_routing_v2.py` checks that the remote Codex TUI receives the
 gateway provider on Windows while Unix launch arguments stay unchanged and routing
@@ -742,3 +773,27 @@ Codex retains its CLI control-file checks. No extra TUI sessions or tasks are ad
 Clear/reload, compaction, and denied-write rollback are not independently checked.
 A native process check runs the real disabled routing CLI from Claude with inherited
 launch flags; it makes no gateway request.
+
+Subagent-routing failures have shared warning coverage in `test_codex_routing.py`;
+the live hook journeys retain their routing assertions and include stderr when no
+decision is returned. This diagnostic coverage does not prove routing service health.
+
+Smart-routing scenarios use checked-in model menus assigned to the explicit CI
+workspace. US `task_v3` uses GPT-6 Sol / Luna; the Canadian managed workspace uses
+GPT-5.6 Sol / Terra / Luna, since it has no GPT-6 services. Unknown Codex workspaces
+fail until a fixture is assigned. Claude uses Opus 4.8 / Sonnet 4.6 / Haiku 4.5.
+Direct hook inputs share the US fixture; managed TUI inputs use their workspace's
+fixture. No workspace is auto-selected or modified. All real routing, native notice,
+audit correlation, and child completion assertions remain required.
+
+Routing-toggle journeys wait for the child's own persisted assistant answer, in addition
+to the parent answer. A parent reporting the expected value while the child is still
+running cannot satisfy child completion. The wait is bounded and still fails on timeout.
+
+Codex routing-display unit coverage accepts a generic child label only after the tagged
+prompt and before the next prompt, requires the expected orchestration state, and
+rejects stale or unrelated panels. Live audit correlation and child answers remain required.
+
+After Codex compaction removes a prompt, display correlation may instead use the
+native Spawned row immediately following the routing box. Unit checks reject later
+answer text, intervening prompts, and nonadjacent or unrelated spawn rows.

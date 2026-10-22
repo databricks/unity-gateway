@@ -2599,9 +2599,17 @@ def _mcp_service_full_name(service: dict, required_prefix: str) -> str | None:
 
 
 def list_mcp_services(
-    workspace: str, token: str, parent: str = "system.ai", *, max_pages: int = 100
+    workspace: str,
+    token: str,
+    parent: str = "system.ai",
+    *,
+    max_pages: int = 100,
+    metadata: dict[str, dict] | None = None,
 ) -> tuple[list[str], str | None]:
     """List UC MCP services under ``parent`` (a ``<catalog>.<schema>`` ref).
+
+    ``metadata``, when provided, receives each accepted service's description and audit
+    fields from the same list response. No per-service requests are made.
 
     Requests the ``BASIC`` view explicitly: only service names are needed to build
     the deterministic proxy URLs, and ``BASIC`` omits the source-connection
@@ -2639,6 +2647,11 @@ def list_mcp_services(
             full_name = _mcp_service_full_name(service, expected_prefix)
             if full_name:
                 names.append(full_name)
+                if metadata is not None:
+                    metadata[full_name] = {
+                        key: service.get(key)
+                        for key in ("comment", "created_by", "create_time", "update_time")
+                    }
         page_token = data.get("next_page_token") or None
         if not page_token or page_token in seen_tokens:
             break
@@ -3304,6 +3317,7 @@ def list_all_mcp_services(
     on_progress: Callable[[int, int, int], None] | None = None,
     on_services: Callable[[list[str]], None] | None = None,
     cancel_event: threading.Event | None = None,
+    metadata: dict[str, dict] | None = None,
 ) -> tuple[list[str], str | None]:
     """Return sorted unique MCP-service full names across every `<catalog>.<schema>`
     in the workspace. The mcp-services API is one-schema-per-call, so this walks
@@ -3323,10 +3337,15 @@ def list_all_mcp_services(
     names: set[str] = set()
 
     def probe(catalog, schema):
-        return list_mcp_services(workspace, token, f"{catalog}.{schema}")
+        details: dict[str, dict] = {}
+        kwargs = {"metadata": details} if metadata is not None else {}
+        result = list_mcp_services(workspace, token, f"{catalog}.{schema}", **kwargs)
+        return result, details
 
     def collect(result, schemas_done, schemas_total):
-        found, _ = result
+        (found, _), details = result
+        if metadata is not None:
+            metadata.update(details)
         new = [n for n in found if n not in names]
         names.update(found)
         if on_progress is not None:

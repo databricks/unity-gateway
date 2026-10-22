@@ -13,6 +13,14 @@ percent consumed, spend, and threshold are treated like missing optional fields,
 individually or together, without discarding valid statuses. Redundant client error
 variants are reduced to one opaque passthrough case; later-page failure checks remain.
 
+MCP/Skills browsing has component coverage in `tests/test_catalog_browsing.py`
+(repository-relative path): paginated BASIC metadata, streamed rows, missing metadata,
+UTC dates, keyboard selection/filtering/cancellation, loader cancellation, and rendered
+80×24/40×12 table rendering and detail scrolling. Status coverage distinguishes selection
+from configuration/installation, protects read-only managed MCP rows, and checks Skills
+attribution against source identity, target directories, and surviving files. These checks
+do not establish live workspace discovery or agent invocation coverage.
+
 Claude answer delivery has offline transcript and subprocess coverage in
 `../test_claude_answer_delivery.py`, including stdout preservation for text, JSON and
 streaming JSON when UG redirects diagnostics to stderr. Live model/gateway selection
@@ -177,6 +185,10 @@ recommendation while its generated `ANTHROPIC_MODEL` setting and native header s
 Sonnet, then exits. It does not verify Claude's inference model. All three cases leave
 workspace and budget configuration unchanged.
 
+`../test_usage.py` and `../test_budget.py` cover budget selection, display, unavailable
+expanded views, and errors.
+The expanded view has unit/component coverage only; CUJ5 tests the standard summary.
+
 Shared subprocess command resolution is covered by `../test_subprocess_cross_os.py` and
 enforced by Ruff. These component checks do not establish native Windows coverage
 for every agent; the Windows journeys below validate their explicitly selected paths.
@@ -241,6 +253,8 @@ covered by the hermetic proxy tests in `tests/test_gateway_proxy_integration.py`
 `utils/agents/claude.py` and `utils/agents/codex.py` own the existing native answer
 parsing, session paths, and child-session detection. `utils/evidence.py` dispatches
 through them without changing existing journey commands or completion assertions.
+Claude child answers include sidechain `SubagentHandback` messages, which newer
+Claude versions use instead of final text blocks; parent handbacks remain excluded.
 
 ## Run a specific combination
 
@@ -402,9 +416,16 @@ configure/revert warnings that preserve profile and selection-state files on loc
 An existing reserved UUID without records is replaced on configure and deleted on revert;
 these remain filesystem component checks.
 CLI revert clears workspace state even when Desktop cleanup fails. A component
-regression verifies that a lock failure preserves Desktop files and selection state,
-then retry restores the previous selection without workspace state. This does not
-establish native Desktop coverage.
+regression invokes the Typer CLI and checks that a lock failure returns exit code 1,
+emits one warning and a failed Desktop summary, and preserves profile and selection
+files. Retry restores the previous selection without workspace state and returns 0;
+a repeated revert also returns 0. This does not establish native Desktop coverage.
+
+`../test_cowork_plugin.py` covers Cowork-root discovery, generated plugin contents,
+scoped Claude plugin commands, install/update selection, PAT/custom-OAuth behavior, and
+owned-file cleanup. `../test_desktop_configure_cli.py` covers managed orchestration and
+cleanup. Both are mocked component coverage; the integration suite does not launch Cowork,
+connect a plugin MCP server, discover its deferred tool, or run a task through it.
 
 Model-source tests require Desktop-only, case-insensitive `\bclaude-` filtering
 instead of copying every catalog entry. Mixed static/discovered lists exclude GPT/OSS
@@ -1249,3 +1270,32 @@ recipe change does not require editing the test.
 Local Claude mod confirmation replaces the old saved-control-file/assistant-turn wait;
 Codex retains its CLI control-file checks. No extra TUI sessions or tasks are added.
 Clear/reload, compaction, and denied-write rollback are not independently checked.
+
+Subagent-routing failures have shared warning coverage in `test_codex_routing.py`;
+the live hook journeys retain their routing assertions and include stderr when no
+decision is returned. This diagnostic coverage does not prove routing service health.
+
+Smart-routing scenarios use checked-in model menus assigned to the explicit CI
+workspace. US `task_v3` uses GPT-6 Sol / Luna; the Canadian managed workspace uses
+GPT-5.6 Sol / Terra / Luna, since it has no GPT-6 services. Unknown Codex workspaces
+fail until a fixture is assigned. Claude uses Opus 4.8 / Sonnet 4.6 / Haiku 4.5.
+Direct hook inputs share the US fixture; managed TUI inputs use their workspace's
+fixture. No workspace is auto-selected or modified. All real routing, native notice,
+audit correlation, and child completion assertions remain required.
+
+Routing-toggle journeys wait for the child's own persisted assistant answer, in addition
+to the parent answer. A parent reporting the expected value while the child is still
+running cannot satisfy child completion. The wait is bounded and still fails on timeout.
+
+Codex routing-display unit coverage accepts a generic child label only after the tagged
+prompt and before the next prompt, requires the expected orchestration state, and
+rejects stale or unrelated panels. Live audit correlation and child answers remain required.
+
+After Codex compaction removes a prompt, display correlation may instead use the
+native Spawned row immediately following the routing box. Unit checks reject later
+answer text, intervening prompts, and nonadjacent or unrelated spawn rows.
+
+For a managed workspace other than the two CI workspaces, set
+`UCODE_TEST_CODEX_ROUTING_FIXTURE` to the basename of a checked-in fixture whose model menu has
+been validated in that workspace. The suite never guesses a model menu or silently changes the
+workspace.
