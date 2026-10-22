@@ -831,6 +831,9 @@ def _launch_workspace_state(workspace: str | None) -> dict:
     if current and not state.get("workspace"):
         set_current_workspace(current)
         state = load_state()
+        if not state.get("workspace"):
+            # A dry run saves nothing, so carry the adopted workspace for this run.
+            state = {**state, "workspace": current}
     return state
 
 

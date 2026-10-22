@@ -6430,6 +6430,21 @@ class TestUnrelatedConfigureFailure:
         assert load_state().get("workspace") == "https://selected.example.com"
 
 
+class TestDryRunAdoptsInstalledWorkspace:
+    def test_dry_run_launch_state_uses_the_installed_workspace(self, monkeypatch):
+        """A dry run saves nothing, so the adopted workspace is carried for that run."""
+        from ucode.managed_config import save_managed_state
+
+        save_managed_state("https://installed.example.com", {"default_agent": "claude"})
+        cli_mod.set_dry_run(True)
+        try:
+            state = cli_mod._launch_workspace_state(None)
+        finally:
+            cli_mod.set_dry_run(False)
+
+        assert state["workspace"] == "https://installed.example.com"
+
+
 class TestInstalledMachineWorkspace:
     INSTALLED = "https://installed.example.com"
     SELECTED = "https://selected.example.com"

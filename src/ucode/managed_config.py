@@ -663,7 +663,7 @@ def save_managed_state(
     config: dict,
     *,
     interactive: bool = False,
-    allow_sudo: bool = True,
+    allow_sudo: bool = False,
     sets_machine_workspace: bool = False,
 ) -> None:
     """Install raw policy only when changed; remove a matching policy when it no longer exists.

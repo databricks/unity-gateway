@@ -665,8 +665,8 @@ class TestWorkspacePolicyWriter:
             raise subprocess.CalledProcessError(1, command, stderr="a password is required")
 
         monkeypatch.setattr(managed_files.subprocess_cross_os, "run", denied)
-        with pytest.raises(managed_files.ManagedFileWriteUnavailable):
-            managed_files.update_workspace_policy(policy_path, "new")
+        with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="password"):
+            managed_files.update_workspace_policy(policy_path, "new", allow_sudo=True)
         assert policy_path.read_text() == "old"
 
     @pytest.mark.skipif(sys.platform == "win32", reason="The workspace-policy writer is Unix-only")
