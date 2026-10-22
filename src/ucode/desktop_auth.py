@@ -46,8 +46,8 @@ _HELPER_BUDGET_SECONDS = 270
 _AUTH_LOCK_PATH = APP_DIR / "claude-desktop-auth.lock"
 _CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials"
 _CLAUDE_CREDENTIALS_FILENAME = ".credentials.json"
-_CLAUDE_AUTH_INVALID_MESSAGE = (
-    "Claude subscription authentication is invalid. "
+_CLAUDE_CREDENTIALS_INVALID_MESSAGE = (
+    "Claude subscription credentials are invalid. "
     "Run `claude auth login`, then start a new Cowork task."
 )
 _NETWORK_MARKERS = (
@@ -404,15 +404,9 @@ def _read_claude_credentials() -> dict:
     try:
         payload = json.loads(raw)
     except (TypeError, ValueError):
-        raise ClaudeDesktopAuthError(
-            "Claude subscription credentials are invalid. Run `claude auth login`, then start a new Cowork task.",
-            kind="auth",
-        ) from None
+        raise ClaudeDesktopAuthError(_CLAUDE_CREDENTIALS_INVALID_MESSAGE, kind="auth") from None
     if not isinstance(payload, dict):
-        raise ClaudeDesktopAuthError(
-            "Claude subscription credentials are invalid. Run `claude auth login`, then start a new Cowork task.",
-            kind="auth",
-        )
+        raise ClaudeDesktopAuthError(_CLAUDE_CREDENTIALS_INVALID_MESSAGE, kind="auth")
     return payload
 
 
@@ -438,17 +432,11 @@ def _claude_subscription_token() -> str:
     token = _clean_token(oauth.get("accessToken"))
     expires_at = oauth.get("expiresAt")
     if token is None:
-        raise ClaudeDesktopAuthError(_CLAUDE_AUTH_INVALID_MESSAGE, kind="auth")
+        raise ClaudeDesktopAuthError(_CLAUDE_CREDENTIALS_INVALID_MESSAGE, kind="auth")
     if isinstance(expires_at, bool) or not isinstance(expires_at, (int, float)):
-        raise ClaudeDesktopAuthError(
-            "Claude subscription credentials are invalid. Run `claude auth login`, then start a new Cowork task.",
-            kind="auth",
-        )
+        raise ClaudeDesktopAuthError(_CLAUDE_CREDENTIALS_INVALID_MESSAGE, kind="auth")
     if isinstance(expires_at, float) and not math.isfinite(expires_at):
-        raise ClaudeDesktopAuthError(
-            "Claude subscription credentials are invalid. Run `claude auth login`, then start a new Cowork task.",
-            kind="auth",
-        )
+        raise ClaudeDesktopAuthError(_CLAUDE_CREDENTIALS_INVALID_MESSAGE, kind="auth")
     minimum_expiry = (time.time() + CLAUDE_DESKTOP_AUTH_TTL_SECONDS) * 1000
     if expires_at <= minimum_expiry:
         raise ClaudeDesktopAuthError(
