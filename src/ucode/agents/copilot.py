@@ -29,7 +29,7 @@ import re
 import secrets
 import threading
 import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -162,8 +162,9 @@ _CLAUDE_200K_WINDOW = 200_000
 _EMPTY_LISTING_REASONS = ("returned no Anthropic model ids", "returned no Codex models")
 
 _ANTHROPIC_PROVIDER_TYPES = ("anthropic", *BEDROCK_PROVIDER_TYPES)
-_NON_CHAT_MODEL_PATTERN = re.compile(
-    r"embed|whisper|tts|dall-e|image|moderation|transcribe|realtime|audio|rerank"
+# A provider target that declares its APIs is usable only if one of them is a chat API.
+_PROVIDER_CHAT_API_TYPES = frozenset(
+    {"anthropic/v1/messages", "openai/v1/chat/completions", "openai/v1/responses"}
 )
 # Copilot sends `temperature: 0` on Chat Completions, which GPT 5+ and o-series models reject.
 _OPENAI_RESPONSES_MODEL_PATTERN = re.compile(r"^(?:gpt-(\d+)|o\d)")
@@ -285,18 +286,22 @@ def build_copilot_catalog(entries: Iterable[ModelServiceEntry | str]) -> list[Co
     return sorted(models.values(), key=_catalog_sort_key)
 
 
-def classify_provider_model(model: str, provider_type: str) -> tuple[str | None, str | None]:
+def classify_provider_model(
+    model: str, provider_type: str, api_types: Iterable[str] = ()
+) -> tuple[str | None, str | None]:
     """The wire API Copilot uses for a provider service's ``model``, or why it can't use it.
 
     Provider ids are the provider's own (``gpt-5.5``, ``us.anthropic.claude-sonnet-4-6``), so they
-    are read whole rather than as ``system.ai`` names."""
+    are read whole rather than as ``system.ai`` names. ``api_types`` (the target's declared APIs)
+    only excludes: the gateway serves some models on APIs they don't declare."""
+    declared = tuple(api_types)
+    if declared and _PROVIDER_CHAT_API_TYPES.isdisjoint(declared):
+        return None, f"it isn't a chat model (it serves {', '.join(declared)})"
     lowered = model.lower()
     if provider_type in _ANTHROPIC_PROVIDER_TYPES:
         if "claude" not in lowered:
             return None, "ug copilot uses only the Claude models of this provider"
         return "anthropic", None
-    if _NON_CHAT_MODEL_PATTERN.search(lowered):
-        return None, "it isn't a chat model"
     match = _OPENAI_RESPONSES_MODEL_PATTERN.match(lowered)
     if match and (match.group(1) is None or int(match.group(1)) >= 5):
         return "responses", None
@@ -304,13 +309,19 @@ def classify_provider_model(model: str, provider_type: str) -> tuple[str | None,
 
 
 def build_provider_catalog(
-    models: Iterable[str], provider_type: str
+    models: Iterable[str],
+    provider_type: str,
+    api_types: Mapping[str, Iterable[str]] | None = None,
 ) -> tuple[list[CopilotModel], list[tuple[str, str]]]:
-    """The provider service models Copilot can use, and the skipped ones with the reason."""
+    """The provider service models Copilot can use, and the skipped ones with the reason.
+
+    ``api_types`` maps a model to the APIs its target declares."""
     usable: dict[str, CopilotModel] = {}
     skipped: dict[str, str] = {}
     for model in models:
-        wire, reason = classify_provider_model(model, provider_type)
+        wire, reason = classify_provider_model(
+            model, provider_type, (api_types or {}).get(model, ())
+        )
         if wire is not None:
             usable.setdefault(model, CopilotModel(model, wire))
         elif reason is not None:
@@ -379,7 +390,8 @@ def provider_catalog(state: dict, service_name: str, requested: str | None) -> l
         listed, reason = _listed_provider_models(workspace, token, service_name, provider_type)
         if reason:
             print_warning(f"Could not list the models of {service_name}: {reason}.")
-    catalog, skipped = build_provider_catalog(models, provider_type)
+    target_api_types = service.get("target_api_types") or {}
+    catalog, skipped = build_provider_catalog(models, provider_type, target_api_types)
     if not catalog:
         detail = "; ".join(f"{model} ({reason})" for model, reason in skipped) or "none declared"
         raise RuntimeError(
@@ -392,7 +404,9 @@ def provider_catalog(state: dict, service_name: str, requested: str | None) -> l
             + "."
         )
     if listed:
-        catalog, _ = build_provider_catalog([m.id for m in catalog] + listed, provider_type)
+        catalog, _ = build_provider_catalog(
+            [m.id for m in catalog] + listed, provider_type, target_api_types
+        )
     return catalog
 
 

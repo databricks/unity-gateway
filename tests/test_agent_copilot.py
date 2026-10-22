@@ -341,13 +341,22 @@ class TestClassifyProviderModel:
     def test_provider_type_and_id_decide_the_wire(self, model, provider_type, wire):
         assert copilot.classify_provider_model(model, provider_type) == (wire, None)
 
+    def test_declared_non_chat_apis_exclude(self):
+        wire, why = copilot.classify_provider_model(
+            "embed-v-4-0", "openai", ["openai/v1/embeddings"]
+        )
+
+        assert wire is None
+        assert "isn't a chat model" in why
+        assert copilot.classify_provider_model(
+            "gpt-5.2-chat", "azure_openai", ["openai/v1/chat/completions"]
+        ) == ("responses", None)
+
     @pytest.mark.parametrize(
         ("model", "provider_type", "reason"),
         [
             ("us.anthropic.claude-sonnet-4-6", "openai", None),
             ("amazon.titan-text-express-v1", "amazon_bedrock", "Claude models"),
-            ("text-embedding-3-large", "openai", "isn't a chat model"),
-            ("whisper-1", "azure_openai", "isn't a chat model"),
         ],
     )
     def test_unusable_models_say_why(self, model, provider_type, reason):
@@ -362,14 +371,18 @@ class TestClassifyProviderModel:
 class TestBuildProviderCatalog:
     def test_keeps_usable_models_in_catalog_order_and_reports_the_rest(self):
         models, skipped = copilot.build_provider_catalog(
-            ["gpt-4o", "text-embedding-3-small", "gpt-5.5", "gpt-5.5"], "openai"
+            ["gpt-4o", "text-embedding-3-small", "gpt-5.5", "gpt-5.5"],
+            "openai",
+            {"text-embedding-3-small": ["openai/v1/embeddings"]},
         )
 
         assert [(m.id, m.wire) for m in models] == [
             ("gpt-5.5", "responses"),
             ("gpt-4o", "completions"),
         ]
-        assert skipped == [("text-embedding-3-small", "it isn't a chat model")]
+        assert skipped == [
+            ("text-embedding-3-small", "it isn't a chat model (it serves openai/v1/embeddings)")
+        ]
 
     def test_orders_dotted_provider_versions_newest_first(self):
         models, _ = copilot.build_provider_catalog(
@@ -479,16 +492,25 @@ class TestProviderCatalog:
 
     def test_no_usable_model_lists_the_reasons(self, monkeypatch):
         _stub_provider_service(
-            monkeypatch, {"provider_type": "openai", "targets": ["text-embedding-3-large"]}
+            monkeypatch,
+            {
+                "provider_type": "openai",
+                "targets": ["text-embedding-3-large"],
+                "target_api_types": {"text-embedding-3-large": ("openai/v1/embeddings",)},
+            },
         )
 
-        with pytest.raises(RuntimeError, match=r"text-embedding-3-large \(it isn't a chat model\)"):
+        with pytest.raises(RuntimeError, match=r"text-embedding-3-large \(it isn't a chat model"):
             copilot.provider_catalog({"workspace": WS}, MPS, None)
 
     def test_warns_about_skipped_models(self, monkeypatch, capsys):
         _stub_provider_service(
             monkeypatch,
-            {"provider_type": "openai", "targets": ["gpt-5.5", "text-embedding-3-large"]},
+            {
+                "provider_type": "openai",
+                "targets": ["gpt-5.5", "text-embedding-3-large"],
+                "target_api_types": {"text-embedding-3-large": ("openai/v1/embeddings",)},
+            },
         )
 
         copilot.provider_catalog({"workspace": WS}, MPS, None)

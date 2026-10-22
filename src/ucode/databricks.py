@@ -2804,9 +2804,11 @@ def list_model_provider_services(
 
     Returns ``(services, reason)`` where each service is
     ``{"name": "<catalog>.<schema>.<service>", "provider_type": "anthropic"|...,
-    "targets": [model_id, ...], "allow_all_targets": bool, "relayed": bool}``.
+    "targets": [model_id, ...], "target_api_types": {model_id: (api_type, ...)},
+    "allow_all_targets": bool, "relayed": bool}``.
     ``targets`` is the provider-side model ids the service exposes (used to pin
-    Bedrock model names). ``relayed`` is True for a credential-less Anthropic
+    Bedrock model names); ``target_api_types`` holds the APIs each target declares
+    (``native_api_types``, e.g. ``openai/v1/embeddings``). ``relayed`` is True for a credential-less Anthropic
     service (Claude Max/Team/Enterprise subscription relay). A non-None
     ``reason`` means the listing call itself failed.
 
@@ -2886,13 +2888,18 @@ def _provider_service_entry(raw_service: object) -> dict | None:
     raw_config = service.get("config")
     config = cast("dict[str, object]", raw_config) if isinstance(raw_config, dict) else {}
     targets: list[str] = []
+    target_api_types: dict[str, tuple[str, ...]] = {}
     raw_targets = config.get("targets")
     for target in raw_targets if isinstance(raw_targets, list) else []:
         if not isinstance(target, dict):
             continue
-        model_id = cast("dict[str, object]", target).get("model")
+        entry = cast("dict[str, object]", target)
+        model_id = entry.get("model")
         if isinstance(model_id, str) and model_id:
             targets.append(model_id)
+            api_types = entry.get("native_api_types")
+            if isinstance(api_types, list):
+                target_api_types[model_id] = tuple(t for t in api_types if isinstance(t, str))
     # Relayed = credential-less Anthropic (subscription relay). Only whether
     # it's relayed matters here; the tier (Max vs Team/Enterprise) is governed
     # server-side, so both launch identically.
@@ -2903,6 +2910,7 @@ def _provider_service_entry(raw_service: object) -> dict | None:
         "name": full_name,
         "provider_type": _provider_type_tag(raw_type if isinstance(raw_type, str) else None),
         "targets": targets,
+        "target_api_types": target_api_types,
         "allow_all_targets": bool(config.get("allow_all_targets")),
         "relayed": relayed,
     }

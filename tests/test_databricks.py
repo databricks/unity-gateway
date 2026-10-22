@@ -867,6 +867,7 @@ class TestListModelProviderServices:
             "name": "main.schema1.anthropic-svc",
             "provider_type": "anthropic",
             "targets": [],
+            "target_api_types": {},
             "allow_all_targets": False,
             "relayed": False,
         }
@@ -895,6 +896,33 @@ class TestListModelProviderServices:
             "us.anthropic.claude-sonnet-4-6",
             "global.anthropic.claude-opus-4-8",
         ]
+
+    def test_keeps_each_targets_declared_api_types(self, monkeypatch):
+        payload = {
+            "model_provider_services": [
+                {
+                    "name": "model-provider-services/main.schema1.foundry-svc",
+                    "config": {
+                        "provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_MICROSOFT_FOUNDRY",
+                        "targets": [
+                            {"model": "gpt-5.4-nano", "native_api_types": ["openai/v1/responses"]},
+                            {"model": "embed-v-4-0", "native_api_types": ["openai/v1/embeddings"]},
+                            {"model": "plain"},
+                        ],
+                    },
+                }
+            ]
+        }
+        monkeypatch.setattr(
+            db_mod, "_http_get_json", lambda url, token, timeout=30: (payload, None)
+        )
+
+        services, _ = db_mod.list_model_provider_services(WS, "token")
+
+        assert services[0]["target_api_types"] == {
+            "gpt-5.4-nano": ("openai/v1/responses",),
+            "embed-v-4-0": ("openai/v1/embeddings",),
+        }
 
     def test_returns_reason_on_failure(self, monkeypatch):
         monkeypatch.setattr(
