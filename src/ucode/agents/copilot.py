@@ -61,6 +61,7 @@ from ucode.custom_oauth import launch_token
 from ucode.databricks import (
     ANTHROPIC_API_PROVIDER_TYPES,
     ANTHROPIC_FAMILIES,
+    MICROSOFT_FOUNDRY_PROVIDER_TYPE,
     ModelServiceEntry,
     bare_model_name,
     build_copilot_base_url,
@@ -192,7 +193,8 @@ def classify_model(
     they don't declare. Without ``provider_type``, ``model`` is a Databricks model service and
     ``api_types`` its advertised routes. With it, ``model`` is a Model Provider Service target and
     ``api_types`` its declared APIs: Anthropic-API provider types serve only Claude, and other types
-    put every model that isn't GPT 5+ or o-series on Chat Completions."""
+    put every model that isn't GPT 5+ or o-series on Chat Completions, except Foundry's Claude
+    models, which use Anthropic."""
     declared = tuple(api_types)
     tail = bare_model_name(model)
     if provider_type is None:
@@ -208,6 +210,10 @@ def classify_model(
             return None, "ug copilot uses only the Claude models of this service"
         return wire, None
     if provider_type is not None:
+        # Foundry serves its Claude targets on the Anthropic route but not on Chat Completions,
+        # whatever the targets declare.
+        if wire == WIRE_ANTHROPIC and provider_type == MICROSOFT_FOUNDRY_PROVIDER_TYPE:
+            return wire, None
         return (WIRE_RESPONSES if wire == WIRE_RESPONSES else WIRE_COMPLETIONS), None
     if wire is None:
         if "gemini-" in tail:

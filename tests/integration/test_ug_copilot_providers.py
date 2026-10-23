@@ -106,6 +106,30 @@ def test_ug_copilot_runs_a_task_through_an_azure_openai_provider(
     assert_no_session_registry_left(session)
 
 
+def test_ug_copilot_runs_a_task_through_a_microsoft_foundry_provider(
+    live_session, workspace, codex_foundry_provider, codex_foundry_provider_model
+):
+    """Scenario: configure Copilot, then run a headless task through a Microsoft Foundry provider
+    service on its GPT model.
+
+    Expected: the session runs on `dbx-responses/<model>` through the gateway's native OpenAI
+    route, the completed answer contains the fixture value and was sent as that model, and no
+    session registry is left.
+    """
+    session = live_session
+    _configure(session, workspace)
+    session.record("copilot-provider.json", {"provider": codex_foundry_provider})
+
+    task, result = _run_task(
+        session, codex_foundry_provider, "--model", codex_foundry_provider_model
+    )
+
+    task.assert_headless_answer("copilot", result)
+    assert_completed_task_model(session, "copilot", task.value, codex_foundry_provider_model)
+    assert f"dbx-responses/{codex_foundry_provider_model}" in copilot_selected_models(session)
+    assert_no_session_registry_left(session)
+
+
 def test_ug_copilot_allow_all_bedrock_provider_runs_the_named_model(
     live_session, workspace, claude_bedrock_allow_all_provider, claude_bedrock_allow_all_model
 ):

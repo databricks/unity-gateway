@@ -1507,13 +1507,21 @@ class TestServiceUsableForTool:
         assert not db_mod.service_usable_for_tool("copilot", service)
 
     @pytest.mark.parametrize(
-        "provider_type", ["anthropic", "amazon_bedrock", "bedrock_mantle", "openai", "azure_openai"]
+        "provider_type",
+        [
+            "anthropic",
+            "amazon_bedrock",
+            "bedrock_mantle",
+            "openai",
+            "azure_openai",
+            "microsoft_foundry",
+        ],
     )
     def test_copilot_routes_anthropic_and_openai_services(self, provider_type):
         service = {"provider_type": provider_type, "targets": [], "allow_all_targets": True}
         assert db_mod.service_usable_for_tool("copilot", service)
 
-    @pytest.mark.parametrize("provider_type", ["microsoft_foundry", "gemini_enterprise", "custom"])
+    @pytest.mark.parametrize("provider_type", ["gemini_enterprise", "custom"])
     def test_copilot_skips_other_provider_types(self, provider_type):
         service = {"provider_type": provider_type, "targets": [], "allow_all_targets": True}
         assert not db_mod.service_usable_for_tool("copilot", service)
