@@ -6431,7 +6431,7 @@ class TestUnrelatedConfigureFailure:
 
 
 class TestDryRunAdoptsInstalledWorkspace:
-    def test_dry_run_launch_state_uses_the_installed_workspace(self, monkeypatch):
+    def test_dry_run_launch_state_uses_the_installed_workspace(self):
         """A dry run saves nothing, so the adopted workspace is carried for that run."""
         from ucode.managed_config import save_managed_state
 

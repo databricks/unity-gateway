@@ -807,10 +807,12 @@ def managed_launch_workspace(workspace: str | None) -> str | None:
     installed = normalize_workspace_url(installed) if installed and installed.strip() else None
     selected = normalize_workspace_url(workspace) if workspace else None
     if installed and selected and selected != installed:
+        # UG_SKIP_OS_SETTINGS never writes the policy, so the switch must run without it.
+        without_skip = f" without {SKIP_OS_SETTINGS_ENV}" if managed_settings_skipped() else ""
         raise RuntimeError(
             f"This machine is managed for {installed}, but your selected workspace is {selected}. "
             f"Launch refused. Use `--workspace {installed}`, or ask your IT team or an administrator "
-            f"to switch the machine with `ug configure --workspace {selected}`."
+            f"to switch the machine with `ug configure --workspace {selected}`{without_skip}."
         )
     return installed or selected
 
