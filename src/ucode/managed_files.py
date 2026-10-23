@@ -1257,7 +1257,10 @@ def update_workspace_policy(
             _sudo_replace(path, desired_text)
         else:
             with tempfile.NamedTemporaryFile(mode="w", suffix=".json", encoding="utf-8") as source:
-                source.write(desired_text if desired_text is not None else current_text or "")
+            with tempfile.NamedTemporaryFile(mode="wb", suffix=".json") as source:
+                source.write(
+                    desired_text.encode("utf-8") if desired_text is not None else path.read_bytes()
+                )
                 source.flush()
                 subprocess_cross_os.run(
                     _sudo_replace_command(
