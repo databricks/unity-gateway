@@ -79,4 +79,8 @@ class UserSession(IntegrationSession):
         if any((state_dir / file).is_file() for file in MANAGED_STATE_FILES):
             with TerminalProcess(self, "ug", [str(self.binary), "revert"], name) as terminal:
                 terminal.finish()
+        # `ug revert` leaves the installed workspace policy, like an uninstall would not.
+        policy = constants.WORKSPACE_POLICY_PATH
+        if policy.exists():
+            self.run("rm", "-f", str(policy), binary=self.which("sudo"))
         assert not any(path.exists() for path in constants.MANAGED_PATHS), message

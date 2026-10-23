@@ -11,8 +11,10 @@ local file, ``~/.ucode/managed-config.json`` (0600), used on the launch path:
 - re-reading it on each launch (reusing a read younger than :data:`MANAGED_CONFIG_TTL` rather than
   re-fetching), falling back to the persisted copy when the read fails.
 
-There is deliberately one file: the workspace is the source of truth, so the pulled copy lives in
-``managed-config.json`` and a launch re-reads it from there.
+An explicit ``ug configure`` also installs the workspace policy machine-wide at
+``/etc/unitygateway/managed-settings.json`` (Linux and macOS) through
+:func:`ucode.managed_files.update_workspace_policy`. Launches never write that file; they read and
+refresh only the per-user cache above.
 
 :func:`refresh_managed_config` is the launch path's entry point. It is called before model discovery,
 because the manifest decides whether that discovery is needed at all; the launch path then hands the
@@ -37,10 +39,19 @@ from ucode.databricks import (
     fetch_model_recommendation,
     get_databricks_token,
 )
+from ucode.managed_files import (
+    OS,
+    UNITY_GATEWAY_MANAGED_SETTINGS_PATH,
+    current_os,
+    managed_settings_skipped,
+    update_workspace_policy,
+)
 from ucode.time_utils import parse_update_time
-from ucode.ui import console, print_warning
+from ucode.ui import console, normalize_workspace_url, print_warning
 
 MANAGED_CONFIG_PATH = config_io.APP_DIR / "managed-config.json"
+# The machine-wide workspace policy that explicit ``ug configure`` installs (Linux and macOS only).
+MACHINE_POLICY_PATH = UNITY_GATEWAY_MANAGED_SETTINGS_PATH
 
 # Shown to a developer when their workspace has no admin-defined managed config yet — the normal
 # case, not an error. Kept here so the CLI (which surfaces it) uses one consistent message.
@@ -378,6 +389,10 @@ class FetchedManagedConfig(NamedTuple):
     reason: str | None
 
 
+class ManagedPolicyInstallDenied(RuntimeError):
+    """``ug configure`` could not install, replace, or remove the machine-wide workspace policy."""
+
+
 class ManagedConfigResult(NamedTuple):
     """The launch-path refresh outcome: the ``manifest`` to apply (None when absent or dropped) and
     ``feature_disabled``, True when the coding-agent-configs feature is off server-side."""
@@ -666,6 +681,67 @@ def save_managed_state(workspace: str, config: dict, *, outcome: str | None = No
     _restrict_permissions(MANAGED_CONFIG_PATH)
 
 
+def _machine_policy_installable() -> bool:
+    """Whether this run can hold the machine-wide policy: Linux or macOS, not opted out with
+    ``UG_SKIP_OS_SETTINGS`` or the ``user`` scope. Windows has no machine policy file."""
+    return not managed_settings_skipped() and current_os() in (OS.LINUX, OS.MACOS)
+
+
+def _policy_content(config: dict) -> dict:
+    """The config compared for changes; ``retrieved_time`` changes on every read, so it is ignored."""
+    return {key: value for key, value in config.items() if key != "retrieved_time"}
+
+
+def _install_machine_policy(workspace: str, config: dict) -> None:
+    """Make the machine policy match an explicit configure's result.
+
+    An empty ``config`` removes the installed policy, whichever workspace it was installed for: the
+    configured workspace now decides the machine's workspace. Otherwise the file is rewritten only
+    when its workspace or configuration differs. Raises RuntimeError when sudo is unavailable.
+    """
+    if not config:
+        update_workspace_policy(MACHINE_POLICY_PATH, None, interactive=True, allow_sudo=True)
+        return
+    workspace = normalize_workspace_url(workspace)
+    installed = config_io.read_json_safe(MACHINE_POLICY_PATH)
+    installed_workspace = installed.get("workspace")
+    installed_config = installed.get("config")
+    if (
+        isinstance(installed_workspace, str)
+        and installed_workspace.strip()
+        and normalize_workspace_url(installed_workspace) == workspace
+        and isinstance(installed_config, dict)
+        and _policy_content(installed_config) == _policy_content(config)
+    ):
+        return
+    payload = {"workspace": workspace, "config": config}
+    update_workspace_policy(
+        MACHINE_POLICY_PATH,
+        json.dumps(payload, indent=2) + "\n",
+        interactive=True,
+        allow_sudo=True,
+    )
+
+
+def _sync_machine_policy(workspace: str, config: dict, *, force_refresh: bool) -> None:
+    """Install or remove the machine policy for an explicit configure; launches never write it.
+
+    A failed install raises :class:`ManagedPolicyInstallDenied`, so configure reports it instead of
+    implying the machine is managed for this workspace.
+    """
+    if not force_refresh or not _machine_policy_installable():
+        return
+    try:
+        _install_machine_policy(workspace, config)
+    except RuntimeError as exc:
+        message = (
+            f"Could not install the workspace policy at {MACHINE_POLICY_PATH}: {exc} "
+            "This machine-wide file needs sudo. Rerun `ug configure` from a terminal where you "
+            "can use sudo, or ask your IT team or an administrator to run it."
+        )
+        raise ManagedPolicyInstallDenied(message) from exc
+
+
 def _restrict_permissions(path: Path) -> None:
     """Best-effort chmod 0600. No-op where unsupported (e.g. Windows), where the effective
     read-only guarantee is left to a later change."""
@@ -783,6 +859,7 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
     if reason is not None:
         if _is_feature_disabled(reason):
             save_managed_state(workspace, {}, outcome=_OUTCOME_FEATURE_DISABLED)
+            _sync_machine_policy(workspace, {}, force_refresh=force_refresh)
             return ManagedConfigResult(None, True)
         fallback = _persisted_fallback(workspace, reason, refused=_is_permission_denied(reason))
         return ManagedConfigResult(fallback, False)
@@ -791,9 +868,11 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
         # the file doubles as the fallback above, so a removed policy would otherwise come back
         # into force after the next transient outage.
         save_managed_state(workspace, {}, outcome=_OUTCOME_NONE)
+        _sync_machine_policy(workspace, {}, force_refresh=force_refresh)
         return ManagedConfigResult(None, False)
     # Persist the raw config verbatim; hand callers the normalized manifest they expect.
     save_managed_state(workspace, raw, outcome=_OUTCOME_PUBLISHED)
+    _sync_machine_policy(workspace, raw, force_refresh=force_refresh)
     return ManagedConfigResult(normalize_managed_config(raw), False)
 
 

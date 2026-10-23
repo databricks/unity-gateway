@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from types import SimpleNamespace
 
@@ -51,6 +52,30 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.setattr(
         managed_config_mod, "MANAGED_CONFIG_PATH", state_dir / "managed-config.json"
     )
+    # The machine-wide workspace policy lives outside APP_DIR. Redirect it, and fake its installer,
+    # so no test installs or removes the real /etc/unitygateway/managed-settings.json.
+    monkeypatch.setattr(
+        managed_config_mod,
+        "MACHINE_POLICY_PATH",
+        tmp_path / "etc" / "unitygateway" / "managed-settings.json",
+    )
+
+    def install_test_policy(path, desired_text, *, interactive=False, allow_sudo=False):
+        if path != managed_config_mod.MACHINE_POLICY_PATH or not path.is_relative_to(tmp_path):
+            pytest.fail(f"test attempted to install machine-wide policy at {path}")
+        if config_io_mod.is_dry_run():
+            return
+        if desired_text is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            config_io_mod.atomic_write_json(path, json.loads(desired_text))
+            path.chmod(0o644)
+
+    monkeypatch.setattr(managed_config_mod, "update_workspace_policy", install_test_policy)
+    # The installer is faked, so let every host take the Linux/macOS install path; tests for
+    # Windows or UG_SKIP_OS_SETTINGS override this.
+    monkeypatch.setattr(managed_config_mod, "current_os", lambda: managed_files_mod.OS.LINUX)
     backup_dir = state_dir / "managed-backups"
     monkeypatch.setattr(managed_files_mod, "MANAGED_BACKUP_DIR", backup_dir)
     monkeypatch.setattr(
