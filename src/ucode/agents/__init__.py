@@ -433,6 +433,20 @@ def refuse_user_scope_over_managed_files(tools: list[str]) -> None:
             )
 
 
+def refuse_user_scope_over_managed_config(workspace: str | None, managed: dict | None) -> None:
+    """Run by ``ug configure`` right after its forced managed-config read, before any agent is set up.
+
+    A workspace that publishes a managed config must install it machine-wide, so ``--user`` cannot
+    apply. ``managed`` is the manifest from that read; None means no managed config is present.
+    """
+    if config_scope() != "user" or managed is None:
+        return
+    raise RuntimeError(
+        f"`ug configure --user` can't be used with {workspace}: it publishes a managed config, "
+        "which must be installed machine-wide. Use `ug configure --global` (the default)."
+    )
+
+
 def configure_tool(
     tool: str,
     state: dict,

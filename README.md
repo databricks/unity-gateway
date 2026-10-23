@@ -139,6 +139,8 @@ ug configure --user
 precedence; later launches use whatever files are present.
 The choice is saved for launches after a successful configure; `ug configure` without `--user`
 and `ug revert` return to `--global`.
+`--user` also fails for a workspace that publishes a managed config, which must be installed
+machine-wide; use `--global` for it.
 
 Available coding agents are `codex`, `claude`, `gemini`, `opencode`,
 `copilot`, and `pi`. `cursor` can be included in `--agents` for MCP-only setup;

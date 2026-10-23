@@ -34,6 +34,7 @@ from ucode.agents import (
     install_databricks_ai_tools_for_agents,
     install_tool_binary,
     normalize_tool,
+    refuse_user_scope_over_managed_config,
     refuse_user_scope_over_managed_files,
     resolve_gemini_provider_model,
     resolve_launch_model,
@@ -103,7 +104,7 @@ from ucode.managed_config import (
     normalize_managed_config,
     refresh_managed_config,
 )
-from ucode.managed_files import managed_write_session, set_config_scope
+from ucode.managed_files import config_scope, managed_write_session, set_config_scope
 from ucode.managed_resolve import (
     managed_claude_family_models,
     managed_default_model,
@@ -829,13 +830,16 @@ def _setup_single_agent(
     managed = None
     if apply_managed and tool in ("claude", "codex"):
         managed, _ = refresh_managed_config(state, force_refresh=True)
+        refuse_user_scope_over_managed_config(state.get("workspace"), managed)
         _reject_disabled_agent(managed, tool)
         if managed is not None:
             state = resolve_state(managed, state, tool)
             if not managed_provider_service(managed, tool):
                 parent_schema = managed_unity_catalog_location(managed, tool)
     elif apply_managed:
-        managed, _ = refresh_managed_config(state, force_refresh=False)
+        # --user must see a managed config for every agent, so it reads fresh; global keeps the cache.
+        managed, _ = refresh_managed_config(state, force_refresh=config_scope() == "user")
+        refuse_user_scope_over_managed_config(state.get("workspace"), managed)
     state = configure_single_tool(tool, state, parent_schema=parent_schema)
     if apply_managed and not managed_enabled_tools(managed or {}):
         state = _record_unmanaged_configured_agents(state, [tool])
@@ -1048,6 +1052,7 @@ def _configure_workspace_command(
     # now rather than prompting the developer to pick. Configure always reads fresh so it never
     # applies a config the admin has since changed.
     managed, _ = refresh_managed_config(state, force_refresh=True)
+    refuse_user_scope_over_managed_config(state.get("workspace"), managed)
     managed_tools = managed_enabled_tools(managed) if managed is not None else []
     if managed is not None and managed_tools:
         refuse_user_scope_over_managed_files(managed_tools)
