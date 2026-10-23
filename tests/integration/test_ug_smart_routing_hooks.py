@@ -388,7 +388,7 @@ def test_smart_routing_codex_route_subagent_hook(
 @pytest.mark.live
 @pytest.mark.claude
 @pytest.mark.managed_fixture
-@pytest.mark.quarantined_router_toggle
+@pytest.mark.soft_fail
 @pytest.mark.parametrize(
     "orchestration_enabled, SMART_ROUTER_CONFIG_VERSION",
     [

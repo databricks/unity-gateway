@@ -67,9 +67,9 @@ def _workflow_job(name, next_name):
     return workflow.split(f"\n  {name}:\n", 1)[1].split(f"\n  {next_name}:\n", 1)[0]
 
 
-def test_smart_router_toggle_quarantine_is_non_blocking_on_both_platforms():
+def test_soft_fail_ci_is_non_blocking_on_both_platforms():
     jobs = _integration_jobs()
-    job = jobs["smart-router-toggle"]
+    job = jobs["soft-fail"]
     assert "continue-on-error: true" in job
     assert "os: [ubuntu-22.04, windows-latest]" in job
     assert "runs-on: ${{ matrix.os }}" in job
@@ -77,23 +77,23 @@ def test_smart_router_toggle_quarantine_is_non_blocking_on_both_platforms():
     assert "!cancelled() && needs.workspace.result == 'success'" in job
     assert "fail-fast: false" in job
     assert "max-parallel: 1" in job
-    assert "AGENT: claude" in job
-    assert "ARTIFACT_NAME: integration-smart-router-toggle-claude-${{ matrix.os }}" in job
+    assert "agent: [claude]" in job
+    assert "AGENT: ${{ matrix.agent }}" in job
+    assert "ARTIFACT_NAME: integration-soft-fail-${{ matrix.agent }}-${{ matrix.os }}" in job
     assert "steps: *live-steps" in job
     needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", jobs["cujs"])
     assert needs is not None
-    assert "smart-router-toggle" not in {name.strip() for name in needs.group(1).split(",")}
-    for name in ("full", "managed"):
+    assert "soft-fail" not in {name.strip() for name in needs.group(1).split(",")}
+    for name in ("smoke", "full", "managed"):
         assert "continue-on-error:" not in jobs[name]
+        assert "and not soft_fail" in jobs[name]
 
 
-def test_router_toggle_quarantine_marks_only_the_affected_claude_journey():
+def test_soft_fail_marks_only_the_affected_claude_journey():
     marked = []
     for path in (Path(__file__).parent / "integration").glob("test_*.py"):
         for node in ast.parse(path.read_text()).body:
-            if isinstance(node, ast.FunctionDef) and "quarantined_router_toggle" in _markers(
-                node.decorator_list
-            ):
+            if isinstance(node, ast.FunctionDef) and "soft_fail" in _markers(node.decorator_list):
                 marked.append((path.name, node.name))
     assert marked == [
         (
@@ -106,14 +106,16 @@ def test_router_toggle_quarantine_marks_only_the_affected_claude_journey():
 @pytest.mark.parametrize(
     ("job_name", "agent", "retained_test"),
     [
+        ("smoke", "claude", "test_ug_claude_headless_prompt_argument"),
+        ("smoke", "codex", "test_ug_codex_headless_prompt_argument"),
         ("full", "claude", "test_smart_routing_claude_route_subagent_hook"),
         ("full", "codex", "test_smart_router_skill_toggles_codex_subagent_routing"),
         ("managed", "claude", "test_ug_configure_managed_claude"),
         ("managed", "codex", "test_smart_router_skill_toggles_codex_subagent_routing"),
-        ("smart-router-toggle", "claude", None),
+        ("soft-fail", "claude", None),
     ],
 )
-def test_router_toggle_ci_selectors_preserve_coverage(job_name, agent, retained_test):
+def test_soft_fail_ci_selectors_preserve_coverage(job_name, agent, retained_test):
     job = _integration_jobs()[job_name]
     if job_name == "managed":
         marker = re.search(r'-- -m "([^"]+)"', job)
@@ -360,7 +362,7 @@ SKIPPED_ON_FORK_PRS = {
     "smoke",
     "headless-windows",
     "full",
-    "smart-router-toggle",
+    "soft-fail",
     "opencode",
     "copilot",
     "managed",
