@@ -172,7 +172,7 @@ jobs:
 
       - name: Set up uv
         if: steps.gate.outputs.review == 'true'
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
 
       # Polly uses tmux for its shell terminal. Apt access on this runner is unverified.
       - name: Install tmux
