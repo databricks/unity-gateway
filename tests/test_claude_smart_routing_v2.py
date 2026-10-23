@@ -778,7 +778,6 @@ class TestSubagentRouting:
         monkeypatch.setenv("UCODE_SESSION_ENV_FILE", str(session_file))
         monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "1")
         monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", orchestrator_enabled)
-        monkeypatch.delenv("ISAAC_LAUNCH_MODE", raising=False)
         selected_model = "system.ai.claude-haiku-5-5"
         requested_agent = v2._routed_claude_agent_name("system.ai.glm-5-3-flash")
         routed_agent = v2._routed_claude_agent_name(selected_model)
