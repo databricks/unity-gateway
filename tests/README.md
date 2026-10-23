@@ -43,10 +43,13 @@ TypeScript event-forwarding and launch-option tests in CI. The existing Claude
 skill-toggle integration journey checks the live recipe payload field across on/off/on.
 See [the mod guide](../docs/claude-mod.md).
 
-Native mod component tests cover per-task routing notices without any tool render events,
+Native mod component tests cover task-labelled routing cards without any tool render events,
 including parallel background agents finishing out of order, distinct IDs for identical
-tasks, pending spinners, and disabled/failed routing. These checks do not establish live
-parallel-agent TUI or gateway coverage.
+tasks, pending spinners, disabled/failed routing, prompt reset, and late-result isolation.
+The native TUI preview drives a real Claude terminal with fixture routing decisions,
+checks wrapping and model emphasis, and rejects raw IDs, log prefixes, and replacement
+characters. It makes no model request and does not establish live parallel-agent routing
+or gateway coverage.
 
 `test_ug_headers.py` covers the `UG_HEADERS` parser and the `--header` flag, `test_databricks.py`
 ug's own requests carrying them, and `test_agent_codex.py` `UG_HEADERS` reaching a Codex launch's

@@ -1,5 +1,9 @@
 import type { On, PluginOptions } from 'claude-code'
 
+export type SubagentRoutingState = {
+  records: Map<string, { task: string; model: string; rationale: string; seconds?: number }>
+}
+
 const shortModel = (model: string): string => model.replace(/^system\.ai\./, '').replace(/^databricks-/, '')
 // Claude's own spinner glyphs, played forwards then back as Claude does.
 const SPINNER_GLYPHS = ['·', '✢', '✳', '✶', '✻', '✽']
@@ -19,13 +23,14 @@ const secondsSince = async ($: any, start: number | undefined): Promise<number |
   return current === undefined || start === undefined ? undefined : Math.max(0, current - start) / 1000
 }
 
-export const registerSubagentRouting = (on: On, options: PluginOptions): void => {
+export const registerSubagentRouting = (on: On, options: PluginOptions, state: SubagentRoutingState): void => {
   // Calls waiting on the router, by when routing started, shown with a spinner and timer.
   const pending = new Map<string, number | undefined>()
 
   on('tool.call', { tool: ['Agent', 'Task'] }, async ($, e, next) => {
     const command = options.routeCommand as readonly string[]
     if (!command.length) return next(e)
+    const records = state.records
     const { tool, tool_use_id, agentId, ...input } = e
     let route
     let spinner: { cancel: () => void } | undefined
@@ -62,12 +67,15 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     const seconds = tool_use_id ? await secondsSince($, pending.get(tool_use_id)) : undefined
     if (tool_use_id) {
       pending.delete(tool_use_id)
+      if (route) records.set(tool_use_id, {
+        task: input.description || input.subagent_type || tool,
+        model: shortModel(route.model),
+        rationale: route.rationale,
+        seconds,
+      })
       $.ui.invalidate('ui.render')
     }
     if (!route) return next(e)
-    const task = `${input.description || input.subagent_type || tool}${tool_use_id ? ` [${tool_use_id}]` : ''}`
-    const elapsed = seconds === undefined ? '' : ` (routed in ${seconds.toFixed(1)}s)`
-    $.ui.log(`Smart Router: ${task}\n  ↳ Selected Model: ${shortModel(route.model)}${elapsed}${route.rationale ? `\n    Reason: ${route.rationale}` : ''}`)
     // Preserve Claude's permission checks and every other mod's tool handlers.
     return next({ ...route.updatedInput, tool, tool_use_id, agentId })
   })

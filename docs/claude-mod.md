@@ -16,11 +16,18 @@ The same entry point routes Agent/Task calls in a native `tool.call` hook. It pi
 call as JSON to `ug claude-router-hook route-subagent-mod`, whose argument list arrives in
 the `routeCommand` plugin option, and continues the call with the returned input. The
 matching Agent row shows a spinner and elapsed seconds while the router answers.
-Each successful decision emits a transcript notice with the task description, `tool_use_id`,
-selected model, routing time, and rationale before continuing the call. Claude's native
-parallel-agent summary bypasses both `ToolUse` and `ToolGroup` render hooks, so completed
-decisions do not depend on either renderer. Notices remain visible when background agents
-are grouped or routing completes out of order, without duplicating decisions on tool rows.
+Successful decisions appear as task-labelled cards in the existing above-prompt panel:
+bold task heading, green selected model, small routing timer, and indented, wrapping
+rationale. Tool IDs remain internal. There are no successful-routing log messages,
+plugin prefixes, or duplicate tool-row annotations. Claude's native parallel-agent
+summary and log messages bypass the relevant transcript render hooks; the panel does
+not depend on them.
+
+The panel retains every successful route for the current prompt, including background
+agents whose routing completes out of order. Cards remain after the parent's turn ends
+and clear on the next submitted prompt. A late result from an earlier prompt cannot
+repopulate the new panel. Plugin reload clears the in-memory cards; the existing routing
+decision audit log is unchanged.
 Disabled routing, command failures, and invalid responses keep the original call;
 failures also log a diagnostic.
 
