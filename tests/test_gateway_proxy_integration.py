@@ -17,6 +17,7 @@ Fully hermetic: no agent binary, no network, no workspace credentials.
 from __future__ import annotations
 
 import contextlib
+import json
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -279,6 +280,7 @@ def _running_gateway_auth_proxy(
     *,
     added_headers=None,
     on_refresh_failure=None,
+    dropped_chat_completions_fields=(),
 ):
     server, cache, client = gateway_proxy.start_gateway_auth_proxy(
         gateway.base_url,
@@ -287,6 +289,7 @@ def _running_gateway_auth_proxy(
         added_headers=added_headers or {},
         sign_in_hint="Run `databricks auth login`.",
         on_refresh_failure=on_refresh_failure or (lambda exc: None),
+        dropped_chat_completions_fields=dropped_chat_completions_fields,
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -328,6 +331,23 @@ class TestGatewayAuthProxyEndToEnd:
         assert req.header("User-Agent") == "ucode/1 copilot/2"
         assert req.header("X-Tag") == "t"
         assert req.body == b'{"model":"m"}'
+
+    def test_drops_configured_fields_from_chat_completions_only(self, make_gateway):
+        gw = make_gateway()
+        body = b'{"model":"gpt-4o-mini","reasoning_effort":"medium","messages":[]}'
+        with _running_gateway_auth_proxy(
+            gw, dropped_chat_completions_fields=("reasoning_effort",)
+        ) as proxy_url:
+            for path in ("openai/v1/chat/completions", "openai/v1/responses"):
+                httpx.post(
+                    f"{proxy_url}/ai-gateway/{path}",
+                    headers={"Authorization": f"Bearer {_SESSION_SECRET}"},
+                    content=body,
+                    timeout=10,
+                )
+        chat, responses = gw.requests
+        assert json.loads(chat.body) == {"model": "gpt-4o-mini", "messages": []}
+        assert responses.body == body
 
     def test_accepts_secret_in_x_api_key_and_does_not_forward_it(self, make_gateway):
         gw = make_gateway()

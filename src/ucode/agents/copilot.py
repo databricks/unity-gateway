@@ -887,6 +887,9 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
         added_headers=proxy_headers(state),
         sign_in_hint=f"Run `databricks auth login --host {workspace}`, then restart `ug copilot`.",
         on_refresh_failure=_log_proxy_failure,
+        # Copilot sends `reasoning_effort` on Chat Completions, but only models that aren't GPT 5+
+        # or o-series use that wire, and OpenAI and Azure reject the field for them.
+        dropped_chat_completions_fields=("reasoning_effort",),
     )
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
