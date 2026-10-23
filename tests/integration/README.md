@@ -26,10 +26,12 @@ Claude answer delivery has offline transcript and subprocess coverage in
 streaming JSON when UG redirects diagnostics to stderr. Live model/gateway selection
 and capability-hook activation are not covered here; interactive selection is unsupported.
 
-Claude Desktop has installed-CLI profile lifecycle coverage in the existing Linux and
-Windows lanes. It configures twice and reverts against each platform's isolated native
-profile path, checking the fixed profile, gateway/helper/model fields, metadata, prior
-selection, and an unrelated profile. It does not launch Desktop. The
+Claude Desktop has installed-CLI profile lifecycle and subscription-relay coverage in the
+existing Linux and Windows lanes. It configures twice and reverts against each platform's
+isolated native profile path, checking the fixed profile, gateway/helper/model fields,
+metadata, prior selection, and an unrelated profile. A separate real-provider journey checks
+the relay helper arguments and runs the installed helper with real Claude and Databricks
+credentials, requiring separate bearer and gateway-header output. It does not launch Desktop. The
 [native testing plan](../../docs/claude-desktop-integration-testing.md) covers the remaining
 macOS/Windows GUI, Cowork, model-switching, and browser-authentication work; those GUI and
 virtualization prerequisites are not satisfied by the headless suite.
@@ -506,7 +508,7 @@ test_ug_codex_commands.py               # command help and parser error forwardi
 test_ug_codex_app_server.py             # actual client/server initialize exchange
 test_ug_smart_routing_hooks.py           # live hook contract plus skill-driven subagent toggles
 test_ug_configure_claude_lifecycle.py   # repeat setup, revert, rejected credentials
-test_ug_configure_claude_desktop.py     # native-path Desktop profile lifecycle, no GUI
+test_ug_configure_claude_desktop.py     # native-path Desktop lifecycle + relay helper, no GUI
 test_ug_configure_codex_desktop.py      # stubbed managed Codex desktop catalog pointer, no GUI
 test_ug_configure_claude_workspace_switch.py # real skills MCP cleanup across two workspaces
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
@@ -701,7 +703,7 @@ cases instead complete real file tasks through `--workspace` and `--model-locati
 `ug_e2e.models.claude_haiku` and `ug_e2e.models.gpt_luna`. The two fresh `--provider`
 journeys check setup and launch with existing services, without inference.
 
-There are **87 live cases** (including 11 marked TUI journeys) and **7 installation
+There are **88 live cases** (including 12 marked TUI journeys) and **7 installation
 checks** with Claude and Codex; selecting OpenCode adds one live headless case and two `managed_fixture` cases; selecting Copilot adds fifteen live cases. One
 **`workspace_switch` case** uses two real workspaces and checks skills MCP cleanup and a completed
 Claude task. A further **43 `managed_fixture` cases** (twelve of them also `live`) run on the
@@ -914,12 +916,12 @@ each test; only explicit-model scenarios choose and record a discovered
 Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
-two agent jobs). Full runs all 87 live cases, including those smoke cases, in two
+two agent jobs). Full runs all 88 live cases, including those smoke cases, in two
 disjoint agent lanes:
 
 | Agent lane | Marker | Cases |
 | --- | --- | --- |
-| Claude | `live and claude` | 39 |
+| Claude | `live and claude` | 40 |
 | Codex | `live and codex` | 46 |
 
 A non-blocking **OpenCode** job (`live and opencode`, one case) runs alongside them with
@@ -1270,7 +1272,7 @@ uv run --no-project --python 3.12 python scripts/run_integration.py \
 unset DATABRICKS_BEARER
 ```
 
-This runs all 87 live cases. For the seven installation checks, run the same
+This runs all 88 live cases. For the seven installation checks, run the same
 runner/version/index arguments with `--installation-only` and omit `-- -m live`;
 no bearer or workspace is needed. Results remain under `.integration-runs/`.
 Each invocation needs a new output directory; an existing one is rejected.
