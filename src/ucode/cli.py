@@ -54,6 +54,7 @@ from ucode.config_io import is_dry_run, restore_file, set_dry_run
 from ucode.constants import (
     AGENT_CLAUDE,
     AGENT_CODEX,
+    AGENT_COPILOT,
     ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
     UG_HEADERS_ENV_VAR,
@@ -3580,7 +3581,7 @@ def _launch_tool(
             provider
             or managed_parent_schema
             or picker_catalog
-            or (tool == "copilot" and parent_schema)
+            or (tool == AGENT_COPILOT and parent_schema)
         ):
             # Routing through a Model Provider Service pins no Databricks model;
             # scoped UC discovery likewise lets the agent select from the parent schema. Skip model
