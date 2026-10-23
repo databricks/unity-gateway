@@ -60,6 +60,8 @@ WS_HOST = "example.databricks.com"
 class _FakeResponse:
     """Minimal urlopen context manager returning a JSON body, or raw bytes as given."""
 
+    status = 200
+
     def __init__(self, payload: dict | bytes):
         self._body = payload if isinstance(payload, bytes) else json.dumps(payload).encode("utf-8")
 
@@ -3973,6 +3975,45 @@ class TestHttpGetJsonRetries:
 
         assert body == b"\x89PNG\x00"
         assert reason is None
+
+
+class TestHttpUgHeaders:
+    def test_get_and_send_carry_ug_headers(self, monkeypatch):
+        monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: testenv://liteswap/abc")
+        requests = []
+
+        def fake_urlopen(request, timeout=None):
+            requests.append(request)
+            return _FakeResponse({})
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+
+        db_mod._http_get_json(f"{WS}/get", "tok")
+        db_mod._http_post_json(f"{WS}/post", "tok", {})
+
+        assert [request.get_header("X-databricks-traffic-id") for request in requests] == [
+            "testenv://liteswap/abc",
+            "testenv://liteswap/abc",
+        ]
+
+    def test_ug_headers_never_replace_auth_or_content_type(self, monkeypatch):
+        monkeypatch.setenv("UG_HEADERS", "authorization: other\ncontent-type: text/plain")
+        requests = []
+
+        def fake_urlopen(request, timeout=None):
+            requests.append(request)
+            return _FakeResponse({})
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+
+        db_mod._http_get_json(f"{WS}/get", "tok")
+        db_mod._http_post_json(f"{WS}/post", "tok", {})
+
+        assert [request.get_header("Authorization") for request in requests] == [
+            "Bearer tok",
+            "Bearer tok",
+        ]
+        assert requests[1].get_header("Content-type") == "application/json"
 
 
 class TestParseDatabricksCliVersion:

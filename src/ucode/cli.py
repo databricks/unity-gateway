@@ -55,6 +55,7 @@ from ucode.constants import (
     AGENT_CODEX,
     ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
+    UG_HEADERS_ENV_VAR,
 )
 from ucode.custom_oauth import (
     CUSTOM_OAUTH_CLI_ENV_VAR,
@@ -184,6 +185,7 @@ from ucode.state import (
     workspace_self_managed_agents,
 )
 from ucode.string_utils import is_valid_catalog_schema
+from ucode.ug_headers import parse_header_line
 from ucode.ui import (
     console,
     heading,
@@ -3768,8 +3770,24 @@ def default(
     ] = False,
     skip_preflight: SkipPreflightOption = False,
     workspace: WorkspaceOption = None,
+    header: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--header",
+            help="Extra `Name: value` header for this launch's Codex and ug Databricks requests "
+            "(repeatable). A header already sent keeps its value.",
+        ),
+    ] = None,
 ) -> None:
     """Configure and launch coding agents through Databricks AI Gateway."""
+    for number, line in enumerate(header or [], 1):
+        if parse_header_line(line) is None:
+            # Name only the flag's position: the value may be a token.
+            print_err(f"--header #{number}: expected `Name: value` with a valid name and value.")
+            raise typer.Exit(1)
+    if header:
+        existing = os.environ.get(UG_HEADERS_ENV_VAR, "")
+        os.environ[UG_HEADERS_ENV_VAR] = "\n".join(filter(None, [existing, *header]))
     if ctx.invoked_subcommand != "revert":
         set_config_scope(load_config_scope())
     if ctx.invoked_subcommand is not None:

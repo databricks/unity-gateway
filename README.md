@@ -142,6 +142,18 @@ and `ug revert` return to `--global`.
 `--user` also fails for a workspace that publishes a managed config, which must be installed
 machine-wide; use `--global` for it.
 
+### Extra headers for one session
+
+```bash
+ug --header "x-databricks-traffic-id: testenv://liteswap/<pod>" codex
+UG_HEADERS="X-Team: eng" ug codex
+```
+
+`--header` (repeatable) and `UG_HEADERS` (one `Name: value` per line) add headers to that launch's
+Databricks requests only: Codex's gateway requests, through the launch's `-c` provider headers, and
+ug's own requests (workspace APIs, MCP proxy, web search, smart routing). A header already sent
+keeps its value. Nothing is written to a config file.
+
 Available coding agents are `codex`, `claude`, `gemini`, `opencode`,
 `copilot`, and `pi`. `cursor` can be included in `--agents` for MCP-only setup;
 Cursor models still run through your Cursor account.

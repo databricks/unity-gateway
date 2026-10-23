@@ -1489,6 +1489,38 @@ class TestCodexLaunch:
         )
         assert "Databricks-Model-Provider-Service" not in provider_arg
 
+    def test_launch_adds_ug_headers_without_writing_the_profile(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        profile_path = tmp_path / "ucode.config.toml"
+        before = profile_path.read_text(encoding="utf-8")
+        monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: testenv://liteswap/a")
+
+        codex.launch({"workspace": WS}, [], options=LaunchOptions())
+
+        provider_arg = next(
+            arg for arg in launches[0] if arg.startswith("model_providers.Databricks=")
+        )
+        assert "x-databricks-traffic-id" in provider_arg
+        assert "testenv://liteswap/a" in provider_arg
+        assert profile_path.read_text(encoding="utf-8") == before
+
+    def test_smart_routing_overlay_adds_ug_headers_keeping_existing_ones(self, monkeypatch):
+        monkeypatch.setenv("UG_HEADERS", "x-team: other\nX-New: 1")
+        monkeypatch.setattr(
+            codex,
+            "render_overlay",
+            lambda *a, **k: {
+                "model_providers": {"Databricks": {"http_headers": {"X-Team": "eng"}}}
+            },
+        )
+
+        overlay = codex._render_launch_overlay(WS)
+
+        assert overlay["model_providers"]["Databricks"]["http_headers"] == {
+            "X-Team": "eng",
+            "X-New": "1",
+        }
+
     def test_provider_discovery_uses_custom_oauth_token(self, tmp_path, monkeypatch):
         self._patch(tmp_path, monkeypatch)
         catalog_path = tmp_path / "models.json"
