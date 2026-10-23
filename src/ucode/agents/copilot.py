@@ -120,7 +120,7 @@ CREDENTIAL_ENV_KEYS = ("COPILOT_PROVIDER_BEARER_TOKEN", "OAUTH_TOKEN")
 CATALOG_STATE_KEY = "copilot_catalog"
 # The Model Provider Service this launch routes through; set by the launch command, never saved.
 LAUNCH_PROVIDER_SERVICE_KEY = "_copilot_launch_provider_service"
-# The Unity Catalog schema whose model services this launch uses; set like the key above.
+# The Unity Catalog schema whose model services this launch uses; never saved.
 LAUNCH_MODEL_LOCATION_KEY = "_copilot_launch_model_location"
 
 # The wire APIs Copilot speaks; `responses` and `completions` are Copilot's `wireApi` values.
@@ -388,10 +388,8 @@ def provider_service_catalog(
 def location_catalog(state: dict, schema: str) -> list[CopilotModel]:
     """The model services of Unity Catalog schema ``schema`` that this launch registers.
 
-    Listed through the gateway's Anthropic models route, as for Claude Code. The listing names
-    services by gateway alias; Copilot sends the full name, which the gateway routes directly.
-    Services named like Claude or GPT models use their usual wire; the rest use the Anthropic one,
-    which the gateway translates for other models."""
+    The listing names some services by gateway alias (``anthropic-aigw-<hash>-<name>``); Copilot
+    sends the full name, which the gateway routes directly."""
     workspace = state["workspace"]
     listing = list_anthropic_model_catalog(
         workspace, launch_token(state, workspace), parent_schema=schema

@@ -3589,9 +3589,12 @@ def _launch_tool(
             resolved_model = None
             managed_source_model = (
                 managed_launch_model(managed or {}, recommendation, tool)
-                if tool == "claude" and (managed_provider or managed_parent_schema)
+                if tool in (AGENT_CLAUDE, AGENT_COPILOT)
+                and (managed_provider or managed_parent_schema)
                 else None
             )
+            if tool == AGENT_COPILOT:
+                managed_model = managed_source_model
             if tool == "claude" and managed_parent_schema:
                 # Native discovery supplies the catalog, but the managed policy still controls
                 # which model Claude starts on.

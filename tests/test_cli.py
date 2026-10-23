@@ -3782,6 +3782,25 @@ class TestCopilotLaunchModel:
         assert result.exit_code == 0, result.output
         assert calls["launch"].call_args.kwargs["options"].launch_model == "system.ai.gpt-5-4"
 
+    @pytest.mark.parametrize(
+        "model_source",
+        [
+            {"unity_catalog_location": "main.models"},
+            {"model_provider_service": "main.default.mps"},
+        ],
+    )
+    def test_managed_default_is_the_launch_model_under_a_managed_source(self, model_source):
+        managed = {
+            "enabled_agents": {
+                "copilot": {"model_config": {"default_model": "gpt-5-4", **model_source}}
+            }
+        }
+        with _launch_policy_patches(managed) as calls:
+            result = runner.invoke(app, ["copilot"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["launch"].call_args.kwargs["options"].launch_model == "gpt-5-4"
+
     def test_a_managed_default_still_discovers_the_catalog(self):
         assert not cli_mod._skip_model_discovery(
             self.MANAGED, "copilot", provider=None, managed_parent_schema=None, family_defaults=None
