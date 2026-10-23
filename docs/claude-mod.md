@@ -20,6 +20,9 @@ selected model, routing time, and rationale. Results live in memory by `tool_use
 plugin reload drops them. Disabled routing, command failures, and invalid responses keep
 the original call; failures also log a diagnostic.
 
+Collapsed parallel-agent groups show each task's selected model and rationale, including
+when routing completes out of order. Expanded groups use the individual tool annotations.
+
 The old routing PreToolUse hook is no longer written, so a call is not routed twice. A
 `route-subagent` hook that an earlier UG version persisted still gets its PreToolUse
 response and plain-text notice.

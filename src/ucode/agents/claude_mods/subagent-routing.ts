@@ -73,46 +73,51 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     return next({ ...route.updatedInput, tool, tool_use_id, agentId })
   })
 
-  on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
+  on('ui.render', { component: ['ToolUse', 'ToolGroup'] }, async ($, e, next) => {
     const original = await next(e)
-    const record = records.get(e.requestId)
-    if (!record && !pending.has(e.requestId)) return original
+    const grouped = e.component === 'ToolGroup'
+    if (grouped && e.props.isExpanded) return original
+    const calls = grouped ? e.props.calls : [e.props]
 
     const { Box, Text } = $.ui.resolve(e)
-    if (!record) {
-      const glyph = SPINNER[Math.floor(((await now($)) ?? 0) / SPINNER_INTERVAL_MS) % SPINNER.length]
-      const seconds = await secondsSince($, pending.get(e.requestId))
-      const elapsed = seconds === undefined ? '' : ` ${Math.floor(seconds)}s`
-      return Box({ flexDirection: 'column', children: [original, Box({
+    const children = [original]
+    for (const call of calls) {
+      const record = records.get(call.tool_use_id)
+      if (!record && !pending.has(call.tool_use_id)) continue
+      if (grouped) {
+        children.push(Text({ bold: true, children: [`  ${call.input.description || call.input.subagent_type || call.tool}`] }))
+      }
+      if (!record) {
+        const glyph = SPINNER[Math.floor(((await now($)) ?? 0) / SPINNER_INTERVAL_MS) % SPINNER.length]
+        const seconds = await secondsSince($, pending.get(call.tool_use_id))
+        const elapsed = seconds === undefined ? '' : ` ${Math.floor(seconds)}s`
+        children.push(Box({
+          flexDirection: 'row',
+          children: [
+            Text({ dimColor: true, children: ['  ↳ '] }),
+            Text({ color: 'green', children: [`${glyph} `] }),
+            Text({ dimColor: true, children: [`Selecting a model…${elapsed}`] }),
+          ],
+        }))
+        continue
+      }
+      children.push(Box({
         flexDirection: 'row',
         children: [
-          Text({ dimColor: true, children: ['  ↳ '] }),
-          Text({ color: 'green', children: [`${glyph} `] }),
-          Text({ dimColor: true, children: [`Selecting a model…${elapsed}`] }),
+          Text({ dimColor: true, children: ['  ↳ Selected Model: '] }),
+          Text({ color: 'green', bold: true, children: [shortModel(record.model)] }),
+          ...(record.seconds === undefined
+            ? []
+            : [Text({ dimColor: true, children: [` (routed in ${record.seconds.toFixed(1)}s)`] })]),
         ],
-      })] })
-    }
-    // Claude's row can name only the agent type, so the routed model is always shown.
-    const children = [original, Box({
-      flexDirection: 'row',
-      children: [
-        // Labels recede so the routed model stands out.
-        Text({ dimColor: true, children: ['  ↳ Selected Model: '] }),
-        // The same green as the status band's ON pill.
-        Text({ color: 'green', bold: true, children: [shortModel(record.model)] }),
-        // How long routing took; omitted when no clock was available.
-        ...(record.seconds === undefined
-          ? []
-          : [Text({ dimColor: true, children: [` (routed in ${record.seconds.toFixed(1)}s)`] })]),
-      ],
-    })]
-    // Align the reason, including its wrapped lines, under "Selected Model" after the arrow.
-    if (record.rationale) {
-      children.push(Box({
-        paddingLeft: 4,
-        children: [Text({ children: [Text({ dimColor: true, children: ['Reason: '] }), record.rationale] })],
       }))
+      if (record.rationale) {
+        children.push(Box({
+          paddingLeft: 4,
+          children: [Text({ children: [Text({ dimColor: true, children: ['Reason: '] }), record.rationale] })],
+        }))
+      }
     }
-    return Box({ flexDirection: 'column', children })
+    return children.length === 1 ? original : Box({ flexDirection: 'column', children })
   })
 }

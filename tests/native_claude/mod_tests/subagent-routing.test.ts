@@ -56,6 +56,86 @@ test('routing preserves distinct results for identical tasks and forwards each c
   await b.unmount();
 });
 
+test('collapsed parallel agents retain task-labelled routing while finishing out of order', async ($, on) => {
+  const releases = new Map<string, () => void>();
+  const calls = ['call-a', 'call-b', 'call-unrouted'].map((id) => ({
+    ...row(id).props,
+    input: { ...originalInput, description: `Task ${id}` },
+  }));
+  const group = {
+    plugin: 'ug-smart-router',
+    component: 'ToolGroup' as const,
+    surface: 'terminal' as const,
+    requestId: 'group-not-a-tool-id',
+    viewport: { columns: 100, rows: 30 },
+    props: { calls, isExpanded: false, isActive: true, isCallsOnly: true },
+  };
+  on('clock.now', () => ({ value: 10_000 }));
+  on('session.id', () => ({ value: 'session-1' }));
+  on('process.run', async ($, e) => {
+    const { tool_use_id } = JSON.parse(e.init.stdin);
+    await new Promise<void>((resolve) => { releases.set(tool_use_id, resolve); });
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+      model: tool_use_id === 'call-a' ? 'system.ai.claude-sonnet-5' : 'system.ai.claude-opus-4-8',
+      rationale: `Selected for ${tool_use_id}`,
+      updatedInput: { ...originalInput, subagent_type: `ug-smart-router:${tool_use_id}` },
+    }) } };
+  });
+  on('tool.call', () => ({ result: 'ok' }));
+  on('ui.render', () => ({ type: 'Text', props: {}, children: ['original group'] }));
+
+  const first = $.tool.call({ tool: 'Agent', tool_use_id: 'call-a', ...originalInput });
+  const second = $.tool.call({ tool: 'Task', tool_use_id: 'call-b', ...originalInput });
+  const pending = await $.ui.mount(group);
+  expect(await pending.find({ type: 'Text', text: '  Task call-a' })).toBeDefined();
+  expect(await pending.find({ type: 'Text', text: '  Task call-b' })).toBeDefined();
+  expect(await pending.find({ type: 'Text', text: /Selecting a model/ })).toBeDefined();
+  await pending.unmount();
+
+  releases.get('call-b')!();
+  await second;
+  const partial = await $.ui.mount(group);
+  expect(await partial.find({ type: 'Text', text: /Selecting a model/ })).toBeDefined();
+  expect(await partial.find({ type: 'Text', text: 'claude-opus-4-8' })).toBeDefined();
+  expect(await partial.find({ type: 'Text', text: /Selected for call-b/ })).toBeDefined();
+  expect(await partial.find({ type: 'Text', text: 'claude-sonnet-5' })).toBeUndefined();
+  await partial.unmount();
+
+  releases.get('call-a')!();
+  await first;
+  const done = await $.ui.mount({ ...group, props: { ...group.props, isActive: false } });
+  expect(await done.find({ type: 'Text', text: 'original group' })).toBeDefined();
+  for (const id of ['call-a', 'call-b']) {
+    expect(await done.find({ type: 'Text', text: `  Task ${id}` })).toBeDefined();
+    expect(await done.find({ type: 'Text', text: `Selected for ${id}` })).toBeDefined();
+  }
+  expect(await done.find({ type: 'Text', text: 'claude-sonnet-5' })).toBeDefined();
+  expect(await done.find({ type: 'Text', text: 'claude-opus-4-8' })).toBeDefined();
+  expect(await done.find({ type: 'Text', text: /Selecting a model|Task call-unrouted/ })).toBeUndefined();
+  await done.unmount();
+
+  for (const [index, model, otherModel] of [
+    [0, 'claude-sonnet-5', 'claude-opus-4-8'],
+    [1, 'claude-opus-4-8', 'claude-sonnet-5'],
+  ] as const) {
+    const isolated = await $.ui.mount({ ...group, props: { ...group.props, calls: [calls[index]] } });
+    expect(await isolated.find({ type: 'Text', text: model })).toBeDefined();
+    expect(await isolated.find({ type: 'Text', text: `Selected for ${calls[index].tool_use_id}` })).toBeDefined();
+    expect(await isolated.find({ type: 'Text', text: otherModel })).toBeUndefined();
+    await isolated.unmount();
+  }
+
+  for (const props of [
+    { ...group.props, isExpanded: true },
+    { ...group.props, calls: [calls[2]] },
+  ]) {
+    const unchanged = await $.ui.mount({ ...group, props });
+    expect(await unchanged.find({ type: 'Text', text: 'original group' })).toBeDefined();
+    expect(await unchanged.find({ type: 'Text', text: /Selected Model|Selected for/ })).toBeUndefined();
+    await unchanged.unmount();
+  }
+});
+
 for (const [name, result, warningCount] of [
   ['disabled', { value: { exitCode: 0, stdout: '', stderr: '' } }, 0],
   ['command failure', { value: { exitCode: 1, stdout: '', stderr: 'failure' } }, 1],
