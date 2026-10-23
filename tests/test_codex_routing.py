@@ -50,7 +50,9 @@ def test_routes_with_models_from_stored_state(monkeypatch):
         captured["timeout"] = timeout
         return _Response(
             {
-                "route_selection": [{"route_option": {"model": "gpt-5-6-sol", "harness": "codex"}}],
+                "route_selection": [
+                    {"route_option": {"model": "system.ai.gpt-5-6-sol", "harness": "codex"}}
+                ],
                 "rationale": "Needs the strongest coding model.",
             }
         )
@@ -67,17 +69,17 @@ def test_routes_with_models_from_stored_state(monkeypatch):
     assert error is None
     assert decision == codex_routing.RoutingDecision(
         model="system.ai.gpt-5-6-sol",
-        raw_model="gpt-5-6-sol",
+        raw_model="system.ai.gpt-5-6-sol",
         rationale="Needs the strongest coding model.",
-        route_options=(("gpt-5-6-luna", "codex"), ("gpt-5-6-sol", "codex")),
+        route_options=(("system.ai.gpt-5-6-luna", "codex"), ("system.ai.gpt-5-6-sol", "codex")),
         router_name=codex_routing.routing.ROUTER_NAME,
     )
     assert captured["url"] == f"{WS}/ai-gateway/routing/v1/routes:select"
     assert captured["headers"]["Authorization"] == "Bearer token"
     assert captured["body"] == {
         "route_options": [
-            {"model": "gpt-5-6-luna", "harness": "codex"},
-            {"model": "gpt-5-6-sol", "harness": "codex"},
+            {"model": "system.ai.gpt-5-6-luna", "harness": "codex"},
+            {"model": "system.ai.gpt-5-6-sol", "harness": "codex"},
         ],
         "task": {"prompt": task},
         "route_selector": {"router_name": codex_routing.routing.ROUTER_NAME},
@@ -90,7 +92,9 @@ def test_router_name_can_be_overridden_with_environment_variable(monkeypatch):
 
     def fake_urlopen(request, timeout):
         captured["body"] = json.loads(request.data)
-        return _Response({"route_selection": [{"route_option": {"model": "gpt-5-6-sol"}}]})
+        return _Response(
+            {"route_selection": [{"route_option": {"model": "system.ai.gpt-5-6-sol"}}]}
+        )
 
     monkeypatch.setattr(codex_routing.urllib.request, "urlopen", fake_urlopen)
 
@@ -109,31 +113,21 @@ def test_blank_router_name_environment_variable_uses_default(monkeypatch):
     assert codex_routing.routing.configured_router_name() == codex_routing.routing.ROUTER_NAME
 
 
-def test_router_model_is_not_substituted_when_exact_model_is_unavailable():
-    model = codex_routing.resolve_routed_model(
-        "gpt-5-6-luna",
-        ["databricks-gpt-5-4-nano", "databricks-gpt-5", "databricks-gpt-5-5"],
+def test_router_pick_that_was_not_offered_fails_open(monkeypatch):
+    monkeypatch.setattr(
+        codex_routing.urllib.request,
+        "urlopen",
+        lambda *args, **kwargs: _Response(
+            {"route_selection": [{"route_option": {"model": "gpt-5-6-sol", "harness": "codex"}}]}
+        ),
     )
 
-    assert model is None
-
-
-def test_glm_maps_to_databricks_gateway_model():
-    model = codex_routing.resolve_routed_model(
-        "glm-5-2",
-        ["system.ai.gpt-5-6-luna", "system.ai.gpt-5-6-sol", "system.ai.glm-5-2"],
+    decision, error = codex_routing.request_routing_decision(
+        WS, "token", "Refactor the parser", ["system.ai.gpt-5-6-sol"]
     )
 
-    assert model == "system.ai.glm-5-2"
-
-
-def test_exact_router_model_is_preserved():
-    model = codex_routing.resolve_routed_model(
-        "gpt-5-6-sol",
-        ["databricks-gpt-5-5", "databricks-gpt-5-6-sol"],
-    )
-
-    assert model == "databricks-gpt-5-6-sol"
+    assert decision is None
+    assert error == "router selected a model it was not offered: 'gpt-5-6-sol'"
 
 
 def test_router_failure_fails_open(monkeypatch):

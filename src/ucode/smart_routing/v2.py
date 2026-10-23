@@ -293,11 +293,6 @@ def _unwrapped_claude_model_id(model: str) -> str:
     return routing.unwrap_anthropic_gateway_model(model)
 
 
-def _claude_router_model_id(model: str) -> str:
-    """Unwrap an Anthropic gateway id and drop Claude Code's `[1m]` hint, then normalize."""
-    return routing.normalize_model(_unwrapped_claude_model_id(model).removesuffix("[1m]"))
-
-
 def _claude_model_overrides(model_ids: list[str]) -> dict[str, str]:
     overrides: dict[str, str] = {}
     prefix = "system.ai."
@@ -433,18 +428,14 @@ def _request_claude_routing_decision(
     prompt: str,
     model_ids: list[str],
 ) -> tuple[routing.RoutingDecision | None, str | None]:
-    available: dict[str, str] = {}
-    for model in _canonical_claude_models(model_ids):
-        available.setdefault(_claude_router_model_id(model), model)
-    if not available:
+    route_options = routing.route_options_for(_canonical_claude_models(model_ids), "claude")
+    if not route_options:
         return None, "Anthropic models endpoint returned no Claude models"
-    route_options = [(model, "claude") for model in available]
     return routing.select_route(
         workspace,
         token,
         prompt,
         route_options,
-        lambda selected: available.get(_claude_router_model_id(selected)),
         router_name=routing.configured_router_name(),
         timeout=CLAUDE_ROUTE_SELECTION_TIMEOUT_S,
     )

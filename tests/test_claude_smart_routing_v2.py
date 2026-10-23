@@ -613,34 +613,16 @@ class TestV2ModelPickerDiscovery:
 
 
 class TestSubagentRouting:
-    @pytest.mark.parametrize(
-        ("model", "expected"),
-        [
-            ("anthropic-aigw-73ea02b2-system.ai.glm-5-2", "glm-5-2"),
-            (
-                "anthropic-aigw-73ea02b-system.ai.glm-5-2",
-                "anthropic-aigw-73ea02b-system.ai.glm-5-2",
-            ),
-            ("system.ai.claude-opus-4-8", "claude-opus-4-8"),
-            ("system.ai.gpt-5-6-sol[1m]", "gpt-5-6-sol"),
-        ],
-    )
-    def test_normalizes_router_model_id(self, model, expected):
-        assert v2._claude_router_model_id(model) == expected
-
-    def test_routes_anthropic_gateway_alias_by_embedded_model_id(self, monkeypatch):
+    def test_offers_gateway_alias_ids_unchanged(self, monkeypatch):
         gateway_alias = "anthropic-aigw-73ea02b2-system.ai.glm-5-2"
         captured = {}
         monkeypatch.setenv("SMART_ROUTER_NAME", "task_v2")
 
-        def fake_select(workspace, token, task, route_options, resolve, **kwargs):
+        def fake_select(workspace, token, task, route_options, **kwargs):
             captured["route_options"] = list(route_options)
             captured["router_name"] = kwargs["router_name"]
             return (
-                routing.RoutingDecision(
-                    model=resolve("glm-5-2"),
-                    raw_model="glm-5-2",
-                ),
+                routing.RoutingDecision(model=gateway_alias, raw_model=gateway_alias),
                 None,
             )
 
@@ -656,8 +638,8 @@ class TestSubagentRouting:
         assert decision.model == gateway_alias
         assert captured == {
             "route_options": [
-                ("claude-opus-4-8", "claude"),
-                ("glm-5-2", "claude"),
+                ("system.ai.claude-opus-4-8", "claude"),
+                (gateway_alias, "claude"),
             ],
             "router_name": "task_v2",
         }
@@ -668,7 +650,7 @@ class TestSubagentRouting:
         decisions_path = tmp_path / "decisions.jsonl"
         monkeypatch.setattr(v2.claude_routing, "DECISIONS_PATH", decisions_path)
 
-        def fake_select(workspace, token, task, route_options, resolve, **kwargs):
+        def fake_select(workspace, token, task, route_options, **kwargs):
             captured.update(
                 workspace=workspace,
                 token=token,
@@ -677,8 +659,8 @@ class TestSubagentRouting:
             )
             return (
                 routing.RoutingDecision(
-                    model=resolve("claude-opus-4-8"),
-                    raw_model="claude-opus-4-8",
+                    model="system.ai.claude-opus-4-8",
+                    raw_model="system.ai.claude-opus-4-8",
                 ),
                 None,
             )
@@ -707,8 +689,8 @@ class TestSubagentRouting:
             "token": "token",
             "task": "inspect the parser",
             "route_options": [
-                ("claude-opus-4-8", "claude"),
-                ("claude-sonnet-5", "claude"),
+                ("system.ai.claude-opus-4-8", "claude"),
+                ("system.ai.claude-sonnet-5", "claude"),
             ],
         }
         updated_input = output["updatedInput"]
@@ -750,6 +732,10 @@ class TestSubagentRouting:
         )
 
         body = captured["body"]
+        assert body["route_options"] == [
+            {"model": "system.ai.claude-opus-4-8", "harness": "claude"},
+            {"model": "system.ai.claude-sonnet-5", "harness": "claude"},
+        ]
         assert body["task"] == {"prompt": "find all Python entry points"}
         record = json.loads(decisions_path.read_text())
         assert record["route_options"] == body["route_options"]
