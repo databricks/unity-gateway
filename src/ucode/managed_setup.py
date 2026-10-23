@@ -70,10 +70,7 @@ def model_families_for_agent(tool: str) -> tuple[str, ...]:
 def supports_provider_service(tool: str, provider_type: str) -> bool:
     """True when ``tool`` can route through a ``provider_type`` Model Provider Service.
 
-    Thin pass-through to :func:`ucode.databricks.tool_supports_provider_type` so the wizard has one
-    obvious place to ask. Only claude (anthropic / amazon_bedrock / bedrock_mantle), codex
-    (openai / azure_openai / microsoft_foundry / amazon_bedrock / bedrock_mantle) and copilot
-    (all of those) have MPS support today; the other harnesses are Databricks-hosted only.
+    See :func:`ucode.databricks.tool_supports_provider_type`.
     """
     return tool_supports_provider_type(tool, provider_type)
 
