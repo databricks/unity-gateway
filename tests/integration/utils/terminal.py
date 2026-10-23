@@ -377,6 +377,11 @@ class AgentTerminal(TerminalProcess):
                 self.send("\r", "continue with Skip selected")
                 handled.add("update-notice")
                 continue
+            # Codex's own prompt when a newer release than the pinned one exists.
+            if "Update available" in text and "esc skip" in text and "codex-update" not in handled:
+                self.send("\x1b", "skip the Codex update")
+                handled.add("codex-update")
+                continue
             # These are interactions with ordinary UI choices, not pre-written
             # onboarding state. Only the test's disposable project is trusted.
             dialogs = [

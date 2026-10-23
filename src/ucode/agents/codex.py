@@ -125,6 +125,9 @@ _LAUNCH_ROUTING_HEADER_ENV_VARS = {
 }
 MINIMUM_CODEX_VERSION = (0, 145, 0)
 MINIMUM_CODEX_VERSION_TEXT = "0.145.0"
+# Older Windows Codex ignores the provider keys ug writes to requirements.toml.
+WINDOWS_MINIMUM_CODEX_VERSION = (0, 156, 0)
+WINDOWS_MINIMUM_CODEX_VERSION_TEXT = "0.156.0"
 # Codex 0.134.0 introduced per-profile config files; older releases use the legacy layout.
 LEGACY_LAYOUT_CODEX_VERSION = (0, 134, 0)
 LEGACY_LAYOUT_CODEX_VERSION_TEXT = "0.134.0"
@@ -168,11 +171,14 @@ def _parse_version(value: str) -> tuple[int, int, int] | None:
 
 
 def minimum_version_error() -> str | None:
+    minimum, minimum_text = MINIMUM_CODEX_VERSION, MINIMUM_CODEX_VERSION_TEXT
+    if current_os() is OS.WINDOWS:
+        minimum, minimum_text = WINDOWS_MINIMUM_CODEX_VERSION, WINDOWS_MINIMUM_CODEX_VERSION_TEXT
     version = agent_version(SPEC["binary"])
     parsed = _parse_version(version)
-    if parsed is None or parsed >= MINIMUM_CODEX_VERSION:
+    if parsed is None or parsed >= minimum:
         return None
-    return f"ug requires Codex {MINIMUM_CODEX_VERSION_TEXT} or newer; found {version}."
+    return f"ug requires Codex {minimum_text} or newer; found {version}."
 
 
 def _use_legacy_layout() -> bool:
