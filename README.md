@@ -327,6 +327,10 @@ Add `--all` to show every limit: `ENABLE_UG_USAGE_SPEND_API=1 ug usage --all`.
 It uses your configured workspace login; no separate login is needed.
 Leave `ENABLE_UG_USAGE_SPEND_API` unset to keep the standard summary.
 
+A launch (`ug claude`, `ug codex`) uses the managed config and OS-managed settings that
+`ug configure` last saved and never refetches or rewrites them. After an admin changes the
+workspace's coding agent config, run `ug configure` to pick it up.
+
 Databricks AI Tools are installed only by `ug configure`, never by agent launch
 commands. Use `--enable-databricks-ai-tools` or `--disable-databricks-ai-tools`
 with `ug configure` to control installation.

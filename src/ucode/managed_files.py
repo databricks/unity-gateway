@@ -481,6 +481,28 @@ def check_skipped_managed_overrides(
     )
 
 
+def check_launch_managed_overrides(path: Path, conflicts: list[str], *, display: str) -> None:
+    """Read-only launch check: a launch never writes ``path``, so report a stale managed file.
+
+    Only ``ug configure`` updates the OS-managed files. When the file's gateway values differ from
+    what this launch would use, warn so the session is not silently running on the wrong settings;
+    when this environment could not have repaired it anyway (no terminal to prompt on), refuse as an
+    interactive-less launch always did.
+    """
+    if not conflicts:
+        return
+    if not managed_writes_allowed(repair_existing=True):
+        raise RuntimeError(
+            f"the OS-managed {display} settings at {path} are stale and conflict with this "
+            f"launch ({', '.join(conflicts)}). Launches do not update them: run `ug configure` "
+            "from an interactive terminal (or an elevated one on Windows)."
+        )
+    print_warning(
+        f"The OS-managed {display} settings at {path} differ from your current settings "
+        f"({', '.join(conflicts)}). Launches do not update them; run `ug configure` to refresh."
+    )
+
+
 def _unwrap(value: object) -> object:
     """Return a plain-Python view of a value, unwrapping tomlkit items so it compares by content."""
     unwrap = getattr(value, "unwrap", None)

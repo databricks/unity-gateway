@@ -1269,3 +1269,40 @@ class TestConfigureToolUserScope:
         managed_files.set_config_scope("user")
         agents_mod.configure_tool("claude", {}, "m")
         assert written == [1]
+
+
+class TestConfigureToolManagedSync:
+    """`ug configure` writes the OS-managed files; only a launch opts out."""
+
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    @pytest.mark.parametrize("sync", [None, False])
+    def test_sync_os_managed_reaches_the_writer(self, monkeypatch, tool, sync):
+        seen = {}
+        module = agents_mod.claude if tool == "claude" else agents_mod.codex
+
+        def fake_write(state, *args, **kwargs):
+            seen.update(kwargs)
+            return state
+
+        monkeypatch.setattr(module, "write_tool_config", fake_write)
+        extra = {} if sync is None else {"sync_os_managed": sync}
+        agents_mod.configure_tool(tool, {"workspace": "https://ws"}, "model", **extra)
+        # Defaults to True so configure, auto-configure, `agents add` and friends keep writing.
+        assert seen["sync_os_managed"] is (True if sync is None else sync)
+
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    def test_configure_single_tool_syncs_os_managed(self, monkeypatch, tool):
+        seen = {}
+
+        def fake_configure_tool(tool, state, *args, **kwargs):
+            seen.update(kwargs)
+            return state
+
+        monkeypatch.setattr(agents_mod, "configure_tool", fake_configure_tool)
+        monkeypatch.setattr(agents_mod, "check_gateway_endpoint", lambda state, tool: True)
+        monkeypatch.setattr(agents_mod, "save_state", lambda state: None)
+        monkeypatch.setattr(
+            agents_mod, "resolve_launch_model", lambda tool, state, model: (state, "m")
+        )
+        agents_mod.configure_single_tool(tool, {"workspace": "https://ws"})
+        assert seen.get("sync_os_managed", True) is True

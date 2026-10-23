@@ -445,11 +445,18 @@ def configure_tool(
     coding_agent_config_defaults: dict[str, str] | None = None,
     parent_schema: str | None = None,
     picker_catalog: AnthropicModelCatalog | None = None,
+    sync_os_managed: bool = True,
 ) -> dict:
+    """Write one tool's config. A launch passes ``sync_os_managed=False`` so claude/codex only
+    read the machine-wide managed files; ``ug configure`` leaves it True and writes them."""
     result: dict | tuple[dict, str]
     if tool == AGENT_CODEX:
         result = codex.write_tool_config(
-            state, model, provider=provider, parent_schema=parent_schema
+            state,
+            model,
+            provider=provider,
+            parent_schema=parent_schema,
+            sync_os_managed=sync_os_managed,
         )
     elif tool == AGENT_CLAUDE:
         # A Model Provider Service or parent schema routes by header and discovers models natively,
@@ -467,6 +474,7 @@ def configure_tool(
             coding_agent_config_defaults=coding_agent_config_defaults,
             parent_schema=parent_schema,
             picker_catalog=picker_catalog,
+            sync_os_managed=sync_os_managed,
         )
     elif tool == "copilot":
         # Under a model provider service, Copilot starts on one of the service's models, chosen at launch.

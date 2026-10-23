@@ -1,6 +1,5 @@
 import json
 import threading
-from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
@@ -87,7 +86,6 @@ def test_configures_isolated_session_state_for_recorder(recorder, tmp_path):
                     {
                         "workspace": recorder.upstream,
                         "config": {"spec_version": 1},
-                        "retrieved_at": "2000-01-01T00:00:00+00:00",
                         "outcome": "published",
                     }
                 )
@@ -109,11 +107,9 @@ def test_configures_isolated_session_state_for_recorder(recorder, tmp_path):
     managed_path = tmp_path / ".ucode/managed-config.json"
     managed = json.loads(managed_path.read_text())
     assert managed["workspace"] == recorder.url
-    first_refresh = datetime.fromisoformat(managed["retrieved_at"])
+    before = managed_path.read_text()
 
-    managed["retrieved_at"] = "2000-01-01T00:00:00+00:00"
-    managed_path.write_text(json.dumps(managed))
     recorder.prepare_launch()
 
-    refreshed = json.loads(managed_path.read_text())
-    assert datetime.fromisoformat(refreshed["retrieved_at"]) >= first_refresh
+    assert managed_path.read_text() == before
+    assert "retrieved_at" not in managed

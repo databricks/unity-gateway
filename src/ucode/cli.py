@@ -3598,6 +3598,8 @@ def _launch_tool(
             custom_model=None,
             coding_agent_config_defaults=coding_agent_config_defaults,
             parent_schema=parent_schema,
+            # Only `ug configure` (and first-run auto-configure) write machine-wide managed files.
+            sync_os_managed=False,
         )
         # A plain launch keeps Claude Code's own starting model, as its own picker did.
         if (

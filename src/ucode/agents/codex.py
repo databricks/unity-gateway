@@ -68,6 +68,7 @@ from ucode.managed_files import (
     CODEX_REQUIREMENTS_FILE,
     OS,
     ManagedFileWriteUnavailable,
+    check_launch_managed_overrides,
     check_skipped_managed_overrides,
     config_scope,
     current_os,
@@ -439,6 +440,7 @@ def write_tool_config(
     model: str | None = None,
     provider: str | None = None,
     parent_schema: str | None = None,
+    sync_os_managed: bool = True,
 ) -> dict:
     workspace = state["workspace"]
     # Leave model selection to Codex. The gateway still receives the configured
@@ -551,7 +553,9 @@ def write_tool_config(
         enabled=False,
     )
     write_toml_file(CODEX_CONFIG_PATH, doc)
-    _reconcile_managed_config(state, lambda base: compose(base, include_catalog=False))
+    _reconcile_managed_config(
+        state, lambda base: compose(base, include_catalog=False), write=sync_os_managed
+    )
     state = mark_tool_managed(state, "codex", MANAGED_KEYS)
     save_state(state)
     # The desktop proxy reads authentication from the saved workspace.
@@ -894,8 +898,14 @@ def _sync_desktop_tracing(workspace: str | None) -> bool:
         return False
 
 
-def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> None:
-    """Reconcile Codex's highest-precedence config while preserving unrelated policy."""
+def _reconcile_managed_config(
+    state: dict, compose: Callable[[dict], dict], *, write: bool = True
+) -> None:
+    """Reconcile Codex's highest-precedence config while preserving unrelated policy.
+
+    With ``write=False`` (a launch) the file is only read: stale or conflicting values are reported
+    and nothing is written, so a launch never uses sudo or touches a machine-wide path.
+    """
     path = codex_managed_config_path()
     if path is not None and path.name == CODEX_REQUIREMENTS_FILE:
         compose = _as_requirements(compose)
@@ -931,6 +941,9 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
     managed_before = copy.deepcopy(existing)
     desired_doc = compose(existing)
     conflicts = managed_file_conflicts(managed_before, desired_doc, MANAGED_KEYS)
+    if not write:
+        check_launch_managed_overrides(path, conflicts, display="Codex")
+        return
     if not managed_writes_allowed() and not conflicts:
         warn_managed_write_skipped(path, managed_before, desired_doc)
         mark_managed_file_verified(state, "codex", path, scope="local-compatible")

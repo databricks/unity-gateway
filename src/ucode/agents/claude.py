@@ -58,6 +58,7 @@ from ucode.managed_files import (
     ManagedFileWriteUnavailable,
     SettingsPassthrough,
     apply_settings_passthrough,
+    check_launch_managed_overrides,
     check_skipped_managed_overrides,
     config_scope,
     current_os,
@@ -1366,6 +1367,7 @@ def write_tool_config(
     coding_agent_config_defaults: dict[str, str] | None = None,
     parent_schema: str | None = None,
     picker_catalog: AnthropicModelCatalog | None = None,
+    sync_os_managed: bool = True,
 ) -> dict:
     external_search = external_provider_selected()
     # Back up only a file that predates ucode's management of the tool. A
@@ -1375,8 +1377,7 @@ def write_tool_config(
         backup_existing_file(CLAUDE_SETTINGS_PATH, CLAUDE_BACKUP_PATH)
     # A managed config makes ug authoritative over the whole custom-header value, so it is
     # overwritten wholesale; without one, preserve the developer's own pre-existing headers. Reuses
-    # this launch's warm managed-config cache (no extra round trip); a failed fetch degrades to None
-    # (treated as unmanaged), never blocking the write.
+    # the managed config `ug configure` saved (no network round trip unless none is saved yet).
     managed_config_present = refresh_managed_config(state).manifest is not None
     previous_keys = ((state.get("managed_configs") or {}).get("claude") or {}).get("keys", [])
     web_search_model = _resolve_web_search_model(state)
@@ -1636,6 +1637,7 @@ def write_tool_config(
             CLAUDE_PERMISSIONS_DENY_PATH, passthrough, previous_leaves
         ),
         passthrough_leaves=passthrough.record(),
+        write=sync_os_managed,
     )
 
     custom_oauth = state.get("custom_oauth")
@@ -1865,6 +1867,7 @@ def _reconcile_managed_settings(
     picker_keys: list[str],
     withdrawn_denies: list | None = None,
     passthrough_leaves: list | None = None,
+    write: bool = True,
 ) -> None:
     """Reconcile Claude Code's OS-managed settings so a bare ``claude`` uses the gateway.
 
@@ -1878,6 +1881,9 @@ def _reconcile_managed_settings(
 
     Relayed launches are skipped: they depend on a per-session loopback refresh proxy that only runs
     during `ucode claude`, so a bare `claude` could not reach the gateway anyway.
+
+    With ``write=False`` (a launch) the file is only read: stale or conflicting values are reported
+    and nothing is written, so a launch never uses sudo or touches a machine-wide path.
     """
     if managed_settings_skipped():
         if config_scope() != "user":
@@ -1925,6 +1931,9 @@ def _reconcile_managed_settings(
     desired_settings = compose(existing)
     _preserve_permission_denies(managed_before, desired_settings, withdrawn=withdrawn_denies or [])
     conflicts = _managed_settings_conflicts(managed_before, desired_settings, owned_paths)
+    if not write:
+        check_launch_managed_overrides(path, conflicts, display="Claude Code")
+        return
     if not managed_writes_allowed() and not conflicts:
         warn_managed_write_skipped(path, managed_before, desired_settings)
         mark_managed_file_verified(state, "claude", path, scope="local-compatible")

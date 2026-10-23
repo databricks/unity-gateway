@@ -6,15 +6,16 @@ local file, ``~/.ucode/managed-config.json`` (0600), used on the launch path:
 
 - fetching the raw manifest (via :func:`ucode.databricks.fetch_managed_coding_agent_configs`),
 - normalizing the proto-JSON into a stable internal dict keyed by ucode's own tool names,
-- persisting it via :func:`save_managed_state` / :func:`load_managed_state` — the launch path pulls
-  the published copy into this file, stamped with a ``retrieved_at`` and its outcome, and
-- re-reading it on each launch (reusing a read younger than :data:`MANAGED_CONFIG_TTL` rather than
-  re-fetching), falling back to the persisted copy when the read fails.
+- persisting it via :func:`save_managed_state` / :func:`load_managed_state` — ``ug configure`` pulls
+  the published copy into this file, stamped with its outcome, and
+- replaying it on every launch without a network read, falling back to the persisted copy when a
+  read fails. A launch never refreshes it: an admin's later edit reaches a machine when the
+  developer re-runs ``ug configure``.
 
 There is deliberately one file: the workspace is the source of truth, so the pulled copy lives in
-``managed-config.json`` and a launch re-reads it from there.
+``managed-config.json`` and a launch reads it from there.
 
-:func:`refresh_managed_config` is the launch path's entry point. It is called before model discovery,
+:func:`refresh_managed_config` is the entry point for both. It is called before model discovery,
 because the manifest decides whether that discovery is needed at all; the launch path then hands the
 manifest to :func:`ucode.managed_resolve.resolve_state` once the state it layers over is final.
 Deciding *which* value wins for a given key is :mod:`ucode.managed_resolve`'s job, kept separate so
@@ -27,7 +28,6 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple, cast
 
@@ -66,11 +66,7 @@ AGENT_NAME_TO_TOOL: dict[str, str] = {
 
 MAX_SPEC_VERSION = 1
 
-# Launch-path cache TTL. `ug` / `ug <agent>` reuse a managed-config read younger than this instead of
-# hitting the control plane every launch; `ug configure` forces a fresh read (force_refresh=True).
-MANAGED_CONFIG_TTL = timedelta(minutes=5)
-
-# The last authoritative read's outcome, persisted alongside the config so a cached wrapper can be
+# The last authoritative read's outcome, persisted alongside the config so a saved wrapper can be
 # replayed without a GET. "none" and "feature_disabled" both persist an empty config, so the outcome
 # is what tells them apart.
 _OUTCOME_PUBLISHED = "published"
@@ -627,11 +623,6 @@ def _is_unsupported_spec(reason: str) -> bool:
     return "spec_version" in reason.lower()
 
 
-def _utcnow() -> datetime:
-    """Current UTC time. A seam so the launch-path cache TTL can be exercised deterministically."""
-    return datetime.now(UTC)
-
-
 def save_managed_state(workspace: str, config: dict, *, outcome: str | None = None) -> None:
     """Persist the raw managed config to ``~/.ucode/managed-config.json`` at mode 0600.
 
@@ -644,13 +635,12 @@ def save_managed_state(workspace: str, config: dict, *, outcome: str | None = No
     file doubles as the fallback when a later read fails: without it, removing a config server-side
     would leave the old one on disk to be reapplied after a transient outage.
 
-    ``outcome``, when set, stamps the read time and its result (published / none / feature_disabled)
-    so a later launch can reuse this read within :data:`MANAGED_CONFIG_TTL` without a GET. Only an
-    authoritative read passes it; a failed refresh persists nothing and so never advances the stamp.
+    ``outcome``, when set, records the read's result (published / none / feature_disabled) so a later
+    launch can replay this read without a GET. Only an authoritative read passes it; a failed refresh
+    persists nothing.
     """
     payload: dict = {"workspace": workspace, "config": config}
     if outcome is not None:
-        payload["retrieved_at"] = _utcnow().isoformat()
         payload["outcome"] = outcome
     if config_io.is_dry_run():
         # Print rather than write, matching how the agent config writers behave under --dry-run.
@@ -716,43 +706,33 @@ def managed_state_workspace() -> str | None:
     return workspace if isinstance(workspace, str) and workspace else None
 
 
-def _cached_result_if_fresh(workspace: str) -> ManagedConfigResult | None:
-    """The persisted read for ``workspace`` replayed as a result, if still within the TTL.
+def _saved_result(workspace: str) -> ManagedConfigResult | None:
+    """The config last saved for ``workspace`` replayed as a result, or None when none is saved.
 
-    Returns None (forcing a fresh fetch) when the wrapper is for another workspace, predates this
-    cache format (no ``outcome`` / ``retrieved_at``), or its stamp is missing, unparseable, in the
-    future, or at least :data:`MANAGED_CONFIG_TTL` old.
+    A wrapper for another workspace counts as none. A file that predates the ``outcome`` stamp is
+    classified by its content: a non-empty config is published, an empty one means "none".
     """
     data = config_io.read_json_safe(MANAGED_CONFIG_PATH)
     if data.get("workspace") != workspace:
         return None
-    # Reuses the RFC-3339 parser the update-time watermark uses; None (missing/unparseable) is stale.
-    retrieved_at = parse_update_time(_str(data.get("retrieved_at")))
-    if retrieved_at is None:
-        return None
-    age = _utcnow() - retrieved_at
-    if age < timedelta(0) or age >= MANAGED_CONFIG_TTL:
+    config = data.get("config")
+    if not isinstance(config, dict):
         return None
     outcome = data.get("outcome")
     if outcome == _OUTCOME_FEATURE_DISABLED:
         return ManagedConfigResult(None, True)
-    if outcome == _OUTCOME_NONE:
+    if outcome == _OUTCOME_NONE or not config:
         return ManagedConfigResult(None, False)
-    if outcome == _OUTCOME_PUBLISHED and isinstance(data.get("config"), dict):
-        return ManagedConfigResult(normalize_managed_config(data["config"]), False)
-    return None
+    return ManagedConfigResult(normalize_managed_config(config), False)
 
 
 def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> ManagedConfigResult:
     """Fetch the workspace's managed config and persist it as a :class:`ManagedConfigResult`.
 
-    Runs on every launch so a developer picks up an admin's edits without re-running
-    ``ucode configure``. A launch reuses the last read when it is younger than
-    :data:`MANAGED_CONFIG_TTL`, so back-to-back launches don't each hit the control plane;
-    ``force_refresh`` (used by ``ug configure``) skips the cache and always reads fresh. Whether the
-    fetched config is *newer* than what was last applied, and so whether the launch re-applies the
-    settings, is the caller's decision, via :func:`managed_config_is_newer` against the persisted
-    applied watermark. The manifest is None when the workspace has no managed config, the normal
+    A launch replays the config ``ug configure`` last saved and never refreshes it, so an admin's
+    edit reaches a machine only when the developer re-runs ``ug configure``; ``force_refresh`` (used
+    by ``ug configure``) always reads fresh. Only when nothing is saved for this workspace yet does a
+    non-forced call read the control plane (and save the result). The manifest is None when the workspace has no managed config, the normal
     case for a workspace whose admin hasn't published one.
 
     A failed fetch never blocks the launch: an unreachable control plane shouldn't stop someone from
@@ -772,9 +752,9 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
     if not workspace:
         return ManagedConfigResult(None, False)
     if not force_refresh:
-        cached = _cached_result_if_fresh(workspace)
-        if cached is not None:
-            return cached
+        saved = _saved_result(workspace)
+        if saved is not None:
+            return saved
     try:
         token = get_databricks_token(workspace, state.get("profile"))
     except RuntimeError as exc:

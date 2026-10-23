@@ -17,6 +17,11 @@ Non-interactive execution uses local settings when the managed file is compatibl
 conflicting managed settings using `sudo -n`, which requires existing authorization and never prompts
 for a password. If that repair is denied, the agent does not launch.
 
+Launches never write the OS-managed files. They replay the managed config that `ug configure` last
+saved, read the OS-managed file, and warn (or, without a terminal to repair it, stop) when it is
+stale. An admin's change reaches a machine only when the developer re-runs `ug configure`. First-run
+auto-configure is an implicit configure and may write them.
+
 ## Configuration Files
 
 | Agent | Local ucode configuration | OS-managed configuration |
@@ -55,7 +60,7 @@ run `ug configure` headlessly. Standard users can't write under Program Files. F
 headless Linux/macOS run, an absent or compatible file stays local-only, and a conflicting file
 stops the command with a request to rerun it elevated. When the machine-wide file lacks UG's
 settings, `ug configure` warns that it wasn't updated because no admin privileges were
-detected; launches, which reconfigure on every run, stay quiet.
+detected; launches never write the file and stay quiet about it.
 
 Codex has no admin-only config layer on Windows, so the same elevated runs write
 `C:\ProgramData\OpenAI\Codex\requirements.toml`, which Codex 0.156.0 and later enforce over the
@@ -87,10 +92,11 @@ command shape in some flows and did not guard managed-file writes consistently.
 | Non-interactive | Ucode-owned value conflicts | Repair through `sudo -n`; stop before launching if authorization or verification fails. |
 | Any | Invalid, unreadable, or symlinked | Stop without modifying the file because precedence cannot be established safely. |
 
-`ucode configure`, first-time `ucode claude` or `ucode codex`, and later launches all use the same
-agent-specific reconciliation path. A first-time launch from an interactive terminal can therefore
-request administrator permission. A first-time non-interactive launch uses local settings unless
-the agent must repair an existing conflicting managed file.
+`ucode configure` and first-time `ucode claude` or `ucode codex` (which auto-configures) use the
+same agent-specific reconciliation path. A first-time launch from an interactive terminal can
+therefore request administrator permission. A first-time non-interactive launch uses local settings
+unless the agent must repair an existing conflicting managed file. Later launches never reconcile:
+they only read the managed file and report a stale one, pointing at `ug configure`.
 
 For Claude, turning off UG tracing preserves the live OS-managed telemetry values unchanged,
 including values UG wrote on an earlier run. The same applies when the workspace has no managed

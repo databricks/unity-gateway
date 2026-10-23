@@ -118,34 +118,25 @@ def test_ug_configure_managed_is_idempotent(live_session, workspace):
 
 @pytest.mark.managed_fixture
 @pytest.mark.claude
-def test_ug_managed_config_launch_reuses_cache_within_ttl(live_session, workspace):
-    """Scenario: after a managed `ug configure`, launch Claude within the cache TTL, then again
-    after the cached read is backdated past it.
+def test_ug_managed_config_launch_replays_saved_config(live_session, workspace):
+    """Scenario: after a managed `ug configure`, launch Claude twice.
 
-    Expected: configure stamps managed-config.json with a `published` outcome and a `retrieved_at`;
-    a launch within the TTL is served from that cache and leaves the stamp untouched (no re-read of
-    the config source), and once the stamp is backdated past the TTL the next launch reads fresh
-    and advances it. The stub takes the same cache path as a live read.
+    Expected: configure saves managed-config.json with a `published` outcome and no expiry stamp;
+    launches replay that saved config without re-reading or rewriting it, however much time passes
+    (an admin's later change is picked up by re-running `ug configure`).
     """
     session = live_session
     use_managed_config_fixture(session, "managed_workspace_default")
     cache = session.home / ".ucode" / "managed-config.json"
 
     session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
-    fresh = json.loads(cache.read_text())
-    assert fresh["outcome"] == "published", fresh
-    stamped = fresh["retrieved_at"]
+    saved = json.loads(cache.read_text())
+    assert saved["outcome"] == "published", saved
+    assert "retrieved_at" not in saved, saved
+    saved_text = cache.read_text()
 
-    # A launch within the TTL reuses the cached read: the stamp must not move.
-    with AgentTerminal(session, "claude", [str(session.binary), "claude"], "ttl-cache-hit") as tui:
-        tui.boot()
-        tui.check_input_and_exit()
-    assert json.loads(cache.read_text())["retrieved_at"] == stamped
-
-    # Backdate the stamp past the TTL; the next launch reads fresh and advances it.
-    backdated = "2000-01-01T00:00:00+00:00"
-    cache.write_text(json.dumps({**json.loads(cache.read_text()), "retrieved_at": backdated}))
-    with AgentTerminal(session, "claude", [str(session.binary), "claude"], "ttl-expired") as tui:
-        tui.boot()
-        tui.check_input_and_exit()
-    assert json.loads(cache.read_text())["retrieved_at"] != backdated
+    for label in ("replay-1", "replay-2"):
+        with AgentTerminal(session, "claude", [str(session.binary), "claude"], label) as tui:
+            tui.boot()
+            tui.check_input_and_exit()
+        assert cache.read_text() == saved_text
