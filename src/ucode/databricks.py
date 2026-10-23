@@ -32,6 +32,7 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, urlencode, urlparse
 
+from ucode.codex_config import catalog_slugs
 from ucode.config_io import APP_DIR
 from ucode.constants import (
     MODEL_PROVIDER_SERVICE_HEADER,
@@ -2779,6 +2780,8 @@ _CLAUDE_ONLY_BEDROCK_TOOLS = ("claude", "copilot")
 # Mantle) instead of the agent's canonical model names, so ucode must pin them
 # explicitly.
 BEDROCK_PROVIDER_TYPES: tuple[str, ...] = ("amazon_bedrock", "bedrock_mantle")
+# Provider types the gateway serves on its Anthropic Messages route.
+ANTHROPIC_API_PROVIDER_TYPES: tuple[str, ...] = ("anthropic", *BEDROCK_PROVIDER_TYPES)
 
 
 def tool_supports_provider_type(tool: str, provider_type: str) -> bool:
@@ -3000,25 +3003,44 @@ def list_tool_provider_services(
     return names, None
 
 
-def service_usable_for_tool(tool: str, service: dict) -> bool:
-    """True when ``tool`` can actually route through ``service``.
+def _provider_service_unusable_reason(tool: str, service: dict, service_name: str) -> str | None:
+    """Why ``tool`` can't route through ``service``, or None when it can.
 
-    Beyond the provider-type match, copilot can't use a relayed (subscription) service, and
-    claude and copilot can use a Bedrock service only if it has a Claude target — otherwise
-    there's no routable model id to pin — or is ``allow_all_targets``, in which case the model id
-    comes from elsewhere (the managed config's default or ``--model``). (Anthropic services use
-    canonical names, so any match is usable.)
+    Beyond the provider-type match, only claude can use a relayed (subscription) service, and
+    claude and copilot can use a Bedrock service only if it has a Claude target — otherwise there's
+    no routable model id to pin — or is ``allow_all_targets``, in which case the model id comes
+    from elsewhere (the managed config's default or ``--model``). (Anthropic services use canonical
+    names, so any match is usable.)
     """
     provider_type = service.get("provider_type", "")
     if not tool_supports_provider_type(tool, provider_type):
-        return False
-    if tool == "copilot" and service.get("relayed"):
-        return False
-    if tool in _CLAUDE_ONLY_BEDROCK_TOOLS and provider_type in BEDROCK_PROVIDER_TYPES:
-        return bool(service.get("allow_all_targets")) or bool(
-            map_claude_family_models(service.get("targets") or [])
+        supported = ", ".join(_TOOL_PROVIDER_TYPES.get(tool, ())) or "none"
+        return (
+            f"Model provider service '{service_name}' is a '{provider_type}' provider, "
+            f"which {tool} can't route to (supported: {supported})."
         )
-    return True
+    if tool != "claude" and service.get("relayed"):
+        return (
+            f"Model provider service '{service_name}' relays a Claude subscription, which only "
+            f"Claude Code can use. Pick an API-key provider service for {tool}."
+        )
+    if (
+        tool in _CLAUDE_ONLY_BEDROCK_TOOLS
+        and provider_type in BEDROCK_PROVIDER_TYPES
+        and not service.get("allow_all_targets")
+        and not map_claude_family_models(service.get("targets") or [])
+    ):
+        return (
+            f"Model provider service '{service_name}' exposes no Claude models — "
+            f"add Claude targets to it, enable allow_all_targets, or pick a different service."
+        )
+    return None
+
+
+def service_usable_for_tool(tool: str, service: dict) -> bool:
+    """True when ``tool`` can actually route through ``service`` (see
+    :func:`_provider_service_unusable_reason`)."""
+    return _provider_service_unusable_reason(tool, service, service.get("name", "")) is None
 
 
 def resolve_provider_service(
@@ -3050,28 +3072,9 @@ def resolve_provider_service(
             suffix = f" Available for {tool}: {', '.join(usable)}." if usable else ""
             detail = f" ({get_reason})" if get_reason and "404" not in get_reason else ""
             return None, f"Model provider service '{service_name}' was not found.{detail}{suffix}"
-    provider_type = match["provider_type"]
-    if not tool_supports_provider_type(tool, provider_type):
-        supported = ", ".join(_TOOL_PROVIDER_TYPES.get(tool, ())) or "none"
-        return None, (
-            f"Model provider service '{service_name}' is a '{provider_type}' provider, "
-            f"which {tool} can't route to (supported: {supported})."
-        )
-    if tool == "copilot" and match.get("relayed"):
-        return None, (
-            f"Model provider service '{service_name}' relays a Claude subscription, which only "
-            "Claude Code can use. Pick an API-key provider service for Copilot."
-        )
-    if (
-        tool in _CLAUDE_ONLY_BEDROCK_TOOLS
-        and provider_type in BEDROCK_PROVIDER_TYPES
-        and not match.get("allow_all_targets")
-        and not map_claude_family_models(match.get("targets") or [])
-    ):
-        return None, (
-            f"Model provider service '{service_name}' exposes no Claude models — "
-            f"add Claude targets to it, enable allow_all_targets, or pick a different service."
-        )
+    unusable = _provider_service_unusable_reason(tool, match, service_name)
+    if unusable is not None:
+        return None, unusable
     return match, None
 
 
@@ -3902,7 +3905,7 @@ def list_provider_service_models(
 
     Anthropic and Bedrock services list through the Anthropic models route, others through the
     Codex model catalog."""
-    if provider_type in ("anthropic", *BEDROCK_PROVIDER_TYPES):
+    if provider_type in ANTHROPIC_API_PROVIDER_TYPES:
         listing = list_anthropic_model_catalog(workspace, token, provider=service_name)
         reason = listing.error_msg
         return listing.model_ids, None if reason == _NO_ANTHROPIC_MODEL_IDS else reason
@@ -3914,11 +3917,7 @@ def list_provider_service_models(
         return [], None
     except RuntimeError as exc:
         return [], str(exc)
-    return [
-        model["slug"]
-        for model in catalog["models"]
-        if isinstance(model, dict) and isinstance(model.get("slug"), str) and model["slug"]
-    ], None
+    return catalog_slugs(catalog), None
 
 
 def build_opencode_base_urls(workspace: str) -> dict[str, str]:
@@ -3951,11 +3950,6 @@ def build_pi_base_urls(workspace: str) -> dict[str, str]:
 def build_copilot_base_url(workspace: str) -> str:
     # Copilot appends `/responses` or `/chat/completions`; both use this gateway base.
     return f"{workspace}/ai-gateway/mlflow/v1"
-
-
-def build_copilot_provider_base_url(workspace: str) -> str:
-    """Copilot's OpenAI base for a Model Provider Service: the native route, served untranslated."""
-    return f"{workspace}/ai-gateway/openai/v1"
 
 
 def build_shared_base_urls(workspace: str) -> dict[str, str | dict[str, str]]:

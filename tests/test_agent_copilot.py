@@ -492,7 +492,7 @@ class TestProviderCatalog:
             monkeypatch, {"provider_type": "anthropic", "targets": [], "allow_all_targets": True}
         )
 
-        with pytest.raises(RuntimeError, match="it lists none.*--model"):
+        with pytest.raises(RuntimeError, match="has no models ug copilot can use.*--model"):
             copilot.provider_catalog({"workspace": WS}, MPS, None)
 
     def test_no_usable_model_lists_the_reasons(self, monkeypatch):

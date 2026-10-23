@@ -53,11 +53,10 @@ from ucode.constants import (
 )
 from ucode.custom_oauth import launch_token
 from ucode.databricks import (
+    ANTHROPIC_API_PROVIDER_TYPES,
     ANTHROPIC_FAMILIES,
-    BEDROCK_PROVIDER_TYPES,
     ModelServiceEntry,
     build_copilot_base_url,
-    build_copilot_provider_base_url,
     build_tool_base_url,
     list_provider_service_models,
     model_version_sort_key,
@@ -133,7 +132,7 @@ _CLAUDE_HAIKU_MAJOR_PATTERN = re.compile(r"^claude-haiku-(\d+)")
 # Provider ids write versions with dots (`gpt-5.6`) or no separator (`o3`); the version sort reads
 # dash-separated digits.
 _DOTTED_VERSION_PATTERN = re.compile(r"(?<=\d)\.(?=\d)")
-_O_SERIES_VERSION_PATTERN = re.compile(r"^o(?=\d)")
+_O_SERIES_PATTERN = re.compile(r"^o(?=\d)")
 _CLAUDE_CATALOG_VERSION_PATTERN = re.compile(r"^claude-([a-z]+)-(\d+)(?:\.(\d+))?$")
 
 # (maxPromptTokens, maxOutputTokens) by Copilot catalog id. Copilot assumes a 128K prompt for
@@ -157,13 +156,8 @@ _CLAUDE_1M_LIMITS = (936_000, 32_000)
 _CLAUDE_200K_LIMITS = (168_000, 32_000)
 _CLAUDE_200K_WINDOW = 200_000
 
-_ANTHROPIC_PROVIDER_TYPES = ("anthropic", *BEDROCK_PROVIDER_TYPES)
 # A provider target that declares its APIs is usable only if one of them is a chat API.
-_PROVIDER_CHAT_API_TYPES = frozenset(
-    {"anthropic/v1/messages", "openai/v1/chat/completions", "openai/v1/responses"}
-)
-# Copilot sends `temperature: 0` on Chat Completions, which GPT 5+ and o-series models reject.
-_OPENAI_RESPONSES_MODEL_PATTERN = re.compile(r"^(?:gpt-(\d+)|o\d)")
+_CHAT_API_TYPES = frozenset(route for routes in _WIRE_ROUTES.values() for route in routes)
 
 
 def _model_tail(model: str) -> str:
@@ -266,7 +260,7 @@ def _catalog_sort_key(model: CopilotModel) -> tuple:
         ),
         len(ANTHROPIC_FAMILIES),
     )
-    sort_name = _O_SERIES_VERSION_PATTERN.sub("o-", _DOTTED_VERSION_PATTERN.sub("-", model.id))
+    sort_name = _O_SERIES_PATTERN.sub("o-", _DOTTED_VERSION_PATTERN.sub("-", model.id))
     version_key = model_version_sort_key(sort_name)
     return (tuple(PROVIDER_NAMES).index(model.wire), family, version_key)
 
@@ -291,15 +285,16 @@ def classify_provider_model(
     are read whole rather than as ``system.ai`` names. ``api_types`` (the target's declared APIs)
     only excludes: the gateway serves some models on APIs they don't declare."""
     declared = tuple(api_types)
-    if declared and _PROVIDER_CHAT_API_TYPES.isdisjoint(declared):
+    if declared and _CHAT_API_TYPES.isdisjoint(declared):
         return None, f"it isn't a chat model (it serves {', '.join(declared)})"
-    lowered = model.lower()
-    if provider_type in _ANTHROPIC_PROVIDER_TYPES:
-        if "claude" not in lowered:
+    tail = _model_tail(model)
+    if provider_type in ANTHROPIC_API_PROVIDER_TYPES:
+        if not tail.startswith("claude-"):
             return None, "ug copilot uses only the Claude models of this provider"
         return "anthropic", None
-    match = _OPENAI_RESPONSES_MODEL_PATTERN.match(lowered)
-    if match and (match.group(1) is None or int(match.group(1)) >= 5):
+    # Copilot sends `temperature: 0` on Chat Completions, which GPT 5+ and o-series models reject.
+    gpt = _GPT_MODEL_MAJOR_PATTERN.match(tail)
+    if (gpt and int(gpt.group(1)) >= 5) or _O_SERIES_PATTERN.match(tail):
         return "responses", None
     return "completions", None
 
@@ -342,7 +337,7 @@ def provider_catalog(state: dict, service_name: str, requested: str | None) -> l
     if error or service is None:
         raise RuntimeError(error or f"Model provider service '{service_name}' was not found.")
     provider_type = service["provider_type"]
-    models = list(service.get("targets") or [])
+    named = list(service.get("targets") or [])
     listed: list[str] = []
     allow_all = bool(service.get("allow_all_targets"))
     if allow_all:
@@ -350,27 +345,24 @@ def provider_catalog(state: dict, service_name: str, requested: str | None) -> l
         managed_default = state.get("copilot_default_model")
         start = start or (managed_default if isinstance(managed_default, str) else None)
         listed, reason = list_provider_service_models(workspace, token, service_name, provider_type)
-        if start:
-            models.append(start)
+        if reason and not start:
+            raise RuntimeError(
+                f"Could not list the models of '{service_name}': {reason}. Name the one to start "
+                "on with `ug copilot --model <id>`."
+            )
         if reason:
-            if not start:
-                raise RuntimeError(
-                    f"Could not list the models of '{service_name}': {reason}. Name the one to "
-                    "start on with `ug copilot --model <id>`."
-                )
             print_warning(f"Could not list the models of {service_name}: {reason}.")
-    target_api_types = service.get("target_api_types") or {}
-    catalog, skipped = build_provider_catalog(models, provider_type, target_api_types)
-    if listed:
-        catalog, _ = build_provider_catalog(
-            [m.id for m in catalog] + listed, provider_type, target_api_types
-        )
+        if start:
+            named.append(start)
+    catalog, skipped = build_provider_catalog(
+        [*named, *listed], provider_type, service.get("target_api_types")
+    )
+    # An allow-all listing includes models Copilot can't use; report only declared or named ones.
+    skipped = [(model, reason) for model, reason in skipped if model in named]
     if not catalog:
-        detail = "; ".join(f"{model} ({reason})" for model, reason in skipped)
-        if not detail:
-            detail = "it lists none" if allow_all else "none declared"
+        detail = "".join(f" {model} ({reason})." for model, reason in skipped)
         raise RuntimeError(
-            f"Model provider service '{service_name}' has no models ug copilot can use: {detail}."
+            f"Model provider service '{service_name}' has no models ug copilot can use.{detail}"
             + (" Name one it serves with `ug copilot --model <id>`." if allow_all else "")
         )
     if skipped:
@@ -591,7 +583,7 @@ def render_providers_config(
                 "type": "openai",
                 "wireApi": wire,
                 "baseUrl": (
-                    build_copilot_provider_base_url(proxy_base_url)
+                    f"{proxy_base_url}/ai-gateway/openai/v1"
                     if provider_service
                     else build_copilot_base_url(proxy_base_url)
                 ),
