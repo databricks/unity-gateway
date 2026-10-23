@@ -16,7 +16,7 @@ import subprocess
 from pathlib import Path
 
 from ucode.config_io import ToolSpec
-from ucode.constants import AGENT_CLAUDE, AGENT_CODEX
+from ucode.constants import AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT
 from ucode.databricks import (
     AnthropicModelCatalog,
     get_databricks_token,
@@ -81,7 +81,7 @@ DEFAULT_TOOL = "codex"
 BUNDLE_VERSION = 1
 _MANAGED_SETTINGS_TOOLS = {"claude", "codex"}
 # Agents that can take their models from a Unity Catalog schema (`--model-location`).
-MODEL_LOCATION_TOOLS = (AGENT_CLAUDE, AGENT_CODEX, "copilot")
+MODEL_LOCATION_TOOLS = (AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT)
 _NATIVE_UPGRADE_COMMANDS = {
     "claude": ["claude", "upgrade"],
     "codex": ["codex", "update"],
