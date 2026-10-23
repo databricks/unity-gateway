@@ -104,6 +104,7 @@ from ucode.managed_config import (
     managed_state_workspace,
     normalize_managed_config,
     refresh_managed_config,
+    revert_machine_policy,
 )
 from ucode.managed_files import managed_write_session, set_config_scope
 from ucode.managed_resolve import (
@@ -1533,6 +1534,7 @@ def revert() -> int:
         print_warning(f"Could not remove leftover Copilot session files: {exc}")
     claude_managed_result = claude_agent.revert_managed_settings()
     codex_managed_result = codex_agent.revert_managed_config()
+    workspace_policy_result = revert_machine_policy()
 
     results: dict[str, bool] = {
         tool: restore_file(
@@ -1555,6 +1557,7 @@ def revert() -> int:
     print_kv("Claude Code OS-managed settings", claude_managed_result)
     print_kv("Claude Desktop profile", desktop_result)
     print_kv("Codex OS-managed settings", codex_managed_result)
+    print_kv("Unity Gateway workspace policy", workspace_policy_result)
     print_kv("Pi settings", "restored" if pi_settings_restored else "unchanged")
     for client, spec in MCP_CLIENTS.items():
         print_kv(

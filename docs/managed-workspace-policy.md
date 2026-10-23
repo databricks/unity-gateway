@@ -92,6 +92,7 @@ All other raw fields participate in comparison. Policy is otherwise preserved wh
 On Linux and macOS, the per-user `~/.ucode/managed-config.json` is no longer read and is never
 promoted to a root-owned policy.
 Run `ug configure --workspace YOUR_WORKSPACE` to retrieve and install authoritative policy.
+`ug revert` removes the installed policy with sudo; without sudo it warns and keeps the file.
 No policy is written when the workspace has none. On MDM machines, ask IT to run root provisioning
 instead of attempting administrator-only configure yourself.
 

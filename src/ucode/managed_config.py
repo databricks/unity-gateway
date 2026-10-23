@@ -702,6 +702,25 @@ def save_managed_state(
     )
 
 
+def revert_machine_policy() -> str:
+    """Remove the installed workspace policy for ``ug revert``: "removed", "unchanged", or "failed".
+
+    Nothing else writes this file, so revert deletes it outright. Without sudo it warns and keeps
+    the file, like the other machine-wide settings revert restores.
+    """
+    if not _machine_policy_installable() or not MANAGED_CONFIG_PATH.exists():
+        return "unchanged"
+    try:
+        update_workspace_policy(MANAGED_CONFIG_PATH, None, interactive=True, allow_sudo=True)
+    except RuntimeError as exc:
+        print_warning(
+            f"Could not remove the workspace policy at {MANAGED_CONFIG_PATH}: {exc} Rerun "
+            "`ug revert` from a terminal where you can use sudo."
+        )
+        return "failed"
+    return "removed"
+
+
 def _restrict_permissions(path: Path) -> None:
     """Best-effort chmod 0600 for user-owned refresh metadata."""
     try:
