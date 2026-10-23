@@ -689,7 +689,7 @@ def test_relay_credential_rediscovers_stale_claude_binary(monkeypatch, tmp_path)
 
     assert credential["token"] == "fresh-token"
     assert run.call_args_list[2].args[0][0] == "/old/bin/claude"
-    assert run.call_args_list[3].args[0][0] == "/new/bin/claude"
+    assert run.call_args_list[3].args[0][0] == desktop_auth.os.path.abspath("/new/bin/claude")
 
 
 def test_relay_credential_noninteractive_refresh_failure_does_not_open_browser(
