@@ -16,7 +16,7 @@ import questionary
 from rich.table import Table
 
 from ucode.agents import claude, codex, copilot, cursor, gemini, kilo, opencode
-from ucode.config_io import restore_file
+from ucode.config_io import read_json_safe, restore_file
 from ucode.constants import MCP_CLEANUP_SCOPES, MCP_USER_SCOPE
 from ucode.databricks import (
     AIGW_MCP_SERVICES_SEGMENT,
@@ -205,6 +205,13 @@ def _kilo_cli_env() -> dict[str, str]:
     # `kilo mcp list` reads the same config (matches kilo.build_runtime_env).
     env = os.environ.copy()
     env["XDG_CONFIG_HOME"] = str(kilo.KILO_XDG_CONFIG_HOME)
+    return env
+
+
+def _opencode_cli_env() -> dict[str, str]:
+    # OpenCode also reads its MCP servers from the isolated XDG config ug writes.
+    env = os.environ.copy()
+    env["XDG_CONFIG_HOME"] = str(opencode.OPENCODE_XDG_CONFIG_HOME)
     return env
 
 
@@ -2275,17 +2282,17 @@ def remove_mcp_command(agents: set[str] | None = None) -> int:
 # `ug mcp list`: configured MCP servers + their live per-agent connection status
 # ---------------------------------------------------------------------------
 
-# Per-(server, agent) live states surfaced by `ug mcp list`. Every agent's `mcp list`
-# health-checks its servers and reports connected/failed — except Codex, whose listing
-# reports only whether an entry is enabled/disabled (no probe). NOT_REGISTERED means the
-# agent is installed but doesn't list the server; a server maps to None (rendered
-# "agent not installed") when the agent binary isn't installed at all.
+# Per-(server, agent) states surfaced by `ug mcp list`. Agent listings differ: some
+# health-check servers, Codex reports enabled/disabled, and Copilot's ug-added entries
+# are visible only in the additional config file. NOT_REGISTERED means the agent is
+# installed but neither its listing nor ug's additional config contains the server.
 LIVE_CONNECTED = "connected"
 LIVE_FAILED = "failed"
 LIVE_ENABLED = "enabled"
 LIVE_DISABLED = "disabled"
 LIVE_UNKNOWN = "unknown"
 LIVE_NOT_REGISTERED = "not-registered"
+LIVE_NEEDS_APPROVAL = "needs-approval"
 # A registered (usually HTTP OAuth) server the agent reached but that needs a one-time per-user
 # connection sign-in before it vends tools — e.g. Claude's "! Needs authentication". Distinct from
 # `unknown` so `ug mcp list` tells the developer to sign in instead of showing an opaque status.
@@ -2312,6 +2319,10 @@ def _classify_health_line(rest: str) -> str:
     if any(marker in rest for marker in _HEALTH_OK_MARKERS):
         return LIVE_CONNECTED
     low = rest.lower()
+    if "needs approval" in low:
+        return LIVE_NEEDS_APPROVAL
+    if "disabled" in low:
+        return LIVE_DISABLED
     if "fail" in low or "error" in low or "disconnect" in low:
         return LIVE_FAILED
     # A glyph-less "needs authentication" (Claude's HTTP-OAuth sign-in prompt) is not a failure —
@@ -2339,7 +2350,8 @@ def _parse_health_mcp_list(output: str) -> dict[str, str]:
             continue
         if ":" in line:
             name, _, rest = line.partition(":")
-            name = name.strip()
+            # Gemini prefixes rows with a status symbol, such as "○ name: ... - Disabled".
+            name = re.sub(r"^[○●✔✓✘✗🟢🔴]\s+", "", name.strip())
         elif line.startswith(_HEALTH_OK_MARKERS + _HEALTH_FAIL_MARKERS):
             # Colon-less shape, e.g. `🟢 serverName - Ready`: take the token after the leading
             # glyph as the name (best-effort for agents beyond claude). Requiring the leading
@@ -2388,13 +2400,12 @@ def _parse_codex_mcp_list(output: str) -> dict[str, str]:
     return statuses
 
 
-def _parse_kilo_mcp_list(output: str) -> dict[str, str]:
-    """Parse `kilo mcp list`'s tree output into ``{server_name: state}``.
+def _parse_tree_mcp_list(output: str) -> dict[str, str]:
+    """Parse Kilo and OpenCode's tree output into ``{server_name: state}``.
 
     Kilo prints one server per line as ``●  <glyph> <name> <status>`` (glyph ✓/✗), with indented
     ``│``-prefixed detail lines (the proxy command, error text) that must be skipped so the command
-    URL isn't misread as a server. (This is the OpenCode-family shape; parsing it generically for
-    every client is tracked separately — here it is scoped to Kilo.)
+    URL isn't misread as a server.
     """
     statuses: dict[str, str] = {}
     for raw in output.splitlines():
@@ -2423,8 +2434,8 @@ def parse_mcp_list_output(client: str, output: str) -> dict[str, str]:
     """
     if client == "codex":
         parsed = _parse_codex_mcp_list(output)
-    elif client == "kilo":
-        parsed = _parse_kilo_mcp_list(output)
+    elif client in ("kilo", "opencode"):
+        parsed = _parse_tree_mcp_list(output)
     else:
         parsed = _parse_health_mcp_list(output)
     if not parsed and _is_missing_mcp_server_output(output):
@@ -2442,11 +2453,13 @@ def _run_mcp_list(client: str) -> str | None:
     if not spec:
         return None
     argv = str(spec["list_command"]).split()
-    # Gemini and Kilo read their config from a pinned dir, matching how ucode registers servers there.
+    # Gemini, Kilo and OpenCode read their MCP config from ug's isolated directories.
     if client == "gemini":
         env = _gemini_cli_env()
     elif client == "kilo":
         env = _kilo_cli_env()
+    elif client == "opencode":
+        env = _opencode_cli_env()
     else:
         env = None
     try:
@@ -2464,11 +2477,18 @@ def _run_mcp_list(client: str) -> str | None:
 
 
 def query_live_mcp_status(client: str) -> dict[str, str]:
-    """Live ``{server_name: state}`` for one installed agent (empty if its listing can't be read)."""
+    """MCP ``{server_name: state}`` for one installed agent, including ug's Copilot config."""
     output = _run_mcp_list(client)
-    if output is None:
-        return {}
-    return parse_mcp_list_output(client, output)
+    statuses = parse_mcp_list_output(client, output) if output is not None else {}
+    if client == "copilot":
+        # Copilot reads ug's additional MCP config only on an agent launch. Its bare `mcp list`
+        # omits these servers, so report their configured state without claiming a live probe.
+        servers = read_json_safe(copilot.COPILOT_MCP_CONFIG_PATH).get("mcpServers")
+        if isinstance(servers, dict):
+            for name, entry in servers.items():
+                if isinstance(name, str) and isinstance(entry, dict):
+                    statuses.setdefault(name, LIVE_ENABLED)
+    return statuses
 
 
 def _query_live_statuses(clients: list[str]) -> dict[str, dict[str, str]]:
@@ -2527,6 +2547,7 @@ _LIVE_LABEL = {
     LIVE_UNKNOWN: "unknown",
     LIVE_NOT_REGISTERED: "missing",
     LIVE_NEEDS_AUTH: "needs sign-in",
+    LIVE_NEEDS_APPROVAL: "needs approval",
 }
 _LIVE_STYLE = {
     LIVE_CONNECTED: "green",
@@ -2536,6 +2557,7 @@ _LIVE_STYLE = {
     LIVE_UNKNOWN: "yellow",
     LIVE_NOT_REGISTERED: "yellow",
     LIVE_NEEDS_AUTH: "yellow",
+    LIVE_NEEDS_APPROVAL: "yellow",
 }
 
 
@@ -2550,6 +2572,7 @@ _LIVE_CLASS = {
     LIVE_NOT_REGISTERED: "missing",
     LIVE_UNKNOWN: "unknown",
     LIVE_NEEDS_AUTH: "needs-auth",
+    LIVE_NEEDS_APPROVAL: "needs-approval",
 }
 
 
@@ -2620,10 +2643,10 @@ def configured_mcp_servers_by_name(
 
 
 def list_mcp_command(agents: set[str] | None = None) -> int:
-    """`ug mcp list`: show the Databricks MCP servers ug has configured and their live
-    connection status in each coding agent, one row per server.
+    """`ug mcp list`: show configured Databricks MCP servers and each agent's known
+    connection or registration status, one row per server.
 
-    Read-only: it reads ug's saved state and each installed agent's own `mcp list`, and needs no
+    Read-only: it reads ug's saved state and installed agents' MCP listings, and needs no
     Databricks login. Each row's STATUS aggregates the agents the server is registered on
     (connected/failed; Codex reports enabled/disabled since its listing does not health-check),
     splitting into ``agent:state`` only when they disagree. ``agents`` (from ``--agents``) scopes
@@ -2688,10 +2711,11 @@ def list_mcp_command(agents: set[str] | None = None) -> int:
     if other_summary:
         print_note(f"Other MCP servers not configured by ug — {other_summary}.")
 
-    live_note = "Live status is from each agent's `mcp list`"
+    live_note = "Status is from each agent's `mcp list`"
     if "codex" in probe_clients:
-        # Only mention Codex's enabled/disabled caveat when Codex is actually in the reported set.
         live_note += "; Codex reports enabled/disabled"
+    if "copilot" in probe_clients:
+        live_note += "; ug-added Copilot servers report configured/enabled, not live health"
     print_note(f"{live_note}.")
     # A `needs sign-in` server is registered fine but needs the one-time per-user connection login;
     # point the developer at it rather than leaving an opaque status.
@@ -2703,6 +2727,15 @@ def list_mcp_command(agents: set[str] | None = None) -> int:
         print_note(
             "`needs sign-in` means the server needs a one-time connection login: authenticate it in "
             "the agent (Claude Code: `/mcp` → the server → Authenticate)."
+        )
+    if any(
+        state == LIVE_NEEDS_APPROVAL
+        for client in probe_clients
+        for state in live.get(client, {}).values()
+    ):
+        print_note(
+            "`needs approval` means Cursor has not approved the server yet: "
+            "run `cursor-agent mcp enable <server-name>`."
         )
     print_note("Use `ug mcp add` / `ug mcp remove` to change the servers ug configures.")
     return 0

@@ -4142,6 +4142,48 @@ class TestParseMcpListOutput:
         )
         assert parsed == {"alpha": mcp.LIVE_CONNECTED, "beta": mcp.LIVE_FAILED}
 
+    def test_gemini_disabled_row_uses_server_name_without_status_symbol(self):
+        # Gemini 0.44.1 prefixes disabled servers with ○ in untrusted folders.
+        output = "Configured MCP servers:\n\n○ ug-audit: /missing (stdio) - Disabled\n"
+        assert mcp.parse_mcp_list_output("gemini", output) == {"ug-audit": mcp.LIVE_DISABLED}
+
+    def test_opencode_tree_rows_report_health_without_parsing_details(self):
+        # OpenCode 1.18.31 uses the same tree layout as Kilo.
+        output = (
+            "┌  MCP Servers\n│\n●  ✗ ug-audit failed\n"
+            "│      ENOENT: no such file or directory\n│      /missing\n└  1 server(s)\n"
+        )
+        assert mcp.parse_mcp_list_output("opencode", output) == {"ug-audit": mcp.LIVE_FAILED}
+
+    def test_opencode_status_reads_the_config_ug_writes(self, monkeypatch):
+        captured: dict = {}
+
+        class _Result:
+            stdout = "●  ✗ ug-audit failed\n"
+            stderr = ""
+
+        def _fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            captured["env"] = kwargs.get("env")
+            return _Result()
+
+        monkeypatch.setattr(mcp.subprocess_cross_os, "run", _fake_run)
+        assert mcp.query_live_mcp_status("opencode") == {"ug-audit": mcp.LIVE_FAILED}
+        assert captured["argv"] == ["opencode", "mcp", "list"]
+        assert captured["env"]["XDG_CONFIG_HOME"] == str(mcp.opencode.OPENCODE_XDG_CONFIG_HOME)
+
+    def test_cursor_unapproved_server_is_not_reported_missing(self):
+        output = "Loading MCPs…\nug-audit: not loaded (needs approval)\n"
+        assert mcp.parse_mcp_list_output("cursor", output) == {"ug-audit": mcp.LIVE_NEEDS_APPROVAL}
+
+    def test_copilot_additional_config_is_reported_as_enabled(self, tmp_path, monkeypatch):
+        # Bare `copilot mcp list` does not include servers from --additional-mcp-config.
+        config = tmp_path / "ucode-mcp-config.json"
+        config.write_text('{"mcpServers":{"ug-audit":{"type":"local"}}}')
+        monkeypatch.setattr(mcp.copilot, "COPILOT_MCP_CONFIG_PATH", config)
+        monkeypatch.setattr(mcp, "_run_mcp_list", lambda client: "No MCP servers configured.")
+        assert mcp.query_live_mcp_status("copilot") == {"ug-audit": mcp.LIVE_ENABLED}
+
     def test_ansi_progress_escapes_are_stripped_before_parsing(self, monkeypatch):
         # cursor-agent redraws progress with ANSI escapes that must not leak into server names.
         class _Result:
