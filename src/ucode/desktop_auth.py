@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -390,7 +391,7 @@ def _read_claude_credentials() -> dict:
             )
     elif platform in ("linux", "win32"):
         try:
-            raw = _claude_credentials_path().read_text(encoding="utf-8")
+            raw = _claude_credentials_path().read_text(encoding="utf-8-sig")
         except OSError as exc:
             raise ClaudeDesktopAuthError(
                 "Claude subscription authentication is required. Run `claude auth login`, then start a new Cowork task.",
@@ -412,7 +413,9 @@ def _read_claude_credentials() -> dict:
 
 def _claude_subscription_token() -> str:
     # Support headless, managed, and automated setups that cannot use interactive local login.
-    if (configured_token := os.environ.get(CLAUDE_CODE_OAUTH_TOKEN_ENV)) is not None:
+    if (
+        configured_token := os.environ.get(CLAUDE_CODE_OAUTH_TOKEN_ENV)
+    ) and configured_token.strip():
         if token := _clean_token(configured_token):
             return token
         raise ClaudeDesktopAuthError(
@@ -446,31 +449,59 @@ def _claude_subscription_token() -> str:
     return token
 
 
-def _run_claude_status(claude_binary: str, *, timeout: float) -> None:
-    try:
-        subprocess_cross_os.run(
-            [claude_binary, "auth", "status", "--json"],
+def _run_claude_auth_command(
+    claude_binary: str,
+    arguments: list[str],
+    *,
+    timeout: float,
+    show_stdout: bool,
+) -> tuple[str, subprocess.CompletedProcess]:
+    def run(binary: str) -> subprocess.CompletedProcess:
+        return subprocess_cross_os.run(
+            [binary, "auth", *arguments],
             check=False,
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
+            stdout=sys.stderr if show_stdout else subprocess.DEVNULL,
             stderr=sys.stderr,
             timeout=timeout,
         )
+
+    try:
+        return claude_binary, run(claude_binary)
+    except OSError:
+        fallback = shutil.which("claude")
+        if not fallback:
+            raise
+        fallback = os.path.abspath(fallback)
+        if os.path.normcase(fallback) == os.path.normcase(os.path.abspath(claude_binary)):
+            raise
+        return fallback, run(fallback)
+
+
+def _run_claude_status(claude_binary: str, *, timeout: float) -> str:
+    try:
+        claude_binary, _ = _run_claude_auth_command(
+            claude_binary,
+            ["status", "--json"],
+            timeout=timeout,
+            show_stdout=False,
+        )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ClaudeDesktopAuthError(
-            "Claude Code could not refresh subscription authentication.", kind="cli"
+            "Claude Code could not refresh subscription authentication. "
+            "Install or repair Claude Code, or run `ug configure`, then start a new Cowork task.",
+            kind="cli",
         ) from exc
+    return claude_binary
 
 
 def _run_claude_login(claude_binary: str, *, timeout: float) -> None:
     try:
-        result = subprocess_cross_os.run(
-            [claude_binary, "auth", "login", "--claudeai"],
-            check=False,
-            stdin=subprocess.DEVNULL,
-            stdout=sys.stderr,
-            stderr=sys.stderr,
+        _, result = _run_claude_auth_command(
+            claude_binary,
+            ["login", "--claudeai"],
             timeout=timeout,
+            show_stdout=True,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ClaudeDesktopAuthError(
@@ -510,7 +541,7 @@ def _get_claude_auth_token(claude_binary: str, *, deadline: float | None = None)
         if isinstance(token, str):
             return token
 
-        _run_claude_status(
+        claude_binary = _run_claude_status(
             claude_binary,
             timeout=_remaining_budget(deadline, _TOKEN_TIMEOUT_SECONDS),
         )

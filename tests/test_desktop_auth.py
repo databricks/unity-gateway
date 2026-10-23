@@ -490,8 +490,9 @@ def test_relay_credential_uses_custom_config_keychain_service(monkeypatch):
 
 @pytest.mark.parametrize("platform", ["linux", "win32"])
 @pytest.mark.parametrize("custom_config_dir", [False, True])
+@pytest.mark.parametrize("with_bom", [False, True])
 def test_relay_credential_reads_file_credentials_on_linux_and_windows(
-    monkeypatch, tmp_path, platform, custom_config_dir
+    monkeypatch, tmp_path, platform, custom_config_dir, with_bom
 ):
     monkeypatch.setattr(desktop_auth, "_credential_storage_platform", lambda: platform)
     home = tmp_path / "home"
@@ -503,17 +504,17 @@ def test_relay_credential_reads_file_credentials_on_linux_and_windows(
     else:
         config_dir = home / ".claude"
     config_dir.mkdir(parents=True)
-    (config_dir / ".credentials.json").write_text(
-        json.dumps(
-            {
-                "claudeAiOauth": {
-                    "accessToken": "anthropic-token",
-                    "expiresAt": int((time.time() + 3600) * 1000),
-                }
+    credentials = json.dumps(
+        {
+            "claudeAiOauth": {
+                "accessToken": "anthropic-token",
+                "expiresAt": int((time.time() + 3600) * 1000),
             }
-        ),
-        encoding="utf-8",
+        }
     )
+    if with_bom:
+        credentials = "\ufeff" + credentials
+    (config_dir / ".credentials.json").write_text(credentials, encoding="utf-8")
     monkeypatch.setattr(
         desktop_auth,
         "get_claude_desktop_databricks_token",
@@ -570,6 +571,23 @@ def test_relay_credential_uses_explicit_claude_oauth_token(monkeypatch):
     run.assert_not_called()
 
 
+@pytest.mark.parametrize("configured_token", ["", " \t "])
+def test_relay_credential_ignores_empty_explicit_claude_oauth_token(monkeypatch, configured_token):
+    monkeypatch.setenv(desktop_auth.CLAUDE_CODE_OAUTH_TOKEN_ENV, configured_token)
+    monkeypatch.setattr(
+        desktop_auth,
+        "_read_claude_credentials",
+        lambda: {
+            "claudeAiOauth": {
+                "accessToken": "stored-token",
+                "expiresAt": int((time.time() + 3600) * 1000),
+            }
+        },
+    )
+
+    assert desktop_auth._claude_subscription_token() == "stored-token"
+
+
 def test_relay_credential_rejects_invalid_explicit_claude_oauth_token(monkeypatch):
     monkeypatch.setenv(desktop_auth.CLAUDE_CODE_OAUTH_TOKEN_ENV, "invalid token")
     monkeypatch.setattr(
@@ -601,9 +619,12 @@ def _subscription_credentials(expires_in_seconds: int, token: str) -> str:
     )
 
 
-def test_relay_credential_silently_refreshes_expiring_token(monkeypatch, tmp_path):
+@pytest.mark.parametrize("helper_context", [None, "background", "mid-session-refresh"])
+def test_relay_credential_silently_refreshes_expiring_token(monkeypatch, tmp_path, helper_context):
     monkeypatch.setattr(desktop_auth, "_credential_storage_platform", lambda: "darwin")
     monkeypatch.setenv("USER", "desktop-user")
+    if helper_context is not None:
+        monkeypatch.setenv(desktop_auth.CLAUDE_HELPER_CONTEXT_ENV, helper_context)
     monkeypatch.setattr(desktop_auth, "_AUTH_LOCK_PATH", tmp_path / "auth.lock")
     monkeypatch.setattr(
         desktop_auth,
@@ -638,6 +659,37 @@ def test_relay_credential_silently_refreshes_expiring_token(monkeypatch, tmp_pat
         "find-generic-password",
     ]
     assert run.call_args_list[2].args[0][1:3] == ["auth", "status"]
+
+
+def test_relay_credential_rediscovers_stale_claude_binary(monkeypatch, tmp_path):
+    monkeypatch.setattr(desktop_auth, "_credential_storage_platform", lambda: "darwin")
+    monkeypatch.setenv("USER", "desktop-user")
+    monkeypatch.setattr(desktop_auth, "_AUTH_LOCK_PATH", tmp_path / "auth.lock")
+    monkeypatch.setattr(desktop_auth.shutil, "which", lambda binary: "/new/bin/claude")
+    monkeypatch.setattr(
+        desktop_auth,
+        "get_claude_desktop_databricks_token",
+        lambda host, profile: "databricks-token",
+    )
+    expired = _subscription_credentials(60, "old-token")
+    run = Mock(
+        side_effect=[
+            subprocess.CompletedProcess([], 0, stdout=expired, stderr=""),
+            subprocess.CompletedProcess([], 0, stdout=expired, stderr=""),
+            FileNotFoundError,
+            subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+            subprocess.CompletedProcess(
+                [], 0, stdout=_subscription_credentials(3600, "fresh-token"), stderr=""
+            ),
+        ]
+    )
+    monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", run)
+
+    credential = desktop_auth.get_claude_desktop_relay_credential(HOST, PROFILE, "/old/bin/claude")
+
+    assert credential["token"] == "fresh-token"
+    assert run.call_args_list[2].args[0][0] == "/old/bin/claude"
+    assert run.call_args_list[3].args[0][0] == "/new/bin/claude"
 
 
 def test_relay_credential_noninteractive_refresh_failure_does_not_open_browser(
