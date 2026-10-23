@@ -58,8 +58,6 @@ from ucode.managed_files import (
     ManagedFileWriteUnavailable,
     SettingsPassthrough,
     apply_settings_passthrough,
-    check_skipped_managed_overrides,
-    config_scope,
     current_os,
     managed_file_conflicts,
     managed_file_is_verified,
@@ -1880,14 +1878,7 @@ def _reconcile_managed_settings(
     during `ucode claude`, so a bare `claude` could not reach the gateway anyway.
     """
     if managed_settings_skipped():
-        if config_scope() != "user":
-            check_skipped_managed_overrides(
-                _managed_settings_path(),
-                parser=_parse_managed_settings,
-                compose=compose,
-                owned_paths=owned_paths,
-                display="Claude Code",
-            )
+        # Opted out: trust whatever OS-managed file exists and leave it untouched.
         return
     path = _managed_settings_path()
     if path is None:

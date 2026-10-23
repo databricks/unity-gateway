@@ -1110,10 +1110,10 @@ class TestWriteToolConfigManagedSettings:
         assert str(claude.CLAUDE_SETTINGS_PATH) in [p for p, _ in private_writes]
         assert managed_writes == []
 
-    def test_skip_env_errors_on_stale_managed_override(self, monkeypatch):
+    def test_skip_env_trusts_a_stale_managed_file(self, monkeypatch):
+        """The opt-out trusts whatever OS-managed file exists: no check, no write, no error."""
         private_writes: list = []
         managed_writes: list = []
-        # A managed file left from an earlier workspace still points at that workspace's gateway.
         existing = {
             str(FAKE_MANAGED_PATH): {
                 "env": {
@@ -1127,18 +1127,12 @@ class TestWriteToolConfigManagedSettings:
             claude, "reconcile_managed_file", lambda *a, **kw: pytest.fail("must not write managed")
         )
         state = {"workspace": WS, "codex_models": []}
-        # A stale override silently defeats the reconfigure, so launching must fail loudly.
-        with pytest.raises(RuntimeError) as excinfo:
-            claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
 
+        assert str(claude.CLAUDE_SETTINGS_PATH) in [p for p, _ in private_writes]
         assert managed_writes == []
-        message = str(excinfo.value)
-        assert managed_files.SKIP_OS_SETTINGS_ENV in message
-        assert "stale" in message
-        assert "ug revert" in message
 
-    @pytest.mark.parametrize("opt_out", ["user_scope", "trust", "trust_and_skip"])
-    def test_opt_out_launches_over_stale_managed_override(self, monkeypatch, opt_out):
+    def test_user_scope_launches_over_stale_managed_override(self, monkeypatch):
         private_writes: list = []
         managed_writes: list = []
         existing = {
@@ -1149,19 +1143,10 @@ class TestWriteToolConfigManagedSettings:
             }
         }
         self._patch(monkeypatch, private_writes, managed_writes, existing)
-        if opt_out == "user_scope":
-            managed_files.set_config_scope("user")
-        else:
-            monkeypatch.setenv(managed_files.TRUST_OS_SETTINGS_ENV, "1")
-            if opt_out == "trust_and_skip":
-                monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
-        monkeypatch.setattr(
-            claude, "reconcile_managed_file", lambda *a, **kw: pytest.fail("must not write managed")
-        )
+        managed_files.set_config_scope("user")
         state = {"workspace": WS, "codex_models": []}
         claude.write_tool_config(state, "databricks-claude-sonnet-4")
         assert managed_writes == []
-        assert str(claude.CLAUDE_SETTINGS_PATH) in [p for p, _ in private_writes]
 
     def test_skip_env_no_error_without_stale_override(self, monkeypatch):
         private_writes: list = []

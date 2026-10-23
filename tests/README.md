@@ -357,11 +357,6 @@ authorization, and one-shot `sudo -n` with disconnected stdin. These are compone
 privileged writes replaced by temporary-file operations, not automated Isaac, real sudo-policy, or
 live telemetry-export coverage.
 
-`UG_TRUST_OS_SETTINGS` component cases in those three files cover standalone and combined
-opt-outs, boolean parsing, user-config generation despite conflicting managed values, and no
-managed write or conflict read. Existing `UG_SKIP_OS_SETTINGS` rejection remains covered.
-Native settings precedence and laptop-hosted Omnigent sessions are not live-tested here.
-
 Managed smart defaults are covered by `test_managed_config.py`, `test_cli.py`,
 `test_managed_setup.py`, `test_databricks.py`, and `test_managed_budget.py`: parsing the
 `smart_defaults` wire field, reading older `spend_tiers` caches, skipping recommendations

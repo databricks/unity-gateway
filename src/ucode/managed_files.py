@@ -34,10 +34,8 @@ from ucode.ui import console, print_note, print_success, print_warning
 
 # Absolute path so a stripped PATH (desktop/GUI launchers) still finds it.
 _SUDO = "/usr/bin/sudo"
-# Opt out of OS-managed writes while retaining the stale-settings conflict check.
+# Opt out of all OS-managed settings work (read, conflict check, and the privileged sudo write).
 SKIP_OS_SETTINGS_ENV = "UG_SKIP_OS_SETTINGS"
-# Trust native agent precedence without checking or modifying OS-managed settings.
-TRUST_OS_SETTINGS_ENV = "UG_TRUST_OS_SETTINGS"
 CONFIG_SCOPES = ("global", "user")
 DEFAULT_CONFIG_SCOPE = "global"
 _config_scope = DEFAULT_CONFIG_SCOPE
@@ -109,7 +107,7 @@ def config_scope() -> str:
 
 
 def managed_settings_skipped() -> bool:
-    """Whether OS-managed writes are opted out via environment or the ``user`` scope.
+    """Whether OS-managed settings are opted out via ``UG_SKIP_OS_SETTINGS`` or the ``user`` scope.
 
     Set the variable to ``1``/``true``/``yes``/``on`` to make ucode neither read nor update the
     root-owned managed files (Claude Code ``managed-settings.json``, Codex ``managed_config.toml``
@@ -118,13 +116,11 @@ def managed_settings_skipped() -> bool:
     always launches through ``ug`` and never needs a bare ``claude``/``codex`` to reach the gateway.
     Skips the privileged ``sudo`` step entirely, so an interactive run is never prompted for a
     password and never hits the "OS-managed settings could not be updated" failure on hosts where
-    that write is blocked. ``ug configure --user`` has the same effect.
-    ``UG_TRUST_OS_SETTINGS`` additionally bypasses the stale-settings conflict check, leaving
-    native agents to combine the existing managed settings with the per-user settings.
+    that write is blocked. ug also trusts whatever OS-managed files exist and doesn't check them
+    against its own settings; the agents apply their native precedence. ``ug configure --user`` has
+    the same effect.
     """
-    return (
-        env_bool(SKIP_OS_SETTINGS_ENV) or env_bool(TRUST_OS_SETTINGS_ENV) or _config_scope == "user"
-    )
+    return env_bool(SKIP_OS_SETTINGS_ENV) or _config_scope == "user"
 
 
 def managed_files_supported() -> bool:
@@ -436,56 +432,6 @@ def managed_file_conflicts(
         if existing_value != _path_value(desired, path):
             conflicts.append(".".join(path))
     return conflicts
-
-
-def raise_on_skipped_managed_overrides(
-    path: Path,
-    conflicts: list[str],
-    *,
-    display: str,
-) -> None:
-    """Fail when an opt-out left a stale OS-managed file overriding the new user config."""
-    if not conflicts:
-        return
-    raise RuntimeError(
-        f"the OS-managed {display} settings at {path} are stale and conflict with your per-user settings."
-        f" {SKIP_OS_SETTINGS_ENV} is set, so the OS-managed settings were not modified. Run `ug revert` "
-        f"from an interactive terminal or remove {path}"
-    )
-
-
-def check_skipped_managed_overrides(
-    path: Path | None,
-    *,
-    parser: ManagedParser,
-    compose: Callable[[dict], dict],
-    owned_paths: list[list[str]],
-    display: str,
-) -> None:
-    """When opting out, fail if a stale OS-managed file still overrides the new user config.
-
-    `UG_SKIP_OS_SETTINGS` leaves the root-owned managed file untouched. A file from an earlier
-    workspace keeps its highest-precedence gateway values, so refuse to proceed when the conflicting
-    keys would let a bare agent silently reach the old workspace. Reads only (no sudo); best-effort,
-    so an unsupported platform, symlink, or unparseable file is left to the normal reconcile path.
-    ``UG_TRUST_OS_SETTINGS`` skips this check and leaves precedence to the native agent.
-    """
-    if env_bool(TRUST_OS_SETTINGS_ENV) or path is None or path.is_symlink():
-        return
-    current_text = read_managed_file(path)
-    if current_text is None:
-        return
-    try:
-        existing = parser(current_text)
-    except RuntimeError:
-        return
-    # `compose` mutates its argument in place, so snapshot the on-disk state before composing.
-    managed_before = deepcopy(existing)
-    raise_on_skipped_managed_overrides(
-        path,
-        managed_file_conflicts(managed_before, compose(existing), owned_paths),
-        display=display,
-    )
 
 
 def _unwrap(value: object) -> object:
