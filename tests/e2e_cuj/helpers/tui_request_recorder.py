@@ -2,7 +2,6 @@
 
 import json
 from copy import deepcopy
-from datetime import UTC, datetime
 from pathlib import Path
 
 from tests.integration.utils.request_recorder import (
@@ -31,15 +30,16 @@ class TuiRequestRecorder(RequestRecorder):
         self.retarget_session(session.home)
 
     def prepare_launch(self) -> None:
-        """Keep the recorder-scoped managed-config cache fresh for a no-preflight launch."""
+        """Check the saved managed config still targets the recorder before a no-preflight launch.
+
+        A launch replays that saved config without refetching, so nothing needs refreshing.
+        """
         if self._session_home is None:
             raise RuntimeError("configure_session must run before prepare_launch")
         path = self._session_home / ".ucode" / "managed-config.json"
         payload = json.loads(path.read_text())
         if payload.get("workspace") != self.url:
             raise AssertionError("Managed-config cache does not target the recorder")
-        payload["retrieved_at"] = datetime.now(UTC).isoformat()
-        path.write_text(json.dumps(payload, indent=2) + "\n")
 
     def retarget_session(self, home: Path) -> None:
         """Retarget a session configured outside configure_session, e.g. in a terminal."""
