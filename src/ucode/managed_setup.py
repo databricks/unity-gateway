@@ -14,7 +14,7 @@ inverting that module's maps rather than restated, so a new agent or MCP type on
 once.
 
 Local persistence is not duplicated here: the config lives in the one local file,
-``~/.ucode/managed-config.json``, which the launch path pulls into via
+``/etc/unitygateway/managed-settings.json``, which configuration and launch refreshes update via
 :func:`ucode.managed_config.save_managed_state` / :func:`ucode.managed_config.load_managed_state`.
 
 These validation and serialization helpers are consumed on the launch/refresh side (notably by

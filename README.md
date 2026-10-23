@@ -452,7 +452,19 @@ preferences are ignored and their files are left untouched. See the bundled
 | GitHub Copilot CLI | `~/.copilot/ucode.env`, `~/.copilot/ucode-mcp-config.json` |
 | Pi | `~/.ucode/pi-home/.pi/agent/models.json`, `~/.ucode/pi-home/.pi/agent/settings.json` |
 | Cursor Agent | `~/.cursor/mcp.json` |
-| Unity Gateway | `~/.ucode/managed-state.json`, `~/.ucode/managed-backups/` |
+| Unity Gateway | `/etc/unitygateway/managed-settings.json` (Linux and macOS), `~/.ucode/refresh_ts.json`, `~/.ucode/managed-state.json`, `~/.ucode/managed-backups/` |
+
+Workspace policy is root-owned but readable without sudo. Configure installs it only when the
+workspace publishes a policy; launches check for updates every five minutes. Non-root launches
+never invoke sudo for workspace policy: they warn about changes and keep the installed policy
+until an administrator or IT provisioning run updates it. Each distinct pending change warns once.
+The installed workspace is authoritative: selecting a different one fails launch instead of
+falling back to unmanaged behavior.
+Refresh timestamps and pending-change hashes live in user-owned `~/.ucode/refresh_ts.json`,
+not in the protected policy file.
+This policy is separate from agent-file backups and is not removed by `ug revert`.
+See [managed workspace policy](docs/managed-workspace-policy.md) for permissions and trade-offs.
+Managed policy headers must not contain secrets: the policy is readable by all local users.
 
 ### Codex desktop tracing
 
