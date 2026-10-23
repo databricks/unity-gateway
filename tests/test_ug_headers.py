@@ -8,7 +8,7 @@ import pytest
 from typer.testing import CliRunner
 
 from ucode.cli import app
-from ucode.ug_headers import ug_headers, with_ug_headers
+from ucode.ug_headers import ug_headers
 
 
 def test_ug_headers_parse_one_per_line(monkeypatch):
@@ -41,12 +41,6 @@ def test_later_line_replaces_same_name_in_any_case(monkeypatch):
     assert ug_headers() == {"x-a": "2"}
 
 
-def test_with_ug_headers_never_replaces_a_set_header(monkeypatch):
-    monkeypatch.setenv("UG_HEADERS", "authorization: other\ncontent-type: text/plain\nX-New: 1")
-    headers = {"Authorization": "Bearer tok", "Content-Type": "application/json"}
-    assert with_ug_headers(headers) == {**headers, "X-New": "1"}
-
-
 def test_header_flag_appends_to_ug_headers(monkeypatch):
     monkeypatch.setenv("UG_HEADERS", "X-Env: 1")
     result = CliRunner().invoke(
@@ -65,10 +59,8 @@ def test_header_flag_appends_to_ug_headers(monkeypatch):
     assert os.environ["UG_HEADERS"] == "X-Env: 1\nX-Flag: 2"
 
 
-def test_bad_inherited_line_warns_and_is_dropped(monkeypatch):
+def test_bad_inherited_line_never_blocks_a_command(monkeypatch):
     monkeypatch.setenv("UG_HEADERS", "Authorization Bearer secret-tok\nX-Ok: 1")
     result = CliRunner().invoke(app, ["revert", "--help"])
     assert result.exit_code == 0, result.output
-    assert "Skipping UG_HEADERS line(s) 1" in result.output
     assert "secret-tok" not in result.output
-    assert os.environ["UG_HEADERS"] == "X-Ok: 1"

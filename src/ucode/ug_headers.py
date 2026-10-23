@@ -27,29 +27,16 @@ def parse_header_line(line: str) -> tuple[str, str] | None:
     return (name, value) if _is_sendable_value(value) else None
 
 
-def invalid_ug_header_lines() -> list[int]:
-    """The 1-based numbers of the non-blank ``UG_HEADERS`` lines that aren't valid headers."""
-    lines = os.environ.get(UG_HEADERS_ENV_VAR, "").splitlines()
-    return [n for n, line in enumerate(lines, 1) if line.strip() and not parse_header_line(line)]
-
-
 def ug_headers() -> dict[str, str]:
     """``UG_HEADERS`` as ``{name: value}``, one ``Name: value`` per line.
 
-    Invalid lines are skipped (the CLI warns about them once). A later line replaces an earlier
-    one with the same name in any case, so ``--header`` overrides an inherited value."""
+    Invalid lines are skipped, so a bad inherited value never blocks a command. A later line
+    replaces an earlier one with the same name in any case, so ``--header`` overrides an inherited
+    value. Spread it first into a urllib header dict: urllib capitalizes names and keeps the last
+    value, so ug's own headers listed after it win in any case."""
     headers: dict[str, tuple[str, str]] = {}
     for line in os.environ.get(UG_HEADERS_ENV_VAR, "").splitlines():
         parsed = parse_header_line(line)
         if parsed:
             headers[parsed[0].casefold()] = parsed
     return dict(headers.values())
-
-
-def with_ug_headers(headers: dict[str, str]) -> dict[str, str]:
-    """``headers`` plus each ``UG_HEADERS`` header it doesn't already set, in any case.
-
-    ug's own headers (``Authorization``, ``Content-Type``, a caller's) always keep their value."""
-    present = {name.casefold() for name in headers}
-    extra = {name: value for name, value in ug_headers().items() if name.casefold() not in present}
-    return {**headers, **extra}

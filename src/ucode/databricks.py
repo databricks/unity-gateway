@@ -43,7 +43,7 @@ from ucode.constants import (
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock
 from ucode.telemetry import ucode_user_agent, ug_version
-from ucode.ug_headers import with_ug_headers
+from ucode.ug_headers import ug_headers
 from ucode.ui import (
     err_console,
     normalize_workspace_url,
@@ -340,7 +340,8 @@ def _http_get_bytes(
     if max_retries < 0:
         raise ValueError("max_retries must be non-negative")
 
-    request_headers = with_ug_headers({"Authorization": f"Bearer {token}", **(headers or {})})
+    request_headers = {**ug_headers(), "Authorization": f"Bearer {token}"}
+    request_headers.update(headers or {})
     request = urllib_request.Request(url, headers=request_headers)
     for attempt in range(max_retries + 1):
         try:
@@ -443,10 +444,14 @@ def _http_send_json(
     empty body there is the expected result, not a decode failure.
     """
     body_bytes = json.dumps(payload).encode("utf-8") if payload is not None else None
-    request_headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    request_headers = {
+        **ug_headers(),
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
     if body_bytes is not None:
         request_headers["Content-Type"] = "application/json"
-    request_headers = with_ug_headers({**request_headers, **(headers or {})})
+    request_headers.update(headers or {})
     request = urllib_request.Request(url, data=body_bytes, method=method, headers=request_headers)
     try:
         with urllib_request.urlopen(request, timeout=timeout) as response:

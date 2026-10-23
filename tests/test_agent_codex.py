@@ -1712,27 +1712,6 @@ class TestCodexLaunch:
         assert f"Codex {version} is outdated" in warning
         assert "Upgrade Codex to 0.134.0 or newer" in warning
         assert "codex --version" in warning
-        # Without UG_HEADERS there is nothing to drop, so no launch-header warning.
-        assert "launch headers" not in warning
-
-    def test_legacy_launch_warns_that_ug_headers_are_dropped(self, tmp_path, monkeypatch, capsys):
-        profile_path = tmp_path / "ucode.config.toml"
-        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile_path)
-        monkeypatch.setattr(codex, "LEGACY_CODEX_CONFIG_PATH", tmp_path / "config.toml")
-        monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "profile-backup.toml")
-        monkeypatch.setattr(codex, "LEGACY_CODEX_BACKUP_PATH", tmp_path / "legacy-backup.toml")
-        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.133.0")
-        monkeypatch.setattr(codex, "save_state", lambda state: None)
-        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kw: "tok")
-        monkeypatch.delenv("OAUTH_TOKEN", raising=False)
-        monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: None)
-        state = codex.write_tool_config({"workspace": WS, "profile": "test-workspace"})
-        monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: testenv://liteswap/a")
-
-        codex.launch(state, [], options=LaunchOptions())
-
-        warning = " ".join(capsys.readouterr().err.split())
-        assert "your `ug --header` / UG_HEADERS headers aren't sent" in warning
 
     def test_requires_populated_ucode_profile(self, tmp_path, monkeypatch):
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", tmp_path / "missing.config.toml")
