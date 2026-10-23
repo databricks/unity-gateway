@@ -10,6 +10,7 @@ model catalog). The expected model ids mirror that fixture; update both together
 
 import json
 import tomllib
+from pathlib import Path
 
 import pytest
 from utils.managed import use_managed_config_fixture
@@ -114,6 +115,30 @@ def test_ug_configure_managed_is_idempotent(live_session, workspace):
 
     expected = (MANAGED_CLAUDE_MODELS, MANAGED_CLAUDE_MODELS, [MANAGED_CODEX_MODEL])
     assert runs == [expected, expected], runs
+
+
+@pytest.mark.managed_fixture
+@pytest.mark.claude
+def test_ug_configure_installs_workspace_policy_machine_wide(live_session, workspace):
+    """Scenario: run a managed `ug configure` on a machine with no installed workspace policy.
+
+    Expected: configure installs the workspace policy at /etc/unitygateway/managed-settings.json as
+    a root-owned 0644 file in a root-owned 0755 directory, containing exactly the `workspace` and
+    `config` keys. Launches read the per-user cache as before, so this test checks only the
+    installed file, which the test suite removes at teardown.
+    """
+    session = live_session
+    use_managed_config_fixture(session, "managed_workspace_default")
+    policy = Path("/etc/unitygateway/managed-settings.json")
+
+    session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
+
+    installed = policy.stat()
+    assert installed.st_uid == 0
+    assert installed.st_mode & 0o777 == 0o644
+    assert policy.parent.stat().st_uid == 0
+    assert policy.parent.stat().st_mode & 0o777 == 0o755
+    assert set(json.loads(policy.read_text(encoding="utf-8"))) == {"workspace", "config"}
 
 
 @pytest.mark.managed_fixture

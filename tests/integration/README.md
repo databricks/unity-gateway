@@ -699,7 +699,7 @@ journeys check setup and launch with existing services, without inference.
 There are **87 live cases** (including 11 marked TUI journeys) and **7 installation
 checks** with Claude and Codex; selecting OpenCode adds one live headless case and two `managed_fixture` cases; selecting Copilot adds ten live cases. One
 **`workspace_switch` case** uses two real workspaces and checks skills MCP cleanup and a completed
-Claude task. A further **43 `managed_fixture` cases** (twelve of them also `live`) run on the
+Claude task. A further **44 `managed_fixture` cases** (twelve of them also `live`) run on the
 managed workspace with a checked-in JSON CodingAgentConfig from `tests/fixtures/managed_config/`
 injected through `UCODE_MANAGED_CONFIG_STUB`; there are no cases that read a published config.
 Twelve explicit configured/fresh Claude and Codex discovery and source-override journeys use the
@@ -718,7 +718,7 @@ bearer; no second workspace or extra secret is involved.
 Across integration and dedicated CUJ7, the 14 numbered scenarios comprise 24 journeys:
 12 managed and 12 unmanaged. Integration contains 22 of them (12 managed, 10 unmanaged);
 configured unmanaged cases 7 and 8 run in `e2e_cuj/test_cuj7_model_discovery.py`.
-The complete integration suite collects 129 executions (126 with Claude and Codex selected).
+The complete integration suite collects 130 executions (127 with Claude and Codex selected).
 See the named coverage and gaps matrix in
 [../README.md](../README.md).
 

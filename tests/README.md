@@ -533,6 +533,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_configure_claude_repeat_and_revert`, `test_ug_configure_codex_repeat_and_revert` | Configure twice over user settings; complete a task; revert twice | Settings preserved; no bearer in ug state; generated config removed; status unconfigured |
 | `test_ug_configure_claude_cleans_stale_skills_mcp_on_workspace_switch` | Configure the first workspace, register its skills MCP, switch to a second real workspace, and use Claude | Old registration removed from Claude and the new workspace state; old workspace bucket preserved; repeat configure stays clean; real file task completes on the second workspace |
 | `test_ug_configure_claude_rejects_invalid_credentials`, `test_ug_configure_codex_rejects_invalid_credentials` | Configure with a rejected bearer against the real workspace | Authentication failure; no successful saved setup |
+| `test_ug_configure_installs_workspace_policy_machine_wide` | Run a managed `ug configure` with no installed workspace policy | `/etc/unitygateway/managed-settings.json` is root-owned `0644` in a root-owned `0755` directory and contains exactly `workspace` and `config`; the suite removes it at teardown (marker `managed_fixture`) |
 | `test_ug_configure_managed_claude`, `test_ug_configure_managed_codex` | Configure on the managed workspace with the stubbed `managed_workspace_default.json` CodingAgentConfig | No agent selector; each agent's generated config exposes exactly the admin's static model_services; real gateway prompt on launch. The Codex case also checks the shared catalog pointer, restart guidance, and a fresh bare app-server's visible model list |
 | `e2e_cuj/test_cuj5_budget_defaults.py` | Launch bare `ug` with separate low-spend and above-tier principals against the fixed 1% tier (`spending_percentage=0.01`); explicitly launch `ug claude` above the tier | Bare launches check Claude/Sonnet below the tier and the Codex/Luna recommendation above it; `ug usage` agrees with backend spend, threshold, and percentage. Explicit `ug claude` displays the backend's Codex/Luna recommendation while its generated model setting and native header select Sonnet. No budget writes or inference tasks. Runs on its own `E2E CUJs · CUJ 5 · Budget-driven defaults` runner with both credential pairs documented in `integration/README.md`. |
 | `test_case_01_*` | Launch managed Claude without defaults after configure and from fresh state | Claude receives the admin MPS header; its gateway cache and replacement picker match the independently fetched provider model IDs; catalog labels are preserved and a model appears in a numbered picker row |
@@ -553,7 +554,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 
 With Claude and Codex selected there are **87 live cases** (11 marked TUI cases),
 **1 two-workspace case** (marker `workspace_switch`),
-**43 managed-fixture cases** (marker `managed_fixture`, with only
+**44 managed-fixture cases** (marker `managed_fixture`, with only
 the CodingAgentConfig input injected from a JSON file in `fixtures/managed_config/`), and **7 installation checks**. The 14 retained numbered scenarios
 comprise **24 explicit journeys**: 12 managed configured/fresh executions and 12 unmanaged
 executions. The remaining managed-fixture cases cover focused model, MCP, skills,
@@ -733,6 +734,15 @@ no elevation for unchanged files, target/symlink rejection, bounded shutdown and
 and real-shell copy/rename failure handling in temporary directories.
 `test_cli.py` covers the workspace configure session boundary.
 These are unit/component checks; they do not establish live sudo password-prompt behavior.
+
+`test_managed_config.py::TestMachinePolicyInstall` covers `ug configure` installing the machine-wide
+workspace policy: unchanged content writes nothing, a changed policy is reinstalled, no-config and
+feature-disabled remove it (for the same or another workspace), launches never write it, denied sudo
+raises `ManagedPolicyInstallDenied`, and Windows, other OSes, and `UG_SKIP_OS_SETTINGS` never write.
+`test_managed_files.py` covers the workspace-policy writer (non-root launch never invokes sudo, sudo
+password failures, root direct runs, dry run, symlink refusal) and runs the real managed shell script
+for install and matching removal. These are component checks against a faked installer; they do not
+establish live sudo behavior.
 
 Codex desktop OTEL component tests cover the systemd unit, the macOS LaunchAgent, and the
 Windows scheduled task (`launchctl` and `schtasks` are simulated), reuse of CLI proxy/auth,
