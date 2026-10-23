@@ -1226,3 +1226,46 @@ class TestMachinePolicyInstall:
         refresh_managed_config(_state(), force_refresh=True)
         assert calls == []
         assert self._installed() is None
+
+
+class TestRevertMachinePolicy:
+    def test_revert_removes_the_installed_policy(self):
+        mc_mod.MACHINE_POLICY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        mc_mod.MACHINE_POLICY_PATH.write_text('{"workspace": "x", "config": {}}', encoding="utf-8")
+
+        assert mc_mod.revert_machine_policy() == "removed"
+        assert not mc_mod.MACHINE_POLICY_PATH.exists()
+
+    def test_revert_without_a_policy_writes_nothing(self, monkeypatch):
+        monkeypatch.setattr(
+            mc_mod, "update_workspace_policy", lambda *a, **k: pytest.fail("nothing to remove")
+        )
+
+        assert mc_mod.revert_machine_policy() == "unchanged"
+
+    @pytest.mark.parametrize("mode", ["skip_os_settings", "windows"])
+    def test_revert_leaves_the_policy_where_ug_does_not_manage_it(self, monkeypatch, mode):
+        mc_mod.MACHINE_POLICY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        mc_mod.MACHINE_POLICY_PATH.write_text("{}", encoding="utf-8")
+        if mode == "skip_os_settings":
+            monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
+        else:
+            monkeypatch.setattr(mc_mod, "current_os", lambda: mc_mod.OS.WINDOWS)
+
+        assert mc_mod.revert_machine_policy() == "unchanged"
+        assert mc_mod.MACHINE_POLICY_PATH.exists()
+
+    def test_revert_without_sudo_warns_and_keeps_the_policy(self, monkeypatch):
+        mc_mod.MACHINE_POLICY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        mc_mod.MACHINE_POLICY_PATH.write_text("{}", encoding="utf-8")
+        warnings = []
+        monkeypatch.setattr(mc_mod, "print_warning", warnings.append)
+
+        def denied(*_a, **_k):
+            raise RuntimeError("sudo: a password is required")
+
+        monkeypatch.setattr(mc_mod, "update_workspace_policy", denied)
+
+        assert mc_mod.revert_machine_policy() == "failed"
+        assert mc_mod.MACHINE_POLICY_PATH.exists()
+        assert "ug revert" in warnings[0]

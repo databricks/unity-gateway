@@ -723,6 +723,25 @@ def _install_machine_policy(workspace: str, config: dict) -> None:
     )
 
 
+def revert_machine_policy() -> str:
+    """Remove the installed workspace policy for ``ug revert``: "removed", "unchanged", or "failed".
+
+    Nothing else writes this file, so revert deletes it outright. Without sudo it warns and keeps
+    the file, like the other machine-wide settings revert restores.
+    """
+    if not _machine_policy_installable() or not MACHINE_POLICY_PATH.exists():
+        return "unchanged"
+    try:
+        update_workspace_policy(MACHINE_POLICY_PATH, None, interactive=True, allow_sudo=True)
+    except RuntimeError as exc:
+        print_warning(
+            f"Could not remove the workspace policy at {MACHINE_POLICY_PATH}: {exc} Rerun "
+            "`ug revert` from a terminal where you can use sudo."
+        )
+        return "failed"
+    return "removed"
+
+
 def _sync_machine_policy(workspace: str, config: dict, *, force_refresh: bool) -> None:
     """Install or remove the machine policy for an explicit configure; launches never write it.
 

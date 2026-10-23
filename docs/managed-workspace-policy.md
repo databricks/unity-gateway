@@ -46,6 +46,7 @@ Launches never install or remove the machine-wide policy. Per-user caching of th
 
 - The policy describes one workspace for the whole machine. Configuring another workspace replaces it
   for all users.
+- `ug revert` removes the policy, with sudo. Without sudo it warns and keeps the file.
 - Installation needs sudo on Linux and macOS. On MDM machines, ask IT to run the provisioning step
   rather than attempting administrator-only configure yourself.
 - Live sudo and ownership checks need a disposable clean machine, not a developer workstation.
