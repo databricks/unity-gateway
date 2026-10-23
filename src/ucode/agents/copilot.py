@@ -48,6 +48,12 @@ from ucode.config_io import (
 )
 from ucode.constants import (
     AI_GATEWAY_REQUEST_TAGS_HEADER,
+    API_ANTHROPIC_MESSAGES,
+    API_CODEX_RESPONSES,
+    API_MLFLOW_CHAT_COMPLETIONS,
+    API_MLFLOW_RESPONSES,
+    API_OPENAI_CHAT_COMPLETIONS,
+    API_OPENAI_RESPONSES,
     LOOPBACK_HOST,
     MODEL_PROVIDER_SERVICE_HEADER,
 )
@@ -122,9 +128,9 @@ PROVIDER_NAMES: dict[str, str] = {
     WIRE_COMPLETIONS: "dbx-completions",
 }
 _WIRE_ROUTES: dict[str, tuple[str, ...]] = {
-    WIRE_ANTHROPIC: ("anthropic/v1/messages",),
-    WIRE_RESPONSES: ("mlflow/v1/responses", "openai/v1/responses", "codex/v1/responses"),
-    WIRE_COMPLETIONS: ("mlflow/v1/chat/completions", "openai/v1/chat/completions"),
+    WIRE_ANTHROPIC: (API_ANTHROPIC_MESSAGES,),
+    WIRE_RESPONSES: (API_MLFLOW_RESPONSES, API_OPENAI_RESPONSES, API_CODEX_RESPONSES),
+    WIRE_COMPLETIONS: (API_MLFLOW_CHAT_COMPLETIONS, API_OPENAI_CHAT_COMPLETIONS),
 }
 _UNSUPPORTED_MODELS = {
     "claude-opus-4-1": "the gateway rejects the thinking settings Copilot sends for it",

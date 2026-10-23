@@ -35,6 +35,8 @@ from urllib.parse import quote, urlencode, urlparse
 from ucode.codex_config import catalog_slugs
 from ucode.config_io import APP_DIR
 from ucode.constants import (
+    API_GEMINI_GENERATE_CONTENT,
+    API_OPENAI_RESPONSES,
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
 )
@@ -3670,7 +3672,7 @@ def discover_gemini_models(workspace: str, token: str) -> tuple[list[str], str |
     # Order newest model version first so `default_model()` (which picks the
     # first entry) launches e.g. gemini-3.5-flash rather than gemini-2.5-flash.
     return discover_endpoints_with_api_type(
-        workspace, token, "gemini/v1/generateContent", sort_key=model_version_sort_key
+        workspace, token, API_GEMINI_GENERATE_CONTENT, sort_key=model_version_sort_key
     )
 
 
@@ -3678,7 +3680,7 @@ def discover_codex_models(workspace: str, token: str) -> tuple[list[str], str | 
     # Order newest model version first (like `discover_gemini_models`), so the picker's top choice
     # and default is e.g. gpt-5-4 rather than the alphabetically-first gpt-5.
     return discover_endpoints_with_api_type(
-        workspace, token, "openai/v1/responses", sort_key=model_version_sort_key
+        workspace, token, API_OPENAI_RESPONSES, sort_key=model_version_sort_key
     )
 
 

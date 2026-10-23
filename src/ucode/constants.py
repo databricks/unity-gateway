@@ -20,6 +20,16 @@ SMART_ROUTING_ENV_KEYS = (
 )
 
 MODEL_PROVIDER_SERVICE_HEADER = "Databricks-Model-Provider-Service"
+
+# AI Gateway API types, as a model service lists them in `supported_api_types` and a Model
+# Provider Service target in `native_api_types`.
+API_ANTHROPIC_MESSAGES = "anthropic/v1/messages"
+API_CODEX_RESPONSES = "codex/v1/responses"
+API_GEMINI_GENERATE_CONTENT = "gemini/v1/generateContent"
+API_MLFLOW_CHAT_COMPLETIONS = "mlflow/v1/chat/completions"
+API_MLFLOW_RESPONSES = "mlflow/v1/responses"
+API_OPENAI_CHAT_COMPLETIONS = "openai/v1/chat/completions"
+API_OPENAI_RESPONSES = "openai/v1/responses"
 MODEL_SERVICE_PARENT_SCHEMA_HEADER = "Databricks-Model-Service-Parent-Schema"
 # Names the smart-router recipe (e.g. `task_v3`) in use; sent only when smart routing is enabled.
 SMART_ROUTER_RECIPE_HEADER = "Databricks-Smart-Router-Recipe"
