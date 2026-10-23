@@ -81,6 +81,20 @@ def test_omitted_profile_is_not_selected_from_host(cli, monkeypatch):
     assert "--profile" not in seen["argv"]
 
 
+def test_external_bearer_uses_shared_token_path(monkeypatch):
+    monkeypatch.setenv("DATABRICKS_BEARER", "external-token")
+    token = Mock(return_value="external-token")
+    monkeypatch.setattr(desktop_auth, "get_databricks_token", token)
+    monkeypatch.setattr(
+        desktop_auth,
+        "databricks_cli_path",
+        Mock(side_effect=AssertionError("CLI must not run for an external bearer")),
+    )
+
+    assert desktop_auth.get_claude_desktop_databricks_token(HOST, PROFILE) == "external-token"
+    token.assert_called_once_with(HOST, PROFILE, force_refresh=False)
+
+
 def test_noninteractive_auth_failure_does_not_start_login(cli, monkeypatch):
     run = Mock(return_value=_result(1, stderr="expired OAuth session"))
     monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", run)

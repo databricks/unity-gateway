@@ -124,7 +124,11 @@ def test_ug_configure_claude_desktop_profile_lifecycle(live_session, workspace):
 def test_ug_configure_claude_desktop_subscription_relay(
     live_session, workspace, claude_relayed_provider, claude_oauth_token
 ):
-    """Configure a relayed Desktop profile and run its installed credential helper."""
+    """Scenario: configure a relayed Desktop profile using live provider credentials.
+
+    Expected: the profile selects relay mode and its installed helper returns both the Claude
+    subscription token and Databricks gateway header. This does not launch the Desktop GUI.
+    """
     session = live_session
     config_library = _config_library(session)
     config_library.mkdir(parents=True)
