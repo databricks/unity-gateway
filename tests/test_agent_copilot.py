@@ -434,7 +434,7 @@ class TestProviderCatalog:
             {"provider_type": "anthropic", "targets": ["claude-sonnet-5", "claude-opus-5"]},
         )
 
-        models = copilot.provider_catalog({"workspace": WS}, MPS, None)
+        models = copilot.provider_service_catalog({"workspace": WS}, MPS, None)
 
         assert [m.id for m in models] == ["claude-opus-5", "claude-sonnet-5"]
         assert seen["resolve"] == ("copilot", MPS, WS, "dbx-token")
@@ -447,7 +447,9 @@ class TestProviderCatalog:
             listed=["anthropic.claude-opus-4-8"],
         )
 
-        models = copilot.provider_catalog({"workspace": WS}, MPS, "us.anthropic.claude-sonnet-4-6")
+        models = copilot.provider_service_catalog(
+            {"workspace": WS}, MPS, "us.anthropic.claude-sonnet-4-6"
+        )
 
         assert [m.id for m in models] == [
             "anthropic.claude-opus-4-8",
@@ -462,7 +464,7 @@ class TestProviderCatalog:
             listed=["gpt-5.5", "gpt-4o"],
         )
 
-        models = copilot.provider_catalog({"workspace": WS}, MPS, "dbx-responses/gpt-5.5")
+        models = copilot.provider_service_catalog({"workspace": WS}, MPS, "dbx-responses/gpt-5.5")
 
         assert [(m.id, m.wire) for m in models] == [
             ("gpt-5.5", "responses"),
@@ -477,7 +479,7 @@ class TestProviderCatalog:
             listing_error="HTTP 503 Service Unavailable",
         )
 
-        models = copilot.provider_catalog({"workspace": WS}, MPS, "gpt-5.5")
+        models = copilot.provider_service_catalog({"workspace": WS}, MPS, "gpt-5.5")
 
         assert [m.id for m in models] == ["gpt-5.5"]
         assert "HTTP 503" in capsys.readouterr().out
@@ -489,7 +491,7 @@ class TestProviderCatalog:
             listed=["claude-opus-5", "claude-sonnet-5"],
         )
 
-        models = copilot.provider_catalog({"workspace": WS}, MPS, None)
+        models = copilot.provider_service_catalog({"workspace": WS}, MPS, None)
 
         assert [m.id for m in models] == ["claude-opus-5", "claude-sonnet-5"]
         assert copilot.launch_model({}, models, warn=False).id == "claude-sonnet-5"
@@ -500,7 +502,7 @@ class TestProviderCatalog:
         )
 
         with pytest.raises(RuntimeError, match="has no models ug copilot can use.*--model"):
-            copilot.provider_catalog({"workspace": WS}, MPS, None)
+            copilot.provider_service_catalog({"workspace": WS}, MPS, None)
 
     def test_no_usable_model_lists_the_reasons(self, monkeypatch):
         _stub_provider_service(
@@ -513,7 +515,7 @@ class TestProviderCatalog:
         )
 
         with pytest.raises(RuntimeError, match=r"text-embedding-3-large \(it isn't a chat model"):
-            copilot.provider_catalog({"workspace": WS}, MPS, None)
+            copilot.provider_service_catalog({"workspace": WS}, MPS, None)
 
     def test_warns_about_skipped_models(self, monkeypatch, capsys):
         _stub_provider_service(
@@ -525,7 +527,7 @@ class TestProviderCatalog:
             },
         )
 
-        copilot.provider_catalog({"workspace": WS}, MPS, None)
+        copilot.provider_service_catalog({"workspace": WS}, MPS, None)
 
         assert "text-embedding-3-large" in capsys.readouterr().out
 
@@ -533,7 +535,7 @@ class TestProviderCatalog:
         _stub_provider_service(monkeypatch, None)
 
         with pytest.raises(RuntimeError, match="was not found"):
-            copilot.provider_catalog({"workspace": WS}, MPS, None)
+            copilot.provider_service_catalog({"workspace": WS}, MPS, None)
 
 
 class TestCopilotModelLimits:
@@ -1173,7 +1175,7 @@ class TestLaunch:
             {"provider_type": "anthropic", "targets": ["claude-opus-5", "claude-sonnet-5"]},
         )
         state = dict(STATE, copilot_static_models=[GPT])
-        state[copilot.LAUNCH_PROVIDER_KEY] = MPS
+        state[copilot.LAUNCH_PROVIDER_SERVICE_KEY] = MPS
 
         with pytest.raises(SystemExit):
             copilot.launch(state, [], options=copilot.LaunchOptions())
@@ -1182,7 +1184,7 @@ class TestLaunch:
         assert [m["id"] for m in registry["models"]] == ["claude-opus-5", "claude-sonnet-5"]
         assert registry["providers"][0]["headers"] == {"Databricks-Model-Provider-Service": MPS}
         assert seen["env"]["COPILOT_MODEL"] == "dbx-anthropic/claude-sonnet-5"
-        assert copilot.LAUNCH_PROVIDER_KEY not in state
+        assert copilot.LAUNCH_PROVIDER_SERVICE_KEY not in state
 
     def test_provider_service_launch_rejects_a_model_it_does_not_serve(self, tmp_path, monkeypatch):
         isolate_copilot_config_paths(monkeypatch, tmp_path)
@@ -1191,7 +1193,7 @@ class TestLaunch:
             monkeypatch, {"provider_type": "anthropic", "targets": ["claude-opus-5"]}
         )
         state = dict(STATE)
-        state[copilot.LAUNCH_PROVIDER_KEY] = MPS
+        state[copilot.LAUNCH_PROVIDER_SERVICE_KEY] = MPS
 
         with pytest.raises(RuntimeError, match="claude-opus-5"):
             copilot.launch(state, ["--model", SONNET], options=copilot.LaunchOptions())

@@ -12,7 +12,7 @@ sends, and open-source models are not validated with Copilot yet.
 
 `ug copilot --provider` registers a Model Provider Service's models instead: its Claude models on
 the Anthropic endpoint, its other chat models on the gateway's native OpenAI route, with every
-provider sending the service's routing header.
+registry provider sending the service's routing header.
 
 Copilot holds its provider credential for the whole session, so every provider points at a
 per-session loopback proxy (`gateway_proxy.start_gateway_auth_proxy`): Copilot authenticates to
@@ -115,7 +115,7 @@ LEGACY_ENV_KEYS = [
 CREDENTIAL_ENV_KEYS = ("COPILOT_PROVIDER_BEARER_TOKEN", "OAUTH_TOKEN")
 CATALOG_STATE_KEY = "copilot_catalog"
 # The Model Provider Service this launch routes through; set by the launch command, never saved.
-LAUNCH_PROVIDER_KEY = "_copilot_launch_provider"
+LAUNCH_PROVIDER_SERVICE_KEY = "_copilot_launch_provider_service"
 
 # The wire APIs Copilot speaks; `responses` and `completions` are Copilot's `wireApi` values.
 WIRE_ANTHROPIC = "anthropic"
@@ -138,11 +138,12 @@ _UNSUPPORTED_MODELS = {
 _GATEWAY_ALIAS_PREFIX = "anthropic-aigw-"
 _GPT_MODEL_MAJOR_PATTERN = re.compile(r"^gpt-(\d+)o?(?=$|[.-])")
 _CLAUDE_DASHED_VERSION_PATTERN = re.compile(r"-(\d+)-(\d+)$")
-# Provider-side Claude ids end in a release date and, on Bedrock, a version: `-20250929-v1:0`.
+# Anthropic and Bedrock Claude ids end in a release date and, on Bedrock, a version:
+# `-20250929-v1:0`.
 _CLAUDE_RELEASE_SUFFIX_PATTERN = re.compile(r"(?:-\d{8})?(?:-v\d+(?::\d+)?)?$")
 _CLAUDE_HAIKU_MAJOR_PATTERN = re.compile(r"^claude-haiku-(\d+)")
-# Provider ids write versions with dots (`gpt-5.6`) or no separator (`o3`); the version sort reads
-# dash-separated digits.
+# Model Provider Service ids write versions with dots (`gpt-5.6`) or no separator (`o3`); the
+# version sort reads dash-separated digits.
 _DOTTED_VERSION_PATTERN = re.compile(r"(?<=\d)\.(?=\d)")
 _O_SERIES_PATTERN = re.compile(r"^o(?=\d)")
 _CLAUDE_CATALOG_VERSION_PATTERN = re.compile(r"^claude-([a-z]+)-(\d+)(?:\.(\d+))?$")
@@ -168,7 +169,7 @@ _CLAUDE_1M_LIMITS = (936_000, 32_000)
 _CLAUDE_200K_LIMITS = (168_000, 32_000)
 _CLAUDE_200K_WINDOW = 200_000
 
-# A provider target that declares its APIs is usable only if one of them is a chat API.
+# A Model Provider Service target that declares its APIs is usable only if one is a chat API.
 _CHAT_API_TYPES = frozenset(route for routes in _WIRE_ROUTES.values() for route in routes)
 
 
@@ -204,7 +205,7 @@ def classify_model(
     wire = _wire_from_name(tail)
     if provider_type in ANTHROPIC_API_PROVIDER_TYPES:
         if wire != WIRE_ANTHROPIC:
-            return None, "ug copilot uses only the Claude models of this provider"
+            return None, "ug copilot uses only the Claude models of this service"
         return wire, None
     if provider_type is not None:
         return (WIRE_RESPONSES if wire == WIRE_RESPONSES else WIRE_COMPLETIONS), None
@@ -314,13 +315,15 @@ def build_copilot_catalog(entries: Iterable[ModelServiceEntry | str]) -> list[Co
     return build_catalog(pairs)[0]
 
 
-def _without_provider_prefix(model: str) -> str:
-    """``model`` without Copilot's ``<provider>/`` prefix, e.g. ``dbx-responses/gpt-5.5`` -> ``gpt-5.5``."""
-    provider, separator, rest = model.partition("/")
-    return rest if separator and provider in PROVIDER_NAMES.values() else model
+def _without_registry_prefix(model: str) -> str:
+    """``model`` without a Copilot registry provider prefix: ``dbx-responses/gpt-5.5`` -> ``gpt-5.5``."""
+    name, separator, rest = model.partition("/")
+    return rest if separator and name in PROVIDER_NAMES.values() else model
 
 
-def provider_catalog(state: dict, service_name: str, requested: str | None) -> list[CopilotModel]:
+def provider_service_catalog(
+    state: dict, service_name: str, requested: str | None
+) -> list[CopilotModel]:
     """The models of Model Provider Service ``service_name`` that this launch registers.
 
     A service that allows every model registers what the gateway lists for it, plus ``requested``
@@ -335,7 +338,7 @@ def provider_catalog(state: dict, service_name: str, requested: str | None) -> l
     listed: list[str] = []
     allow_all = bool(service.get("allow_all_targets"))
     if allow_all:
-        start = _without_provider_prefix(requested) if requested else None
+        start = _without_registry_prefix(requested) if requested else None
         managed_default = state.get("copilot_default_model")
         start = start or (managed_default if isinstance(managed_default, str) else None)
         listed, reason = list_provider_service_models(workspace, token, service_name, provider_type)
@@ -562,8 +565,9 @@ def render_providers_config(
     """Copilot's providers.json for ``catalog``: one provider per wire, all on the session proxy.
 
     A provider with no models makes Copilot probe ``GET <baseUrl>/models``, so only used wires are
-    listed. Under ``provider_service`` every provider carries its routing header and OpenAI wires
-    use the gateway's native OpenAI route, which serves provider services untranslated."""
+    listed. With ``provider_service`` (a Model Provider Service), every registry provider carries its
+    routing header and OpenAI wires use the gateway's native OpenAI route, which serves Model
+    Provider Services untranslated."""
     providers = []
     for wire, name in PROVIDER_NAMES.items():
         if not any(model.wire == wire for model in catalog):
@@ -604,7 +608,7 @@ def render_providers_config(
             entry["modelId"] = catalog_id
         limits = copilot_model_limits(model.id) if model.wire == WIRE_ANTHROPIC else None
         if limits is not None and provider_service and sum(limits) > _CLAUDE_200K_WINDOW:
-            # A provider service may not serve the 1M window.
+            # A Model Provider Service may not serve the 1M window.
             limits = _CLAUDE_200K_LIMITS
         if limits is not None:
             entry["maxPromptTokens"], entry["maxOutputTokens"] = limits
@@ -844,9 +848,12 @@ def _wait_for_exit(proc: _ChildProcess) -> int:
 def _session_catalog(
     state: dict, tool_args: list[str], provider_service: str | None
 ) -> list[CopilotModel]:
-    """The models this launch registers: the provider service's, else the Databricks catalog."""
+    """The models this launch registers: the Model Provider Service's, else the Databricks
+    catalog."""
     if provider_service:
-        return provider_catalog(state, provider_service, explicit_model_arg_value(tool_args))
+        return provider_service_catalog(
+            state, provider_service, explicit_model_arg_value(tool_args)
+        )
     catalog = copilot_catalog(state)
     if not catalog:
         raise RuntimeError(
@@ -859,7 +866,7 @@ def _session_catalog(
 
 
 def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None:
-    provider_service = state.pop(LAUNCH_PROVIDER_KEY, None)
+    provider_service = state.pop(LAUNCH_PROVIDER_SERVICE_KEY, None)
     catalog = _session_catalog(state, tool_args, provider_service)
     # Resolve before the proxy starts so a bad model fails without starting Copilot.
     tool_args, selected = rewrite_model_args(tool_args, catalog)

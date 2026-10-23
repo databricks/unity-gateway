@@ -2764,8 +2764,8 @@ def build_skills_mcp_url(workspace: str, locations: list[str]) -> str:
 # `bedrock_mantle` provider types all serve (the gateway fronts them with the
 # OpenAI surface); gemini speaks Google's, served by a Gemini Enterprise
 # provider. copilot speaks Anthropic's for the Claude targets of anthropic and
-# Bedrock services, and OpenAI's for openai and azure_openai services, on each
-# provider's native route. Tags are the short form produced by `_provider_type_tag`
+# Bedrock services, and OpenAI's for openai and azure_openai services, on the
+# gateway's native route for each API. Tags are the short form produced by `_provider_type_tag`
 # (e.g. `amazon_bedrock`).
 _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
     "claude": ("anthropic", "amazon_bedrock", "bedrock_mantle"),
@@ -3024,7 +3024,7 @@ def _provider_service_unusable_reason(tool: str, service: dict, service_name: st
     if tool != "claude" and service.get("relayed"):
         return (
             f"Model provider service '{service_name}' relays a Claude subscription, which only "
-            f"Claude Code can use. Pick an API-key provider service for {tool}."
+            f"Claude Code can use. Pick a Model Provider Service with an API key for {tool}."
         )
     if (
         tool in _CLAUDE_ONLY_BEDROCK_TOOLS
@@ -3580,7 +3580,8 @@ _BARE_MODEL_NAME_PATTERN = re.compile(
 
 
 def bare_model_name(model: str) -> str:
-    """``model`` lowercased, without its catalog, schema, provider or hint decorations."""
+    """``model`` lowercased, without its catalog/schema or region prefix, ``anthropic.`` and
+    ``databricks-`` prefixes, or ``[...]`` hint."""
     match = _BARE_MODEL_NAME_PATTERN.match(model.lower())
     return match.group("name") if match else ""
 

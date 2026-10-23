@@ -469,7 +469,7 @@ def configure_tool(
             picker_catalog=picker_catalog,
         )
     elif tool == "copilot":
-        # Under a provider Copilot starts on one of the service's models, chosen at launch.
+        # Under a model provider service, Copilot starts on one of the service's models, chosen at launch.
         if not model and not provider:
             raise RuntimeError(f"A {tool} model must be selected before configuration.")
         result = copilot.write_tool_config(state, model)

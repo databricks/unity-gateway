@@ -2169,7 +2169,7 @@ class TestClaudeModelFlag:
         assert mock_resolve.call_args.args[0] == "copilot"
         assert mock_configure.call_args.args[2] is None
         launch_state = mock_launch.call_args.args[1]
-        assert launch_state[copilot_agent.LAUNCH_PROVIDER_KEY] == "main.default.openai"
+        assert launch_state[copilot_agent.LAUNCH_PROVIDER_SERVICE_KEY] == "main.default.openai"
 
     def test_model_location_sets_transient_codex_launch_marker(self):
         state = dict(MINIMAL_STATE)

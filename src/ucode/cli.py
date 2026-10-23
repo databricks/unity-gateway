@@ -3655,7 +3655,7 @@ def _launch_tool(
             elif parent_schema:
                 state["_codex_launch_parent_schema"] = parent_schema
         elif tool == "copilot" and provider:
-            state[copilot_agent.LAUNCH_PROVIDER_KEY] = provider
+            state[copilot_agent.LAUNCH_PROVIDER_SERVICE_KEY] = provider
         launch_options = _launch_options(
             tool,
             ctx.args,
