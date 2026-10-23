@@ -11,6 +11,7 @@ arms, spawn-tool detector, model-id translation, and artifact paths.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import textwrap
@@ -308,8 +309,11 @@ def resolve_spawn_route(
         ),
         default_task_label,
     )
-    decision, _ = decision_fn(task)
+    decision, reason = decision_fn(task)
     if decision is None:
+        logging.getLogger(__name__).warning(
+            "Smart Router could not route subagent: %s", reason or "no routing decision"
+        )
         return None
     routed_model = model_id_mapper(decision.model)
     return SpawnRoute(tool_input, task, decision, routed_model)

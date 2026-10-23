@@ -32,14 +32,17 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, urlencode, urlparse
 
+from ucode.codex_config import catalog_slugs
 from ucode.config_io import APP_DIR
 from ucode.constants import (
+    API_GEMINI_GENERATE_CONTENT,
+    API_OPENAI_RESPONSES,
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
 )
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock
-from ucode.telemetry import ug_version
+from ucode.telemetry import ucode_user_agent, ug_version
 from ucode.ui import (
     err_console,
     normalize_workspace_url,
@@ -112,6 +115,10 @@ class AnthropicModelCatalog:
 
 class CodexMpsModelCatalogUnavailable(RuntimeError):
     """The workspace does not expose the Codex model-catalog route."""
+
+
+class CodexModelCatalogEmpty(RuntimeError):
+    """The Codex model-catalog route answered with no models."""
 
 
 class CodexCatalogSource(Enum):
@@ -2097,6 +2104,24 @@ def model_token_limits(model_id: str) -> dict[str, int] | None:
     return None
 
 
+@dataclass(frozen=True)
+class ModelServiceEntry:
+    """One ``system.ai.*`` model service and the API types it advertises.
+
+    ``api_types`` is advisory: the gateway serves some models on routes they don't list, so callers
+    use it to exclude non-chat models, never to pick a route."""
+
+    id: str
+    api_types: tuple[str, ...] = ()
+
+
+def _model_service_api_types(service: dict) -> tuple[str, ...]:
+    api_types = service.get("supported_api_types")
+    if not isinstance(api_types, list):
+        return ()
+    return tuple(t for t in api_types if isinstance(t, str))
+
+
 def _model_service_id(service: dict) -> str | None:
     """Extract the `system.ai.<model-name>` id from one model-service entry.
 
@@ -2150,13 +2175,19 @@ def _get_model_services_page(
 # Claude ids), so a single `ucode setup` run would otherwise page it twice. Cached per process, not
 # persisted: a long-lived process is not a thing here, and a new model appearing mid-command is not
 # worth a second walk. Failures are never cached, so a transient error still retries.
-_MODEL_SERVICES_CACHE: dict[str, list[str]] = {}
+_MODEL_SERVICES_CACHE: dict[str, list[ModelServiceEntry]] = {}
 
 # Same idea for the Model Provider Service listing (a different endpoint). It is workspace-wide and
 # filtered per agent afterwards, so `ucode setup` would otherwise re-list it once per MPS-capable
 # agent. Keyed by ``(workspace, parent)`` — a schema-scoped listing is a different result set than
 # the metastore-wide one, so they must not share an entry.
 _MODEL_PROVIDER_SERVICES_CACHE: dict[tuple[str, str], list[dict]] = {}
+
+
+def cached_model_service_entries(workspace: str) -> list[ModelServiceEntry] | None:
+    """The model services this process already listed for ``workspace``, without a request."""
+    cached = _MODEL_SERVICES_CACHE.get(workspace)
+    return list(cached) if cached is not None else None
 
 
 def clear_model_services_cache() -> None:
@@ -2183,16 +2214,32 @@ def list_model_services(
     max_pages: int = 100,
     use_cache: bool = True,
 ) -> tuple[list[str], str | None]:
-    """List all `system.ai.*` model ids via the UC model-services API.
+    """List all `system.ai.*` model ids via the UC model-services API (see
+    :func:`list_model_service_entries`)."""
+    entries, reason = list_model_service_entries(
+        workspace, token, page_size=page_size, max_pages=max_pages, use_cache=use_cache
+    )
+    return [entry.id for entry in entries], reason
+
+
+def list_model_service_entries(
+    workspace: str,
+    token: str,
+    *,
+    page_size: int = _MODEL_SERVICES_PAGE_SIZE,
+    max_pages: int = 100,
+    use_cache: bool = True,
+) -> tuple[list[ModelServiceEntry], str | None]:
+    """List all `system.ai.*` model services via the UC model-services API.
 
     Pages through ``/api/2.1/unity-catalog/model-services`` scoped to the
     ``system.ai`` schema (``parent=schemas/system.ai``) with a bounded
-    ``page_size`` (the endpoint 499s without one) and returns the de-duplicated,
-    sorted list of ``system.ai.<model-name>`` ids. Returns (ids, reason); reason
-    is None on success, otherwise it describes why the list is empty (HTTP/network
-    error or no services). Scoping matters: the unscoped metastore listing walks
-    every schema across dozens of ~2s pages (~50s on a busy workspace) only to
-    keep the same ``system.ai.*`` subset — see ``_MODEL_SERVICE_PARENT_SCHEMA``.
+    ``page_size`` (the endpoint 499s without one) and returns the de-duplicated
+    entries sorted by id. Returns (entries, reason); reason is None on success,
+    otherwise it describes why the list is empty (HTTP/network error or no
+    services). Scoping matters: the unscoped metastore listing walks every schema
+    across dozens of ~2s pages (~50s on a busy workspace) only to keep the same
+    ``system.ai.*`` subset — see ``_MODEL_SERVICE_PARENT_SCHEMA``.
 
     A successful result is memoized per workspace for the life of the process; pass
     ``use_cache=False`` to force a fresh walk.
@@ -2203,7 +2250,7 @@ def list_model_services(
             return list(cached), None
 
     origin = workspace_origin(workspace)
-    ids: list[str] = []
+    entries: dict[str, ModelServiceEntry] = {}
     page_token: str | None = None
     seen_tokens: set[str] = set()
     last_reason: str | None = None
@@ -2225,8 +2272,10 @@ def list_model_services(
         for service in data.get("model_services", []):
             if isinstance(service, dict):
                 model_id = _model_service_id(service)
-                if model_id:
-                    ids.append(model_id)
+                if model_id and model_id not in entries:
+                    entries[model_id] = ModelServiceEntry(
+                        model_id, _model_service_api_types(service)
+                    )
         page_token = data.get("next_page_token") or None
         if not page_token:
             last_reason = None
@@ -2235,11 +2284,11 @@ def list_model_services(
             break
         seen_tokens.add(page_token)
 
-    deduped = sorted(set(ids))
-    if deduped:
+    listed = [entries[model_id] for model_id in sorted(entries)]
+    if listed:
         if use_cache:
-            _MODEL_SERVICES_CACHE[workspace] = list(deduped)
-        return deduped, None
+            _MODEL_SERVICES_CACHE[workspace] = list(listed)
+        return listed, None
     return [], last_reason or "model-services listing returned no models"
 
 
@@ -2384,14 +2433,15 @@ _CODING_AGENT_CONFIGS_API_PATH = "/api/ai-gateway/v2/coding-agent-configs"
 
 
 def _managed_config_user_agent() -> str:
-    """``ucode/<v>`` plus each ``<agent>/<v>`` ug already wrote into the OS-managed files.
+    """``ucode/<v>`` plus each ``<agent>/<v>`` ug already wrote into the OS-managed files, then the
+    client platform.
 
     The fetch serves every agent, so it reports what ug configured on this machine; reading the
     managed files avoids probing each agent's ``--version`` on every fetch."""
     from ucode.agents import claude, codex  # the agent modules import this one
     from ucode.managed_files import ug_agent_token
 
-    tokens = [f"ucode/{ug_version()}"]
+    tokens: list[str] = []
     for agent, user_agent in (
         ("claude", claude.managed_user_agent()),
         ("codex", codex.managed_user_agent()),
@@ -2399,7 +2449,7 @@ def _managed_config_user_agent() -> str:
         token = ug_agent_token(user_agent or "", agent)
         if token:
             tokens.append(token)
-    return " ".join(tokens)
+    return ucode_user_agent(ug_version(), *tokens)
 
 
 def fetch_managed_coding_agent_configs(workspace: str, token: str) -> tuple[list[dict], str | None]:
@@ -2599,9 +2649,17 @@ def _mcp_service_full_name(service: dict, required_prefix: str) -> str | None:
 
 
 def list_mcp_services(
-    workspace: str, token: str, parent: str = "system.ai", *, max_pages: int = 100
+    workspace: str,
+    token: str,
+    parent: str = "system.ai",
+    *,
+    max_pages: int = 100,
+    metadata: dict[str, dict] | None = None,
 ) -> tuple[list[str], str | None]:
     """List UC MCP services under ``parent`` (a ``<catalog>.<schema>`` ref).
+
+    ``metadata``, when provided, receives each accepted service's description and audit
+    fields from the same list response. No per-service requests are made.
 
     Requests the ``BASIC`` view explicitly: only service names are needed to build
     the deterministic proxy URLs, and ``BASIC`` omits the source-connection
@@ -2639,6 +2697,11 @@ def list_mcp_services(
             full_name = _mcp_service_full_name(service, expected_prefix)
             if full_name:
                 names.append(full_name)
+                if metadata is not None:
+                    metadata[full_name] = {
+                        key: service.get(key)
+                        for key in ("comment", "created_by", "create_time", "update_time")
+                    }
         page_token = data.get("next_page_token") or None
         if not page_token or page_token in seen_tokens:
             break
@@ -2700,19 +2763,27 @@ def build_skills_mcp_url(workspace: str, locations: list[str]) -> str:
 # the `openai`, `azure_openai`, `microsoft_foundry`, `amazon_bedrock`, and
 # `bedrock_mantle` provider types all serve (the gateway fronts them with the
 # OpenAI surface); gemini speaks Google's, served by a Gemini Enterprise
-# provider. Tags are the short form produced by `_provider_type_tag` (e.g.
-# `amazon_bedrock`).
+# provider. copilot speaks Anthropic's for the Claude targets of anthropic and
+# Bedrock services, and OpenAI's for openai and azure_openai services, on the
+# gateway's native route for each API. Tags are the short form produced by `_provider_type_tag`
+# (e.g. `amazon_bedrock`).
 _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
     "claude": ("anthropic", "amazon_bedrock", "bedrock_mantle"),
     "codex": ("openai", "azure_openai", "microsoft_foundry", "amazon_bedrock", "bedrock_mantle"),
     "gemini": ("gemini_enterprise",),
+    "copilot": ("anthropic", "amazon_bedrock", "bedrock_mantle", "openai", "azure_openai"),
 }
+
+# Agents that can only use a Bedrock service's Claude targets.
+_CLAUDE_ONLY_BEDROCK_TOOLS = ("claude", "copilot")
 
 # Provider types that expose Bedrock-style model ids (e.g.
 # `us.anthropic.claude-sonnet-4-6`, or region-less `anthropic.claude-*` on
 # Mantle) instead of the agent's canonical model names, so ucode must pin them
 # explicitly.
 BEDROCK_PROVIDER_TYPES: tuple[str, ...] = ("amazon_bedrock", "bedrock_mantle")
+# Provider types the gateway serves on its Anthropic Messages route.
+ANTHROPIC_API_PROVIDER_TYPES: tuple[str, ...] = ("anthropic", *BEDROCK_PROVIDER_TYPES)
 
 
 def tool_supports_provider_type(tool: str, provider_type: str) -> bool:
@@ -2742,9 +2813,11 @@ def list_model_provider_services(
 
     Returns ``(services, reason)`` where each service is
     ``{"name": "<catalog>.<schema>.<service>", "provider_type": "anthropic"|...,
-    "targets": [model_id, ...], "allow_all_targets": bool, "relayed": bool}``.
+    "targets": [model_id, ...], "target_api_types": {model_id: (api_type, ...)},
+    "allow_all_targets": bool, "relayed": bool}``.
     ``targets`` is the provider-side model ids the service exposes (used to pin
-    Bedrock model names). ``relayed`` is True for a credential-less Anthropic
+    Bedrock model names); ``target_api_types`` holds the APIs each target declares
+    (``native_api_types``, e.g. ``openai/v1/embeddings``). ``relayed`` is True for a credential-less Anthropic
     service (Claude Max/Team/Enterprise subscription relay). A non-None
     ``reason`` means the listing call itself failed.
 
@@ -2824,13 +2897,18 @@ def _provider_service_entry(raw_service: object) -> dict | None:
     raw_config = service.get("config")
     config = cast("dict[str, object]", raw_config) if isinstance(raw_config, dict) else {}
     targets: list[str] = []
+    target_api_types: dict[str, tuple[str, ...]] = {}
     raw_targets = config.get("targets")
     for target in raw_targets if isinstance(raw_targets, list) else []:
         if not isinstance(target, dict):
             continue
-        model_id = cast("dict[str, object]", target).get("model")
+        entry = cast("dict[str, object]", target)
+        model_id = entry.get("model")
         if isinstance(model_id, str) and model_id:
             targets.append(model_id)
+            api_types = entry.get("native_api_types")
+            if isinstance(api_types, list):
+                target_api_types[model_id] = tuple(t for t in api_types if isinstance(t, str))
     # Relayed = credential-less Anthropic (subscription relay). Only whether
     # it's relayed matters here; the tier (Max vs Team/Enterprise) is governed
     # server-side, so both launch identically.
@@ -2841,6 +2919,7 @@ def _provider_service_entry(raw_service: object) -> dict | None:
         "name": full_name,
         "provider_type": _provider_type_tag(raw_type if isinstance(raw_type, str) else None),
         "targets": targets,
+        "target_api_types": target_api_types,
         "allow_all_targets": bool(config.get("allow_all_targets")),
         "relayed": relayed,
     }
@@ -2926,23 +3005,44 @@ def list_tool_provider_services(
     return names, None
 
 
-def service_usable_for_tool(tool: str, service: dict) -> bool:
-    """True when ``tool`` can actually route through ``service``.
+def _provider_service_unusable_reason(tool: str, service: dict, service_name: str) -> str | None:
+    """Why ``tool`` can't route through ``service``, or None when it can.
 
-    Beyond the provider-type match, a Bedrock service is only usable for claude
-    if it exposes at least one Claude model in its targets — otherwise there's no
-    routable model id to pin — or is ``allow_all_targets``, in which case the model
-    id comes from elsewhere (e.g. the managed config's authored default). (Anthropic
-    services use canonical names, so any match is usable.)
+    Beyond the provider-type match, only claude can use a relayed (subscription) service, and
+    claude and copilot can use a Bedrock service only if it has a Claude target — otherwise there's
+    no routable model id to pin — or is ``allow_all_targets``, in which case the model id comes
+    from elsewhere (the managed config's default or ``--model``). (Anthropic services use canonical
+    names, so any match is usable.)
     """
     provider_type = service.get("provider_type", "")
     if not tool_supports_provider_type(tool, provider_type):
-        return False
-    if tool == "claude" and provider_type in BEDROCK_PROVIDER_TYPES:
-        return bool(service.get("allow_all_targets")) or bool(
-            map_claude_family_models(service.get("targets") or [])
+        supported = ", ".join(_TOOL_PROVIDER_TYPES.get(tool, ())) or "none"
+        return (
+            f"Model provider service '{service_name}' is a '{provider_type}' provider, "
+            f"which {tool} can't route to (supported: {supported})."
         )
-    return True
+    if tool != "claude" and service.get("relayed"):
+        return (
+            f"Model provider service '{service_name}' relays a Claude subscription, which only "
+            f"Claude Code can use. Pick a Model Provider Service with an API key for {tool}."
+        )
+    if (
+        tool in _CLAUDE_ONLY_BEDROCK_TOOLS
+        and provider_type in BEDROCK_PROVIDER_TYPES
+        and not service.get("allow_all_targets")
+        and not map_claude_family_models(service.get("targets") or [])
+    ):
+        return (
+            f"Model provider service '{service_name}' exposes no Claude models — "
+            f"add Claude targets to it, enable allow_all_targets, or pick a different service."
+        )
+    return None
+
+
+def service_usable_for_tool(tool: str, service: dict) -> bool:
+    """True when ``tool`` can actually route through ``service`` (see
+    :func:`_provider_service_unusable_reason`)."""
+    return _provider_service_unusable_reason(tool, service, service.get("name", "")) is None
 
 
 def resolve_provider_service(
@@ -2974,23 +3074,9 @@ def resolve_provider_service(
             suffix = f" Available for {tool}: {', '.join(usable)}." if usable else ""
             detail = f" ({get_reason})" if get_reason and "404" not in get_reason else ""
             return None, f"Model provider service '{service_name}' was not found.{detail}{suffix}"
-    provider_type = match["provider_type"]
-    if not tool_supports_provider_type(tool, provider_type):
-        supported = ", ".join(_TOOL_PROVIDER_TYPES.get(tool, ())) or "none"
-        return None, (
-            f"Model provider service '{service_name}' is a '{provider_type}' provider, "
-            f"which {tool} can't route to (supported: {supported})."
-        )
-    if (
-        tool == "claude"
-        and provider_type in BEDROCK_PROVIDER_TYPES
-        and not match.get("allow_all_targets")
-        and not map_claude_family_models(match.get("targets") or [])
-    ):
-        return None, (
-            f"Model provider service '{service_name}' exposes no Claude models — "
-            f"add Claude targets to it, enable allow_all_targets, or pick a different service."
-        )
+    unusable = _provider_service_unusable_reason(tool, match, service_name)
+    if unusable is not None:
+        return None, unusable
     return match, None
 
 
@@ -3304,6 +3390,7 @@ def list_all_mcp_services(
     on_progress: Callable[[int, int, int], None] | None = None,
     on_services: Callable[[list[str]], None] | None = None,
     cancel_event: threading.Event | None = None,
+    metadata: dict[str, dict] | None = None,
 ) -> tuple[list[str], str | None]:
     """Return sorted unique MCP-service full names across every `<catalog>.<schema>`
     in the workspace. The mcp-services API is one-schema-per-call, so this walks
@@ -3323,10 +3410,15 @@ def list_all_mcp_services(
     names: set[str] = set()
 
     def probe(catalog, schema):
-        return list_mcp_services(workspace, token, f"{catalog}.{schema}")
+        details: dict[str, dict] = {}
+        kwargs = {"metadata": details} if metadata is not None else {}
+        result = list_mcp_services(workspace, token, f"{catalog}.{schema}", **kwargs)
+        return result, details
 
     def collect(result, schemas_done, schemas_total):
-        found, _ = result
+        (found, _), details = result
+        if metadata is not None:
+            metadata.update(details)
         new = [n for n in found if n not in names]
         names.update(found)
         if on_progress is not None:
@@ -3378,6 +3470,9 @@ def list_anthropic_models(workspace: str, token: str) -> tuple[list[str], str | 
     return catalog.model_ids, catalog.error_msg
 
 
+_NO_ANTHROPIC_MODEL_IDS = "AI Gateway returned no Anthropic model ids"
+
+
 def list_anthropic_model_catalog(
     workspace: str,
     token: str,
@@ -3422,7 +3517,7 @@ def list_anthropic_model_catalog(
     return AnthropicModelCatalog(
         model_ids=[],
         model_id_to_display_name={},
-        error_msg="AI Gateway returned no Anthropic model ids",
+        error_msg=_NO_ANTHROPIC_MODEL_IDS,
     )
 
 
@@ -3468,6 +3563,27 @@ def fetch_ai_gateway_claude_models(workspace: str, token: str) -> dict[str, str]
     """Backwards-compatible wrapper that discards the diagnostic reason."""
     models, _ = discover_claude_models(workspace, token)
     return models
+
+
+# Drops a `<catalog>.<schema>.` or `<region>.anthropic.` prefix, a region-less `anthropic.`,
+# `databricks-` and a trailing `[...]` hint:
+#   system.ai.claude-sonnet-4-6     -> claude-sonnet-4-6
+#   us.anthropic.claude-sonnet-4-6  -> claude-sonnet-4-6
+#   anthropic.claude-opus-4-8       -> claude-opus-4-8
+#   databricks-claude-sonnet-4-6    -> claude-sonnet-4-6
+#   system.ai.claude-opus-4-7[1m]   -> claude-opus-4-7
+#   main.ucode.claude_haiku         -> claude_haiku
+#   gpt-5.5                         -> gpt-5.5 (one dot is a version, not a schema)
+_BARE_MODEL_NAME_PATTERN = re.compile(
+    r"^(?:[^.\[]+\.[^.\[]+\.)?(?:anthropic\.)?(?:databricks-)?(?P<name>[^\[]*)"
+)
+
+
+def bare_model_name(model: str) -> str:
+    """``model`` lowercased, without its catalog/schema or region prefix, ``anthropic.`` and
+    ``databricks-`` prefixes, or ``[...]`` hint."""
+    match = _BARE_MODEL_NAME_PATTERN.match(model.lower())
+    return match.group("name") if match else ""
 
 
 def model_version_sort_key(name: str) -> tuple:
@@ -3557,7 +3673,7 @@ def discover_gemini_models(workspace: str, token: str) -> tuple[list[str], str |
     # Order newest model version first so `default_model()` (which picks the
     # first entry) launches e.g. gemini-3.5-flash rather than gemini-2.5-flash.
     return discover_endpoints_with_api_type(
-        workspace, token, "gemini/v1/generateContent", sort_key=model_version_sort_key
+        workspace, token, API_GEMINI_GENERATE_CONTENT, sort_key=model_version_sort_key
     )
 
 
@@ -3565,7 +3681,7 @@ def discover_codex_models(workspace: str, token: str) -> tuple[list[str], str | 
     # Order newest model version first (like `discover_gemini_models`), so the picker's top choice
     # and default is e.g. gpt-5-4 rather than the alphabetically-first gpt-5.
     return discover_endpoints_with_api_type(
-        workspace, token, "openai/v1/responses", sort_key=model_version_sort_key
+        workspace, token, API_OPENAI_RESPONSES, sort_key=model_version_sort_key
     )
 
 
@@ -3800,8 +3916,31 @@ def _fetch_codex_model_catalog(
     if not isinstance(payload, dict) or not isinstance(payload.get("models"), list):
         raise RuntimeError(f"{kind} {identifier} returned an invalid Codex model catalog.")
     if not payload["models"]:
-        raise RuntimeError(f"{kind} {identifier} returned no Codex models.")
+        raise CodexModelCatalogEmpty(f"{kind} {identifier} returned no Codex models.")
     return payload
+
+
+def list_provider_service_models(
+    workspace: str, token: str, service_name: str, provider_type: str
+) -> tuple[list[str], str | None]:
+    """The models the gateway lists for Model Provider Service ``service_name``, and why listing
+    failed. An empty listing is not a failure.
+
+    Anthropic and Bedrock services list through the Anthropic models route, others through the
+    Codex model catalog."""
+    if provider_type in ANTHROPIC_API_PROVIDER_TYPES:
+        listing = list_anthropic_model_catalog(workspace, token, provider=service_name)
+        reason = listing.error_msg
+        return listing.model_ids, None if reason == _NO_ANTHROPIC_MODEL_IDS else reason
+    try:
+        catalog = _fetch_codex_model_catalog(
+            workspace, token, source=CodexCatalogSource.PROVIDER, identifier=service_name
+        )
+    except CodexModelCatalogEmpty:
+        return [], None
+    except RuntimeError as exc:
+        return [], str(exc)
+    return catalog_slugs(catalog), None
 
 
 def build_opencode_base_urls(workspace: str) -> dict[str, str]:

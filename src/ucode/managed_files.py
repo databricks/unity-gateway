@@ -496,19 +496,29 @@ def _unwrap(value: object) -> object:
 _VERSION = r"[0-9A-Za-z.+_-]+"
 
 
+# Optional trailing parenthesized platform; generic so new fields never break matching, and
+# absent in User-Agents written by older ug versions.
+_PLATFORM_SUFFIX = r"(?: \([^()]*\))?"
+
+
 def ug_agent_token(user_agent: str, agent: str) -> str | None:
-    """The ``<agent>/<v>`` token of ug's exact ``ucode/<v> <agent>/<v>`` User-Agent, else None."""
-    match = re.fullmatch(rf"ucode/{_VERSION} ({re.escape(agent)}/{_VERSION})", user_agent)
+    """The ``<agent>/<v>`` token of ug's exact ``ucode/<v> <agent>/<v>[ (<os>; <arch>)]`` User-Agent,
+    else None."""
+    match = re.fullmatch(
+        rf"ucode/{_VERSION} ({re.escape(agent)}/{_VERSION}){_PLATFORM_SUFFIX}", user_agent
+    )
     return match.group(1) if match else None
 
 
-_UG_USER_AGENT = re.compile(rf"ucode/{_VERSION} ([a-z][a-z0-9-]*)/{_VERSION}")
+_UG_USER_AGENT = re.compile(rf"ucode/{_VERSION} ([a-z][a-z0-9-]*)/{_VERSION}{_PLATFORM_SUFFIX}")
 
 
 def mask_user_agent_versions(value: object, key: object = None) -> object:
     """Copy of a parsed managed document with the versions in ug's ``ucode/<v> <agent>/<v>``
     User-Agent masked. They change on every ug or agent upgrade, which alone must not rewrite (and
-    prompt for sudo to replace) the root-owned file. Only User-Agent headers are masked: a
+    prompt for sudo to replace) the root-owned file. The ``(<os>; <arch>)`` suffix is dropped too:
+    it describes the machine that owns the file, and keeping it would force one sudo rewrite on the
+    first ug upgrade that adds it. Only User-Agent headers are masked: a
     ``User-Agent`` key, or a ``User-Agent:`` line in a header string; every other value compares
     exactly."""
     value = _unwrap(value)

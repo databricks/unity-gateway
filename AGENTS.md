@@ -21,7 +21,7 @@ Tests live in `tests/`.
 
 - Use Python 3.12+.
 - Keep changes scoped to the requested behavior.
-- Follow the existing module boundaries: CLI orchestration in `cli.py`, CLI-agent behavior in `agents/<name>.py`, desktop-app adapters in `agents/desktop/`, shared agent dispatch in `agents/__init__.py`, Databricks calls in `databricks.py`, skill download (UC fetch client + on-disk writer + download orchestration) in `skills_download.py`, MCP-connection state glue in `mcp.py`, and presentation helpers in `ui.py`. Skill download persists no disk state — it writes files to `--path` (or the home dir) and registers only the schema-less skills MCP connection. `ug configure skills` with no `--location` (or `--mcp` with no `--location`) registers that schema-less connection without downloading anything.
+- Follow the existing module boundaries: CLI orchestration in `cli.py`, CLI-agent behavior in `agents/<name>.py`, desktop-app adapters in `agents/desktop/` with CLI setup/cleanup orchestration in `agents/desktop/setup.py`, shared agent dispatch in `agents/__init__.py`, Databricks calls in `databricks.py`, skill download (UC fetch client + on-disk writer + download orchestration) in `skills_download.py`, MCP-connection state glue in `mcp.py`, and presentation helpers in `ui.py`. Skill download persists no disk state — it writes files to `--path` (or the home dir) and registers only the schema-less skills MCP connection. `ug configure skills` with no `--location` (or `--mcp` with no `--location`) registers that schema-less connection without downloading anything.
 - Prefer existing helpers for config file writes, state persistence, UI messages, and Databricks authentication.
 - Use `ucode.os_compatibility.subprocess_cross_os.run` / `ucode.os_compatibility.subprocess_cross_os.popen` for subprocesses; they resolve Windows npm wrappers automatically and default text streams to UTF-8 with replacement for invalid bytes. Keep commands as argument lists. Do not repeat these encoding defaults at callsites; explicit encoding/error overrides and binary mode remain supported. Ruff rejects direct `subprocess.run` / `subprocess.Popen` calls outside `os_compatibility/subprocess_cross_os.py` and tests.
 - Use `acquire_exclusive_file_lock` / `release_file_lock` from `ucode.os_compatibility.file_lock_cross_os` instead of calling `fcntl.flock`, `fcntl.lockf`, or `msvcrt.locking` directly. Ruff enforces this outside the compatibility module and tests.
@@ -43,8 +43,11 @@ Resolve and materialize valid selectors at the CLI boundary before argument pars
 Unknown selectors are a no-op: do not apply a preset, mutate the inherited environment, or raise
 an error. Existing legacy flags and explicit launch/session controls retain their behavior.
 Restore the inherited environment on every exit.
-Explicit launch/session on/off controls still apply after version expansion.
-Managed routing defaults must not rewrite already-resolved version flags.
+`--disable-smart-routing` and session on/off controls still apply after version expansion.
+`--enable-smart-routing` and managed smart routing turn routing on only through
+`apply_enabled_version` in `config.py`: keep a known version, otherwise select
+`DEFAULT_ENABLED_VERSION` (an unknown selector is replaced for that launch). Neither may rewrite
+already-resolved version flags.
 
 Every new `smart_routing` or `smart_router` environment variable must be registered in
 `SMART_ROUTING_ENV_KEYS` in the same change, including orchestration controls.
@@ -154,6 +157,11 @@ When `claude_otel_tracing` is enabled, Desktop's reserved profile also owns
 for the existing `otel-headers` command. Native sessions rerun it as tokens rotate;
 no bearer is persisted. Disable/revert removes the wrapper, with atomic writes and
 rollback shared with the profile. Disabled tracing omits these fields on replacement.
+Managed Claude setup also installs a generated Cowork plugin containing only the current
+workspace's managed skills and Claude-targeted MCP servers. The source lives at
+`~/.ucode/claude-cowork-marketplace`, and `~/.ucode/claude-cowork.json` records the selected
+account/org root for cleanup. Cowork must have started once. Setup and cleanup use scoped
+`claude plugin ... --cowork --json` commands with `CLAUDE_CONFIG_DIR`; failures stay best-effort.
 See `docs/claude-desktop.md` for native validation limits and revert behavior.
 
 <details>

@@ -707,6 +707,34 @@ class TestDiscoverModelServices:
         assert ids == ["system.ai.gpt-5"]
         assert calls["n"] == 3  # two failures, third succeeds
 
+    def test_entries_keep_the_advertised_api_types(self, monkeypatch):
+        service = {
+            **_model_service("system.ai.gte-large-en"),
+            "supported_api_types": ["mlflow/v1/embeddings", 3],
+        }
+
+        monkeypatch.setattr(
+            db_mod,
+            "_get_model_services_page",
+            lambda url, token: ({"model_services": [service]}, None),
+        )
+
+        entries, reason = db_mod.list_model_service_entries(WS, "token")
+
+        assert reason is None
+        assert entries == [
+            db_mod.ModelServiceEntry("system.ai.gte-large-en", ("mlflow/v1/embeddings",))
+        ]
+        assert db_mod.cached_model_service_entries(WS) == entries
+
+    def test_failed_listing_is_not_cached(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod, "_get_model_services_page", lambda url, token: (None, "HTTP 503")
+        )
+
+        assert db_mod.list_model_service_entries(WS, "token") == ([], "HTTP 503")
+        assert db_mod.cached_model_service_entries(WS) is None
+
 
 class TestModelServiceExists:
     def test_true_when_listed_in_its_schema(self, monkeypatch):
@@ -839,6 +867,7 @@ class TestListModelProviderServices:
             "name": "main.schema1.anthropic-svc",
             "provider_type": "anthropic",
             "targets": [],
+            "target_api_types": {},
             "allow_all_targets": False,
             "relayed": False,
         }
@@ -867,6 +896,33 @@ class TestListModelProviderServices:
             "us.anthropic.claude-sonnet-4-6",
             "global.anthropic.claude-opus-4-8",
         ]
+
+    def test_keeps_each_targets_declared_api_types(self, monkeypatch):
+        payload = {
+            "model_provider_services": [
+                {
+                    "name": "model-provider-services/main.schema1.foundry-svc",
+                    "config": {
+                        "provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_MICROSOFT_FOUNDRY",
+                        "targets": [
+                            {"model": "gpt-5.4-nano", "native_api_types": ["openai/v1/responses"]},
+                            {"model": "embed-v-4-0", "native_api_types": ["openai/v1/embeddings"]},
+                            {"model": "plain"},
+                        ],
+                    },
+                }
+            ]
+        }
+        monkeypatch.setattr(
+            db_mod, "_http_get_json", lambda url, token, timeout=30: (payload, None)
+        )
+
+        services, _ = db_mod.list_model_provider_services(WS, "token")
+
+        assert services[0]["target_api_types"] == {
+            "gpt-5.4-nano": ("openai/v1/responses",),
+            "embed-v-4-0": ("openai/v1/embeddings",),
+        }
 
     def test_returns_reason_on_failure(self, monkeypatch):
         monkeypatch.setattr(
@@ -1211,6 +1267,43 @@ class TestResolveProviderService:
         assert service is None
         assert "can't route to" in error
 
+    def test_copilot_accepts_openai(self, monkeypatch):
+        self._patch(monkeypatch)
+        service, error = db_mod.resolve_provider_service(
+            "copilot", "main.schema1.openai-svc", WS, "token"
+        )
+        assert error is None
+        assert service["provider_type"] == "openai"
+
+    def test_copilot_rejects_bedrock_without_claude(self, monkeypatch):
+        self._patch(monkeypatch)
+        service, error = db_mod.resolve_provider_service(
+            "copilot", "main.schema2.bedrock-titan-svc", WS, "token"
+        )
+        assert service is None
+        assert "no Claude models" in error
+
+    def test_copilot_rejects_a_subscription_relay(self, monkeypatch):
+        payload = {
+            "model_provider_services": [
+                {
+                    "name": "model-provider-services/main.schema1.relay-svc",
+                    "config": {
+                        "provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_ANTHROPIC",
+                        "anthropic": {"relayed": {}},
+                    },
+                }
+            ]
+        }
+        monkeypatch.setattr(
+            db_mod, "_http_get_json", lambda url, token, timeout=30: (payload, None)
+        )
+        service, error = db_mod.resolve_provider_service(
+            "copilot", "main.schema1.relay-svc", WS, "token"
+        )
+        assert service is None
+        assert "only Claude Code can use" in error
+
     def test_bedrock_without_claude_rejected(self, monkeypatch):
         self._patch(monkeypatch)
         service, error = db_mod.resolve_provider_service(
@@ -1333,6 +1426,60 @@ class TestResolveProviderService:
         assert service["targets"] == ["gemini-3.5-flash"]
 
 
+class TestListProviderServiceModels:
+    @pytest.mark.parametrize(
+        ("provider_type", "response", "expected"),
+        [
+            (
+                "amazon_bedrock",
+                ({"data": [{"id": "us.anthropic.claude-sonnet-4-6"}]}, None),
+                (["us.anthropic.claude-sonnet-4-6"], None),
+            ),
+            ("anthropic", ({"data": []}, None), ([], None)),
+            ("anthropic", (None, "HTTP 403 Forbidden"), ([], "HTTP 403 Forbidden")),
+            ("openai", ({"models": [{"slug": "gpt-5.5"}]}, None), (["gpt-5.5"], None)),
+            ("openai", ({"models": []}, None), ([], None)),
+        ],
+    )
+    def test_reports_failures_but_not_empty_listings(
+        self, monkeypatch, provider_type, response, expected
+    ):
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda url, token, **kw: response)
+
+        assert (
+            db_mod.list_provider_service_models(WS, "token", "main.a.b", provider_type) == expected
+        )
+
+    def test_reports_a_codex_listing_failure(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda url, token, **kw: (None, "HTTP 503 Service Unavailable"),
+        )
+
+        ids, reason = db_mod.list_provider_service_models(WS, "token", "main.a.b", "openai")
+
+        assert ids == []
+        assert "HTTP 503" in reason
+
+
+@pytest.mark.parametrize(
+    ("model", "name"),
+    [
+        ("system.ai.claude-sonnet-4-6", "claude-sonnet-4-6"),
+        ("System.AI.Claude-Opus-4-7[1m]", "claude-opus-4-7"),
+        ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", "claude-sonnet-4-5-20250929-v1:0"),
+        ("anthropic.claude-opus-4-8", "claude-opus-4-8"),
+        ("databricks-claude-sonnet-4-6", "claude-sonnet-4-6"),
+        ("main.ucode.claude_haiku", "claude_haiku"),
+        ("gpt-5.5", "gpt-5.5"),
+        ("main.default.gpt-5.5", "gpt-5.5"),
+    ],
+)
+def test_bare_model_name(model, name):
+    assert db_mod.bare_model_name(model) == name
+
+
 class TestServiceUsableForTool:
     def test_bedrock_allow_all_targets_usable_without_targets(self):
         service = {"provider_type": "amazon_bedrock", "targets": [], "allow_all_targets": True}
@@ -1355,6 +1502,24 @@ class TestServiceUsableForTool:
         }
         assert not db_mod.service_usable_for_tool("claude", service)
         assert db_mod.service_usable_for_tool("codex", service)
+        assert not db_mod.service_usable_for_tool("copilot", service)
+
+    @pytest.mark.parametrize(
+        "provider_type", ["anthropic", "amazon_bedrock", "bedrock_mantle", "openai", "azure_openai"]
+    )
+    def test_copilot_routes_anthropic_and_openai_services(self, provider_type):
+        service = {"provider_type": provider_type, "targets": [], "allow_all_targets": True}
+        assert db_mod.service_usable_for_tool("copilot", service)
+
+    @pytest.mark.parametrize("provider_type", ["microsoft_foundry", "gemini_enterprise", "custom"])
+    def test_copilot_skips_other_provider_types(self, provider_type):
+        service = {"provider_type": provider_type, "targets": [], "allow_all_targets": True}
+        assert not db_mod.service_usable_for_tool("copilot", service)
+
+    def test_copilot_skips_a_subscription_relay(self):
+        service = {"provider_type": "anthropic", "targets": [], "relayed": True}
+        assert not db_mod.service_usable_for_tool("copilot", service)
+        assert db_mod.service_usable_for_tool("claude", service)
 
 
 class TestModelProviderFeatureUnavailable:

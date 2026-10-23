@@ -1,12 +1,12 @@
-"""Per-connection login for AI Gateway MCP services, driven by the proxy on a 401.
+"""Per-connection login for AI Gateway MCP services, driven by the proxy on demand.
 
 A connection-backed AI Gateway MCP service (e.g. ``system.ai.github``) needs a
 per-user connection credential before its tools can be used. Until the user has
-logged in to the underlying SaaS, AI Gateway answers requests with an HTTP 401
-(RFC 9728 ``WWW-Authenticate``).
+logged in to the underlying SaaS, AI Gateway reports missing connection authentication
+as an HTTP 401 or an MCP JSON-RPC authentication error.
 
-The ``ug mcp-proxy`` bridge (see ``mcp_proxy``) sees that 401 in its httpx auth
-flow and, for a connection-backed service, runs the Databricks CLI U2M login
+The ``ug mcp-proxy`` bridge (see ``mcp_proxy``) sees that failure and, for a
+connection-backed service, runs the Databricks CLI U2M login
 with an RFC 8707 ``resource`` indicator naming the service, then retries the
 request. A resource-aware ``/oidc`` drives the connection's own SaaS login
 before minting the token, so the credential exists on retry — transparently to
@@ -38,7 +38,7 @@ def connection_from_url(url: str) -> str | None:
 
     ``https://ws/ai-gateway/mcp-services/system.ai.github`` -> ``system.ai.github``.
     A URL that is not an mcp-services endpoint (or names no service) returns
-    ``None`` — only connection-backed services get the login-on-401 treatment.
+    ``None`` — only connection-backed services get automatic connection login.
     """
     marker = url.find(AIGW_MCP_SERVICES_SEGMENT)
     if marker == -1:

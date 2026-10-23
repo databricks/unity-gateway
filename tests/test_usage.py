@@ -180,9 +180,51 @@ class TestRenderBudgetLimits:
         assert "99% used" in additional_limits
         assert "Monthly personal limit (budget extra-99)" in additional_limits
         assert "98% used" not in result
-        assert "[dim]Showing 5 of 9 spend limits.[/dim]" in result
-        assert "All budgets" not in result
+        assert (
+            "[dim]Showing 5 of 9 spend limits. Run ug usage --all to see all limits.[/dim]"
+            in result
+        )
+
+    def test_all_preserves_category_priority_and_displays_every_limit(self):
+        result = render_budget_limits(
+            [
+                BudgetLimitStatus("monthly", PER_USER, "MONTH", Decimal("90")),
+                BudgetLimitStatus("first", PER_USER, "MONTH", Decimal("80")),
+                BudgetLimitStatus("second", PER_USER, "MONTH", Decimal("80")),
+                BudgetLimitStatus("lower", PER_USER, "MONTH", Decimal("20")),
+                BudgetLimitStatus("lowest", PER_USER, "MONTH", Decimal("10")),
+                BudgetLimitStatus("unknown", PER_USER, "MONTH", None),
+                BudgetLimitStatus("shared", SHARED, "DAY", None),
+            ],
+            show_all=True,
+        )
+
+        summary, additional_limits = result.split("[bold]Additional limits[/bold]")
+        assert "90% used" in summary
+        assert "Daily shared limit" in summary
+        assert "Usage percentage not reported" in summary
+        assert additional_limits.index("budget first") < additional_limits.index("budget second")
+        assert additional_limits.index("budget second") < additional_limits.index("budget lower")
+        assert additional_limits.index("budget lower") < additional_limits.index("budget lowest")
+        assert additional_limits.index("budget lowest") < additional_limits.index("budget unknown")
+        assert result.count("% used") == 5
+        assert result.count("Usage percentage not reported") == 2
+        assert "Showing " not in result
         assert "--all" not in result
+
+    def test_all_does_not_cap_the_number_of_categories(self):
+        result = render_budget_limits(
+            [
+                BudgetLimitStatus(f"budget-{index}", PER_USER, f"PERIOD_{index}", Decimal(index))
+                for index in range(6)
+            ],
+            show_all=True,
+        )
+
+        for index in range(6):
+            assert f"PERIOD_{index} personal limit" in result
+        assert result.count("% used") == 6
+        assert "Showing " not in result
 
     def test_fills_five_slots_from_a_single_category(self):
         result = render_budget_limits(
@@ -472,6 +514,31 @@ class TestUsageCommand:
         assert usage() == 0
         assert notes == ["No Unity Gateway spend limits found for this workspace."]
 
+    def test_all_displays_every_returned_limit(self, monkeypatch):
+        self._stub_auth(monkeypatch, {"workspace": "https://workspace"})
+        printed: list[str] = []
+        monkeypatch.setattr(
+            usage_mod,
+            "list_current_user_budget_spend_statuses",
+            lambda workspace, token: (
+                [
+                    BudgetLimitStatus(f"budget-{index}", PER_USER, "MONTH", Decimal(index))
+                    for index in range(8)
+                ],
+                None,
+            ),
+        )
+        monkeypatch.setattr(
+            usage_mod,
+            "console",
+            type("Console", (), {"print": lambda _, text: printed.append(text)})(),
+        )
+
+        assert usage(show_all=True) == 0
+        assert len(printed) == 1
+        assert printed[0].count("% used") == 8
+        assert "Showing " not in printed[0]
+
     def test_shows_all_valid_limits_when_no_percentages_are_reported(self, monkeypatch):
         self._stub_auth(monkeypatch, {"workspace": "https://workspace"})
         printed: list[str] = []
@@ -606,6 +673,24 @@ class TestLegacyUsageCommand:
             "list_current_user_budget_spend_statuses",
             lambda *_: pytest.fail("legacy usage must not call the spend-status endpoint"),
         )
+
+    @pytest.mark.parametrize("flag", [None, "0", " 1 "])
+    def test_all_requires_the_expanded_view_opt_in(self, monkeypatch, flag):
+        if flag is not None:
+            monkeypatch.setenv("ENABLE_UG_USAGE_SPEND_API", flag)
+        monkeypatch.setattr(
+            usage_mod,
+            "resolve_current_budget_spend",
+            lambda *_: pytest.fail("--all must not return the standard summary"),
+        )
+        monkeypatch.setattr(
+            usage_mod,
+            "ensure_databricks_auth",
+            lambda *_: pytest.fail("invalid options must be rejected before authentication"),
+        )
+
+        with pytest.raises(RuntimeError, match="Set ENABLE_UG_USAGE_SPEND_API=1"):
+            usage(show_all=True)
 
     @pytest.mark.parametrize("flag", [None, "", "0", "true", "yes", "2", " 1 "])
     def test_uses_legacy_budget_summary_without_explicit_opt_in(self, monkeypatch, flag):

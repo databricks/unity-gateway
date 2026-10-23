@@ -6,14 +6,62 @@ Windows, and Linux. This uses
 the same workspace, Databricks CLI OAuth profile, model source, and managed HTTP
 headers as Claude Code. There is no separate Desktop checkbox or managed field.
 
+## Requirements and setup
+
+- Claude Desktop installed on macOS, Windows, or Linux. On Windows/Linux, open it
+  once to initialize application data.
+- A named Databricks CLI OAuth profile with gateway/model access. A bearer token
+  alone is not enough for Desktop's credential helper.
+- At least one Claude-named model in the configured static list or gateway catalog.
+- For an Anthropic subscription relay, Claude Code installed and signed in on the
+  same OS user account.
+
+Quit Claude Desktop, configure Claude Code, then reopen Desktop normally:
+
 ```bash
 ug configure --profile <your-profile> --agents claude
 ```
 
-Quit Claude Desktop before configuring, then reopen it normally from your app launcher.
-No terminal process needs to stay running. Claude Desktop must already be installed;
-UG does not install it or manage the customer's MDM process. On Windows and Linux,
-open Desktop once before configuring so it initializes its application-data directory.
+No terminal process needs to stay running. UG does not install Desktop or manage
+the customer's MDM process. Explicit-agent, selected-agent, and managed configure
+flows all set up Desktop after successful Claude Code configuration. Ordinary agent
+launches and `ug agents add` do not configure Desktop.
+
+## Cowork workspace skills and MCP servers
+
+Whenever Claude is configured, `ug configure` also installs a generated
+`unity-gateway@unity-gateway-cowork` plugin into that account's Cowork scope. This applies
+to managed and unmanaged workspaces. Start one Cowork session before configuring so Desktop
+creates its active account/organization directory. If several Cowork profiles exist and UG
+cannot identify one active profile, setup warns without changing any of them.
+
+The plugin contains the current workspace's Claude-targeted MCP servers. In a managed
+workspace, that includes both user-selected and managed MCP servers, plus managed skills.
+In an unmanaged workspace, it includes user-selected MCP servers. User, project, unmanaged
+Databricks AI Tools, and other-workspace skills are not copied. `ug configure --mcp`,
+`ug mcp add`, and `ug mcp remove` resync the plugin. MCP entries run the absolute
+`ug mcp-proxy` executable with the selected workspace and CLI profile; no bearer token is
+stored in the plugin. Saved PAT mode is supported. Custom OAuth is not yet supported for
+Cowork MCP servers.
+
+UG owns these local files:
+
+- Generated marketplace: `~/.ucode/claude-cowork-marketplace`
+- Selected Cowork root record: `~/.ucode/claude-cowork.json`
+
+Start a new Cowork session after configure. Plugin MCP servers connect asynchronously and
+may take a few seconds to appear, so a tool can be absent on the first model turn. Deferred
+tool search or a retry after another tool call should find it. The resulting tool name follows
+Claude's `mcp__plugin_<plugin>_<server>__<tool>` pattern.
+
+Cowork plugin support can still be disabled by Anthropic account feature flags or managed
+Desktop policy. UG treats installation as best-effort: failure warns but does not fail Claude
+Code setup. If the current workspace has no Claude-targeted MCP servers or managed skills, UG
+keeps the plugin installed but replaces its contents with an empty plugin so a prior workspace's
+tools and skills do not remain active. If Cowork has never been started and UG has no prior plugin
+state, setup skips silently. Only `ug revert` removes the plugin registration and generated
+marketplace. The native Desktop gateway profile is separate and remains under the cleanup rules
+below.
 
 ## Models and authentication
 
@@ -47,6 +95,17 @@ If authentication is missing, it opens browser login only when Desktop supplies
 `CLAUDE_HELPER_CONTEXT=interactive`. Other contexts fail with instructions to start
 a new Cowork task. Browser login has a bounded timeout and concurrent sign-ins are
 serialized. If the original message failed during login, resend it.
+
+For an Anthropic subscription relay, the same helper returns the Claude subscription
+token as Desktop's bearer token and the Databricks token in
+`X-Databricks-AI-Gateway-Token`. On macOS it reads the Claude credential from Keychain.
+On Linux and Windows it reads `.claude/.credentials.json` from the user's home directory,
+or `.credentials.json` under `CLAUDE_CONFIG_DIR` when set; macOS selects the matching custom
+Keychain entry. An expired or soon-to-expire token first runs `claude auth status --json` so
+Claude Code can use its refresh token without opening a browser. If silent refresh does not
+produce a valid token, browser login remains limited to an interactive helper context. Claude
+refresh and login share the helper time budget and lock. The profile stores neither credential,
+and no proxy or background service is needed.
 
 ## OpenTelemetry tracing
 
@@ -133,23 +192,32 @@ otherwise it clears the selection. A later selection of another profile is prese
 Only this previous-selection ID is saved in `~/.ucode/claude-desktop.json`.
 Repeated configure retains it while UG remains selected.
 
+Revert also uninstalls `unity-gateway@unity-gateway-cowork`, removes its marketplace
+registration, and deletes UG's generated marketplace. This removes the MCP connectors and
+skills delivered by that plugin. It also cleans up an exact UG registration left in another
+Cowork profile by an older failed revert. Unrelated Desktop plugins, connectors, and skills are
+left untouched.
+
+The revert summary reports `Claude Desktop profile: removed`, `unchanged`, or `failed`.
+
 Old random-ID and workspace-derived profiles from earlier builds are left untouched;
 there is no automatic migration or cleanup. Workspace-specific UUID normalization
 is no longer needed; normal CLI URL handling is unchanged.
 
 Files are replaced atomically one at a time with best-effort rollback of their exact
 previous bytes on write failure. This is not a crash-atomic transaction across files.
-Workspace state is cleared even if Desktop revert fails. Desktop's separate
-previous-selection file is retained on failure, so cleanup can still be retried
-with `ug revert`.
+Workspace and Cowork cleanup state is retained if Desktop revert fails, so cleanup can be
+retried with `ug revert`. The generated Cowork marketplace is also retained until its plugin
+and marketplace registrations are removed successfully. A Desktop cleanup failure produces
+one warning and exit code 1; the summary reports the failed cleanup.
 Profile configure/revert waits at most five seconds for its file lock. A timeout
 does not interrupt the holder or change profile, metadata, or selection-state files.
 
-Desktop failures are warnings: successful Claude Code setup still returns exit 0.
-`--dry-run` performs no Desktop discovery or writes. Removing Claude from managed
-configuration does not revoke a previously written Desktop profile. Desktop does
-not run UG's launch-time managed-agent checks; gateway authorization remains the
-enforcement boundary.
+Desktop setup failures only warn: successful Claude Code configuration still returns exit 0.
+`--dry-run` performs no Desktop or Cowork discovery, writes, or plugin commands. Removing Claude
+from managed configuration preserves both the Cowork plugin and a previously written native
+Desktop profile until `ug revert`. Desktop does not run UG's launch-time managed-agent checks;
+gateway authorization remains the enforcement boundary.
 
 ## Validation limits
 
@@ -173,10 +241,13 @@ orchestration; they do not prove GUI inference on every app version.
   not remove this client restriction. UG filters Desktop's catalog to Claude-named
   models without renaming them; that name filter does not reproduce every native
   validation rule.
-- Anthropic subscription relay, custom OAuth/PAT profiles, Desktop Smart Routing,
-  and connector/plugin compatibility are not implemented here. Native OTEL settings
-  are generated, but native export and ingestion remain unverified; session auth
-  limits are described above.
+- Custom OAuth/PAT profiles, Desktop Smart Routing, and third-party connectors outside
+  UG's generated Cowork plugin are not implemented here. Cowork's MCP proxy supports saved
+  PAT mode but not custom OAuth. Native OTEL settings are generated, but native export and
+  ingestion remain unverified; session auth limits are described above.
+- Anthropic subscription relay has native macOS proof-of-concept validation. Windows and
+  Linux credential-file handling has component coverage, but native Desktop login, refresh,
+  and inference remain rollout gates.
 - Observed inference applies to Cowork. Ordinary Chat is not claimed to use the
   same gateway path.
 

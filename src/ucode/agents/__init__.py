@@ -468,6 +468,11 @@ def configure_tool(
             parent_schema=parent_schema,
             picker_catalog=picker_catalog,
         )
+    elif tool == "copilot":
+        # Under a model provider service, Copilot starts on one of the service's models, chosen at launch.
+        if not model and not provider:
+            raise RuntimeError(f"A {tool} model must be selected before configuration.")
+        result = copilot.write_tool_config(state, model)
     else:
         # Every tool in this branch needs a model — including gemini under a provider,
         # which still pins the service's target model in the URL.
@@ -475,8 +480,6 @@ def configure_tool(
             raise RuntimeError(f"A {tool} model must be selected before configuration.")
         if tool == "gemini":
             result = gemini.write_tool_config(state, model, provider=provider)
-        elif tool == "copilot":
-            result = copilot.write_tool_config(state, model)
         elif tool == "pi":
             result = pi.write_tool_config(state, model)
         elif tool == "kilo":
@@ -529,7 +532,7 @@ def check_gateway_endpoint(state: dict, tool: str) -> bool:
     if tool == "gemini":
         return bool(state.get("gemini_models"))
     if tool == "copilot":
-        return bool(state.get("claude_models")) or bool(state.get("codex_models"))
+        return bool(copilot.copilot_catalog(state))
     if tool == "pi":
         return (
             bool(state.get("claude_models"))
@@ -545,7 +548,7 @@ _TOOL_DISCOVERY_SOURCES: dict[str, tuple[str, ...]] = {
     "kilo": ("claude", "gemini", "oss"),
     "codex": ("codex",),
     "gemini": ("gemini",),
-    "copilot": ("claude", "codex"),
+    "copilot": ("copilot",),
     "pi": ("claude", "codex", "gemini"),
 }
 

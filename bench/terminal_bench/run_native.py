@@ -25,12 +25,19 @@ from ucode.os_compatibility.subprocess_cross_os import popen, run
 
 
 def agent_command(
-    agent: str, ug: str, model: str | None, step_dir: Path, instruction: str, resume: bool
+    agent: str,
+    ug: str,
+    model: str | None,
+    step_dir: Path,
+    instruction: str,
+    resume: bool,
+    claude_task_model: str | None = None,
 ) -> tuple[list[str], str | None]:
     """Return argv plus the stdin to send. Codex takes the prompt as an argument."""
     model_args = ["--model", model] if model else []
     if agent == "claude":
-        argv = [ug, "claude", *model_args, "--", "-p", "--verbose", "--output-format"]
+        task_model = ["--model", claude_task_model] if claude_task_model and not model else []
+        argv = [ug, "claude", *model_args, "--", *task_model, "-p", "--verbose", "--output-format"]
         argv += ["stream-json", "--dangerously-skip-permissions"]
         return argv + (["--continue"] if resume else []), instruction
     if agent == "codex":
@@ -121,7 +128,8 @@ def run_task(args: argparse.Namespace, task_dir: Path, out: Path, attempt: int) 
     logs.mkdir(parents=True, exist_ok=True)
     prepare(task_dir, workdir)
 
-    env = {**os.environ, "TASK_APP_DIR": str(workdir), "IS_SANDBOX": "1"}
+    env = {**os.environ, **config.get("environment", {}).get("env", {})}
+    env.update(TASK_APP_DIR=str(workdir), IS_SANDBOX="1")
     env["ENABLE_SMART_ROUTING_V2"] = "1"
     if args.agent == "oracle":
         # Checks that read the agent transcript have nothing to read for the oracle.
@@ -143,7 +151,13 @@ def run_task(args: argparse.Namespace, task_dir: Path, out: Path, attempt: int) 
         env["TASK_AGENT_LOG"] = str(log_path)
         instruction = (step_dir / "instruction.md").read_text()
         argv, stdin = agent_command(
-            args.agent, args.ug, args.model, step_dir, instruction, resume=index > 0
+            args.agent,
+            args.ug,
+            args.model,
+            step_dir,
+            instruction,
+            resume=index > 0,
+            claude_task_model=env.get("UG_BENCH_CLAUDE_MODEL"),
         )
         proc, timed_out = run_agent(argv, stdin, workdir, env, log_path, agent_timeout)
         # Verify before cleanup so a server the agent left running still counts against it.

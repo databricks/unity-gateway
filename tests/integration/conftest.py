@@ -185,6 +185,12 @@ def claude_relayed_provider():
 
 
 @pytest.fixture(scope="session")
+def claude_bedrock_provider():
+    # A Bedrock MPS that restricts its allowed models to an explicit set (Sonnet + Haiku, no Opus).
+    return os.environ["UG_INTEGRATION_CLAUDE_BEDROCK_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
 def claude_oauth_token():
     # Real subscription OAuth token (`claude setup-token`); the relayed launch needs it to run
     # headless. Missing means the launch would fall back to a browser login, so fail rather than
@@ -223,6 +229,26 @@ def codex_provider():
 @pytest.fixture(scope="session")
 def codex_provider_model():
     return os.environ["UG_INTEGRATION_CODEX_PROVIDER_MODEL"]
+
+
+@pytest.fixture(scope="session")
+def codex_azure_provider():
+    return os.environ["UG_INTEGRATION_CODEX_AZURE_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def codex_azure_provider_model():
+    return os.environ["UG_INTEGRATION_CODEX_AZURE_PROVIDER_MODEL"]
+
+
+@pytest.fixture(scope="session")
+def codex_foundry_provider():
+    return os.environ["UG_INTEGRATION_CODEX_FOUNDRY_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def codex_foundry_provider_model():
+    return os.environ["UG_INTEGRATION_CODEX_FOUNDRY_PROVIDER_MODEL"]
 
 
 @pytest.fixture(scope="session")

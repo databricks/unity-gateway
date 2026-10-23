@@ -4,11 +4,14 @@ import json
 from pathlib import Path
 
 import pytest
-from utils.evidence import FileTask
+from utils.evidence import FileTask, assert_completed_task_model
 from utils.harness import split_command
 from utils.terminal import AgentTerminal, ConfigureTerminal
 
 pytestmark = [pytest.mark.live, pytest.mark.tui, pytest.mark.claude]
+
+# Bedrock reports the bare Anthropic id, not the us.anthropic.*-v1:0 slug the MPS targets.
+BEDROCK_SONNET_RESPONSE_MODEL = "claude-sonnet-4-5-20250929"
 
 
 @pytest.mark.smoke
@@ -51,7 +54,9 @@ def test_ug_configure_claude_databricks(live_session, workspace):
         tui.boot()
         tui.submit(task.prompt)
         tui.wait_for_task(task)
-        screen = tui.open_model_picker()
+        screen = tui.open_model_picker(
+            model_visible=lambda _text: session.claude_gateway_cache_ready()
+        )
         cache = json.loads((session.home / ".claude/cache/gateway-models.json").read_text())
         assert cache["baseUrl"] == workspace.rstrip("/") + "/ai-gateway/anthropic", cache
         models = cache["models"]
@@ -105,4 +110,46 @@ def test_ug_configure_claude_anthropic_mps(live_session, workspace, claude_provi
         tui.wait_for_task(task, timeout=300)
         tui.exit_normally()
     task.assert_completed(session, "claude")
+    session.assert_not_routed()
+
+
+def test_ug_configure_claude_bedrock_mps(live_session, workspace, claude_bedrock_provider):
+    """Scenario: pick the real AWS Bedrock (amazon_bedrock) Anthropic MPS in the provider picker.
+    This MPS allows only a restricted set of models (its explicit targets: Sonnet + Haiku, no
+    Opus), unlike an allow_all_targets service, so discovery must surface exactly that allow-list.
+
+    Expected: ug saves that provider, and launching Claude without --provider completes a
+    file-reading task. With Opus outside the allow-list, the launch tier preference
+    (sonnet > opus > haiku) resolves to Sonnet. This is the live check that the real ug + Claude
+    Code binary resolve a region-prefixed Bedrock slug (us.anthropic.claude-...) into a working
+    launch -- the model-id pinning that unit tests only cover against mocked listings.
+    """
+    session = live_session
+    task = FileTask(session)
+
+    command = [
+        str(session.binary),
+        "configure",
+        "--workspace",
+        workspace,
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+    ]
+    with ConfigureTerminal(session, "claude", command, "configure-bedrock-provider") as configure:
+        configure.select_agent("Claude Code")
+        configure.choose("How should Claude Code get its models?", "External Models")
+        configure.choose("Select a model provider service:", claude_bedrock_provider)
+        configure.finish(timeout=240)
+    assert session.workspace_state()["provider_services"]["claude"] == claude_bedrock_provider
+    assert claude_bedrock_provider in session.run("status").stdout
+
+    with AgentTerminal(
+        session, "claude", [str(session.binary), "claude"], "bedrock-provider-session"
+    ) as tui:
+        tui.boot()
+        tui.submit(task.prompt)
+        tui.wait_for_task(task, timeout=300)
+        tui.exit_normally()
+    task.assert_completed(session, "claude")
+    assert_completed_task_model(session, "claude", task.value, BEDROCK_SONNET_RESPONSE_MODEL)
     session.assert_not_routed()

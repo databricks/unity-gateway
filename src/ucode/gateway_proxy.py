@@ -35,7 +35,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import cast
 from urllib.parse import unquote, urlsplit
@@ -293,6 +293,10 @@ class _ProxyHandler(BaseHTTPRequestHandler):
     def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
         return self.token_header, frozenset(), "forward"
 
+    def _request_body(self, body: bytes | None) -> bytes | None:
+        """The body to forward; ``body`` unchanged unless a subclass rewrites it."""
+        return body
+
     def _added_headers(self) -> dict[str, str]:
         return {}
 
@@ -305,7 +309,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         diagnostic_id = uuid.uuid4().hex[:12]
         started = time.monotonic()
         length = int(self.headers.get("Content-Length", 0) or 0)
-        body = self.rfile.read(length) if length else None
+        body = self._request_body(self.rfile.read(length) if length else None)
         url = self.path.lstrip("/")
         try:
             body = self._prepare_request_body(body)
@@ -656,6 +660,24 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
     added_headers: Mapping[str, str]
     allowed_path_prefixes: tuple[str, ...]
     sign_in_hint: str
+    dropped_chat_completions_fields: frozenset[str]
+
+    def _request_body(self, body: bytes | None) -> bytes | None:
+        if not body or not self.dropped_chat_completions_fields:
+            return body
+        if not self.path.split("?", 1)[0].endswith("/chat/completions"):
+            return body
+        try:
+            payload = json.loads(body)
+        except ValueError:
+            return body
+        if not isinstance(payload, dict) or self.dropped_chat_completions_fields.isdisjoint(
+            payload
+        ):
+            return body
+        for field in self.dropped_chat_completions_fields:
+            payload.pop(field, None)
+        return json.dumps(payload).encode()
 
     def _has_session_secret(self) -> bool:
         expected = self.session_secret.encode()
@@ -843,12 +865,15 @@ def start_gateway_auth_proxy(
     added_headers: Mapping[str, str],
     sign_in_hint: str,
     on_refresh_failure: Callable[[BaseException], None] = log_token_refresh_failure,
+    dropped_chat_completions_fields: Iterable[str] = (),
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     """Start a per-session proxy for agents that only hold a static credential.
 
     The agent sends ``session_secret`` as its API key; the proxy accepts it only on
     gateway model paths and forwards with a fresh Databricks token plus
-    ``added_headers``. Binds an OS-assigned port, read from ``server.server_address[1]``.
+    ``added_headers``, after removing ``dropped_chat_completions_fields`` from Chat
+    Completions request bodies. Binds an OS-assigned port, read from
+    ``server.server_address[1]``.
     """
     return _start_proxy(
         workspace,
@@ -864,6 +889,7 @@ def start_gateway_auth_proxy(
             "added_headers": dict(added_headers),
             "allowed_path_prefixes": GATEWAY_MODEL_PATH_PREFIXES,
             "sign_in_hint": sign_in_hint,
+            "dropped_chat_completions_fields": frozenset(dropped_chat_completions_fields),
         },
         on_refresh_failure=on_refresh_failure,
     )
