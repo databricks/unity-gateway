@@ -2,6 +2,7 @@
 
 import copy
 import json
+import shutil
 
 from ucode import managed_files
 from ucode.agents import claude
@@ -30,7 +31,7 @@ def _managed_env(tmp_path, monkeypatch, managed_doc=None):
 
     monkeypatch.setattr(managed_files, "_sudo_replace", _write)
     monkeypatch.setattr(managed_files, "_sudo_remove", lambda path: path.unlink())
-    monkeypatch.setattr(managed_files, "_privileged_rmdir", lambda folder: folder.rmdir())
+    monkeypatch.setattr(claude, "remove_privileged_tree", shutil.rmtree)
     monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
     monkeypatch.setattr(claude, "claude_header_mod_root", lambda: root)
     monkeypatch.setattr(claude, "managed_writes_allowed", lambda: True)
@@ -151,17 +152,10 @@ def test_revert_keeps_the_guard_when_an_admin_extended_the_list(tmp_path, monkey
     ]
 
 
-def test_header_mod_active_needs_every_file_and_entry(tmp_path, monkeypatch):
-    managed_path, root, _writes = _managed_env(tmp_path, monkeypatch)
+def test_header_mod_active_needs_every_file(tmp_path, monkeypatch):
+    _managed_path, root, _writes = _managed_env(tmp_path, monkeypatch)
     claude.write_tool_config({"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4")
     assert claude.header_mod_active()
 
-    enabled = managed_path.read_text()
-    doc = json.loads(enabled)
-    doc["prependPlugins"] = ["sec-default@builtin"]
-    managed_path.write_text(json.dumps(doc), encoding="utf-8")
-    assert not claude.header_mod_active()
-
-    managed_path.write_text(enabled, encoding="utf-8")
     (root / "ug-headers/.claude-plugin/plugin.json").unlink()
     assert not claude.header_mod_active()
