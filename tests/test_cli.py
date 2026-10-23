@@ -1186,33 +1186,13 @@ class TestSubcommandRouting:
         assert mock_launch.call_args.kwargs["parent_schema"] == "main.default"
         assert mock_launch.call_args.args[1].args == []
 
-    def test_codex_provider_and_model_location_are_mutually_exclusive(self):
-        with _launch_policy_patches(None):
+    @pytest.mark.parametrize("tool", ["claude", "codex", "copilot"])
+    def test_provider_and_model_location_are_mutually_exclusive(self, tool):
+        with _launch_policy_patches(None) as calls:
+            calls["state"]["available_tools"] = [tool]
             result = runner.invoke(
                 app,
-                [
-                    "codex",
-                    "--provider",
-                    "main.default.provider",
-                    "--model-location",
-                    "main.default",
-                ],
-            )
-
-        assert result.exit_code == 1
-        assert "--provider and --model-location cannot be used together" in result.output
-
-    def test_claude_provider_and_model_location_are_mutually_exclusive(self):
-        with _launch_policy_patches(None):
-            result = runner.invoke(
-                app,
-                [
-                    "claude",
-                    "--provider",
-                    "main.default.provider",
-                    "--model-location",
-                    "main.default",
-                ],
+                [tool, "--provider", "main.default.provider", "--model-location", "main.default"],
             )
 
         assert result.exit_code == 1
@@ -1255,23 +1235,6 @@ class TestSubcommandRouting:
 
         assert result.exit_code == 0, result.output
         assert copilot_agent.LAUNCH_MODEL_LOCATION_KEY not in calls["launch"].call_args.args[1]
-
-    def test_copilot_provider_and_model_location_are_mutually_exclusive(self):
-        with _launch_policy_patches(None) as calls:
-            calls["state"]["available_tools"] = ["copilot"]
-            result = runner.invoke(
-                app,
-                [
-                    "copilot",
-                    "--provider",
-                    "main.default.provider",
-                    "--model-location",
-                    "main.default",
-                ],
-            )
-
-        assert result.exit_code == 1
-        assert "--provider and --model-location cannot be used together" in result.output
 
     @pytest.mark.parametrize("tool", ["claude", "codex", "copilot"])
     def test_invalid_model_location_is_rejected(self, tool):
