@@ -38,6 +38,7 @@ from ucode.databricks import (
 from ucode.mcp_connection_login import connection_from_url
 from ucode.mcp_oauth import (
     CLAUDE_CODE_CIMD_CLIENT_ID,
+    CODEX_CIMD_CLIENT_ID,
     CURSOR_OAUTH_CLIENT_ID,
     first_available_oauth_client,
 )
@@ -78,20 +79,20 @@ MCP_SQL_PATH = "/api/2.0/mcp/sql"
 # is a much better experience than the stdio proxy for a connection-backed service:
 #   - Claude Code: `claude mcp add --transport http --client-id <app>` with its
 #     published CIMD URL client ID.
+#   - Codex CLI: an HTTP MCP entry with `oauth.client_id` and `oauth_resource`.
 #   - Cursor: a `url` server with an `auth.CLIENT_ID` in ~/.cursor/mcp.json.
-# Both need the app *published on the workspace* (checked per-workspace via
+# Each needs the app *published on the workspace* (checked per-workspace via
 # `first_available_oauth_client`) and its loopback `/callback` redirect registered on
 # `/oidc` — which lacks dynamic client registration, so a pre-registered client is
 # required.
-# Codex currently uses the stdio proxy: its per-server loopback `/callback/<hash>`
-# redirect is absent from the ChatGPT CIMD document, and the old `codex-cli`
-# published app is deprecated. Add a native mapping only when a compatible CIMD
-# client and redirect handling are available.
+# Codex CLI has its own CIMD document for the loopback callback. Workspaces without
+# that published client continue to use the Databricks CLI-backed stdio proxy.
 # Agents whose `mcp add` accepts only a static bearer, not an OAuth client — gemini
 # (`--header`) — stay on the stdio proxy even where their apps exist; add one here
 # (with its registration branch below) once its CLI can pin a client.
 AGENT_OAUTH_CLIENTS = {
     "claude": (CLAUDE_CODE_CIMD_CLIENT_ID,),
+    "codex": (CODEX_CIMD_CLIENT_ID,),
     "cursor": (CURSOR_OAUTH_CLIENT_ID,),
 }
 

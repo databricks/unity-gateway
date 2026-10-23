@@ -6,7 +6,7 @@ registers the service as a **direct HTTP** MCP server, the agent itself drives
 that login via OAuth against the workspace ``/oidc`` — and `/oidc` has no dynamic
 client registration, so the agent must present a **pre-registered public client**.
 
-Claude Code and Cursor use their CIMD URL client IDs where published. We probe
+Claude Code, Codex CLI, and Cursor use their CIMD URL client IDs where published. We probe
 each candidate and cache the result per workspace.
 """
 
@@ -23,6 +23,10 @@ from ucode.config_io import APP_DIR, read_json_safe, write_json_file
 # workspace must recognize it before ug registers it; merely serving the
 # document at this URL does not make an OAuth client available on every workspace.
 CLAUDE_CODE_CIMD_CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata"
+
+# Codex CLI's published CIMD document is separate from ChatGPT's hosted client.
+# It supports Codex's loopback OAuth callback rather than ChatGPT's hosted redirect.
+CODEX_CIMD_CLIENT_ID = "https://chatgpt.com/oauth/codex/client.json"
 
 MCP_OAUTH_CALLBACK_PORT = 3118
 
@@ -135,6 +139,7 @@ def first_available_oauth_client(workspace: str, client_ids: tuple[str, ...]) ->
 
 __all__ = [
     "CLAUDE_CODE_CIMD_CLIENT_ID",
+    "CODEX_CIMD_CLIENT_ID",
     "CURSOR_OAUTH_CLIENT_ID",
     "MCP_OAUTH_CALLBACK_PORT",
     "oauth_client_available",
