@@ -30,6 +30,7 @@ def _managed_env(tmp_path, monkeypatch, managed_doc=None):
 
     monkeypatch.setattr(managed_files, "_sudo_replace", _write)
     monkeypatch.setattr(managed_files, "_sudo_remove", lambda path: path.unlink())
+    monkeypatch.setattr(managed_files, "_privileged_rmdir", lambda folder: folder.rmdir())
     monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
     monkeypatch.setattr(claude, "claude_header_mod_root", lambda: root)
     monkeypatch.setattr(claude, "managed_writes_allowed", lambda: True)
@@ -104,3 +105,63 @@ def test_unreadable_mod_folder_reads_as_inactive(tmp_path, monkeypatch):
 
     monkeypatch.setattr(claude.Path, "is_file", denied)
     assert claude.header_mod_active() is False
+
+
+def test_failed_install_never_enables_a_missing_plugin(tmp_path, monkeypatch):
+    managed_path, root, _writes = _managed_env(tmp_path, monkeypatch)
+    write = managed_files._sudo_replace
+
+    def refuse_mod_files(target, text):
+        if root in target.parents:
+            raise PermissionError("denied")
+        write(target, text)
+
+    monkeypatch.setattr(managed_files, "_sudo_replace", refuse_mod_files)
+
+    claude.write_tool_config({"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4")
+
+    doc = json.loads(managed_path.read_text())
+    assert not {"extraKnownMarketplaces", "enabledPlugins", "prependPlugins"} & set(doc)
+    assert not claude.header_mod_active()
+
+
+def test_revert_removes_the_mod_files_and_folders(tmp_path, monkeypatch):
+    _managed_path, root, _writes = _managed_env(tmp_path, monkeypatch)
+    claude.write_tool_config({"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4")
+    assert (root / "ug-headers/hooks/register.ts").is_file()
+
+    claude.revert_managed_settings()
+
+    assert not root.exists()
+
+
+def test_revert_keeps_the_guard_when_an_admin_extended_the_list(tmp_path, monkeypatch):
+    managed_path, _root, _writes = _managed_env(tmp_path, monkeypatch)
+    claude.write_tool_config({"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4")
+    doc = json.loads(managed_path.read_text())
+    doc["prependPlugins"].append("acme-guard@acme")
+    managed_path.write_text(json.dumps(doc), encoding="utf-8")
+
+    claude.revert_managed_settings()
+
+    # A non-empty list without the guard would turn it off, so revert keeps it.
+    assert json.loads(managed_path.read_text())["prependPlugins"] == [
+        "sec-default@builtin",
+        "acme-guard@acme",
+    ]
+
+
+def test_header_mod_active_needs_every_file_and_entry(tmp_path, monkeypatch):
+    managed_path, root, _writes = _managed_env(tmp_path, monkeypatch)
+    claude.write_tool_config({"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4")
+    assert claude.header_mod_active()
+
+    enabled = managed_path.read_text()
+    doc = json.loads(enabled)
+    doc["prependPlugins"] = ["sec-default@builtin"]
+    managed_path.write_text(json.dumps(doc), encoding="utf-8")
+    assert not claude.header_mod_active()
+
+    managed_path.write_text(enabled, encoding="utf-8")
+    (root / "ug-headers/.claude-plugin/plugin.json").unlink()
+    assert not claude.header_mod_active()

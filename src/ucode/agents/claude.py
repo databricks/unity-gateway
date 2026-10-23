@@ -55,7 +55,6 @@ from ucode.databricks import (
 from ucode.launcher import exec_or_spawn
 from ucode.managed_config import refresh_managed_config
 from ucode.managed_files import (
-    CLAUDE_HEADER_MOD_FILES,
     OS,
     ManagedFileSnapshots,
     ManagedFileWriteUnavailable,
@@ -75,11 +74,13 @@ from ucode.managed_files import (
     managed_writes_allowed,
     mark_managed_file_verified,
     plan_settings_passthrough,
+    privileged_files_current,
     read_managed_file,
     reconcile_managed_file,
     reconcile_privileged_files,
     record_settings_passthrough,
     record_ug_picker,
+    remove_privileged_files,
     revert_managed_file,
     warn_managed_write_skipped,
     warn_skipped_settings_passthrough,
@@ -399,12 +400,34 @@ def managed_settings_status(state: dict) -> tuple[Path | None, str, str]:
 
 
 def revert_managed_settings() -> str:
-    return revert_managed_file(
-        "claude",
-        display="Claude Code",
-        parser=_parse_managed_settings,
-        dumper=_dump_managed_settings,
+    # ug lists the built-in guard to keep it when it creates `prependPlugins`, so revert takes it
+    # out with ug's entries. When an admin has since added to the list, put the guard back: a
+    # non-empty list without it turns the guard off.
+    guard_listed = _CLAUDE_GUARD_MOD_ID in _managed_prepend_plugins()
+
+    def dump(settings: dict) -> str:
+        prepend = settings.get("prependPlugins")
+        if guard_listed and isinstance(prepend, list) and prepend:
+            if _CLAUDE_GUARD_MOD_ID not in prepend:
+                settings["prependPlugins"] = [_CLAUDE_GUARD_MOD_ID, *prepend]
+        return _dump_managed_settings(settings)
+
+    status = revert_managed_file(
+        "claude", display="Claude Code", parser=_parse_managed_settings, dumper=dump
     )
+    _remove_header_mod()
+    return status
+
+
+def _managed_prepend_plugins() -> list:
+    """The managed file's ``prependPlugins`` list, or an empty one."""
+    path = _managed_settings_path()
+    try:
+        text = read_managed_file(path) if path is not None else None
+        prepend = _parse_managed_settings(text).get("prependPlugins") if text else None
+    except RuntimeError:
+        return []
+    return prepend if isinstance(prepend, list) else []
 
 
 def _managed_relayed_conflicts(path: Path) -> list[str]:
@@ -1859,10 +1882,15 @@ def _header_mod_files(root: Path) -> dict[Path, str]:
     return files
 
 
-def _enable_header_mod(settings: dict, root: Path | None) -> dict:
-    """Enable ug's header mod in the managed file and run it ahead of every user's mod."""
+def _enable_header_mod(settings: dict, root: Path | None, *, installed: bool = True) -> dict:
+    """Enable ug's header mod in the managed file and run it ahead of every user's mod.
+
+    Without its files in place (``installed`` false), take ug's entries back out instead, so the
+    managed file never names a plugin that isn't there."""
     if root is None:
         return settings
+    if not installed:
+        return _disable_header_mod(settings)
     marketplaces = settings.setdefault("extraKnownMarketplaces", {})
     plugins = settings.setdefault("enabledPlugins", {})
     if not isinstance(marketplaces, dict) or not isinstance(plugins, dict):
@@ -1881,14 +1909,54 @@ def _enable_header_mod(settings: dict, root: Path | None) -> dict:
     return settings
 
 
-def _install_header_mod(root: Path | None) -> None:
-    """Install or update the header mod's files; a failure only costs ``ug --header`` for Claude."""
+def _disable_header_mod(settings: dict) -> dict:
+    """Remove ug's header-mod entries, restoring the default plugin list when only it was set."""
+    for key, name in (
+        ("extraKnownMarketplaces", CLAUDE_HEADER_MOD_MARKETPLACE),
+        ("enabledPlugins", CLAUDE_HEADER_MOD_ID),
+    ):
+        entries = settings.get(key)
+        if isinstance(entries, dict) and name in entries:
+            del entries[name]
+            if not entries:
+                del settings[key]
+    prepend = settings.get("prependPlugins")
+    if isinstance(prepend, list) and CLAUDE_HEADER_MOD_ID in prepend:
+        rest = [entry for entry in prepend if entry != CLAUDE_HEADER_MOD_ID]
+        if rest in ([], [_CLAUDE_GUARD_MOD_ID]):
+            del settings["prependPlugins"]
+        else:
+            settings["prependPlugins"] = rest
+    return settings
+
+
+def _install_header_mod(root: Path | None) -> bool:
+    """Install or update the header mod's files, returning whether they are all in place.
+
+    A failure only costs ``ug --header`` for Claude; the caller then leaves the mod disabled."""
+    if root is None:
+        return False
+    files = _header_mod_files(root)
+    if is_dry_run() or not managed_writes_allowed():
+        # This run can't write as root: the mod counts as installed only if a run before did it.
+        return privileged_files_current(files)
+    try:
+        reconcile_privileged_files(files, display="Claude Code")
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+        print_warning(f"Couldn't install ug's Claude header mod at {root}: {exc}")
+        return False
+    return True
+
+
+def _remove_header_mod() -> None:
+    """Remove the header mod's root-owned files and folders, for ``ug revert``."""
+    root = claude_header_mod_root()
     if root is None or is_dry_run():
         return
     try:
-        reconcile_privileged_files(_header_mod_files(root))
+        remove_privileged_files(list(_header_mod_files(root)), root)
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
-        print_warning(f"Couldn't install ug's Claude header mod at {root}: {exc}")
+        print_warning(f"Couldn't remove ug's Claude header mod at {root}: {exc}")
 
 
 def header_mod_active() -> bool:
@@ -1898,13 +1966,22 @@ def header_mod_active() -> bool:
     if root is None or path is None:
         return False
     try:
-        if not (root / CLAUDE_HEADER_MOD_FILES[-1]).is_file():
+        if not all(file.is_file() for file in _header_mod_files(root)):
             return False
         settings = _parse_managed_settings(read_managed_file(path) or "{}")
     except (OSError, RuntimeError):
         return False
     plugins = settings.get("enabledPlugins")
-    return isinstance(plugins, dict) and plugins.get(CLAUDE_HEADER_MOD_ID) is True
+    marketplaces = settings.get("extraKnownMarketplaces")
+    prepend = settings.get("prependPlugins")
+    return (
+        isinstance(plugins, dict)
+        and plugins.get(CLAUDE_HEADER_MOD_ID) is True
+        and isinstance(marketplaces, dict)
+        and CLAUDE_HEADER_MOD_MARKETPLACE in marketplaces
+        and isinstance(prepend, list)
+        and CLAUDE_HEADER_MOD_ID in prepend
+    )
 
 
 def _is_shared_claude_list(path: list[str]) -> bool:
@@ -2010,7 +2087,11 @@ def _reconcile_managed_settings(
         ) from exc
     managed_before = copy.deepcopy(existing)
     header_mod_root = claude_header_mod_root()
-    desired_settings = _enable_header_mod(compose(existing), header_mod_root)
+    # Install the files before the settings name them, so a failed install never enables a
+    # plugin that isn't there.
+    desired_settings = _enable_header_mod(
+        compose(existing), header_mod_root, installed=_install_header_mod(header_mod_root)
+    )
     if header_mod_root is not None:
         owned_paths = [*owned_paths, *CLAUDE_HEADER_MOD_PATHS]
     _preserve_permission_denies(managed_before, desired_settings, withdrawn=withdrawn_denies or [])
@@ -2040,8 +2121,6 @@ def _reconcile_managed_settings(
     mark_managed_file_verified(state, "claude", path)
     record_ug_picker("claude", {key: desired_settings[key] for key in picker_keys})
     record_settings_passthrough("claude", passthrough_leaves or [])
-    # After the settings write, so a first install reuses its sudo session and password notice.
-    _install_header_mod(header_mod_root)
 
 
 def _preserve_permission_denies(

@@ -98,6 +98,9 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(managed_files_mod, "_sudo_replace", reject_privileged_write)
+    monkeypatch.setattr(
+        managed_files_mod, "_privileged_rmdir", lambda path: reject_privileged_write(path, "")
+    )
     # Windows CI runners are elevated; never let an unmocked test write C:\Program Files.
     monkeypatch.setattr(managed_files_mod.system_cross_os, "is_admin", lambda: False)
     monkeypatch.setattr(managed_files_mod, "_windows_replace", reject_privileged_write)

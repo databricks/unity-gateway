@@ -158,11 +158,43 @@ def claude_header_mod_root() -> Path | None:
     return None if managed_settings_skipped() else CLAUDE_HEADER_MOD_ROOTS.get(current_os())
 
 
-def reconcile_privileged_files(files: dict[Path, str]) -> None:
+def privileged_files_current(files: dict[Path, str]) -> bool:
+    """Whether every root-owned file already holds its contents."""
+    try:
+        return all(read_managed_file(path) == text for path, text in files.items())
+    except RuntimeError:
+        return False
+
+
+def reconcile_privileged_files(files: dict[Path, str], *, display: str) -> None:
     """Write each allowlisted root-owned file whose contents differ, through the sudo worker."""
-    for path, text in files.items():
-        if read_managed_file(path) != text:
-            _privileged_replace(path, text)
+    changed = [(path, text) for path, text in files.items() if read_managed_file(path) != text]
+    if changed and _sudo_may_prompt():
+        _print_managed_write_permission(display)
+    for path, text in changed:
+        _privileged_replace(path, text)
+
+
+def remove_privileged_files(paths: list[Path], root: Path) -> None:
+    """Remove root-owned files ug installed, then the folders under ``root`` they leave empty."""
+    for path in paths:
+        if path.is_file() or path.is_symlink():
+            _privileged_remove(path)
+    folders = {
+        parent for path in paths for parent in path.parents if root in (parent, *parent.parents)
+    }
+    for folder in sorted(folders, key=lambda f: len(f.parts), reverse=True):
+        if folder.is_dir() and not folder.is_symlink() and not any(folder.iterdir()):
+            _privileged_rmdir(folder)
+
+
+def _privileged_rmdir(folder: Path) -> None:
+    if current_os() is OS.WINDOWS:
+        folder.rmdir()
+        return
+    subprocess_cross_os.run(
+        _sudo_command("rmdir", str(folder)), capture_output=True, text=True, check=True
+    )
 
 
 def windows_claude_managed_settings_path() -> Path:

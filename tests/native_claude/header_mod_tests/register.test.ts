@@ -35,6 +35,14 @@ test('a header already sent keeps its value, and reapplying changes nothing', ()
   expect(headerLines(merged, 'x-team: other\nX-New: 1')).toBeUndefined();
 });
 
+test('malformed and repeated launch lines are skipped, and CRLF bases are read', () => {
+  const extra = 'no colon\nbad name: 1\nX-Empty:  \nX-Ctl: a\u0001b\nX-New: 1\nx-new: 2';
+  expect(headerLines('X-Team: eng\r\nUser-Agent: ucode/1', extra)).toBe(
+    'X-Team: eng\nUser-Agent: ucode/1\nX-New: 1',
+  );
+  expect(headerLines('X-Team: eng', 'no colon\nbad name: 1')).toBeUndefined();
+});
+
 test('without launch headers the variable is left alone', async ($, on) => {
   const env = setup(on, { ANTHROPIC_CUSTOM_HEADERS: 'X-Team: eng' });
 
