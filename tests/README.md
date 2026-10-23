@@ -559,7 +559,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 
 With Claude and Codex selected there are **87 live cases** (11 marked TUI cases),
 **1 two-workspace case** (marker `workspace_switch`),
-**43 managed-fixture cases** (marker `managed_fixture`, with only
+**44 managed-fixture cases** (marker `managed_fixture`, with only
 the CodingAgentConfig input injected from a JSON file in `fixtures/managed_config/`), and **7 installation checks**. The 14 retained numbered scenarios
 comprise **24 explicit journeys**: 12 managed configured/fresh executions and 12 unmanaged
 executions. The remaining managed-fixture cases cover focused model, MCP, skills,
@@ -745,6 +745,23 @@ Windows scheduled task (`launchctl` and `schtasks` are simulated), reuse of CLI 
 fixed-port collisions, setup failures that only warn, unchanged launches that keep the
 service running, and leaving another exporter alone. They do not establish a live
 desktop GUI, a real `launchctl` or `schtasks` run, or a login/reboot pass.
+
+`test_managed_config.py` and `test_managed_files.py` cover machine policy versus user-owned
+`refresh_ts.json`, five-minute throttling, no privileged write for unchanged policy or
+retrieval-only drift, configure-only sudo selection, deferred-update warning/fallback, matching
+removal, workspace isolation, fingerprint invalidation, and dry-run behavior.
+Pending-change regressions cover one warning across expired checks, distinct-change warnings,
+retrieval/key-order stability, removal, and clearing after remote/MDM/configure reconciliation.
+Workspace-lock regressions in `test_managed_config.py` and `test_cli.py` refuse foreign workspaces
+before cache/auth/bootstrap, including bare/agent launches, dry-run, and skip-preflight.
+`test_ug_managed_machine_refuses_foreign_workspace_launch` adds the black-box managed journey
+(stubbed managed config): configure followed by rejected bare/Claude/Codex workspace overrides, with policy,
+refresh metadata, and user state unchanged. This new live case has not been run locally.
+`test_ug_managed_config_launch_reuses_cache_within_ttl` is the live journey for root-owned `0644`
+policy, user-owned `0600` timestamps, and unchanged policy bytes/inode/mtime/ctime after an
+expired unchanged check. Its live sudo/password behavior still requires a disposable clean VM.
+Non-root writer regressions cover terminal/script launches, initial install and removal, and
+verify that neither a sudo capability probe nor a prompting worker is started.
 
 | Scenario | Status / requirement |
 | --- | --- |
