@@ -3,12 +3,41 @@
 from __future__ import annotations
 
 import json
+import subprocess
+
+import pytest
 
 from ucode.agents import cursor
 
 WS = "https://example.databricks.com"
 # The proxy argv ucode registers for every MCP server (see build_mcp_proxy_argv).
 PROXY_ARGV = ["ucode", "mcp-proxy", "--url", f"{WS}/api/2.0/mcp/functions/system/ai"]
+
+
+@pytest.mark.parametrize(
+    ("version", "supported"),
+    [
+        ("2026.01.23-916f423", False),
+        ("2026.10.22-27dcf5f", True),
+        ("2026.10.23-1234567", True),
+        ("unknown", False),
+    ],
+)
+def test_cursor_cimd_version_gate(monkeypatch, version, supported):
+    monkeypatch.setattr(
+        cursor.subprocess_cross_os,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, version, ""),
+    )
+    assert cursor.supports_cimd() is supported
+
+
+def test_cursor_cimd_version_check_fails_closed(monkeypatch):
+    def timed_out(*args, **kwargs):
+        raise subprocess.TimeoutExpired("cursor-agent --version", 10)
+
+    monkeypatch.setattr(cursor.subprocess_cross_os, "run", timed_out)
+    assert cursor.supports_cimd() is False
 
 
 class TestMcpServerEntry:

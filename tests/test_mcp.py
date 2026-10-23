@@ -339,6 +339,7 @@ class TestConfigureClientMcpServer:
     def _capture_cursor(self, monkeypatch, *, cursor_client_available: bool):
         http_calls: list[tuple[str, str, str]] = []
         proxy_calls: list[tuple[str, list[str]]] = []
+        monkeypatch.setattr(mcp.cursor, "supports_cimd", lambda: True)
         monkeypatch.setattr(
             mcp,
             "first_available_oauth_client",
@@ -370,6 +371,18 @@ class TestConfigureClientMcpServer:
         mcp.configure_client_mcp_server("cursor", "github", AIGW_MCP_URL, WS, "p")
         assert http_calls == []
         assert len(proxy_calls) == 1  # workspaces without Cursor's CIMD client keep the proxy
+
+    def test_cursor_older_build_uses_proxy_without_probing_cimd(self, monkeypatch):
+        http_calls, proxy_calls = self._capture_cursor(monkeypatch, cursor_client_available=True)
+        monkeypatch.setattr(mcp.cursor, "supports_cimd", lambda: False)
+        monkeypatch.setattr(
+            mcp,
+            "first_available_oauth_client",
+            lambda *args: pytest.fail("unsupported Cursor build must not probe CIMD"),
+        )
+        mcp.configure_client_mcp_server("cursor", "github", AIGW_MCP_URL, WS, "p")
+        assert http_calls == []
+        assert len(proxy_calls) == 1
 
     def test_cursor_aigw_service_with_pat_keeps_proxy(self, monkeypatch):
         # PAT auth has no interactive OAuth, so it can't use the HTTP login path.

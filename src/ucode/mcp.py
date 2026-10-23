@@ -289,6 +289,8 @@ def _oauth_http_client(client: str, workspace: str, *, use_pat: bool) -> str | N
     URL-independent, so callers can compute it once per (client, workspace); the per-server half
     (:func:`_native_oauth_http_entry`) decides whether a *specific* URL warrants the native entry."""
     clients = AGENT_OAUTH_CLIENTS.get(client)
+    if client == "cursor" and not cursor.supports_cimd():
+        return None
     return first_available_oauth_client(workspace, clients) if clients and not use_pat else None
 
 
