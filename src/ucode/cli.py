@@ -904,16 +904,17 @@ def _setup_single_agent(
     if apply_managed and tool in ("claude", "codex"):
         # Explicit configure always reads the workspace policy fresh, so it can install it.
         managed, _ = _refresh_configured_policy(state)
+    elif apply_managed:
+        # Other agents only read the policy; they never install it.
+        managed, _ = _read_policy_for_other_agent(state)
+    if apply_managed:
         refuse_user_scope_over_managed_config(state.get("workspace"), managed)
+    if apply_managed and tool in MODEL_LOCATION_TOOLS:
         _reject_disabled_agent(managed, tool)
         if managed is not None:
             state = resolve_state(managed, state, tool)
             if not managed_provider_service(managed, tool):
                 parent_schema = managed_unity_catalog_location(managed, tool)
-    elif apply_managed:
-        # Other agents only read the policy; they never install it.
-        managed, _ = _read_policy_for_other_agent(state)
-        refuse_user_scope_over_managed_config(state.get("workspace"), managed)
     state = configure_single_tool(tool, state, parent_schema=parent_schema)
     if apply_managed and not managed_enabled_tools(managed or {}):
         state = _record_unmanaged_configured_agents(state, [tool])
@@ -3733,15 +3734,15 @@ def _launch_tool(
             _print_budget_panel(recommendation, tool, managed)
         # The managed config's MCP servers and skills are both applied at `ug configure`, not here,
         # so the launch hot path makes no per-launch discovery calls for them.
-        if tool == "claude":
+        if tool == AGENT_CLAUDE:
             if provider:
                 state["_claude_launch_provider"] = provider
-        elif tool == "codex":
+        elif tool == AGENT_CODEX:
             if provider:
                 state["_codex_launch_provider"] = provider
             elif parent_schema:
                 state["_codex_launch_parent_schema"] = parent_schema
-        elif tool == "copilot":
+        elif tool == AGENT_COPILOT:
             if provider:
                 state[copilot_agent.LAUNCH_PROVIDER_SERVICE_KEY] = provider
             elif parent_schema:

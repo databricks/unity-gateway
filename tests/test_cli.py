@@ -1218,7 +1218,62 @@ class TestSubcommandRouting:
         assert result.exit_code == 1
         assert "--provider and --model-location cannot be used together" in result.output
 
-    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    def test_copilot_launch_uses_saved_model_location(self):
+        with _launch_policy_patches(None) as calls:
+            calls["state"]["model_locations"] = {"copilot": "main.saved"}
+            result = runner.invoke(app, ["copilot"])
+
+        assert result.exit_code == 0, result.output
+        launch_state = calls["launch"].call_args.args[1]
+        assert launch_state[copilot_agent.LAUNCH_MODEL_LOCATION_KEY] == "main.saved"
+
+    def test_copilot_explicit_provider_overrides_saved_location(self):
+        with _launch_policy_patches(None) as calls:
+            calls["state"]["available_tools"] = ["copilot"]
+            calls["state"]["model_locations"] = {"copilot": "main.saved"}
+            result = runner.invoke(app, ["copilot", "--provider", "main.default.openai"])
+
+        assert result.exit_code == 0, result.output
+        launch_state = calls["launch"].call_args.args[1]
+        assert launch_state[copilot_agent.LAUNCH_PROVIDER_SERVICE_KEY] == "main.default.openai"
+        assert copilot_agent.LAUNCH_MODEL_LOCATION_KEY not in launch_state
+
+    def test_copilot_explicit_model_location_overrides_saved_provider(self):
+        with _launch_policy_patches(None, persisted_provider="main.default.openai") as calls:
+            result = runner.invoke(app, ["copilot", "--model-location", "main.flag"])
+
+        assert result.exit_code == 0, result.output
+        launch_state = calls["launch"].call_args.args[1]
+        assert launch_state[copilot_agent.LAUNCH_MODEL_LOCATION_KEY] == "main.flag"
+        assert copilot_agent.LAUNCH_PROVIDER_SERVICE_KEY not in launch_state
+
+    def test_copilot_saved_model_location_is_ignored_under_managed_config(self):
+        managed = {"enabled_agents": {"copilot": {"model_config": {}}}}
+        with _launch_policy_patches(managed) as calls:
+            calls["state"]["model_locations"] = {"copilot": "main.saved"}
+            result = runner.invoke(app, ["copilot"])
+
+        assert result.exit_code == 0, result.output
+        assert copilot_agent.LAUNCH_MODEL_LOCATION_KEY not in calls["launch"].call_args.args[1]
+
+    def test_copilot_provider_and_model_location_are_mutually_exclusive(self):
+        with _launch_policy_patches(None) as calls:
+            calls["state"]["available_tools"] = ["copilot"]
+            result = runner.invoke(
+                app,
+                [
+                    "copilot",
+                    "--provider",
+                    "main.default.provider",
+                    "--model-location",
+                    "main.default",
+                ],
+            )
+
+        assert result.exit_code == 1
+        assert "--provider and --model-location cannot be used together" in result.output
+
+    @pytest.mark.parametrize("tool", ["claude", "codex", "copilot"])
     def test_invalid_model_location_is_rejected(self, tool):
         with _launch_policy_patches(None):
             result = runner.invoke(app, [tool, "--model-location", "main"])
@@ -3801,6 +3856,32 @@ class TestCopilotLaunchModel:
         assert result.exit_code == 0, result.output
         assert calls["launch"].call_args.kwargs["options"].launch_model == "gpt-5-4"
 
+    @pytest.mark.parametrize(
+        ("model_config", "expected_provider", "expected_location"),
+        [
+            (
+                {"model_provider_service": "main.default.managed-mps"},
+                "main.default.managed-mps",
+                None,
+            ),
+            ({"unity_catalog_location": "main.managed"}, None, "main.managed"),
+        ],
+        ids=["mps", "uc-parent"],
+    )
+    def test_managed_source_overrides_saved_provider(
+        self, model_config, expected_provider, expected_location
+    ):
+        managed = {"enabled_agents": {"copilot": {"model_config": model_config}}}
+        with _launch_policy_patches(managed, persisted_provider="main.default.developer") as calls:
+            calls["state"]["model_locations"] = {"copilot": "main.saved"}
+            result = runner.invoke(app, ["copilot"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["shared"].call_args.kwargs["skip_model_discovery"] is True
+        launch_state = calls["launch"].call_args.args[1]
+        assert launch_state.get(copilot_agent.LAUNCH_PROVIDER_SERVICE_KEY) == expected_provider
+        assert launch_state.get(copilot_agent.LAUNCH_MODEL_LOCATION_KEY) == expected_location
+
     def test_a_managed_default_still_discovers_the_catalog(self):
         assert not cli_mod._skip_model_discovery(
             self.MANAGED, "copilot", provider=None, managed_parent_schema=None, family_defaults=None
@@ -4765,6 +4846,17 @@ class TestConfigureAgentsSelection:
         assert asked == [["databricks", "location"]]
         assert cli_mod.get_model_location(result, "codex") == "main.models"
 
+    def test_picker_offers_location_for_copilot(self, monkeypatch):
+        state, _saved, asked = self._picker(
+            monkeypatch, "copilot", services=(["a.b.mps"], None), answers=["location"]
+        )
+
+        result = cli_mod._maybe_select_provider_service("copilot", state)
+
+        assert asked == [["databricks", "mps", "location"]]
+        assert cli_mod.get_model_location(result, "copilot") == "main.models"
+        assert cli_mod.get_provider_service(result, "copilot") is None
+
     def test_picker_reprompts_until_location_is_valid(self, monkeypatch):
         state, _saved, _asked = self._picker(
             monkeypatch,
@@ -5024,6 +5116,69 @@ class TestConfigureAgentsSelection:
         refresh.assert_called_once_with(state, force_refresh=True)
         configure.assert_called_once_with("codex", state, parent_schema="main.models")
         install_ai_tools.assert_called_once_with(["codex"], state, force_refresh=False)
+
+    def test_managed_copilot_parent_is_passed_to_generic_configure(self, monkeypatch):
+        state = {
+            **MINIMAL_STATE,
+            "available_tools": [],
+            "copilot_models": [],
+            "provider_services": {"copilot": "main.default.developer"},
+        }
+        managed = {
+            "enabled_agents": {
+                "copilot": {"model_config": {"unity_catalog_location": "main.models"}}
+            }
+        }
+        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda s, **_k: (managed, False))
+        monkeypatch.setattr(
+            cli_mod,
+            "check_gateway_endpoint",
+            lambda *_a: pytest.fail("managed model sources do not require global models"),
+        )
+        monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
+        monkeypatch.setattr(cli_mod, "_print_managed_summary", lambda *a, **k: None)
+        monkeypatch.setattr(cli_mod, "_configure_managed_mcp_servers", lambda *_a: None)
+        configured: list[dict] = []
+        monkeypatch.setattr(
+            cli_mod,
+            "configure_selected_tools",
+            lambda resolved, tools, **kwargs: configured.append(kwargs) or resolved,
+        )
+
+        assert cli_mod.configure_workspace_command(workspaces=[("https://w.com", None)]) == 0
+
+        assert configured[0]["parent_schemas"] == {"copilot": "main.models"}
+
+    def test_single_copilot_agent_passes_managed_parent_directly(self, monkeypatch):
+        state = {
+            **MINIMAL_STATE,
+            "provider_services": {"copilot": "main.default.developer"},
+        }
+        managed = {
+            "enabled_agents": {
+                "copilot": {"model_config": {"unity_catalog_location": "main.models"}}
+            }
+        }
+        monkeypatch.setattr(cli_mod, "install_databricks_cli", MagicMock())
+        monkeypatch.setattr(cli_mod, "install_tool_binary", MagicMock())
+        monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
+        refresh = MagicMock(return_value=(managed, False))
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", refresh)
+        configure = MagicMock(return_value=state)
+        monkeypatch.setattr(cli_mod, "configure_single_tool", configure)
+        install_ai_tools = MagicMock()
+        monkeypatch.setattr(cli_mod, "install_databricks_ai_tools_for_agents", install_ai_tools)
+
+        result = runner.invoke(
+            app, ["configure", "--agent", "copilot", "--workspace", "https://w.com"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "(Provider: Databricks)" in _strip_ansi(result.output)
+        refresh.assert_called_once_with(state, force_refresh=True)
+        configure.assert_called_once_with("copilot", state, parent_schema="main.models")
+        install_ai_tools.assert_called_once_with(["copilot"], state, force_refresh=False)
 
     def test_managed_config_fails_when_no_enabled_agent_is_available(self, monkeypatch):
         import ucode.cli as cli_mod
