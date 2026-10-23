@@ -339,17 +339,17 @@ class TestClassifyProviderModel:
         ],
     )
     def test_provider_type_and_id_decide_the_wire(self, model, provider_type, wire):
-        assert copilot.classify_provider_model(model, provider_type) == (wire, None)
+        assert copilot.classify_model(model, provider_type=provider_type) == (wire, None)
 
     def test_declared_non_chat_apis_exclude(self):
-        wire, why = copilot.classify_provider_model(
-            "embed-v-4-0", "openai", ["openai/v1/embeddings"]
+        wire, why = copilot.classify_model(
+            "embed-v-4-0", ["openai/v1/embeddings"], provider_type="openai"
         )
 
         assert wire is None
         assert "isn't a chat model" in why
-        assert copilot.classify_provider_model(
-            "gpt-5.2-chat", "azure_openai", ["openai/v1/chat/completions"]
+        assert copilot.classify_model(
+            "gpt-5.2-chat", ["openai/v1/chat/completions"], provider_type="azure_openai"
         ) == ("responses", None)
 
     @pytest.mark.parametrize(
@@ -360,7 +360,7 @@ class TestClassifyProviderModel:
         ],
     )
     def test_unusable_models_say_why(self, model, provider_type, reason):
-        wire, why = copilot.classify_provider_model(model, provider_type)
+        wire, why = copilot.classify_model(model, provider_type=provider_type)
         if reason is None:
             assert wire == "completions"
         else:
@@ -368,9 +368,16 @@ class TestClassifyProviderModel:
             assert reason in why
 
 
+def provider_models(models, provider_type, api_types=None):
+    api_types = api_types or {}
+    return copilot.build_catalog(
+        ((model, api_types.get(model, ())) for model in models), provider_type=provider_type
+    )
+
+
 class TestBuildProviderCatalog:
     def test_keeps_usable_models_in_catalog_order_and_reports_the_rest(self):
-        models, skipped = copilot.build_provider_catalog(
+        models, skipped = provider_models(
             ["gpt-4o", "text-embedding-3-small", "gpt-5.5", "gpt-5.5"],
             "openai",
             {"text-embedding-3-small": ["openai/v1/embeddings"]},
@@ -385,7 +392,7 @@ class TestBuildProviderCatalog:
         ]
 
     def test_orders_dotted_provider_versions_newest_first(self):
-        models, _ = copilot.build_provider_catalog(
+        models, _ = provider_models(
             ["gpt-5", "gpt-5.6", "gpt-5.1", "gpt-5.5", "o1", "o4-mini", "o3"], "openai"
         )
 
@@ -593,8 +600,8 @@ class TestRenderProvidersConfig:
         ]
 
     def test_provider_service_routes_every_provider_by_header(self):
-        claude, _ = copilot.build_provider_catalog(["claude-sonnet-4-6"], "anthropic")
-        gpt, _ = copilot.build_provider_catalog(["gpt-5.5", "gpt-4o"], "openai")
+        claude, _ = provider_models(["claude-sonnet-4-6"], "anthropic")
+        gpt, _ = provider_models(["gpt-5.5", "gpt-4o"], "openai")
 
         config = copilot.render_providers_config(
             claude + gpt, PROXY, "secret", provider_service=MPS
@@ -627,7 +634,7 @@ class TestRenderProvidersConfig:
         ]
 
     def test_provider_service_claude_keeps_its_id_with_200k_limits(self):
-        claude, _ = copilot.build_provider_catalog(["claude-sonnet-4-6"], "anthropic")
+        claude, _ = provider_models(["claude-sonnet-4-6"], "anthropic")
 
         config = copilot.render_providers_config(claude, PROXY, "secret", provider_service=MPS)
 
