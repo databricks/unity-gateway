@@ -15,13 +15,14 @@ cleans up the files when Claude exits.
 The same entry point routes Agent/Task calls in a native `tool.call` hook. It pipes the
 call as JSON to `ug claude-router-hook route-subagent-mod`, whose argument list arrives in
 the `routeCommand` plugin option, and continues the call with the returned input. The
-matching Agent row shows a spinner and elapsed seconds while the router answers, then the
-selected model, routing time, and rationale. Results live in memory by `tool_use_id`, so a
-plugin reload drops them. Disabled routing, command failures, and invalid responses keep
-the original call; failures also log a diagnostic.
-
-Collapsed parallel-agent groups show each task's selected model and rationale, including
-when routing completes out of order. Expanded groups use the individual tool annotations.
+matching Agent row shows a spinner and elapsed seconds while the router answers.
+Each successful decision emits a transcript notice with the task description, `tool_use_id`,
+selected model, routing time, and rationale before continuing the call. Claude's native
+parallel-agent summary bypasses both `ToolUse` and `ToolGroup` render hooks, so completed
+decisions do not depend on either renderer. Notices remain visible when background agents
+are grouped or routing completes out of order, without duplicating decisions on tool rows.
+Disabled routing, command failures, and invalid responses keep the original call;
+failures also log a diagnostic.
 
 The old routing PreToolUse hook is no longer written, so a call is not routed twice. A
 `route-subagent` hook that an earlier UG version persisted still gets its PreToolUse

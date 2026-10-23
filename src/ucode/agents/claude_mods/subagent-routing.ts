@@ -1,7 +1,5 @@
 import type { On, PluginOptions } from 'claude-code'
 
-type RoutingRecord = { model: string; rationale: string; seconds?: number }
-
 const shortModel = (model: string): string => model.replace(/^system\.ai\./, '').replace(/^databricks-/, '')
 // Claude's own spinner glyphs, played forwards then back as Claude does.
 const SPINNER_GLYPHS = ['·', '✢', '✳', '✶', '✻', '✽']
@@ -22,7 +20,6 @@ const secondsSince = async ($: any, start: number | undefined): Promise<number |
 }
 
 export const registerSubagentRouting = (on: On, options: PluginOptions): void => {
-  const records = new Map<string, RoutingRecord>()
   // Calls waiting on the router, by when routing started, shown with a spinner and timer.
   const pending = new Map<string, number | undefined>()
 
@@ -62,62 +59,34 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     } finally {
       spinner?.cancel()
     }
+    const seconds = tool_use_id ? await secondsSince($, pending.get(tool_use_id)) : undefined
     if (tool_use_id) {
-      const seconds = await secondsSince($, pending.get(tool_use_id))
       pending.delete(tool_use_id)
-      if (route) records.set(tool_use_id, { model: route.model, rationale: route.rationale, seconds })
       $.ui.invalidate('ui.render')
     }
     if (!route) return next(e)
+    const task = `${input.description || input.subagent_type || tool}${tool_use_id ? ` [${tool_use_id}]` : ''}`
+    const elapsed = seconds === undefined ? '' : ` (routed in ${seconds.toFixed(1)}s)`
+    $.ui.log(`Smart Router: ${task}\n  ↳ Selected Model: ${shortModel(route.model)}${elapsed}${route.rationale ? `\n    Reason: ${route.rationale}` : ''}`)
     // Preserve Claude's permission checks and every other mod's tool handlers.
     return next({ ...route.updatedInput, tool, tool_use_id, agentId })
   })
 
-  on('ui.render', { component: ['ToolUse', 'ToolGroup'] }, async ($, e, next) => {
+  on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
     const original = await next(e)
-    const grouped = e.component === 'ToolGroup'
-    if (grouped && e.props.isExpanded) return original
-    const calls = grouped ? e.props.calls : [e.props]
+    if (!pending.has(e.requestId)) return original
 
     const { Box, Text } = $.ui.resolve(e)
-    const children = [original]
-    for (const call of calls) {
-      const record = records.get(call.tool_use_id)
-      if (!record && !pending.has(call.tool_use_id)) continue
-      if (grouped) {
-        children.push(Text({ bold: true, children: [`  ${call.input.description || call.input.subagent_type || call.tool}`] }))
-      }
-      if (!record) {
-        const glyph = SPINNER[Math.floor(((await now($)) ?? 0) / SPINNER_INTERVAL_MS) % SPINNER.length]
-        const seconds = await secondsSince($, pending.get(call.tool_use_id))
-        const elapsed = seconds === undefined ? '' : ` ${Math.floor(seconds)}s`
-        children.push(Box({
-          flexDirection: 'row',
-          children: [
-            Text({ dimColor: true, children: ['  ↳ '] }),
-            Text({ color: 'green', children: [`${glyph} `] }),
-            Text({ dimColor: true, children: [`Selecting a model…${elapsed}`] }),
-          ],
-        }))
-        continue
-      }
-      children.push(Box({
-        flexDirection: 'row',
-        children: [
-          Text({ dimColor: true, children: ['  ↳ Selected Model: '] }),
-          Text({ color: 'green', bold: true, children: [shortModel(record.model)] }),
-          ...(record.seconds === undefined
-            ? []
-            : [Text({ dimColor: true, children: [` (routed in ${record.seconds.toFixed(1)}s)`] })]),
-        ],
-      }))
-      if (record.rationale) {
-        children.push(Box({
-          paddingLeft: 4,
-          children: [Text({ children: [Text({ dimColor: true, children: ['Reason: '] }), record.rationale] })],
-        }))
-      }
-    }
-    return children.length === 1 ? original : Box({ flexDirection: 'column', children })
+    const glyph = SPINNER[Math.floor(((await now($)) ?? 0) / SPINNER_INTERVAL_MS) % SPINNER.length]
+    const seconds = await secondsSince($, pending.get(e.requestId))
+    const elapsed = seconds === undefined ? '' : ` ${Math.floor(seconds)}s`
+    return Box({ flexDirection: 'column', children: [original, Box({
+      flexDirection: 'row',
+      children: [
+        Text({ dimColor: true, children: ['  ↳ '] }),
+        Text({ color: 'green', children: [`${glyph} `] }),
+        Text({ dimColor: true, children: [`Selecting a model…${elapsed}`] }),
+      ],
+    })] })
   })
 }

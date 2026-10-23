@@ -14,6 +14,8 @@ const row = (id: string) => ({
 
 test('routing preserves distinct results for identical tasks and forwards each call once', async ($, on) => {
   const calls: any[] = [];
+  const notices: string[] = [];
+  on('ui.log', ($, e) => { notices.push(e.text); return { value: undefined }; });
   on('session.id', () => ({ value: 'session-1' }));
   on('process.run', ($, e) => {
     expect(e.argv).toEqual(command);
@@ -38,102 +40,68 @@ test('routing preserves distinct results for identical tasks and forwards each c
   expect(calls[0].model).toBeUndefined();
   expect(calls[1].subagent_type).toBe('ug-smart-router:call-b');
 
-  const a = await $.ui.mount(row('call-a'));
-  expect(await a.find({ type: 'Text', text: 'original Agent row' })).toBeDefined();
-  expect(await a.find({ type: 'Text', text: '  ↳ Selected Model: ' })).toBeDefined();
-  expect(await a.find({ type: 'Text', text: 'claude-sonnet-5' })).toBeDefined();
-  expect(await a.find({ type: 'Text', text: 'Reason: ' })).toBeDefined();
-  expect(await a.find({ type: 'Text', text: /Selected for call-a/ })).toBeDefined();
-  expect(await a.find({ type: 'Text', text: 'claude-opus-4-8' })).toBeUndefined();
-  // UG's routed agent name only repeats the model, and the requested type is never shown.
-  expect(await a.find({ type: 'Text', text: /ug-smart-router:/ })).toBeUndefined();
-  expect(await a.find({ type: 'Text', text: /Explore/ })).toBeUndefined();
-  await a.unmount();
-  const b = await $.ui.mount(row('call-b'));
-  expect(await b.find({ type: 'Text', text: 'claude-opus-4-8' })).toBeDefined();
-  expect(await b.find({ type: 'Text', text: /Selected for call-b/ })).toBeDefined();
-  expect(await b.find({ type: 'Text', text: /ug-smart-router:/ })).toBeUndefined();
-  await b.unmount();
+  expect(notices.length).toBe(2);
+  expect(notices[0]).toContain('Smart Router: Inspect parser [call-a]');
+  expect(notices[0]).toContain('↳ Selected Model: claude-sonnet-5');
+  expect(notices[0]).toContain('Reason: Selected for call-a');
+  expect(notices[0]).not.toContain('claude-opus-4-8');
+  expect(notices[1]).toContain('Smart Router: Inspect parser [call-b]');
+  expect(notices[1]).toContain('↳ Selected Model: claude-opus-4-8');
+  expect(notices[1]).toContain('Reason: Selected for call-b');
+  const done = await $.ui.mount(row('call-a'));
+  expect(await done.find({ type: 'Text', text: 'original Agent row' })).toBeDefined();
+  expect(await done.find({ type: 'Text', text: /Selected Model|Reason:/ })).toBeUndefined();
+  await done.unmount();
 });
 
-test('collapsed parallel agents retain task-labelled routing while finishing out of order', async ($, on) => {
+test('parallel background agents emit distinct notices without any tool render events', async ($, on) => {
   const releases = new Map<string, () => void>();
-  const calls = ['call-a', 'call-b', 'call-unrouted'].map((id) => ({
-    ...row(id).props,
-    input: { ...originalInput, description: `Task ${id}` },
-  }));
-  const group = {
-    plugin: 'ug-smart-router',
-    component: 'ToolGroup' as const,
-    surface: 'terminal' as const,
-    requestId: 'group-not-a-tool-id',
-    viewport: { columns: 100, rows: 30 },
-    props: { calls, isExpanded: false, isActive: true, isCallsOnly: true },
-  };
+  let started: () => void = () => {};
+  const ready = new Promise<void>((resolve) => { started = resolve; });
+  const notices: string[] = [];
+  const forwarded: string[] = [];
+  on('ui.log', ($, e) => { notices.push(e.text); return { value: undefined }; });
   on('clock.now', () => ({ value: 10_000 }));
   on('session.id', () => ({ value: 'session-1' }));
   on('process.run', async ($, e) => {
-    const { tool_use_id } = JSON.parse(e.init.stdin);
-    await new Promise<void>((resolve) => { releases.set(tool_use_id, resolve); });
+    const { tool_use_id, tool_input } = JSON.parse(e.init.stdin);
+    await new Promise<void>((resolve) => {
+      releases.set(tool_use_id, resolve);
+      if (releases.size === 2) started();
+    });
     return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
       model: tool_use_id === 'call-a' ? 'system.ai.claude-sonnet-5' : 'system.ai.claude-opus-4-8',
       rationale: `Selected for ${tool_use_id}`,
-      updatedInput: { ...originalInput, subagent_type: `ug-smart-router:${tool_use_id}` },
+      updatedInput: { ...tool_input, subagent_type: `ug-smart-router:${tool_use_id}` },
     }) } };
   });
-  on('tool.call', () => ({ result: 'ok' }));
-  on('ui.render', () => ({ type: 'Text', props: {}, children: ['original group'] }));
+  on('tool.call', ($, e) => {
+    expect(notices[notices.length - 1]).toContain(`[${e.tool_use_id}]`);
+    expect(e.run_in_background).toBe(true);
+    forwarded.push(e.tool_use_id);
+    return { result: 'ok' };
+  });
 
-  const first = $.tool.call({ tool: 'Agent', tool_use_id: 'call-a', ...originalInput });
-  const second = $.tool.call({ tool: 'Task', tool_use_id: 'call-b', ...originalInput });
-  const pending = await $.ui.mount(group);
-  expect(await pending.find({ type: 'Text', text: '  Task call-a' })).toBeDefined();
-  expect(await pending.find({ type: 'Text', text: '  Task call-b' })).toBeDefined();
-  expect(await pending.find({ type: 'Text', text: /Selecting a model/ })).toBeDefined();
-  await pending.unmount();
-
+  const input = { ...originalInput, run_in_background: true };
+  const first = $.tool.call({ tool: 'Agent', tool_use_id: 'call-a', ...input, description: 'Compute 1+1 (agent A)' });
+  const second = $.tool.call({ tool: 'Task', tool_use_id: 'call-b', ...input, description: 'Compute 1+1 (agent B)' });
+  await ready;
+  expect(notices.length).toBe(0);
   releases.get('call-b')!();
   await second;
-  const partial = await $.ui.mount(group);
-  expect(await partial.find({ type: 'Text', text: /Selecting a model/ })).toBeDefined();
-  expect(await partial.find({ type: 'Text', text: 'claude-opus-4-8' })).toBeDefined();
-  expect(await partial.find({ type: 'Text', text: /Selected for call-b/ })).toBeDefined();
-  expect(await partial.find({ type: 'Text', text: 'claude-sonnet-5' })).toBeUndefined();
-  await partial.unmount();
-
+  expect(notices.length).toBe(1);
+  expect(notices[0]).toContain('Compute 1+1 (agent B) [call-b]');
+  expect(notices[0]).toContain('Selected Model: claude-opus-4-8');
+  expect(notices[0]).toContain('Reason: Selected for call-b');
+  expect(notices[0]).not.toContain('call-a');
   releases.get('call-a')!();
   await first;
-  const done = await $.ui.mount({ ...group, props: { ...group.props, isActive: false } });
-  expect(await done.find({ type: 'Text', text: 'original group' })).toBeDefined();
-  for (const id of ['call-a', 'call-b']) {
-    expect(await done.find({ type: 'Text', text: `  Task ${id}` })).toBeDefined();
-    expect(await done.find({ type: 'Text', text: `Selected for ${id}` })).toBeDefined();
-  }
-  expect(await done.find({ type: 'Text', text: 'claude-sonnet-5' })).toBeDefined();
-  expect(await done.find({ type: 'Text', text: 'claude-opus-4-8' })).toBeDefined();
-  expect(await done.find({ type: 'Text', text: /Selecting a model|Task call-unrouted/ })).toBeUndefined();
-  await done.unmount();
-
-  for (const [index, model, otherModel] of [
-    [0, 'claude-sonnet-5', 'claude-opus-4-8'],
-    [1, 'claude-opus-4-8', 'claude-sonnet-5'],
-  ] as const) {
-    const isolated = await $.ui.mount({ ...group, props: { ...group.props, calls: [calls[index]] } });
-    expect(await isolated.find({ type: 'Text', text: model })).toBeDefined();
-    expect(await isolated.find({ type: 'Text', text: `Selected for ${calls[index].tool_use_id}` })).toBeDefined();
-    expect(await isolated.find({ type: 'Text', text: otherModel })).toBeUndefined();
-    await isolated.unmount();
-  }
-
-  for (const props of [
-    { ...group.props, isExpanded: true },
-    { ...group.props, calls: [calls[2]] },
-  ]) {
-    const unchanged = await $.ui.mount({ ...group, props });
-    expect(await unchanged.find({ type: 'Text', text: 'original group' })).toBeDefined();
-    expect(await unchanged.find({ type: 'Text', text: /Selected Model|Selected for/ })).toBeUndefined();
-    await unchanged.unmount();
-  }
+  expect(notices.length).toBe(2);
+  expect(notices[1]).toContain('Compute 1+1 (agent A) [call-a]');
+  expect(notices[1]).toContain('Selected Model: claude-sonnet-5');
+  expect(notices[1]).toContain('Reason: Selected for call-a');
+  expect(notices[1]).not.toContain('call-b');
+  expect(forwarded).toEqual(['call-b', 'call-a']);
 });
 
 for (const [name, result, warningCount] of [
@@ -167,6 +135,8 @@ for (const [name, result, warningCount] of [
 }
 
 test('a call waiting on the router shows a spinner until its model is selected', async ($, on) => {
+  const notices: string[] = [];
+  on('ui.log', ($, e) => { notices.push(e.text); return { value: undefined }; });
   let release: (value: unknown) => void = () => {};
   const routed = new Promise((resolve) => { release = resolve; });
   let now = 10_000;
@@ -204,8 +174,8 @@ test('a call waiting on the router shows a spinner until its model is selected',
   await parallel;
   const done = await $.ui.mount(row('call-a'));
   expect(await done.find({ type: 'Text', text: /Selecting a model/ })).toBeUndefined();
-  expect(await done.find({ type: 'Text', text: 'claude-sonnet-5' })).toBeDefined();
-  // The selected row keeps how long routing took.
-  expect(await done.find({ type: 'Text', text: ' (routed in 3.2s)' })).toBeDefined();
+  expect(await done.find({ type: 'Text', text: /Selected Model/ })).toBeUndefined();
+  expect(notices.length).toBe(2);
+  expect(notices[0]).toContain('claude-sonnet-5 (routed in 3.2s)');
   await done.unmount();
 });

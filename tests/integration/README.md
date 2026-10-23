@@ -1,9 +1,9 @@
 # Integration tests
 
 Native mod component tests in `../native_claude/test_mod.py` cover task-labelled model
-and rationale annotations in collapsed parallel-agent groups, out-of-order routing,
-pending/completed states, and expanded/unrouted passthrough. These are render-event
-checks, not live parallel-agent TUI or gateway coverage.
+and rationale notices without tool render events, parallel background routing finishing
+out of order, distinct IDs for identical tasks, pending spinners, and disabled/failed
+routing. These are not live parallel-agent TUI or gateway checks.
 
 The spend-status client's workspace authentication, optional percentage handling,
 pagination, validation, and failure propagation are covered by component tests in
