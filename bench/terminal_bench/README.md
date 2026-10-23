@@ -85,7 +85,7 @@ Each job writes a table of task results to its run summary.
 
 Every task must pass 2 of up to 3 attempts. A task stops after 2 passes, so the third attempt runs only when the first two split. Two misses also skip the third attempt. That covers ug's own tasks in both lanes and the TB2 tasks in the Harbor lane. A job fails when any task misses that bar. Agents miss a run now and then, so one miss doesn't fail the task. Change the bar with `run_native.py --attempts` and `--min-passes`, or the workflow's Harbor `-k` values and `summarize_harbor.py --min-passes`.
 
-The default TB2 subset holds only tasks that both agents pass reliably, so a miss points at ug rather than task difficulty. `kv-store-grpc` and `chess-best-move` were dropped because agents solve them too rarely. A trial that hits a harness error, such as a failed agent install or an API error, counts as a failed attempt.
+The default TB2 subset holds only tasks that both agents pass reliably, so a miss points at ug rather than task difficulty. `kv-store-grpc` and `chess-best-move` were dropped because agents solve them too rarely. A trial that hits a harness error, such as a failed agent install or an API error, counts as a failed attempt. In a Harbor job with a pinned model, so does a Claude trial whose session ran another model, such as when the workspace doesn't allow the pin. Its error is `ModelMismatch`.
 
 Each job uploads its files as an artifact named `terminal-bench-harbor-<agent>` or `terminal-bench-native-<agent>-<os>`. The GPT jobs add the model after the agent, such as `terminal-bench-harbor-claude-gpt-6-luna`. `scrub_secrets.py` replaces bearer tokens in those files before upload.
 

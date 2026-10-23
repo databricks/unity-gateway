@@ -108,7 +108,7 @@ jobs:
           run_harbor "${includes[@]}" -k 2
           retry=()
           while read -r task; do retry+=(-i "$task"); done \
-            < <(python3 bench/terminal_bench/summarize_harbor.py "$out" --undecided)
+            < <(python3 bench/terminal_bench/summarize_harbor.py "$out" --undecided --model "$MODEL")
           if (( ${#retry[@]} )); then run_harbor "${retry[@]}" -k 1; fi
       - name: Run ug's own tasks
         if: ${{ !cancelled() }}
@@ -128,14 +128,14 @@ jobs:
           run_harbor "${includes[@]}" -k 2
           retry=()
           while read -r task; do retry+=(-i "$task"); done \
-            < <(python3 bench/terminal_bench/summarize_harbor.py "$out" --undecided)
+            < <(python3 bench/terminal_bench/summarize_harbor.py "$out" --undecided --model "$MODEL")
           if (( ${#retry[@]} )); then run_harbor "${retry[@]}" -k 1; fi
       - name: Summarize
         if: ${{ !cancelled() }}
         run: |
           status=0
-          python3 bench/terminal_bench/summarize_harbor.py "$RUNNER_TEMP/harbor-jobs/tb2" "TB2 · ${{ matrix.agent }}" --min-passes 2 || status=1
-          python3 bench/terminal_bench/summarize_harbor.py "$RUNNER_TEMP/harbor-jobs/ug" "ug tasks in Harbor · ${{ matrix.agent }}" --min-passes 2 || status=1
+          python3 bench/terminal_bench/summarize_harbor.py "$RUNNER_TEMP/harbor-jobs/tb2" "TB2 · ${{ matrix.agent }}" --min-passes 2 --model "$MODEL" || status=1
+          python3 bench/terminal_bench/summarize_harbor.py "$RUNNER_TEMP/harbor-jobs/ug" "ug tasks in Harbor · ${{ matrix.agent }}" --min-passes 2 --model "$MODEL" || status=1
           exit $status
       - name: Scrub the bearer token from job output
         if: ${{ !cancelled() }}
