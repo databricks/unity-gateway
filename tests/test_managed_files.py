@@ -733,6 +733,22 @@ class TestWorkspacePolicyWriter:
         assert "b'" not in str(error.value)
 
     @pytest.mark.skipif(sys.platform == "win32", reason="The workspace-policy writer is Unix-only")
+    def test_policy_removal_compares_the_raw_bytes(self, policy_path, monkeypatch):
+        """A BOM or CRLF endings must survive into the copy the script compares before deleting."""
+        raw = b'\xef\xbb\xbf{"workspace": "x",\r\n "config": {}}\r\n'
+        policy_path.write_bytes(raw)
+        seen = {}
+
+        def remove(command, **kwargs):
+            seen["source"] = Path(command[-2]).read_bytes()
+            policy_path.unlink()
+            return subprocess.CompletedProcess(command, 0)
+
+        monkeypatch.setattr(managed_files.subprocess_cross_os, "run", remove)
+        managed_files.update_workspace_policy(policy_path, None, allow_sudo=True)
+        assert seen["source"] == raw
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="The workspace-policy writer is Unix-only")
     def test_root_policy_update_does_not_need_sudo(self, policy_path, monkeypatch):
         monkeypatch.setattr(managed_files.os, "geteuid", lambda: 0)
         calls = []

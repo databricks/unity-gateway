@@ -170,7 +170,7 @@ def session(request, installed_binary):
                 policy = Path("/etc/unitygateway/managed-settings.json")
                 sudo = shutil.which("sudo")
                 if os.name == "posix" and policy.exists() and sudo:
-                    user.run("-n", "rm", "-f", str(policy), binary=Path(sudo), timeout=30)
+                    user.run("-n", "rm", "-f", str(policy), binary=Path(sudo), timeout=30, ok=False)
 
 
 @pytest.fixture

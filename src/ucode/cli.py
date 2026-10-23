@@ -840,7 +840,8 @@ def _read_policy_for_other_agent(state: dict) -> ManagedConfigResult:
     if installed:
         raise RuntimeError(
             f"This machine is managed for {installed}, so it cannot be configured for "
-            f"{state['workspace']}. Run `ug configure --workspace {state['workspace']}` with sudo "
+            f"{state['workspace']}. Your selection stays on {installed}. Run "
+            f"`ug configure --workspace {state['workspace']}` from a terminal where you can use sudo "
             "to switch the machine, or ask your IT team or an administrator."
         )
     return refresh_managed_config(state)
@@ -851,20 +852,16 @@ def _launch_workspace_state(workspace: str | None) -> dict:
 
     Adopts the installed workspace when none is saved, so a fresh user launches it directly.
     """
-    flag_workspace = managed_launch_workspace(workspace) if workspace else None
-    if flag_workspace:
-        set_current_workspace(flag_workspace)
     state = load_state()
-    if flag_workspace and state.get("workspace") != flag_workspace:
-        # A dry run saves nothing, so carry the requested workspace for this run.
-        state = {**state, "workspace": flag_workspace}
-    current = managed_launch_workspace(state.get("workspace"))
-    if current and not state.get("workspace"):
-        set_current_workspace(current)
+    saved = state.get("workspace")
+    # The flag wins over the saved selection; either is refused if it isn't the installed one.
+    target = managed_launch_workspace(workspace or saved)
+    if target and (not saved or normalize_workspace_url(saved) != target):
+        set_current_workspace(target)
         state = load_state()
-        if not state.get("workspace"):
-            # A dry run saves nothing, so carry the adopted workspace for this run.
-            state = {**state, "workspace": current}
+        if state.get("workspace") != target:
+            # A dry run saves nothing, so carry the workspace for this run.
+            state = {**state, "workspace": target}
     return state
 
 

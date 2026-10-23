@@ -139,6 +139,7 @@ def test_ug_managed_config_launch_reuses_cache_within_ttl(live_session, workspac
     installed_stat = policy.stat()
     assert installed_stat.st_uid == 0
     assert installed_stat.st_mode & 0o777 == 0o644
+    assert policy.parent.stat().st_uid == 0
     assert policy.parent.stat().st_mode & 0o777 == 0o755
     assert set(json.loads(installed)) == {"workspace", "config"}
     fresh = json.loads(refresh.read_text())[workspace_key]
