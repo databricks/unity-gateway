@@ -587,6 +587,9 @@ first-prompt wrapper starts. The skill toggles' legacy-env cases load the `_off`
 workspace's routing fixture (`claude_smart_routing_off.json`, `codex_smart_routing_off.json`, or
 `codex_smart_routing_ca_off.json`): the same models without `smart_routing`, because managed
 smart routing overrides individual routing env vars.
+Claude's toggle variants are temporarily non-blocking on both CI platforms; see
+[Smart Router toggle quarantine](#smart-router-toggle-quarantine). Their assertions and local
+selection are unchanged. Codex toggles and the direct hook journeys remain required.
 Explicit-model selection, command forwarding, app-server initialization, and catalog fallback
 retain their original legacy flags and on/off coverage; preset-specific behavior there is not
 covered.
@@ -945,6 +948,30 @@ and installation subsets do not select managed tests and do not require them.
 The advisory Windows installation and headless lanes are not yet included in that aggregate check.
 The existing required `e2e` context also waits for the complete integration workflow, so integration
 cannot still be running when that gate passes. Full coverage on PRs needs no label or opt-in.
+
+### Smart Router toggle quarantine
+
+Only `test_smart_router_skill_toggles_claude_subagent_routing` and its six variants carry
+`quarantined_router_toggle`. Required Full and Managed config selectors exclude that marker.
+The **Smart Router toggles · Claude · Linux/Windows (non-blocking)** jobs run those cases
+unchanged, with the pinned Claude version and existing e2e workspace/bearer. They run after
+Full and Managed config finish, one OS at a time, to avoid adding concurrent inference load.
+They use `continue-on-error`, stay outside `All integration tests`, and upload separate
+`integration-smart-router-toggle-claude-<os>` artifacts even when tests fail.
+No skip, xfail, task retry, weaker assertion, or production routing change is involved.
+The separate advisory harness-latest workflow still selects these cases too.
+
+Evidence: [the original Windows failure](https://github.com/databricks/unity-gateway/actions/runs/39822847395/job/119982066996)
+and [a matching Linux failure](https://github.com/databricks/unity-gateway/actions/runs/39736474661/job/119684849649)
+completed ordinary child work but never displayed a selected routing model. Child startup
+roughly 20 seconds after the Agent call suggests route-selection timeout followed by fallback;
+the router's exact error was not retained. This is a shared reliability issue, not an
+established Windows-specific defect.
+
+Restore required coverage after route-selection outcome/error diagnostics identify the
+failure, the underlying routing/fallback issue is addressed, and repeated first-attempt
+advisory runs pass on both platforms. Remove the marker and its selector exclusions together
+with the dedicated advisory jobs; keep all existing routing and child-completion assertions.
 
 ### Opting into harness-latest
 

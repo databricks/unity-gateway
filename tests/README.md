@@ -450,6 +450,11 @@ Claude checks local mod confirmations and the inference payload's `smart_router_
 Codex checks saved session controls and native tool-result confirmations after each toggle.
 Both explicitly request their children,
 including while routing is off.
+Claude's six toggle variants are temporarily non-blocking on Linux and Windows; required
+Full and Managed config lanes deselect only `quarantined_router_toggle` cases. A separate
+Smart Router toggles lane still runs every assertion and uploads evidence on both platforms.
+Codex toggles, direct routing hooks, CUJ4, and routing component tests remain required.
+See [quarantine evidence and restoration criteria](integration/README.md#smart-router-toggle-quarantine).
 The managed-fixture banner journeys separately cover the selector unset (managed default) and
 `first_prompt_and_subagent_no_orch_v0` for real first-prompt tasks.
 Preset parameterization augments only routing hooks, skill toggles, and first-prompt routing;

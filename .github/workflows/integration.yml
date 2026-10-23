@@ -331,8 +331,31 @@ jobs:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: ${{ matrix.agent }}
-      TEST_MARKER: live and ${{ matrix.agent }}
+      TEST_MARKER: live and ${{ matrix.agent }} and not quarantined_router_toggle
       ARTIFACT_NAME: integration-full-${{ matrix.agent }}-${{ matrix.os }}
+    steps: *live-steps
+
+  # Restore required coverage once the shared routing timeout/fallback flake is fixed.
+  # See tests/integration/README.md#smart-router-toggle-quarantine for evidence and exit criteria.
+  smart-router-toggle:
+    name: Smart Router toggles · Claude · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
+    if: ${{ !cancelled() && needs.workspace.result == 'success' }}
+    needs: [workspace, full, managed]
+    continue-on-error: true
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    env:
+      UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+      DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+      DEPENDENCY: ${{ inputs.dependency }}
+      AGENT: claude
+      TEST_MARKER: live and claude and quarantined_router_toggle
+      ARTIFACT_NAME: integration-smart-router-toggle-claude-${{ matrix.os }}
     steps: *live-steps
 
   # Non-blocking: continue-on-error and absent from the cujs `needs`, so a flaky OpenCode
@@ -490,7 +513,7 @@ jobs:
           uv run --no-project --python 3.12 python scripts/run_integration.py \
             --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
             --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
-            "${args[@]}" -- -m "(managed_fixture or workspace_switch) and $AGENT"
+            "${args[@]}" -- -m "(managed_fixture or workspace_switch) and $AGENT and not quarantined_router_toggle"
       - name: Upload managed test evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
