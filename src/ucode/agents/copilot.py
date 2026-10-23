@@ -78,6 +78,7 @@ from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
     release_file_lock,
 )
+from ucode.smart_routing.routing import unwrap_anthropic_gateway_model
 from ucode.state import is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
 from ucode.ui import print_warning
@@ -142,7 +143,6 @@ _UNSUPPORTED_MODELS = {
     "claude-opus-4-1": "the gateway rejects the thinking settings Copilot sends for it",
 }
 _GATEWAY_ALIAS_PREFIX = "anthropic-aigw-"
-_GATEWAY_ALIAS_PATTERN = re.compile(r"^anthropic-aigw-[0-9a-f]{8}-", re.IGNORECASE)
 _GPT_MODEL_MAJOR_PATTERN = re.compile(r"^gpt-(\d+)o?(?=$|[.-])")
 _CLAUDE_DASHED_VERSION_PATTERN = re.compile(r"-(\d+)-(\d+)$")
 # Anthropic and Bedrock Claude ids end in a release date and, on Bedrock, a version:
@@ -394,7 +394,7 @@ def location_catalog(state: dict, schema: str) -> list[CopilotModel]:
     listing = list_anthropic_model_catalog(
         workspace, launch_token(state, workspace), parent_schema=schema
     )
-    models = dict.fromkeys(_GATEWAY_ALIAS_PATTERN.sub("", model) for model in listing.model_ids)
+    models = dict.fromkeys(unwrap_anthropic_gateway_model(model) for model in listing.model_ids)
     catalog = [
         CopilotModel(model, classify_copilot_model(model) or WIRE_ANTHROPIC)
         for model in models

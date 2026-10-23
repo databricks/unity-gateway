@@ -884,7 +884,7 @@ def _setup_single_agent(
 ) -> dict:
     """Log in, discover the agent's models, and write its config, then print the summary.
 
-    With ``apply_managed`` the workspace's managed config governs claude/codex (the
+    With ``apply_managed`` the workspace's managed config governs claude/codex/copilot (the
     ``ug configure --agent`` path: admin-enabled applies the admin config, a disabled agent is
     rejected). ``ug agents add`` passes ``apply_managed=False`` to set up a self-managed agent
     standalone, independent of the managed config.
@@ -927,9 +927,9 @@ def _setup_single_agent(
             skills_configured = _configure_managed_skills(managed)
             if resolved_mcps is not None and skills_configured:
                 _sync_claude_cowork_mcp_servers(state, managed_mcp_servers=resolved_mcps)
-    install_databricks_ai_tools_for_agents(
-        [tool], state, force_refresh=tool not in ("claude", "codex")
-    )
+    # Only the Claude and Codex branch above reads the managed config fresh.
+    managed_refreshed = apply_managed and tool in ("claude", "codex")
+    install_databricks_ai_tools_for_agents([tool], state, force_refresh=not managed_refreshed)
     spec = TOOL_SPECS[tool]
     provider_summary = "Databricks" if parent_schema else _provider_summary(tool, state)
     console.print(

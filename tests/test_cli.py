@@ -5180,6 +5180,23 @@ class TestConfigureAgentsSelection:
         configure.assert_called_once_with("copilot", state, parent_schema="main.models")
         install_ai_tools.assert_called_once_with(["copilot"], state, force_refresh=False)
 
+    @pytest.mark.parametrize(("apply_managed", "force_refresh"), [(True, False), (False, True)])
+    def test_single_copilot_agent_refreshes_ai_tools_unless_managed_refresh_ran(
+        self, monkeypatch, apply_managed, force_refresh
+    ):
+        state = dict(MINIMAL_STATE)
+        monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda *a, **k: (None, False))
+        monkeypatch.setattr(cli_mod, "configure_single_tool", lambda *a, **k: state)
+        install_ai_tools = MagicMock()
+        monkeypatch.setattr(cli_mod, "install_databricks_ai_tools_for_agents", install_ai_tools)
+
+        cli_mod._setup_single_agent(
+            [("https://w.com", None)], "copilot", apply_managed=apply_managed
+        )
+
+        install_ai_tools.assert_called_once_with(["copilot"], state, force_refresh=force_refresh)
+
     def test_managed_config_fails_when_no_enabled_agent_is_available(self, monkeypatch):
         import ucode.cli as cli_mod
 
