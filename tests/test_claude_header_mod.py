@@ -3,6 +3,7 @@
 import copy
 import json
 import shutil
+from types import SimpleNamespace
 
 from ucode import managed_files
 from ucode.agents import claude
@@ -41,6 +42,12 @@ def _managed_env(tmp_path, monkeypatch, managed_doc=None):
     monkeypatch.setattr(claude, "ug_version", lambda: "1.0")
     monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.0")
     monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", tmp_path / "ucode-settings.json")
+    monkeypatch.setattr(
+        claude, "refresh_managed_config", lambda *a, **kw: SimpleNamespace(manifest={"claude": {}})
+    )
+    # As `ug configure` runs it.
+    monkeypatch.setattr(claude, "_header_mod_requested", True)
+    monkeypatch.delenv("UG_HEADERS", raising=False)
     return managed_path, root, writes
 
 
@@ -64,6 +71,28 @@ def test_configure_installs_and_enables_mod_then_stays_put(tmp_path, monkeypatch
     count = len(writes)
     claude.write_tool_config(state, "databricks-claude-sonnet-4")
     assert len(writes) == count  # unchanged files are never rewritten through sudo
+
+
+def test_launch_adds_the_mod_only_with_headers_and_keeps_configures(tmp_path, monkeypatch):
+    managed_path, root, writes = _managed_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(claude, "_header_mod_requested", False)
+    state = {"workspace": WS, "codex_models": []}
+
+    # Another writer of the managed file drops entries it doesn't know; a plain launch mustn't
+    # add them back every time.
+    claude.write_tool_config(state, "databricks-claude-sonnet-4")
+    assert not root.exists()
+    assert "enabledPlugins" not in json.loads(managed_path.read_text())
+
+    monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: testenv://liteswap/unit")
+    claude.write_tool_config(state, "databricks-claude-sonnet-4")
+    assert claude.header_mod_active()
+
+    # Once added, a plain launch leaves the mod as it is.
+    monkeypatch.delenv("UG_HEADERS")
+    count = len(writes)
+    claude.write_tool_config(state, "databricks-claude-sonnet-4")
+    assert claude.header_mod_active() and len(writes) == count
 
 
 def test_admin_prepend_list_is_kept_and_revert_restores_it(tmp_path, monkeypatch):

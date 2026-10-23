@@ -1903,6 +1903,15 @@ def _enable_header_mod(settings: dict, root: Path | None) -> dict:
     return settings
 
 
+_header_mod_requested = False
+
+
+def request_header_mod() -> None:
+    """Have this run add the header mod even without headers, as ``ug configure`` does."""
+    global _header_mod_requested
+    _header_mod_requested = True
+
+
 def _install_header_mod(root: Path | None) -> bool:
     """Install or update the header mod's files, returning whether this run did.
 
@@ -2047,9 +2056,12 @@ def _reconcile_managed_settings(
         ) from exc
     managed_before = copy.deepcopy(existing)
     header_mod_root = claude_header_mod_root()
+    # Only `ug configure` and a launch with headers add the mod: another writer of this file
+    # drops entries it doesn't know, and re-adding them would rewrite it on every launch.
+    wants_mod = _header_mod_requested or bool(os.environ.get(UG_HEADERS_ENV_VAR, "").strip())
     # Install the files before the settings name them, so a failed install never enables a
     # plugin that isn't there; a run that can't write as root leaves any earlier entries as is.
-    installed = _install_header_mod(header_mod_root)
+    installed = wants_mod and _install_header_mod(header_mod_root)
     desired_settings = _enable_header_mod(compose(existing), header_mod_root if installed else None)
     if header_mod_root is not None:
         owned_paths = [*owned_paths, *CLAUDE_HEADER_MOD_PATHS]
