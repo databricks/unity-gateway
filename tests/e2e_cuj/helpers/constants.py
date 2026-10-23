@@ -25,6 +25,8 @@ CLAUDE_HAIKU_MODEL = "system.ai.claude-haiku-4-5"
 NATIVE_MODEL_ALIASES = {
     "system.ai.anthropic.claude-haiku-4-5-20251001-v1:0": CLAUDE_HAIKU_MODEL,
 }
+CLAUDE_GPT_LUNA_MODEL = "system.ai.gpt-6-luna"
+CLAUDE_GPT_SOL_MODEL = "system.ai.gpt-6-1-sol"
 CODEX_SOL_MODEL = "system.ai.gpt-5-6-sol"
 CODEX_LUNA_MODEL = "system.ai.gpt-5-6-luna"
 # TuiRequestRecorder lowercases recorded header names.
