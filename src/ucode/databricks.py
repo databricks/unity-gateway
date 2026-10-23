@@ -3563,6 +3563,26 @@ def fetch_ai_gateway_claude_models(workspace: str, token: str) -> dict[str, str]
     return models
 
 
+# Drops a `<catalog>.<schema>.` or `<region>.anthropic.` prefix, a region-less `anthropic.`,
+# `databricks-` and a trailing `[...]` hint:
+#   system.ai.claude-sonnet-4-6     -> claude-sonnet-4-6
+#   us.anthropic.claude-sonnet-4-6  -> claude-sonnet-4-6
+#   anthropic.claude-opus-4-8       -> claude-opus-4-8
+#   databricks-claude-sonnet-4-6    -> claude-sonnet-4-6
+#   system.ai.claude-opus-4-7[1m]   -> claude-opus-4-7
+#   main.ucode.claude_haiku         -> claude_haiku
+#   gpt-5.5                         -> gpt-5.5 (one dot is a version, not a schema)
+_BARE_MODEL_NAME_PATTERN = re.compile(
+    r"^(?:[^.\[]+\.[^.\[]+\.)?(?:anthropic\.)?(?:databricks-)?(?P<name>[^\[]*)"
+)
+
+
+def bare_model_name(model: str) -> str:
+    """``model`` lowercased, without its catalog, schema, provider or hint decorations."""
+    match = _BARE_MODEL_NAME_PATTERN.match(model.lower())
+    return match.group("name") if match else ""
+
+
 def model_version_sort_key(name: str) -> tuple:
     """Sort endpoint names so newer model versions come first.
 

@@ -1463,6 +1463,23 @@ class TestListProviderServiceModels:
         assert "HTTP 503" in reason
 
 
+@pytest.mark.parametrize(
+    ("model", "name"),
+    [
+        ("system.ai.claude-sonnet-4-6", "claude-sonnet-4-6"),
+        ("System.AI.Claude-Opus-4-7[1m]", "claude-opus-4-7"),
+        ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", "claude-sonnet-4-5-20250929-v1:0"),
+        ("anthropic.claude-opus-4-8", "claude-opus-4-8"),
+        ("databricks-claude-sonnet-4-6", "claude-sonnet-4-6"),
+        ("main.ucode.claude_haiku", "claude_haiku"),
+        ("gpt-5.5", "gpt-5.5"),
+        ("main.default.gpt-5.5", "gpt-5.5"),
+    ],
+)
+def test_bare_model_name(model, name):
+    assert db_mod.bare_model_name(model) == name
+
+
 class TestServiceUsableForTool:
     def test_bedrock_allow_all_targets_usable_without_targets(self):
         service = {"provider_type": "amazon_bedrock", "targets": [], "allow_all_targets": True}

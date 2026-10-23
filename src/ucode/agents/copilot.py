@@ -56,6 +56,7 @@ from ucode.databricks import (
     ANTHROPIC_API_PROVIDER_TYPES,
     ANTHROPIC_FAMILIES,
     ModelServiceEntry,
+    bare_model_name,
     build_copilot_base_url,
     build_tool_base_url,
     list_provider_service_models,
@@ -110,15 +111,20 @@ CATALOG_STATE_KEY = "copilot_catalog"
 # The Model Provider Service this launch routes through; set by the launch command, never saved.
 LAUNCH_PROVIDER_KEY = "_copilot_launch_provider"
 
+# The wire APIs Copilot speaks; `responses` and `completions` are Copilot's `wireApi` values.
+WIRE_ANTHROPIC = "anthropic"
+WIRE_RESPONSES = "responses"
+WIRE_COMPLETIONS = "completions"
+
 PROVIDER_NAMES: dict[str, str] = {
-    "anthropic": "dbx-anthropic",
-    "responses": "dbx-responses",
-    "completions": "dbx-completions",
+    WIRE_ANTHROPIC: "dbx-anthropic",
+    WIRE_RESPONSES: "dbx-responses",
+    WIRE_COMPLETIONS: "dbx-completions",
 }
 _WIRE_ROUTES: dict[str, tuple[str, ...]] = {
-    "anthropic": ("anthropic/v1/messages",),
-    "responses": ("mlflow/v1/responses", "openai/v1/responses", "codex/v1/responses"),
-    "completions": ("mlflow/v1/chat/completions", "openai/v1/chat/completions"),
+    WIRE_ANTHROPIC: ("anthropic/v1/messages",),
+    WIRE_RESPONSES: ("mlflow/v1/responses", "openai/v1/responses", "codex/v1/responses"),
+    WIRE_COMPLETIONS: ("mlflow/v1/chat/completions", "openai/v1/chat/completions"),
 }
 _UNSUPPORTED_MODELS = {
     "claude-opus-4-1": "the gateway rejects the thinking settings Copilot sends for it",
@@ -160,13 +166,6 @@ _CLAUDE_200K_WINDOW = 200_000
 _CHAT_API_TYPES = frozenset(route for routes in _WIRE_ROUTES.values() for route in routes)
 
 
-def _model_tail(model: str) -> str:
-    """The model name without its ``<catalog>.<schema>.`` and ``databricks-`` prefixes or ``[...]`` suffix."""
-    name = model.split("[", 1)[0].lower()
-    tail = name.split(".", 2)[-1] if name.count(".") >= 2 else name
-    return tail.removeprefix("anthropic.").removeprefix("databricks-")
-
-
 def copilot_exclusion_reason(model: str, api_types: Iterable[str] = ()) -> str | None:
     """Why ``model`` can't be offered in Copilot, or None when it can."""
     return _classify(model, tuple(api_types))[1]
@@ -183,14 +182,14 @@ def classify_copilot_model(model: str, api_types: Iterable[str] = ()) -> str | N
 def _classify(model: str, api_types: tuple[str, ...]) -> tuple[str | None, str | None]:
     if model.lower().startswith(_GATEWAY_ALIAS_PREFIX):
         return None, "it is a gateway alias, not a model"
-    tail = _model_tail(model)
+    tail = bare_model_name(model)
     if tail in _UNSUPPORTED_MODELS:
         return None, _UNSUPPORTED_MODELS[tail]
     gpt = _GPT_MODEL_MAJOR_PATTERN.match(tail)
     if tail.startswith("claude-"):
-        wire = "anthropic"
+        wire = WIRE_ANTHROPIC
     elif gpt:
-        wire = "responses" if int(gpt.group(1)) >= 5 else "completions"
+        wire = WIRE_RESPONSES if int(gpt.group(1)) >= 5 else WIRE_COMPLETIONS
     elif "gemini-" in tail:
         return None, "the gateway rejects the requests Copilot sends to Gemini models"
     else:
@@ -206,7 +205,7 @@ def copilot_catalog_model_id(model: str) -> str | None:
     Copilot applies Claude request settings to any ``claude-*`` id, so ids missing from its catalog still work.
     Returns None for anything other than Claude.
     """
-    tail = _model_tail(model)
+    tail = bare_model_name(model)
     if not tail.startswith("claude-"):
         return None
     tail = _CLAUDE_RELEASE_SUFFIX_PATTERN.sub("", tail, count=1)
@@ -256,7 +255,7 @@ def _catalog_sort_key(model: CopilotModel) -> tuple:
         (
             i
             for i, f in enumerate(ANTHROPIC_FAMILIES)
-            if _model_tail(model.id).startswith(f"claude-{f}-")
+            if bare_model_name(model.id).startswith(f"claude-{f}-")
         ),
         len(ANTHROPIC_FAMILIES),
     )
@@ -287,16 +286,16 @@ def classify_provider_model(
     declared = tuple(api_types)
     if declared and _CHAT_API_TYPES.isdisjoint(declared):
         return None, f"it isn't a chat model (it serves {', '.join(declared)})"
-    tail = _model_tail(model)
+    tail = bare_model_name(model)
     if provider_type in ANTHROPIC_API_PROVIDER_TYPES:
         if not tail.startswith("claude-"):
             return None, "ug copilot uses only the Claude models of this provider"
-        return "anthropic", None
+        return WIRE_ANTHROPIC, None
     # Copilot sends `temperature: 0` on Chat Completions, which GPT 5+ and o-series models reject.
     gpt = _GPT_MODEL_MAJOR_PATTERN.match(tail)
     if (gpt and int(gpt.group(1)) >= 5) or _O_SERIES_PATTERN.match(tail):
-        return "responses", None
-    return "completions", None
+        return WIRE_RESPONSES, None
+    return WIRE_COMPLETIONS, None
 
 
 def build_provider_catalog(
@@ -388,8 +387,10 @@ def catalog_from_listings(
         return fallback_catalog or None
     catalog = build_copilot_catalog(listed)
     # A family the UC listing lacks keeps the models its gateway listing found.
-    families = {model.wire == "anthropic" for model in catalog}
-    missing = [model for model in fallback_catalog if (model.wire == "anthropic") not in families]
+    families = {model.wire == WIRE_ANTHROPIC for model in catalog}
+    missing = [
+        model for model in fallback_catalog if (model.wire == WIRE_ANTHROPIC) not in families
+    ]
     return sorted([*catalog, *missing], key=_catalog_sort_key)
 
 
@@ -509,10 +510,10 @@ def launch_model(
     if chosen is not None:
         return chosen
     for prefix in ("claude-sonnet-", "claude-opus-", "claude-haiku-"):
-        family = next((m for m in catalog if _model_tail(m.id).startswith(prefix)), None)
+        family = next((m for m in catalog if bare_model_name(m.id).startswith(prefix)), None)
         if family is not None:
             return family
-    return next((m for m in catalog if m.wire != "anthropic"), catalog[0])
+    return next((m for m in catalog if m.wire != WIRE_ANTHROPIC), catalog[0])
 
 
 def default_model(state: dict) -> str | None:
@@ -571,7 +572,7 @@ def render_providers_config(
         if not any(model.wire == wire for model in catalog):
             continue
         provider: dict[str, Any]
-        if wire == "anthropic":
+        if wire == WIRE_ANTHROPIC:
             provider = {
                 "name": name,
                 "type": "anthropic",
@@ -601,10 +602,10 @@ def render_providers_config(
             "wireModel": model.id,
             "name": model.id,
         }
-        catalog_id = copilot_catalog_model_id(model.id) if model.wire == "anthropic" else None
+        catalog_id = copilot_catalog_model_id(model.id) if model.wire == WIRE_ANTHROPIC else None
         if catalog_id is not None:
             entry["modelId"] = catalog_id
-        limits = copilot_model_limits(model.id) if model.wire == "anthropic" else None
+        limits = copilot_model_limits(model.id) if model.wire == WIRE_ANTHROPIC else None
         if limits is not None and provider_service and sum(limits) > _CLAUDE_200K_WINDOW:
             # A provider service may not serve the 1M window.
             limits = _CLAUDE_200K_LIMITS
