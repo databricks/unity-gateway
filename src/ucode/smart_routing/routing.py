@@ -3,9 +3,8 @@
 Both the Codex and Claude Code integrations route through the workspace's
 configured router at ``/ai-gateway/routing/v1/routes:select``. The
 harness-agnostic mechanics live here — the gateway call, the decision shape,
-model-name normalization, and the canary/audit/decision bookkeeping. Each
-harness module (``codex_routing`` / ``claude_routing``) supplies its own route
-arms, spawn-tool detector, model-id translation, and artifact paths.
+and the canary/audit/decision bookkeeping. Each harness supplies its own route
+options, spawn-tool detector, model-id translation, and artifact paths.
 """
 
 from __future__ import annotations
@@ -184,10 +183,10 @@ def _plaintext_string(value: Any) -> str | None:
 
 
 def normalize_model(model: str) -> str:
-    """Strip provider prefixes so router arms and workspace ids compare equal.
+    """Strip provider prefixes and lowercase a model id.
 
     ``system.ai.claude-opus-4-8`` and ``databricks-claude-opus-4-8`` both
-    normalize to ``claude-opus-4-8`` — the router's canonical arm vocabulary.
+    normalize to ``claude-opus-4-8``.
     """
     tail = model.rsplit("/", 1)[-1]
     for prefix in ("databricks-", "system.ai."):
@@ -209,23 +208,26 @@ def configured_router_name() -> str:
     return os.environ.get(ROUTER_NAME_ENV_VAR, "").strip() or ROUTER_NAME
 
 
+def route_options_for(models: Iterable[str], harness: str) -> list[tuple[str, str]]:
+    """Return one ``(model, harness)`` option per distinct model id, unchanged and in order."""
+    return [(model, harness) for model in dict.fromkeys(models)]
+
+
 def select_route(
     workspace: str,
     token: str,
     task: str,
     route_options: Iterable[tuple[str, str | None]],
-    resolve: Callable[[str], str | None],
     *,
     router_name: str,
     timeout: float = REQUEST_TIMEOUT_S,
 ) -> tuple[RoutingDecision | None, str | None]:
-    """POST one ``routes:select`` request and resolve the router's pick.
+    """POST one ``routes:select`` request and return the router's pick.
 
-    ``route_options`` are ``(model, harness)`` pairs offered to the router (the
-    frozen menu the caller's harness scenario requires). ``resolve`` maps the
-    router's chosen arm back to a model id the workspace can serve, returning
-    None when the arm is unservable. Returns ``(decision, error)``; a failed
-    call yields ``(None, reason)`` so callers can fail open.
+    ``route_options`` are ``(model, harness)`` pairs sent as given. The gateway
+    canonicalizes model names itself and returns the option it was sent, so a
+    pick that was not offered is rejected. Returns ``(decision, error)``; a
+    failed call yields ``(None, reason)`` so callers can fail open.
     """
     offered_routes = tuple(route_options)
     body = {
@@ -260,19 +262,18 @@ def select_route(
     except (urllib.error.URLError, OSError, TimeoutError, ValueError) as exc:
         return None, f"router request failed: {exc}"
 
-    raw_model = _selected_model(payload)
-    if raw_model is None:
-        return None, "router returned no model selection"
-    model = resolve(raw_model)
+    model = _selected_model(payload)
     if model is None:
-        return None, f"router selected unsupported model {raw_model!r}"
+        return None, "router returned no model selection"
+    if model not in {offered for offered, _ in offered_routes}:
+        return None, f"router selected a model it was not offered: {model!r}"
     raw_rationale = payload.get("rationale")
     raw_rationale = raw_rationale if isinstance(raw_rationale, str) else ""
     rationale = format_rationale(payload["route_selection"][0], raw_rationale)
     return (
         RoutingDecision(
             model=model,
-            raw_model=raw_model,
+            raw_model=model,
             rationale=rationale,
             route_options=offered_routes,
             router_name=router_name,
