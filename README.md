@@ -132,6 +132,12 @@ precedence; later launches use whatever files are present.
 The choice is saved for launches after a successful configure; `ug configure` without `--user`
 and `ug revert` return to `--global`.
 
+For hosts whose OS-managed settings are maintained externally, launch with
+`UG_TRUST_OS_SETTINGS=1 ug claude` (or `ug codex`). This switch alone skips UG's
+OS-managed writes and stale-settings conflict check; UG still generates per-user settings.
+The agent combines its settings normally, including the higher precedence of OS-managed settings.
+`UG_SKIP_OS_SETTINGS=1` continues to check for conflicting managed settings.
+
 Available coding agents are `codex`, `claude`, `gemini`, `opencode`,
 `copilot`, and `pi`. `cursor` can be included in `--agents` for MCP-only setup;
 Cursor models still run through your Cursor account.

@@ -724,6 +724,39 @@ class TestManagedSettingsSkipped:
         )
         assert result == "unsupported"
 
+    @pytest.mark.parametrize("value", ["1", "true", "TRUE", "Yes", "on", " on "])
+    def test_trust_skips_writes_and_conflict_reads(self, monkeypatch, value):
+        monkeypatch.delenv(managed_files.SKIP_OS_SETTINGS_ENV, raising=False)
+        monkeypatch.setenv(managed_files.TRUST_OS_SETTINGS_ENV, value)
+        assert managed_files.managed_settings_skipped() is True
+        assert _REAL_MANAGED_FILES_SUPPORTED() is False
+        monkeypatch.setattr(
+            managed_files, "read_managed_file", lambda *a: pytest.fail("must not check managed")
+        )
+        managed_files.check_skipped_managed_overrides(
+            Path("/etc/claude-code/managed-settings.json"),
+            parser=json.loads,
+            compose=lambda settings: settings,
+            owned_paths=[["env", "ANTHROPIC_BASE_URL"]],
+            display="Claude Code",
+        )
+
+    @pytest.mark.parametrize("value", ["0", "false", "off", "no", ""])
+    def test_falsey_trust_keeps_conflict_check(self, tmp_path, monkeypatch, value):
+        monkeypatch.delenv(managed_files.SKIP_OS_SETTINGS_ENV, raising=False)
+        monkeypatch.setenv(managed_files.TRUST_OS_SETTINGS_ENV, value)
+        assert managed_files.managed_settings_skipped() is False
+        path = tmp_path / "managed-settings.json"
+        path.write_text('{"apiKeyHelper": "old-helper"}', encoding="utf-8")
+        with pytest.raises(RuntimeError, match="stale and conflict"):
+            managed_files.check_skipped_managed_overrides(
+                path,
+                parser=json.loads,
+                compose=lambda settings: {"apiKeyHelper": "new-helper"},
+                owned_paths=[["apiKeyHelper"]],
+                display="Claude Code",
+            )
+
     def test_raise_on_skipped_managed_overrides_reports_stale_leaves(self):
         with pytest.raises(RuntimeError) as excinfo:
             managed_files.raise_on_skipped_managed_overrides(

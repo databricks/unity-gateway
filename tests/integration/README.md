@@ -243,6 +243,11 @@ handling without sudo.
 This integration suite does not yet assert password-prompt counts with sudo credential caching
 disabled; that requires a disposable workstation/VM with an explicit sudo policy.
 
+`UG_TRUST_OS_SETTINGS` is covered by component tests in `../test_managed_files.py`,
+`../test_agent_claude.py`, and `../test_agent_codex.py`: no managed writes/checks and
+continued per-user config generation. This suite does not cover the switch with live
+agent settings precedence or laptop-hosted Omnigent sessions.
+
 Caller permission-deny preservation is covered by `TestBuildClaudeArgv` in
 `../test_agent_claude.py`, including direct, relayed, and routing configuration output.
 Native parent/child enforcement and the distinction between technical search exclusion

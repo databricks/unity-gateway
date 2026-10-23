@@ -1137,7 +1137,8 @@ class TestWriteToolConfigManagedSettings:
         assert "stale" in message
         assert "ug revert" in message
 
-    def test_user_scope_launches_over_stale_managed_override(self, monkeypatch):
+    @pytest.mark.parametrize("opt_out", ["user_scope", "trust", "trust_and_skip"])
+    def test_opt_out_launches_over_stale_managed_override(self, monkeypatch, opt_out):
         private_writes: list = []
         managed_writes: list = []
         existing = {
@@ -1148,10 +1149,19 @@ class TestWriteToolConfigManagedSettings:
             }
         }
         self._patch(monkeypatch, private_writes, managed_writes, existing)
-        managed_files.set_config_scope("user")
+        if opt_out == "user_scope":
+            managed_files.set_config_scope("user")
+        else:
+            monkeypatch.setenv(managed_files.TRUST_OS_SETTINGS_ENV, "1")
+            if opt_out == "trust_and_skip":
+                monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        monkeypatch.setattr(
+            claude, "reconcile_managed_file", lambda *a, **kw: pytest.fail("must not write managed")
+        )
         state = {"workspace": WS, "codex_models": []}
         claude.write_tool_config(state, "databricks-claude-sonnet-4")
         assert managed_writes == []
+        assert str(claude.CLAUDE_SETTINGS_PATH) in [p for p, _ in private_writes]
 
     def test_skip_env_no_error_without_stale_override(self, monkeypatch):
         private_writes: list = []

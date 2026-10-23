@@ -1797,7 +1797,8 @@ class TestCodexManagedConfig:
         assert "stale" in message
         assert "ug revert" in message
 
-    def test_user_scope_launches_over_stale_managed_override(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("opt_out", ["user_scope", "trust", "trust_and_skip"])
+    def test_opt_out_launches_over_stale_managed_override(self, tmp_path, monkeypatch, opt_out):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)
         managed_path.parent.mkdir(parents=True, exist_ok=True)
         managed_path.write_text(
@@ -1806,7 +1807,15 @@ class TestCodexManagedConfig:
             'base_url = "https://old-workspace.databricks.com/ai-gateway/openai/v1"\n',
             encoding="utf-8",
         )
-        managed_files.set_config_scope("user")
+        if opt_out == "user_scope":
+            managed_files.set_config_scope("user")
+        else:
+            monkeypatch.setenv(managed_files.TRUST_OS_SETTINGS_ENV, "1")
+            if opt_out == "trust_and_skip":
+                monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        monkeypatch.setattr(
+            codex, "reconcile_managed_file", lambda *a, **kw: pytest.fail("must not write managed")
+        )
 
         codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
 
