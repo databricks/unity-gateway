@@ -346,8 +346,6 @@ def route_spawn_tool(
     if record_decision is not None:
         record_decision(payload, route.task, route.decision, route.routed_model)
     # Include the same routing notice in both hook response fields.
-    # Claude launches OSS models with an `anthropic-aigw-...` alias, but the notice
-    # displays the shorter `system.ai...` model ID.
     routing_message = notice_config.message(
         route.decision,
         route.routed_model,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import sys
@@ -717,6 +718,64 @@ class TestSubagentRouting:
         )
         decision_record = json.loads(decisions_path.read_text())
         assert decision_record["requested_model"] == "system.ai.claude-opus-4-8"
+
+    def test_decision_log_keeps_the_request_menu_and_router(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("SMART_ROUTER_NAME", raising=False)
+        decisions_path = tmp_path / "decisions.jsonl"
+        monkeypatch.setattr(v2.claude_routing, "DECISIONS_PATH", decisions_path)
+        captured = {}
+
+        def fake_urlopen(request, timeout):
+            captured["body"] = json.loads(request.data)
+            first_option = captured["body"]["route_options"][0]
+            return io.BytesIO(
+                json.dumps({"route_selection": [{"route_option": first_option}]}).encode()
+            )
+
+        monkeypatch.setattr(routing.urllib.request, "urlopen", fake_urlopen)
+        v2.route_claude_subagent(
+            {
+                "session_id": "s1",
+                "tool_name": "Agent",
+                "tool_input": {
+                    "subagent_type": "Explore",
+                    "prompt": "find all Python entry points",
+                    "description": "explore the repo",
+                },
+            },
+            workspace="https://example.com",
+            token="token",
+            available_models=["system.ai.claude-opus-4-8", "system.ai.claude-sonnet-5"],
+            audit_decision=True,
+        )
+
+        body = captured["body"]
+        assert body["task"] == {"prompt": "find all Python entry points"}
+        record = json.loads(decisions_path.read_text())
+        assert record["route_options"] == body["route_options"]
+        assert record["router_name"] == body["route_selector"]["router_name"]
+        assert record["router_name"] == routing.ROUTER_NAME
+
+    def test_legacy_hook_notice_shows_the_unwrapped_gateway_model(self, monkeypatch):
+        gateway_model = "anthropic-aigw-77df06ea-system.ai.glm-5-3"
+        monkeypatch.setattr(
+            v2,
+            "_request_claude_routing_decision",
+            lambda *_args: (
+                routing.RoutingDecision(model=gateway_model, raw_model="glm-5-3"),
+                None,
+            ),
+        )
+
+        output = v2.route_claude_subagent(
+            {"tool_name": "Task", "tool_input": {"prompt": "Inspect the parser"}},
+            workspace="https://example.com",
+            token="token",
+            available_models=[gateway_model],
+            hook_output=True,
+        )
+
+        assert "Selected Model : system.ai.glm-5-3 " in output["systemMessage"]
 
     def test_returns_routing_details_to_mod_without_writing_files(self, tmp_path, monkeypatch):
         monkeypatch.setenv(v2.SESSION_ENV_VAR, str(tmp_path / "env.json"))
