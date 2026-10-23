@@ -433,6 +433,20 @@ def refuse_user_scope_over_managed_files(tools: list[str]) -> None:
             )
 
 
+def refuse_user_scope_over_managed_config(workspace: str | None, managed: dict | None) -> None:
+    """Run by ``ug configure`` right after its forced managed-config read, before any agent is set up.
+
+    A workspace that publishes a managed config must install it machine-wide, so ``--user`` cannot
+    apply. ``managed`` is the manifest from that read; None means no managed config is present.
+    """
+    if config_scope() != "user" or managed is None:
+        return
+    raise RuntimeError(
+        f"`ug configure --user` can't be used with {workspace}: it publishes a managed config, "
+        "which must be installed machine-wide. Use `ug configure --global` (the default)."
+    )
+
+
 def configure_tool(
     tool: str,
     state: dict,
@@ -468,6 +482,11 @@ def configure_tool(
             parent_schema=parent_schema,
             picker_catalog=picker_catalog,
         )
+    elif tool == "copilot":
+        # Under a model provider service, Copilot starts on one of the service's models, chosen at launch.
+        if not model and not provider:
+            raise RuntimeError(f"A {tool} model must be selected before configuration.")
+        result = copilot.write_tool_config(state, model)
     else:
         # Every tool in this branch needs a model — including gemini under a provider,
         # which still pins the service's target model in the URL.
@@ -475,8 +494,6 @@ def configure_tool(
             raise RuntimeError(f"A {tool} model must be selected before configuration.")
         if tool == "gemini":
             result = gemini.write_tool_config(state, model, provider=provider)
-        elif tool == "copilot":
-            result = copilot.write_tool_config(state, model)
         elif tool == "pi":
             result = pi.write_tool_config(state, model)
         elif tool == "kilo":

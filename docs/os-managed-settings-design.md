@@ -37,6 +37,8 @@ exists (including Windows `requirements.toml`), whoever wrote it; `ug revert`, r
 `--global` resolves it. Launches don't check: a managed file added later simply takes precedence.
 `UG_SKIP_OS_SETTINGS` doesn't check either: ug trusts the OS-managed files present and leaves them
 untouched. `ug configure` without `--user` and `ug revert` reset the scope to `global`.
+`ug configure --user` also fails when the selected workspace publishes a managed config, since that
+config must be installed machine-wide.
 
 ## Interactive Detection
 

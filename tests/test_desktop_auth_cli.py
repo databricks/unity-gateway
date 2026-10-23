@@ -1,5 +1,8 @@
 """Desktop credential command output, argument isolation, and failure behavior."""
 
+import json
+from unittest.mock import Mock
+
 import pytest
 from click import unstyle
 from typer import rich_utils
@@ -22,7 +25,7 @@ def test_desktop_auth_emits_only_token_and_keeps_diagnostics_on_stderr(monkeypat
         print("Sign-in diagnostic")
         return "test-access-token"
 
-    monkeypatch.setattr(desktop_auth, "get_claude_desktop_token", credential)
+    monkeypatch.setattr(desktop_auth, "get_claude_desktop_databricks_token", credential)
     result = runner.invoke(
         app,
         [
@@ -36,6 +39,62 @@ def test_desktop_auth_emits_only_token_and_keeps_diagnostics_on_stderr(monkeypat
     assert result.exit_code == 0
     assert result.stdout == "test-access-token\n"
     assert "Sign-in diagnostic" in result.stderr
+
+
+def test_desktop_auth_emits_relay_credential_json(monkeypatch, runner):
+    from ucode import desktop_auth
+
+    def credential(host, profile, claude_binary):
+        assert claude_binary == "/opt/claude/bin/claude"
+        return {
+            "token": "anthropic-token",
+            "headers": {"X-Databricks-AI-Gateway-Token": "Bearer databricks-token"},
+        }
+
+    monkeypatch.setattr(desktop_auth, "get_claude_desktop_relay_credential", credential)
+    result = runner.invoke(
+        app,
+        [
+            "claude-desktop-auth",
+            "--host",
+            "https://workspace.example",
+            "--profile",
+            "selected-profile",
+            "--relay",
+            "--claude-binary",
+            "/opt/claude/bin/claude",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == credential(
+        "https://workspace.example", "selected-profile", "/opt/claude/bin/claude"
+    )
+
+
+@pytest.mark.parametrize("claude_binary", [None, "claude"])
+def test_desktop_auth_relay_requires_absolute_claude_binary(monkeypatch, runner, claude_binary):
+    from ucode import desktop_auth
+
+    credential = Mock()
+    monkeypatch.setattr(desktop_auth, "get_claude_desktop_relay_credential", credential)
+    args = [
+        "claude-desktop-auth",
+        "--host",
+        "https://workspace.example",
+        "--profile",
+        "selected-profile",
+        "--relay",
+    ]
+    if claude_binary is not None:
+        args += ["--claude-binary", claude_binary]
+
+    result = runner.invoke(app, args)
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert "absolute Claude Code executable path" in result.stderr
+    credential.assert_not_called()
 
 
 @pytest.mark.parametrize("missing", ["host", "profile"])
@@ -63,7 +122,7 @@ def test_desktop_auth_failure_is_actionable_and_never_emits_token(monkeypatch, r
     def credential(host, profile):
         raise error
 
-    monkeypatch.setattr(desktop_auth, "get_claude_desktop_token", credential)
+    monkeypatch.setattr(desktop_auth, "get_claude_desktop_databricks_token", credential)
     result = runner.invoke(
         app,
         ["claude-desktop-auth", "--host", "https://workspace.example", "--profile", "selected"],
@@ -79,7 +138,7 @@ def test_desktop_auth_cancelled_login_is_reported_on_stderr(monkeypatch, runner)
     def credential(host, profile):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(desktop_auth, "get_claude_desktop_token", credential)
+    monkeypatch.setattr(desktop_auth, "get_claude_desktop_databricks_token", credential)
     result = runner.invoke(
         app,
         ["claude-desktop-auth", "--host", "https://workspace.example", "--profile", "selected"],

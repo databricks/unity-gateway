@@ -24,6 +24,7 @@ from typer.testing import CliRunner
 import ucode.cli as cli_mod
 import ucode.databricks as db_mod
 import ucode.managed_files as managed_files
+from ucode.agents import copilot as copilot_agent
 from ucode.cli import app
 from ucode.databricks import GatewayProbe
 from ucode.managed_config import ManagedConfigResult, normalize_managed_config
@@ -2136,6 +2137,39 @@ class TestClaudeModelFlag:
 
         assert result.exit_code == 0, result.output
         assert mock_launch.call_args.args[1]["_codex_launch_provider"] == "main.default.openai"
+
+    def test_provider_sets_transient_copilot_launch_marker(self):
+        state = dict(MINIMAL_STATE, available_tools=["copilot"])
+        with (
+            patch("ucode.cli.ensure_bootstrap_dependencies"),
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.ensure_provider_state", return_value=state),
+            patch("ucode.cli.configure_shared_state", return_value=state),
+            patch(
+                "ucode.cli.resolve_provider_models", return_value=(None, None, False)
+            ) as mock_resolve,
+            patch("ucode.cli.configure_tool", return_value=state) as mock_configure,
+            patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
+            patch("ucode.cli.set_current_workspace") as mock_set,
+            patch("ucode.cli.launch_agent") as mock_launch,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "copilot",
+                    "--workspace",
+                    "https://example.databricks.com/",
+                    "--provider",
+                    "main.default.openai",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        mock_set.assert_called_once_with("https://example.databricks.com")
+        assert mock_resolve.call_args.args[0] == "copilot"
+        assert mock_configure.call_args.args[2] is None
+        launch_state = mock_launch.call_args.args[1]
+        assert launch_state[copilot_agent.LAUNCH_PROVIDER_SERVICE_KEY] == "main.default.openai"
 
     def test_model_location_sets_transient_codex_launch_marker(self):
         state = dict(MINIMAL_STATE)
@@ -5594,6 +5628,111 @@ class TestConfigureScopeFlags:
         mock_selected.assert_not_called()
         assert "config_scope" not in cli_mod.load_full_state()
 
+    @staticmethod
+    @contextlib.contextmanager
+    def _single_agent_env(manifest, *, feature_disabled=False):
+        """Stub the workspace login, managed read, and on-disk checks for --agent/--agents runs."""
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(
+                patch("ucode.agents.claude._managed_settings_path", return_value=None)
+            )
+            stack.enter_context(
+                patch("ucode.agents.codex.codex_managed_config_path", return_value=None)
+            )
+            stack.enter_context(patch("ucode.cli.install_tool_binary", return_value=True))
+            stack.enter_context(patch("ucode.cli.save_state"))
+            stack.enter_context(
+                patch(
+                    "ucode.cli._configure_shared_workspace_states",
+                    return_value=[{"workspace": "https://first.databricks.com"}],
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "ucode.cli.refresh_managed_config",
+                    return_value=(manifest, feature_disabled),
+                )
+            )
+            yield
+
+    @pytest.mark.parametrize("agent_args", [["--agent", "claude"], ["--agent", "gemini"]])
+    def test_managed_config_blocks_user_scope_before_agent_setup(self, agent_args):
+        with (
+            self._single_agent_env({"enabled_agents": {}}),
+            patch("ucode.cli.configure_single_tool") as mock_single,
+            patch("ucode.cli.configure_selected_tools") as mock_selected,
+        ):
+            result = runner.invoke(
+                app,
+                ["configure", *agent_args, "--workspace", "https://first.databricks.com", "--user"],
+            )
+        output = _strip_ansi(result.output)
+        assert result.exit_code == 1, output
+        assert "`ug configure --user` can't be used with https://first.databricks.com" in output
+        assert "publishes a managed config" in output
+        mock_single.assert_not_called()
+        mock_selected.assert_not_called()
+        assert "config_scope" not in cli_mod.load_full_state()
+
+    def test_managed_config_blocks_user_scope_for_agents_list(self):
+        with (
+            self._single_agent_env({"enabled_agents": {}}),
+            patch("ucode.cli.check_gateway_endpoint", return_value=True),
+            patch("ucode.cli.configure_selected_tools") as mock_selected,
+        ):
+            result = runner.invoke(app, [*self.ARGS, "--user"])
+        assert result.exit_code == 1, _strip_ansi(result.output)
+        assert "publishes a managed config" in _strip_ansi(result.output)
+        mock_selected.assert_not_called()
+        assert "config_scope" not in cli_mod.load_full_state()
+
+    @pytest.mark.parametrize(
+        "feature_disabled", [False, True], ids=["no_config", "feature_disabled"]
+    )
+    def test_user_scope_proceeds_without_managed_config(self, feature_disabled):
+        with (
+            self._single_agent_env(None, feature_disabled=feature_disabled),
+            patch(
+                "ucode.cli.configure_single_tool", side_effect=lambda _tool, state, **_kw: state
+            ) as mock_single,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "configure",
+                    "--agent",
+                    "claude",
+                    "--workspace",
+                    "https://first.databricks.com",
+                    "--user",
+                ],
+            )
+        assert result.exit_code == 0, _strip_ansi(result.output)
+        mock_single.assert_called_once()
+        assert cli_mod.load_full_state()["config_scope"] == "user"
+
+    def test_global_scope_proceeds_with_managed_config(self):
+        with (
+            self._single_agent_env({"enabled_agents": {}}),
+            patch(
+                "ucode.cli.configure_single_tool", side_effect=lambda _tool, state, **_kw: state
+            ) as mock_single,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "configure",
+                    "--agent",
+                    "claude",
+                    "--workspace",
+                    "https://first.databricks.com",
+                    "--global",
+                ],
+            )
+        assert result.exit_code == 0, _strip_ansi(result.output)
+        mock_single.assert_called_once()
+        assert "config_scope" not in cli_mod.load_full_state()
+
     @pytest.mark.parametrize("managed", [True, False], ids=["managed_config", "picker"])
     def test_workspace_paths_refuse_before_configuring(self, tmp_path, managed):
         claude_managed = tmp_path / "managed-settings.json"
@@ -5616,7 +5755,8 @@ class TestConfigureScopeFlags:
             patch("ucode.cli.install_tool_binary") as mock_install,
             patch("ucode.cli.configure_selected_tools") as mock_selected,
         ):
-            with pytest.raises(RuntimeError, match="managed settings exist"):
+            expected = "publishes a managed config" if managed else "managed settings exist"
+            with pytest.raises(RuntimeError, match=expected):
                 cli_mod._configure_workspace_command(
                     workspaces=[("https://first.databricks.com", None)]
                 )

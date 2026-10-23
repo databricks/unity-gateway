@@ -89,6 +89,14 @@ restart, and no Databricks token is written to disk. If the Databricks sign-in i
 Copilot shows a "Databricks sign-in expired" error; run `databricks auth login` and
 restart `ug copilot`. Proxy errors are logged to `~/.ucode/logs/copilot-proxy.log`.
 
+`ug copilot --provider <catalog>.<schema>.<name>` routes the session through a Model Provider
+Service instead, and `/model` lists that service's models: Claude models of an Anthropic or
+Bedrock service, and the chat models of an OpenAI or Azure OpenAI service. For a service that
+allows every model, `/model` lists the models the gateway reports for it, which the provider
+account may not serve; name the one to start on with `--model`. Services that relay a Claude subscription work only with Claude Code. Interactive
+`ug configure` offers the matching services under **External Models**, and a managed workspace
+config can set one for Copilot.
+
 Without a managed workspace config, `ug claude` automatically discovers gateway
 models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when
 no provider or model location is selected. Use `--provider` or `--model-location`
@@ -132,6 +140,8 @@ there and the agents apply their native precedence. Configure fails while a mana
 precedence; later launches use whatever files are present.
 The choice is saved for launches after a successful configure; `ug configure` without `--user`
 and `ug revert` return to `--global`.
+`--user` also fails for a workspace that publishes a managed config, which must be installed
+machine-wide; use `--global` for it.
 
 Available coding agents are `codex`, `claude`, `gemini`, `opencode`,
 `copilot`, and `pi`. `cursor` can be included in `--agents` for MCP-only setup;
@@ -147,6 +157,8 @@ without failing Claude Code configuration. See [Claude Desktop setup](docs/claud
 for authentication, profile preservation, and native validation limits.
 When managed Claude tracing is enabled, the same profile configures Desktop's native
 OTLP trace export with a refreshing headers helper; no background service is needed.
+Anthropic subscription relay profiles use one helper to supply the short-lived Claude
+subscription token and Databricks gateway token on macOS, Windows, and Linux.
 
 ## MCP Servers
 
