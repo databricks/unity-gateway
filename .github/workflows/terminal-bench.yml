@@ -89,7 +89,7 @@ jobs:
             uvx --python 3.12 --from "harbor==$HARBOR_VERSION" harbor run -y \
               -d "$TB2_DATASET" "$@" \
               -a "ug_agent:$AGENT_CLASS" --ak "version=$AGENT_VERSION" \
-              ${MODEL:+-m "$MODEL"} -n 3 -o "$out"
+              ${MODEL:+-m "$MODEL"} -n 3 -o "$out" --agent-setup-timeout-multiplier 2
           }
           # Best 2 of 3: a third attempt runs only for tasks that split the first two.
           run_harbor "${includes[@]}" -k 2
@@ -110,7 +110,7 @@ jobs:
             uvx --python 3.12 --from "harbor==$HARBOR_VERSION" harbor run -y \
               -p bench/terminal_bench/tasks "$@" --resume-trajectory \
               -a "ug_agent:$AGENT_CLASS" --ak "version=$AGENT_VERSION" \
-              ${MODEL:+-m "$MODEL"} -n 3 -o "$out"
+              ${MODEL:+-m "$MODEL"} -n 3 -o "$out" --agent-setup-timeout-multiplier 2
           }
           run_harbor "${includes[@]}" -k 2
           retry=()

@@ -20,6 +20,14 @@ from harbor.models.agent.context import AgentContext
 
 INSTALL_DIR = PurePosixPath("/installed-agent")
 UG = '"$HOME/.local/bin/ug"'
+# archive.ubuntu.com can stall from GitHub runners; retry apt and use the runners' Azure mirror.
+APT_SETUP = (
+    "if [ -d /etc/apt/apt.conf.d ]; then "
+    'printf \'Acquire::Retries "5";\\nAcquire::http::Timeout "30";\\n\' '
+    "> /etc/apt/apt.conf.d/80-ug-bench; "
+    "sed -i 's#http://archive.ubuntu.com/ubuntu#http://azure.archive.ubuntu.com/ubuntu#g' "
+    "/etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true; fi"
+)
 SHELL_PREFIX = 'export PATH="$HOME/.local/bin:$PATH"; if [ -s "$HOME/.nvm/nvm.sh" ]; then . "$HOME/.nvm/nvm.sh"; fi; '
 
 
@@ -44,6 +52,7 @@ class _UgAgent(BaseInstalledAgent):
 
     async def install(self, environment: BaseEnvironment) -> None:
         wheel = Path(_required_env("UG_BENCH_WHEEL"))
+        await self.exec_as_root(environment, command=APT_SETUP)
         await self.ensure_system_dependencies(
             environment, ("curl", "bash", "git", "ca_certificates", "procps", "unzip")
         )
@@ -127,6 +136,9 @@ class UgClaude(_UgAgent):
 
     def _launch_args(self, resume: bool) -> str:
         args = "-p --verbose --output-format stream-json --dangerously-skip-permissions"
+        if not self.model_name:
+            # A task's [environment] env can pin Claude's model, which skips Smart Router's root pick.
+            args = '${UG_BENCH_CLAUDE_MODEL:+--model "$UG_BENCH_CLAUDE_MODEL"} ' + args
         return f"{args} --continue" if resume else args
 
 
