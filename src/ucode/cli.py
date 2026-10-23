@@ -183,7 +183,7 @@ from ucode.state import (
     workspace_self_managed_agents,
 )
 from ucode.string_utils import is_valid_catalog_schema
-from ucode.ug_headers import ug_headers
+from ucode.ug_headers import invalid_ug_header_lines, parse_header_line, ug_headers
 from ucode.ui import (
     console,
     heading,
@@ -3772,16 +3772,24 @@ def default(
     ] = None,
 ) -> None:
     """Configure and launch coding agents through Databricks AI Gateway."""
+    for number, line in enumerate(header or [], 1):
+        if parse_header_line(line) is None:
+            # Name only the flag's position: the value may be a token.
+            print_err(f"--header #{number}: expected `Name: value` with a valid name and value.")
+            raise typer.Exit(1)
     if header:
-        # Codex's launch config and every ug request, in this process or a child, add the lines.
         existing = os.environ.get(UG_HEADERS_ENV_VAR, "")
         os.environ[UG_HEADERS_ENV_VAR] = "\n".join(filter(None, [existing, *header]))
-    # Every ug request reads it, so reject a bad value here rather than mid-request.
-    try:
-        ug_headers()
-    except RuntimeError as exc:
-        print_err(str(exc))
-        raise typer.Exit(1) from None
+    if os.environ.get(UG_HEADERS_ENV_VAR):
+        if skipped := invalid_ug_header_lines():
+            # An inherited value warns rather than blocking every command, `ug revert` included.
+            print_warning(
+                f"Skipping {UG_HEADERS_ENV_VAR} line(s) {', '.join(map(str, skipped))}: "
+                "expected `Name: value` with a valid name and value."
+            )
+        # Codex's launch config and every ug request (in this process or a child) read the
+        # variable, so hand them only the valid, de-duplicated lines.
+        os.environ[UG_HEADERS_ENV_VAR] = "\n".join(f"{n}: {v}" for n, v in ug_headers().items())
     if ctx.invoked_subcommand != "revert":
         set_config_scope(load_config_scope())
     if ctx.invoked_subcommand is not None:

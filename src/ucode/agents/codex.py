@@ -1521,6 +1521,12 @@ def launch(
         token = _launch_token(state, workspace)
         os.environ["OAUTH_TOKEN"] = token
     if _use_legacy_layout():
+        if ug_headers():
+            print_warning_err(
+                f"Codex {agent_version(binary)} doesn't support launch headers, so your "
+                "`ug --header` / UG_HEADERS headers aren't sent. Upgrade Codex to "
+                f"{LEGACY_LAYOUT_CODEX_VERSION_TEXT} or newer."
+            )
         print_warning_err(
             f"Codex {agent_version(binary)} is outdated. Upgrade Codex to "
             f"{LEGACY_LAYOUT_CODEX_VERSION_TEXT} or newer, then run `codex --version` to verify "

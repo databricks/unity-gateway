@@ -3996,6 +3996,25 @@ class TestHttpUgHeaders:
             "testenv://liteswap/abc",
         ]
 
+    def test_ug_headers_never_replace_auth_or_content_type(self, monkeypatch):
+        monkeypatch.setenv("UG_HEADERS", "authorization: other\ncontent-type: text/plain")
+        requests = []
+
+        def fake_urlopen(request, timeout=None):
+            requests.append(request)
+            return _FakeResponse({})
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+
+        db_mod._http_get_json(f"{WS}/get", "tok")
+        db_mod._http_post_json(f"{WS}/post", "tok", {})
+
+        assert [request.get_header("Authorization") for request in requests] == [
+            "Bearer tok",
+            "Bearer tok",
+        ]
+        assert requests[1].get_header("Content-type") == "application/json"
+
 
 class TestParseDatabricksCliVersion:
     def test_parses_standard_format(self):
