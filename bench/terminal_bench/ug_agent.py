@@ -151,11 +151,15 @@ class UgCodex(_UgAgent):
 
     async def _install_agent_cli(self, environment: BaseEnvironment) -> None:
         version = f"@{self._version}" if self._version else "@latest"
+        # Harbor drops setup output on success; keep a timestamped copy to find slow steps.
+        log = (self.environment_logs_dir / "codex-install.txt").as_posix()
         await self.exec_as_agent(
             environment,
             command=(
-                f"set -euo pipefail; {nvm_node_install_snippet()} && "
-                f"npm install -g @openai/codex{shlex.quote(version)} && codex --version"
+                f"set -euo pipefail; {{ {nvm_node_install_snippet()} && "
+                f"npm install -g @openai/codex{shlex.quote(version)} && codex --version; }} 2>&1 | "
+                f'while IFS= read -r line; do printf "%s %s\\n" "$(date +%T)" "$line"; done | '
+                f"tee -a {log}"
             ),
             env={"NVM_NODEJS_ORG_MIRROR": "https://nodejs.org/dist"},
         )
