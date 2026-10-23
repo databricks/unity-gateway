@@ -110,6 +110,7 @@ LEGACY_CODEX_CONFIG_PATH = CODEX_CONFIG_DIR / "config.toml"
 LEGACY_CODEX_BACKUP_PATH = APP_DIR / "codex-config.backup.toml"
 CODEX_MODEL_PROVIDER_NAME = "Databricks"
 LEGACY_CODEX_MODEL_PROVIDER_NAME = "ucode-databricks"
+BATCH_USER_MCP_SERVER_WRITES = True  # `codex mcp add` may start OAuth during setup.
 # ug owns the whole provider http_headers table, so it is pruned before each merge and rewritten
 # from render_overlay — dropping stale routing and admin headers that deep_merge cannot delete.
 _PROVIDER_HTTP_HEADERS_KEY_PATHS = [
