@@ -133,6 +133,7 @@ def test_windows_policy_paths_match_pinned_agent_locations():
     )
 
     assert paths == (
+        Path("C:/ProgramData/UnityGateway/managed-settings.json"),
         Path("C:/ProgramData/OpenAI/Codex/requirements.toml"),
         Path("C:/ProgramData/OpenAI/Codex/config.toml"),
         Path("C:/Program Files/ClaudeCode/managed-settings.json"),

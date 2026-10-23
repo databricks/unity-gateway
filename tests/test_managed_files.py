@@ -772,6 +772,136 @@ class TestWorkspacePolicyWriter:
         assert target.read_text() == "user settings"
 
 
+class TestWindowsWorkspacePolicyWriter:
+    """Windows holds the workspace policy under ProgramData, written only by an elevated process."""
+
+    @pytest.fixture
+    def policy_path(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ProgramData", str(tmp_path / "ProgramData"))
+        monkeypatch.setenv("SystemRoot", str(tmp_path / "Windows"))
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.WINDOWS)
+        monkeypatch.setattr(managed_files, "_windows_replace", _REAL_WINDOWS_REPLACE)
+        path = managed_files.unity_gateway_managed_settings_path()
+        monkeypatch.setattr(managed_files, "UNITY_GATEWAY_MANAGED_SETTINGS_PATH", path)
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
+        self.calls = []
+
+        def run(args, **kwargs):
+            self.calls.append(args)
+            return subprocess.CompletedProcess(args, self.returncode, "Access is denied.", "")
+
+        self.returncode = 0
+        monkeypatch.setattr(managed_files.subprocess_cross_os, "run", run)
+        return path
+
+    def test_path_is_under_program_data(self, policy_path, tmp_path):
+        assert policy_path == tmp_path / "ProgramData" / "UnityGateway" / "managed-settings.json"
+
+    def test_posix_path_is_unchanged_off_windows(self, monkeypatch):
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
+
+        assert managed_files.unity_gateway_managed_settings_path() == Path(
+            "/etc/unitygateway/managed-settings.json"
+        )
+
+    def test_elevated_run_installs_replaces_and_removes(self, policy_path, tmp_path):
+        managed_files.update_workspace_policy(policy_path, "one")
+        assert policy_path.read_text(encoding="utf-8") == "one"
+        managed_files.update_workspace_policy(policy_path, "two", allow_sudo=True)
+        assert policy_path.read_text(encoding="utf-8") == "two"
+        assert [entry.name for entry in policy_path.parent.iterdir()] == [policy_path.name]
+
+        managed_files.update_workspace_policy(policy_path, None, allow_sudo=True)
+        assert not policy_path.exists()
+
+    def test_folder_is_given_to_administrators_with_read_for_users(self, policy_path, tmp_path):
+        managed_files.update_workspace_policy(policy_path, "one")
+
+        icacls = str(tmp_path / "Windows" / "System32" / "icacls.exe")
+        folder = str(policy_path.parent)
+        assert self.calls == [
+            [icacls, folder, "/setowner", "*S-1-5-32-544", "/L"],
+            [
+                icacls,
+                folder,
+                "/inheritance:r",
+                "/grant:r",
+                "*S-1-5-18:(OI)(CI)F",
+                "*S-1-5-32-544:(OI)(CI)F",
+                "*S-1-5-32-545:(OI)(CI)RX",
+                "/L",
+            ],
+        ]
+
+    def test_unsecured_folder_blocks_the_write(self, policy_path):
+        self.returncode = 5
+
+        with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="could not secure"):
+            managed_files.update_workspace_policy(policy_path, "one")
+
+        assert not policy_path.exists()
+
+    @pytest.mark.parametrize("allow_sudo", [False, True])
+    @pytest.mark.parametrize("desired_text", ["new", None])
+    def test_standard_user_gets_the_admin_hint(
+        self, policy_path, monkeypatch, allow_sudo, desired_text
+    ):
+        policy_path.parent.mkdir(parents=True)
+        policy_path.write_text("old", encoding="utf-8")
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: False)
+
+        with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="administrator rights"):
+            managed_files.update_workspace_policy(
+                policy_path, desired_text, interactive=True, allow_sudo=allow_sudo
+            )
+
+        assert policy_path.read_text(encoding="utf-8") == "old"
+        assert not self.calls
+
+    def test_elevated_launch_writes_like_root(self, policy_path):
+        managed_files.update_workspace_policy(policy_path, "new", allow_sudo=False)
+
+        assert policy_path.read_text(encoding="utf-8") == "new"
+
+    def test_unchanged_policy_needs_no_elevation(self, policy_path, monkeypatch):
+        policy_path.parent.mkdir(parents=True)
+        policy_path.write_text("same", encoding="utf-8")
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: False)
+
+        managed_files.update_workspace_policy(policy_path, "same")
+
+    def test_skip_mode_is_rejected(self, policy_path, monkeypatch):
+        monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
+
+        with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="skipped"):
+            managed_files.update_workspace_policy(policy_path, "new")
+
+        assert not policy_path.exists()
+
+    def test_dry_run_writes_nothing(self, policy_path):
+        config_io.set_dry_run(True)
+
+        managed_files.update_workspace_policy(policy_path, "new")
+
+        assert not policy_path.exists()
+        assert not self.calls
+
+    def test_refuses_an_unexpected_target(self, policy_path, tmp_path):
+        with pytest.raises(RuntimeError, match="unexpected workspace-policy target"):
+            managed_files.update_workspace_policy(tmp_path / "elsewhere.json", "new")
+
+    def test_refuses_a_linked_folder(self, policy_path, tmp_path):
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        policy_path.parent.parent.mkdir()
+        policy_path.parent.symlink_to(elsewhere, target_is_directory=True)
+
+        with pytest.raises(RuntimeError, match="through link"):
+            managed_files.update_workspace_policy(policy_path, "new")
+
+        assert list(elsewhere.iterdir()) == []
+
+
 class TestWorkspacePolicyAsRoot:
     def test_direct_root_run_points_sudo_uid_at_root(self, tmp_path, monkeypatch):
         """Under `sudo ug configure` SUDO_UID names the caller, but root owns the temp source."""
