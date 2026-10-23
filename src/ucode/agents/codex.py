@@ -43,10 +43,13 @@ from ucode.config_io import (
 from ucode.constants import (
     AGENT_CODEX,
     AI_GATEWAY_REQUEST_TAGS_HEADER,
+    LITESWAP_ID_ENV_VAR,
+    LITESWAP_TRAFFIC_ID_PREFIX,
     LOOPBACK_HOST,
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
     SMART_ROUTER_RECIPE_HEADER,
+    TRAFFIC_ID_HEADER,
 )
 from ucode.custom_oauth import (
     CUSTOM_OAUTH_CLI_ENV_VAR,
@@ -1232,8 +1235,18 @@ def _export_launch_routing_headers(config: dict) -> None:
             os.environ.pop(name, None)
 
 
+def _liteswap_traffic_id() -> str | None:
+    swap = os.environ.get(LITESWAP_ID_ENV_VAR, "").strip()
+    if not swap:
+        return None
+    return (
+        swap if swap.startswith(LITESWAP_TRAFFIC_ID_PREFIX) else LITESWAP_TRAFFIC_ID_PREFIX + swap
+    )
+
+
 def _render_launch_overlay(*args, **kwargs) -> dict:
     overlay = render_overlay(*args, **kwargs)
+    _set_routing_header(overlay, TRAFFIC_ID_HEADER, _liteswap_traffic_id())
     _export_launch_routing_headers(overlay)
     return overlay
 
@@ -1533,6 +1546,7 @@ def launch(
         )
     _set_provider_header(profile_doc, provider)
     _set_parent_schema_header(profile_doc, parent_schema if not provider else None)
+    _set_routing_header(profile_doc, TRAFFIC_ID_HEADER, _liteswap_traffic_id())
     _export_launch_routing_headers(profile_doc)
     updating = tool_args[:1] == ["update"]
     if updating and _is_ucode_catalog_reference(profile_doc.get("model_catalog_json")):
