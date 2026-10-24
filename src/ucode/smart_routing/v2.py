@@ -293,11 +293,6 @@ def _unwrapped_claude_model_id(model: str) -> str:
     return routing.unwrap_anthropic_gateway_model(model)
 
 
-def _claude_router_model_id(model: str) -> str:
-    """Unwrap an Anthropic gateway id and drop Claude Code's `[1m]` hint, then normalize."""
-    return routing.normalize_model(_unwrapped_claude_model_id(model).removesuffix("[1m]"))
-
-
 def _claude_model_overrides(model_ids: list[str]) -> dict[str, str]:
     overrides: dict[str, str] = {}
     prefix = "system.ai."
@@ -307,9 +302,23 @@ def _claude_model_overrides(model_ids: list[str]) -> dict[str, str]:
     return overrides
 
 
+def _normalize_model(model: str) -> str:
+    """Strip provider prefixes and lowercase a model id.
+
+    ``system.ai.claude-opus-4-8`` and ``databricks-claude-opus-4-8`` both
+    normalize to ``claude-opus-4-8``.
+    """
+    tail = model.rsplit("/", 1)[-1]
+    for prefix in ("databricks-", "system.ai."):
+        if tail.startswith(prefix):
+            tail = tail[len(prefix) :]
+            break
+    return tail.lower()
+
+
 def _routed_claude_agent_slug(model: str) -> str:
     canonical = _canonical_claude_model_id(model)
-    normalized = routing.normalize_model(canonical)
+    normalized = _normalize_model(canonical)
     safe = "".join(character if character.isalnum() else "-" for character in normalized)
     slug = "-".join(part for part in safe.split("-") if part)
     digest = hashlib.sha256(canonical.encode()).hexdigest()[:8]
@@ -433,18 +442,14 @@ def _request_claude_routing_decision(
     prompt: str,
     model_ids: list[str],
 ) -> tuple[routing.RoutingDecision | None, str | None]:
-    available: dict[str, str] = {}
-    for model in _canonical_claude_models(model_ids):
-        available.setdefault(_claude_router_model_id(model), model)
-    if not available:
+    route_options = routing.route_options_for(_canonical_claude_models(model_ids), "claude")
+    if not route_options:
         return None, "Anthropic models endpoint returned no Claude models"
-    route_options = [(model, "claude") for model in available]
     return routing.select_route(
         workspace,
         token,
         prompt,
         route_options,
-        lambda selected: available.get(_claude_router_model_id(selected)),
         router_name=routing.configured_router_name(),
         timeout=CLAUDE_ROUTE_SELECTION_TIMEOUT_S,
     )
