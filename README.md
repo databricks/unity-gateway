@@ -145,14 +145,19 @@ machine-wide; use `--global` for it.
 ### Extra headers for one session
 
 ```bash
-ug --header "x-databricks-traffic-id: testenv://liteswap/<pod>" codex
+ug --header "x-databricks-traffic-id: testenv://liteswap/<pod>" claude
 UG_HEADERS="X-Team: eng" ug codex
 ```
 
 `--header` (repeatable) and `UG_HEADERS` (one `Name: value` per line) add headers to that launch's
-Databricks requests only: Codex's gateway requests, through the launch's `-c` provider headers, and
-ug's own requests (workspace APIs, MCP proxy, web search, smart routing). A header already sent
-keeps its value. Nothing is written to a config file.
+Databricks requests only: Claude Code's and Codex's gateway requests, and ug's own requests
+(workspace APIs, MCP proxy, web search, smart routing). A header already sent keeps its value.
+Nothing is written to a config file.
+
+- **Codex**: added to the launch's `-c` provider headers.
+- **Claude Code**: added by a mod, even when managed settings set `ANTHROPIC_CUSTOM_HEADERS`.
+  `ug configure` installs it beside the managed settings (Linux and macOS, with sudo, not under
+  `--user`); without it the launch warns and Claude doesn't send them.
 
 Available coding agents are `codex`, `claude`, `gemini`, `opencode`,
 `copilot`, and `pi`. `cursor` can be included in `--agents` for MCP-only setup;
