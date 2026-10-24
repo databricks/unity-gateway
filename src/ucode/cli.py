@@ -99,11 +99,15 @@ from ucode.managed_budget import (
 from ucode.managed_config import (
     AGENT_ENUM_TO_TOOL,
     ManagedConfigResult,
+    ManagedPolicyInstallDenied,
     get_managed_config,
     get_model_recommendation,
     load_managed_state,
+    managed_launch_workspace,
+    managed_state_workspace,
     normalize_managed_config,
     refresh_managed_config,
+    revert_machine_policy,
 )
 from ucode.managed_files import config_scope, managed_write_session, set_config_scope
 from ucode.managed_resolve import (
@@ -802,6 +806,71 @@ def _configure_shared_workspace_states(
     return states
 
 
+def _refresh_configured_policy(state: dict) -> ManagedConfigResult:
+    """Read and install the workspace policy for an explicit configure.
+
+    Configure saves the selected workspace before the policy step. When that step cannot switch the
+    machine (no administrator access), the machine stays managed for its installed workspace, so put
+    the saved selection back on it: launches keep working there, and the error explains the switch.
+    """
+    try:
+        return refresh_managed_config(state, force_refresh=True)
+    except ManagedPolicyInstallDenied:
+        _keep_installed_workspace_selected(state)
+        raise
+
+
+def _keep_installed_workspace_selected(state: dict) -> str | None:
+    """Put the saved selection back on the machine's installed workspace when it differs.
+
+    Returns that installed workspace, or None when the selection already matches or none exists.
+    """
+    installed = managed_state_workspace()
+    if not installed or normalize_workspace_url(installed) == normalize_workspace_url(
+        state["workspace"]
+    ):
+        return None
+    set_current_workspace(normalize_workspace_url(installed))
+    return installed
+
+
+def _read_policy_for_other_agent(state: dict) -> ManagedConfigResult:
+    """Read the policy for an agent other than Claude and Codex, which never installs it.
+
+    Such a configure cannot switch the machine's workspace, so on a machine managed for another
+    workspace it keeps the saved selection there and fails before writing the agent's config.
+    """
+    installed = _keep_installed_workspace_selected(state)
+    if installed:
+        raise RuntimeError(
+            f"This machine is managed for {installed}, so it cannot be configured for "
+            f"{state['workspace']}. Your selection stays on {installed}. Run "
+            f"`ug configure --workspace {state['workspace']}` from a terminal where you can use sudo "
+            "to switch the machine, or ask your IT team or an administrator."
+        )
+    # --user must see a managed config for every agent, so it reads fresh; global keeps the cache.
+    return refresh_managed_config(state, force_refresh=config_scope() == "user")
+
+
+def _launch_workspace_state(workspace: str | None) -> dict:
+    """Load launch state on the machine's installed workspace, refusing any other selection.
+
+    Adopts the installed workspace when none is saved, so a fresh user launches it directly.
+    """
+    state = load_state()
+    saved = state.get("workspace")
+    # The flag wins over the saved selection; either is refused if it isn't the installed one.
+    target = managed_launch_workspace(workspace or saved)
+    # An explicit --workspace always saves the selection, as on main.
+    if target and (workspace or not saved or normalize_workspace_url(saved) != target):
+        set_current_workspace(target)
+        state = load_state()
+        if state.get("workspace") != target:
+            # A dry run saves nothing, so carry the workspace for this run.
+            state = {**state, "workspace": target}
+    return state
+
+
 def _setup_single_agent(
     workspace_entries: list[tuple[str, str | None]],
     tool: str,
@@ -831,7 +900,8 @@ def _setup_single_agent(
     parent_schema = None
     managed = None
     if apply_managed and tool in ("claude", "codex"):
-        managed, _ = refresh_managed_config(state, force_refresh=True)
+        # Explicit configure always reads the workspace policy fresh, so it can install it.
+        managed, _ = _refresh_configured_policy(state)
         refuse_user_scope_over_managed_config(state.get("workspace"), managed)
         _reject_disabled_agent(managed, tool)
         if managed is not None:
@@ -839,8 +909,8 @@ def _setup_single_agent(
             if not managed_provider_service(managed, tool):
                 parent_schema = managed_unity_catalog_location(managed, tool)
     elif apply_managed:
-        # --user must see a managed config for every agent, so it reads fresh; global keeps the cache.
-        managed, _ = refresh_managed_config(state, force_refresh=config_scope() == "user")
+        # Other agents only read the policy; they never install it.
+        managed, _ = _read_policy_for_other_agent(state)
         refuse_user_scope_over_managed_config(state.get("workspace"), managed)
     state = configure_single_tool(tool, state, parent_schema=parent_schema)
     if apply_managed and not managed_enabled_tools(managed or {}):
@@ -1053,7 +1123,7 @@ def _configure_workspace_command(
     # A published managed config means the admin dictates the setup: apply it to every enabled agent
     # now rather than prompting the developer to pick. Configure always reads fresh so it never
     # applies a config the admin has since changed.
-    managed, _ = refresh_managed_config(state, force_refresh=True)
+    managed, _ = _refresh_configured_policy(state)
     refuse_user_scope_over_managed_config(state.get("workspace"), managed)
     managed_tools = managed_enabled_tools(managed) if managed is not None else []
     if managed is not None and managed_tools:
@@ -1470,6 +1540,7 @@ def revert() -> int:
         print_warning(f"Could not remove leftover Copilot session files: {exc}")
     claude_managed_result = claude_agent.revert_managed_settings()
     codex_managed_result = codex_agent.revert_managed_config()
+    workspace_policy_result = revert_machine_policy()
 
     results: dict[str, bool] = {
         tool: restore_file(
@@ -1492,6 +1563,7 @@ def revert() -> int:
     print_kv("Claude Code OS-managed settings", claude_managed_result)
     print_kv("Claude Desktop profile", desktop_result)
     print_kv("Codex OS-managed settings", codex_managed_result)
+    print_kv("Unity Gateway workspace policy", workspace_policy_result)
     print_kv("Pi settings", "restored" if pi_settings_restored else "unchanged")
     for client, spec in MCP_CLIENTS.items():
         print_kv(
@@ -3247,9 +3319,7 @@ def _launch_tool(
         # An explicit --workspace targets that workspace for this launch (and
         # auto-configures it if unseen), so `ug claude --provider ... --workspace ...`
         # works without a prior `ug configure`.
-        if workspace_url:
-            set_current_workspace(normalize_workspace_url(workspace_url))
-        existing = load_state()
+        existing = _launch_workspace_state(workspace_url)
         # Workspaces configured with --use-pat export the profile's PAT as
         # DATABRICKS_BEARER up front so every auth check below (and the
         # launched agent itself) uses the static token instead of OAuth.
@@ -3812,9 +3882,7 @@ def _launch_managed_default(
     workspace: str | None,
 ) -> None:
     """Route bare ``ucode`` by whether the workspace publishes a managed config."""
-    if workspace:
-        set_current_workspace(normalize_workspace_url(workspace))
-    state = load_state()
+    state = _launch_workspace_state(workspace)
     current = state.get("workspace")
     if not current:
         console.print(ctx.get_help())

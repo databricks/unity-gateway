@@ -42,6 +42,7 @@ _config_scope = DEFAULT_CONFIG_SCOPE
 MANAGED_BACKUP_DIR = APP_DIR / "managed-backups"
 MANAGED_BACKUP_MANIFEST_PATH = MANAGED_BACKUP_DIR / "manifest.json"
 MANAGED_FINGERPRINT_VERSION = 1
+UNITY_GATEWAY_MANAGED_SETTINGS_PATH = Path("/etc/unitygateway/managed-settings.json")
 _MISSING = object()
 _managed_write_batch: tuple[str, ...] = ()
 _managed_write_notice_shown = False
@@ -72,12 +73,14 @@ _SUDO_REPLACE_TARGETS = {
         {
             Path("/etc/claude-code/managed-settings.json"),
             Path("/etc/codex/managed_config.toml"),
+            UNITY_GATEWAY_MANAGED_SETTINGS_PATH,
         }
     ),
     OS.MACOS: frozenset(
         {
             Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
             Path("/etc/codex/managed_config.toml"),
+            UNITY_GATEWAY_MANAGED_SETTINGS_PATH,
         }
     ),
 }
@@ -1195,8 +1198,8 @@ _SUDO_REPLACE_SCRIPT = (
 )
 
 
-def _sudo_replace_command(mode: str, *args: str) -> list[str]:
-    return _sudo_command(
+def _sudo_replace_command(mode: str, *args: str, non_interactive: bool = False) -> list[str]:
+    command = [
         "/bin/sh",
         "-c",
         _SUDO_REPLACE_SCRIPT,
@@ -1204,7 +1207,88 @@ def _sudo_replace_command(mode: str, *args: str) -> list[str]:
         mode,
         current_os().value,
         *args,
-    )
+    ]
+    if non_interactive:
+        if os.geteuid() == 0:
+            return command
+        return [_SUDO, "-n", *command]
+    return _sudo_command(*command)
+
+
+def update_workspace_policy(
+    path: Path,
+    desired_text: str | None,
+    *,
+    interactive: bool = False,
+    allow_sudo: bool = False,
+) -> None:
+    """Install or remove changed policy; unprivileged launches never invoke sudo."""
+    if path != UNITY_GATEWAY_MANAGED_SETTINGS_PATH:
+        raise RuntimeError(f"Refusing unexpected workspace-policy target: {path}")
+    if current_os() not in (OS.LINUX, OS.MACOS):
+        raise ManagedFileWriteUnavailable(
+            "Machine-wide workspace policy is supported only on Linux and macOS."
+        )
+    if managed_settings_skipped():
+        raise ManagedFileWriteUnavailable("Machine-wide workspace policy is skipped for this run.")
+    _validate_sudo_replace_target(path)
+    current_text = read_managed_file(path)
+    if current_text == desired_text:
+        return
+    # Checked before the dry-run preview, so a dry run never shows a write the real run refuses.
+    if not allow_sudo and os.geteuid() != 0:
+        raise ManagedFileWriteUnavailable(
+            "Workspace policy updates require an administrator or root provisioning run."
+        )
+    if is_dry_run():
+        console.print(
+            f"\n[bold]\\[dry run] {path} (via sudo)[/bold]\n"
+            f"{desired_text if desired_text is not None else '(remove)'}"
+        )
+        return
+    running_as_root = os.geteuid() == 0
+    can_prompt = interactive and managed_writes_allowed() and not running_as_root
+    # Run directly as root (no sudo), the script still checks the temp source's owner against
+    # SUDO_UID. Under `sudo ug configure` that variable names the invoking user while root owns the
+    # source, so point it at root for the direct run.
+    script_env = {**os.environ, "SUDO_UID": "0"} if running_as_root else None
+    try:
+        if desired_text is not None and can_prompt:
+            _sudo_replace(path, desired_text)
+        else:
+            # Raw bytes, so removal's byte-for-byte check matches a file with a BOM or CRLF endings.
+            with tempfile.NamedTemporaryFile(mode="wb", suffix=".json") as source:
+                source.write(
+                    desired_text.encode("utf-8") if desired_text is not None else path.read_bytes()
+                )
+                source.flush()
+                subprocess_cross_os.run(
+                    _sudo_replace_command(
+                        "once" if desired_text is not None else "remove",
+                        source.name,
+                        str(path),
+                        non_interactive=not can_prompt,
+                    ),
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    # A password prompt waits on the person typing; only unattended runs time out.
+                    timeout=None if can_prompt else 30,
+                    env=script_env,
+                )
+    except (OSError, subprocess.SubprocessError) as exc:
+        stderr = getattr(exc, "stderr", None)
+        if isinstance(stderr, bytes):
+            # TimeoutExpired carries bytes even when the run used text mode.
+            stderr = stderr.decode("utf-8", "replace")
+        detail = (stderr or "").strip()
+        raise ManagedFileWriteUnavailable(
+            f"Could not update workspace policy at {path}." + (f" {detail}" if detail else "")
+        ) from exc
+    if read_managed_file(path) != desired_text:
+        raise ManagedFileWriteUnavailable(
+            f"Workspace policy at {path} changed during installation; run `ug configure` again."
+        )
 
 
 def _encode_worker_arg(value: str) -> str:

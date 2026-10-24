@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from types import SimpleNamespace
 
@@ -46,11 +47,35 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.setattr(codex_mod, "_otel_service_path", lambda: state_dir / "otel.service")
     monkeypatch.setattr(desktop_mod, "APP_DIR", state_dir)
     monkeypatch.setattr(desktop_auth_mod, "_AUTH_LOCK_PATH", state_dir / "claude-desktop-auth.lock")
-    # MANAGED_CONFIG_PATH is bound from APP_DIR at import, so patching APP_DIR alone doesn't move it;
-    # rebind it or save_managed_state writes to the developer's real ~/.ucode/managed-config.json.
+    # The workspace policy lives outside APP_DIR; rebind it, and its user-owned refresh stamps,
+    # so no test reads or installs the machine-wide copy.
     monkeypatch.setattr(
-        managed_config_mod, "MANAGED_CONFIG_PATH", state_dir / "managed-config.json"
+        managed_config_mod,
+        "MANAGED_CONFIG_PATH",
+        tmp_path / "etc" / "unitygateway" / "managed-settings.json",
     )
+    monkeypatch.setattr(managed_config_mod, "REFRESH_TS_PATH", state_dir / "refresh_ts.json")
+    monkeypatch.setattr(
+        managed_config_mod, "USER_MANAGED_CONFIG_PATH", state_dir / "managed-config.json"
+    )
+
+    def install_test_policy(path, desired_text, *, interactive=False, allow_sudo=True):
+        if path != managed_config_mod.MANAGED_CONFIG_PATH or not path.is_relative_to(tmp_path):
+            pytest.fail(f"test attempted to install machine-wide policy at {path}")
+        if config_io_mod.is_dry_run():
+            return
+        if desired_text is None:
+            path.unlink(missing_ok=True)
+        else:
+            config_io_mod.atomic_write_json(path, json.loads(desired_text))
+            path.chmod(0o644)
+
+    monkeypatch.setattr(managed_config_mod, "update_workspace_policy", install_test_policy)
+    # The installer is faked above, so let every host take the installable (Linux/macOS) path;
+    # tests for Windows or UG_SKIP_OS_SETTINGS override this.
+    monkeypatch.setattr(managed_config_mod, "current_os", lambda: managed_files_mod.OS.LINUX)
+    # Likewise let any run install the faked policy, as root may; non-root launch tests override it.
+    monkeypatch.setattr(managed_config_mod, "is_admin", lambda: True)
     backup_dir = state_dir / "managed-backups"
     monkeypatch.setattr(managed_files_mod, "MANAGED_BACKUP_DIR", backup_dir)
     monkeypatch.setattr(
