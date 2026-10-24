@@ -135,7 +135,8 @@ ug configure --user
 
 `--global` (the default) writes the machine-wide Claude Code and Codex managed settings with sudo.
 `--user` skips them, like `UG_SKIP_OS_SETTINGS`, and needs no sudo; use it when you launch through
-`ug`. Configure fails while a managed file for the agent exists, since managed settings take
+`ug`. `UG_SKIP_OS_SETTINGS=1` neither writes nor checks the OS-managed files: ug trusts whatever is
+there and the agents apply their native precedence. Configure fails while a managed file for the agent exists, since managed settings take
 precedence; later launches use whatever files are present.
 The choice is saved for launches after a successful configure; `ug configure` without `--user`
 and `ug revert` return to `--global`.

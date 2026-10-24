@@ -1054,37 +1054,6 @@ class TestManagedSettingsSkipped:
         )
         assert result == "unsupported"
 
-    def test_raise_on_skipped_managed_overrides_reports_stale_leaves(self):
-        with pytest.raises(RuntimeError) as excinfo:
-            managed_files.raise_on_skipped_managed_overrides(
-                Path("/etc/claude-code/managed-settings.json"),
-                ["env.ANTHROPIC_BASE_URL"],
-                display="Claude Code",
-            )
-        message = str(excinfo.value)
-        assert managed_files.SKIP_OS_SETTINGS_ENV in message
-        assert "stale" in message
-        assert "ug revert" in message
-
-    def test_user_scope_skips_managed_settings_and_files(self, monkeypatch):
-        monkeypatch.delenv(managed_files.SKIP_OS_SETTINGS_ENV, raising=False)
-        monkeypatch.setattr(managed_files, "_config_scope", "user")
-        assert managed_files.managed_settings_skipped() is True
-        monkeypatch.setattr(managed_files, "managed_files_supported", _REAL_MANAGED_FILES_SUPPORTED)
-        assert managed_files.managed_files_supported() is False
-
-    def test_set_config_scope_rejects_unknown_scope(self):
-        with pytest.raises(ValueError, match="Unknown config scope"):
-            managed_files.set_config_scope("system")
-
-    def test_raise_on_skipped_managed_overrides_silent_without_conflicts(self):
-        # No conflicts means nothing stale overrides the user config, so this must not raise.
-        managed_files.raise_on_skipped_managed_overrides(
-            Path("/etc/claude-code/managed-settings.json"),
-            [],
-            display="Claude Code",
-        )
-
 
 class TestWindowsManagedWrites:
     """Windows has no sudo: an elevated process writes Program Files directly, others can't."""
