@@ -12,7 +12,7 @@ import pytest
 
 from ucode import custom_oauth
 from ucode.agents import copilot
-from ucode.databricks import ModelServiceEntry
+from ucode.databricks import AnthropicModelCatalog, ModelServiceEntry
 from ucode.telemetry import client_platform
 
 WS = "https://example.databricks.com"
@@ -553,6 +553,48 @@ class TestProviderCatalog:
 
         with pytest.raises(RuntimeError, match="was not found"):
             copilot.provider_service_catalog({"workspace": WS}, MPS, None)
+
+
+def _stub_location(monkeypatch, model_ids, error=None):
+    monkeypatch.setattr(copilot, "launch_token", lambda state, workspace, **_: "dbx-token")
+    seen = {}
+
+    def anthropic_catalog(workspace, token, *, parent_schema):
+        seen["parent_schema"] = parent_schema
+        return AnthropicModelCatalog(
+            model_ids=list(model_ids), model_id_to_display_name={}, error_msg=error
+        )
+
+    monkeypatch.setattr(copilot, "list_anthropic_model_catalog", anthropic_catalog)
+    return seen
+
+
+class TestLocationCatalog:
+    def test_registers_the_schemas_services_by_full_name(self, monkeypatch):
+        seen = _stub_location(
+            monkeypatch,
+            [
+                "anthropic-aigw-1a2b3c4d-main.ucode.claude_haiku",
+                "main.ucode.claude-sonnet-4-6",
+                "anthropic-aigw-0f0f0f0f-main.ucode.gpt-5-6-luna",
+                "main.ucode.claude-opus-4-1",
+            ],
+        )
+
+        models = copilot.location_catalog({"workspace": WS}, "main.ucode")
+
+        assert [(m.id, m.wire) for m in models] == [
+            ("main.ucode.claude-sonnet-4-6", "anthropic"),
+            ("main.ucode.claude_haiku", "anthropic"),
+            ("main.ucode.gpt-5-6-luna", "responses"),
+        ]
+        assert seen["parent_schema"] == "main.ucode"
+
+    def test_an_empty_schema_says_so(self, monkeypatch):
+        _stub_location(monkeypatch, [], error="AI Gateway returned no Anthropic model ids")
+
+        with pytest.raises(RuntimeError, match="no model services to use in main.ucode"):
+            copilot.location_catalog({"workspace": WS}, "main.ucode")
 
 
 class TestCopilotModelLimits:
@@ -1202,6 +1244,26 @@ class TestLaunch:
         assert registry["providers"][0]["headers"] == {"Databricks-Model-Provider-Service": MPS}
         assert seen["env"]["COPILOT_MODEL"] == "dbx-anthropic/claude-sonnet-5"
         assert copilot.LAUNCH_PROVIDER_SERVICE_KEY not in state
+
+    def test_model_location_launch_registers_the_schemas_services(self, tmp_path, monkeypatch):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        seen = _stub_launch(monkeypatch)
+        _stub_location(monkeypatch, ["main.ucode.claude-sonnet-4-6", "main.ucode.claude_haiku"])
+        state = dict(STATE, copilot_static_models=[GPT])
+        state[copilot.LAUNCH_MODEL_LOCATION_KEY] = "main.ucode"
+
+        with pytest.raises(SystemExit):
+            copilot.launch(state, [], options=copilot.LaunchOptions())
+
+        registry = seen["registry"]
+        assert [m["id"] for m in registry["models"]] == [
+            "main.ucode.claude-sonnet-4-6",
+            "main.ucode.claude_haiku",
+        ]
+        assert "headers" not in registry["providers"][0]
+        assert registry["models"][0]["maxPromptTokens"] == 168_000
+        assert seen["env"]["COPILOT_MODEL"] == "dbx-anthropic/main.ucode.claude-sonnet-4-6"
+        assert copilot.LAUNCH_MODEL_LOCATION_KEY not in state
 
     def test_provider_service_launch_rejects_a_model_it_does_not_serve(self, tmp_path, monkeypatch):
         isolate_copilot_config_paths(monkeypatch, tmp_path)
