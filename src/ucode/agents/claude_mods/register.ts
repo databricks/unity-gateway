@@ -1,7 +1,6 @@
 import type { EngineInterface, On, PluginOptions } from 'claude-code';
 import { registerStatusBand, showStatusBand } from './smart-routing-status.ts';
 import { registerSubagentRouting } from './subagent-routing.ts';
-import type { SubagentRoutingState } from './subagent-routing.ts';
 import {
   CLI_AGENT,
   CLI_MODULE,
@@ -130,7 +129,6 @@ export function register(on: On, options: PluginOptions): void {
     }
     return {text: `Smart Router is ${action}`};
   });
-  const subagents: SubagentRoutingState = {records: new Map()};
-  registerSubagentRouting(on, options, subagents);
-  registerStatusBand(on, subagents);
+  registerStatusBand(on);
+  registerSubagentRouting(on, options);
 }

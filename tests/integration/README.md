@@ -1,12 +1,9 @@
 # Integration tests
 
-Native mod component tests in `../native_claude/test_mod.py` cover task-labelled model
-and rationale cards without tool render events, parallel background routing finishing
-out of order, distinct IDs for identical tasks, pending spinners, and disabled/failed
-routing, prompt reset, and late-result isolation. A native TUI fixture preview checks
-wrapping, model emphasis, and the absence of raw IDs, log prefixes, and replacement
-characters. These are not live parallel-agent routing or gateway checks; the preview
-makes no model request.
+Native mod component tests in `../native_claude/test_mod.py` cover routing cards above the
+parent's next reply in call order, calls still routing waiting for a later reply, distinct
+IDs for identical tasks, pending row and turn-spinner routing timers, and disabled/failed routing. These are not live
+parallel-agent TUI or gateway checks.
 
 The spend-status client's workspace authentication, optional percentage handling,
 pagination, validation, and failure propagation are covered by component tests in

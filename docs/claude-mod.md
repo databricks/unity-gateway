@@ -15,19 +15,19 @@ cleans up the files when Claude exits.
 The same entry point routes Agent/Task calls in a native `tool.call` hook. It pipes the
 call as JSON to `ug claude-router-hook route-subagent-mod`, whose argument list arrives in
 the `routeCommand` plugin option, and continues the call with the returned input. The
-matching Agent row shows a spinner and elapsed seconds while the router answers.
-Successful decisions appear as task-labelled cards in the existing above-prompt panel:
-bold task heading, green selected model, small routing timer, and indented, wrapping
-rationale. Tool IDs remain internal. There are no successful-routing log messages,
-plugin prefixes, or duplicate tool-row annotations. Claude's native parallel-agent
-summary and log messages bypass the relevant transcript render hooks; the panel does
-not depend on them.
-
-The panel retains every successful route for the current prompt, including background
-agents whose routing completes out of order. Cards remain after the parent's turn ends
-and clear on the next submitted prompt. A late result from an earlier prompt cannot
-repopulate the new panel. Plugin reload clears the in-memory cards; the existing routing
-decision audit log is unchanged.
+matching Agent row shows a spinner and elapsed seconds while the router answers. Claude
+hides that row once a second Agent call joins it, so while any call is routing, the turn's
+spinner line also reads `Selecting a model… Ns` or `Selecting models for N agents… Ns`,
+timed from the oldest waiting call; Claude's own glyph and counters stay.
+Each successful decision is drawn as a card in the transcript: bold task, green selected
+model with its routing time, and the indented rationale. Claude folds parallel Agent rows
+into its own "Running N agents" block, which raises no render hook, so single and parallel
+calls alike draw their cards above the parent's first reply after routing, in call order.
+A reply drawn before routing finished is never used, a call still routing waits for a
+later reply, and a call whose routing failed draws no card. If the parent writes no reply
+in that turn, no card is drawn. Nothing is drawn above the prompt and nothing is logged.
+Cards are kept for the session; a plugin reload clears them from the screen, and the
+routing decision audit log is unchanged.
 Disabled routing, command failures, and invalid responses keep the original call;
 failures also log a diagnostic.
 

@@ -1,7 +1,6 @@
 import type { On } from 'claude-code'
 import { SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY } from './constants.ts'
 import { isRoutingEnabled } from './routing-state.ts'
-import type { SubagentRoutingState } from './subagent-routing.ts'
 
 const BANNER = 'unity gateway smart router'
 
@@ -45,10 +44,8 @@ async function readRoutingState($: any): Promise<RoutingState> {
   }
 }
 
-export const registerStatusBand = (on: On, subagents: SubagentRoutingState): void => {
+export const registerStatusBand = (on: On): void => {
   on('prompt.submit', ($, e, next) => {
-    subagents.records = new Map()
-    $.ui.invalidate('ui.render')
     if (band.isVisible) band.isHideArmed = true
     return next(e)
   })
@@ -73,7 +70,7 @@ export const registerStatusBand = (on: On, subagents: SubagentRoutingState): voi
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const theirs = await next(e)
-    if (!band.isVisible && !subagents.records.size) return theirs
+    if (!band.isVisible) return theirs
     const { Box, Text } = $.ui.resolve(e)
     const { enabled, firstPrompt } = await readRoutingState($)
 
@@ -93,33 +90,7 @@ export const registerStatusBand = (on: On, subagents: SubagentRoutingState): voi
       columnGap: 1,
       children: [Text({ bold: true, children: [BANNER] }), pill, trailer],
     })
-    const children = band.isVisible ? [line] : []
-    for (const record of subagents.records.values()) {
-      const card = [
-        Text({ bold: true, children: [record.task] }),
-        Box({
-          flexDirection: 'row',
-          children: [
-            Text({ dimColor: true, children: ['↳ Selected Model: '] }),
-            Text({ bold: true, color: 'green', children: [record.model] }),
-            ...(record.seconds === undefined ? [] : [
-              Text({ dimColor: true, children: [` · ${record.seconds.toFixed(1)}s`] }),
-            ]),
-          ],
-        }),
-      ]
-      if (record.rationale) {
-        card.push(Box({
-          paddingLeft: 2,
-          children: [Text({ children: [
-            Text({ dimColor: true, children: ['Reason: '] }),
-            record.rationale,
-          ] })],
-        }))
-      }
-      children.push(Box({ flexDirection: 'column', marginTop: 1, paddingLeft: 2, children: card }))
-    }
-    if (theirs) children.push(theirs)
+    const children = theirs ? [line, theirs] : [line]
     return Box({ flexDirection: 'column', children })
   })
 }
