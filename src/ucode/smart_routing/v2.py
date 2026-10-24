@@ -304,8 +304,12 @@ def _claude_model_overrides(model_ids: list[str]) -> dict[str, str]:
 
 def _routed_claude_agent_slug(model: str) -> str:
     canonical = _canonical_claude_model_id(model)
-    normalized = routing.normalize_model(canonical)
-    safe = "".join(character if character.isalnum() else "-" for character in normalized)
+    readable = canonical.rsplit("/", 1)[-1]
+    for prefix in ("databricks-", "system.ai."):
+        if readable.startswith(prefix):
+            readable = readable[len(prefix) :]
+            break
+    safe = "".join(character if character.isalnum() else "-" for character in readable.lower())
     slug = "-".join(part for part in safe.split("-") if part)
     digest = hashlib.sha256(canonical.encode()).hexdigest()[:8]
     return f"{CLAUDE_ROUTED_AGENT_PREFIX}{slug[:36]}-{digest}"

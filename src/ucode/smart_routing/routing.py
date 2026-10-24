@@ -181,20 +181,6 @@ def _plaintext_string(value: Any) -> str | None:
     return text
 
 
-def normalize_model(model: str) -> str:
-    """Strip provider prefixes and lowercase a model id.
-
-    ``system.ai.claude-opus-4-8`` and ``databricks-claude-opus-4-8`` both
-    normalize to ``claude-opus-4-8``.
-    """
-    tail = model.rsplit("/", 1)[-1]
-    for prefix in ("databricks-", "system.ai."):
-        if tail.startswith(prefix):
-            tail = tail[len(prefix) :]
-            break
-    return tail.lower()
-
-
 def unwrap_anthropic_gateway_model(model: str) -> str:
     """Strip Claude's synthetic Anthropic gateway prefix from a model id."""
     if match := _ANTHROPIC_AIGW_MODEL_RE.fullmatch(model):

@@ -38,8 +38,6 @@ SUBAGENT_NOTICE_CONFIG = routing.SubagentNoticeConfig(
 
 _GPT_RE = re.compile(r"gpt-(\d+)(?:[.-](\d+))?(?:[.-](\d+))?(-.+|[a-z].*)?")
 
-_normalize_model = routing.normalize_model
-
 
 def request_routing_decision(
     workspace: str,
@@ -126,22 +124,6 @@ def record_subagent_start(payload: dict[str, Any]) -> dict[str, Any]:
 def clear_routing_artifacts() -> None:
     """Remove ucode-owned routing canary and audit files."""
     routing.clear_artifacts((CANARY_PATH, AUDIT_PATH, DECISIONS_PATH))
-
-
-def _parse_gpt(model: str) -> tuple[int, int, int, str] | None:
-    match = _GPT_RE.fullmatch(_normalize_model(model))
-    if not match:
-        return None
-    major, minor, patch, suffix = match.groups()
-    return int(major), int(minor or 0), int(patch or 0), suffix or ""
-
-
-def _model_strength(model: str) -> tuple[int, int, int, int]:
-    parsed = _parse_gpt(model)
-    if parsed is None:
-        return (0, 0, 0, 0)
-    major, minor, patch, suffix = parsed
-    return major, minor, patch, 1 if not suffix else 0
 
 
 def codex_model_id(model: str) -> str:
