@@ -758,7 +758,9 @@ desktop GUI, a real `launchctl` or `schtasks` run, or a login/reboot pass.
 
 `test_managed_config.py` and `test_managed_files.py` cover machine policy versus user-owned
 `refresh_ts.json`, five-minute throttling, no privileged write for unchanged policy or
-retrieval-only drift, configure-only sudo selection, deferred-update warning/fallback, matching
+retrieval-only drift, configure-only sudo selection, Windows ProgramData install/replace/removal
+with a stubbed `icacls` (elevated only, administrator hint otherwise, linked folders refused),
+Windows launch/revert rules, per-user cache only for `UG_SKIP_OS_SETTINGS`, deferred-update warning/fallback, matching
 removal, workspace isolation, fingerprint invalidation, and dry-run behavior.
 Pending-change regressions cover one warning across expired checks, distinct-change warnings,
 retrieval/key-order stability, removal, and clearing after remote/MDM/configure reconciliation.

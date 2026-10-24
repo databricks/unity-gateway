@@ -7,7 +7,7 @@ created: 2026-10-12
 
 ## Intent
 
-Install workspace policy in `/etc/unitygateway/managed-settings.json` during `ug configure` and read it during agent launches. Preserve five-minute launch refreshes without rewriting the privileged file or requesting sudo when policy content is unchanged.
+Install workspace policy in `/etc/unitygateway/managed-settings.json` (Windows: `%ProgramData%\UnityGateway\managed-settings.json`) during `ug configure` and read it during agent launches. Preserve five-minute launch refreshes without rewriting the privileged file or requesting sudo when policy content is unchanged.
 
 ## Context
 
@@ -40,7 +40,7 @@ The existing privileged writer atomically installs allowlisted Claude/Codex sett
 ## Clarifications
 
 - Q1: Which platforms are supported?
-  A1: Linux and macOS use `/etc/unitygateway/managed-settings.json`. Unsupported-platform writes fail explicitly; do not introduce a user-cache policy fallback.
+  A1: Linux and macOS use `/etc/unitygateway/managed-settings.json`; Windows uses `%ProgramData%\UnityGateway\managed-settings.json`, written only by an elevated process into an Administrators-owned folder (standard users read only; no sudo, so a non-elevated configure fails with an administrator hint, and revert warns and keeps the file). Unsupported-platform writes fail explicitly; do not introduce a user-cache policy fallback.
 - Q2: How many workspaces does the machine file hold?
   A2: One active workspace. Explicit administrator configure can replace it for all users. Launch refuses a mismatched workspace and never uses unmanaged fallback to escape the installed policy.
 - Q3: What if sudo is unavailable?

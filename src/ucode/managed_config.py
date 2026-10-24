@@ -713,9 +713,13 @@ def revert_machine_policy() -> str:
     try:
         update_workspace_policy(MANAGED_CONFIG_PATH, None, interactive=True, allow_sudo=True)
     except RuntimeError as exc:
+        retry = (
+            "Rerun `ug revert` from an elevated terminal (Run as administrator)."
+            if current_os() is OS.WINDOWS
+            else "Rerun `ug revert` from a terminal where you can use sudo."
+        )
         print_warning(
-            f"Could not remove the workspace policy at {MANAGED_CONFIG_PATH}: {exc} Rerun "
-            "`ug revert` from a terminal where you can use sudo."
+            f"Could not remove the workspace policy at {MANAGED_CONFIG_PATH}: {exc} {retry}"
         )
         return "failed"
     return "removed"
@@ -762,8 +766,8 @@ def load_managed_configuration(workspace: str | None) -> dict | None:
 def _installed_config(workspace: str) -> dict | None:
     """The installed machine policy for ``workspace``, read only where ug installs one.
 
-    On Windows the POSIX path resolves under the current drive's root, which a standard user may be
-    able to create, so it is never trusted there.
+    On Windows only the protected ProgramData file is read, never a POSIX-style path under a drive
+    root that a standard user may be able to create.
     """
     if not _machine_policy_supported():
         return None
@@ -932,10 +936,18 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
         )
     except RuntimeError as exc:
         if force_refresh and _machine_policy_installable():
+            if current_os() is OS.WINDOWS:
+                hint = (
+                    "Run `ug configure` from an elevated terminal (Run as administrator), or ask "
+                    "your IT team or an administrator to run it."
+                )
+            else:
+                hint = (
+                    "This machine-wide file needs sudo. Rerun `ug configure` from a terminal where "
+                    "you can use sudo, or ask your IT team or an administrator to run it."
+                )
             message = (
-                f"Could not install the workspace policy at {MANAGED_CONFIG_PATH}: {exc} "
-                "This machine-wide file needs sudo. Rerun `ug configure` from a terminal where you "
-                "can use sudo, or ask your IT team or an administrator to run it."
+                f"Could not install the workspace policy at {MANAGED_CONFIG_PATH}: {exc} {hint}"
             )
             raise ManagedPolicyInstallDenied(message) from exc
         installed = load_managed_state(workspace)
@@ -975,13 +987,16 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
 
 
 def _machine_policy_supported() -> bool:
-    """Whether ug installs a machine policy on this OS at all (Linux and macOS)."""
-    return current_os() in (OS.LINUX, OS.MACOS)
+    """Whether ug installs a machine policy on this OS at all (Linux, macOS, and Windows).
+
+    On Windows the path is the protected ProgramData file, never the POSIX one.
+    """
+    return current_os() in (OS.LINUX, OS.MACOS, OS.WINDOWS)
 
 
 def _machine_policy_installable() -> bool:
-    """Whether this machine can hold the installed workspace policy (Linux or macOS, not opted out
-    with ``UG_SKIP_OS_SETTINGS``)."""
+    """Whether this machine can hold the installed workspace policy (Linux, macOS, or Windows, not
+    opted out with ``UG_SKIP_OS_SETTINGS``)."""
     return not managed_settings_skipped() and _machine_policy_supported()
 
 
