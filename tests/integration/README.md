@@ -132,8 +132,10 @@ completed task rows before submitting `/exit`. Claude 2.1.290 retains finished c
 checkmarked `done` rows and no running or scheduled section. The helper observes menu dismissal
 after Escape before typing `/exit`. Offline PTY checks reject active/scheduled tasks, partial
 lists, and completed-task text outside the native menu.
-It neither stops tasks nor confirms an exit dialog. Process exit retains its 30-second
-timeout. Offline PTY checks cover this ordering.
+Scheduled wakeups can be absent from `/tasks` but appear in the exit dialog. Cleanup cancels
+that exit request with Escape and waits before checking again, for up to 180 seconds. It
+neither stops tasks nor confirms the dialog. Each exit attempt retains its 30-second timeout.
+Offline PTY cases cover this ordering, a scheduled check finishing, and stuck work failing.
 The shared wait also runs before CUJ4's Claude preset sessions exit, after delegated-task
 evidence is checked, because Claude can resume a child after its first completed answer.
 
@@ -522,6 +524,7 @@ test_ug_claude_commands.py              # command help forwarding
 test_ug_codex_commands.py               # command help and parser error forwarding
 test_ug_codex_app_server.py             # actual client/server initialize exchange
 test_ug_smart_routing_hooks.py           # live hook contract plus skill-driven subagent toggles
+test_ug_codex_v2_routing.py              # native v2 parent/child assignment routing CUJ
 test_ug_configure_claude_lifecycle.py   # repeat setup, revert, rejected credentials
 test_ug_configure_claude_desktop.py     # native-path Desktop lifecycle + relay helper, no GUI
 test_ug_configure_codex_desktop.py      # stubbed managed Codex desktop catalog pointer, no GUI
@@ -590,6 +593,9 @@ is enabled. Claude checks each local mod confirmation and the recorded `smart_ro
 on the following calculation's real gateway requests. Codex verifies saved session controls,
 a new CLI confirmation in native tool-result records, and a new assistant answer after each
 skill invocation.
+Fresh remote Codex sessions can require approval to write the session controls. On POSIX,
+the driver accepts only the exact requested toggle command through the native permission
+dialog; unexpected commands fail, and sandbox settings are not changed.
 Collapsed terminal output is allowed; the answer need not repeat the CLI's exact wording.
 Each following child still verifies whether a routing decision occurred.
 With orchestration enabled through legacy flags, a preset, or the managed default, both routed
@@ -599,8 +605,9 @@ Their off-phase child is an explicit user-requested delegation;
 these journeys do not establish automatic orchestration behavior. Root-only
 activation, compaction, retained skills in ineligible sessions,
 role-contract preservation, and isolation from legacy preference files
-lack dedicated regression coverage. Codex's native hook merging, project trust,
-and execution of pre-existing hooks are not exercised by this integration suite.
+lack dedicated regression coverage. The native v2 assignment journey covers a
+pre-existing observer hook alongside UG's hook and normal TUI trust. Other hook
+combinations remain outside the integration suite.
 
 Preset parameterization augments only routing hooks, skill toggles, and first-prompt routing;
 their original legacy-env cases remain, and the skill toggles add a managed-default case in
@@ -747,6 +754,19 @@ configured unmanaged cases 7 and 8 run in `e2e_cuj/test_cuj7_model_discovery.py`
 The complete integration suite collects 130 executions (127 with Claude and Codex selected).
 See the named coverage and gaps matrix in
 [../README.md](../README.md).
+
+The native v2 CUJ covers subagent-only launch behavior with a bundled v2 catalog and
+a user-owned observer hook to verify the exact assignment at the native call,
+PreToolUse, and router decision. It checks
+session-provider selection over the configured Databricks default (machine-managed on
+POSIX) and completion on the selected child model; it does not exercise compaction.
+The proxy component test checks that retained calls, results, and the compressed
+response pass through unchanged; it uses no patched behavior. Append
+`-- -k test_ug_codex_native_v2_plain_assignment_routing` to the version-pinned runner.
+A before/after comparison additionally needs fresh sessions with identical Codex, parent
+model, workspace, catalog, and prompt, capturing the provider spawn, hook, and router
+inputs. Only an actually encrypted baseline establishes the bug; a crash, missing
+spawn, or plaintext baseline is inconclusive. Encrypted-history resume is a separate check.
 
 ```bash
 # Append one of these selections to the runner command:

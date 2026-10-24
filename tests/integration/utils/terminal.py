@@ -60,6 +60,15 @@ def _claude_background_tasks_complete(text):
     )
 
 
+def _claude_background_exit_dialog(text):
+    return re.search(
+        r"(?ms)^[ \t]*Background work is running[ \t]*\n"
+        r"[ \t]*The following will stop when you exit:[ \t]*\n.*?"
+        r"^[ \t]*Enter to confirm · Esc to cancel[ \t]*\s*\Z",
+        text,
+    )
+
+
 class TerminalScreen(pyte.Screen):
     def __init__(self, columns, lines, send):
         super().__init__(columns, lines)
@@ -594,6 +603,32 @@ class AgentTerminal(TerminalProcess):
             "the prompt after closing the background-task view",
         )
 
-    def exit_normally(self):
-        self.submit("/exit")
+    def exit_normally(self, *, background_timeout=180):
+        deadline = time.monotonic() + background_timeout
+        while True:
+            self.submit("/exit")
+            if self.agent != "claude":
+                break
+            self.wait_for(
+                lambda text: self.ended or _claude_background_exit_dialog(text),
+                "process exit or Claude's background-work dialog",
+                timeout=30,
+            )
+            if self.ended:
+                break
+            # Scheduled wakeups can be absent from /tasks. Leave the session open to run them.
+            self.send("\x1b", "cancel exit while background work is pending")
+            self.wait_for(
+                lambda text: _claude_background_exit_dialog(text) is None,
+                "the prompt after cancelling exit",
+            )
+            wait_until = min(deadline, time.monotonic() + 5)
+            while time.monotonic() < wait_until:
+                self.read()
+                assert not self.ended, f"TUI exited after cancelling exit:\n{self.visible}"
+                assert_no_terminal_api_error(self.visible)
+            assert time.monotonic() < deadline, (
+                f"Claude background work did not finish within {background_timeout}s:\n"
+                f"{self.visible}"
+            )
         self.finish(timeout=30)

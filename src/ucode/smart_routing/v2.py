@@ -8,8 +8,10 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
+import uuid
 from collections.abc import Callable, Mapping, MutableMapping
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -46,7 +48,6 @@ from ucode.databricks import (
     list_anthropic_models,
     maybe_add_gpt_1m_suffix,
 )
-from ucode.launcher import exec_or_spawn
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
@@ -117,7 +118,8 @@ def remove_smart_router_session_skills(agent: str) -> None:
             print_warning(f"Could not remove the {skill} skill: {exc}")
 
 
-def _launch_token(state: dict, workspace: str) -> str:
+def _launch_token(state: dict, workspace: str, *, force_refresh: bool = False) -> str:
+    refresh_kwargs = {"force_refresh": True} if force_refresh else {}
     custom_oauth = state.get("custom_oauth")
     if custom_oauth_cli_enabled(custom_oauth) and isinstance(custom_oauth, dict):
         return get_custom_client_token(
@@ -126,8 +128,9 @@ def _launch_token(state: dict, workspace: str) -> str:
             custom_oauth["redirect_url"],
             scopes=custom_oauth["scopes"],
             profile=custom_oauth.get("profile"),
+            **refresh_kwargs,
         )
-    return get_databricks_token(workspace, state.get("profile"))
+    return get_databricks_token(workspace, state.get("profile"), **refresh_kwargs)
 
 
 def _model_picker_catalog() -> AnthropicModelCatalog | None:
@@ -812,6 +815,8 @@ def launch_codex(
     start_model: str | None,
     render_overlay: Callable[..., dict],
 ) -> NoReturn:
+    from ucode import gateway_proxy
+
     workspace = state.get("workspace")
     if not workspace:
         raise RuntimeError(
@@ -851,11 +856,56 @@ def launch_codex(
     overlay[f"shell_environment_policy.set.{SESSION_PYTHON_ENV_VAR}"] = os.environ[
         SESSION_PYTHON_ENV_VAR
     ]
+    # Keep this transport session-local: native v2 remains enabled in the model
+    # catalog, and neither the installed Codex nor its on-disk config is changed.
+    server, cache, client = gateway_proxy.start_codex_v2_proxy(
+        workspace, lambda force: _launch_token(state, workspace, force_refresh=force)
+    )
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    transport_started = False
+    try:
+        server_thread.start()
+        transport_started = True
+        provider = overlay["model_providers"].pop(overlay["model_provider"])
+        # OS-managed Databricks settings outrank CLI overrides. Give this
+        # transport its own provider, selected through the native thread API.
+        provider_name = f"Databricks-ug-{uuid.uuid4().hex}"
+        overlay["model_provider"] = provider_name
+        overlay["model_providers"][provider_name] = provider
+        provider["base_url"] = f"http://{LOOPBACK_HOST}:{server.server_address[1]}/v1"
+        # The adapter handles Responses HTTP/SSE, not the optional provider
+        # WebSocket transport. The app-server/TUI WebSocket is independent.
+        provider["supports_websockets"] = False
+        _run_codex_session(
+            state,
+            tool_args,
+            binary=binary,
+            start_model=start_model,
+            overlay=overlay,
+            available_models=available_models,
+            workspace=workspace,
+        )
+    finally:
+        cache.stop()
+        if transport_started:
+            server.shutdown()
+        server.server_close()
+        client.close()
+        if transport_started:
+            server_thread.join(timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
+
+
+def _run_codex_session(
+    state: dict,
+    tool_args: list[str],
+    *,
+    binary: str,
+    start_model: str,
+    overlay: dict,
+    available_models: list[str],
+    workspace: str,
+) -> NoReturn:
     config_args = codex_config_args(overlay)
-    if not first_prompt_routing_enabled(agent=AGENT_CODEX):
-        # Subagent-only routing needs neither the app-server nor the interposer:
-        # the hooks ride in the CLI config, so launch the TUI directly.
-        exec_or_spawn([binary, *config_args, *tool_args])
     app_port = _free_port()
     app_server_url = _loopback_websocket_url(app_port)
 
@@ -880,23 +930,18 @@ def launch_codex(
         tui_port, stop_interposer = codex_interposer.start_interposer_thread(
             LOOPBACK_HOST,
             app_server_url,
+            model_provider=overlay["model_provider"],
             available_models=available_models,
-            workspace=workspace,
+            workspace=workspace if first_prompt_routing_enabled(agent=AGENT_CODEX) else None,
             token_provider=lambda: _launch_token(state, workspace),
             switch_message_fn=format_routing_notice,
             log_path=CODEX_INTERPOSER_LOG,
         )
         tui_url = _loopback_websocket_url(tui_port)
-        provider_args = []
-        if os.name == "nt":
-            # Windows has no machine-wide Codex config for the remote TUI to inherit.
-            provider_args = codex_config_args(
-                {
-                    key: overlay[key]
-                    for key in ("model_provider", "model_providers")
-                    if key in overlay
-                }
-            )
+        # The TUI must recognize the session provider reported by the server.
+        provider_args = codex_config_args(
+            {key: overlay[key] for key in ("model_provider", "model_providers")}
+        )
         tui = subprocess_cross_os.popen(
             [binary, *provider_args, "--remote", tui_url, "--model", start_model, *tool_args]
         )
