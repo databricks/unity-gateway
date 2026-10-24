@@ -92,7 +92,6 @@ class RoutingDecision:
     """One model selection returned by the AI Gateway router."""
 
     model: str
-    raw_model: str
     rationale: str = ""
     route_options: tuple[tuple[str, str | None], ...] = ()
     router_name: str = ""
@@ -273,7 +272,6 @@ def select_route(
     return (
         RoutingDecision(
             model=model,
-            raw_model=model,
             rationale=rationale,
             route_options=offered_routes,
             router_name=router_name,
@@ -329,7 +327,6 @@ def route_spawn_tool(
     default_task_label: str,
     model_id_mapper: Callable[[str], str],
     notice_config: SubagentNoticeConfig,
-    skip_arms: dict[str, str] | None = None,
     record_decision: Callable[[dict[str, Any], str, RoutingDecision, str], None] | None = None,
 ) -> dict[str, Any] | None:
     """Route one subagent-spawn tool call, rewriting its ``model`` input."""
@@ -342,8 +339,6 @@ def route_spawn_tool(
     )
     if route is None:
         return None
-    if skip_arms and route.decision.raw_model in skip_arms:
-        return {"systemMessage": skip_arms[route.decision.raw_model]}
     if record_decision is not None:
         record_decision(payload, route.task, route.decision, route.routed_model)
     # Include the same routing notice in both hook response fields.
@@ -426,7 +421,7 @@ def write_decision_record(
             "decision_id": uuid.uuid4().hex,
             "session_id": payload.get("session_id"),
             "task_name": task_name,
-            "router_model": decision.raw_model,
+            "router_model": decision.model,
             "requested_model": requested_model,
             "route_options": [
                 {"model": model, "harness": harness} for model, harness in decision.route_options

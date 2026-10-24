@@ -263,7 +263,6 @@ class TestV2Launch:
             "_route_claude_prompt",
             lambda *_args: v2.routing.RoutingDecision(
                 model="system.ai.claude-sonnet-5",
-                raw_model="claude-sonnet-5",
                 rationale="Selected for the parser task.",
             ),
         )
@@ -622,7 +621,7 @@ class TestSubagentRouting:
             captured["route_options"] = list(route_options)
             captured["router_name"] = kwargs["router_name"]
             return (
-                routing.RoutingDecision(model=gateway_alias, raw_model=gateway_alias),
+                routing.RoutingDecision(model=gateway_alias),
                 None,
             )
 
@@ -660,7 +659,6 @@ class TestSubagentRouting:
             return (
                 routing.RoutingDecision(
                     model="system.ai.claude-opus-4-8",
-                    raw_model="system.ai.claude-opus-4-8",
                 ),
                 None,
             )
@@ -748,7 +746,7 @@ class TestSubagentRouting:
             v2,
             "_request_claude_routing_decision",
             lambda *_args: (
-                routing.RoutingDecision(model=gateway_model, raw_model="glm-5-3"),
+                routing.RoutingDecision(model=gateway_model),
                 None,
             ),
         )
@@ -771,7 +769,6 @@ class TestSubagentRouting:
             lambda *a, **k: (
                 routing.RoutingDecision(
                     model="system.ai.claude-opus-4-8",
-                    raw_model="claude-opus-4-8",
                     rationale="A focused task with an explicit target",
                 ),
                 None,
@@ -832,7 +829,7 @@ class TestSubagentRouting:
             v2,
             "_request_claude_routing_decision",
             lambda *_args: (
-                routing.RoutingDecision(model=selected_model, raw_model="claude-haiku-5-5"),
+                routing.RoutingDecision(model=selected_model),
                 None,
             ),
         )
@@ -1062,9 +1059,7 @@ class TestV2HeadlessClaude:
             prompts.append(prompt)
             if route is not None:
                 return route()
-            return v2.routing.RoutingDecision(
-                model="system.ai.claude-sonnet-5", raw_model="claude-sonnet-5", rationale="parser"
-            )
+            return v2.routing.RoutingDecision(model="system.ai.claude-sonnet-5", rationale="parser")
 
         monkeypatch.setattr(v2, "_route_claude_prompt", fake_route)
         if sys.platform != "win32":

@@ -796,7 +796,6 @@ class TestInterposerSession:
             return (
                 codex_interposer.routing.RoutingDecision(
                     model="claude-opus-4-8",
-                    raw_model="claude-opus-4-8",
                     rationale="Task classified as bugfix.",
                 ),
                 None,
@@ -822,7 +821,6 @@ class TestInterposerSession:
             return (
                 codex_interposer.routing.RoutingDecision(
                     model="system.ai.gpt-5-6-luna",
-                    raw_model="gpt-5-6-luna",
                     rationale="Trivial task.",
                 ),
                 None,
@@ -852,7 +850,6 @@ class TestInterposerSession:
             return (
                 codex_interposer.routing.RoutingDecision(
                     model="system.ai.glm-5-2",
-                    raw_model="glm-5-2",
                     rationale="Short isolated task.",
                 ),
                 None,
@@ -895,7 +892,6 @@ class TestInterposerSession:
             route_decision=lambda _p: (
                 codex_interposer.routing.RoutingDecision(
                     model="gpt-5.6-luna",
-                    raw_model="gpt-5-6-luna",
                     rationale="trivial",
                 ),
                 None,
@@ -944,7 +940,6 @@ def test_routing_request_uses_models_prompt_and_same_token(monkeypatch):
         return (
             codex_interposer.routing.RoutingDecision(
                 model="system.ai.gpt-5-6-sol",
-                raw_model="system.ai.gpt-5-6-sol",
                 rationale="Bugfix needs deeper reasoning.",
             ),
             None,
