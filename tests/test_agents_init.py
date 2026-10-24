@@ -1251,6 +1251,20 @@ class TestConfigureToolUserScope:
         with pytest.raises(RuntimeError, match="requirements.toml"):
             agents_mod.refuse_user_scope_over_managed_files(["codex"])
 
+    def test_managed_config_blocks_user_scope(self):
+        managed_files.set_config_scope("user")
+        with pytest.raises(RuntimeError, match=r"--user.*publishes a managed config.*--global"):
+            agents_mod.refuse_user_scope_over_managed_config("https://ws.example.com", {"x": 1})
+
+    @pytest.mark.parametrize("scope", ["user", "global"])
+    def test_no_managed_config_does_not_block(self, scope):
+        managed_files.set_config_scope(scope)
+        agents_mod.refuse_user_scope_over_managed_config("https://ws.example.com", None)
+
+    def test_global_scope_does_not_block_managed_config(self):
+        managed_files.set_config_scope("global")
+        agents_mod.refuse_user_scope_over_managed_config("https://ws.example.com", {"x": 1})
+
     def test_no_managed_path_is_not_checked(self, monkeypatch):
         monkeypatch.setattr(agents_mod.codex, "codex_managed_config_path", lambda: None)
         managed_files.set_config_scope("user")

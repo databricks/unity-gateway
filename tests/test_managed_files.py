@@ -993,12 +993,18 @@ chown() {
         assert f"0:0 {parent}" in ownership_log.read_text()
         assert len(ownership_log.read_text().splitlines()) >= 2
 
-    @pytest.mark.parametrize("changed", [False, True])
-    def test_real_shell_removes_only_matching_workspace_policy(self, tmp_path, changed):
+    @pytest.mark.parametrize(
+        ("changed", "neighbor"), [(False, False), (True, False), (False, True)]
+    )
+    def test_real_shell_removes_only_matching_workspace_policy(self, tmp_path, changed, neighbor):
         source = tmp_path / "expected.json"
         source.write_text("old policy")
-        target = tmp_path / "managed-settings.json"
+        policy_dir = tmp_path / "unitygateway"
+        policy_dir.mkdir()
+        target = policy_dir / "managed-settings.json"
         target.write_text("new policy" if changed else "old policy")
+        if neighbor:
+            (policy_dir / "other").write_text("not ours")
         script = managed_files._SUDO_REPLACE_SCRIPT.replace(
             "/etc/unitygateway/managed-settings.json", str(target)
         )
@@ -1024,6 +1030,8 @@ chown() {
         else:
             assert result.returncode == 0, result.stderr
             assert not target.exists()
+            # The emptied folder goes too; one holding anything else stays.
+            assert policy_dir.exists() == neighbor
 
     @pytest.mark.parametrize("failed_step", ["", "metadata", "content", "rename"])
     def test_real_shell_preserves_file_on_failed_step(self, tmp_path, failed_step):

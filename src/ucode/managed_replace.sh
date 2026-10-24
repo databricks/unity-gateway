@@ -246,6 +246,8 @@ remove_one() (
         exit 1
     fi
     rm -f "$target"
+    # The folder holds only the policy; rmdir leaves it in place if anything else is there.
+    rmdir "$(dirname "$target")" 2>/dev/null || true
 )
 
 case "$mode" in

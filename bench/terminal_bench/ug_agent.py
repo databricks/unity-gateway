@@ -127,6 +127,9 @@ class UgClaude(_UgAgent):
 
     def _launch_args(self, resume: bool) -> str:
         args = "-p --verbose --output-format stream-json --dangerously-skip-permissions"
+        if not self.model_name:
+            # A task's [environment] env can pin Claude's model, which skips Smart Router's root pick.
+            args = '${UG_BENCH_CLAUDE_MODEL:+--model "$UG_BENCH_CLAUDE_MODEL"} ' + args
         return f"{args} --continue" if resume else args
 
 

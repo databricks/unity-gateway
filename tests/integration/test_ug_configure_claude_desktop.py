@@ -3,10 +3,11 @@
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
-from utils.terminal import TerminalProcess
+from utils.terminal import ConfigureTerminal, TerminalProcess
 
 pytestmark = [pytest.mark.live, pytest.mark.claude]
 
@@ -117,3 +118,78 @@ def test_ug_configure_claude_desktop_profile_lifecycle(live_session, workspace):
     }
     assert json.loads(unrelated_profile_path.read_text()) == unrelated_profile
     assert not (session.home / ".ucode/claude-desktop.json").exists()
+
+
+@pytest.mark.tui
+def test_ug_configure_claude_desktop_subscription_relay(
+    live_session, workspace, claude_relayed_provider, claude_oauth_token
+):
+    """Scenario: configure a relayed Desktop profile using live provider credentials.
+
+    Expected: the profile selects relay mode and its installed helper returns both the Claude
+    subscription token and Databricks gateway header. This does not launch the Desktop GUI.
+    """
+    session = live_session
+    config_library = _config_library(session)
+    config_library.mkdir(parents=True)
+    Path(session.env["DATABRICKS_CONFIG_FILE"]).write_text(
+        f"[{CLI_PROFILE}]\nhost = {workspace}\nauth_type = databricks-cli\n"
+    )
+
+    command = [
+        str(session.binary),
+        "configure",
+        "--profile",
+        CLI_PROFILE,
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+    ]
+    with ConfigureTerminal(session, "claude", command, "configure-desktop-relay") as configure:
+        configure.select_agent("Claude Code")
+        configure.choose("How should Claude Code get its models?", "External Models")
+        configure.choose("Select a model provider service:", claude_relayed_provider)
+        configure.finish(timeout=240)
+
+    profile = json.loads((config_library / f"{UG_PROFILE_ID}.json").read_text())
+    claude_binary = session.which("claude")
+    helper_args = [
+        "-m",
+        "ucode.cli",
+        "claude-desktop-auth",
+        "--host",
+        workspace,
+        "--profile",
+        CLI_PROFILE,
+        "--relay",
+        "--claude-binary",
+        str(claude_binary),
+    ]
+    assert profile["inferenceCredentialHelperArgs"] == helper_args
+    assert profile["inferenceCustomHeaders"]["Databricks-Model-Provider-Service"] == (
+        claude_relayed_provider
+    )
+    assert profile["inferenceModels"]
+
+    if sys.platform == "darwin":
+        session.env["CLAUDE_CODE_OAUTH_TOKEN"] = claude_oauth_token
+    else:
+        credentials_path = Path(session.env["CLAUDE_CONFIG_DIR"]) / ".credentials.json"
+        credentials_path.parent.mkdir(parents=True, exist_ok=True)
+        credentials_path.write_text(
+            json.dumps(
+                {
+                    "claudeAiOauth": {
+                        "accessToken": claude_oauth_token,
+                        "expiresAt": int((time.time() + 3600) * 1000),
+                    }
+                }
+            )
+        )
+
+    helper = Path(profile["inferenceCredentialHelper"])
+    result = session.run(*helper_args, binary=helper, timeout=30)
+    assert json.loads(result.stdout) == {
+        "token": "<redacted>",
+        "headers": {"X-Databricks-AI-Gateway-Token": "Bearer <redacted>"},
+    }
+    assert result.stderr == ""
