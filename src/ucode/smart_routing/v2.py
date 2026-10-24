@@ -302,9 +302,23 @@ def _claude_model_overrides(model_ids: list[str]) -> dict[str, str]:
     return overrides
 
 
+def _normalize_model(model: str) -> str:
+    """Strip provider prefixes and lowercase a model id.
+
+    ``system.ai.claude-opus-4-8`` and ``databricks-claude-opus-4-8`` both
+    normalize to ``claude-opus-4-8``.
+    """
+    tail = model.rsplit("/", 1)[-1]
+    for prefix in ("databricks-", "system.ai."):
+        if tail.startswith(prefix):
+            tail = tail[len(prefix) :]
+            break
+    return tail.lower()
+
+
 def _routed_claude_agent_slug(model: str) -> str:
     canonical = _canonical_claude_model_id(model)
-    normalized = routing.normalize_model(canonical)
+    normalized = _normalize_model(canonical)
     safe = "".join(character if character.isalnum() else "-" for character in normalized)
     slug = "-".join(part for part in safe.split("-") if part)
     digest = hashlib.sha256(canonical.encode()).hexdigest()[:8]
