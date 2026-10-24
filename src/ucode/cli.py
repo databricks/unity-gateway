@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -33,6 +34,7 @@ from ucode.agents import (
     install_databricks_ai_tools_for_agents,
     install_tool_binary,
     normalize_tool,
+    refuse_user_scope_over_managed_config,
     refuse_user_scope_over_managed_files,
     resolve_gemini_provider_model,
     resolve_launch_model,
@@ -53,6 +55,7 @@ from ucode.constants import (
     AGENT_CODEX,
     ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
+    UG_HEADERS_ENV_VAR,
 )
 from ucode.custom_oauth import (
     CUSTOM_OAUTH_CLI_ENV_VAR,
@@ -102,7 +105,7 @@ from ucode.managed_config import (
     normalize_managed_config,
     refresh_managed_config,
 )
-from ucode.managed_files import managed_write_session, set_config_scope
+from ucode.managed_files import config_scope, managed_write_session, set_config_scope
 from ucode.managed_resolve import (
     managed_claude_family_models,
     managed_default_model,
@@ -181,6 +184,7 @@ from ucode.state import (
     workspace_self_managed_agents,
 )
 from ucode.string_utils import is_valid_catalog_schema
+from ucode.ug_headers import parse_header_line
 from ucode.ui import (
     console,
     heading,
@@ -828,13 +832,16 @@ def _setup_single_agent(
     managed = None
     if apply_managed and tool in ("claude", "codex"):
         managed, _ = refresh_managed_config(state, force_refresh=True)
+        refuse_user_scope_over_managed_config(state.get("workspace"), managed)
         _reject_disabled_agent(managed, tool)
         if managed is not None:
             state = resolve_state(managed, state, tool)
             if not managed_provider_service(managed, tool):
                 parent_schema = managed_unity_catalog_location(managed, tool)
     elif apply_managed:
-        managed, _ = refresh_managed_config(state, force_refresh=False)
+        # --user must see a managed config for every agent, so it reads fresh; global keeps the cache.
+        managed, _ = refresh_managed_config(state, force_refresh=config_scope() == "user")
+        refuse_user_scope_over_managed_config(state.get("workspace"), managed)
     state = configure_single_tool(tool, state, parent_schema=parent_schema)
     if apply_managed and not managed_enabled_tools(managed or {}):
         state = _record_unmanaged_configured_agents(state, [tool])
@@ -888,15 +895,15 @@ def _provider_summary(tool: str, state: dict) -> str:
 
 
 def _maybe_select_provider_service(tool: str, state: dict) -> dict:
-    """Interactively let the user pick where claude/codex get their models — Databricks hosted
+    """Interactively let the user pick where an agent gets its models — Databricks hosted
     (``system.ai``), a Model Provider Service, or a custom Unity Catalog model location — and
     persist (or clear) the choice.
 
-    No-op for tools other than claude/codex/gemini (gemini has no custom location). Falls back
-    to Databricks when no matching provider services are found or the listing fails and no
-    custom location is offered.
+    No-op for tools other than claude/codex/gemini/copilot (gemini and copilot have no custom
+    location). Falls back to Databricks when no matching provider services are found or the
+    listing fails and no custom location is offered.
     """
-    if tool not in ("claude", "codex", "gemini"):
+    if tool not in ("claude", "codex", "gemini", "copilot"):
         return state
     display = TOOL_SPECS[tool]["display"]
 
@@ -1047,6 +1054,7 @@ def _configure_workspace_command(
     # now rather than prompting the developer to pick. Configure always reads fresh so it never
     # applies a config the admin has since changed.
     managed, _ = refresh_managed_config(state, force_refresh=True)
+    refuse_user_scope_over_managed_config(state.get("workspace"), managed)
     managed_tools = managed_enabled_tools(managed) if managed is not None else []
     if managed is not None and managed_tools:
         refuse_user_scope_over_managed_files(managed_tools)
@@ -2376,22 +2384,39 @@ def mcp_proxy_cmd(
 def claude_desktop_auth_cmd(
     host: Annotated[str, typer.Option("--host", help="Configured workspace URL.")],
     profile: Annotated[str, typer.Option("--profile", help="Configured Databricks CLI profile.")],
+    relay: Annotated[
+        bool, typer.Option("--relay", help="Return subscription relay credentials.")
+    ] = False,
+    claude_binary: Annotated[
+        str | None, typer.Option("--claude-binary", help="Absolute Claude Code executable path.")
+    ] = None,
 ) -> None:
     """Print a Desktop credential, allowing browser login only for interactive requests."""
     import sys
 
-    from ucode.desktop_auth import get_claude_desktop_token
+    from ucode.desktop_auth import (
+        get_claude_desktop_databricks_token,
+        get_claude_desktop_relay_credential,
+    )
 
     try:
         with redirect_stdout(sys.stderr):
-            token = get_claude_desktop_token(host, profile)
+            if relay:
+                if not claude_binary or not os.path.isabs(claude_binary):
+                    raise RuntimeError("An absolute Claude Code executable path is required.")
+                credential = get_claude_desktop_relay_credential(host, profile, claude_binary)
+            else:
+                credential = get_claude_desktop_databricks_token(host, profile)
     except (RuntimeError, ValueError) as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
     except KeyboardInterrupt:
         print_err("Databricks sign-in cancelled. Start a new Cowork task to try again.")
         raise typer.Exit(130) from None
-    sys.stdout.write(token + "\n")
+    if isinstance(credential, str):
+        sys.stdout.write(credential + "\n")
+    else:
+        sys.stdout.write(json.dumps(credential, separators=(",", ":")) + "\n")
 
 
 @app.command("auth-token", hidden=True)
@@ -3636,6 +3661,8 @@ def _launch_tool(
                 state["_codex_launch_provider"] = provider
             elif parent_schema:
                 state["_codex_launch_parent_schema"] = parent_schema
+        elif tool == "copilot" and provider:
+            state[copilot_agent.LAUNCH_PROVIDER_SERVICE_KEY] = provider
         launch_options = _launch_options(
             tool,
             ctx.args,
@@ -3740,8 +3767,24 @@ def default(
     ] = False,
     skip_preflight: SkipPreflightOption = False,
     workspace: WorkspaceOption = None,
+    header: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--header",
+            help="Extra `Name: value` header for this launch's Codex and ug Databricks requests "
+            "(repeatable). A header already sent keeps its value.",
+        ),
+    ] = None,
 ) -> None:
     """Configure and launch coding agents through Databricks AI Gateway."""
+    for number, line in enumerate(header or [], 1):
+        if parse_header_line(line) is None:
+            # Name only the flag's position: the value may be a token.
+            print_err(f"--header #{number}: expected `Name: value` with a valid name and value.")
+            raise typer.Exit(1)
+    if header:
+        existing = os.environ.get(UG_HEADERS_ENV_VAR, "")
+        os.environ[UG_HEADERS_ENV_VAR] = "\n".join(filter(None, [existing, *header]))
     if ctx.invoked_subcommand != "revert":
         set_config_scope(load_config_scope())
     if ctx.invoked_subcommand is not None:
@@ -4086,10 +4129,25 @@ def kilo_cmd(
 )
 def copilot_cmd(
     ctx: typer.Context,
+    provider: Annotated[
+        str | None,
+        typer.Option(
+            "--provider",
+            help="Route through a Unity Catalog Model Provider Service "
+            "(<catalog>.<schema>.<name>); `/model` then lists that service's models.",
+        ),
+    ] = None,
     skip_preflight: SkipPreflightOption = False,
+    workspace: WorkspaceOption = None,
 ) -> None:
     """Launch GitHub Copilot CLI via Databricks."""
-    _launch_tool("copilot", ctx, skip_preflight=skip_preflight)
+    _launch_tool(
+        "copilot",
+        ctx,
+        provider=provider,
+        skip_preflight=skip_preflight,
+        workspace_url=workspace,
+    )
 
 
 @app.command(

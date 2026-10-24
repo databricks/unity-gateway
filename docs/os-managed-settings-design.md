@@ -36,7 +36,8 @@ register in user scope. Because OS-managed settings take precedence over user se
 exists (including Windows `requirements.toml`), whoever wrote it; `ug revert`, removal, or
 `--global` resolves it. Launches don't check: a managed file added later simply takes precedence,
 without the `UG_SKIP_OS_SETTINGS` stale-override error. `ug configure` without `--user` and
-`ug revert` reset the scope to `global`.
+`ug revert` reset the scope to `global`. `ug configure --user` also fails when the selected
+workspace publishes a managed config, since that config must be installed machine-wide.
 
 ## Interactive Detection
 

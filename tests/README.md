@@ -25,6 +25,7 @@ mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 workspace URL/token reuse without account discovery or account CLI authentication,
 personal/shared decimal parsing, optional percentages, pagination through empty pages,
 invalid/repeated tokens, malformed responses, and discarding partial results after failures.
+Budget IDs come from resource names, including when the deprecated ID field is absent or differs.
 Future nonempty scope/period strings are preserved, alone or alongside known values.
 Decimal checks cover negative and nonfinite values for all three numeric fields,
 valid zero/fractional strings such as `"85.25"`, and explicit nulls treated like missing
@@ -41,6 +42,11 @@ Claude mod entry-point coverage lives in `test_claude_mod.py` (generated plugin 
 TypeScript event-forwarding and launch-option tests in CI. The existing Claude
 skill-toggle integration journey checks the live recipe payload field across on/off/on.
 See [the mod guide](../docs/claude-mod.md).
+
+`test_ug_headers.py` covers the `UG_HEADERS` parser and the `--header` flag, `test_databricks.py`
+ug's own requests carrying them, and `test_agent_codex.py` `UG_HEADERS` reaching a Codex launch's
+`-c` headers (plain and smart-routed) without writing its profile. No automated test checks the
+header at the gateway.
 
 The required Isaac feedback form and background delivery notifications need manual
 validation using the released Isaac skill and existing capture/retry CLI. Check
@@ -242,6 +248,12 @@ They also assert `Unity Gateway - <CLI profile name>` labels, label refresh with
 changing the UUID, and configure/revert warnings on profile-lock timeout without
 changing profile or selection-state files. An existing reserved UUID without records
 is replaced on configure and deleted on revert. Workspace changes reuse the same file.
+Subscription-relay component coverage configures the combined credential helper on all
+three platforms. Helper tests cover macOS Keychain, Linux and Windows credential files,
+`CLAUDE_CONFIG_DIR`, custom macOS Keychain entries, finite required expiry timestamps, silent
+refresh before interactive login, shared login budgets, malformed environment tokens, and
+credential separation. Native Windows/Linux Desktop helper execution and inference remain
+unverified.
 CLI revert clears workspace state even when Desktop cleanup fails. A lock-failure
 regression invokes the Typer CLI and checks exit code 1, one warning, and a failed
 Desktop summary while profile and previous-selection files survive. Retry returns
@@ -450,6 +462,11 @@ Claude checks local mod confirmations and the inference payload's `smart_router_
 Codex checks saved session controls and native tool-result confirmations after each toggle.
 Both explicitly request their children,
 including while routing is off.
+Claude's six toggle variants are temporarily non-blocking on Linux and Windows; required
+Smoke, Full, and Managed config lanes deselect `soft_fail` cases. A separate
+Soft-fail journeys lane still runs every assertion and uploads evidence on both platforms.
+Codex toggles, direct routing hooks, CUJ4, and routing component tests remain required.
+See [the generic soft-fail marker, evidence, and restoration criteria](integration/README.md#soft-fail-tests).
 The managed-fixture banner journeys separately cover the selector unset (managed default) and
 `first_prompt_and_subagent_no_orch_v0` for real first-prompt tasks.
 Preset parameterization augments only routing hooks, skill toggles, and first-prompt routing;
@@ -550,7 +567,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_and_ucode_auth_helpers_emit_only_the_supplied_bearer` | Run both auth helper commands with the public bearer override, with and without forced refresh | Exact token-only stdout, no warnings or ANSI escapes; no workspace authentication or saved state |
 | `test_ug_and_ucode_web_search_helpers_preserve_mcp_stdio` | Initialize and list tools through both web-search helper commands | Exactly the MCP JSON-RPC responses; no text/ANSI contamination; existing server/tool identities preserved; no model request |
 
-With Claude and Codex selected there are **87 live cases** (11 marked TUI cases),
+With Claude and Codex selected there are **88 live cases** (12 marked TUI cases),
 **1 two-workspace case** (marker `workspace_switch`),
 **43 managed-fixture cases** (marker `managed_fixture`, with only
 the CodingAgentConfig input injected from a JSON file in `fixtures/managed_config/`), and **7 installation checks**. The 14 retained numbered scenarios
@@ -617,7 +634,7 @@ dependency graph to reproduce a user's combination. Every relevant same-reposito
 PR and push to `main` runs both smoke and the full CUJ suite. Smoke covers the
 Databricks Hosted configure/TUI, custom OAuth CLI TUI, and headless argument
 journeys for both agents, in two parallel jobs. After smoke finishes, the full
-suite runs all 87 live cases across two parallel agent jobs: one Claude VM and one
+suite runs all 88 live cases across two parallel agent jobs: one Claude VM and one
 Codex VM, each running its configure, headless, and commands/lifecycle cases
 serially. Each agent is installed once for the full suite, and no two full jobs
 for the same agent overlap within a run.

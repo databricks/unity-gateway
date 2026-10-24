@@ -42,7 +42,7 @@ Verifiers and solutions read these variables.
 | `image-code` | Claude, Codex | `code.txt` holds the 8-digit code drawn in `code.png`, with at least 6 digits right. |
 | `pdf-extract` | Claude, Codex | `total.txt` holds the total from `invoice.pdf`, whose text stream is compressed. |
 | `web-fetch` | Claude, Codex | `answer.txt` holds a value from a file in this repo, pinned to a fixed commit. |
-| `background-shell` | Claude, Codex | `result.txt` holds the value that a 150-second job prints when it finishes. Claude's default command timeout is 2 minutes. |
+| `background-shell` | Claude, Codex | `result.txt` holds the value that a job prints when it finishes. The job waits for the agent to ack a token it prints at start, so the agent must read its output while it runs. Claude must start it with `run_in_background`, and runs on `system.ai.claude-opus-4-8` instead of Smart Router's pick. |
 | `resume-session` | Claude, Codex | Step 1 deletes `note.txt` without saving its code word to a file. Step 2 resumes the session and writes the code word to `answer.txt`. |
 | `log-triage` | Claude, Codex | `report.json` has the correct counts for five independent service directories. |
 | `fix-failing-tests` | Claude, Codex | The unit tests and extra hidden checks pass, and `tests/` is unchanged. |

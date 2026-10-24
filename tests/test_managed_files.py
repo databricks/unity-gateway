@@ -1409,6 +1409,47 @@ class TestManagedFileLifecycle:
     def test_mask_user_agent_versions_masks_only_ug_version_tokens(self, value, masked):
         assert managed_files.mask_user_agent_versions(value) == masked
 
+    @pytest.mark.parametrize(
+        ("user_agent", "token"),
+        [
+            ("ucode/1.0 claude/2.1", "claude/2.1"),
+            ("ucode/1.0 claude/2.1 (macos; arm64)", "claude/2.1"),
+            ("ucode/1.0 claude/2.1 (windows; x86_64)", "claude/2.1"),
+            ("ucode/1.0 claude/2.1 (macos 15.1; arm64)", "claude/2.1"),
+            ("ucode/1.0 claude/2.1 (linux ubuntu-24.04; x86_64)", "claude/2.1"),
+            ("ucode/1.0 claude/2.1 (anything, new: fields; v2)", "claude/2.1"),
+            ("ucode/1.0 claude/2.1 (a (nested))", None),
+            ("ucode/1.0 claude/2.1 (macos; arm64) extra", None),
+            ("ucode/1.0 codex/2.1 (macos; arm64)", None),
+        ],
+    )
+    def test_ug_agent_token_accepts_optional_platform_suffix(self, user_agent, token):
+        assert managed_files.ug_agent_token(user_agent, "claude") == token
+
+    @pytest.mark.parametrize(
+        "user_agent",
+        [
+            "ucode/0.9 claude/2.1",
+            "ucode/1.0 claude/2.2 (macos; arm64)",
+            "ucode/1.0 claude/2.2 (linux; x86_64)",
+            "ucode/1.0 claude/2.2 (macos 15.1; arm64)",
+        ],
+    )
+    def test_platform_suffix_is_masked_with_the_versions(self, user_agent):
+        masked = managed_files.mask_user_agent_versions({"User-Agent": user_agent})
+        assert masked == {"User-Agent": "ucode/* claude/*"}
+        header = managed_files.mask_user_agent_versions({"h": f"a: 1\nUser-Agent: {user_agent}"})
+        assert header == {"h": "a: 1\nUser-Agent: ucode/* claude/*"}
+
+    def test_ug_upgrade_adding_platform_suffix_is_not_a_conflict(self):
+        # A file written by an older ug (no suffix) must not force a sudo rewrite on upgrade.
+        existing = {"h": {"User-Agent": "ucode/1.0 codex/0.1"}, "a": 1}
+        desired = {"h": {"User-Agent": "ucode/1.1 codex/0.1 (macos; arm64)"}, "a": 1}
+
+        assert managed_files.managed_file_conflicts(existing, desired, [["h"], ["a"]]) == []
+        assert managed_files.managed_file_conflicts(desired, existing, [["h"], ["a"]]) == []
+        assert managed_files.managed_file_conflicts(existing, {**desired, "a": 2}, [["a"]]) == ["a"]
+
     def test_verified_check_uses_fingerprint(self, tmp_path):
         path = tmp_path / "managed.json"
         path.write_text("current", encoding="utf-8")
