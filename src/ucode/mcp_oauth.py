@@ -6,8 +6,8 @@ registers the service as a **direct HTTP** MCP server, the agent itself drives
 that login via OAuth against the workspace ``/oidc`` — and `/oidc` has no dynamic
 client registration, so the agent must present a **pre-registered public client**.
 
-Claude Code uses its URL client ID where published. We probe each candidate and
-cache the result per workspace.
+Claude Code, Codex CLI, and Cursor use their CIMD URL client IDs where published. We probe
+each candidate and cache the result per workspace.
 """
 
 from __future__ import annotations
@@ -25,23 +25,16 @@ from ucode.ug_headers import ug_headers
 # document at this URL does not make an OAuth client available on every workspace.
 CLAUDE_CODE_CIMD_CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata"
 
+# Codex CLI's published CIMD document is separate from ChatGPT's hosted client.
+# It supports Codex's loopback OAuth callback rather than ChatGPT's hosted redirect.
+CODEX_CIMD_CLIENT_ID = "https://chatgpt.com/oauth/codex/client.json"
+
 MCP_OAUTH_CALLBACK_PORT = 3118
 
-# Published public OAuth client Cursor authenticates with for OAuth MCP servers.
-# Cursor's `mcp.json` accepts a pre-registered `auth.CLIENT_ID` (no dynamic client
-# registration, which `/oidc` lacks) and drives the login to Cursor's fixed loopback
-# redirect `http://localhost:8787/callback`. `/oidc` matches loopback redirects by
-# path (RFC 8252 §8.4), so the registered `/callback` path is required.
-CURSOR_OAUTH_CLIENT_ID = "cursor-desktop"
-
-# Published public OAuth client Codex authenticates with for OAuth MCP servers
-# (`codex mcp add --oauth-client-id`). Codex derives a per-MCP-server callback path
-# (`/callback/<hash>`) that can't be pre-registered on a shared app, so `/oidc` gates
-# it behind the `enableCodexLoopbackRedirectExemption` SAFE flag: for this client on a
-# loopback host it accepts any path (RFC 8252 already waives the port; the flag waives
-# the path). The ChatGPT/Codex CIMD document lists only ChatGPT's hosted redirect,
-# so it cannot replace this client for Codex CLI's loopback callback.
-CODEX_CLI_OAUTH_CLIENT_ID = "codex-cli"
+# Cursor's CIMD document includes its desktop loopback callback at
+# `http://localhost:8787/callback`, so the same published client ID works in
+# Cursor's `mcp.json` `auth.CLIENT_ID` field.
+CURSOR_OAUTH_CLIENT_ID = "https://cursor.com/oauth/mcp-client.json"
 
 # A published app stays available, but an absent app may be published at any time.
 # Cache positive results only, so the next run detects a newly published app.
@@ -147,8 +140,8 @@ def first_available_oauth_client(workspace: str, client_ids: tuple[str, ...]) ->
 
 __all__ = [
     "CLAUDE_CODE_CIMD_CLIENT_ID",
+    "CODEX_CIMD_CLIENT_ID",
     "CURSOR_OAUTH_CLIENT_ID",
-    "CODEX_CLI_OAUTH_CLIENT_ID",
     "MCP_OAUTH_CALLBACK_PORT",
     "oauth_client_available",
     "first_available_oauth_client",

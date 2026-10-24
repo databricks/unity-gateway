@@ -3,12 +3,41 @@
 from __future__ import annotations
 
 import json
+import subprocess
+
+import pytest
 
 from ucode.agents import cursor
 
 WS = "https://example.databricks.com"
 # The proxy argv ucode registers for every MCP server (see build_mcp_proxy_argv).
 PROXY_ARGV = ["ucode", "mcp-proxy", "--url", f"{WS}/api/2.0/mcp/functions/system/ai"]
+
+
+@pytest.mark.parametrize(
+    ("version", "supported"),
+    [
+        ("2026.01.23-916f423", False),
+        ("2026.10.22-27dcf5f", True),
+        ("2026.10.23-1234567", True),
+        ("unknown", False),
+    ],
+)
+def test_cursor_cimd_version_gate(monkeypatch, version, supported):
+    monkeypatch.setattr(
+        cursor.subprocess_cross_os,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, version, ""),
+    )
+    assert cursor.supports_cimd() is supported
+
+
+def test_cursor_cimd_version_check_fails_closed(monkeypatch):
+    def timed_out(*args, **kwargs):
+        raise subprocess.TimeoutExpired("cursor-agent --version", 10)
+
+    monkeypatch.setattr(cursor.subprocess_cross_os, "run", timed_out)
+    assert cursor.supports_cimd() is False
 
 
 class TestMcpServerEntry:
@@ -69,15 +98,16 @@ class TestWriteMcpServerConfig:
 
 
 AIGW_URL = f"{WS}/ai-gateway/mcp-services/system.ai.github"
+CURSOR_CLIENT_ID = "https://cursor.com/oauth/mcp-client.json"
 
 
 class TestHttpMcpServerEntry:
     def test_builds_url_plus_auth_entry_with_pinned_client(self):
-        entry = cursor.build_http_mcp_server_entry(AIGW_URL, "cursor-desktop")
+        entry = cursor.build_http_mcp_server_entry(AIGW_URL, CURSOR_CLIENT_ID)
         # A direct OAuth HTTP server: url + auth.CLIENT_ID, no stdio command and no
         # static bearer — Cursor drives the OAuth itself. Scopes come from the MCP
         # protected-resource metadata, so none are hard-coded here.
-        assert entry == {"url": AIGW_URL, "auth": {"CLIENT_ID": "cursor-desktop"}}
+        assert entry == {"url": AIGW_URL, "auth": {"CLIENT_ID": CURSOR_CLIENT_ID}}
         assert "command" not in entry
         assert "headers" not in entry
 
@@ -89,14 +119,14 @@ class TestHttpMcpServerEntry:
             encoding="utf-8",
         )
 
-        removed = cursor.write_http_mcp_server_config("github", AIGW_URL, "cursor-desktop")
+        removed = cursor.write_http_mcp_server_config("github", AIGW_URL, CURSOR_CLIENT_ID)
 
         written = json.loads(config_file.read_text())
         assert removed is False
         assert written["mcpServers"]["proxy"] == {"command": "keep"}
         assert written["mcpServers"]["github"] == {
             "url": AIGW_URL,
-            "auth": {"CLIENT_ID": "cursor-desktop"},
+            "auth": {"CLIENT_ID": CURSOR_CLIENT_ID},
         }
 
 

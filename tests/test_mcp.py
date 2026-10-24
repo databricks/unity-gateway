@@ -38,6 +38,7 @@ GH_URL = f"{WS}/api/2.0/mcp/external/github"
 # A connection-backed AI Gateway MCP service (3-part FQN) — the URL form that
 # registers as direct HTTP for Claude when its CIMD client is available.
 AIGW_MCP_URL = f"{WS}/ai-gateway/mcp-services/system.ai.github"
+CODEX_TEST_CIMD_CLIENT_ID = mcp.CODEX_CIMD_CLIENT_ID
 PROXY_TAIL = ["mcp-proxy", "--url", GH_URL, "--host", WS, "--profile", "p"]
 
 
@@ -338,6 +339,7 @@ class TestConfigureClientMcpServer:
     def _capture_cursor(self, monkeypatch, *, cursor_client_available: bool):
         http_calls: list[tuple[str, str, str]] = []
         proxy_calls: list[tuple[str, list[str]]] = []
+        monkeypatch.setattr(mcp.cursor, "supports_cimd", lambda: True)
         monkeypatch.setattr(
             mcp,
             "first_available_oauth_client",
@@ -360,6 +362,7 @@ class TestConfigureClientMcpServer:
     def test_cursor_aigw_service_registers_http_when_client_available(self, monkeypatch):
         http_calls, proxy_calls = self._capture_cursor(monkeypatch, cursor_client_available=True)
         mcp.configure_client_mcp_server("cursor", "github", AIGW_MCP_URL, WS, "p")
+        assert mcp.CURSOR_OAUTH_CLIENT_ID == "https://cursor.com/oauth/mcp-client.json"
         assert http_calls == [("github", AIGW_MCP_URL, mcp.CURSOR_OAUTH_CLIENT_ID)]
         assert proxy_calls == []
 
@@ -367,7 +370,19 @@ class TestConfigureClientMcpServer:
         http_calls, proxy_calls = self._capture_cursor(monkeypatch, cursor_client_available=False)
         mcp.configure_client_mcp_server("cursor", "github", AIGW_MCP_URL, WS, "p")
         assert http_calls == []
-        assert len(proxy_calls) == 1  # workspaces without cursor-desktop keep the stdio proxy
+        assert len(proxy_calls) == 1  # workspaces without Cursor's CIMD client keep the proxy
+
+    def test_cursor_older_build_uses_proxy_without_probing_cimd(self, monkeypatch):
+        http_calls, proxy_calls = self._capture_cursor(monkeypatch, cursor_client_available=True)
+        monkeypatch.setattr(mcp.cursor, "supports_cimd", lambda: False)
+        monkeypatch.setattr(
+            mcp,
+            "first_available_oauth_client",
+            lambda *args: pytest.fail("unsupported Cursor build must not probe CIMD"),
+        )
+        mcp.configure_client_mcp_server("cursor", "github", AIGW_MCP_URL, WS, "p")
+        assert http_calls == []
+        assert len(proxy_calls) == 1
 
     def test_cursor_aigw_service_with_pat_keeps_proxy(self, monkeypatch):
         # PAT auth has no interactive OAuth, so it can't use the HTTP login path.
@@ -387,10 +402,18 @@ class TestConfigureClientMcpServer:
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
         monkeypatch.setattr(mcp, "remove_codex_mcp_server", lambda name: False)
+
+        def write_http(add, remove):
+            name, entry = next(iter(add.items()))
+            assert remove == {name}
+            assert entry["oauth_resource"] == entry["url"]
+            http_calls.append((name, entry["url"], entry["oauth"]["client_id"]))
+            return set()
+
         monkeypatch.setattr(
-            mcp,
-            "add_codex_http_mcp_server",
-            lambda name, url, client_id: http_calls.append((name, url, client_id)),
+            mcp.codex,
+            "write_user_mcp_servers",
+            write_http,
         )
         monkeypatch.setattr(
             mcp, "add_codex_mcp_server", lambda name, argv: proxy_calls.append((name, argv))
@@ -400,14 +423,14 @@ class TestConfigureClientMcpServer:
     def test_codex_aigw_service_registers_http_when_client_available(self, monkeypatch):
         http_calls, proxy_calls = self._capture_codex(monkeypatch, codex_client_available=True)
         mcp.configure_client_mcp_server("codex", "github", AIGW_MCP_URL, WS, "p")
-        assert http_calls == [("github", AIGW_MCP_URL, mcp.CODEX_CLI_OAUTH_CLIENT_ID)]
+        assert http_calls == [("github", AIGW_MCP_URL, CODEX_TEST_CIMD_CLIENT_ID)]
         assert proxy_calls == []
 
     def test_codex_aigw_service_falls_back_to_proxy_without_client(self, monkeypatch):
         http_calls, proxy_calls = self._capture_codex(monkeypatch, codex_client_available=False)
         mcp.configure_client_mcp_server("codex", "github", AIGW_MCP_URL, WS, "p")
         assert http_calls == []
-        assert len(proxy_calls) == 1  # workspaces without codex-cli keep the stdio proxy
+        assert len(proxy_calls) == 1  # workspaces without a compatible CIMD client use the proxy
 
     def test_codex_aigw_service_with_pat_keeps_proxy(self, monkeypatch):
         # PAT auth has no interactive OAuth, so it can't use the HTTP login path.
@@ -424,6 +447,16 @@ class TestConfigureClientMcpServer:
         mcp.configure_client_mcp_server("codex", "web_search", url, WS, "p")
         assert http_calls == []
         assert len(proxy_calls) == 1
+
+    def test_codex_probes_only_new_cimd_client(self, monkeypatch):
+        probed: list[str] = []
+        monkeypatch.setattr(
+            mcp,
+            "first_available_oauth_client",
+            lambda ws, client_ids: probed.extend(client_ids) or None,
+        )
+        assert mcp._oauth_http_client("codex", WS, use_pat=False) is None
+        assert probed == ["https://chatgpt.com/oauth/codex/client.json"]
 
     def test_oauthless_client_keeps_proxy_and_skips_probe(self, monkeypatch):
         # An agent with no mapped OAuth client (gemini) always proxies, and must not
@@ -868,9 +901,9 @@ class TestManagedMcpEntry:
             None,
             use_pat=False,
             always_load=False,
-            http_client="codex-cli",
+            http_client=CODEX_TEST_CIMD_CLIENT_ID,
         )
-        assert e == mcp.codex.managed_mcp_http_entry(self.MCP_URL, "codex-cli")
+        assert e == mcp.codex.managed_mcp_http_entry(self.MCP_URL, CODEX_TEST_CIMD_CLIENT_ID)
 
     def test_other_agents_use_stdio_proxy_entry(self):
         argv = self._argv()
@@ -4113,6 +4146,48 @@ class TestParseMcpListOutput:
             "gemini", "🟢 alpha - Ready (3 tools)\n🔴 beta - Disconnected\n"
         )
         assert parsed == {"alpha": mcp.LIVE_CONNECTED, "beta": mcp.LIVE_FAILED}
+
+    def test_gemini_disabled_row_uses_server_name_without_status_symbol(self):
+        # Gemini 0.44.1 prefixes disabled servers with ○ in untrusted folders.
+        output = "Configured MCP servers:\n\n○ ug-audit: /missing (stdio) - Disabled\n"
+        assert mcp.parse_mcp_list_output("gemini", output) == {"ug-audit": mcp.LIVE_DISABLED}
+
+    def test_opencode_tree_rows_report_health_without_parsing_details(self):
+        # OpenCode 1.18.31 uses the same tree layout as Kilo.
+        output = (
+            "┌  MCP Servers\n│\n●  ✗ ug-audit failed\n"
+            "│      ENOENT: no such file or directory\n│      /missing\n└  1 server(s)\n"
+        )
+        assert mcp.parse_mcp_list_output("opencode", output) == {"ug-audit": mcp.LIVE_FAILED}
+
+    def test_opencode_status_reads_the_config_ug_writes(self, monkeypatch):
+        captured: dict = {}
+
+        class _Result:
+            stdout = "●  ✗ ug-audit failed\n"
+            stderr = ""
+
+        def _fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            captured["env"] = kwargs.get("env")
+            return _Result()
+
+        monkeypatch.setattr(mcp.subprocess_cross_os, "run", _fake_run)
+        assert mcp.query_live_mcp_status("opencode") == {"ug-audit": mcp.LIVE_FAILED}
+        assert captured["argv"] == ["opencode", "mcp", "list"]
+        assert captured["env"]["XDG_CONFIG_HOME"] == str(mcp.opencode.OPENCODE_XDG_CONFIG_HOME)
+
+    def test_cursor_unapproved_server_is_not_reported_missing(self):
+        output = "Loading MCPs…\nug-audit: not loaded (needs approval)\n"
+        assert mcp.parse_mcp_list_output("cursor", output) == {"ug-audit": mcp.LIVE_NEEDS_APPROVAL}
+
+    def test_copilot_additional_config_is_reported_as_enabled(self, tmp_path, monkeypatch):
+        # Bare `copilot mcp list` does not include servers from --additional-mcp-config.
+        config = tmp_path / "ucode-mcp-config.json"
+        config.write_text('{"mcpServers":{"ug-audit":{"type":"local"}}}')
+        monkeypatch.setattr(mcp.copilot, "COPILOT_MCP_CONFIG_PATH", config)
+        monkeypatch.setattr(mcp, "_run_mcp_list", lambda client: "No MCP servers configured.")
+        assert mcp.query_live_mcp_status("copilot") == {"ug-audit": mcp.LIVE_ENABLED}
 
     def test_ansi_progress_escapes_are_stripped_before_parsing(self, monkeypatch):
         # cursor-agent redraws progress with ANSI escapes that must not leak into server names.

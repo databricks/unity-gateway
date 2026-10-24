@@ -3,11 +3,11 @@
 Cursor is an MCP-only integration. `cursor-agent` runs models on the user's own
 Cursor account and exposes no gateway base URL, so ucode configures no models
 for it (it stays out of `agents.__init__._MODULES`). What ucode does is register
-Databricks MCP servers in Cursor's config, using the same uniform mechanism as
-every other client: a local **stdio** server that runs `ug mcp-proxy`, which
-bridges to the Databricks MCP endpoint and mints a fresh OAuth token per request
-(see `ucode.mcp_proxy`). So Cursor needs no token in its config and no launch-
-time token export — `cursor-agent` just spawns the proxy like any stdio server.
+Databricks MCP servers in Cursor's config. Connection-backed services use native
+HTTP OAuth with Cursor's CIMD client ID. Other services use a local **stdio**
+server that runs `ug mcp-proxy`, which bridges to the Databricks MCP endpoint and
+refreshes the workspace token (see `ucode.mcp_proxy`). Neither entry persists a
+bearer token in Cursor's config.
 
 `cursor-agent` reads `~/.cursor/mcp.json` directly, so entries are merged into
 that shared file (preserving anything already there) and removed surgically,
@@ -17,14 +17,41 @@ whole-file backup.
 
 from __future__ import annotations
 
+import re
+import subprocess
 from pathlib import Path
 
 from ucode.config_io import apply_json_mcp_diff, read_json_safe, write_json_file
 from ucode.launcher import exec_or_spawn
+from ucode.os_compatibility import subprocess_cross_os
 
 CURSOR_BINARY = "cursor-agent"
 CURSOR_CONFIG_DIR = Path.home() / ".cursor"
 CURSOR_MCP_CONFIG_PATH = CURSOR_CONFIG_DIR / "mcp.json"
+MINIMUM_CIMD_VERSION = (2026, 10, 22)
+
+
+def supports_cimd() -> bool:
+    """Whether Cursor Agent can use a pinned CIMD client instead of attempting DCR.
+
+    The 2026.01.23 build ignored ``auth.CLIENT_ID`` and failed against Databricks' /oidc
+    because it attempted dynamic client registration. The 2026.10.22 build recognizes
+    the CIMD entry. Unknown or older versions use the CLI-backed proxy.
+    """
+    try:
+        result = subprocess_cross_os.run(
+            [CURSOR_BINARY, "--version"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if result.returncode != 0:
+        return False
+    match = re.search(r"\b(\d{4})\.(\d{2})\.(\d{2})\b", result.stdout or "")
+    return bool(match and tuple(map(int, match.groups())) >= MINIMUM_CIMD_VERSION)
 
 
 def build_mcp_server_entry(argv: list[str]) -> dict:
