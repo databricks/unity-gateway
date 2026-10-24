@@ -69,7 +69,6 @@ def test_routes_with_models_from_stored_state(monkeypatch):
     assert error is None
     assert decision == codex_routing.RoutingDecision(
         model="system.ai.gpt-5-6-sol",
-        raw_model="system.ai.gpt-5-6-sol",
         rationale="Needs the strongest coding model.",
         route_options=(("system.ai.gpt-5-6-luna", "codex"), ("system.ai.gpt-5-6-sol", "codex")),
         router_name=codex_routing.routing.ROUTER_NAME,
@@ -165,7 +164,6 @@ def test_spawn_rewrite_preserves_original_input(monkeypatch):
         lambda *args, **kwargs: (
             codex_routing.RoutingDecision(
                 model="databricks-gpt-5-5",
-                raw_model="gpt-5-6-sol",
                 rationale="Review needs deeper reasoning.",
             ),
             None,
@@ -215,7 +213,6 @@ def test_spawn_rewrite_uses_codex_model_id_for_uc_endpoint(monkeypatch, tmp_path
         lambda *args, **kwargs: (
             codex_routing.RoutingDecision(
                 model="system.ai.gpt-5-6-luna",
-                raw_model="gpt-5-6-luna",
             ),
             None,
         ),
@@ -267,7 +264,6 @@ def test_spawn_glm_decision_applies_glm_model(monkeypatch):
         lambda *args, **kwargs: (
             codex_routing.RoutingDecision(
                 model="system.ai.glm-5-2",
-                raw_model="glm-5-2",
             ),
             None,
         ),
@@ -312,7 +308,7 @@ def test_spawn_routes_on_plaintext_message_when_present(monkeypatch):
     def fake_decision(*args, **kwargs):
         captured["task"] = args[2] if len(args) > 2 else kwargs.get("task")
         return (
-            codex_routing.RoutingDecision(model="databricks-gpt-5-5", raw_model="gpt-5-6-sol"),
+            codex_routing.RoutingDecision(model="databricks-gpt-5-5"),
             None,
         )
 
@@ -340,7 +336,7 @@ def test_spawn_falls_through_encrypted_message_to_task_name(monkeypatch):
     def fake_decision(*args, **kwargs):
         captured["task"] = args[2] if len(args) > 2 else kwargs.get("task")
         return (
-            codex_routing.RoutingDecision(model="databricks-gpt-5-5", raw_model="gpt-5-6-sol"),
+            codex_routing.RoutingDecision(model="databricks-gpt-5-5"),
             None,
         )
 
@@ -367,7 +363,7 @@ def test_spawn_falls_through_fernet_message_to_task_name(monkeypatch):
     def fake_decision(*args, **kwargs):
         captured["task"] = args[2] if len(args) > 2 else kwargs.get("task")
         return (
-            codex_routing.RoutingDecision(model="databricks-gpt-5-5", raw_model="gpt-5-6-sol"),
+            codex_routing.RoutingDecision(model="databricks-gpt-5-5"),
             None,
         )
 
@@ -394,7 +390,7 @@ def test_spawn_uses_generic_task_instead_of_fernet_message(monkeypatch):
     def fake_decision(*args, **kwargs):
         captured["task"] = args[2] if len(args) > 2 else kwargs.get("task")
         return (
-            codex_routing.RoutingDecision(model="databricks-gpt-5-5", raw_model="gpt-5-6-sol"),
+            codex_routing.RoutingDecision(model="databricks-gpt-5-5"),
             None,
         )
 
@@ -440,7 +436,6 @@ def test_decision_is_reconciled_with_actual_subagent_model(tmp_path, monkeypatch
         lambda *args, **kwargs: (
             codex_routing.RoutingDecision(
                 model="system.ai.gpt-5-6-luna",
-                raw_model="gpt-5-6-luna",
             ),
             None,
         ),
@@ -461,7 +456,7 @@ def test_decision_is_reconciled_with_actual_subagent_model(tmp_path, monkeypatch
         {"session_id": "s1", "agent_id": "a1", "model": "gpt-5.6-luna"}
     )
 
-    assert record["router_model"] == "gpt-5-6-luna"
+    assert record["router_model"] == "system.ai.gpt-5-6-luna"
     assert record["requested_model"] == "gpt-5.6-luna"
     assert record["matches_router_decision"] is True
 
@@ -475,7 +470,6 @@ def test_decision_record_persists_rationale(tmp_path, monkeypatch):
         lambda *args, **kwargs: (
             codex_routing.RoutingDecision(
                 model="system.ai.gpt-5-6-sol",
-                raw_model="gpt-5-6-sol",
                 rationale="Cross-cutting refactor needs the strongest model.",
             ),
             None,

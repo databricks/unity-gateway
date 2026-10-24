@@ -42,9 +42,7 @@ def test_decision_is_reconciled_with_actual_subagent_model(tmp_path, monkeypatch
     audit = tmp_path / "audit.jsonl"
     monkeypatch.setattr(claude_routing, "DECISIONS_PATH", decisions)
     monkeypatch.setattr(claude_routing, "AUDIT_PATH", audit)
-    decision = routing.RoutingDecision(
-        model="system.ai.claude-opus-4-8", raw_model="system.ai.claude-opus-4-8"
-    )
+    decision = routing.RoutingDecision(model="system.ai.claude-opus-4-8")
     routing.write_decision_record(decisions, {"session_id": "s1"}, "x", decision, decision.model)
 
     record = claude_routing.record_subagent_start(
@@ -64,9 +62,7 @@ def test_subagent_start_without_model_reports_unknown_not_mismatch(tmp_path, mon
     audit = tmp_path / "audit.jsonl"
     monkeypatch.setattr(claude_routing, "DECISIONS_PATH", decisions)
     monkeypatch.setattr(claude_routing, "AUDIT_PATH", audit)
-    decision = routing.RoutingDecision(
-        model="system.ai.claude-sonnet-5", raw_model="system.ai.claude-sonnet-5"
-    )
+    decision = routing.RoutingDecision(model="system.ai.claude-sonnet-5")
     routing.write_decision_record(decisions, {"session_id": "s2"}, "x", decision, decision.model)
 
     record = claude_routing.record_subagent_start(
