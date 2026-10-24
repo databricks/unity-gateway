@@ -25,6 +25,7 @@ from ucode.managed_config import (
     save_managed_state,
 )
 from ucode.managed_setup import serialize_managed_config
+from ucode.telemetry import client_platform
 
 # A CodingAgentConfig in the current agent-config wire shape as emitted by ai-gateway-api.
 # The wire format uses: default_models map (not separate default_model + default_alias_models),
@@ -537,7 +538,7 @@ class TestFetchClient:
 
         monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
         db_mod.fetch_managed_coding_agent_configs("https://ws", "tok")
-        assert captured["request"].get_header("User-agent") == expected
+        assert captured["request"].get_header("User-agent") == f"{expected} {client_platform()}"
 
 
 WORKSPACE = "https://ws.example.com"

@@ -17,6 +17,7 @@ from ucode import custom_oauth, gateway_proxy, managed_files
 from ucode.agents import LaunchOptions, codex
 from ucode.config_io import read_toml_safe
 from ucode.smart_routing import codex_routing
+from ucode.telemetry import client_platform
 
 WS = "https://example.databricks.com"
 
@@ -216,7 +217,7 @@ class TestRenderOverlay:
         headers = overlay["model_providers"]["Databricks"]["http_headers"]
         # Admin wins on a case-insensitive collision, leaving no duplicate spelling of the header.
         assert headers == {
-            "User-Agent": "ucode/0.1.0 codex/0.123.0",
+            "User-Agent": f"ucode/0.1.0 codex/0.123.0 {client_platform()}",
             "databricks-model-provider-service": "admin.override",
         }
 
@@ -227,7 +228,10 @@ class TestRenderOverlayUserAgent:
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.123.0")
         overlay = codex.render_overlay(WS)
         provider = overlay["model_providers"]["Databricks"]
-        assert provider["http_headers"]["User-Agent"] == "ucode/0.1.0 codex/0.123.0"
+        assert (
+            provider["http_headers"]["User-Agent"]
+            == f"ucode/0.1.0 codex/0.123.0 {client_platform()}"
+        )
 
     def test_managed_keys_include_http_headers(self):
         # Revert must clean up the new key.
@@ -1485,6 +1489,38 @@ class TestCodexLaunch:
         )
         assert "Databricks-Model-Provider-Service" not in provider_arg
 
+    def test_launch_adds_ug_headers_without_writing_the_profile(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        profile_path = tmp_path / "ucode.config.toml"
+        before = profile_path.read_text(encoding="utf-8")
+        monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: testenv://liteswap/a")
+
+        codex.launch({"workspace": WS}, [], options=LaunchOptions())
+
+        provider_arg = next(
+            arg for arg in launches[0] if arg.startswith("model_providers.Databricks=")
+        )
+        assert "x-databricks-traffic-id" in provider_arg
+        assert "testenv://liteswap/a" in provider_arg
+        assert profile_path.read_text(encoding="utf-8") == before
+
+    def test_smart_routing_overlay_adds_ug_headers_keeping_existing_ones(self, monkeypatch):
+        monkeypatch.setenv("UG_HEADERS", "x-team: other\nX-New: 1")
+        monkeypatch.setattr(
+            codex,
+            "render_overlay",
+            lambda *a, **k: {
+                "model_providers": {"Databricks": {"http_headers": {"X-Team": "eng"}}}
+            },
+        )
+
+        overlay = codex._render_launch_overlay(WS)
+
+        assert overlay["model_providers"]["Databricks"]["http_headers"] == {
+            "X-Team": "eng",
+            "X-New": "1",
+        }
+
     def test_provider_discovery_uses_custom_oauth_token(self, tmp_path, monkeypatch):
         self._patch(tmp_path, monkeypatch)
         catalog_path = tmp_path / "models.json"
@@ -1942,7 +1978,10 @@ class TestCodexManagedConfig:
         assert managed_path.read_bytes() == before
         private = read_toml_safe(codex.CODEX_CONFIG_PATH)
         provider = private["model_providers"][codex.CODEX_MODEL_PROVIDER_NAME]
-        assert provider["http_headers"]["User-Agent"] == f"ucode/{ug_version} codex/{agent_version}"
+        assert (
+            provider["http_headers"]["User-Agent"]
+            == f"ucode/{ug_version} codex/{agent_version} {client_platform()}"
+        )
 
     def test_version_only_user_agent_change_is_not_a_noninteractive_conflict(
         self, tmp_path, monkeypatch
@@ -1973,7 +2012,7 @@ class TestCodexManagedConfig:
             "http_headers"
         ]
         assert headers["x-team"] == "eng-ml"
-        assert headers["User-Agent"].endswith(" codex/0.135.0")
+        assert headers["User-Agent"].endswith(f" codex/0.135.0 {client_platform()}")
 
     def test_provider_settings_stay_launch_scoped(self, tmp_path, monkeypatch):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)

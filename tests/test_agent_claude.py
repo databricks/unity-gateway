@@ -18,6 +18,7 @@ from ucode import gateway_proxy, managed_files
 from ucode.agents import LaunchOptions, claude
 from ucode.smart_routing import claude_routing, v2
 from ucode.state import MANAGED_OVERLAY_KEY
+from ucode.telemetry import client_platform
 
 WS = "https://example.databricks.com"
 # A connection MCP proxy argv, used by the Claude MCP-registration helper tests.
@@ -684,7 +685,9 @@ class TestRenderOverlayUserAgent:
         return overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
 
     def test_user_agent_present(self, monkeypatch):
-        assert "User-Agent: ucode/0.1.0 claude/2.1.136" in self._ua(monkeypatch)
+        assert f"User-Agent: ucode/0.1.0 claude/2.1.136 {client_platform()}" in self._ua(
+            monkeypatch
+        )
 
     def test_existing_databricks_header_preserved(self, monkeypatch):
         assert "x-databricks-use-coding-agent-mode: true" in self._ua(monkeypatch)
@@ -1343,11 +1346,14 @@ class TestWriteToolConfigManagedSettings:
         claude.write_tool_config(state, "databricks-claude-sonnet-4")
 
         lines = private_writes[0][1]["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
-        assert lines == [
-            "X-Foreign-Header: keep-me",  # not ug's, survives untouched
-            "x-databricks-use-coding-agent-mode: true",  # ug-managed name, replaced in place
-            "User-Agent: ucode/1.0 claude/2.0",  # ug-managed name, replaced in place
-        ]
+        assert (
+            lines
+            == [
+                "X-Foreign-Header: keep-me",  # not ug's, survives untouched
+                "x-databricks-use-coding-agent-mode: true",  # ug-managed name, replaced in place
+                f"User-Agent: ucode/1.0 claude/2.0 {client_platform()}",  # ug-managed name, replaced in place
+            ]
+        )
 
     def test_unmanaged_preserves_existing_family_defaults(self, monkeypatch):
         monkeypatch.setattr(
@@ -1856,7 +1862,10 @@ class TestWriteToolConfigManagedSettings:
         assert managed_path.read_bytes() == before
         private = json.loads((tmp_path / "ucode-settings.json").read_text())
         private_headers = private["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
-        assert f"User-Agent: ucode/{ug_version} claude/{agent_version}" in private_headers
+        assert (
+            f"User-Agent: ucode/{ug_version} claude/{agent_version} {client_platform()}"
+            in private_headers
+        )
 
     @pytest.mark.parametrize(
         "change",
@@ -1879,7 +1888,7 @@ class TestWriteToolConfigManagedSettings:
         assert len(sudo_writes) == 2
         written = json.loads(managed_path.read_text())
         headers = written["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
-        assert "User-Agent: ucode/1.0 claude/2.1" in headers
+        assert f"User-Agent: ucode/1.0 claude/2.1 {client_platform()}" in headers
 
     def test_managed_file_applies_model_default_precedence(self, monkeypatch):
         managed_defaults = self._write_managed_model_defaults(
