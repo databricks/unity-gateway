@@ -3188,7 +3188,9 @@ def _should_launch_smart_routing(
     model: str | None,
 ) -> bool:
     if model is not None or has_explicit_model_arg(tool_args):
-        return False
+        # A caller-pinned root model (e.g. Omnigent's --model) still allows subagent-only routing.
+        if tool != "claude" or smart_routing_v2.first_prompt_routing_enabled(agent=tool):
+            return False
     return _smart_routing_launch_shape(tool, tool_args, explicit_prompt)
 
 

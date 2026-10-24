@@ -770,8 +770,6 @@ class TestSubcommandRouting:
             (["fix this"], True, None, None, True),
             (["fix this"], False, None, None, False),
             (["update"], False, None, None, False),
-            (["--model", "fixed"], False, None, None, False),
-            ([], False, "fixed", None, False),
             ([], False, None, "catalog.schema.service", False),
         ],
     )
@@ -789,6 +787,33 @@ class TestSubcommandRouting:
 
         assert options.launch_smart_routing is expected
 
+    @pytest.mark.parametrize(("tool_args", "model"), [(["--model", "fixed"], None), ([], "fixed")])
+    @pytest.mark.parametrize(
+        ("tool", "routing_env", "expected"),
+        [
+            ("claude", {"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1"}, True),
+            ("claude", {"ENABLE_SMART_ROUTING_V2": "1"}, False),
+            ("codex", {"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1"}, False),
+            ("codex", {"ENABLE_SMART_ROUTING_V2": "1"}, False),
+        ],
+    )
+    def test_explicit_model_keeps_only_claude_subagent_routing(
+        self, monkeypatch, tool_args, model, tool, routing_env, expected
+    ):
+        for name, value in routing_env.items():
+            monkeypatch.setenv(name, value)
+
+        options = cli_mod._launch_options(
+            tool,
+            tool_args,
+            smart_routing_enabled=True,
+            explicit_prompt=False,
+            user_pinned_model=model,
+            provider=None,
+        )
+
+        assert options.launch_smart_routing is expected
+
     @pytest.mark.parametrize(
         ("tool_args", "expected"),
         [
@@ -801,7 +826,10 @@ class TestSubcommandRouting:
             (["--session-id", "session-123", "--model", "fixed"], False),
         ],
     )
-    def test_claude_options_allow_smart_routing_except_model(self, tool_args, expected):
+    def test_claude_options_allow_smart_routing_except_model(
+        self, monkeypatch, tool_args, expected
+    ):
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
         options = cli_mod._launch_options(
             "claude",
             tool_args,
