@@ -13,17 +13,59 @@ from databricks.sdk import oauth
 from typer.testing import CliRunner
 
 import ucode.cli as cli_mod
+import ucode.custom_oauth as custom_oauth_mod
 import ucode.databricks as db_mod
 from ucode.cli import app
 from ucode.custom_oauth import (
+    CUSTOM_OAUTH_TIMEOUT_MS,
+    UNATTENDED_CUSTOM_OAUTH_LOGIN_TIMEOUT_S,
     _custom_oauth_lock,
     build_custom_auth_token_argv,
+    create_custom_oauth_config,
+    ensure_custom_oauth_cli_token,
     get_custom_client_token,
 )
+from ucode.env import NONINTERACTIVE_ENV
 
 WS = "https://example.databricks.com"
 TEST_SCOPES = ("offline_access", "catalog.catalogs:read")
 runner = CliRunner()
+
+
+class TestCustomOAuthCliLoginBudget:
+    @pytest.fixture(autouse=True)
+    def _setup(self, monkeypatch):
+        monkeypatch.setattr(custom_oauth_mod, "ensure_databricks_cli_version", lambda _v: None)
+        monkeypatch.setattr(custom_oauth_mod, "databricks_cli_path", lambda: "/tools/databricks")
+        monkeypatch.setattr(custom_oauth_mod, "external_bearer_configured", lambda: False)
+        monkeypatch.setattr(custom_oauth_mod, "has_valid_databricks_auth", lambda *_a: False)
+        monkeypatch.setattr(custom_oauth_mod, "get_databricks_token", lambda *_a: "fresh-token")
+        monkeypatch.setattr(custom_oauth_mod, "clear_databricks_token_cache", lambda: None)
+        self.login = Mock()
+        monkeypatch.setattr(custom_oauth_mod, "run", self.login)
+        self.config = create_custom_oauth_config("client-1", TEST_SCOPES)
+
+    def test_attended_login_keeps_the_interactive_budget_and_browser(self, monkeypatch):
+        monkeypatch.delenv(NONINTERACTIVE_ENV, raising=False)
+
+        assert ensure_custom_oauth_cli_token(WS, self.config) == "fresh-token"
+
+        kwargs = self.login.call_args.kwargs
+        assert kwargs == {"env": None, "timeout": CUSTOM_OAUTH_TIMEOUT_MS // 1000}
+
+    def test_unattended_login_prints_the_link_and_waits_for_the_person(self, monkeypatch):
+        """Nobody can finish consent within 180 s, so the link is printed and the login kept open."""
+        monkeypatch.setenv(NONINTERACTIVE_ENV, "1")
+        monkeypatch.setenv("BROWSER", "firefox")
+
+        assert ensure_custom_oauth_cli_token(WS, self.config) == "fresh-token"
+
+        args = self.login.call_args.args[0]
+        kwargs = self.login.call_args.kwargs
+        assert args[1:3] == ["auth", "login"]
+        assert kwargs["timeout"] == UNATTENDED_CUSTOM_OAUTH_LOGIN_TIMEOUT_S
+        assert kwargs["env"]["BROWSER"] == "none"
+        assert kwargs["env"][NONINTERACTIVE_ENV] == "1"
 
 
 class TestCustomOAuthLock:
