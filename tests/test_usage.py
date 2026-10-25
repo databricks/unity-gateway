@@ -96,8 +96,7 @@ class TestRenderBudgetLimits:
         assert "$20.00 limit for period [red]WEEK[/red]" in text.plain
         assert all(span.style != "red" for span in text.spans)
 
-    @pytest.mark.parametrize("show_all", [False, True])
-    def test_shows_limits_in_one_list(self, show_all):
+    def test_shows_limits_in_one_list(self):
         result = render_budget_limits(
             [
                 BudgetLimitStatus(
@@ -130,8 +129,7 @@ class TestRenderBudgetLimits:
                 BudgetLimitStatus(
                     "e42f8d19-6c73-4b05-a128-9f3d7c6e2b41", SHARED, "MONTH", Decimal("20")
                 ),
-            ],
-            show_all=show_all,
+            ]
         )
 
         assert result.startswith(
@@ -232,23 +230,6 @@ class TestRenderBudgetLimits:
             assert f"PERIOD_{index} personal limit" in result
         assert result.count("% used") == 6
         assert "Showing " not in result
-
-    def test_fills_five_slots_from_a_single_category(self):
-        result = render_budget_limits(
-            [
-                BudgetLimitStatus(f"limit-{percent}", PER_USER, "MONTH", Decimal(percent))
-                for percent in ("10", "20", "30", "40", "50", "60", "70")
-            ]
-        )
-
-        assert "Additional limits" not in result
-        assert "70% used" in result
-        assert result.count("% used") == 5
-        for percent in ("60", "50", "40", "30"):
-            assert f"{percent}% used" in result
-        assert "20% used" not in result
-        assert "10% used" not in result
-        assert "Showing 5 of 7 spend limits." in result
 
     def test_preserves_api_order_for_equal_percentages_at_the_cutoff(self):
         result = render_budget_limits(
@@ -433,7 +414,6 @@ class TestRenderBudgetLimits:
         assert result.index("0% used") < result.index("budget unknown")
         assert result.index("budget unknown") < result.index("Monthly shared limit")
 
-    @pytest.mark.parametrize("show_all", [False, True])
     @pytest.mark.parametrize(
         ("spend", "expected_amounts"),
         [
@@ -441,10 +421,9 @@ class TestRenderBudgetLimits:
             ("1", "$1.00 of $0.00 used · $1.00 over the limit today"),
         ],
     )
-    def test_shows_zero_threshold_as_fully_used(self, spend, expected_amounts, show_all):
+    def test_shows_zero_threshold_as_fully_used(self, spend, expected_amounts):
         result = render_budget_limits(
-            [BudgetLimitStatus("zero-limit", PER_USER, "DAY", None, Decimal(spend), Decimal("0"))],
-            show_all=show_all,
+            [BudgetLimitStatus("zero-limit", PER_USER, "DAY", None, Decimal(spend), Decimal("0"))]
         )
 
         assert "[red][██████████████████████████████][/red] 100% used" in result
