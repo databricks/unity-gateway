@@ -1,0 +1,24 @@
+{
+  "spec_version": 1,
+  "default_agent": "CODING_AGENT_COPILOT",
+  "enabled_agents": [
+    {
+      "agent": "CODING_AGENT_COPILOT",
+      "config": {
+        "models": {
+          "model_services": [
+            "system.ai.claude-sonnet-4-6"
+          ]
+        },
+        "default_models": {
+          "default_model": "system.ai.claude-sonnet-4-6"
+        }
+      }
+    }
+  ],
+  "skills": {
+    "names": [
+      "main.default.forkable-meals"
+    ]
+  }
+}

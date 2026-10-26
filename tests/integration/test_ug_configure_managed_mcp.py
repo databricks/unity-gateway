@@ -10,9 +10,11 @@ managed servers into Codex's `[mcp_servers]` in managed_config.toml, additive to
 the developer's own ~/.codex/config.toml servers. A non-interactive configure has no sudo reconcile,
 so it falls back to the user-scope registration, which the real /mcp view still lists. Claude's
 `managedMcpServers` path is covered by unit tests; its integration coverage needs the managed
-workspace to publish the `claude-code` OAuth client, which E2E_ADMIN_WORKSPACE does not.
+workspace to publish the `claude-code` OAuth client, which E2E_ADMIN_WORKSPACE does not. Copilot
+has no OS-managed MCP file, so its managed servers land in its user config, ~/.copilot/mcp-config.json.
 """
 
+import json
 import tomllib
 
 import pytest
@@ -114,3 +116,27 @@ def test_managed_fixture_codex_http_headers_in_managed_file(live_session, worksp
         f"Expected {managed_header_key!r} = {managed_header_value!r}, "
         f"got {headers[managed_header_key]!r}"
     )
+
+
+@pytest.mark.managed_fixture
+@pytest.mark.copilot
+def test_managed_fixture_copilot_mcp_registered_in_user_config(live_session, workspace):
+    """Scenario: a non-interactive configure with a managed MCP server enabled for Copilot.
+
+    Expected: Copilot's own `copilot mcp list --json` lists the server from its user config,
+    enabled, as the ug mcp-proxy stdio command for the server's mcp-services URL.
+    """
+    session = live_session
+    use_managed_config_fixture(session, "copilot_mcp")
+    result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
+    assert "Select coding agents to configure:" not in result.stdout, result.stdout
+
+    listing = session.run("mcp", "list", "--json", binary=session.which("copilot"), timeout=60)
+    servers = json.loads(listing.stdout)["mcpServers"]
+    entries = {name: entry for name, entry in servers.items() if "github" in name.lower()}
+    assert entries, servers
+    entry = next(iter(entries.values()))
+    assert entry["source"] == "user", entry
+    assert entry["enabled"] is True, entry
+    assert entry["command"].endswith("ug"), entry
+    assert "mcp-services" in entry["args"][entry["args"].index("--url") + 1], entry
