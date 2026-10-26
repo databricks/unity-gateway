@@ -26,6 +26,7 @@ from .helpers.constants import (
     PROVIDER_HEADER,
     SANDBOX_MCP_SERVICE_NAME,
     WEB_SEARCH_MCP_SERVICE_NAME,
+    WORKSPACE_POLICY_PATH,
 )
 from .helpers.desktop import assert_claude_desktop_profile, enable_claude_desktop
 from .helpers.evidence import assert_served
@@ -113,11 +114,9 @@ def _assert_mcp_services(workspace) -> None:
 
 
 def _assert_configured_files(session, workspace_url: str) -> None:
-    managed_cache = json.loads(
-        (session.home / ".ucode" / "managed-config.json").read_text(encoding="utf-8")
-    )
-    managed_config = managed_cache.get("config")
-    assert isinstance(managed_config, dict), managed_cache
+    installed = json.loads(WORKSPACE_POLICY_PATH.read_text(encoding="utf-8"))
+    managed_config = installed.get("config")
+    assert isinstance(managed_config, dict), installed
     _assert_cuj2_config(managed_config)
 
     claude_settings = session.home / ".claude" / "ucode-settings.json"

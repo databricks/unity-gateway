@@ -273,8 +273,23 @@ fails before Copilot starts,
 and the TUI switches from Claude to GPT with `/model` mid-session. Model evidence comes
 from Copilot's own `~/.copilot/session-state/*/events.jsonl` (`utils/agents/copilot.py`).
 `test_ug_copilot_providers.py` runs Copilot through the MPS fixtures below: a file task on the
-Anthropic service's model, on the OpenAI and Azure OpenAI services' `gpt-5-nano`, and on a named
-model of the Bedrock allow-all service; launching on the relayed service fails before Copilot starts.
+Anthropic service's model, on the OpenAI, Azure OpenAI and Microsoft Foundry services' `gpt-5-nano`, and
+on a named model of the Bedrock allow-all service; launching on the relayed service fails before Copilot starts.
+
+The managed TTL journey installs `/etc/unitygateway/managed-settings.json` through real configure,
+checks root ownership and readable modes, then ages only user-owned `~/.ucode/refresh_ts.json`.
+Warm launch leaves the timestamp unchanged; expired launch advances it without changing installed
+policy bytes, inode, mtime, or ctime when the workspace policy is unchanged. Unit/component tests
+cover configure-only elevation, non-root read-only launches, IT guidance, removal, and
+metadata-only drift. Root/non-root packaged-writer checks in a disposable Linux container are
+component evidence, not live MDM provisioning or Claude/Codex launch evidence. Running the full MDM
+bootstrap and agent journey still requires explicitly selected workspace provisioning credentials.
+The foreign-workspace journey configures through the public CLI, then verifies that bare ug,
+Claude, and Codex reject a different `--workspace` with dry-run/skip-preflight without changing
+machine policy, user state, or refresh metadata. It uses the `managed_workspace_default` fixture and is implemented but not locally run; unit
+regressions cover workspace-authoritative refresh and pending-hash warning suppression.
+The credential-free disposable-container harness passes real installed-CLI mismatch rejection
+as UID 10001; it does not replace the unrun real-workspace configure journey.
 
 ## Shared agent helpers
 
@@ -297,7 +312,7 @@ existing agent installations or checkout's `.venv`.
 CI pins Databricks CLI 1.17.0 in the live and managed integration lanes. The
 runner's isolated `PATH` exposes that selected CLI, so skills journeys meet ug's
 CLI minimum without falling back to another version installed on the machine.
-Native live runs refuse existing machine-wide Claude/Codex configuration, which
+Native live runs refuse existing machine-wide Unity Gateway/Claude/Codex configuration, which
 could override the selected workspace even with a fresh home. Use a clean VM
 in that case; the runner never edits or bypasses those managed settings.
 
@@ -501,7 +516,7 @@ test_ug_codex_headless.py               # script prompts and model arguments
 test_ug_copilot_headless.py             # Copilot via the session proxy: Claude + GPT tasks, no token on disk
 test_ug_copilot_lifecycle.py            # Copilot refresh after revocation, sign-in expired, configure/revert, upgrade
 test_ug_copilot_models.py               # Copilot model registry: Claude then GPT, unknown model, TUI /model switch
-test_ug_copilot_providers.py            # Copilot via Model Provider Services: Anthropic, OpenAI, Azure OpenAI, Bedrock allow-all; relayed refused
+test_ug_copilot_providers.py            # Copilot via Model Provider Services: Anthropic, OpenAI, Azure OpenAI, Foundry, Bedrock allow-all; relayed refused
 test_ug_codex_tracing.py                # Codex OTLP export reaches the configured trace table
 test_ug_claude_commands.py              # command help forwarding
 test_ug_codex_commands.py               # command help and parser error forwarding
@@ -636,6 +651,7 @@ MPS CUJs select the existing services already used by e2e:
   launch runs headless instead of opening a browser login.
 - Codex: `main.ucode.ci_openai_mps`, using its allowed `gpt-5-nano` model.
 - Codex and Copilot (Azure OpenAI): `main.ucode.ci_azure_openai_mps`, using its `gpt-5-nano` model.
+- Codex and Copilot (Microsoft Foundry): `main.ucode.ci_foundry_mps`, using its `gpt-5-nano` model.
 
 Use `--claude-provider` / `--claude-relayed-provider` / `--codex-provider` to
 reproduce another existing service. Use `--claude-provider-model` /
@@ -707,14 +723,14 @@ cases instead complete real file tasks through `--workspace` and `--model-locati
 journeys check setup and launch with existing services, without inference.
 
 There are **88 live cases** (including 12 marked TUI journeys) and **7 installation
-checks** with Claude and Codex; selecting OpenCode adds one live headless case and two `managed_fixture` cases; selecting Copilot adds fifteen live cases. One
+checks** with Claude and Codex; selecting OpenCode adds one live headless case and two `managed_fixture` cases; selecting Copilot adds sixteen live cases. One
 **`workspace_switch` case** uses two real workspaces and checks skills MCP cleanup and a completed
-Claude task. A further **43 `managed_fixture` cases** (twelve of them also `live`) run on the
+Claude task. A further **44 `managed_fixture` cases** (twelve of them also `live`) run on the
 managed workspace with a checked-in JSON CodingAgentConfig from `tests/fixtures/managed_config/`
 injected through `UCODE_MANAGED_CONFIG_STUB`; there are no cases that read a published config.
 Twelve explicit configured/fresh Claude and Codex discovery and source-override journeys use the
 `claude_mps.json` / `codex_mps.json` fixtures, which set each agent's source to its dedicated MPS.
-The other cases cover focused model, MCP, skills, cache-TTL, and lifecycle shapes, including
+The other cases cover focused model, MCP, skills, cache-TTL, foreign-workspace refusal, and lifecycle shapes, including
 per-agent model reconciliation and managed skill cleanup. Of the two Claude default-model cases,
 the MPS case stubs a `main.default.ci_e2e_anthropic_mps` source and the `system.ai` parent-schema
 case stubs a Unity Catalog source; both verify the generated settings
@@ -728,7 +744,7 @@ bearer; no second workspace or extra secret is involved.
 Across integration and dedicated CUJ7, the 14 numbered scenarios comprise 24 journeys:
 12 managed and 12 unmanaged. Integration contains 22 of them (12 managed, 10 unmanaged);
 configured unmanaged cases 7 and 8 run in `e2e_cuj/test_cuj7_model_discovery.py`.
-The complete integration suite collects 129 executions (126 with Claude and Codex selected).
+The complete integration suite collects 130 executions (127 with Claude and Codex selected).
 See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
@@ -933,7 +949,7 @@ A second non-blocking job, **Managed OpenCode self-managed** (`managed_fixture a
 in `test_ug_agents_self_managed.py`), installs Claude, Codex and OpenCode and runs against the
 managed e2e workspace (`E2E_ADMIN_WORKSPACE`) with the injected `managed_workspace_default` config,
 which enables Claude/Codex but not OpenCode. It is likewise outside `cujs`.
-A non-blocking **Copilot** job (`live and copilot`, fourteen cases) runs on Linux and Windows the
+A non-blocking **Copilot** job (`live and copilot`, fifteen cases) runs on Linux and Windows the
 same way and is likewise outside `cujs` until it is stable.
 
 Each lane installs only the agent CLIs it needs (one, except the managed OpenCode lane's

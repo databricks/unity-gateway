@@ -18,6 +18,7 @@ import urllib.request
 from urllib.parse import urlencode
 
 from ucode.config_io import APP_DIR, read_json_safe, write_json_file
+from ucode.ug_headers import ug_headers
 
 # Claude Code's published URL client ID (Client ID Metadata Document). The
 # workspace must recognize it before ug registers it; merely serving the
@@ -77,7 +78,7 @@ def _probe_oauth_client(workspace: str, client_id: str) -> bool | None:
         f"{workspace.rstrip('/')}/oidc/v1/token",
         data=body,
         method="POST",
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers={**ug_headers(), "Content-Type": "application/x-www-form-urlencoded"},
     )
     try:
         urllib.request.urlopen(request, timeout=10)  # noqa: S310 - fixed https workspace URL
