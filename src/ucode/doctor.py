@@ -251,12 +251,13 @@ def _check_databricks_auth() -> Check | None:
 
 
 def _check_anthropic_env_collision() -> Check | None:
-    """Warn when a Claude token env var is set that collides with ucode's own.
+    """Note a Claude token env var that would outrank ucode's own credential.
 
-    ucode authenticates Claude Code through the gateway; a stray
-    `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` in the environment shadows that
-    and makes Claude complain. We can't unset a parent shell's env, so this is
-    advisory (no fix). Returns None when nothing collides.
+    Claude Code ranks `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` above ucode's
+    `apiKeyHelper`. `ug configure` and `ug claude` blank both in ucode's Claude
+    settings, so the shell's value is hidden from Claude only and needn't be
+    unset; a bare `claude` that doesn't load those settings still sees it.
+    Advisory (no fix). Returns None when nothing collides.
     """
     set_vars = [name for name in _CLAUDE_TOKEN_ENV_VARS if os.environ.get(name, "").strip()]
     if not set_vars:
@@ -265,7 +266,8 @@ def _check_anthropic_env_collision() -> Check | None:
     return Check(
         "Claude auth env",
         "warn",
-        f"{joined} is set and can collide with ucode's Claude auth; unset it in your shell",
+        f"{joined} is set; ug blanks it for Claude Code, so no need to unset it "
+        "(re-run `ug configure` if Claude still fails with a 401)",
     )
 
 

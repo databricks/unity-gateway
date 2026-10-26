@@ -231,6 +231,11 @@ CLAUDE_CONDITIONAL_ENV_KEYS = ("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",)
 # Env keys ucode used to write but no longer does; stripped from the managed
 # settings file on every launch so stale values never linger.
 CLAUDE_REMOVED_ENV_KEYS = ("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",)
+# Claude Code ranks these shell variables above `apiKeyHelper` and the subscription login, so a
+# stray one (e.g. a LiteLLM key) would be sent to the gateway instead of ug's credential. A
+# settings `env` value beats the shell's, so ug blanks them for the Claude process only.
+CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS = ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY")
+CLAUDE_BLANKED_CREDENTIAL_PATHS = [["env", key] for key in CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS]
 CLAUDE_MANAGED_PICKER_KEYS = ("availableModels", "enforceAvailableModels", "modelPicker")
 CLAUDE_PERMISSIONS_DENY_PATH = ["permissions", "deny"]
 CLAUDE_ALLOWED_MCP_SERVERS_KEY = "allowedMcpServers"
@@ -560,6 +565,8 @@ def render_overlay(
         "ENABLE_PROMPT_CACHING_1H": "1",
         "ENABLE_TOOL_SEARCH": "true",
         "CLAUDE_CODE_USE_GATEWAY": "1",
+        # Also outrank the subscription login, so relayed launches blank them too.
+        **dict.fromkeys(CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS, ""),
     }
     # Intentionally NOT setting ANTHROPIC_MODEL by default. Setting it produces a
     # duplicate catalog row in Claude Code's /model picker (e.g. "Opus 4.8 (1M
@@ -1780,7 +1787,11 @@ def _required_custom_headers(value: object) -> dict[str, str] | None:
 def _managed_settings_conflicts(
     existing: dict, desired: dict, owned_paths: list[list[str]]
 ) -> list[str]:
-    owned_paths = [path for path in owned_paths if path not in CLAUDE_HEADER_MOD_PATHS]
+    owned_paths = [
+        path
+        for path in owned_paths
+        if path not in CLAUDE_HEADER_MOD_PATHS and path not in CLAUDE_BLANKED_CREDENTIAL_PATHS
+    ]
     conflicts = managed_file_conflicts(existing, desired, owned_paths)
     header_path = f"env.{ANTHROPIC_CUSTOM_HEADERS_ENV_KEY}"
     if header_path in conflicts:
@@ -1951,6 +1962,27 @@ def header_mod_active() -> bool:
     return isinstance(plugins, dict) and plugins.get(CLAUDE_HEADER_MOD_ID) is True
 
 
+def _settle_credential_blanks(desired: dict, existing: dict, *, add: bool) -> None:
+    """Add ug's credential blanks to the managed file only when asked; otherwise keep it as found.
+
+    Like the header mod, they are written by ``ug configure`` and never by a plain launch: another
+    writer of the file drops keys it doesn't template, and re-adding them would rewrite the
+    root-owned file (and prompt for sudo) on every launch. ``ucode-settings.json`` always has them.
+    """
+    env = desired.get("env")
+    if not isinstance(env, dict):
+        return
+    existing_env = existing.get("env")
+    existing_env = existing_env if isinstance(existing_env, dict) else {}
+    for key in CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS:
+        if add:
+            env[key] = ""
+        elif key in existing_env:
+            env[key] = existing_env[key]
+        else:
+            env.pop(key, None)
+
+
 def _is_shared_claude_list(path: list[str]) -> bool:
     """Lists IT and ug also write to in the managed file, so the admin's entries merge into them."""
     return path == CLAUDE_PERMISSIONS_DENY_PATH or (len(path) == 2 and path[0] == "hooks")
@@ -2054,6 +2086,8 @@ def _reconcile_managed_settings(
     # plugin that isn't there; a run that can't write as root leaves any earlier entries as is.
     installed = wants_mod and _install_header_mod(header_mod_root)
     desired_settings = _enable_header_mod(compose(existing), header_mod_root if installed else None)
+    # `request_header_mod()` marks the explicit `ug configure` path, which also adds the blanks.
+    _settle_credential_blanks(desired_settings, managed_before, add=_header_mod_requested)
     if header_mod_root is not None:
         owned_paths = [*owned_paths, *CLAUDE_HEADER_MOD_PATHS]
     _preserve_permission_denies(managed_before, desired_settings, withdrawn=withdrawn_denies or [])

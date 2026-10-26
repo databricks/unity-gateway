@@ -48,6 +48,11 @@ ug's own requests carrying them, and `test_agent_codex.py` `UG_HEADERS` reaching
 `-c` headers (plain and smart-routed) without writing its profile. No automated test checks the
 header at the gateway.
 
+`test_claude_credential_blanks.py` covers the `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` blanks: always in
+the user file (relayed included), written to the managed file by `ug configure` only, a plain launch
+making no privileged write after another writer drops them, skip mode, revert, and admin passthrough
+not overriding them. Claude's precedence of settings `env` over the shell was checked by hand on 2.1.299.
+
 `test_claude_header_mod.py` covers installing the Claude header mod's files and managed entries
 (no rewrite when unchanged), keeping an admin's `prependPlugins`, a failed install never enabling
 the plugin, revert removing the files and keeping the guard, the sudo allowlist, `header_mod_active`
