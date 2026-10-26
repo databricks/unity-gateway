@@ -2507,12 +2507,16 @@ def _parse_tree_mcp_list(output: str) -> dict[str, str]:
 def _parse_copilot_mcp_list(output: str) -> dict[str, str]:
     """Parse `copilot mcp list --json` into ``{server_name: state}``.
 
-    Like Codex, Copilot reports config state (``enabled``), not a health probe. Output that isn't
-    the expected JSON object contributes nothing."""
-    try:
-        servers = json.loads(output[output.find("{") :]).get("mcpServers")
-    except (json.JSONDecodeError, AttributeError):
+    Like Codex, Copilot reports config state (``enabled``), not a health probe. Only the leading
+    JSON object is read, since stderr follows it; output without one contributes nothing."""
+    start = output.find("{")
+    if start < 0:
         return {}
+    try:
+        data, _ = json.JSONDecoder().raw_decode(output, start)
+    except json.JSONDecodeError:
+        return {}
+    servers = data.get("mcpServers") if isinstance(data, dict) else None
     if not isinstance(servers, dict):
         return {}
     return {

@@ -4200,6 +4200,10 @@ class TestParseMcpListOutput:
             "paused": mcp.LIVE_DISABLED,
         }
 
+    def test_copilot_listing_followed_by_stderr_still_parses(self):
+        output = json.dumps({"mcpServers": {"svc": {"enabled": True}}}) + "\nwarning: slow start\n"
+        assert mcp.parse_mcp_list_output("copilot", output) == {"svc": mcp.LIVE_ENABLED}
+
     def test_unreadable_copilot_listing_returns_no_servers(self):
         assert mcp.parse_mcp_list_output("copilot", "error: something broke") == {}
 
