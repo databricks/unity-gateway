@@ -159,6 +159,11 @@ def test_configure_generates_plugin_and_installs_in_cowork_scope(tmp_path, monke
             }
         }
     }
+    hooks = json.loads((plugin_root / "hooks" / "hooks.json").read_text())
+    routing_hook = hooks["hooks"]["UserPromptSubmit"][0]["hooks"][0]
+    assert routing_hook["type"] == "command"
+    assert "ucode.agents.desktop.cowork_routing" in routing_hook["command"]
+    assert "--server github" in routing_hook["command"]
     assert (plugin_root / "skills" / "review" / "SKILL.md").read_text() == "managed skill"
     assert not (plugin_root / "skills" / "foreign").exists()
     assert [call[0][1:3] for call in calls] == [

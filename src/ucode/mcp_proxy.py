@@ -260,14 +260,6 @@ class _McpBridge:
         self.authentication_completed = False
         self._tools_refresh_waiters: list[anyio.Event] = []
 
-    def _service_routing_guidance(self) -> str:
-        connection = self.connection_login.connection or "this service"
-        service = connection.rsplit(".", 1)[-1].replace("_", " ")
-        return (
-            f"Use this MCP server for requests involving {service}, including requests about "
-            "the user's own resources."
-        )
-
     def _authentication_tool(self) -> dict:
         connection = self.connection_login.connection or "this service"
         return {
@@ -294,8 +286,8 @@ class _McpBridge:
             )
         )
 
-    def _with_initialize_changes(
-        self,
+    @staticmethod
+    def _with_tool_list_changes(
         message: SessionMessage,
         original: SessionMessage | None,
     ) -> SessionMessage:
@@ -314,14 +306,6 @@ class _McpBridge:
         tools["listChanged"] = True
         capabilities["tools"] = tools
         result["capabilities"] = capabilities
-        guidance = (
-            f"{self._service_routing_guidance()} If only the authenticate tool is available, "
-            "call it and retry the original request in the same turn."
-        )
-        existing_instructions = result.get("instructions")
-        if isinstance(existing_instructions, str) and existing_instructions.strip():
-            guidance = f"{existing_instructions.rstrip()}\n\n{guidance}"
-        result["instructions"] = guidance
         return SessionMessage(
             JSONRPCResponse(jsonrpc="2.0", id=payload.id, result=result),
             metadata=message.metadata,
@@ -466,7 +450,7 @@ class _McpBridge:
                     if isinstance(payload, (JSONRPCResponse, JSONRPCError)):
                         original = self.pending_requests.get(payload.id)
                     if self.connection_login.connection is not None:
-                        message = self._with_initialize_changes(message, original)
+                        message = self._with_tool_list_changes(message, original)
                     payload = message.message
                     if isinstance(payload, JSONRPCError):
                         request_id = payload.id

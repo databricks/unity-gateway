@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -282,6 +285,10 @@ def _write_marketplace(
         if mcp_config["mcpServers"]:
             plugin["mcpServers"] = "./.mcp.json"
             _write_json(staging_plugin / ".mcp.json", mcp_config)
+            _write_json(
+                staging_plugin / "hooks" / "hooks.json",
+                _routing_hooks(list(mcp_config["mcpServers"])),
+            )
         _write_json(staging / ".claude-plugin" / "marketplace.json", marketplace)
         _write_json(staging_plugin / ".claude-plugin" / "plugin.json", plugin)
         _copy_skills(staging_plugin / "skills", skill_records)
@@ -315,6 +322,28 @@ def _copy_skills(destination: Path, records: list[dict]) -> None:
         destination.mkdir(parents=True, exist_ok=True)
         shutil.copytree(source, destination / bundle_name)
         copied.add(bundle_name)
+
+
+def _routing_hooks(server_names: list[str]) -> dict:
+    argv = [sys.executable, "-m", "ucode.agents.desktop.cowork_routing"]
+    for name in server_names:
+        argv.extend(("--server", name))
+    command = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+    return {
+        "hooks": {
+            "UserPromptSubmit": [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": command,
+                            "timeout": 5,
+                        }
+                    ]
+                }
+            ]
+        }
+    }
 
 
 def _claude_skill_directory(record: dict) -> Path | None:
