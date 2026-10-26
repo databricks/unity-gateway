@@ -11,9 +11,11 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import traceback
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 
 from ucode.config_io import (
@@ -85,9 +87,8 @@ from ucode.managed_files import (
     withdrawn_list_items,
 )
 from ucode.mcp_oauth import (
-    CLAUDE_CODE_CIMD_CLIENT_ID,
     MCP_OAUTH_CALLBACK_PORT,
-    first_available_oauth_client,
+    workspace_supports_cimd,
 )
 from ucode.mcp_web_search import (
     AUTOMATIC_PROVIDER,
@@ -841,7 +842,7 @@ def add_claude_http_mcp_server(
     url: str,
     scope: str = MCP_USER_SCOPE,
     *,
-    client_id: str = CLAUDE_CODE_CIMD_CLIENT_ID,
+    client_id: str | None = None,
     callback_port: int = MCP_OAUTH_CALLBACK_PORT,
 ) -> None:
     """Register a Databricks MCP endpoint as a **direct HTTP** server so Claude
@@ -851,10 +852,9 @@ def add_claude_http_mcp_server(
     per-user connection state), a direct HTTP server lets Claude Code do MCP OAuth
     against ``/oidc`` with the ``resource`` indicator: on a missing/expired
     connection credential, ``/mcp`` shows "needs authentication" and Authenticate
-    runs the login (``/oidc`` -> ``/mcp-service-login``). ``client_id`` is the
-    published CIMD URL client ID. It has the loopback ``/callback`` redirect registered; the port
-    is arbitrary because ``/oidc`` ignores the port
-    for loopback redirects."""
+    runs the login (``/oidc`` -> ``/mcp-service-login``). Claude Code selects
+    its own CIMD client when ``client_id`` is omitted. The callback port is
+    arbitrary because ``/oidc`` ignores it for loopback redirects."""
     cmd = [
         "claude",
         "mcp",
@@ -863,8 +863,7 @@ def add_claude_http_mcp_server(
         "http",
         "-s",
         scope,
-        "--client-id",
-        client_id,
+        *(["--client-id", client_id] if client_id else []),
         "--callback-port",
         str(callback_port),
         name,
@@ -963,7 +962,7 @@ def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
                 add_claude_http_mcp_server(
                     name,
                     entry["url"],
-                    client_id=oauth.get("clientId", CLAUDE_CODE_CIMD_CLIENT_ID),
+                    client_id=oauth.get("clientId"),
                     callback_port=oauth.get("callbackPort", MCP_OAUTH_CALLBACK_PORT),
                 )
             else:
@@ -989,27 +988,27 @@ def managed_mcp_uses_managed_file(workspace: str, *, use_pat: bool) -> bool:
     servers) but Claude Code reads it only from a real managed source, and only as a remote HTTP
     server it can drive OAuth against itself. So it fits only when the platform supports the sudo
     reconcile, the run is interactive, the developer is not on PAT auth (which needs the stdio
-    proxy), and the workspace publishes a Claude Code OAuth client. Every other case falls back to the user-scope registration."""
+    proxy), and the workspace advertises CIMD support. Other cases use user scope."""
     return (
         managed_files_supported()
         and managed_writes_allowed()
         and not use_pat
-        and first_available_oauth_client(workspace, (CLAUDE_CODE_CIMD_CLIENT_ID,)) is not None
+        and workspace_supports_cimd(workspace)
     )
 
 
-def managed_mcp_entry(url: str, *, client_id: str = CLAUDE_CODE_CIMD_CLIENT_ID) -> dict:
+def managed_mcp_entry(url: str, *, client_id: str | None = None) -> dict:
     """A ``managedMcpServers`` entry: a direct HTTP server Claude Code drives OAuth against itself.
 
-    Mirrors :func:`add_claude_http_mcp_server`: a published Claude Code OAuth client and an
-    arbitrary loopback callback port, which ``/oidc`` ignores for loopback redirects."""
+    Mirrors :func:`add_claude_http_mcp_server`: Claude chooses its own CIMD
+    client and ``/oidc`` ignores the arbitrary loopback callback port."""
+    oauth = {"callbackPort": MCP_OAUTH_CALLBACK_PORT}
+    if client_id:
+        oauth["clientId"] = client_id
     return {
         "type": "http",
         "url": url,
-        "oauth": {
-            "clientId": client_id,
-            "callbackPort": MCP_OAUTH_CALLBACK_PORT,
-        },
+        "oauth": oauth,
     }
 
 
@@ -2331,6 +2330,29 @@ def _build_claude_argv(
     ]
 
 
+@contextmanager
+def _launch_settings_file(argv: list[str], *, windows: bool | None = None) -> Iterator[list[str]]:
+    """Keep merged settings in a private file while Claude runs on Windows.
+
+    Inline JSON can exceed CreateProcess's command-line limit when the workspace
+    supplies a large model picker. The file is per launch so concurrent sessions
+    cannot overwrite each other's settings.
+    """
+    if windows is None:
+        windows = os.name == "nt"
+    if not windows or "--settings" not in argv:
+        yield argv
+        return
+    index = argv.index("--settings") + 1
+    if index >= len(argv) or not argv[index].startswith("{"):
+        yield argv
+        return
+    with tempfile.TemporaryDirectory(prefix="ug-claude-settings-") as directory:
+        path = Path(directory) / "settings.json"
+        path.write_text(argv[index], encoding="utf-8")
+        yield [*argv[:index], str(path), *argv[index + 1 :]]
+
+
 def _has_subscription_login() -> bool:
     """True when Claude Code holds a Claude subscription login that a relayed launch will use."""
     try:
@@ -2422,12 +2444,14 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
 
-    proc = subprocess_cross_os.popen(_build_claude_argv(binary, tool_args, relayed=True))
     try:
-        returncode = proc.wait()
-    except KeyboardInterrupt:
-        proc.send_signal(signal.SIGINT)
-        returncode = proc.wait()
+        with _launch_settings_file(_build_claude_argv(binary, tool_args, relayed=True)) as argv:
+            proc = subprocess_cross_os.popen(argv)
+            try:
+                returncode = proc.wait()
+            except KeyboardInterrupt:
+                proc.send_signal(signal.SIGINT)
+                returncode = proc.wait()
     finally:
         cache.stop()
         server.shutdown()
@@ -2523,7 +2547,10 @@ def launch(
         }
         settings_override = _merge_claude_settings(settings_override or {}, {"env": fallback_env})
         os.environ.update(fallback_env)
-    exec_or_spawn(_build_claude_argv(binary, launch_args, settings_override=settings_override))
+    with _launch_settings_file(
+        _build_claude_argv(binary, launch_args, settings_override=settings_override)
+    ) as argv:
+        exec_or_spawn(argv)
 
 
 def validate_cmd(binary: str) -> list[str]:

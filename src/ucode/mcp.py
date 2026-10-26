@@ -37,10 +37,10 @@ from ucode.databricks import (
 )
 from ucode.mcp_connection_login import connection_from_url
 from ucode.mcp_oauth import (
-    CLAUDE_CODE_CIMD_CLIENT_ID,
     CODEX_CIMD_CLIENT_ID,
     CURSOR_OAUTH_CLIENT_ID,
     first_available_oauth_client,
+    workspace_supports_cimd,
 )
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.skills_api import (
@@ -77,11 +77,10 @@ MCP_SQL_PATH = "/api/2.0/mcp/sql"
 # These agents can pin a pre-registered OAuth client and drive the `/oidc` login
 # themselves (so `/mcp` shows "needs authentication" / Cursor shows a login), which
 # is a much better experience than the stdio proxy for a connection-backed service:
-#   - Claude Code: `claude mcp add --transport http --client-id <app>` with its
-#     published CIMD URL client ID.
+#   - Claude Code: `claude mcp add --transport http` chooses its own CIMD URL.
 #   - Codex CLI: an HTTP MCP entry with `oauth.client_id` and `oauth_resource`.
 #   - Cursor: a `url` server with an `auth.CLIENT_ID` in ~/.cursor/mcp.json.
-# Each needs the app *published on the workspace* (checked per-workspace via
+# Codex and Cursor need their app *published on the workspace* (checked via
 # `first_available_oauth_client`) and its loopback `/callback` redirect registered on
 # `/oidc` — which lacks dynamic client registration, so a pre-registered client is
 # required.
@@ -91,10 +90,12 @@ MCP_SQL_PATH = "/api/2.0/mcp/sql"
 # (`--header`) — stay on the stdio proxy even where their apps exist; add one here
 # (with its registration branch below) once its CLI can pin a client.
 AGENT_OAUTH_CLIENTS = {
-    "claude": (CLAUDE_CODE_CIMD_CLIENT_ID,),
     "codex": (CODEX_CIMD_CLIENT_ID,),
     "cursor": (CURSOR_OAUTH_CLIENT_ID,),
 }
+# An empty internal client ID means the agent chooses its own CIMD URL. It is
+# never written into an agent config or sent to the authorization server by ug.
+AUTO_CIMD_CLIENT_ID = ""
 
 MCP_CLIENTS = {
     "claude": {
@@ -280,19 +281,23 @@ def configured_mcp_clients(state: dict, installed_clients: list[str]) -> list[st
 
 
 def _oauth_http_client(client: str, workspace: str, *, use_pat: bool) -> str | None:
-    """The published OAuth app id to register a **native HTTP+OAuth** MCP entry against for
-    ``client`` (Claude Code / Cursor), or ``None`` to use the stdio ``ug mcp-proxy`` instead.
+    """The OAuth client choice for a native HTTP MCP entry, or ``None`` for the proxy.
 
-    Native HTTP+OAuth fits only an agent that pins an OAuth client (``AGENT_OAUTH_CLIENTS``), on a
-    non-PAT run (PAT has no interactive OAuth), whose workspace actually publishes that client.
+    Claude Code chooses its own client when the workspace advertises CIMD; the
+    empty internal value represents that choice. Codex and Cursor use pinned
+    clients only when published on the workspace. PAT always uses the proxy.
     This is the client-level half of the choice, shared by the per-server
     (:func:`configure_client_mcp_server`) and batched (:func:`_managed_mcp_entry`) paths. It is
     URL-independent, so callers can compute it once per (client, workspace); the per-server half
     (:func:`_native_oauth_http_entry`) decides whether a *specific* URL warrants the native entry."""
+    if use_pat:
+        return None
+    if client == "claude":
+        return AUTO_CIMD_CLIENT_ID if workspace_supports_cimd(workspace) else None
     clients = AGENT_OAUTH_CLIENTS.get(client)
     if client == "cursor" and not cursor.supports_cimd():
         return None
-    return first_available_oauth_client(workspace, clients) if clients and not use_pat else None
+    return first_available_oauth_client(workspace, clients) if clients else None
 
 
 def _native_oauth_http_entry(

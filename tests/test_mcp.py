@@ -248,16 +248,11 @@ class TestKiloMcpClient:
 
 
 class TestConfigureClientMcpServer:
-    def test_claude_does_not_probe_legacy_client_when_cimd_is_absent(self, monkeypatch):
-        probed: list[str] = []
-        monkeypatch.setattr(
-            mcp,
-            "first_available_oauth_client",
-            lambda ws, client_ids: probed.extend(client_ids) or None,
-        )
-
+    def test_claude_uses_agent_selected_client_when_cimd_is_advertised(self, monkeypatch):
+        monkeypatch.setattr(mcp, "workspace_supports_cimd", lambda ws: True)
+        assert mcp._oauth_http_client("claude", WS, use_pat=False) == mcp.AUTO_CIMD_CLIENT_ID
+        monkeypatch.setattr(mcp, "workspace_supports_cimd", lambda ws: False)
         assert mcp._oauth_http_client("claude", WS, use_pat=False) is None
-        assert probed == [mcp.CLAUDE_CODE_CIMD_CLIENT_ID]
 
     def test_configures_copilot_with_proxy_argv(self, monkeypatch):
         calls: list[tuple[str, list[str]]] = []
@@ -277,11 +272,7 @@ class TestConfigureClientMcpServer:
     def _capture_claude(self, monkeypatch, *, claude_code_available: bool):
         http_calls: list[tuple[str, str]] = []
         proxy_calls: list[tuple[str, list[str]]] = []
-        monkeypatch.setattr(
-            mcp,
-            "first_available_oauth_client",
-            lambda ws, client_ids: client_ids[0] if claude_code_available else None,
-        )
+        monkeypatch.setattr(mcp, "workspace_supports_cimd", lambda ws: claude_code_available)
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
         monkeypatch.setattr(claude, "remove_claude_mcp_server", lambda name, scope: False)
@@ -791,7 +782,7 @@ class TestApplyMcpServerChanges:
         monkeypatch.setattr(
             mcp.claude, "write_user_mcp_servers", lambda a, r: writes.append((a, r))
         )
-        monkeypatch.setattr(mcp, "first_available_oauth_client", lambda ws, cids: cids[0])
+        monkeypatch.setattr(mcp, "workspace_supports_cimd", lambda ws: True)
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
         url = f"{WS}/ai-gateway/mcp-services/system.ai.github"
@@ -834,7 +825,7 @@ class TestManagedMcpEntry:
             None,
             use_pat=False,
             always_load=False,
-            http_client=mcp.CLAUDE_CODE_CIMD_CLIENT_ID,
+            http_client=mcp.AUTO_CIMD_CLIENT_ID,
         )
         assert e == mcp.claude.managed_mcp_entry(self.MCP_URL)
         assert e["type"] == "http" and e["url"] == self.MCP_URL
@@ -849,7 +840,7 @@ class TestManagedMcpEntry:
             None,
             use_pat=False,
             always_load=False,
-            http_client=mcp.CLAUDE_CODE_CIMD_CLIENT_ID,
+            http_client=mcp.AUTO_CIMD_CLIENT_ID,
         )
         assert e["type"] == "stdio"
 
@@ -866,7 +857,7 @@ class TestManagedMcpEntry:
             None,
             use_pat=False,
             always_load=False,
-            http_client=mcp.CLAUDE_CODE_CIMD_CLIENT_ID,
+            http_client=mcp.AUTO_CIMD_CLIENT_ID,
         )
         assert e["type"] == "stdio"
 
@@ -3556,6 +3547,7 @@ class TestReconcileManagedMcpServers:
             "first_available_oauth_client",
             lambda ws, client_ids: client_ids[0],
         )
+        monkeypatch.setattr(mcp, "workspace_supports_cimd", lambda ws: True)
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
 

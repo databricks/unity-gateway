@@ -6,12 +6,14 @@ registers the service as a **direct HTTP** MCP server, the agent itself drives
 that login via OAuth against the workspace ``/oidc`` — and `/oidc` has no dynamic
 client registration, so the agent must present a **pre-registered public client**.
 
-Claude Code, Codex CLI, and Cursor use their CIMD URL client IDs where published. We probe
-each candidate and cache the result per workspace.
+Claude Code selects its own CIMD URL when the workspace advertises support.
+Codex CLI and Cursor still need pinned, published URLs; we probe and cache those
+per workspace.
 """
 
 from __future__ import annotations
 
+import json
 import time
 import urllib.error
 import urllib.request
@@ -19,11 +21,6 @@ from urllib.parse import urlencode
 
 from ucode.config_io import APP_DIR, read_json_safe, write_json_file
 from ucode.ug_headers import ug_headers
-
-# Claude Code's published URL client ID (Client ID Metadata Document). The
-# workspace must recognize it before ug registers it; merely serving the
-# document at this URL does not make an OAuth client available on every workspace.
-CLAUDE_CODE_CIMD_CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata"
 
 # Codex CLI's published CIMD document is separate from ChatGPT's hosted client.
 # It supports Codex's loopback OAuth callback rather than ChatGPT's hosted redirect.
@@ -40,6 +37,27 @@ CURSOR_OAUTH_CLIENT_ID = "https://cursor.com/oauth/mcp-client.json"
 # Cache positive results only, so the next run detects a newly published app.
 _CACHE_PATH = APP_DIR / "oauth_client_cache.json"
 _CACHE_TTL_SECONDS = 7 * 24 * 3600
+
+
+def workspace_supports_cimd(workspace: str) -> bool:
+    """Whether this workspace advertises public-client CIMD for agent-driven OAuth."""
+    request = urllib.request.Request(
+        f"{workspace.rstrip('/')}/oidc/.well-known/oauth-authorization-server",
+        headers=ug_headers(),
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310
+            metadata = json.load(response)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(metadata, dict):
+        return False
+    methods = metadata.get("token_endpoint_auth_methods_supported")
+    return (
+        metadata.get("client_id_metadata_document_supported") is True
+        and isinstance(methods, list)
+        and "none" in methods
+    )
 
 
 def _probe_oauth_client(workspace: str, client_id: str) -> bool | None:
@@ -139,10 +157,10 @@ def first_available_oauth_client(workspace: str, client_ids: tuple[str, ...]) ->
 
 
 __all__ = [
-    "CLAUDE_CODE_CIMD_CLIENT_ID",
     "CODEX_CIMD_CLIENT_ID",
     "CURSOR_OAUTH_CLIENT_ID",
     "MCP_OAUTH_CALLBACK_PORT",
     "oauth_client_available",
     "first_available_oauth_client",
+    "workspace_supports_cimd",
 ]

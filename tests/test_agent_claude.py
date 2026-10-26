@@ -2788,6 +2788,32 @@ class TestWriteToolConfigManagedSettings:
 
 
 class TestAddClaudeMcpServer:
+    def test_http_lets_claude_select_its_cimd_client(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            claude.subprocess_cross_os,
+            "run",
+            lambda args, **kwargs: calls.append(args) or MagicMock(returncode=0),
+        )
+
+        claude.add_claude_http_mcp_server("github", GH_URL)
+
+        assert calls == [
+            [
+                "claude",
+                "mcp",
+                "add",
+                "--transport",
+                "http",
+                "-s",
+                "user",
+                "--callback-port",
+                "3118",
+                "github",
+                GH_URL,
+            ]
+        ]
+
     def test_registers_stdio_proxy_command(self, monkeypatch):
         calls: list[dict] = []
 
@@ -3726,6 +3752,23 @@ class TestBuildClaudeArgv:
         argv = claude._build_claude_argv("claude", ["-p", "hi"])
         assert argv == ["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), "-p", "hi"]
 
+    def test_windows_launch_writes_merged_settings_to_private_temporary_file(self):
+        settings = json.dumps({"availableModels": ["model-" + "x" * 40000]})
+        argv = ["claude", "--settings", settings, "-p", "hi"]
+        with claude._launch_settings_file(argv, windows=True) as launch_argv:
+            path = Path(launch_argv[2])
+            assert path.name == "settings.json"
+            assert json.loads(path.read_text(encoding="utf-8")) == json.loads(settings)
+            assert launch_argv[3:] == ["-p", "hi"]
+            assert len(" ".join(launch_argv)) < 1000
+        assert not path.exists()
+        assert argv[2] == settings
+
+    def test_windows_launch_keeps_existing_settings_path(self):
+        argv = ["claude", "--settings", "settings.json", "-p", "hi"]
+        with claude._launch_settings_file(argv, windows=True) as launch_argv:
+            assert launch_argv == argv
+
     def test_non_relayed_does_not_set_setting_sources(self, monkeypatch):
         # Normal launches must keep loading user settings (hooks/permissions) —
         # no --setting-sources so nothing changes for the stored-key path.
@@ -4081,11 +4124,7 @@ class TestManagedMcpUsesManagedFile:
     def _wire(self, monkeypatch, *, supported=True, interactive=True, oauth=True):
         monkeypatch.setattr(claude, "managed_files_supported", lambda: supported)
         monkeypatch.setattr(claude, "managed_writes_allowed", lambda: interactive)
-        monkeypatch.setattr(
-            claude,
-            "first_available_oauth_client",
-            lambda ws, client_ids: client_ids[0] if oauth else None,
-        )
+        monkeypatch.setattr(claude, "workspace_supports_cimd", lambda ws: oauth)
 
     def test_true_when_all_conditions_hold(self, monkeypatch):
         self._wire(monkeypatch)
@@ -4129,10 +4168,7 @@ class TestClaudeReconcileManagedMcp:
         doc = json.loads(captured["text"])
         assert doc["managedMcpServers"]["system-ai-github"]["url"] == GH_URL
         assert doc["managedMcpServers"]["system-ai-github"]["type"] == "http"
-        assert (
-            doc["managedMcpServers"]["system-ai-github"]["oauth"]["clientId"]
-            == claude.CLAUDE_CODE_CIMD_CLIENT_ID
-        )
+        assert "clientId" not in doc["managedMcpServers"]["system-ai-github"]["oauth"]
         assert doc["env"] == {"X": "1"}
         assert doc["apiKeyHelper"] == "ug auth-token"
         assert captured["owned_paths"] == [["managedMcpServers"]]
