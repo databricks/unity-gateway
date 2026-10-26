@@ -268,13 +268,6 @@ class TestRenderOverlay:
         headers = overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
         assert "Databricks-Ai-Gateway-Request-Tags" not in headers
 
-    def test_request_tags_header_absent_when_env_unset(self, monkeypatch):
-        monkeypatch.delenv("AI_GATEWAY_REQUEST_TAGS", raising=False)
-        overlay, _ = claude.render_overlay(WS, "s4")
-        assert (
-            "Databricks-Ai-Gateway-Request-Tags" not in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
-        )
-
     def test_does_not_disable_experimental_betas(self):
         # Would suppress the beta header 1h prompt caching needs.
         overlay, _ = claude.render_overlay(WS, "s4")
@@ -3133,7 +3126,9 @@ class TestClaudeLaunch:
         monkeypatch.setattr(
             claude,
             "_launch_relayed",
-            lambda state, binary, tool_args: calls.append((state, binary, tool_args)),
+            lambda state, binary, tool_args, settings_override=None: calls.append(
+                (state, binary, tool_args)
+            ),
         )
         state = {"workspace": WS, "claude_relayed": True}
 

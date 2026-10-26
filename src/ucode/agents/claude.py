@@ -1558,9 +1558,15 @@ def write_tool_config(
         else:
             # No managed config: preserve the developer's own pre-existing headers, replacing only
             # the header names ug manages.
-            merged["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = _merge_anthropic_custom_headers(
+            merged_custom_headers = _merge_anthropic_custom_headers(
                 existing_custom_headers, overlay_custom_headers
             )
+            if managed_settings_snapshots is None:
+                # Only ug's private file: older ug persisted the launch's tags there verbatim under
+                # this exact spelling, and they would otherwise ride along in every session. The
+                # OS-managed file may carry an admin's or Isaac's own tags line, so it is kept.
+                merged_custom_headers = _strip_persisted_request_tags(merged_custom_headers)
+            merged["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = merged_custom_headers
         # Drop any apiKeyHelper a prior non-relayed launch left in the file; relayed
         # must not carry one (it would outrank the subscription OAuth).
         if relayed:
@@ -1755,6 +1761,15 @@ def _merge_anthropic_custom_headers(existing: object, ucode_headers: str) -> str
         if name not in replaced_names:
             merged.append(ucode_lines_by_name[name])
     return "\n".join(merged)
+
+
+def _strip_persisted_request_tags(headers: str) -> str:
+    """Drop the request-tags line older ug wrote, matched by the exact name ug emitted."""
+    return "\n".join(
+        line
+        for line in headers.splitlines()
+        if line.partition(":")[0].strip() != AI_GATEWAY_REQUEST_TAGS_HEADER
+    )
 
 
 def _required_custom_headers(value: object) -> dict[str, str] | None:
@@ -2225,6 +2240,18 @@ def _compose_v2_settings(tool_args: list[str]) -> tuple[dict, list[str]]:
     return _merge_claude_settings(settings, read_json_safe(CLAUDE_SETTINGS_PATH)), remaining
 
 
+def _compose_with_override(override: dict | None) -> Callable[[list[str]], tuple[dict, list[str]]]:
+    """``_compose_v2_settings`` with a per-launch settings override layered on top."""
+    if not override:
+        return _compose_v2_settings
+
+    def compose(tool_args: list[str]) -> tuple[dict, list[str]]:
+        settings, remaining = _compose_v2_settings(tool_args)
+        return _merge_claude_settings(settings, override), remaining
+
+    return compose
+
+
 def _launch_model_args(tool_args: list[str], launch_model: str | None) -> list[str]:
     if not launch_model or has_explicit_model_arg(tool_args):
         return []
@@ -2396,7 +2423,12 @@ def _rewrite_relayed_port(state: dict, port: int) -> None:
         write_json_file(CLAUDE_SETTINGS_PATH, settings)
 
 
-def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
+def _launch_relayed(
+    state: dict,
+    binary: str,
+    tool_args: list[str],
+    settings_override: dict | None = None,
+) -> None:
     """Relayed launch: sign into the Claude subscription, start the loopback
     refresh proxy, then run Claude Code alongside it (the proxy must outlive the
     exec, so we spawn-and-wait rather than replacing the process)."""
@@ -2425,7 +2457,9 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
 
-    proc = subprocess_cross_os.popen(_build_claude_argv(binary, tool_args, relayed=True))
+    proc = subprocess_cross_os.popen(
+        _build_claude_argv(binary, tool_args, relayed=True, settings_override=settings_override)
+    )
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:
@@ -2438,14 +2472,14 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     raise SystemExit(returncode)
 
 
-def _deliver_request_tags(*, per_launch_settings: bool) -> dict | None:
+def _deliver_request_tags() -> dict | None:
     """Send ``AI_GATEWAY_REQUEST_TAGS`` with this launch's requests only, never persisted.
 
     With the header mod active the tags join ``UG_HEADERS`` in the process environment, which
     the mod adds to every request even though managed settings own ``ANTHROPIC_CUSTOM_HEADERS``.
-    Otherwise, with no managed ``ANTHROPIC_CUSTOM_HEADERS`` and a launch that takes ``--settings``
-    (``per_launch_settings``), returns a settings override carrying the saved headers plus the tags.
-    Anywhere else it warns, because managed settings outrank every launch-scoped override."""
+    Otherwise, with no managed ``ANTHROPIC_CUSTOM_HEADERS``, returns a settings override carrying
+    the saved headers plus the tags; every launch path (plain, relayed, smart-routed) applies it.
+    With managed headers it warns, because managed settings outrank every launch-scoped override."""
     tags = request_tags_header_value()
     if not tags:
         return None
@@ -2468,7 +2502,7 @@ def _deliver_request_tags(*, per_launch_settings: bool) -> dict | None:
             managed_env = None
         if isinstance(managed_env, dict):
             managed_headers = managed_env.get("ANTHROPIC_CUSTOM_HEADERS")
-    if per_launch_settings and managed_headers is None:
+    if managed_headers is None:
         saved_env = read_json_safe(CLAUDE_SETTINGS_PATH).get("env")
         saved = saved_env.get("ANTHROPIC_CUSTOM_HEADERS") if isinstance(saved_env, dict) else None
         lines = [entry for entry in str(saved or "").splitlines() if entry.strip()]
@@ -2480,8 +2514,8 @@ def _deliver_request_tags(*, per_launch_settings: bool) -> dict | None:
         ]
         return {"env": {"ANTHROPIC_CUSTOM_HEADERS": "\n".join([*lines, line])}}
     print_warning(
-        f"Claude Code won't send {AI_GATEWAY_REQUEST_TAGS_ENV_VAR}: managed settings own the "
-        "request headers and ug's header mod isn't installed. Run `ug configure` from an "
+        f"Claude Code won't send {AI_GATEWAY_REQUEST_TAGS_ENV_VAR}: the OS-managed settings set "
+        "ANTHROPIC_CUSTOM_HEADERS and ug's header mod isn't installed. Run `ug configure` from an "
         "interactive terminal on Linux or macOS, without UG_SKIP_OS_SETTINGS."
     )
     return None
@@ -2494,9 +2528,9 @@ def launch(
     options: LaunchOptions,
 ) -> None:
     tool_args = _external_web_search_args(state, tool_args)
-    tags_override = _deliver_request_tags(
-        per_launch_settings=not state.get("claude_relayed") and not options.launch_smart_routing
-    )
+    # Computed once, before any path: relayed, smart-routed, its fallback, and plain launches all
+    # apply it (smart routing through its composed settings, the others via `--settings`).
+    tags_override = _deliver_request_tags()
     binary = SPEC["binary"]
     workspace = state.get("workspace")
     if os.environ.get(UG_HEADERS_ENV_VAR, "").strip() and not header_mod_active():
@@ -2510,7 +2544,7 @@ def launch(
         # than persisting it in Claude's private or OS-managed settings.
         os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
     if state.get("claude_relayed"):
-        _launch_relayed(state, binary, tool_args)
+        _launch_relayed(state, binary, tool_args, settings_override=tags_override)
         return
     launch_default_model = state.get("_claude_launch_default_model")
     if isinstance(launch_default_model, str) and launch_default_model:
@@ -2530,7 +2564,7 @@ def launch(
                 user_settings_path=CLAUDE_USER_SETTINGS_PATH,
                 # With no user pin, let Claude resolve its starting model from its own settings.
                 launch_model=pinned_model,
-                compose_settings=_compose_v2_settings,
+                compose_settings=_compose_with_override(tags_override),
                 launch_model_args=_launch_model_args,
                 model_name=_maybe_add_1m_suffix,
             )
