@@ -515,7 +515,10 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
                         description = tool["description"]
                         if orchestration_enabled and routed:
                             assert "before gathering source evidence" in description, description
-                            assert "Agents run in the background by default." in description
+                            assert (
+                                "To continue a previously spawned agent, use SendMessage"
+                                in description
+                            )
                             assert (
                                 "starts a fresh agent with no memory of prior runs" in description
                             )
