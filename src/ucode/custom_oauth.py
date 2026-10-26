@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -162,8 +163,22 @@ def ensure_custom_oauth_cli_token(
         "--scopes",
         ",".join(scope for scope in config["scopes"] if scope != "offline_access"),
     ]
+    timeout = CUSTOM_OAUTH_TIMEOUT_MS // 1000
     try:
-        run(login_args, timeout=CUSTOM_OAUTH_TIMEOUT_MS // 1000)
+        run(login_args, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"Custom-client browser sign-in timed out after {timeout} seconds. "
+            "Retry and complete sign-in in the browser."
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            "Custom-client browser sign-in failed. Check the Databricks CLI output and retry."
+        ) from exc
+    except OSError as exc:
+        raise RuntimeError(
+            "Custom-client browser sign-in could not start. Check the Databricks CLI installation and retry."
+        ) from exc
     finally:
         clear_databricks_token_cache()
     return get_databricks_token(workspace, profile)
