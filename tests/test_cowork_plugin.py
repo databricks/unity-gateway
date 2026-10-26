@@ -140,14 +140,14 @@ def test_configure_generates_plugin_and_installs_in_cowork_scope(tmp_path, monke
 
     plugin_root = app_dir / cowork.MARKETPLACE_DIRECTORY_NAME / "plugins" / cowork.PLUGIN_NAME
     plugin = json.loads((plugin_root / ".claude-plugin" / "plugin.json").read_text())
-    assert (plugin["name"], plugin["displayName"]) == ("unity-gateway", "ug")
+    assert (plugin["name"], plugin["displayName"]) == ("ug", "ug")
     marketplace = json.loads(
         (
             app_dir / cowork.MARKETPLACE_DIRECTORY_NAME / ".claude-plugin" / "marketplace.json"
         ).read_text()
     )
     entry = marketplace["plugins"][0]
-    assert (entry["name"], entry["displayName"]) == ("unity-gateway", "ug")
+    assert (entry["name"], entry["displayName"]) == ("ug", "ug")
     assert plugin["mcpServers"] == "./.mcp.json"
     mcp = json.loads((plugin_root / ".mcp.json").read_text())
     assert mcp == {
@@ -180,7 +180,7 @@ def test_configure_generates_plugin_and_installs_in_cowork_scope(tmp_path, monke
     assert calls[-1][0][1:] == [
         "plugin",
         "install",
-        "unity-gateway@unity-gateway-cowork",
+        "ug@unity-gateway-cowork",
         "--cowork",
         "--json",
     ]
@@ -233,6 +233,87 @@ def test_configure_updates_installed_plugin(tmp_path, monkeypatch):
         assert list(json.loads(mcp_path.read_text())["mcpServers"]) == ["github"]
 
     assert calls[-1][1:3] == ["plugin", "update"]
+    assert all(argv[1:3] != ["plugin", "uninstall"] for argv in calls)
+
+
+@pytest.mark.parametrize(
+    "legacy_entry",
+    [
+        cowork.LEGACY_PLUGIN_ID,
+        {"pluginId": cowork.LEGACY_PLUGIN_ID},
+        {"id": cowork.LEGACY_PLUGIN_ID},
+        {"name": "unity-gateway", "marketplace": cowork.MARKETPLACE_NAME},
+    ],
+)
+@pytest.mark.parametrize("already_installed", [False, True])
+def test_install_replaces_legacy_registration_after_success(
+    tmp_path, monkeypatch, legacy_entry, already_installed
+):
+    cowork_root = tmp_path / "cowork"
+    monkeypatch.setattr(cowork.shutil, "which", lambda name: str(tmp_path / "bin" / name))
+    installed = {cowork.LEGACY_PLUGIN_ID, "other@unrelated"}
+    if already_installed:
+        installed.add(cowork.PLUGIN_ID)
+    calls = []
+
+    # Keep the external Claude CLI isolated from the developer's plugin registrations.
+    def run(argv, **kwargs):
+        assert kwargs["env"]["CLAUDE_CONFIG_DIR"] == str(cowork_root)
+        calls.append(argv[1:])
+        stdout = '{"outcome":"ok"}'
+        if argv[1:3] == ["plugin", "validate"]:
+            stdout = "valid"
+        elif argv[1:3] == ["plugin", "list"]:
+            entries = [legacy_entry, {"id": "other@unrelated"}]
+            if already_installed:
+                entries.append({"pluginId": cowork.PLUGIN_ID})
+            stdout = json.dumps({"plugins": entries})
+        elif argv[1:3] in (["plugin", "install"], ["plugin", "update"]):
+            installed.add(argv[3])
+        elif argv[1:3] == ["plugin", "uninstall"]:
+            assert cowork.PLUGIN_ID in installed
+            installed.remove(argv[3])
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(cowork.subprocess_cross_os, "run", run)
+
+    cowork._install_plugin(cowork_root, tmp_path / "marketplace")
+
+    assert installed == {"ug@unity-gateway-cowork", "other@unrelated"}
+    assert calls[-2:] == [
+        [
+            "plugin",
+            "update" if already_installed else "install",
+            cowork.PLUGIN_ID,
+            "--cowork",
+            "--json",
+        ],
+        ["plugin", "uninstall", cowork.LEGACY_PLUGIN_ID, "--cowork", "--json"],
+    ]
+
+
+def test_install_failure_preserves_legacy_registration(tmp_path, monkeypatch):
+    monkeypatch.setattr(cowork.shutil, "which", lambda name: str(tmp_path / "bin" / name))
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv[1:])
+        stdout = '{"outcome":"ok"}'
+        if argv[1:3] == ["plugin", "validate"]:
+            stdout = "valid"
+        elif argv[1:3] == ["plugin", "list"]:
+            stdout = json.dumps([{"pluginId": cowork.LEGACY_PLUGIN_ID}])
+        elif argv[1:3] == ["plugin", "install"]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="installation failed")
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(cowork.subprocess_cross_os, "run", run)
+
+    with pytest.raises(RuntimeError, match="installation failed"):
+        cowork._install_plugin(tmp_path / "cowork", tmp_path / "marketplace")
+
+    assert calls[-1] == ["plugin", "install", cowork.PLUGIN_ID, "--cowork", "--json"]
+    assert all(argv[:2] != ["plugin", "uninstall"] for argv in calls)
 
 
 def test_cowork_mcp_config_shortens_uc_names_and_preserves_routing(tmp_path, monkeypatch):
@@ -496,7 +577,12 @@ def test_revert_uses_saved_root_and_removes_owned_files(tmp_path, monkeypatch):
     assert cowork.revert_cowork()
     assert [call[0][1:3] for call in calls] == [
         ["plugin", "uninstall"],
+        ["plugin", "uninstall"],
         ["plugin", "marketplace"],
+    ]
+    assert [call[0][3] for call in calls[:2]] == [
+        "ug@unity-gateway-cowork",
+        "unity-gateway@unity-gateway-cowork",
     ]
     assert all(call[1]["env"]["CLAUDE_CONFIG_DIR"] == str(cowork_root) for call in calls)
     assert not marketplace.exists()
@@ -550,7 +636,7 @@ def test_revert_removes_orphaned_registration_without_saved_state(tmp_path, monk
     monkeypatch.setattr(cowork.subprocess_cross_os, "run", run)
 
     assert cowork.revert_cowork()
-    assert len(calls) == 2
+    assert len(calls) == 3
     assert all(call[1]["env"]["CLAUDE_CONFIG_DIR"] == str(orphaned_root) for call in calls)
     assert all(call[1]["env"]["CLAUDE_CONFIG_DIR"] != str(unrelated_root) for call in calls)
 

@@ -19,9 +19,10 @@ from ucode.skills_state import records_for_scope
 from ucode.ui import print_warning
 
 MARKETPLACE_NAME = "unity-gateway-cowork"
-PLUGIN_NAME = "unity-gateway"
+PLUGIN_NAME = "ug"
 PLUGIN_DISPLAY_NAME = "ug"
 PLUGIN_ID = f"{PLUGIN_NAME}@{MARKETPLACE_NAME}"
+LEGACY_PLUGIN_ID = f"unity-gateway@{MARKETPLACE_NAME}"
 STATE_FILENAME = "claude-cowork.json"
 MARKETPLACE_DIRECTORY_NAME = "claude-cowork-marketplace"
 
@@ -117,12 +118,15 @@ def _remove_plugin_registration(cowork_root: Path) -> bool:
     claude = _claude_binary()
     env = os.environ.copy()
     env["CLAUDE_CONFIG_DIR"] = str(cowork_root)
-    plugin_result = _run_claude_json(
-        claude,
-        ["plugin", "uninstall", PLUGIN_ID, "--cowork", "--json"],
-        env,
-        accepted_failures=("not installed", "not_installed", "not found"),
-    )
+    plugin_result = False
+    for plugin_id in (PLUGIN_ID, LEGACY_PLUGIN_ID):
+        result = _run_claude_json(
+            claude,
+            ["plugin", "uninstall", plugin_id, "--cowork", "--json"],
+            env,
+            accepted_failures=("not installed", "not_installed", "not found"),
+        )
+        plugin_result = bool(result) or plugin_result
     marketplace_result = _run_claude_json(
         claude,
         [
@@ -404,6 +408,13 @@ def _install_plugin(cowork_root: Path, marketplace_root: Path) -> None:
         ["plugin", action, PLUGIN_ID, "--cowork", "--json"],
         env,
     )
+    if _contains_plugin_id(installed, plugin_id=LEGACY_PLUGIN_ID):
+        _run_claude_json(
+            claude,
+            ["plugin", "uninstall", LEGACY_PLUGIN_ID, "--cowork", "--json"],
+            env,
+            accepted_failures=("not installed", "not_installed", "not found"),
+        )
 
 
 def _claude_binary() -> str:
@@ -465,18 +476,19 @@ def _run_claude_json(
     return payload
 
 
-def _contains_plugin_id(payload: object) -> bool:
+def _contains_plugin_id(payload: object, *, plugin_id: str = PLUGIN_ID) -> bool:
     if isinstance(payload, str):
-        return payload == PLUGIN_ID
+        return payload == plugin_id
     if isinstance(payload, list):
-        return any(_contains_plugin_id(value) for value in payload)
+        return any(_contains_plugin_id(value, plugin_id=plugin_id) for value in payload)
     if isinstance(payload, dict):
-        plugin_id = payload.get("pluginId") or payload.get("id")
-        if plugin_id == PLUGIN_ID:
+        installed_id = payload.get("pluginId") or payload.get("id")
+        if installed_id == plugin_id:
             return True
-        if payload.get("name") == PLUGIN_NAME and payload.get("marketplace") == MARKETPLACE_NAME:
+        name, _, marketplace = plugin_id.partition("@")
+        if payload.get("name") == name and payload.get("marketplace") == marketplace:
             return True
-        return any(_contains_plugin_id(value) for value in payload.values())
+        return any(_contains_plugin_id(value, plugin_id=plugin_id) for value in payload.values())
     return False
 
 

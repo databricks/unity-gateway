@@ -468,7 +468,9 @@ a repeated revert also returns 0. This does not establish native Desktop coverag
 scoped Claude plugin commands, install/update selection, PAT/custom-OAuth behavior, and
 owned-file cleanup. Alias checks cover short UC names, unchanged proxy routing, custom-name
 preservation, order-independent collisions, and repeated replacement of old keys.
-Manifest checks require the `ug` display name in both manifests without renaming the plugin ID.
+Manifest checks require the `ug` name and display name in both manifests.
+Legacy-registration component checks cover replacement after successful install/update,
+preservation on install failure, scoped cleanup, and unrelated-plugin preservation.
 `../test_desktop_configure_cli.py` covers managed orchestration and
 cleanup. Both are mocked component coverage; the integration suite does not launch Cowork,
 connect a plugin MCP server, discover its deferred tool, or run a task through it.
