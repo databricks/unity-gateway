@@ -478,6 +478,7 @@ class TestMcpBridgeConnectionLogin:
                     response = (await client_receive.receive()).message
                     assert isinstance(response, mcp_proxy.JSONRPCResponse)
                     assert response.result["tools"][0]["name"] == "authenticate"
+                    assert "requests involving github" in response.result["tools"][0]["description"]
                     assert "same turn" in response.result["tools"][0]["description"]
                     with pytest.raises(anyio.WouldBlock):
                         upstream_receive.receive_nowait()
@@ -514,6 +515,8 @@ class TestMcpBridgeConnectionLogin:
                     received = (await client_receive.receive()).message
                     assert isinstance(received, mcp_proxy.JSONRPCResponse)
                     assert received.result["capabilities"]["tools"]["listChanged"] is True
+                    assert "requests involving github" in received.result["instructions"]
+                    assert "authenticate tool" in received.result["instructions"]
                 tg.cancel_scope.cancel()
 
         anyio.run(scenario)
@@ -550,6 +553,25 @@ class TestMcpBridgeConnectionLogin:
                 tg.cancel_scope.cancel()
 
         anyio.run(scenario)
+
+    def test_initialize_appends_routing_guidance_to_server_instructions(self):
+        bridge = mcp_proxy._McpBridge(mcp_proxy._ConnectionLogin(CONN_URL, WS, "p"))
+        request = mcp_proxy.SessionMessage(
+            mcp_proxy.JSONRPCRequest(jsonrpc="2.0", id=1, method="initialize", params={})
+        )
+        response = mcp_proxy.SessionMessage(
+            mcp_proxy.JSONRPCResponse(
+                jsonrpc="2.0",
+                id=1,
+                result={"capabilities": {"tools": {}}, "instructions": "Server guidance."},
+            )
+        )
+
+        received = bridge._with_initialize_changes(response, request).message
+
+        assert isinstance(received, mcp_proxy.JSONRPCResponse)
+        assert received.result["instructions"].startswith("Server guidance.\n\n")
+        assert "requests involving github" in received.result["instructions"]
 
     def test_authentication_tool_runs_login_after_upstream_auth_error(self, monkeypatch):
         monkeypatch.setattr(
