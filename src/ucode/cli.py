@@ -409,7 +409,12 @@ def _prompt_for_configuration(tool: str | None = None) -> tuple[str, str | None]
         desc = f"Configure {TOOL_SPECS[tool]['display']} to use your Databricks endpoint."
     with spinner("Loading Databricks workspaces and profiles..."):
         profiles = get_databricks_profiles()
-    return prompt_for_workspace(desc, profiles)
+    url, profile = prompt_for_workspace(desc, profiles)
+    workspace_id = None
+    if profile:
+        entry = next((p for p in list_profile_entries() if p.get("name") == profile), {})
+        workspace_id = str(entry.get("workspace_id") or "").strip() or None
+    return resolve_workspace(url, workspace_id, explicit_id=False), profile
 
 
 def _custom_oauth_config(
@@ -554,7 +559,10 @@ def configure_shared_state(
     Only the local profile resolution and the shared state assembly still run;
     the saved model lists are preserved.
     """
-    workspace, workspace_id = split_workspace_key(normalize_workspace_url(workspace))
+    workspace = normalize_workspace_url(workspace)
+    if not split_workspace_key(workspace)[1]:
+        workspace = resolve_workspace(workspace)
+    workspace, workspace_id = split_workspace_key(workspace)
     prior_state = load_state()
     previous_workspace = prior_state.get("workspace")
     # Re-configures pass the saved bare host; they keep its workspace on a multi-workspace host.
@@ -562,6 +570,7 @@ def configure_shared_state(
         workspace_id = prior_state.get("workspace_id")
     key = workspace_key(workspace, workspace_id)
     previous_key = state_workspace_key(prior_state)
+    purge_kwargs = {"same_host_switch": True} if previous_workspace == workspace else {}
     if use_pat is None:
         use_pat = bool(prior_state.get("use_pat")) and previous_key == key
     if databricks_ai_tools_enabled is None:
@@ -633,8 +642,8 @@ def configure_shared_state(
                 state["profile"] = profile
         save_state(state)
         # Scrub MCP entries ucode wrote for a previous workspace.
-        if previous_workspace and previous_workspace != workspace:
-            purge_cross_workspace_mcp_residue(state, workspace)
+        if previous_key and previous_key != key:
+            purge_cross_workspace_mcp_residue(state, workspace, **purge_kwargs)
         # Diagnostic reasons are transient (attached after save_state so they
         # don't land on disk). No discovery ran, so there is nothing to report.
         state["_discovery_reasons"] = {"claude": None, "gemini": None, "codex": None, "oss": None}
@@ -795,8 +804,8 @@ def configure_shared_state(
     save_state(state)
     # Scrub MCP entries that ucode wrote for the previous workspace so the new
     # workspace's agent configs aren't stale.
-    if previous_workspace and previous_workspace != workspace:
-        purge_cross_workspace_mcp_residue(state, workspace)
+    if previous_key and previous_key != key:
+        purge_cross_workspace_mcp_residue(state, workspace, **purge_kwargs)
     # Diagnostic reasons are transient — attach after save_state so they don't
     # land on disk but are available to the caller for this run.
     state["_discovery_reasons"] = {
@@ -893,6 +902,9 @@ def _launch_workspace_state(workspace: str | None) -> dict:
     state = load_state()
     saved = state_workspace_key(state)
     requested = resolve_workspace(workspace) if workspace else None
+    if requested and requested == state.get("workspace"):
+        # The bare host of a multi-workspace host keeps its saved workspace.
+        requested = saved
     # The flag wins over the saved selection; either is refused if it isn't the installed one.
     target = managed_launch_workspace(requested or saved)
     # An explicit --workspace always saves the selection, as on main.

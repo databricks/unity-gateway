@@ -31,14 +31,6 @@ def clear_host_types():
     workspace_mod._host_types.clear()
 
 
-class _Response(io.BytesIO):
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        return None
-
-
 def _host_types(**types: str | None):
     return patch.object(workspace_mod, "host_type", side_effect=lambda host: types.get(host))
 
@@ -96,7 +88,7 @@ class TestValidateWorkspaceId:
         with pytest.raises(RuntimeError, match="disaster-recovery"):
             validate_workspace_id("1b4e28ba-2fa1-11d2-883f-0016d3cca427")
 
-    @pytest.mark.parametrize("value", ["abc", "9007199254740992", "-1"])
+    @pytest.mark.parametrize("value", ["abc", "9007199254740992", "-1", "\u00b2"])
     def test_rejects_other_values(self, value):
         with pytest.raises(RuntimeError, match="not a valid numeric workspace id"):
             validate_workspace_id(value)
@@ -107,7 +99,7 @@ class TestValidateWorkspaceId:
 
 class TestHostType:
     def _response(self, payload: dict):
-        return _Response(json.dumps(payload).encode())
+        return io.BytesIO(json.dumps(payload).encode())
 
     def test_reads_host_type_without_a_selector(self):
         with patch.object(
@@ -130,10 +122,29 @@ class TestHostType:
             host_type(CLASSIC)
         assert urlopen.call_count == 1
 
-    def test_unreachable_host_is_unknown(self):
+    def test_unreachable_host_raises_and_is_not_cached(self):
         with patch.object(
             workspace_mod.urllib_request, "urlopen", side_effect=urllib_error.URLError("down")
         ):
+            with pytest.raises(workspace_mod.HostUnreachableError, match="down"):
+                host_type(CLASSIC)
+            assert not workspace_mod.is_unified_host(CLASSIC)
+        assert CLASSIC not in workspace_mod._host_types
+
+    def test_bad_response_is_unreachable(self):
+        with (
+            patch.object(
+                workspace_mod.urllib_request,
+                "urlopen",
+                side_effect=workspace_mod.http.client.IncompleteRead(b""),
+            ),
+            pytest.raises(workspace_mod.HostUnreachableError),
+        ):
+            host_type(CLASSIC)
+
+    def test_host_without_the_document_is_a_single_workspace_host(self):
+        error = urllib_error.HTTPError(f"{CLASSIC}/x", 404, "Not Found", None, None)  # type: ignore[arg-type]
+        with patch.object(workspace_mod.urllib_request, "urlopen", side_effect=error):
             assert host_type(CLASSIC) is None
 
 
@@ -152,7 +163,16 @@ class TestResolveWorkspace:
             assert resolve_workspace(f"{CLASSIC}/?o=123") == CLASSIC
         assert "serves a single workspace" in capsys.readouterr().out
 
-    def test_unreachable_host_is_treated_as_single_workspace(self):
+    def test_unreachable_host_with_an_id_fails(self):
+        with (
+            patch.object(
+                workspace_mod, "host_type", side_effect=workspace_mod.HostUnreachableError("down")
+            ),
+            pytest.raises(RuntimeError, match="Could not check"),
+        ):
+            resolve_workspace(f"{SHARED}/?o=123")
+
+    def test_host_without_host_type_is_treated_as_single_workspace(self):
         with _host_types():
             assert resolve_workspace(f"{CLASSIC}/?o=123") == CLASSIC
 

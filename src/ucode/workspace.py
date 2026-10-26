@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import uuid
@@ -19,6 +20,7 @@ _MAX_WORKSPACE_ID = 2**53
 _HOST_TYPE_TIMEOUT_SECONDS = 3
 _KEY_PATTERN = re.compile(r"^(https?://[^/?#]+)\?w=([0-9]+)$")
 _host_types: dict[str, str | None] = {}
+_DIGITS = re.compile(r"[0-9]+")
 
 
 @dataclass(frozen=True)
@@ -96,36 +98,64 @@ def validate_workspace_id(workspace_id: str) -> str:
             f"Workspace id {value} is a disaster-recovery stable connection id, which ug does "
             "not support yet. Use the numeric workspace id instead."
         )
-    if not value.isdigit() or int(value) >= _MAX_WORKSPACE_ID:
+    if not _DIGITS.fullmatch(value) or int(value) >= _MAX_WORKSPACE_ID:
         raise RuntimeError(f"Workspace id {value} is not a valid numeric workspace id.")
     return str(int(value))
+
+
+class HostUnreachableError(RuntimeError):
+    pass
 
 
 def host_type(host: str) -> str | None:
     """The host's ``host_type`` from its unauthenticated ``/.well-known/databricks-config``.
 
     Fetched without a workspace selector, which would replace the host-level answer. ``None`` when
-    the host doesn't answer, which callers treat as a single-workspace host.
+    the host answers without one (an older or single-workspace host). Raises
+    :class:`HostUnreachableError` when there is no answer at all; that result isn't cached.
     """
     if host in _host_types:
         return _host_types[host]
-    result: str | None = None
     request = urllib_request.Request(
         f"{host}/.well-known/databricks-config", headers={"Accept": "application/json"}
     )
+    result: str | None = None
     try:
         with urllib_request.urlopen(request, timeout=_HOST_TYPE_TIMEOUT_SECONDS) as response:
             payload = json.loads(response.read().decode("utf-8"))
         value = payload.get("host_type") if isinstance(payload, dict) else None
         result = value.lower() if isinstance(value, str) else None
-    except (urllib_error.URLError, OSError, ValueError):
+    except (urllib_error.HTTPError, ValueError):
         result = None
+    except (urllib_error.URLError, http.client.HTTPException, OSError) as exc:
+        reason = exc.reason if isinstance(exc, urllib_error.URLError) else exc
+        raise HostUnreachableError(f"{host} did not answer ({reason}).") from exc
     _host_types[host] = result
     return result
 
 
 def is_unified_host(host: str) -> bool:
-    return host_type(host) == UNIFIED_HOST_TYPE
+    """Whether ``host`` serves several workspaces; an unreachable host counts as no."""
+    try:
+        return host_type(host) == UNIFIED_HOST_TYPE
+    except HostUnreachableError:
+        return False
+
+
+def canonical_workspace_key(key: str) -> str:
+    """``key`` as this version saves it: unchanged when canonical, else its bare host.
+
+    Older versions saved a pasted URL as is, so a saved workspace can carry a path or query. A
+    query selector is dropped rather than kept: whether the host serves several workspaces is
+    unknown here.
+    """
+    if split_workspace_key(key)[1]:
+        return key
+    try:
+        parsed = split_workspace_url(key)
+    except RuntimeError:
+        return key
+    return parsed.host if parsed.extra_parts or parsed.workspace_id else key
 
 
 def resolve_workspace(
@@ -152,7 +182,14 @@ def resolve_workspace(
         print_note(f"Using {parsed.host}; the rest of {raw} is not part of the workspace URL.")
     if selected is None:
         return parsed.host
-    if is_unified_host(parsed.host):
+    try:
+        kind = host_type(parsed.host)
+    except HostUnreachableError as exc:
+        raise RuntimeError(
+            f"Could not check whether {parsed.host} serves several workspaces: {exc} "
+            "Check your network and retry."
+        ) from exc
+    if kind == UNIFIED_HOST_TYPE:
         return workspace_key(parsed.host, validate_workspace_id(selected))
     if explicit_id or parsed.workspace_id:
         print_note(f"{parsed.host} serves a single workspace, so the workspace id is not needed.")

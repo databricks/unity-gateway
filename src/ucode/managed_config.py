@@ -53,7 +53,7 @@ from ucode.managed_files import (
 from ucode.os_compatibility import system_cross_os
 from ucode.time_utils import parse_update_time
 from ucode.ui import console, normalize_workspace_url, print_warning
-from ucode.workspace import split_workspace_key, state_workspace_key
+from ucode.workspace import canonical_workspace_key, split_workspace_key, state_workspace_key
 
 MANAGED_CONFIG_PATH = UNITY_GATEWAY_MANAGED_SETTINGS_PATH
 # Per-user policy cache for platforms or modes without machine installation (Windows,
@@ -650,6 +650,12 @@ def _policy_content(config: dict) -> dict:
     return {key: value for key, value in config.items() if key != "retrieved_time"}
 
 
+def _policy_workspace(workspace: str) -> str:
+    """``workspace`` as compared against an installed policy, which an older version may have
+    stored with a pasted path or query."""
+    return canonical_workspace_key(normalize_workspace_url(workspace))
+
+
 def _policy_hash(workspace: str, config: dict) -> str:
     payload = {"workspace": normalize_workspace_url(workspace), "config": _policy_content(config)}
     return sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -673,13 +679,13 @@ def save_managed_state(
     workspace: a workspace that publishes no policy then also removes another workspace's
     installed policy. A launch never does.
     """
-    workspace = normalize_workspace_url(workspace)
+    workspace = _policy_workspace(workspace)
     existing = config_io.read_json_safe(MANAGED_CONFIG_PATH)
     existing_workspace = existing.get("workspace")
     matches = (
         isinstance(existing_workspace, str)
         and bool(existing_workspace.strip())
-        and normalize_workspace_url(existing_workspace) == workspace
+        and _policy_workspace(existing_workspace) == workspace
     )
     if not config:
         if matches or (sets_machine_workspace and existing_workspace):
@@ -787,7 +793,7 @@ def _stored_config(path: Path, workspace: str) -> dict | None:
     if (
         not isinstance(stored_workspace, str)
         or not stored_workspace.strip()
-        or normalize_workspace_url(stored_workspace) != normalize_workspace_url(workspace)
+        or _policy_workspace(stored_workspace) != _policy_workspace(workspace)
     ):
         return None
     config = data.get("config")
@@ -814,8 +820,8 @@ def managed_state_workspace(*, include_user_cache: bool = False) -> str | None:
 def managed_launch_workspace(workspace: str | None) -> str | None:
     """Resolve launch policy from the installed workspace, refusing a different selection."""
     installed = managed_state_workspace()
-    installed = normalize_workspace_url(installed) if installed and installed.strip() else None
-    selected = normalize_workspace_url(workspace) if workspace else None
+    installed = _policy_workspace(installed) if installed and installed.strip() else None
+    selected = _policy_workspace(workspace) if workspace else None
     if installed and selected and selected != installed:
         # UG_SKIP_OS_SETTINGS never writes the policy, so the switch must run without it.
         without_skip = f" without {SKIP_OS_SETTINGS_ENV}" if managed_settings_skipped() else ""
@@ -1066,9 +1072,7 @@ def _saved_user_result(workspace: str) -> ManagedConfigResult | None:
     """
     data = config_io.read_json_safe(USER_MANAGED_CONFIG_PATH)
     stored = data.get("workspace")
-    if not isinstance(stored, str) or normalize_workspace_url(stored) != normalize_workspace_url(
-        workspace
-    ):
+    if not isinstance(stored, str) or _policy_workspace(stored) != _policy_workspace(workspace):
         return None
     config = data.get("config")
     if not isinstance(config, dict):

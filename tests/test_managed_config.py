@@ -589,6 +589,20 @@ class TestRefreshManagedConfig:
         assert fetched == [shared]
         assert saved == [(f"{shared}?w=111", RAW_MANIFEST)]
 
+    def test_policy_saved_for_a_pasted_url_still_matches(self, monkeypatch):
+        """An older version stored the URL as pasted; the state is re-keyed to the bare host."""
+        from ucode.managed_config import managed_launch_workspace
+
+        mc_mod.MANAGED_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        mc_mod.MANAGED_CONFIG_PATH.write_text(
+            json.dumps({"workspace": "https://adb-1.azuredatabricks.net/?o=1", "config": {}}),
+            encoding="utf-8",
+        )
+        assert (
+            managed_launch_workspace("https://adb-1.azuredatabricks.net")
+            == "https://adb-1.azuredatabricks.net"
+        )
+
     def test_no_managed_config_returns_none(self, monkeypatch):
         monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, tok: (None, None))
         monkeypatch.setattr(mc_mod, "save_managed_state", lambda ws, cfg, **kwargs: None)

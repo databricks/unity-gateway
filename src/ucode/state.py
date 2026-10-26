@@ -18,7 +18,7 @@ from ucode.databricks import (
     build_shared_base_urls,
 )
 from ucode.managed_files import CONFIG_SCOPES, DEFAULT_CONFIG_SCOPE
-from ucode.workspace import split_workspace_key, split_workspace_url, workspace_key
+from ucode.workspace import canonical_workspace_key, split_workspace_key, workspace_key
 
 STATE_PATH = APP_DIR / "state.json"
 STATE_VERSION = 3
@@ -51,19 +51,15 @@ def load_full_state() -> dict:
     return data
 
 
-def _canonical_workspace_key(key: str) -> str:
-    """The key ``key`` should have: unchanged when canonical, else its bare host.
+def _canonical_saved_key(key: str, block: object) -> str:
+    """Like :func:`canonical_workspace_key`, also for a ``<host>?w=<id>`` key an older version saved.
 
-    Older versions saved a pasted URL as is, so a key can carry a path or query. A query selector
-    is dropped rather than kept, because whether the host serves several workspaces is unknown here.
+    This version writes ``workspace_id`` into every block it keys that way.
     """
-    if split_workspace_key(key)[1]:
-        return key
-    try:
-        parsed = split_workspace_url(key)
-    except RuntimeError:
-        return key
-    return parsed.host if parsed.extra_parts or parsed.workspace_id else key
+    host, workspace_id = split_workspace_key(key)
+    if workspace_id and not (isinstance(block, dict) and block.get("workspace_id") == workspace_id):
+        return host
+    return canonical_workspace_key(key)
 
 
 def _migrate_legacy_workspace_keys(data: dict) -> None:
@@ -71,7 +67,7 @@ def _migrate_legacy_workspace_keys(data: dict) -> None:
     if not isinstance(workspaces, dict):
         return
     for key in list(workspaces):
-        canonical = _canonical_workspace_key(key)
+        canonical = _canonical_saved_key(key, workspaces[key])
         if canonical == key or canonical in workspaces:
             continue
         block = workspaces.pop(key)
@@ -168,11 +164,6 @@ def _write_workspace_block(full: dict, key: str, block: dict) -> None:
     block.pop(ALIAS_OF_KEY, None)
     if workspace_id:
         block["workspace_id"] = workspace_id
-        legacy = workspaces.get(host)
-        if key not in workspaces and isinstance(legacy, dict) and ALIAS_OF_KEY not in legacy:
-            for intent_key in _ALIAS_INTENT_KEYS:
-                if intent_key in legacy and intent_key not in block:
-                    block[intent_key] = legacy[intent_key]
         workspaces[key] = block
         workspaces[host] = {**block, ALIAS_OF_KEY: key}
         full[CURRENT_WORKSPACE_KEY] = key
@@ -217,6 +208,13 @@ def set_current_workspace(workspace: str | None) -> None:
         full.pop(CURRENT_WORKSPACE_KEY, None)
     else:
         host, workspace_id = split_workspace_key(workspace)
+        alias_block = full.get("workspaces", {}).get(host)
+        if not workspace_id and isinstance(alias_block, dict):
+            # The bare host of a multi-workspace host means its current workspace.
+            aliased = alias_block.get(ALIAS_OF_KEY)
+            if isinstance(aliased, str):
+                workspace = aliased
+                host, workspace_id = split_workspace_key(aliased)
         full["current_workspace"] = host
         if workspace_id:
             full[CURRENT_WORKSPACE_KEY] = workspace
@@ -381,8 +379,6 @@ def clear_state() -> None:
 
 
 SELF_MANAGED_AGENTS_KEY = "self_managed_agents"
-# What the developer set on a bare-host block, carried into a multi-workspace block that replaces it.
-_ALIAS_INTENT_KEYS = (SELF_MANAGED_AGENTS_KEY, "custom_oauth", "mcp_servers", "profile")
 
 
 def self_managed_agents(state: dict) -> list[str]:
@@ -402,7 +398,12 @@ def workspace_self_managed_agents(workspace: str) -> list[str]:
     The opt-in is per workspace, so a configure that switches workspaces must read the
     destination's own list rather than carry the source workspace's forward.
     """
-    block = load_full_state().get("workspaces", {}).get(workspace, {})
+    workspaces = load_full_state().get("workspaces", {})
+    block = workspaces.get(workspace)
+    host, workspace_id = split_workspace_key(workspace)
+    if block is None and workspace_id:
+        # A workspace first configured with its id inherits a bare-host block saved before.
+        block = workspaces.get(host)
     if not isinstance(block, dict) or ALIAS_OF_KEY in block:
         return []
     value = block.get(SELF_MANAGED_AGENTS_KEY)

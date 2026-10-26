@@ -4534,3 +4534,19 @@ def test_setup_mcp_clients_user_messages_name_ug_not_ucode(monkeypatch, capsys):
         mcp.setup_mcp_clients(state, "Add MCP Servers", require_auth=False, agents={"codex"})
     with pytest.raises(RuntimeError, match="Run `ug configure` first"):
         mcp.setup_mcp_clients({}, "Add MCP Servers")
+
+
+class TestSameHostWorkspaceSwitch:
+    def test_entries_from_another_workspace_on_the_same_host_are_foreign(self):
+        from ucode.mcp import _partition_mcp_entries_by_workspace
+
+        entries = [{"name": "a", "url": "https://acme.cloud.databricks.com/api/2.0/mcp/x"}]
+        assert _partition_mcp_entries_by_workspace(
+            entries, "https://acme.cloud.databricks.com"
+        ) == (
+            entries,
+            [],
+        )
+        assert _partition_mcp_entries_by_workspace(
+            entries, "https://acme.cloud.databricks.com", same_host_switch=True
+        ) == ([], entries)
