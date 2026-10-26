@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 from session import Session
 
+from ucode.agents.claude import _header_mod_files
 from ucode.smart_routing import config
 from ucode.smart_routing.v2 import _claude_mod_launch_options, _write_routed_claude_plugin
 
@@ -51,6 +52,24 @@ def test_mod_validation_and_event_forwarding(native_binary, tmp_path):
         assert result.returncode == 0, result.stdout + result.stderr
         if command == "validate":
             assert "./register.ts hooks: session.start" in result.stdout
+
+
+def test_header_mod_validation_and_merge(native_binary, tmp_path):
+    for path, text in _header_mod_files(tmp_path).items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    plugin = tmp_path / "ug-headers"
+    shutil.copytree(Path(__file__).with_name("header_mod_tests"), plugin / "tests")
+    for command in ("validate", "test"):
+        result = subprocess.run(
+            [native_binary, "plugin", command, str(plugin)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        if command == "validate":
+            assert "env writes: ANTHROPIC_CUSTOM_HEADERS" in result.stdout
 
 
 def test_native_options_are_launch_local(native_binary, tmp_path):
