@@ -19,6 +19,7 @@ from pathlib import Path
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
+    atomic_write_json,
     backup_existing_file,
     deep_merge_dict,
     is_dry_run,
@@ -938,6 +939,38 @@ def _read_claude_config_for_rewrite(path: Path) -> dict | None:
     except (OSError, UnicodeError, json.JSONDecodeError):
         return None
     return data if isinstance(data, dict) else None
+
+
+CLAUDE_HOOKS_MODULES_GATE = "tengu_plugin_hooks_modules"
+
+
+def ensure_hooks_modules_gate() -> None:
+    """Force Claude Code's mods rollout gate on in its cached feature flags.
+
+    Claude Code loads hooks modules (mods) from installed plugins only when the
+    ``tengu_plugin_hooks_modules`` gate is on, and no settings key can force it on. The only
+    source is the feature cache in ``.claude.json``, so seed ``true`` there before each launch.
+    A stale top-level copy of the gate is dropped. Best-effort: an unreadable file is left alone
+    and a write failure never blocks the launch."""
+    path = claude_mcp_config_path()
+    config = _read_claude_config_for_rewrite(path)
+    if config is None:
+        return
+    features = config.get("cachedGrowthBookFeatures")
+    if not isinstance(features, dict):
+        features = {}
+    if features.get(CLAUDE_HOOKS_MODULES_GATE) is True and CLAUDE_HOOKS_MODULES_GATE not in config:
+        return
+    config.pop(CLAUDE_HOOKS_MODULES_GATE, None)
+    features[CLAUDE_HOOKS_MODULES_GATE] = True
+    config["cachedGrowthBookFeatures"] = features
+    if is_dry_run():
+        return
+    try:
+        # Atomic: this file also holds Claude's auth and onboarding state.
+        atomic_write_json(path, config)
+    except RuntimeError:
+        _debug("Could not enable the Claude Code mods gate", traceback.format_exc())
 
 
 def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
@@ -2444,6 +2477,7 @@ def launch(
     tool_args = _external_web_search_args(state, tool_args)
     binary = SPEC["binary"]
     workspace = state.get("workspace")
+    ensure_hooks_modules_gate()
     if os.environ.get(UG_HEADERS_ENV_VAR, "").strip() and not header_mod_active():
         print_warning(
             "Claude Code won't send your `ug --header` / UG_HEADERS headers: ug's header mod isn't "
