@@ -12,6 +12,7 @@ from subprocess import CalledProcessError
 from unittest.mock import Mock
 
 import pytest
+import tomlkit
 
 from ucode import custom_oauth, gateway_proxy, managed_files
 from ucode import databricks as db_mod
@@ -1871,7 +1872,7 @@ class TestCodexManagedConfig:
 
     @staticmethod
     def _fake_ug(tmp_path, name):
-        exe = tmp_path / name / "ug"
+        exe = tmp_path / name / ("ug.exe" if os.name == "nt" else "ug")
         exe.parent.mkdir()
         exe.write_text("#!/bin/sh\n")
         exe.chmod(0o755)
@@ -1882,9 +1883,11 @@ class TestCodexManagedConfig:
         mine = self._fake_ug(tmp_path, "mine")
         monkeypatch.setattr(db_mod, "ug_binary", lambda: mine)
         managed_path.parent.mkdir(parents=True, exist_ok=True)
-        args_toml = ", ".join(f'"{a}"' for a in args)
+        # Serialize with the product's TOML writer so Windows paths (backslashes) are escaped.
         managed_path.write_text(
-            f'[model_providers.Databricks.auth]\ncommand = "{command}"\nargs = [{args_toml}]\n',
+            tomlkit.dumps(
+                {"model_providers": {"Databricks": {"auth": {"command": command, "args": args}}}}
+            ),
             encoding="utf-8",
         )
         state = {"workspace": WS, "codex_models": ["gpt-5"]}

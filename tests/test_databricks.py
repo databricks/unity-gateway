@@ -52,6 +52,7 @@ from ucode.databricks import (
     workspace_hostname,
     workspace_origin,
 )
+from ucode.os_compatibility.subprocess_cross_os import shell_command
 
 WS = "https://example.databricks.com"
 WS_HOST = "example.databricks.com"
@@ -5842,7 +5843,7 @@ def test_importing_the_cli_does_not_load_the_databricks_sdk():
 class TestKeepEquivalentHelper:
     @staticmethod
     def _exe(tmp_path, name):
-        exe = tmp_path / name / "ug"
+        exe = tmp_path / name / ("ug.exe" if os.name == "nt" else "ug")
         exe.parent.mkdir()
         exe.write_text("#!/bin/sh\n")
         exe.chmod(0o755)
@@ -5851,11 +5852,10 @@ class TestKeepEquivalentHelper:
     def test_command_with_spaces_in_path_is_kept(self, tmp_path):
         old = self._exe(tmp_path, "my tools")
         new = self._exe(tmp_path, "new")
-        existing = f"'{old}' auth-token --host https://h"
-        assert (
-            db_mod.keep_equivalent_helper_command(existing, f"{new} auth-token --host https://h")
-            == existing
-        )
+        # Quoted the way the product quotes: single quotes on POSIX, double quotes on Windows.
+        existing = shell_command([old, "auth-token", "--host", "https://h"])
+        desired = shell_command([new, "auth-token", "--host", "https://h"])
+        assert db_mod.keep_equivalent_helper_command(existing, desired) == existing
 
     def test_different_subcommand_or_args_are_not_kept(self, tmp_path):
         old = self._exe(tmp_path, "old")
@@ -5872,3 +5872,27 @@ class TestKeepEquivalentHelper:
         desired = [new, "auth-token", "--host", "h"]
         gone = [str(tmp_path / "gone" / "ug"), "auth-token", "--host", "h"]
         assert db_mod.keep_equivalent_helper_argv(gone, desired) == desired
+
+    def test_windows_executability_is_judged_by_extension(self, monkeypatch):
+        monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+        assert db_mod._windows_executable_extension(r"C:\tools\ug.exe")
+        assert db_mod._windows_executable_extension(r"C:\tools\UG.CMD")
+        assert not db_mod._windows_executable_extension(r"C:\tools\ug")
+        assert not db_mod._windows_executable_extension(r"C:\tools\ug.txt")
+
+    @pytest.mark.parametrize(
+        ("command", "expected"),
+        [
+            (
+                '"C:\\my tools\\ug.exe" auth-token --host https://h',
+                ("C:\\my tools\\ug.exe", " auth-token --host https://h"),
+            ),
+            ("C:\\tools\\ug.exe auth-token", ("C:\\tools\\ug.exe", " auth-token")),
+        ],
+    )
+    def test_windows_command_splitting_matches_list2cmdline_quoting(
+        self, monkeypatch, command, expected
+    ):
+        # Windows quotes with subprocess.list2cmdline (double quotes), not shlex single quotes.
+        monkeypatch.setattr(db_mod.os, "name", "nt")
+        assert db_mod._split_helper_command(command) == expected

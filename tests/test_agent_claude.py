@@ -16,6 +16,7 @@ import pytest
 from ucode import databricks as db_mod
 from ucode import gateway_proxy, managed_files
 from ucode.agents import LaunchOptions, claude
+from ucode.os_compatibility.subprocess_cross_os import shell_command
 from ucode.smart_routing import claude_routing, v2
 from ucode.state import MANAGED_OVERLAY_KEY
 from ucode.telemetry import client_platform
@@ -1175,7 +1176,7 @@ class TestWriteToolConfigManagedSettings:
 
     @staticmethod
     def _fake_ug(tmp_path, name):
-        exe = tmp_path / name / "ug"
+        exe = tmp_path / name / ("ug.exe" if os.name == "nt" else "ug")
         exe.parent.mkdir()
         exe.write_text("#!/bin/sh\n")
         exe.chmod(0o755)
@@ -1198,7 +1199,7 @@ class TestWriteToolConfigManagedSettings:
 
     def test_launch_keeps_helper_from_another_ug_installation(self, monkeypatch, tmp_path):
         other = self._fake_ug(tmp_path, "other")
-        existing_cmd = f"{other} auth-token --host {WS} --profile p"
+        existing_cmd = shell_command([other, "auth-token", "--host", WS, "--profile", "p"])
         _, helper, _ = self._helper_launch(
             monkeypatch, tmp_path, existing_cmd, configure=False, profile="p"
         )
@@ -1247,6 +1248,10 @@ class TestWriteToolConfigManagedSettings:
             "relative": "ug",
         }[kind]
         if kind == "not-executable":
+            if os.name == "nt":
+                # Windows has no execute bit (os.access(X_OK) is true for any file); executability
+                # there is judged by extension and covered in test_databricks.py.
+                pytest.skip("no execute permission bit on Windows")
             Path(other).chmod(0o644)
         if kind == "other-command":
             Path(exe).write_text("#!/bin/sh\n")
