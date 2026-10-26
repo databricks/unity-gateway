@@ -150,7 +150,8 @@ def save_state(state: dict) -> None:
     if key:
         block = hydrate_state(_without_managed_overlay(state))
         _write_workspace_block(full, key, block, workspace_id)
-        activate_state(block)
+        host = split_workspace_key(key)[0] if workspace_id else key
+        activate_state({"workspace": host, "workspace_id": workspace_id})
     try:
         APP_DIR.mkdir(parents=True, exist_ok=True)
         STATE_PATH.write_text(json.dumps(full, indent=2), encoding="utf-8")

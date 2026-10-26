@@ -572,7 +572,6 @@ def configure_shared_state(
     if workspace_id is None and previous_workspace == workspace:
         workspace_id = prior_state.get("workspace_id")
     key = workspace_key(workspace, workspace_id)
-    activate(workspace, workspace_id)
     previous_key = state_workspace_key(prior_state)
     if use_pat is None:
         use_pat = bool(prior_state.get("use_pat")) and previous_key == key
@@ -595,6 +594,8 @@ def configure_shared_state(
         state["workspace_id"] = workspace_id
     else:
         state.pop("workspace_id", None)
+    # After `load_state`, which selected the previous workspace.
+    activate(workspace, workspace_id)
     if previous_key != key:
         # Model discovery below refreshes the selected workspace. MCP selections are different:
         # they are user choices, so carry the destination's saved registry across a switch.

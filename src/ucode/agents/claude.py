@@ -119,7 +119,12 @@ from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed,
 from ucode.string_utils import model_picker_label
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
 from ucode.ui import print_note, print_success, print_warning
-from ucode.workspace import SELECTOR_HEADER_NAMES, workspace_headers
+from ucode.workspace import (
+    SELECTOR_HEADER_NAMES,
+    WORKSPACE_ID_ENV_VAR,
+    workspace_headers,
+    workspace_id_args,
+)
 
 from .args import LaunchOptions, has_explicit_model_arg
 from .request_tags import request_tags_header_value
@@ -272,17 +277,12 @@ CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
         MODEL_PROVIDER_SERVICE_HEADER.casefold(),
         MODEL_SERVICE_PARENT_SCHEMA_HEADER.casefold(),
         SMART_ROUTER_RECIPE_HEADER.casefold(),  # Remove recipe headers written by older ug versions.
-    }
-)
-# ug replaces these only when it emits them (e.g. AI_GATEWAY_REQUEST_TAGS is set, or the workspace is
-# on a multi-workspace host); otherwise an existing line, such as Isaac's own request tags, is
-# preserved.
-CLAUDE_OPTIONAL_CUSTOM_HEADER_NAMES = frozenset(
-    {
-        AI_GATEWAY_REQUEST_TAGS_HEADER.casefold(),
         *(name.casefold() for name in SELECTOR_HEADER_NAMES),
     }
 )
+# ug replaces these only when it emits them (e.g. AI_GATEWAY_REQUEST_TAGS is set); otherwise an
+# existing line, such as Isaac's own request tags, is preserved.
+CLAUDE_OPTIONAL_CUSTOM_HEADER_NAMES = frozenset({AI_GATEWAY_REQUEST_TAGS_HEADER.casefold()})
 # These attribute inference traffic; neither selects the gateway or provider.
 CLAUDE_OPTIONAL_ATTRIBUTION_HEADER_NAMES = frozenset(
     {"user-agent", SMART_ROUTER_RECIPE_HEADER.casefold()}
@@ -521,6 +521,9 @@ def _web_search_mcp_entry(
     }
     if profile:
         env["DATABRICKS_CONFIG_PROFILE"] = profile
+    workspace_args = workspace_id_args(workspace)
+    if workspace_args:
+        env[WORKSPACE_ID_ENV_VAR] = workspace_args[1]
     return {
         "type": "stdio",
         "command": ug_binary(),
@@ -1333,6 +1336,7 @@ def _generated_search_entry(entry: object) -> bool:
             "DATABRICKS_HOST",
             "UCODE_WEB_SEARCH_MODEL",
             "DATABRICKS_CONFIG_PROFILE",
+            WORKSPACE_ID_ENV_VAR,
         }
     )
 

@@ -24,13 +24,6 @@ SHARED = "https://acme.cloud.databricks.com"
 CLASSIC = "https://dbc-1234.cloud.databricks.com"
 
 
-@pytest.fixture(autouse=True)
-def clear_host_types():
-    workspace_mod._host_types.clear()
-    yield
-    workspace_mod._host_types.clear()
-
-
 def _host_types(**types: str | None):
     return patch.object(workspace_mod, "host_type", side_effect=lambda host: types.get(host))
 

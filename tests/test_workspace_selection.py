@@ -68,6 +68,32 @@ class TestWorkspaceHeaders:
         assert workspace_headers(SHARED)["X-Databricks-Org-Id"] == WSID
 
 
+class TestActivation:
+    def test_configure_selects_the_new_workspace_after_loading_the_previous_one(self, monkeypatch):
+        import ucode.cli as cli_mod
+
+        previous = {"workspace": SHARED, "workspace_id": "222"}
+
+        def load_previous():
+            activate_state(previous)
+            return dict(previous)
+
+        monkeypatch.setattr(cli_mod, "load_state", load_previous)
+        monkeypatch.setattr(cli_mod, "save_state", lambda state: None)
+        monkeypatch.setattr(cli_mod, "build_shared_base_urls", lambda workspace: {})
+        monkeypatch.setattr(cli_mod, "purge_cross_workspace_mcp_residue", lambda *a, **k: None)
+        monkeypatch.setattr(cli_mod, "_find_profile_name", lambda workspace, workspace_id: "p")
+        cli_mod.configure_shared_state(f"{SHARED}?w={WSID}", skip_preflight=True)
+        assert workspace_headers(SHARED) == SELECTOR
+
+    def test_saving_state_without_its_workspace_keeps_the_selection(self, tmp_path):
+        from ucode.state import save_state
+
+        save_state({"workspace": SHARED, "workspace_id": WSID})
+        save_state({"profile": "p"})
+        assert workspace_headers(SHARED) == SELECTOR
+
+
 class TestFailureReasons:
     def test_no_selection_on_a_multi_workspace_host(self):
         with patch.object(workspace_mod, "host_type", return_value="unified"):
@@ -255,9 +281,19 @@ class TestAgentConfigs:
         ).splitlines()
         assert merged == [f"X-Databricks-Org-Id: {WSID}", "X-Mine: keep"]
 
-    def test_claude_classic_merge_keeps_an_existing_org_line(self):
-        merged = claude._merge_anthropic_custom_headers("X-Databricks-Org-Id: 222", "User-Agent: u")
-        assert "X-Databricks-Org-Id: 222" in merged.splitlines()
+    def test_claude_merge_drops_a_selection_ug_no_longer_writes(self):
+        """Moving to a single-workspace host removes the selection ug wrote for the previous one."""
+        merged = claude._merge_anthropic_custom_headers(
+            "X-Databricks-Org-Id: 222\nX-Databricks-Workspace-Id: 222\nX-Mine: keep",
+            "User-Agent: u",
+        )
+        assert merged.splitlines() == ["X-Mine: keep", "User-Agent: u"]
+
+    def test_claude_web_search_helper_gets_the_workspace(self, selected):
+        entry = claude._web_search_mcp_entry(SHARED, "search-model", "p")
+        assert entry["env"]["UG_WORKSPACE_ID"] == WSID
+        assert claude._generated_search_entry(entry)
+        assert "UG_WORKSPACE_ID" not in claude._web_search_mcp_entry(CLASSIC, "m")["env"]
 
     def test_codex(self, selected):
         block = codex._provider_block(

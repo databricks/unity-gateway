@@ -185,6 +185,8 @@ def resolve_workspace(
 # Org-Id routes in every region. Workspace-Id is the newer header and the only one that accepts a
 # disaster-recovery connection id; both may be sent with the same value.
 SELECTOR_HEADER_NAMES = ("X-Databricks-Org-Id", "X-Databricks-Workspace-Id")
+# Carries the workspace to a ug helper an agent starts with an environment instead of arguments.
+WORKSPACE_ID_ENV_VAR = "UG_WORKSPACE_ID"
 _active_host: str | None = None
 _active_workspace_id: str | None = None
 _pinned = False
