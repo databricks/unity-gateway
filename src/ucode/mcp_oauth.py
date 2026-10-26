@@ -9,6 +9,7 @@ from functools import lru_cache
 from urllib.parse import urlencode
 
 from ucode.ug_headers import ug_headers
+from ucode.workspace import workspace_headers
 
 MCP_OAUTH_CALLBACK_PORT = 3118
 
@@ -61,7 +62,11 @@ def oauth_client_available(workspace: str, client_id: str) -> bool:
     request = urllib.request.Request(
         f"{workspace.rstrip('/')}/oidc/v1/token",
         data=body,
-        headers={**ug_headers(), "Content-Type": "application/x-www-form-urlencoded"},
+        headers={
+            **ug_headers(),
+            **workspace_headers(workspace),
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
     )
     try:
         urllib.request.urlopen(request, timeout=10)  # noqa: S310

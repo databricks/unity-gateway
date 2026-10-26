@@ -119,6 +119,7 @@ from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed,
 from ucode.string_utils import model_picker_label
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
 from ucode.ui import print_note, print_success, print_warning
+from ucode.workspace import SELECTOR_HEADER_NAMES, workspace_headers
 
 from .args import LaunchOptions, has_explicit_model_arg
 from .request_tags import request_tags_header_value
@@ -273,9 +274,15 @@ CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
         SMART_ROUTER_RECIPE_HEADER.casefold(),  # Remove recipe headers written by older ug versions.
     }
 )
-# ug replaces these only when it emits them (e.g. AI_GATEWAY_REQUEST_TAGS is set); otherwise an
-# existing line, such as Isaac's own request tags, is preserved.
-CLAUDE_OPTIONAL_CUSTOM_HEADER_NAMES = frozenset({AI_GATEWAY_REQUEST_TAGS_HEADER.casefold()})
+# ug replaces these only when it emits them (e.g. AI_GATEWAY_REQUEST_TAGS is set, or the workspace is
+# on a multi-workspace host); otherwise an existing line, such as Isaac's own request tags, is
+# preserved.
+CLAUDE_OPTIONAL_CUSTOM_HEADER_NAMES = frozenset(
+    {
+        AI_GATEWAY_REQUEST_TAGS_HEADER.casefold(),
+        *(name.casefold() for name in SELECTOR_HEADER_NAMES),
+    }
+)
 # These attribute inference traffic; neither selects the gateway or provider.
 CLAUDE_OPTIONAL_ATTRIBUTION_HEADER_NAMES = frozenset(
     {"user-agent", SMART_ROUTER_RECIPE_HEADER.casefold()}
@@ -296,6 +303,16 @@ def _apply_managed_header_lines(
     for name, value in (managed_http_headers or {}).items():
         lines_by_name[name.strip().casefold()] = f"{name}: {value}"
     return list(lines_by_name.values())
+
+
+def _with_workspace_selector(lines: list[str], workspace: str) -> list[str]:
+    """``lines`` with the workspace selection last, so an admin header can't replace it."""
+    selector = workspace_headers(workspace)
+    if not selector:
+        return lines
+    names = {name.casefold() for name in selector}
+    kept = [line for line in lines if line.partition(":")[0].strip().casefold() not in names]
+    return kept + [f"{name}: {value}" for name, value in selector.items()]
 
 
 def configured_paths(state: dict) -> list[str]:
@@ -576,7 +593,11 @@ def render_overlay(
         header_lines.append(f"{AI_GATEWAY_REQUEST_TAGS_HEADER}: {request_tags}")
     # Relayed: the X-Databricks-AI-Gateway-Token swap header is added per request
     # by the refresh proxy, not here — a static value would go stale mid-session.
-    custom_headers = "\n".join(_apply_managed_header_lines(header_lines, managed_http_headers))
+    custom_headers = "\n".join(
+        _with_workspace_selector(
+            _apply_managed_header_lines(header_lines, managed_http_headers), workspace
+        )
+    )
     env: dict[str, str] = {
         "ANTHROPIC_BASE_URL": base_url,
         "ANTHROPIC_CUSTOM_HEADERS": custom_headers,
@@ -1106,6 +1127,7 @@ def managed_mcp_uses_managed_file(workspace: str, *, use_pat: bool) -> bool:
         managed_files_supported()
         and managed_writes_allowed()
         and not use_pat
+        and not workspace_headers(workspace)
         and workspace_supports_cimd(workspace)
         and oauth_client_available(workspace, CLAUDE_CODE_CIMD_CLIENT_ID)
     )

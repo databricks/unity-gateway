@@ -55,6 +55,14 @@ from ucode.ui import (
     spinner,
     status_subprocess_stdout,
 )
+from ucode.workspace import (
+    WorkspaceSelectionReason,
+    response_workspace_mismatch,
+    signin_redirect_reason,
+    workspace_failure_reason,
+    workspace_headers,
+    workspace_id_args,
+)
 
 UNIX_DATABRICKS_INSTALL_URL = (
     "https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh"
@@ -315,6 +323,25 @@ def _capture_org_id(url: str, headers: Message | None) -> None:
         _WORKSPACE_ORG_IDS[hostname] = org_id
 
 
+def _workspace_response_failure(url: str, response: object) -> str | None:
+    """A failure reason when ``response`` is the sign-in page or answers for another workspace.
+
+    urllib follows a redirect to sign-in, which a multi-workspace host sends for a request that
+    selects no workspace; the HTML it lands on would otherwise surface as invalid JSON.
+    """
+    geturl = getattr(response, "geturl", None)
+    final_url = geturl() if callable(geturl) else None
+    if (
+        isinstance(final_url, str)
+        and urlparse(final_url).path.startswith("/login")
+        and not urlparse(url).path.startswith("/login")
+    ):
+        return signin_redirect_reason(url)
+    headers = getattr(response, "headers", None)
+    org_id = headers.get(_ORG_ID_HEADER) if isinstance(headers, Message) else None
+    return response_workspace_mismatch(url, org_id)
+
+
 def workspace_org_id(workspace: str) -> str | None:
     """The numeric workspace (org) id for ``workspace``, or None if no response has revealed it yet."""
     return _WORKSPACE_ORG_IDS.get(workspace_hostname(workspace))
@@ -344,14 +371,19 @@ def _http_get_bytes(
     if max_retries < 0:
         raise ValueError("max_retries must be non-negative")
 
-    request_headers = {**ug_headers(), "Authorization": f"Bearer {token}"}
+    request_headers = {**ug_headers(), **workspace_headers(url), "Authorization": f"Bearer {token}"}
     request_headers.update(headers or {})
     request = urllib_request.Request(url, headers=request_headers)
     for attempt in range(max_retries + 1):
         try:
             with urllib_request.urlopen(request, timeout=timeout) as response:
                 body = response.read()
-                _capture_org_id(url, getattr(response, "headers", None))
+                failure = _workspace_response_failure(url, response)
+                if failure is None:
+                    _capture_org_id(url, getattr(response, "headers", None))
+            if failure is not None:
+                _debug(f"GET {url}", failure)
+                return None, failure
             _debug(f"GET {url}", f"HTTP 200, {len(body)} bytes")
             return body, None
         except urllib_error.HTTPError as exc:
@@ -369,6 +401,7 @@ def _http_get_bytes(
             body_excerpt = body.strip()[:200]
             if body_excerpt:
                 reason = f"{reason}: {body_excerpt}"
+            reason = workspace_failure_reason(url, exc.code, body) or reason
             if exc.code not in _HTTP_GET_RETRYABLE_STATUS_CODES or attempt == max_retries:
                 return None, reason
             retry_after = exc.headers.get("Retry-After") if exc.headers is not None else None
@@ -450,6 +483,7 @@ def _http_send_json(
     body_bytes = json.dumps(payload).encode("utf-8") if payload is not None else None
     request_headers = {
         **ug_headers(),
+        **workspace_headers(url),
         "Authorization": f"Bearer {token}",
         "Accept": "application/json",
     }
@@ -460,6 +494,10 @@ def _http_send_json(
     try:
         with urllib_request.urlopen(request, timeout=timeout) as response:
             body = response.read().decode("utf-8")
+            failure = _workspace_response_failure(url, response)
+        if failure is not None:
+            _debug(f"{method} {url}", failure)
+            return None, failure
         _debug(f"{method} {url}", f"HTTP {response.status}, {len(body)} bytes")
         if _debug_enabled():
             _debug("body", body[:4000])
@@ -482,6 +520,7 @@ def _http_send_json(
         body_excerpt = body.strip()[:200]
         if body_excerpt:
             reason = f"{reason}: {body_excerpt}"
+        reason = workspace_failure_reason(url, exc.code, body) or reason
         return None, reason
     except urllib_error.URLError as exc:
         _debug(f"{method} {url}", f"URLError: {exc.reason}")
@@ -1976,7 +2015,34 @@ def _looks_like_cli_permission_error(stderr: str | None) -> bool:
     return "403" in lowered or "not authorized" in lowered or "unauthorized" in lowered
 
 
+def _list_databricks_apps_over_http(workspace: str, profile: str | None) -> list[dict]:
+    """List apps with ug's own requests, which carry the workspace selection.
+
+    The CLI would select the workspace from its profile, which may be another workspace's profile
+    on the same host.
+    """
+    token = get_databricks_token(workspace, profile)
+    apps: list[dict] = []
+    page_token: str | None = None
+    while True:
+        params = {"page_size": "1000", **({"page_token": page_token} if page_token else {})}
+        payload, reason = _http_get_json(
+            f"{workspace.rstrip('/')}/api/2.0/apps?{urlencode(params)}", token, timeout=30
+        )
+        if payload is None:
+            if reason and ("HTTP 403" in reason or "permission" in reason.lower()):
+                raise PermissionDeniedError("Not authorized to list Databricks apps.")
+            raise RuntimeError(f"Failed to list Databricks apps ({reason}).")
+        apps.extend(_extract_apps_payload(payload))
+        next_token = payload.get("next_page_token") if isinstance(payload, dict) else None
+        if not isinstance(next_token, str) or not next_token:
+            return apps
+        page_token = next_token
+
+
 def list_databricks_apps(workspace: str, profile: str | None = None) -> list[dict]:
+    if workspace_headers(workspace):
+        return _list_databricks_apps_over_http(workspace, profile)
     env = build_databricks_cli_env(workspace)
     try:
         result = run(
@@ -2051,6 +2117,7 @@ def build_mcp_proxy_argv(
     path and passes plain arguments (no shell), so it runs identically on every
     platform."""
     argv = [ug_binary(), "mcp-proxy", "--url", url, "--host", workspace.rstrip("/")]
+    argv += workspace_id_args(workspace)
     if profile:
         argv += ["--profile", profile]
     if use_pat:
@@ -2076,6 +2143,7 @@ def build_otel_headers_argv(
 ) -> list[str]:
     """Argv for Claude Code's refreshing OTLP headers helper."""
     argv = [ug_binary(), "otel-headers", "--host", workspace.rstrip("/")]
+    argv += workspace_id_args(workspace)
     if profile:
         argv += ["--profile", profile]
     if use_pat:
@@ -3875,6 +3943,8 @@ def probe_unity_gateway_capabilities(workspace: str, token: str) -> GatewayProbe
         return model_service_probe
 
     reason = model_service_probe.detail
+    if isinstance(reason, WorkspaceSelectionReason):
+        raise RuntimeError(reason)
     if _looks_like_definitive_auth_failure(reason):
         _raise_ai_gateway_auth_failure(workspace, reason)
     if _looks_like_scope_failure(reason):

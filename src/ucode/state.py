@@ -18,7 +18,12 @@ from ucode.databricks import (
     build_shared_base_urls,
 )
 from ucode.managed_files import CONFIG_SCOPES, DEFAULT_CONFIG_SCOPE
-from ucode.workspace import split_workspace_key, workspace_key
+from ucode.workspace import (
+    activate_state,
+    selector_headers,
+    split_workspace_key,
+    workspace_key,
+)
 
 STATE_PATH = APP_DIR / "state.json"
 STATE_VERSION = 3
@@ -106,6 +111,7 @@ def load_state() -> dict:
     full = load_full_state()
     key = current_workspace_key(full)
     if not key:
+        activate_state({})
         return {}
     ws_state = full.get("workspaces", {}).get(key, {})
     if not isinstance(ws_state, dict):
@@ -117,6 +123,7 @@ def load_state() -> dict:
     else:
         ws_state.pop("workspace_id", None)
     ws_state.pop(ALIAS_OF_KEY, None)
+    activate_state(ws_state)
     return hydrate_state(ws_state)
 
 
@@ -143,6 +150,7 @@ def save_state(state: dict) -> None:
     if key:
         block = hydrate_state(_without_managed_overlay(state))
         _write_workspace_block(full, key, block, workspace_id)
+        activate_state(block)
     try:
         APP_DIR.mkdir(parents=True, exist_ok=True)
         STATE_PATH.write_text(json.dumps(full, indent=2), encoding="utf-8")
@@ -348,6 +356,14 @@ def build_agent_state(state: dict) -> dict[str, dict]:
             "auth_refresh_interval_ms": AUTH_REFRESH_INTERVAL_MS,
         },
     }
+    workspace_id = state.get("workspace_id")
+    selector = selector_headers(workspace_id if isinstance(workspace_id, str) else None)
+    if selector:
+        agents["claude"]["env"]["ANTHROPIC_CUSTOM_HEADERS"] = "\n".join(
+            f"{name}: {value}" for name, value in selector.items()
+        )
+        for config in agents.values():
+            config["headers"] = dict(selector)
     return {
         name: {key: value for key, value in config.items() if value is not None}
         for name, config in agents.items()

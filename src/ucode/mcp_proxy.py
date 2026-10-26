@@ -57,6 +57,7 @@ from ucode.databricks import (
 )
 from ucode.mcp_connection_login import connection_from_url, run_connection_login
 from ucode.ug_headers import ug_headers
+from ucode.workspace import workspace_headers
 
 # Exit code used when the proxy cannot continue. MCP clients surface a non-zero
 # exit far more usefully than a timeout, so bail out instead of hanging.
@@ -643,7 +644,7 @@ async def _run(url: str, workspace: str, profile: str | None, use_pat: bool = Fa
     # yields a (read, write) pair in both.
     async with httpx.AsyncClient(
         auth=auth,
-        headers=ug_headers(),
+        headers={**ug_headers(), **workspace_headers(url)},
         timeout=httpx.Timeout(
             connect=30.0,
             read=300.0,

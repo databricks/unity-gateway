@@ -21,6 +21,7 @@ from ucode.databricks import (
     workspace_origin,
 )
 from ucode.os_compatibility import subprocess_cross_os
+from ucode.workspace import workspace_headers
 
 _LOGIN_TIMEOUT_SECONDS = 300
 _POLL_INTERVAL_SECONDS = 2
@@ -74,6 +75,11 @@ def run_connection_login(
     connection = unquote(connection_from_url(resource_url) or "")
     if len(connection.split(".")) != 3 or not all(connection.split(".")):
         return False, "connection sign-in requires an MCP service name (catalog.schema.service)"
+    if workspace_headers(workspace):
+        return False, (
+            f"signing in to the '{connection}' connection isn't supported yet on a host that "
+            "serves several workspaces. Sign in to it from the workspace in your browser, then retry."
+        )
     origin = workspace_origin(workspace)
     try:
         token = get_databricks_token(workspace, profile)
