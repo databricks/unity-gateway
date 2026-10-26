@@ -974,6 +974,18 @@ class TestCopilotUserMcpConfig:
 
         assert copilot.LEGACY_MCP_CONFIG_PATH.exists()
 
+    def test_a_legacy_side_file_that_cannot_be_deleted_raises_a_runtime_error(self, monkeypatch):
+        copilot.LEGACY_MCP_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        copilot.LEGACY_MCP_CONFIG_PATH.write_text("{}")
+
+        def unlink(self, missing_ok=False):
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(Path, "unlink", unlink)
+
+        with pytest.raises(RuntimeError, match="Failed to remove"):
+            copilot.remove_legacy_mcp_config()
+
     def test_empty_legacy_side_file_is_removed_without_a_write(self):
         copilot.LEGACY_MCP_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         copilot.LEGACY_MCP_CONFIG_PATH.write_text("{}")
