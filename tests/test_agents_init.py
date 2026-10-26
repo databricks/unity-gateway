@@ -169,9 +169,7 @@ class TestConfigureWiresAiToolsInstall:
 
     def _stub_configure(self, monkeypatch):
         captured = {}
-        monkeypatch.setattr(
-            agents_mod, "configure_tool", lambda tool, state, model=None, **_: state
-        )
+        monkeypatch.setattr(agents_mod, "configure_tool", lambda tool, state, model=None: state)
         monkeypatch.setattr(agents_mod, "save_state", lambda state: None)
         monkeypatch.setattr(
             agents_mod,
@@ -1122,9 +1120,7 @@ class TestConfigureSelectedTools:
     def test_merges_with_existing_available_tools(self, monkeypatch):
         """Configuring a new tool should not drop previously-configured tools
         from state['available_tools']."""
-        monkeypatch.setattr(
-            "ucode.agents.configure_tool", lambda tool, state, model=None, **_: state
-        )
+        monkeypatch.setattr("ucode.agents.configure_tool", lambda tool, state, model=None: state)
         monkeypatch.setattr("ucode.agents.save_state", lambda s: None)
 
         state = {
@@ -1136,9 +1132,7 @@ class TestConfigureSelectedTools:
         assert set(result["available_tools"]) == {"codex", "claude"}
 
     def test_adds_new_tool_to_available_tools(self, monkeypatch):
-        monkeypatch.setattr(
-            "ucode.agents.configure_tool", lambda tool, state, model=None, **_: state
-        )
+        monkeypatch.setattr("ucode.agents.configure_tool", lambda tool, state, model=None: state)
         monkeypatch.setattr("ucode.agents.save_state", lambda s: None)
 
         state = {
@@ -1150,9 +1144,7 @@ class TestConfigureSelectedTools:
         assert set(result["available_tools"]) == {"codex", "claude"}
 
     def test_empty_selection_preserves_existing(self, monkeypatch):
-        monkeypatch.setattr(
-            "ucode.agents.configure_tool", lambda tool, state, model=None, **_: state
-        )
+        monkeypatch.setattr("ucode.agents.configure_tool", lambda tool, state, model=None: state)
         monkeypatch.setattr("ucode.agents.save_state", lambda s: None)
 
         state = {"workspace": "https://x.databricks.com", "available_tools": ["codex"]}
@@ -1291,43 +1283,3 @@ class TestConfigureToolUserScope:
         managed_files.set_config_scope("user")
         agents_mod.configure_tool("claude", {}, "m")
         assert written == [1]
-
-
-def test_configure_one_passes_claude_managed_model_inputs(monkeypatch):
-    """`ug configure` hands the writer the same managed inputs a plain launch derives."""
-    from ucode.agents import _configure_one, claude
-    from ucode.managed_config import ManagedConfigResult
-
-    managed = {
-        "enabled_agents": {
-            "claude": {
-                "model_config": {
-                    "default_model": "system.ai.claude-opus-5",
-                    "default_models_by_model_family": {
-                        "default_opus_model": "system.ai.claude-opus-5"
-                    },
-                }
-            }
-        }
-    }
-    captured: dict = {}
-
-    def fake_configure_tool(tool, state, model=None, **kwargs):
-        captured.update(kwargs)
-        return state
-
-    monkeypatch.setattr("ucode.agents.configure_tool", fake_configure_tool)
-    monkeypatch.setattr(
-        "ucode.agents.refresh_managed_config", lambda state: ManagedConfigResult(managed, False)
-    )
-    state = {
-        "workspace": "https://x.databricks.com",
-        "claude_models": {"opus": "system.ai.claude-opus-4-8"},
-    }
-
-    _configure_one("claude", state, None)
-
-    expected = claude.managed_model_inputs(state, managed)
-    assert captured["route_root_model"] == "system.ai.claude-opus-5"
-    assert captured["coding_agent_config_defaults"] == expected.coding_agent_config_defaults
-    assert captured["picker_catalog"] == expected.picker_catalog

@@ -580,7 +580,7 @@ def render_overlay(
     # A Bedrock-backed provider needs its provider-side ids pinned verbatim
     # (Claude Code's canonical names aren't routable there). These come from the
     # service's targets, already de-duped to one id per family upstream.
-    elif provider and provider_models:
+    if provider and provider_models and not route_root_model:
         if provider_models.get("opus"):
             env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = provider_models["opus"]
         if provider_models.get("sonnet"):
@@ -590,7 +590,8 @@ def render_overlay(
     # With an Anthropic Model Provider Service, the header routes to the external
     # provider and Claude Code's own canonical model names are sent verbatim —
     # pinning a Databricks model id here would mislabel the picker and isn't
-    # routable.
+    # routable. A pinned root model (ANTHROPIC_MODEL) does not displace the family defaults:
+    # configure and a plain launch must write the same ones.
     elif claude_models and not provider and not parent_schema:
         # Picker rows show the raw routable id (e.g. "system.ai.claude-opus-4-8[1m]")
         # so users can see which gateway-routable model is behind each shortcut.
@@ -1433,7 +1434,19 @@ def write_tool_config(
     # overwritten wholesale; without one, preserve the developer's own pre-existing headers. Reuses
     # this launch's warm managed-config cache (no extra round trip); a failed fetch degrades to None
     # (treated as unmanaged), never blocking the write.
-    managed_config_present = refresh_managed_config(state).manifest is not None
+    managed_manifest = refresh_managed_config(state).manifest
+    managed_config_present = managed_manifest is not None
+    if (
+        coding_agent_config_defaults is None
+        and route_root_model is None
+        and picker_catalog is None
+        and not (provider or parent_schema or relayed)
+    ):
+        # `ug configure` supplies no model inputs; derive the ones a plain launch passes explicitly.
+        derived = managed_model_inputs(state, managed_manifest)
+        coding_agent_config_defaults = derived.coding_agent_config_defaults
+        route_root_model = derived.route_root_model
+        picker_catalog = derived.picker_catalog
     previous_keys = ((state.get("managed_configs") or {}).get("claude") or {}).get("keys", [])
     web_search_model = _resolve_web_search_model(state)
     should_write_tracing_settings = (
