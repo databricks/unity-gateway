@@ -19,6 +19,7 @@ from pathlib import Path
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
+    atomic_write_json,
     backup_existing_file,
     deep_merge_dict,
     is_dry_run,
@@ -2279,6 +2280,60 @@ def _resolve_launch_binary(binary: str) -> str:
     )
 
 
+_LAUNCH_DIR_PREFIX = "claude-launch-"
+
+
+def _launch_dir() -> Path:
+    """This process's private per-launch directory for documents handed to Claude by path.
+
+    Named by ``os.getpid()`` so concurrent launches never share files. On POSIX the launch
+    ``exec``s, so the pid is Claude's pid and the directory outlives ug until
+    :func:`_sweep_stale_launch_dirs` removes it after Claude exits. Where ug stays resident
+    (Windows spawn, relayed launches) :func:`_remove_launch_dir` removes it when Claude exits."""
+    return APP_DIR / f"{_LAUNCH_DIR_PREFIX}{os.getpid()}"
+
+
+def _write_launch_document(name: str, payload: dict) -> Path:
+    """Write ``payload`` as JSON into the per-launch directory (owner-only, 0700/0600).
+
+    Passing these by path keeps Claude's argv short: whole settings or MCP-config documents inline
+    can push a Windows command line past its 32,767 character limit."""
+    directory = _launch_dir()
+    _sweep_stale_launch_dirs()
+    try:
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(directory, 0o700)
+    except OSError as exc:
+        raise RuntimeError(f"Failed to create directory for {directory}") from exc
+    path = directory / name
+    atomic_write_json(path, payload)  # mkstemp creates the file 0600
+    return path
+
+
+def _remove_launch_dir() -> None:
+    shutil.rmtree(_launch_dir(), ignore_errors=True)
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True  # exists but not ours (PermissionError), or cannot tell
+    return True
+
+
+def _sweep_stale_launch_dirs() -> None:
+    """Remove per-launch directories whose launching process is gone (POSIX ``exec`` leaves them)."""
+    if os.name == "nt" or not APP_DIR.is_dir():
+        return
+    for entry in APP_DIR.glob(f"{_LAUNCH_DIR_PREFIX}*"):
+        suffix = entry.name[len(_LAUNCH_DIR_PREFIX) :]
+        if suffix.isdigit() and int(suffix) != os.getpid() and not _pid_alive(int(suffix)):
+            shutil.rmtree(entry, ignore_errors=True)
+
+
 def _relayed_mcp_config_args(tool_args: list[str]) -> list[str]:
     """``--mcp-config`` args that re-supply Claude's user-scope MCP servers to a relayed launch.
 
@@ -2293,7 +2348,10 @@ def _relayed_mcp_config_args(tool_args: list[str]) -> list[str]:
     servers = read_json_safe(claude_mcp_config_path()).get("mcpServers")
     if not isinstance(servers, dict) or not servers:
         return []
-    return ["--mcp-config", json.dumps({"mcpServers": servers}, separators=(",", ":"))]
+    # By file path: the server list scales with the user's MCP registrations, and Windows caps a
+    # whole command line at 32,767 characters.
+    path = _write_launch_document("mcp-config.json", {"mcpServers": servers})
+    return ["--mcp-config", str(path)]
 
 
 def _build_claude_argv(
@@ -2312,7 +2370,7 @@ def _build_claude_argv(
     of the two silently dropped. To let ucode compose with any prior command,
     we merge a caller-supplied ``--settings`` with ucode's — ucode's gateway
     keys win, hooks and denies from both are unioned — and hand Claude a single merged
-    ``--settings`` (inline JSON). The merge is per-launch and is never written
+    ``--settings`` (a per-launch file, see :func:`_write_launch_document`). The merge is per-launch and is never written
     back to the shared ucode settings file, so concurrent launches cannot
     accumulate one another's hooks. A caller ``--settings`` value ucode cannot
     resolve raises (see :func:`_load_caller_settings`) rather than being passed
@@ -2345,13 +2403,8 @@ def _build_claude_argv(
     merged_env = merged.get("env")
     if isinstance(merged_env, dict):
         merged_env.pop("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", None)
-    return [
-        binary,
-        *source_args,
-        "--settings",
-        json.dumps(merged, separators=(",", ":")),
-        *remaining,
-    ]
+    merged_path = _write_launch_document("settings.json", merged)
+    return [binary, *source_args, "--settings", str(merged_path), *remaining]
 
 
 def _has_subscription_login() -> bool:
@@ -2445,13 +2498,17 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
 
-    proc = subprocess_cross_os.popen(_build_claude_argv(binary, tool_args, relayed=True))
+    proc = None
     try:
+        proc = subprocess_cross_os.popen(_build_claude_argv(binary, tool_args, relayed=True))
         returncode = proc.wait()
     except KeyboardInterrupt:
+        if proc is None:
+            raise
         proc.send_signal(signal.SIGINT)
         returncode = proc.wait()
     finally:
+        _remove_launch_dir()
         cache.stop()
         server.shutdown()
         client.close()
@@ -2546,7 +2603,11 @@ def launch(
         }
         settings_override = _merge_claude_settings(settings_override or {}, {"env": fallback_env})
         os.environ.update(fallback_env)
-    exec_or_spawn(_build_claude_argv(binary, launch_args, settings_override=settings_override))
+    try:
+        exec_or_spawn(_build_claude_argv(binary, launch_args, settings_override=settings_override))
+    finally:
+        # Reached only when ug stays resident (Windows spawn); POSIX exec is swept later.
+        _remove_launch_dir()
 
 
 def validate_cmd(binary: str) -> list[str]:

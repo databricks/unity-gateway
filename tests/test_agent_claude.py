@@ -26,6 +26,11 @@ WS = "https://example.databricks.com"
 GH_URL = f"{WS}/api/2.0/mcp/external/github"
 
 
+def _read_doc(value: str) -> dict:
+    """Load a JSON document Claude is handed by path (--settings / --mcp-config)."""
+    return json.loads(Path(value).read_text(encoding="utf-8"))
+
+
 def _proxy_argv() -> list[str]:
     from ucode.databricks import build_mcp_proxy_argv
 
@@ -3114,6 +3119,12 @@ class TestResolveLaunchBinary:
 
 class TestClaudeLaunch:
     @pytest.fixture(autouse=True)
+    def _keep_launch_documents(self, monkeypatch):
+        # exec_or_spawn is mocked and returns, so launch() would remove the per-launch files
+        # before the test reads them; real runs keep them for as long as Claude runs.
+        monkeypatch.setattr(claude, "_remove_launch_dir", lambda: None)
+
+    @pytest.fixture(autouse=True)
     def _claude_on_windows_path(self, monkeypatch):
         if sys.platform != "win32":
             return
@@ -3282,7 +3293,7 @@ class TestClaudeLaunch:
         assert os.environ["ANTHROPIC_MODEL"] == "cat.schema.model"
         assert os.environ["ANTHROPIC_DEFAULT_MODEL"] == "main.default.claude-sonnet-5"
         assert calls[0][:2] == ["claude", "--settings"]
-        settings = json.loads(calls[0][2])
+        settings = _read_doc(calls[0][2])
         assert settings["env"]["ANTHROPIC_MODEL"] == "cat.schema.model"
 
     def test_launch_custom_model_uses_native_model(self, monkeypatch, tmp_path):
@@ -3307,7 +3318,7 @@ class TestClaudeLaunch:
 
         assert os.environ["ANTHROPIC_MODEL"] == custom_model
         assert calls[0][0:2] == ["claude", "--settings"]
-        settings = json.loads(calls[0][2])
+        settings = _read_doc(calls[0][2])
         assert settings["model"] == saved_model
         assert settings["env"] == {"USER_SETTING": "keep", "ANTHROPIC_MODEL": custom_model}
         assert calls[0][3:] == ["--model", custom_model, "--debug"]
@@ -3354,7 +3365,7 @@ class TestClaudeLaunch:
         )
 
         assert calls[0][1] == "--settings"
-        launch_settings = json.loads(calls[0][2])
+        launch_settings = _read_doc(calls[0][2])
         assert launch_settings["model"] == original_settings["model"]
         assert launch_settings["availableModels"] == original_settings["availableModels"]
         assert launch_settings["enforceAvailableModels"] is True
@@ -3483,7 +3494,7 @@ class TestClaudeLaunch:
             options=LaunchOptions(),
         )
 
-        launch_settings = json.loads(calls[0][2])
+        launch_settings = _read_doc(calls[0][2])
         assert launch_settings["model"] == picker_models[0]
         assert user_settings_path.read_text() == user_settings
         assert settings_path.read_text() == settings
@@ -3674,7 +3685,7 @@ class TestBuildClaudeArgv:
             argv = claude._build_claude_argv("claude", args, relayed=launch_mode == "relayed")
 
         assert argv.count("--settings") == 1
-        merged = json.loads(argv[argv.index("--settings") + 1])
+        merged = _read_doc(argv[argv.index("--settings") + 1])
         assert set(merged["permissions"]["deny"]) == {denied_tool, "Bash(rm:*)", "WebSearch"}
         assert len(merged["permissions"]["deny"]) == 3
         assert merged["permissions"]["allow"] == ["Read"]
@@ -3697,7 +3708,7 @@ class TestBuildClaudeArgv:
             settings_override=override,
         )
 
-        merged = json.loads(argv[2])
+        merged = _read_doc(argv[2])
         assert merged["permissions"] == {
             "deny": ["mcp__web-search__web_search", "WebSearch", "Bash(rm:*)"],
             "allow": ["Read"],
@@ -3717,7 +3728,7 @@ class TestBuildClaudeArgv:
             "claude", ["--settings", json.dumps({"permissions": permissions})]
         )
 
-        merged = json.loads(argv[2])
+        merged = _read_doc(argv[2])
         assert merged["permissions"]["deny"] == ["WebSearch"]
         assert merged["permissions"].get("allow") == permissions.get("allow")
 
@@ -3767,7 +3778,7 @@ class TestBuildClaudeArgv:
         self._write_user_mcp(tmp_path, monkeypatch, servers)
         argv = claude._build_claude_argv("claude", ["-p", "hi"], relayed=True)
         i = argv.index("--mcp-config")
-        assert json.loads(argv[i + 1]) == {"mcpServers": servers}
+        assert _read_doc(argv[i + 1]) == {"mcpServers": servers}
         # Variadic --mcp-config must be closed by an option, not swallow the prompt.
         assert argv[i + 2] == "--settings"
         assert argv[-2:] == ["-p", "hi"]
@@ -3778,7 +3789,7 @@ class TestBuildClaudeArgv:
         caller = json.dumps({"statusLine": {"type": "command", "command": "sl"}})
         argv = claude._build_claude_argv("claude", ["--settings", caller], relayed=True)
         i = argv.index("--mcp-config")
-        assert json.loads(argv[i + 1]) == {"mcpServers": servers}
+        assert _read_doc(argv[i + 1]) == {"mcpServers": servers}
         assert argv[i + 2] == "--settings"
 
     def test_non_relayed_does_not_pass_mcp_config(self, tmp_path, monkeypatch):
@@ -3802,6 +3813,55 @@ class TestBuildClaudeArgv:
         argv = claude._build_claude_argv("claude", ["-p", "hi"], relayed=True)
         assert "--mcp-config" not in argv
 
+    def test_documents_are_passed_by_short_file_path_not_inline(self, tmp_path, monkeypatch):
+        # Windows caps a CreateProcess command line at 32,767 characters, so a large settings
+        # override or many user-scope MCP servers must never ride inline in argv.
+        big_models = [f"system.ai.model-{i}-" + "x" * 80 for i in range(1000)]
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", tmp_path / "ucode-settings.json")
+        (tmp_path / "ucode-settings.json").write_text(json.dumps({"apiKeyHelper": "h"}))
+        servers = {
+            f"srv-{i}": {"type": "stdio", "command": "ug", "args": ["mcp-proxy", "x" * 200]}
+            for i in range(300)
+        }
+        self._write_user_mcp(tmp_path, monkeypatch, servers)
+        override = {"modelPicker": {"models": big_models}}
+        argv = claude._build_claude_argv(
+            "claude", ["-p", "hi"], relayed=True, settings_override=override
+        )
+        assert all(len(arg) < 500 for arg in argv)
+        assert len(subprocess.list2cmdline(argv)) < 2000
+        i = argv.index("--mcp-config")
+        assert _read_doc(argv[i + 1]) == {"mcpServers": servers}
+        settings = _read_doc(argv[argv.index("--settings") + 1])
+        assert settings["modelPicker"] == override["modelPicker"]
+        assert settings["apiKeyHelper"] == "h"
+
+    def test_launch_documents_are_private_and_per_process(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", tmp_path / "ucode-settings.json")
+        argv = claude._build_claude_argv("claude", [], settings_override={"model": "m"})
+        path = Path(argv[argv.index("--settings") + 1])
+        assert path.parent.name == f"claude-launch-{os.getpid()}"
+        if os.name != "nt":
+            assert path.stat().st_mode & 0o777 == 0o600
+            assert path.parent.stat().st_mode & 0o777 == 0o700
+        claude._remove_launch_dir()
+        assert not path.parent.exists()
+
+    def test_stale_launch_dirs_from_dead_processes_are_swept(self, tmp_path, monkeypatch):
+        if os.name == "nt":
+            pytest.skip("POSIX exec leaves the directory; Windows removes it on exit")
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", tmp_path / "ucode-settings.json")
+        proc = subprocess.Popen([sys.executable, "-c", "pass"])
+        proc.wait()
+        dead = claude.APP_DIR / f"claude-launch-{proc.pid}"
+        dead.mkdir(parents=True)
+        (dead / "settings.json").write_text("{}")
+        live = claude.APP_DIR / f"claude-launch-{os.getppid()}"
+        live.mkdir(parents=True)
+        claude._build_claude_argv("claude", [], settings_override={"model": "m"})
+        assert not dead.exists()
+        assert live.exists()
+
     def test_inline_caller_settings_merged_into_single_flag(self, monkeypatch):
         ucode_settings = {
             "apiKeyHelper": "ucode-helper",
@@ -3820,7 +3880,7 @@ class TestBuildClaudeArgv:
         assert argv.count("--settings") == 1
         assert argv[:2] == ["claude", "--settings"]
         assert argv[3:] == ["-p", "hi"]
-        merged = json.loads(argv[2])
+        merged = _read_doc(argv[2])
         # ucode's gateway config survives.
         assert merged["apiKeyHelper"] == "ucode-helper"
         assert merged["env"]["ANTHROPIC_BASE_URL"] == "https://gw"
@@ -3836,7 +3896,7 @@ class TestBuildClaudeArgv:
         caller = json.dumps({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "c"}]}]}})
         argv = claude._build_claude_argv("claude", [f"--settings={caller}"])
         assert argv.count("--settings") == 1
-        merged = json.loads(argv[2])
+        merged = _read_doc(argv[2])
         assert merged["apiKeyHelper"] == "u"
         assert merged["hooks"]["Stop"][0]["hooks"][0]["command"] == "c"
 
@@ -3846,7 +3906,7 @@ class TestBuildClaudeArgv:
         )
         caller = json.dumps({"env": {"ANTHROPIC_BASE_URL": "https://caller", "FOO": "bar"}})
         argv = claude._build_claude_argv("claude", ["--settings", caller])
-        merged = json.loads(argv[2])
+        merged = _read_doc(argv[2])
         assert merged["env"]["ANTHROPIC_BASE_URL"] == "https://ucode"  # ucode wins
         assert merged["env"]["FOO"] == "bar"  # caller's non-conflicting key kept
 
@@ -3862,7 +3922,7 @@ class TestBuildClaudeArgv:
         monkeypatch.setattr(claude, "read_json_safe", lambda p: {"apiKeyHelper": "u"})
         argv = claude._build_claude_argv("claude", ["--settings", str(caller_file)])
         assert argv.count("--settings") == 1
-        merged = json.loads(argv[2])
+        merged = _read_doc(argv[2])
         assert merged["apiKeyHelper"] == "u"
         assert merged["hooks"]["SessionStart"][0]["hooks"][0]["command"] == "cs"
 

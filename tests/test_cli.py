@@ -1923,7 +1923,14 @@ class TestClaudeModelFlag:
         monkeypatch.setattr(claude, "_resolve_launch_binary", lambda binary: binary)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_: "token")
         native_calls: list[list[str]] = []
-        monkeypatch.setattr(claude, "exec_or_spawn", native_calls.append)
+        launched_settings: list[dict] = []
+
+        def fake_exec(argv):
+            # launch() removes the per-launch settings file once exec_or_spawn returns.
+            native_calls.append(argv)
+            launched_settings.append(json.loads(Path(argv[2]).read_text(encoding="utf-8")))
+
+        monkeypatch.setattr(claude, "exec_or_spawn", fake_exec)
 
         with _launch_policy_patches(None) as calls:
             calls["launch"].side_effect = lambda tool, state, args, *, options: claude.launch(
@@ -1939,7 +1946,7 @@ class TestClaudeModelFlag:
         assert calls["configure"].call_args.kwargs["custom_model"] is None
         assert len(native_calls) == 1
         assert native_calls[0][3:] == ["--model", expected_model]
-        settings = json.loads(native_calls[0][2])
+        settings = launched_settings[0]
         assert settings["env"]["ANTHROPIC_MODEL"] == expected_model
         for key, value in original_settings["env"].items():
             assert settings["env"][key] == value
