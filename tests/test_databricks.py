@@ -5842,3 +5842,61 @@ def test_importing_the_cli_does_not_load_the_databricks_sdk():
         check=True,
     )
     assert result.stdout.strip() == "False"
+
+
+class TestSharedHostProfiles:
+    SHARED = "https://acme.cloud.databricks.com"
+    ENTRIES = [
+        {"name": "other", "host": "https://acme.cloud.databricks.com", "workspace_id": "222"},
+        {"name": "mine", "host": "https://acme.cloud.databricks.com/", "workspace_id": "111"},
+        {"name": "pat", "host": "https://acme.cloud.databricks.com", "auth_type": "pat"},
+    ]
+
+    def test_prefers_the_workspace_profile(self, monkeypatch):
+        monkeypatch.setattr(db_mod, "list_profile_entries", lambda: self.ENTRIES)
+        assert db_mod.find_profile_name_for_workspace(self.SHARED, "111") == "mine"
+
+    def test_falls_back_to_another_profile_on_the_host(self, monkeypatch):
+        monkeypatch.setattr(db_mod, "list_profile_entries", lambda: self.ENTRIES)
+        assert db_mod.find_profile_name_for_workspace(self.SHARED, "333") == "other"
+
+    def test_without_an_id_matches_by_host(self, monkeypatch):
+        monkeypatch.setattr(db_mod, "find_profile_name_for_host", lambda ws: "first")
+        assert db_mod.find_profile_name_for_workspace(self.SHARED, None) == "first"
+
+    def _capture_login(self, monkeypatch, entries):
+        calls = []
+        monkeypatch.setattr(db_mod, "list_profile_entries", lambda: entries)
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        monkeypatch.setattr(db_mod, "run", lambda cmd, **kwargs: calls.append(cmd))
+        return calls
+
+    def test_first_login_names_a_profile_and_selects_the_workspace(self, monkeypatch):
+        calls = self._capture_login(monkeypatch, [{"name": "ug-acme", "host": "https://x.com"}])
+        db_mod.run_databricks_login(self.SHARED, workspace_id="111")
+        assert calls == [
+            [
+                "databricks",
+                "auth",
+                "login",
+                "--host",
+                f"{self.SHARED}?w=111",
+                "--profile",
+                "ug-acme-2",
+            ]
+        ]
+
+    def test_login_reuses_a_profile_on_the_host(self, monkeypatch):
+        calls = self._capture_login(monkeypatch, self.ENTRIES)
+        db_mod.run_databricks_login(self.SHARED, workspace_id="111")
+        assert calls == [
+            ["databricks", "auth", "login", "--host", self.SHARED, "--profile", "mine"]
+        ]
+
+    def test_classic_login_argv_is_unchanged(self, monkeypatch):
+        calls = self._capture_login(monkeypatch, [])
+        monkeypatch.setattr(db_mod, "find_profile_name_for_host", lambda ws: None)
+        db_mod.run_databricks_login("https://dbc-1.cloud.databricks.com")
+        assert calls == [
+            ["databricks", "auth", "login", "--host", "https://dbc-1.cloud.databricks.com"]
+        ]

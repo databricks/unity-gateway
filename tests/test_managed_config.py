@@ -572,6 +572,23 @@ class TestRefreshManagedConfig:
         )
         assert saved == [(WORKSPACE, RAW_MANIFEST)]
 
+    def test_shared_host_binds_the_policy_to_the_workspace(self, monkeypatch):
+        """On a host serving several workspaces the policy is stored for one of them."""
+        fetched: list[str] = []
+        saved: list[tuple] = []
+        monkeypatch.setattr(
+            mc_mod,
+            "get_managed_config",
+            lambda ws, tok: fetched.append(ws) or (RAW_MANIFEST, None),
+        )
+        monkeypatch.setattr(
+            mc_mod, "save_managed_state", lambda ws, cfg, **kwargs: saved.append((ws, cfg))
+        )
+        shared = "https://acme.cloud.databricks.com"
+        refresh_managed_config(_state(workspace=shared, workspace_id="111"), force_refresh=True)
+        assert fetched == [shared]
+        assert saved == [(f"{shared}?w=111", RAW_MANIFEST)]
+
     def test_no_managed_config_returns_none(self, monkeypatch):
         monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, tok: (None, None))
         monkeypatch.setattr(mc_mod, "save_managed_state", lambda ws, cfg, **kwargs: None)

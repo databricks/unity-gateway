@@ -1290,6 +1290,38 @@ def find_profile_name_for_host(workspace: str) -> str | None:
     return None
 
 
+def find_profile_name_for_workspace(workspace: str, workspace_id: str | None) -> str | None:
+    """Like :func:`find_profile_name_for_host`, preferring the profile for ``workspace_id``.
+
+    On a host that serves several workspaces any of its profiles mints the account token ug needs,
+    so another workspace's profile is the fallback.
+    """
+    if not workspace_id:
+        return find_profile_name_for_host(workspace)
+    normalized = workspace.rstrip("/")
+    fallback: str | None = None
+    for entry in list_profile_entries():
+        name = entry.get("name")
+        host = str(entry.get("host") or "").rstrip("/")
+        if not name or host != normalized or entry.get("auth_type") == "pat":
+            continue
+        if str(entry.get("workspace_id") or "") == workspace_id:
+            return str(name)
+        fallback = fallback or str(name)
+    return fallback
+
+
+def _new_profile_name(workspace: str) -> str:
+    label = (urlparse(workspace).hostname or "workspace").split(".")[0]
+    taken = {str(entry.get("name")) for entry in list_profile_entries() if entry.get("name")}
+    name = f"ug-{label}"
+    suffix = 2
+    while name in taken:
+        name = f"ug-{label}-{suffix}"
+        suffix += 1
+    return name
+
+
 def profile_auth_type(profile: str) -> str | None:
     """Return the auth_type of a Databricks CLI profile (e.g. "pat"), or None."""
     for p in list_profile_entries():
@@ -1365,23 +1397,33 @@ def apply_pat_environment(state: dict) -> None:
     ensure_pat_bearer(state.get("profile"))
 
 
-def run_databricks_login(workspace: str, profile: str | None = None) -> None:
+def run_databricks_login(
+    workspace: str, profile: str | None = None, *, workspace_id: str | None = None
+) -> None:
     """Run databricks auth login unconditionally.
 
     When ``profile`` is provided, it is passed via ``--profile``. Otherwise we
     fall back to looking up an existing profile by host so a stored session is
-    refreshed in place rather than overwriting another profile's tokens."""
+    refreshed in place rather than overwriting another profile's tokens.
+
+    ``workspace_id`` selects the workspace on a host that serves several. With no profile on that
+    host yet, the login names a new one: without a name the CLI saves none outside a terminal, and
+    its own default is shared by every workspace of the account."""
     print_section("Databricks Login")
     print_kv("Workspace", workspace)
     print_note("A browser may open for `databricks auth login`.")
     try:
-        profile_name = profile or find_profile_name_for_host(workspace)
+        profile_name = profile or find_profile_name_for_workspace(workspace, workspace_id)
+        login_host = workspace
+        if workspace_id and profile_name is None:
+            login_host = f"{workspace}?w={workspace_id}"
+            profile_name = _new_profile_name(workspace)
         cmd = [
             databricks_cli_path(),
             "auth",
             "login",
             "--host",
-            workspace,
+            login_host,
             *_profile_args(profile_name),
         ]
         run(cmd, env=build_databricks_cli_env(workspace, profile_name), timeout=300)
@@ -1396,7 +1438,11 @@ def run_databricks_login(workspace: str, profile: str | None = None) -> None:
 
 
 def ensure_databricks_auth(
-    workspace: str, profile: str | None = None, *, quiet: bool = False
+    workspace: str,
+    profile: str | None = None,
+    *,
+    quiet: bool = False,
+    workspace_id: str | None = None,
 ) -> None:
     """Check auth and login only if needed (used by launch path).
 
@@ -1410,7 +1456,7 @@ def ensure_databricks_auth(
         if not quiet:
             print_success(f"Databricks auth already available for {workspace}")
         return
-    run_databricks_login(workspace, profile)
+    run_databricks_login(workspace, profile, workspace_id=workspace_id)
 
 
 def _bearer_from_command(command: str) -> str:

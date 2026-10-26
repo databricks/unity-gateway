@@ -5761,6 +5761,55 @@ class TestParseProfileOption:
         with pytest.raises(RuntimeError, match="no host configured"):
             cli_mod._parse_profile_option("DEFAULT")
 
+    def test_profile_workspace_id_selects_the_workspace_on_a_shared_host(self, monkeypatch):
+        import ucode.workspace as workspace_mod
+
+        cli_mod = self._patch_profiles(
+            monkeypatch,
+            [
+                {
+                    "name": "acme",
+                    "host": "https://acme.cloud.databricks.com",
+                    "account_id": "acct",
+                    "workspace_id": "111",
+                }
+            ],
+        )
+        monkeypatch.setattr(workspace_mod, "host_type", lambda host: "unified")
+        assert cli_mod._parse_profile_option("acme") == [
+            ("https://acme.cloud.databricks.com?w=111", "acme"),
+        ]
+
+    def test_profile_workspace_id_on_a_single_workspace_host_is_ignored(self, monkeypatch):
+        import ucode.workspace as workspace_mod
+
+        cli_mod = self._patch_profiles(
+            monkeypatch,
+            [{"name": "ws", "host": "https://dbc-1.cloud.databricks.com", "workspace_id": "111"}],
+        )
+        monkeypatch.setattr(workspace_mod, "host_type", lambda host: "workspace")
+        assert cli_mod._parse_profile_option("ws") == [("https://dbc-1.cloud.databricks.com", "ws")]
+
+
+class TestParseWorkspaceOptionSelectors:
+    def test_bare_url_is_unchanged(self, monkeypatch):
+        import ucode.cli as cli_mod
+        import ucode.workspace as workspace_mod
+
+        monkeypatch.setattr(workspace_mod, "host_type", lambda host: pytest.fail("probed"))
+        assert cli_mod._parse_workspace_option("https://first.databricks.com/") == [
+            ("https://first.databricks.com", None)
+        ]
+
+    def test_selector_on_a_shared_host(self, monkeypatch):
+        import ucode.cli as cli_mod
+        import ucode.workspace as workspace_mod
+
+        monkeypatch.setattr(workspace_mod, "host_type", lambda host: "unified")
+        assert cli_mod._parse_workspace_option("https://acme.cloud.databricks.com/?o=111") == [
+            ("https://acme.cloud.databricks.com?w=111", None)
+        ]
+
 
 class TestConfigureProfilesFlag:
     PROFILE_ENTRIES = [
@@ -6887,6 +6936,44 @@ class TestConfigureSharedStateSkipPreflight:
         # find_profile_name_for_host is a local ~/.databrickscfg lookup (no network).
         assert state["profile"] == "resolved"
 
+    def test_shared_host_key_saves_the_workspace_id(self, monkeypatch):
+        cli_mod, saved = self._stub(monkeypatch)
+        monkeypatch.setattr(cli_mod, "load_state", lambda: {})
+        monkeypatch.setattr(cli_mod, "find_profile_name_for_workspace", lambda w, i: f"p-{i}")
+
+        state = cli_mod.configure_shared_state(
+            "https://acme.cloud.databricks.com?w=111", profile=None, skip_preflight=True
+        )
+
+        assert state["workspace"] == "https://acme.cloud.databricks.com"
+        assert state["workspace_id"] == "111"
+        assert state["profile"] == "p-111"
+        assert saved[-1]["workspace_id"] == "111"
+
+    def test_reconfigure_with_the_bare_host_keeps_the_saved_workspace(self, monkeypatch):
+        cli_mod, _ = self._stub(monkeypatch)
+        shared = "https://acme.cloud.databricks.com"
+        monkeypatch.setattr(
+            cli_mod,
+            "load_state",
+            lambda: {"workspace": shared, "workspace_id": "111", "use_pat": True},
+        )
+        monkeypatch.setattr(cli_mod, "find_profile_name_for_workspace", lambda w, i: "acme")
+
+        state = cli_mod.configure_shared_state(shared, profile="acme", skip_preflight=True)
+
+        assert state["workspace_id"] == "111"
+        assert state["use_pat"] is True
+
+    def test_classic_reconfigure_never_gains_a_workspace_id(self, monkeypatch):
+        cli_mod, saved = self._stub(monkeypatch)
+        monkeypatch.setattr(cli_mod, "load_state", lambda: {"workspace": self.WS})
+
+        state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT", skip_preflight=True)
+
+        assert "workspace_id" not in state
+        assert "workspace_id" not in saved[-1]
+
 
 class TestSkipPreflightFlag:
     """`--skip-preflight` on a launch command threads through _launch_tool to
@@ -7000,6 +7087,28 @@ class TestDryRunAdoptsInstalledWorkspace:
             cli_mod.set_dry_run(False)
 
         assert state["workspace"] == "https://installed.example.com"
+
+
+class TestLaunchWorkspaceStateOnSharedHosts:
+    def test_launch_selector_saves_the_workspace_key(self, monkeypatch):
+        import ucode.workspace as workspace_mod
+
+        monkeypatch.setattr(workspace_mod, "host_type", lambda host: "unified")
+        state = cli_mod._launch_workspace_state("https://acme.cloud.databricks.com/?w=111")
+        assert state["workspace"] == "https://acme.cloud.databricks.com"
+        assert state["workspace_id"] == "111"
+
+    def test_policy_for_another_workspace_on_the_same_host_refuses_the_launch(self, monkeypatch):
+        """A policy installed for one workspace of a shared host doesn't admit its siblings."""
+        import ucode.workspace as workspace_mod
+        from ucode.managed_config import save_managed_state
+
+        monkeypatch.setattr(workspace_mod, "host_type", lambda host: "unified")
+        save_managed_state("https://acme.cloud.databricks.com?w=111", {"default_agent": "claude"})
+        with pytest.raises(
+            RuntimeError, match="managed for https://acme.cloud.databricks.com\\?w=111"
+        ):
+            cli_mod._launch_workspace_state("https://acme.cloud.databricks.com/?w=222")
 
 
 class TestConfigureOtherAgentReadsPolicyOnly:

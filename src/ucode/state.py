@@ -18,6 +18,7 @@ from ucode.databricks import (
     build_shared_base_urls,
 )
 from ucode.managed_files import CONFIG_SCOPES, DEFAULT_CONFIG_SCOPE
+from ucode.workspace import split_workspace_key, split_workspace_url, workspace_key
 
 STATE_PATH = APP_DIR / "state.json"
 STATE_VERSION = 3
@@ -26,6 +27,12 @@ CONFIG_SCOPE_KEY = "config_scope"
 # Present only in memory: the layered values render the agent settings files, while `save_state`
 # restores what's under it so `state.json` keeps recording the developer's own configuration.
 MANAGED_OVERLAY_KEY = "_managed_overlay"
+# On a host that serves several workspaces, ``current_workspace`` holds the bare host (what older
+# ug versions and integrations read) and ``current_workspace_key`` the ``<host>?w=<id>`` block.
+CURRENT_WORKSPACE_KEY = "current_workspace_key"
+# The copy of a multi-workspace host's current block kept under the bare host for integrations that
+# look ucode state up by the host alone. ug itself never reads it.
+ALIAS_OF_KEY = "alias_of"
 AUTH_COMMAND_TIMEOUT_MS = 5000
 AUTH_REFRESH_INTERVAL_MS = 900_000
 
@@ -40,7 +47,54 @@ def load_full_state() -> dict:
         return {"state_version": STATE_VERSION, "current_workspace": None, "workspaces": {}}
     if not isinstance(data, dict) or data.get("state_version") != STATE_VERSION:
         return {"state_version": STATE_VERSION, "current_workspace": None, "workspaces": {}}
+    _migrate_legacy_workspace_keys(data)
     return data
+
+
+def _canonical_workspace_key(key: str) -> str:
+    """The key ``key`` should have: unchanged when canonical, else its bare host.
+
+    Older versions saved a pasted URL as is, so a key can carry a path or query. A query selector
+    is dropped rather than kept, because whether the host serves several workspaces is unknown here.
+    """
+    if split_workspace_key(key)[1]:
+        return key
+    try:
+        parsed = split_workspace_url(key)
+    except RuntimeError:
+        return key
+    return parsed.host if parsed.extra_parts or parsed.workspace_id else key
+
+
+def _migrate_legacy_workspace_keys(data: dict) -> None:
+    workspaces = data.get("workspaces")
+    if not isinstance(workspaces, dict):
+        return
+    for key in list(workspaces):
+        canonical = _canonical_workspace_key(key)
+        if canonical == key or canonical in workspaces:
+            continue
+        block = workspaces.pop(key)
+        if isinstance(block, dict) and "workspace" in block:
+            block["workspace"] = canonical
+        workspaces[canonical] = block
+        if data.get("current_workspace") == key:
+            data["current_workspace"] = canonical
+
+
+def current_workspace_key(full: dict) -> str | None:
+    """The ``workspaces`` key of the current workspace.
+
+    ``current_workspace_key`` counts only while it matches ``current_workspace``: an older ug that
+    switched workspaces updates the bare host alone.
+    """
+    current = full.get("current_workspace")
+    if not isinstance(current, str) or not current:
+        return None
+    key = full.get(CURRENT_WORKSPACE_KEY)
+    if isinstance(key, str) and split_workspace_key(key)[0] == current:
+        return key
+    return current
 
 
 def load_config_scope() -> str:
@@ -63,11 +117,19 @@ def save_config_scope(scope: str) -> None:
 def load_state() -> dict:
     """Load the current workspace's state as a flat dict."""
     full = load_full_state()
-    workspace = full.get("current_workspace")
-    if not workspace:
+    key = current_workspace_key(full)
+    if not key:
         return {}
-    ws_state = full.get("workspaces", {}).get(workspace, {})
+    ws_state = full.get("workspaces", {}).get(key, {})
+    if not isinstance(ws_state, dict):
+        ws_state = {}
+    workspace, workspace_id = split_workspace_key(key)
     ws_state["workspace"] = workspace
+    if workspace_id:
+        ws_state["workspace_id"] = workspace_id
+    else:
+        ws_state.pop("workspace_id", None)
+    ws_state.pop(ALIAS_OF_KEY, None)
     return hydrate_state(ws_state)
 
 
@@ -83,15 +145,42 @@ def save_state(state: dict) -> None:
     if is_dry_run():
         return
     full = load_full_state()
-    workspace = state.get("workspace") or full.get("current_workspace")
+    workspace = state.get("workspace")
     if workspace:
-        full["current_workspace"] = workspace
-        full["workspaces"][workspace] = hydrate_state(_without_managed_overlay(state))
+        workspace_id = state.get("workspace_id")
+        key = workspace_key(workspace, workspace_id if isinstance(workspace_id, str) else None)
+    else:
+        key = current_workspace_key(full)
+    if key:
+        block = hydrate_state(_without_managed_overlay(state))
+        _write_workspace_block(full, key, block)
     try:
         APP_DIR.mkdir(parents=True, exist_ok=True)
         STATE_PATH.write_text(json.dumps(full, indent=2), encoding="utf-8")
     except OSError as exc:
         raise RuntimeError(f"Failed to write state file: {STATE_PATH}") from exc
+
+
+def _write_workspace_block(full: dict, key: str, block: dict) -> None:
+    """Store ``block`` under ``key`` and select it, keeping the bare-host alias in step."""
+    workspaces = full.setdefault("workspaces", {})
+    host, workspace_id = split_workspace_key(key)
+    block.pop(ALIAS_OF_KEY, None)
+    if workspace_id:
+        block["workspace_id"] = workspace_id
+        legacy = workspaces.get(host)
+        if key not in workspaces and isinstance(legacy, dict) and ALIAS_OF_KEY not in legacy:
+            for intent_key in _ALIAS_INTENT_KEYS:
+                if intent_key in legacy and intent_key not in block:
+                    block[intent_key] = legacy[intent_key]
+        workspaces[key] = block
+        workspaces[host] = {**block, ALIAS_OF_KEY: key}
+        full[CURRENT_WORKSPACE_KEY] = key
+    else:
+        block.pop("workspace_id", None)
+        workspaces[key] = block
+        full.pop(CURRENT_WORKSPACE_KEY, None)
+    full["current_workspace"] = host
 
 
 def _without_managed_overlay(state: dict) -> dict:
@@ -114,16 +203,28 @@ def _without_managed_overlay(state: dict) -> dict:
 
 
 def set_current_workspace(workspace: str | None) -> None:
-    """Set ``current_workspace`` without touching the per-workspace blocks.
+    """Select ``workspace`` (a ``workspaces`` key) without touching the per-workspace blocks.
 
     Used by flows that operate on a non-current workspace and must not silently
     change which workspace ``ucode launch`` targets afterwards."""
     if is_dry_run():
         return
     full = load_full_state()
-    if full.get("current_workspace") == workspace:
+    if current_workspace_key(full) == workspace:
         return
-    full["current_workspace"] = workspace
+    if workspace is None:
+        full["current_workspace"] = None
+        full.pop(CURRENT_WORKSPACE_KEY, None)
+    else:
+        host, workspace_id = split_workspace_key(workspace)
+        full["current_workspace"] = host
+        if workspace_id:
+            full[CURRENT_WORKSPACE_KEY] = workspace
+            block = full.get("workspaces", {}).get(workspace)
+            if isinstance(block, dict):
+                full["workspaces"][host] = {**block, ALIAS_OF_KEY: workspace}
+        else:
+            full.pop(CURRENT_WORKSPACE_KEY, None)
     try:
         APP_DIR.mkdir(parents=True, exist_ok=True)
         STATE_PATH.write_text(json.dumps(full, indent=2), encoding="utf-8")
@@ -262,10 +363,16 @@ def clear_state() -> None:
     """Remove the current workspace entry and the config scope from state."""
     full = load_full_state()
     full.pop(CONFIG_SCOPE_KEY, None)
-    workspace = full.get("current_workspace")
-    if workspace:
-        full.get("workspaces", {}).pop(workspace, None)
+    key = current_workspace_key(full)
+    if key:
+        workspaces = full.get("workspaces", {})
+        workspaces.pop(key, None)
+        host, workspace_id = split_workspace_key(key)
+        if workspace_id and isinstance(workspaces.get(host), dict):
+            if workspaces[host].get(ALIAS_OF_KEY) == key:
+                workspaces.pop(host, None)
         full["current_workspace"] = None
+        full.pop(CURRENT_WORKSPACE_KEY, None)
     try:
         APP_DIR.mkdir(parents=True, exist_ok=True)
         STATE_PATH.write_text(json.dumps(full, indent=2), encoding="utf-8")
@@ -274,6 +381,8 @@ def clear_state() -> None:
 
 
 SELF_MANAGED_AGENTS_KEY = "self_managed_agents"
+# What the developer set on a bare-host block, carried into a multi-workspace block that replaces it.
+_ALIAS_INTENT_KEYS = (SELF_MANAGED_AGENTS_KEY, "custom_oauth", "mcp_servers", "profile")
 
 
 def self_managed_agents(state: dict) -> list[str]:
@@ -294,6 +403,8 @@ def workspace_self_managed_agents(workspace: str) -> list[str]:
     destination's own list rather than carry the source workspace's forward.
     """
     block = load_full_state().get("workspaces", {}).get(workspace, {})
+    if not isinstance(block, dict) or ALIAS_OF_KEY in block:
+        return []
     value = block.get(SELF_MANAGED_AGENTS_KEY)
     return list(value) if isinstance(value, list) else []
 
