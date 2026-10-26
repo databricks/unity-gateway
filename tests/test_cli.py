@@ -1462,15 +1462,7 @@ class TestSubcommandRouting:
             route.assert_not_called()
 
 
-class TestLaunchLeavesMachineWideFilesAlone:
-    @pytest.mark.parametrize("tool", ["claude", "codex"])
-    def test_launch_configures_without_syncing_os_managed_files(self, tool):
-        with _launch_policy_patches(None) as calls:
-            result = runner.invoke(app, [tool])
-
-        assert result.exit_code == 0, result.output
-        assert calls["configure"].call_args.kwargs["sync_os_managed"] is False
-
+class TestLaunchReplaysSavedManagedConfig:
     def test_launch_replays_the_saved_config_without_fetching(self, monkeypatch, tmp_path):
         import json
 

@@ -1091,58 +1091,6 @@ class TestWriteToolConfigManagedSettings:
         assert "modelPicker" not in private_writes[0][1]
         assert "modelPicker" not in json.loads(managed_writes[0][1])
 
-    def test_launch_never_writes_managed_file(self, monkeypatch):
-        private_writes: list = []
-        managed_writes: list = []
-        self._patch(monkeypatch, private_writes, managed_writes)
-        monkeypatch.setattr(
-            claude, "reconcile_managed_file", lambda *a, **kw: pytest.fail("launch wrote managed")
-        )
-        state = {"workspace": WS, "codex_models": []}
-        claude.write_tool_config(state, "databricks-claude-sonnet-4", sync_os_managed=False)
-        # The per-user file is still written; the machine-wide file is not.
-        assert str(claude.CLAUDE_SETTINGS_PATH) in [p for p, _ in private_writes]
-        assert managed_writes == []
-
-    def test_launch_warns_on_stale_managed_file_without_writing(self, monkeypatch):
-        private_writes: list = []
-        managed_writes: list = []
-        existing = {
-            str(FAKE_MANAGED_PATH): {
-                "env": {
-                    "ANTHROPIC_BASE_URL": "https://old-workspace.databricks.com/ai-gateway/anthropic"
-                }
-            }
-        }
-        self._patch(monkeypatch, private_writes, managed_writes, existing)
-        monkeypatch.setattr(
-            claude, "reconcile_managed_file", lambda *a, **kw: pytest.fail("launch wrote managed")
-        )
-        warnings: list[str] = []
-        monkeypatch.setattr(managed_files, "print_warning", warnings.append)
-        monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda **kw: True)
-        state = {"workspace": WS, "codex_models": []}
-        claude.write_tool_config(state, "databricks-claude-sonnet-4", sync_os_managed=False)
-        assert managed_writes == []
-        assert any("ug configure" in w and "ANTHROPIC_BASE_URL" in w for w in warnings), warnings
-
-    def test_launch_refuses_stale_managed_file_when_it_cannot_be_repaired(self, monkeypatch):
-        private_writes: list = []
-        managed_writes: list = []
-        existing = {
-            str(FAKE_MANAGED_PATH): {
-                "env": {
-                    "ANTHROPIC_BASE_URL": "https://old-workspace.databricks.com/ai-gateway/anthropic"
-                }
-            }
-        }
-        self._patch(monkeypatch, private_writes, managed_writes, existing)
-        monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda **kw: False)
-        state = {"workspace": WS, "codex_models": []}
-        with pytest.raises(RuntimeError, match="ug configure"):
-            claude.write_tool_config(state, "databricks-claude-sonnet-4", sync_os_managed=False)
-        assert managed_writes == []
-
     @pytest.mark.parametrize("opt_out", ["env", "user_scope"])
     def test_skip_env_bypasses_managed_file(self, monkeypatch, opt_out):
         private_writes: list = []

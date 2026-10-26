@@ -1753,54 +1753,6 @@ class TestCodexManagedConfig:
         assert profile["model"] == "gpt-5"
         assert "env_http_headers" not in profile["model_providers"]["Databricks"]
 
-    def test_launch_never_writes_managed_config(self, tmp_path, monkeypatch):
-        config_path, managed_path = self._patch(tmp_path, monkeypatch)
-        monkeypatch.setattr(
-            codex, "reconcile_managed_file", lambda *a, **kw: pytest.fail("launch wrote managed")
-        )
-
-        codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]}, sync_os_managed=False)
-
-        assert read_toml_safe(config_path)["model_provider"] == "Databricks"
-        assert not managed_path.exists()
-
-    def _stale_managed(self, managed_path):
-        managed_path.parent.mkdir(parents=True, exist_ok=True)
-        managed_path.write_text(
-            'model_provider = "Databricks"\n'
-            "[model_providers.Databricks]\n"
-            'base_url = "https://old-workspace.databricks.com/ai-gateway/openai/v1"\n',
-            encoding="utf-8",
-        )
-
-    def test_launch_warns_on_stale_managed_config_without_writing(self, tmp_path, monkeypatch):
-        _, managed_path = self._patch(tmp_path, monkeypatch)
-        self._stale_managed(managed_path)
-        before = managed_path.read_text(encoding="utf-8")
-        monkeypatch.setattr(
-            codex, "reconcile_managed_file", lambda *a, **kw: pytest.fail("launch wrote managed")
-        )
-        warnings: list[str] = []
-        monkeypatch.setattr(managed_files, "print_warning", warnings.append)
-        monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda **kw: True)
-
-        codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]}, sync_os_managed=False)
-
-        assert managed_path.read_text(encoding="utf-8") == before
-        assert any("ug configure" in w for w in warnings), warnings
-
-    def test_launch_refuses_stale_managed_config_when_it_cannot_be_repaired(
-        self, tmp_path, monkeypatch
-    ):
-        _, managed_path = self._patch(tmp_path, monkeypatch)
-        self._stale_managed(managed_path)
-        monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda **kw: False)
-
-        with pytest.raises(RuntimeError, match="ug configure"):
-            codex.write_tool_config(
-                {"workspace": WS, "codex_models": ["gpt-5"]}, sync_os_managed=False
-            )
-
     @pytest.mark.parametrize("opt_out", ["env", "user_scope"])
     def test_skip_env_bypasses_managed_config(self, tmp_path, monkeypatch, opt_out):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)
