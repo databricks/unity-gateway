@@ -48,7 +48,6 @@ from ucode.managed_files import (
     managed_settings_skipped,
     update_workspace_policy,
 )
-from ucode.os_compatibility.system_cross_os import is_admin
 from ucode.time_utils import parse_update_time
 from ucode.ui import console, normalize_workspace_url, print_warning
 
@@ -665,8 +664,12 @@ def save_managed_state(
     interactive: bool = False,
     allow_sudo: bool = False,
     sets_machine_workspace: bool = False,
+    allow_write: bool = True,
 ) -> None:
     """Install raw policy only when changed; remove a matching policy when it no longer exists.
+
+    With ``allow_write=False`` (a launch) nothing is written, even as root: a change that would
+    need a write raises :class:`RuntimeError` instead.
 
     ``sets_machine_workspace`` marks an explicit ``ug configure``, which decides the machine's
     workspace: a workspace that publishes no policy then also removes another workspace's
@@ -682,6 +685,7 @@ def save_managed_state(
     )
     if not config:
         if matches or (sets_machine_workspace and existing_workspace):
+            _require_policy_write(allow_write)
             update_workspace_policy(
                 MANAGED_CONFIG_PATH, None, interactive=interactive, allow_sudo=allow_sudo
             )
@@ -693,6 +697,7 @@ def save_managed_state(
         and _policy_content(existing_config) == _policy_content(config)
     ):
         return
+    _require_policy_write(allow_write)
     payload = {"workspace": workspace, "config": config}
     update_workspace_policy(
         MANAGED_CONFIG_PATH,
@@ -700,6 +705,13 @@ def save_managed_state(
         interactive=interactive,
         allow_sudo=allow_sudo,
     )
+
+
+def _require_policy_write(allow_write: bool) -> None:
+    if not allow_write:
+        raise RuntimeError(
+            "Workspace policy updates are only made by `ug configure`, never by a launch."
+        )
 
 
 def revert_machine_policy() -> str:
@@ -876,8 +888,8 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
 
     ``force_refresh`` bypasses throttling for explicit configuration. The installed policy changes
     only when the workspace or configuration changes; unchanged reads update only refresh metadata.
-    Only explicit configuration may invoke sudo. Non-root launches are read-only regardless of
-    terminal attachment or cached sudo access; root launches can install without sudo.
+    Only explicit configuration writes the machine policy. Launches are read-only regardless of
+    privilege, terminal attachment, or cached sudo access.
 
     The installed workspace is authoritative for launches; mismatched selections fail before
     cached reads or remote requests. Explicit configure can change the machine workspace.
@@ -929,6 +941,7 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
             interactive=force_refresh,
             allow_sudo=force_refresh,
             sets_machine_workspace=force_refresh,
+            allow_write=force_refresh,
         )
     except RuntimeError as exc:
         if force_refresh and _machine_policy_installable():
@@ -986,9 +999,9 @@ def _machine_policy_installable() -> bool:
 
 
 def _can_install_policy(explicit_configure: bool) -> bool:
-    """Whether this run may install the machine policy: root, or an explicit ``ug configure``
-    (which may use sudo). A non-root launch never does."""
-    return _machine_policy_installable() and (explicit_configure or is_admin())
+    """Whether this run may install the machine policy: only an explicit ``ug configure``.
+    A launch never does, regardless of privilege."""
+    return _machine_policy_installable() and explicit_configure
 
 
 def _refresh_user_cache(state: dict, workspace: str, *, force_refresh: bool) -> ManagedConfigResult:

@@ -567,7 +567,10 @@ class TestRefreshManagedConfig:
             mc_mod, "save_managed_state", lambda ws, cfg, **kwargs: saved.append((ws, cfg))
         )
         # The raw config is persisted verbatim; the caller gets the normalized manifest.
-        assert refresh_managed_config(_state()) == (normalize_managed_config(RAW_MANIFEST), False)
+        assert refresh_managed_config(_state(), force_refresh=True) == (
+            normalize_managed_config(RAW_MANIFEST),
+            False,
+        )
         assert saved == [(WORKSPACE, RAW_MANIFEST)]
 
     def test_no_managed_config_returns_none(self, monkeypatch):
@@ -669,7 +672,7 @@ class TestRefreshManagedConfig:
             mc_mod, "save_managed_state", lambda ws, cfg, **kwargs: saved.append((ws, cfg))
         )
         monkeypatch.setattr(mc_mod, "load_managed_state", lambda ws: None)
-        result, _ = refresh_managed_config(_state())
+        result, _ = refresh_managed_config(_state(), force_refresh=True)
         assert result is None
         assert saved == [(WORKSPACE, {})]
 
@@ -720,7 +723,7 @@ class TestRefreshManagedConfig:
             lambda msg: pytest.fail("feature-disabled must not warn about falling back to a cache"),
         )
         state = _state()
-        result, flag = refresh_managed_config(state)
+        result, flag = refresh_managed_config(state, force_refresh=True)
         assert result is None
         assert flag is True
         assert saved == [(WORKSPACE, {})]
@@ -888,7 +891,7 @@ class TestRefreshTTL:
 
     def test_successful_read_stamps_retrieved_at_and_outcome(self, monkeypatch):
         self._counting_fetch(monkeypatch)
-        refresh_managed_config(_state())
+        refresh_managed_config(_state(), force_refresh=True)
         stored = json.loads(mc_mod.MANAGED_CONFIG_PATH.read_text(encoding="utf-8"))
         assert stored["config"] == RAW_MANIFEST
         assert set(stored) == {"workspace", "config"}
@@ -996,7 +999,7 @@ class TestMachinePolicyRefresh:
 
         monkeypatch.setattr(mc_mod, "update_workspace_policy", install)
         refresh_managed_config(_state(), force_refresh=force_refresh)
-        assert writes == [(force_refresh, force_refresh)]
+        assert writes == ([(True, True)] if force_refresh else [])
 
     def test_denied_changed_policy_warns_and_reuses_installed_policy(self, monkeypatch):
         save_managed_state(WORKSPACE, RAW_MANIFEST)
@@ -1022,29 +1025,16 @@ class TestMachinePolicyRefresh:
         )
         assert refresh_managed_config(_state()) == result
 
-    def test_denied_initial_install_warns_and_applies_the_fetched_policy(self, monkeypatch):
-        """A root run that cannot install still governs this run with the fetched policy."""
-        warnings = []
-
-        def denied(*args, **kwargs):
-            raise RuntimeError("sudo permission denied")
-
-        monkeypatch.setattr(mc_mod, "update_workspace_policy", denied)
-        monkeypatch.setattr(mc_mod, "print_warning", warnings.append)
-        assert refresh_managed_config(_state()) == (normalize_managed_config(RAW_MANIFEST), False)
-        assert not mc_mod.MANAGED_CONFIG_PATH.exists()
-        assert "Continuing with the fetched policy for this run" in warnings[0]
-        assert "Ask your IT team or an administrator" in warnings[0]
-
-    def test_non_root_launch_applies_the_fetched_policy_without_installing(self, monkeypatch):
-        """A first launch before any configure is managed, as on main, and installs nothing."""
-        monkeypatch.setattr(mc_mod, "is_admin", lambda: False)
+    @pytest.mark.parametrize("is_root", [False, True])
+    def test_launch_applies_the_fetched_policy_without_installing(self, monkeypatch, is_root):
+        """A first launch before any configure is managed and installs nothing, even as root."""
+        monkeypatch.setattr(os, "geteuid", lambda: 0 if is_root else 1000, raising=False)
         warnings = []
         monkeypatch.setattr(mc_mod, "print_warning", warnings.append)
         monkeypatch.setattr(
             mc_mod,
             "update_workspace_policy",
-            lambda *a, **k: pytest.fail("a non-root launch must not install the machine policy"),
+            lambda *a, **k: pytest.fail("a launch must not install the machine policy"),
         )
 
         result = refresh_managed_config(_state())
@@ -1053,8 +1043,9 @@ class TestMachinePolicyRefresh:
         assert not mc_mod.MANAGED_CONFIG_PATH.exists()
         assert warnings == []
 
-    def test_non_root_configure_installs_the_policy(self, monkeypatch):
-        monkeypatch.setattr(mc_mod, "is_admin", lambda: False)
+    @pytest.mark.parametrize("is_root", [False, True])
+    def test_configure_installs_the_policy(self, monkeypatch, is_root):
+        monkeypatch.setattr(os, "geteuid", lambda: 0 if is_root else 1000, raising=False)
 
         refresh_managed_config(_state(), force_refresh=True)
 
@@ -1088,8 +1079,25 @@ class TestMachinePolicyRefresh:
     def test_removed_policy_is_deleted_instead_of_replaced_with_empty_file(self, monkeypatch):
         save_managed_state(WORKSPACE, RAW_MANIFEST)
         monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (None, None))
-        assert refresh_managed_config(_state()) == (None, False)
+        assert refresh_managed_config(_state(), force_refresh=True) == (None, False)
         assert not mc_mod.MANAGED_CONFIG_PATH.exists()
+
+    @pytest.mark.parametrize("is_root", [False, True])
+    def test_launch_never_removes_the_installed_policy(self, monkeypatch, is_root):
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (None, None))
+        monkeypatch.setattr(os, "geteuid", lambda: 0 if is_root else 1000, raising=False)
+        monkeypatch.setattr(
+            mc_mod,
+            "update_workspace_policy",
+            lambda *a, **k: pytest.fail("a launch must not remove the machine policy"),
+        )
+        warnings = []
+        monkeypatch.setattr(mc_mod, "print_warning", warnings.append)
+        result = refresh_managed_config(_state())
+        assert result.manifest == normalize_managed_config(RAW_MANIFEST)
+        assert mc_mod.MANAGED_CONFIG_PATH.exists()
+        assert "Ask your IT team or an administrator" in warnings[0]
 
     @pytest.mark.parametrize("reason", [None, "FEATURE_DISABLED"])
     def test_failed_policy_removal_warns_and_preserves_installed_policy(self, monkeypatch, reason):
@@ -1172,7 +1180,7 @@ class TestMachinePolicyRefresh:
         assert all("config" not in entry for entry in entries.values())
 
     def test_workspace_urls_with_trailing_slash_share_policy_and_timestamp(self, monkeypatch):
-        refresh_managed_config(_state())
+        refresh_managed_config(_state(), force_refresh=True)
         monkeypatch.setattr(
             mc_mod,
             "get_managed_config",
