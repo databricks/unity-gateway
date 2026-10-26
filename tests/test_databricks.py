@@ -4319,34 +4319,70 @@ class TestEnsureDatabricksCliVersion:
         env.setdefault("PATHEXT", ".COM;.EXE;.BAT;.CMD")
         return env
 
-    def test_passes_when_version_meets_minimum(self, tmp_path, monkeypatch):
-        env = self._fake_databricks(tmp_path, "Databricks CLI v1.0.0")
+    @pytest.mark.parametrize("version", ["1.18.0", "1.19.0"])
+    def test_passes_when_version_meets_minimum(self, tmp_path, monkeypatch, version):
+        env = self._fake_databricks(tmp_path, f"Databricks CLI v{version}")
         monkeypatch.setattr("os.environ", env)
-        ensure_databricks_cli_version()  # should not raise
-
-    def test_auto_upgrades_when_version_too_old(self, tmp_path, monkeypatch):
-        import ucode.databricks as db_mod
-
-        env = self._fake_databricks(tmp_path, "Databricks CLI v0.299.2")
-        monkeypatch.setattr("os.environ", env)
-        upgraded = []
         monkeypatch.setattr(
             db_mod,
             "_run_databricks_cli_installer",
-            lambda brew_subcommand="install": upgraded.append(brew_subcommand),
+            lambda **kwargs: pytest.fail("supported CLI must not be upgraded"),
         )
-        # Stop the recursive re-check after upgrade
-        call_count = [0]
-        original = db_mod.ensure_databricks_cli_version
+        install_databricks_cli()
+        assert databricks_cli_version() == tuple(map(int, version.split(".")))
 
-        def once(*a, **kw):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                original()
+    @pytest.mark.parametrize("version", ["0.299.2", "1.0.0", "1.11.0", "1.17.9"])
+    @pytest.mark.parametrize("skills_mcp", [False, True])
+    def test_auto_upgrades_when_version_too_old(self, tmp_path, monkeypatch, version, skills_mcp):
+        env = self._fake_databricks(tmp_path, f"Databricks CLI v{version}")
+        monkeypatch.setattr("os.environ", env)
+        upgraded = []
 
-        monkeypatch.setattr(db_mod, "ensure_databricks_cli_version", once)
-        once()
+        # Simulate the external installer without upgrading the developer's CLI.
+        def upgrade(brew_subcommand="install"):
+            upgraded.append(brew_subcommand)
+            self._fake_databricks(tmp_path, "Databricks CLI v1.18.0")
+
+        monkeypatch.setattr(db_mod, "_run_databricks_cli_installer", upgrade)
+        if skills_mcp:
+            install_databricks_cli(minimum=db_mod.SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
+        else:
+            install_databricks_cli()
         assert upgraded == ["upgrade"]
+        assert databricks_cli_version() == (1, 18, 0)
+
+    def test_upgrade_failure_stops_bootstrap(self, tmp_path, monkeypatch):
+        env = self._fake_databricks(tmp_path, "Databricks CLI v1.17.0")
+        monkeypatch.setattr("os.environ", env)
+
+        def fail_upgrade(**kwargs):
+            raise RuntimeError("upgrade failed")
+
+        monkeypatch.setattr(db_mod, "_run_databricks_cli_installer", fail_upgrade)
+        with pytest.raises(RuntimeError, match="upgrade failed"):
+            install_databricks_cli()
+        assert databricks_cli_version() == (1, 17, 0)
+
+    def test_reuses_supported_cli_when_old_install_is_first_on_path(self, tmp_path, monkeypatch):
+        old_dir, new_dir = tmp_path / "old", tmp_path / "new"
+        old_dir.mkdir()
+        new_dir.mkdir()
+        env = self._fake_databricks(old_dir, "Databricks CLI v1.17.0")
+        new_binary = _write_fake_executable(
+            new_dir, "databricks", "print('Databricks CLI v1.18.0')"
+        )
+        env["PATH"] = os.pathsep.join([str(old_dir), str(new_dir)])
+        monkeypatch.setattr("os.environ", env)
+        monkeypatch.setattr(
+            db_mod,
+            "_run_databricks_cli_installer",
+            lambda **kwargs: pytest.fail("supported CLI must be reused"),
+        )
+
+        install_databricks_cli()
+
+        assert databricks_cli_path() == new_binary
+        assert databricks_cli_version() == (1, 18, 0)
 
     def test_raises_when_version_unparseable(self, tmp_path, monkeypatch):
         env = self._fake_databricks(tmp_path, "completely broken output")
@@ -4355,28 +4391,18 @@ class TestEnsureDatabricksCliVersion:
             ensure_databricks_cli_version()
 
     def test_custom_minimum_upgrades_version_below_it(self, tmp_path, monkeypatch):
-        import ucode.databricks as db_mod
-
-        # v1.8.0 clears the default floor but not the skills-MCP floor (1.11.0).
-        env = self._fake_databricks(tmp_path, "Databricks CLI v1.8.0")
+        env = self._fake_databricks(tmp_path, "Databricks CLI v1.18.0")
         monkeypatch.setattr("os.environ", env)
         upgraded = []
-        monkeypatch.setattr(
-            db_mod,
-            "_run_databricks_cli_installer",
-            lambda brew_subcommand="install": upgraded.append(brew_subcommand),
-        )
-        call_count = [0]
-        original = db_mod.ensure_databricks_cli_version
 
-        def once(*a, **kw):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                original(*a, **kw)
+        def upgrade(brew_subcommand="install"):
+            upgraded.append(brew_subcommand)
+            self._fake_databricks(tmp_path, "Databricks CLI v1.19.0")
 
-        monkeypatch.setattr(db_mod, "ensure_databricks_cli_version", once)
-        once(db_mod.SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
+        monkeypatch.setattr(db_mod, "_run_databricks_cli_installer", upgrade)
+        install_databricks_cli(minimum=(1, 19, 0))
         assert upgraded == ["upgrade"]
+        assert databricks_cli_version() == (1, 19, 0)
 
 
 class TestInstallDatabricksCli:

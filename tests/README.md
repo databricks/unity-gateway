@@ -334,6 +334,13 @@ selection, and errors without browser consent through the MCP handler. These
 component checks replace external auth/network boundaries; they do not establish
 live search, parent/child discovery, or classifier permission behavior.
 
+`test_databricks.py` covers the shared Databricks CLI 1.18.0 minimum: bootstrap and
+skills commands upgrade older versions and recheck the result, supported versions
+are reused, installer failure stops bootstrap, and multiple installations resolve
+to the supported binary. `test_doctor.py` checks the matching warning and upgrade
+suggestion. Installer effects are simulated; these checks do not establish native
+installation or successful browser/connector sign-in.
+
 `test_databricks.py` also covers process-local CLI token memoization, expiry
 margins on both wall and monotonic clocks (including suspend and clock rollback),
 short-lived failure entries only for confirmed invalid/missing credentials,

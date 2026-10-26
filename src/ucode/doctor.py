@@ -133,7 +133,7 @@ def _check_databricks_cli() -> Check:
         return Check(
             "Databricks CLI",
             "warn",
-            f"v{current} is below v{floor}, the release that ships `databricks aitools`",
+            f"v{current} is below required v{floor} (MCP connection sign-in needs `auth login --resource`)",
             Suggestion("Upgrade the Databricks CLI to the latest release?", upgrade_databricks_cli),
         )
     return Check("Databricks CLI", "ok", f"v{current}")

@@ -63,6 +63,11 @@ When Claude Code or Codex is older than the minimum version `ug` supports, `ug`
 asks before upgrading it in place. Set `UG_AUTO_UPGRADE_AGENT=1` to upgrade
 without asking, for example from a launcher that manages the agent install.
 
+Databricks CLI 1.18.0 or newer is required for MCP connection sign-in.
+Configure and normal launches automatically upgrade an older CLI through the
+existing platform installer, then verify the installed version. `ug doctor`
+reports an older CLI and offers an upgrade.
+
 Use `ug opencode --model system.ai.glm-5-3` (or `-m`) to select a configured
 model for one launch. OpenCode's `provider/model` form is also accepted.
 Unknown Databricks models produce an error; this option does not add models

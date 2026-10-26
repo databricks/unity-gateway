@@ -677,7 +677,7 @@ class TestBootstrapStdout:
         def run_dependency(command, **kwargs):
             commands.append(command)
             if command in (["databricks", "--version"], ["/tools/databricks", "--version"]):
-                version = "1.17.0" if "databricks" in updated else "0.1.0"
+                version = "1.18.0" if "databricks" in updated else "0.1.0"
                 script = f"print('Databricks CLI v{version}')"
             else:
                 dependency = "databricks" if command[0] == "brew" else "agent"
@@ -724,7 +724,7 @@ class TestBootstrapStdout:
 
         captured = capfd.readouterr()
         assert "databricks setup stderr" in captured.err
-        assert not {"Databricks CLI v0.1.0", "Databricks CLI v1.17.0"}.intersection(
+        assert not {"Databricks CLI v0.1.0", "Databricks CLI v1.18.0"}.intersection(
             (captured.out + captured.err).splitlines()
         )
         assert [

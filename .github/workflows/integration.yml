@@ -202,7 +202,7 @@ jobs:
           enable-cache: ${{ inputs.ref == '' }}
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
         with:
-          version: 1.17.0
+          version: 1.18.0
       - name: Expose the Databricks CLI on Windows
         if: ${{ runner.os == 'Windows' }}
         shell: bash
@@ -261,7 +261,7 @@ jobs:
           enable-cache: ${{ inputs.ref == '' }}
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
         with:
-          version: 1.17.0
+          version: 1.18.0
       - name: Expose the Databricks CLI to native PowerShell
         shell: pwsh
         run: |
@@ -433,7 +433,7 @@ jobs:
           enable-cache: ${{ inputs.ref == '' }}
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
         with:
-          version: 1.17.0
+          version: 1.18.0
       - name: Run the self-managed OpenCode journey against the managed workspace
         shell: bash
         run: |
@@ -492,7 +492,7 @@ jobs:
           enable-cache: ${{ inputs.ref == '' }}
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
         with:
-          version: 1.17.0
+          version: 1.18.0
       - name: Run the managed cases against the managed e2e workspace
         shell: bash
         env:
@@ -587,7 +587,7 @@ jobs:
           enable-cache: ${{ inputs.ref == '' }}
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
         with:
-          version: 1.17.0
+          version: 1.18.0
       - name: Install ug and agent CLIs
         run: |
           uv lock

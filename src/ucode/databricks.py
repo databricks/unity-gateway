@@ -62,10 +62,10 @@ UNIX_DATABRICKS_INSTALL_URL = (
 WINDOWS_DATABRICKS_WINGET_PACKAGE = "Databricks.DatabricksCLI"
 AI_GATEWAY_DOCS_URL = "https://docs.databricks.com/aws/en/ai-gateway/overview-beta"
 ANTHROPIC_MODELS_PATH = "/ai-gateway/anthropic/v1/models"
-# v1.0.0 is the release that ships `databricks aitools`.
-MIN_DATABRICKS_CLI_VERSION = (1, 0, 0)
+# v1.18.0 adds `auth login --resource` for MCP connection sign-in.
+MIN_DATABRICKS_CLI_VERSION = (1, 18, 0)
 # v1.11.0 fixes `fs cp` (create -> finalize), which the skills MCP uploads rely on.
-SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION = (1, 11, 0)
+SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION = max(MIN_DATABRICKS_CLI_VERSION, (1, 11, 0))
 TOKEN_REFRESH_INTERVAL_SECONDS = 1800
 # Substrings the Databricks CLI emits when it loses the token-cache write lock
 # to a concurrent `databricks auth token` (e.g. another ucode helper process
@@ -1035,11 +1035,8 @@ def install_databricks_cli(
 ) -> None:
     """Ensure the Databricks CLI is installed and (unless skipped) new enough.
 
-    ``skip_version_check`` is set on ``--skip-preflight`` launches: they trust a
-    prior ``ucode configure`` and must not re-run the minimum-version gate, whose
-    ``databricks aitools`` floor (v1.0.0) rejects a perfectly usable public-preview
-    build (e.g. v0.299.2) as a false positive. A missing CLI is still installed —
-    only the version *check* is bypassed."""
+    ``--skip-preflight`` launches trust a prior configure and skip the version
+    check. A missing CLI is still installed."""
     if platform.system() == "Windows":
         _refresh_windows_path()
 

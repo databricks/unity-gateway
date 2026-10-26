@@ -161,6 +161,11 @@ These component checks do not establish live installer, Isaac, or inference cove
 `TestInstallDatabricksCli` in `../test_databricks.py` checks that Windows PATH refresh
 discards a cached missing CLI and reuses an existing WinGet alias or persisted user PATH
 entry across repeated bootstrap. It does not establish a live Windows launch.
+`TestEnsureDatabricksCliVersion` covers the shared 1.18.0 minimum through real CLI
+discovery with temporary executables and simulated installer effects, including
+skills commands, post-upgrade checks, failures, and multiple installations.
+`../test_doctor.py` covers the corresponding upgrade recommendation. These component
+checks do not establish native installation or browser/connector sign-in.
 The live Claude/Codex headless prompt-argument and stdin journeys require raw stdout to parse
 as JSON/JSONL, without discarding non-JSON lines before checking the completed file task.
 
@@ -302,14 +307,14 @@ Claude versions use instead of final text blocks; parent handbacks remain exclud
 ## Run a specific combination
 
 Prerequisites: Python 3.12+, uv, and Node/npm. Live runs also require Databricks
-CLI 1.17.0. Windows drives TUIs through ConPTY (pywinpty) and supports the explicit
+CLI 1.18.0. Windows drives TUIs through ConPTY (pywinpty) and supports the explicit
 headless subset described below. The runner installs the requested agents into a new
 npm prefix and ug into a new virtualenv. Pytest, the recorder's pinned `httpx`, and,
 for live runs, the PTY/screen libraries (pexpect and pyte) live in a different
 virtualenv, so they cannot accidentally
 supply a missing application dependency. No packages are installed into your
 existing agent installations or checkout's `.venv`.
-CI pins Databricks CLI 1.17.0 in the live and managed integration lanes. The
+CI pins Databricks CLI 1.18.0 in the live and managed integration lanes. The
 runner's isolated `PATH` exposes that selected CLI, so skills journeys meet ug's
 CLI minimum without falling back to another version installed on the machine.
 Native live runs refuse existing machine-wide Unity Gateway/Claude/Codex configuration, which

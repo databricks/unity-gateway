@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 import ucode.doctor as doctor_mod
-from ucode.databricks import MIN_DATABRICKS_CLI_VERSION
 from ucode.doctor import (
     Check,
     Suggestion,
@@ -51,25 +52,24 @@ class TestDatabricksCliCheck:
         assert check.suggestion is not None
         assert "Install" in check.suggestion.prompt
 
-    def test_warn_and_upgrade_suggestion_when_below_floor(self):
-        # A public-preview build below the aitools floor: recommend an upgrade,
-        # not a hard failure.
-        old = (MIN_DATABRICKS_CLI_VERSION[0], MIN_DATABRICKS_CLI_VERSION[1] - 1, 0)
+    @pytest.mark.parametrize("version", [(0, 299, 2), (1, 0, 0), (1, 11, 0), (1, 17, 9)])
+    def test_warn_and_upgrade_suggestion_when_below_floor(self, version):
         with (
             patch.object(doctor_mod, "databricks_cli_installed", return_value=True),
-            patch.object(doctor_mod, "databricks_cli_version", return_value=old),
+            patch.object(doctor_mod, "databricks_cli_version", return_value=version),
         ):
             check = _check_databricks_cli()
         assert check.status == "warn"
+        assert "1.18.0" in check.detail
+        assert "--resource" in check.detail
         assert check.suggestion is not None
         assert "Upgrade" in check.suggestion.prompt
 
-    def test_ok_when_at_or_above_floor(self):
+    @pytest.mark.parametrize("version", [(1, 18, 0), (1, 19, 0)])
+    def test_ok_when_at_or_above_floor(self, version):
         with (
             patch.object(doctor_mod, "databricks_cli_installed", return_value=True),
-            patch.object(
-                doctor_mod, "databricks_cli_version", return_value=MIN_DATABRICKS_CLI_VERSION
-            ),
+            patch.object(doctor_mod, "databricks_cli_version", return_value=version),
         ):
             check = _check_databricks_cli()
         assert check.status == "ok"
