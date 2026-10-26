@@ -492,6 +492,7 @@ def _launch_policy_patches(
     *,
     persisted_provider: str | None = None,
     picker_catalog: db_mod.AnthropicModelCatalog | None = None,
+    recommendation: dict | None = None,
 ):
     launch_state = dict(MINIMAL_STATE)
     picker_catalog = picker_catalog or db_mod.AnthropicModelCatalog(
@@ -503,7 +504,7 @@ def _launch_policy_patches(
         patch("ucode.cli.load_state", return_value=launch_state),
         patch("ucode.cli.ensure_provider_state", return_value=launch_state),
         patch("ucode.cli._fetch_managed_config", return_value=(managed, False)),
-        patch("ucode.cli._fetch_budget_recommendation", return_value=None),
+        patch("ucode.cli._fetch_budget_recommendation", return_value=recommendation),
         patch("ucode.cli.get_databricks_token", return_value="token"),
         patch("ucode.cli.get_provider_service", return_value=persisted_provider) as get_provider,
         patch("ucode.cli.configure_shared_state", return_value=launch_state) as shared,
@@ -7078,7 +7079,7 @@ class TestBudgetRecommendationAtLaunch:
         )
         assert cfg.call_args.args[2] == "system.ai.claude-haiku-4-5"
 
-    def test_budget_pick_is_launch_only_and_managed_inputs_match_configure(self, monkeypatch):
+    def test_budget_pick_is_launch_only_and_managed_inputs_match_configure(self):
         managed = {
             "enabled_agents": {
                 "claude": {
@@ -7093,40 +7094,29 @@ class TestBudgetRecommendationAtLaunch:
             **self.SMART_DEFAULTS,
         }
         recommendation = {"agent": "claude", "model": "system.ai.claude-haiku-4-5"}
-        state = dict(MINIMAL_STATE)
-        with (
-            patch("ucode.cli.load_state", return_value=state),
-            patch("ucode.cli.apply_pat_environment"),
-            patch("ucode.cli.ensure_bootstrap_dependencies"),
-            patch("ucode.cli.ensure_provider_state", return_value=state),
-            patch("ucode.cli.configure_shared_state", return_value=state),
-            patch("ucode.cli.configure_tool", return_value=state) as cfg,
-            patch("ucode.cli.get_databricks_token", return_value="tok"),
-            patch("ucode.cli._fetch_managed_config", return_value=(managed, False)),
-            patch("ucode.cli._fetch_budget_recommendation", return_value=recommendation),
-            patch("ucode.cli.launch_agent") as launch,
-        ):
+        with _launch_policy_patches(managed, recommendation=recommendation) as calls:
             result = runner.invoke(app, ["claude"])
 
         assert result.exit_code == 0, result.output
-        expected = cli_mod.claude_agent.managed_model_inputs(state, managed)
-        kwargs = cfg.call_args.kwargs
+        expected = cli_mod.claude_agent.managed_model_inputs(calls["state"], managed)
+        kwargs = calls["configure"].call_args.kwargs
         # What the launch writes is what `ug configure` writes: the admin default, not the pick.
         assert kwargs["route_root_model"] == "system.ai.claude-opus-4-8"
         assert kwargs["coding_agent_config_defaults"] == expected.coding_agent_config_defaults
         assert kwargs["picker_catalog"] == expected.picker_catalog
-        options = launch.call_args.kwargs["options"]
+        options = calls["launch"].call_args.kwargs["options"]
         assert options.launch_model == "system.ai.claude-haiku-4-5"
         assert options.user_pinned_model is None
 
-    def test_budget_pick_equal_to_default_needs_no_launch_model(self, monkeypatch):
+    def test_budget_pick_equal_to_default_needs_no_launch_model(self):
         managed = {
             "enabled_agents": {
                 "claude": {"model_config": {"default_model": "system.ai.claude-opus-4-8"}}
             },
             **self.SMART_DEFAULTS,
         }
-        with _launch_policy_patches(managed) as calls:
+        recommendation = {"agent": "claude", "model": "system.ai.claude-opus-4-8"}
+        with _launch_policy_patches(managed, recommendation=recommendation) as calls:
             result = runner.invoke(app, ["claude"])
         assert result.exit_code == 0, result.output
         assert calls["launch"].call_args.kwargs["options"].launch_model is None

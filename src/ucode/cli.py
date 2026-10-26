@@ -3573,7 +3573,9 @@ def _launch_tool(
         # The router's per-launch pick for the root session. Codex pins it as the
         # resolved model; claude pins it via ANTHROPIC_MODEL (route_root_model).
         route_root_model = None
-        managed_files_pinned = False  # route_root_model / picker already match `ug configure`
+        claude_inputs_from_configure = (
+            False  # claude's model inputs are the ones `ug configure` derives
+        )
         session_model = None  # launch-only model for Claude Code's `--model` flag
         managed_model = None
         relayed_forward_model = None  # forwarded to Claude Code's --model for a relayed provider
@@ -3637,7 +3639,7 @@ def _launch_tool(
                 coding_agent_config_defaults = managed_inputs.coding_agent_config_defaults
                 route_root_model = managed_inputs.route_root_model
                 picker_catalog = managed_inputs.picker_catalog
-                managed_files_pinned = True
+                claude_inputs_from_configure = True
                 if managed_model and managed_model != managed_inputs.route_root_model:
                     session_model = managed_model
             # An explicit `--model` is the user's own choice and outranks everything above (managed
@@ -3645,7 +3647,7 @@ def _launch_tool(
             # Codex keeps an explicit --model in ctx.args and passes it to its CLI verbatim.
             if model and tool != "claude":
                 resolved_model = model
-        if model and tool == "claude" and not provider and not managed_files_pinned:
+        if model and tool == "claude" and not provider and not claude_inputs_from_configure:
             route_root_model = None
         # List the gateway's models in ug's own /model picker so GPT rows get the `[1m]` hint.
         # Claude Code's own discovery lists them without it, so they would run at 200K.
@@ -3668,7 +3670,7 @@ def _launch_tool(
                 )
         if (
             coding_agent_config_defaults
-            and not managed_files_pinned
+            and not claude_inputs_from_configure
             and not state.get("claude_static_models")
             and not relayed
         ):
@@ -3758,9 +3760,8 @@ def _launch_tool(
             user_pinned_model=model or forwarded_model,
             provider=provider,
             # Copilot picks its start model from its own catalog; the admin's or budget pick leads.
-            launch_model=(
-                managed_model if tool == "copilot" else session_model if tool == "claude" else None
-            ),
+            # session_model is set for claude only.
+            launch_model=managed_model if tool == "copilot" else session_model,
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
         with _smart_routing_v2_flag(True if managed_smart_routing_applies else None, agent=tool):

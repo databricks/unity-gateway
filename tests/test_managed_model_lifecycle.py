@@ -342,9 +342,9 @@ def test_claude_configure_and_plain_launch_write_identical_files(harness, monkey
     state = resolve_state(managed, base, "claude")
 
     def write(inputs=None):
-        # `ug configure` passes no model inputs; a plain launch passes the helper's explicitly.
+        # `ug configure` asks the writer to derive the inputs; a launch passes the helper's.
         kwargs = (
-            {}
+            {"derive_managed_model_inputs": True}
             if inputs is None
             else {
                 "route_root_model": inputs.route_root_model,
@@ -387,3 +387,21 @@ def test_managed_model_inputs_ignore_per_launch_choices():
     assert claude.managed_model_inputs({"workspace": WS}, None) == claude.ManagedModelInputs(
         {}, None, None
     )
+
+
+def test_claude_writer_without_inputs_or_derive_flag_pins_no_model(harness, monkeypatch):
+    """Omitting the inputs never silently pins ANTHROPIC_MODEL; configure must opt in."""
+    base = {"workspace": WS, "codex_models": [], "claude_models": dict(DISCOVERED_CLAUDE)}
+    managed = normalize_managed_config(CLAUDE_CONFIG_A)
+    state = resolve_state(managed, base, "claude")
+    monkeypatch.setattr(
+        claude,
+        "refresh_managed_config",
+        lambda _state: managed_config.ManagedConfigResult(managed, False),
+    )
+
+    claude.write_tool_config(state, None)
+
+    private, managed_file = harness.claude_files()
+    assert "ANTHROPIC_MODEL" not in private.get("env", {})
+    assert "ANTHROPIC_MODEL" not in managed_file.get("env", {})

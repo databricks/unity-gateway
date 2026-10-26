@@ -1423,7 +1423,15 @@ def write_tool_config(
     coding_agent_config_defaults: dict[str, str] | None = None,
     parent_schema: str | None = None,
     picker_catalog: AnthropicModelCatalog | None = None,
+    derive_managed_model_inputs: bool = False,
 ) -> dict:
+    """Write Claude's config.
+
+    The model inputs (``coding_agent_config_defaults``, ``route_root_model``, ``picker_catalog``)
+    are used as given, so a caller passing none gets no managed model keys. ``ug configure`` sets
+    ``derive_managed_model_inputs`` to build them from the managed config read below; a launch
+    passes them explicitly (see ``managed_model_inputs``).
+    """
     external_search = external_provider_selected()
     # Back up only a file that predates ucode's management of the tool. A
     # re-configure would otherwise snapshot ucode's own generated file, and
@@ -1436,12 +1444,7 @@ def write_tool_config(
     # (treated as unmanaged), never blocking the write.
     managed_manifest = refresh_managed_config(state).manifest
     managed_config_present = managed_manifest is not None
-    if (
-        coding_agent_config_defaults is None
-        and route_root_model is None
-        and picker_catalog is None
-        and not (provider or parent_schema or relayed)
-    ):
+    if derive_managed_model_inputs and not (provider or parent_schema or relayed):
         # `ug configure` supplies no model inputs; derive the ones a plain launch passes explicitly.
         derived = managed_model_inputs(state, managed_manifest)
         coding_agent_config_defaults = derived.coding_agent_config_defaults
