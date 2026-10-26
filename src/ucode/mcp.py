@@ -39,7 +39,7 @@ from ucode.mcp_connection_login import connection_from_url
 from ucode.mcp_oauth import (
     CODEX_CIMD_CLIENT_ID,
     CURSOR_OAUTH_CLIENT_ID,
-    first_available_oauth_client,
+    oauth_client_available,
     workspace_supports_cimd,
 )
 from ucode.os_compatibility import subprocess_cross_os
@@ -81,17 +81,17 @@ MCP_SQL_PATH = "/api/2.0/mcp/sql"
 #   - Codex CLI: an HTTP MCP entry with `oauth.client_id` and `oauth_resource`.
 #   - Cursor: a `url` server with an `auth.CLIENT_ID` in ~/.cursor/mcp.json.
 # Codex and Cursor need their app *published on the workspace* (checked via
-# `first_available_oauth_client`) and its loopback `/callback` redirect registered on
-# `/oidc` — which lacks dynamic client registration, so a pre-registered client is
-# required.
+# `oauth_client_available`). `/oidc` lacks dynamic client registration; Codex's
+# variable loopback callback path also requires the login service's gated redirect
+# exemption for its fixed CIMD client ID.
 # Codex CLI has its own CIMD document for the loopback callback. Workspaces without
 # that published client continue to use the Databricks CLI-backed stdio proxy.
 # Agents whose `mcp add` accepts only a static bearer, not an OAuth client — gemini
 # (`--header`) — stay on the stdio proxy even where their apps exist; add one here
 # (with its registration branch below) once its CLI can pin a client.
 AGENT_OAUTH_CLIENTS = {
-    "codex": (CODEX_CIMD_CLIENT_ID,),
-    "cursor": (CURSOR_OAUTH_CLIENT_ID,),
+    "codex": CODEX_CIMD_CLIENT_ID,
+    "cursor": CURSOR_OAUTH_CLIENT_ID,
 }
 # An empty internal client ID means the agent chooses its own CIMD URL. It is
 # never written into an agent config or sent to the authorization server by ug.
@@ -294,10 +294,12 @@ def _oauth_http_client(client: str, workspace: str, *, use_pat: bool) -> str | N
         return None
     if client == "claude":
         return AUTO_CIMD_CLIENT_ID if workspace_supports_cimd(workspace) else None
-    clients = AGENT_OAUTH_CLIENTS.get(client)
+    client_id = AGENT_OAUTH_CLIENTS.get(client)
     if client == "cursor" and not cursor.supports_cimd():
         return None
-    return first_available_oauth_client(workspace, clients) if clients else None
+    if client_id and oauth_client_available(workspace, client_id):
+        return client_id
+    return None
 
 
 def _native_oauth_http_entry(

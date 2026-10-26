@@ -145,19 +145,3 @@ class TestOauthClientAvailableCache:
         mcp_oauth.oauth_client_available(WS, TEST_CLIENT_ID)
         mcp_oauth.oauth_client_available(WS, TEST_CLIENT_ID)
         assert len(calls) == 2  # re-probed because the cached entry expired
-
-
-class TestFirstAvailableOauthClient:
-    def test_uses_claude_cimd_client(self, monkeypatch):
-        probed: list[str] = []
-        monkeypatch.setattr(
-            mcp_oauth,
-            "oauth_client_available",
-            lambda ws, client_id: probed.append(client_id) or True,
-        )
-        assert mcp_oauth.first_available_oauth_client(WS, (TEST_CLIENT_ID,)) == TEST_CLIENT_ID
-        assert probed == [TEST_CLIENT_ID]
-
-    def test_returns_none_when_no_client_is_published(self, monkeypatch):
-        monkeypatch.setattr(mcp_oauth, "oauth_client_available", lambda ws, client_id: False)
-        assert mcp_oauth.first_available_oauth_client(WS, (TEST_CLIENT_ID,)) is None

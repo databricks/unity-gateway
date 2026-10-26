@@ -148,19 +148,10 @@ def oauth_client_available(workspace: str, client_id: str) -> bool:
     return available
 
 
-def first_available_oauth_client(workspace: str, client_ids: tuple[str, ...]) -> str | None:
-    """Choose the first published client for this workspace, preserving fallback order."""
-    return next(
-        (client_id for client_id in client_ids if oauth_client_available(workspace, client_id)),
-        None,
-    )
-
-
 __all__ = [
     "CODEX_CIMD_CLIENT_ID",
     "CURSOR_OAUTH_CLIENT_ID",
     "MCP_OAUTH_CALLBACK_PORT",
     "oauth_client_available",
-    "first_available_oauth_client",
     "workspace_supports_cimd",
 ]

@@ -333,8 +333,8 @@ class TestConfigureClientMcpServer:
         monkeypatch.setattr(mcp.cursor, "supports_cimd", lambda: True)
         monkeypatch.setattr(
             mcp,
-            "first_available_oauth_client",
-            lambda ws, client_ids: client_ids[0] if cursor_client_available else None,
+            "oauth_client_available",
+            lambda ws, client_id: cursor_client_available,
         )
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
@@ -368,7 +368,7 @@ class TestConfigureClientMcpServer:
         monkeypatch.setattr(mcp.cursor, "supports_cimd", lambda: False)
         monkeypatch.setattr(
             mcp,
-            "first_available_oauth_client",
+            "oauth_client_available",
             lambda *args: pytest.fail("unsupported Cursor build must not probe CIMD"),
         )
         mcp.configure_client_mcp_server("cursor", "github", AIGW_MCP_URL, WS, "p")
@@ -387,8 +387,8 @@ class TestConfigureClientMcpServer:
         proxy_calls: list[tuple[str, list[str]]] = []
         monkeypatch.setattr(
             mcp,
-            "first_available_oauth_client",
-            lambda ws, client_ids: client_ids[0] if codex_client_available else None,
+            "oauth_client_available",
+            lambda ws, client_id: codex_client_available,
         )
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
@@ -443,8 +443,8 @@ class TestConfigureClientMcpServer:
         probed: list[str] = []
         monkeypatch.setattr(
             mcp,
-            "first_available_oauth_client",
-            lambda ws, client_ids: probed.extend(client_ids) or None,
+            "oauth_client_available",
+            lambda ws, client_id: probed.append(client_id) or False,
         )
         assert mcp._oauth_http_client("codex", WS, use_pat=False) is None
         assert probed == ["https://chatgpt.com/oauth/codex/client.json"]
@@ -456,8 +456,8 @@ class TestConfigureClientMcpServer:
         proxy_calls: list[tuple[str, list[str]]] = []
         monkeypatch.setattr(
             mcp,
-            "first_available_oauth_client",
-            lambda ws, client_ids: probed.append(client_ids) or client_ids[0],
+            "oauth_client_available",
+            lambda ws, client_id: probed.append(client_id) or True,
         )
         monkeypatch.setattr(
             mcp, "add_gemini_mcp_server", lambda name, argv: proxy_calls.append((name, argv))
@@ -739,7 +739,7 @@ class TestApplyMcpServerChanges:
             "configure_client_mcp_server",
             lambda c, n, *a, **k: per_server.append((c, n)) or [],
         )
-        monkeypatch.setattr(mcp, "first_available_oauth_client", lambda *a, **k: None)
+        monkeypatch.setattr(mcp, "oauth_client_available", lambda *a, **k: False)
         working = [
             self._server("a", ["claude", "codex", "gemini", "cursor"]),
             self._server("b", ["claude", "codex", "gemini", "cursor"]),
@@ -3544,8 +3544,8 @@ class TestReconcileManagedMcpServers:
         monkeypatch.setattr(mcp.codex, "managed_mcp_uses_managed_file", lambda: codex_eligible)
         monkeypatch.setattr(
             mcp,
-            "first_available_oauth_client",
-            lambda ws, client_ids: client_ids[0],
+            "oauth_client_available",
+            lambda ws, client_id: True,
         )
         monkeypatch.setattr(mcp, "workspace_supports_cimd", lambda ws: True)
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
