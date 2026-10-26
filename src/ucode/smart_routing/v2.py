@@ -340,6 +340,11 @@ def _claude_mod_launch_options(env: Mapping[str, str] | None = None) -> dict:
         "unset": [key for key in SMART_ROUTING_ENV_KEYS if key not in source],
         "recipe": source.get(routing.ROUTER_NAME_ENV_VAR, "").strip() or routing.ROUTER_NAME,
         "routeCommand": [],
+        "orchestratorInstructions": (
+            orchestrator.CLAUDE_AGENT_DESCRIPTION
+            if orchestrator.enabled(source, agent=AGENT_CLAUDE)
+            else ""
+        ),
         "isaacExecutable": str(Path(isaac).absolute()) if isaac else "",
         "isaacFeedbackDirectory": str(Path.home() / ".isaac" / "feedback"),
     }
@@ -355,6 +360,12 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
             "description": "Launch-scoped agents for Unity Gateway smart routing.",
             "author": {"name": "Databricks"},
             "userConfig": {
+                "orchestratorInstructions": {
+                    "type": "string",
+                    "default": "",
+                    "title": "Orchestrator delegation instructions",
+                    "description": "Agent tool guidance for an eligible orchestration launch",
+                },
                 "isaacExecutable": {
                     "type": "string",
                     "default": "",

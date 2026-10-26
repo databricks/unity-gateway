@@ -82,6 +82,7 @@ async function setRouting(
     if (syncSessionControls) {
       await writeSessionControls($, enabled, sessionControlArgs);
     }
+    $.ui.invalidate('tool.describe');
   } catch (error) {
     // Restore earlier successful writes if a later environment write is denied.
     await writeEnvironment($, previous);
@@ -99,6 +100,16 @@ export function register(on: On, options: PluginOptions): void {
       await setRouting($, options, isRoutingEnabled(current), false);
     }
     return next(e);
+  });
+
+  on('tool.describe', {tool: ['Agent', 'Task']}, async ($, e, next) => {
+    const instructions = options.orchestratorInstructions as string;
+    if (!instructions) return next(e);
+    const current = await readEnvironment($);
+    if (!isRoutingEnabled(current) || current.ENABLE_SMART_ROUTER_ORCHESTRATOR !== '1') {
+      return next(e);
+    }
+    return next({...e, description: instructions});
   });
 
   // The installed smart-router skill already supplies the slash command.

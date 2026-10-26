@@ -33,6 +33,14 @@ routing decision audit log is unchanged.
 Disabled routing, command failures, and invalid responses keep the original call;
 failures also log a diagnostic.
 
+In eligible Smart Router Orchestrator launches, `tool.describe` replaces the native
+Agent/Task delegation advice with the orchestrator's instructions. It changes only the
+description, preserving the native input schema and execution. Routing toggles invalidate
+Claude's description cache: off restores native advice, and on restores the launch's
+orchestrator advice. Routing-only launches retain native advice. The same concise
+instructions lead the Claude activation context so its delegation rule survives a
+truncated preview of the full workflow.
+
 The old routing PreToolUse hook is no longer written, so a call is not routed twice. A
 `route-subagent` hook that an earlier UG version persisted still gets its PreToolUse
 response and plain-text notice.
@@ -140,9 +148,15 @@ The existing Claude skill-toggle integration journey checks recorded inference
 payloads during its three calculation phases: launch recipe, `DISABLED` after off,
 and launch recipe after on. Each phase retains completed native parent/child
 answers and requires successful real gateway responses, with no recipe header.
+It also checks Agent/Task descriptions in those requests: orchestrator instructions during
+active phases, native guidance otherwise, without the conflicting native advice to avoid
+spawning when unsure.
 
 The `Claude mod · 2.1.290` CI job validates the packaged module and checks event
-forwarding and launch-local options. To run those component checks locally:
+forwarding and launch-local options. Native request-construction checks cover description
+changes across on/off/on, an unchanged Agent schema, and ineligible launches. They inspect
+Claude's recorded request shapes after deliberately unauthenticated requests; they do not
+establish successful inference or delegation quality. To run those component checks locally:
 
 ```bash
 UCODE_TEST_CLAUDE_BINARY=/absolute/path/to/claude \

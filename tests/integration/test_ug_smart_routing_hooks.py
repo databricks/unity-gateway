@@ -509,6 +509,21 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
                 else:
                     recipe = "DISABLED"
                 for request in inferences:
+                    for tool in request.payload["tools"]:
+                        if tool.get("name") not in {"Agent", "Task"}:
+                            continue
+                        description = tool["description"]
+                        if orchestration_enabled and routed:
+                            assert "before gathering source evidence" in description, description
+                            assert "When in doubt, don't spawn" not in description, description
+                            assert "A fresh agent costs more than it looks" not in description, (
+                                description
+                            )
+                        else:
+                            assert (
+                                "under the active Smart Router Orchestrator workflow"
+                                not in description
+                            )
                     assert request.payload.get("smart_router_recipe_name") == recipe, (
                         task.marker,
                         request.sequence,

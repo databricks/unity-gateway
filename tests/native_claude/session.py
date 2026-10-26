@@ -56,6 +56,8 @@ class Session:
             "ANTHROPIC_BASE_URL": api,
             "ANTHROPIC_API_KEY": "fixture-dummy-key",
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+            "CLAUDE_CODE_MAX_RETRIES": "0",
+            "CLAUDE_CODE_ELEGANT_MEADOW": "1",
             "DISABLE_AUTOUPDATER": "1",
         }
         self.proc = subprocess.Popen(
@@ -98,7 +100,7 @@ class Session:
         for reader in self.readers:
             reader.start()
 
-    def send(self, prompt):
+    def send(self, prompt, *, expect_error=False):
         self.proc.stdin.write(
             json.dumps({"type": "user", "message": {"role": "user", "content": prompt}}) + "\n"
         )
@@ -107,7 +109,7 @@ class Session:
         while True:
             event = json.loads(self.lines.get(timeout=max(0, deadline - time.monotonic())))
             if event.get("type") == "result":
-                assert not event.get("is_error"), event.get("result")
+                assert bool(event.get("is_error")) == expect_error, event.get("result")
                 return event
 
     def observe(self):
