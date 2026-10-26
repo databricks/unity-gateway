@@ -69,6 +69,7 @@ from ucode.smart_routing.claude_hooks import (
 from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
 from ucode.smart_routing.config import apply_config, apply_enabled_version, resolve_environment
 from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
+from ucode.startup_timing import startup_phase
 from ucode.ui import print_note, print_warning
 
 LEGACY_STATE_KEY = "smart_routing_enabled"
@@ -644,16 +645,18 @@ def launch_claude(
         raise RuntimeError(
             "Smart routing needs a configured workspace; run `ucode configure claude` first."
         )
-    token = _launch_token(state, workspace)
+    with startup_phase("routing_authentication"):
+        token = _launch_token(state, workspace)
     os.environ[OAUTH_TOKEN_ENV_VAR] = token
     # if modelPicker is defined, then skip model discovery.
-    picker_catalog = _model_picker_catalog()
-    if picker_catalog is None:
-        os.environ[GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
-        os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
-        catalog = list_anthropic_model_catalog(workspace, token)
-    else:
-        catalog = picker_catalog
+    with startup_phase("routing_model_picker"):
+        picker_catalog = _model_picker_catalog()
+        if picker_catalog is None:
+            os.environ[GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
+            os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
+            catalog = list_anthropic_model_catalog(workspace, token)
+        else:
+            catalog = picker_catalog
     if not catalog.model_ids:
         raise RuntimeError(
             catalog.error_msg or "Anthropic models endpoint returned no Claude models"
@@ -728,20 +731,25 @@ def launch_claude(
             plugin_dir = launch_dir / "plugin"
             if route_first_prompt:
                 env[FIRST_PROMPT_SOCKET_ENV] = str(socket_path)
-            session_path = _prepare_smart_router_session("claude")
-            env[SESSION_ENV_VAR] = str(session_path)
-            env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
-            settings.setdefault("pluginConfigs", {}).setdefault(CLAUDE_ROUTING_PLUGIN_NAME, {})[
-                "options"
-            ] = {
-                **_claude_mod_launch_options({**resolve_environment(agent=AGENT_CLAUDE), **env}),
-                "routeCommand": routing_hook_argv(routing_state, ROUTE_SUBAGENT_MOD_EVENT),
-            }
-            try:
-                write_json_file(settings_path, settings)
-                _write_routed_claude_plugin(plugin_dir, model_ids)
-            except Exception as exc:  # noqa: BLE001 - optional setup must not block normal launch
-                raise ClaudeRoutingSetupError("Failed to write Claude smart-routing files") from exc
+            with startup_phase("routing_configuration"):
+                session_path = _prepare_smart_router_session("claude")
+                env[SESSION_ENV_VAR] = str(session_path)
+                env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
+                settings.setdefault("pluginConfigs", {}).setdefault(CLAUDE_ROUTING_PLUGIN_NAME, {})[
+                    "options"
+                ] = {
+                    **_claude_mod_launch_options(
+                        {**resolve_environment(agent=AGENT_CLAUDE), **env}
+                    ),
+                    "routeCommand": routing_hook_argv(routing_state, ROUTE_SUBAGENT_MOD_EVENT),
+                }
+                try:
+                    write_json_file(settings_path, settings)
+                    _write_routed_claude_plugin(plugin_dir, model_ids)
+                except Exception as exc:  # noqa: BLE001 - optional setup must not block normal launch
+                    raise ClaudeRoutingSetupError(
+                        "Failed to write Claude smart-routing files"
+                    ) from exc
             model_args = launch_model_args(remaining, routed_model or launch_model)
             argv = [
                 binary,
@@ -767,9 +775,10 @@ def launch_claude(
                     log_path=CLAUDE_PTY_LOG,
                 )
             else:
-                proc = subprocess_cross_os.popen(
-                    argv, stdin=subprocess.PIPE if stdin_prompt is not None else None
-                )
+                with startup_phase("harness_handoff"):
+                    proc = subprocess_cross_os.popen(
+                        argv, stdin=subprocess.PIPE if stdin_prompt is not None else None
+                    )
                 if stdin_prompt is not None and proc.stdin is not None:
                     # ug consumed stdin to route the prompt, so hand Claude the same bytes.
                     try:

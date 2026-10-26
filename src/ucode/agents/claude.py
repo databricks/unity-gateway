@@ -103,6 +103,7 @@ from ucode.smart_routing.claude_hooks import (
     remove_smart_routing_hooks,
     sync_smart_routing_hooks,
 )
+from ucode.startup_timing import startup_phase
 from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
 from ucode.ui import print_note, print_success, print_warning
@@ -2422,7 +2423,8 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
 
-    proc = subprocess_cross_os.popen(_build_claude_argv(binary, tool_args, relayed=True))
+    with startup_phase("harness_handoff"):
+        proc = subprocess_cross_os.popen(_build_claude_argv(binary, tool_args, relayed=True))
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:
@@ -2461,7 +2463,8 @@ def launch(
     if isinstance(launch_default_model, str) and launch_default_model:
         os.environ["ANTHROPIC_DEFAULT_MODEL"] = launch_default_model
     # Smart routing also spawns Claude directly, so it needs the native executable.
-    binary = _resolve_launch_binary(binary)
+    with startup_phase("resolve_binary"):
+        binary = _resolve_launch_binary(binary)
     pinned_model = (
         maybe_add_gpt_1m_suffix(options.user_pinned_model) if options.user_pinned_model else None
     )
@@ -2485,7 +2488,8 @@ def launch(
         else:
             return
     if workspace and not custom_oauth_cli_enabled(state.get("custom_oauth")):
-        os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
+        with startup_phase("launch_authentication"):
+            os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
     settings_override = None
     launch_args = list(tool_args)
     if pinned_model:

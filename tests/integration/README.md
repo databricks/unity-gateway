@@ -1,5 +1,11 @@
 # Integration tests
 
+Opt-in startup timing has offline component coverage in `test_startup_timing.py`,
+`test_startup_imports.py`, `test_cli.py`, and `test_launcher.py` (all under `tests/`).
+It checks silence when disabled, real CLI import timing, phase boundaries and failures,
+stdout preservation, and handoff ordering. Gateway calls and agent execution are mocked;
+these checks do not establish live startup latency or successful inference.
+
 The spend-status client's workspace authentication, optional percentage handling,
 pagination, validation, and failure propagation are covered by component tests in
 `../test_budget.py`, importing the client from `src/ucode/budget.py`.
