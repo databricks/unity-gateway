@@ -637,6 +637,17 @@ def _configure_one(
     if tool == "codex":
         return configure_tool("codex", state)
     state, model = resolve_launch_model(tool, state, None)
+    if tool == AGENT_CLAUDE:
+        # Same managed inputs a plain launch derives, so a launch finds nothing to change.
+        inputs = claude.managed_model_inputs(state, refresh_managed_config(state).manifest)
+        return configure_tool(
+            tool,
+            state,
+            model,
+            route_root_model=inputs.route_root_model,
+            coding_agent_config_defaults=inputs.coding_agent_config_defaults,
+            picker_catalog=inputs.picker_catalog,
+        )
     return configure_tool(tool, state, model)
 
 

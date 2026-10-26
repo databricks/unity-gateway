@@ -1684,7 +1684,8 @@ class TestManagedClaudeModelDiscovery:
         assert result.exit_code == 0, result.output
         calls["list_catalog"].assert_not_called()
         picker = calls["configure"].call_args.kwargs["picker_catalog"]
-        assert picker.model_ids == [explicit_model or "system.ai.claude-sonnet-5[1m]"]
+        # --model is launch-only: the picker written to the managed file never depends on it.
+        assert picker.model_ids == ["system.ai.claude-sonnet-5[1m]"]
         assert calls["configure"].call_args.kwargs["route_root_model"] is None
         assert calls["launch"].call_args.args[1]["_claude_launch_picker_models"] == picker.model_ids
         assert calls["launch"].call_args.kwargs["options"].user_pinned_model == explicit_model
@@ -1889,7 +1890,10 @@ class TestClaudeModelFlag:
             result = runner.invoke(app, ["claude", "--model", "system.ai.claude-opus-4-8"])
 
         assert result.exit_code == 0, result.output
-        assert calls["configure"].call_args.kwargs["route_root_model"] is None
+        # The managed default stays in the files `ug configure` wrote; --model is launch-only.
+        assert (
+            calls["configure"].call_args.kwargs["route_root_model"] == "system.ai.claude-sonnet-5"
+        )
         assert (
             calls["launch"].call_args.kwargs["options"].user_pinned_model
             == "system.ai.claude-opus-4-8"
@@ -7073,6 +7077,59 @@ class TestBudgetRecommendationAtLaunch:
             recommendation={"agent": "claude", "model": "system.ai.claude-haiku-4-5"},
         )
         assert cfg.call_args.args[2] == "system.ai.claude-haiku-4-5"
+
+    def test_budget_pick_is_launch_only_and_managed_inputs_match_configure(self, monkeypatch):
+        managed = {
+            "enabled_agents": {
+                "claude": {
+                    "model_config": {
+                        "default_model": "system.ai.claude-opus-4-8",
+                        "default_models_by_model_family": {
+                            "default_opus_model": "system.ai.claude-opus-4-8"
+                        },
+                    }
+                }
+            },
+            **self.SMART_DEFAULTS,
+        }
+        recommendation = {"agent": "claude", "model": "system.ai.claude-haiku-4-5"}
+        state = dict(MINIMAL_STATE)
+        with (
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.apply_pat_environment"),
+            patch("ucode.cli.ensure_bootstrap_dependencies"),
+            patch("ucode.cli.ensure_provider_state", return_value=state),
+            patch("ucode.cli.configure_shared_state", return_value=state),
+            patch("ucode.cli.configure_tool", return_value=state) as cfg,
+            patch("ucode.cli.get_databricks_token", return_value="tok"),
+            patch("ucode.cli._fetch_managed_config", return_value=(managed, False)),
+            patch("ucode.cli._fetch_budget_recommendation", return_value=recommendation),
+            patch("ucode.cli.launch_agent") as launch,
+        ):
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        expected = cli_mod.claude_agent.managed_model_inputs(state, managed)
+        kwargs = cfg.call_args.kwargs
+        # What the launch writes is what `ug configure` writes: the admin default, not the pick.
+        assert kwargs["route_root_model"] == "system.ai.claude-opus-4-8"
+        assert kwargs["coding_agent_config_defaults"] == expected.coding_agent_config_defaults
+        assert kwargs["picker_catalog"] == expected.picker_catalog
+        options = launch.call_args.kwargs["options"]
+        assert options.launch_model == "system.ai.claude-haiku-4-5"
+        assert options.user_pinned_model is None
+
+    def test_budget_pick_equal_to_default_needs_no_launch_model(self, monkeypatch):
+        managed = {
+            "enabled_agents": {
+                "claude": {"model_config": {"default_model": "system.ai.claude-opus-4-8"}}
+            },
+            **self.SMART_DEFAULTS,
+        }
+        with _launch_policy_patches(managed) as calls:
+            result = runner.invoke(app, ["claude"])
+        assert result.exit_code == 0, result.output
+        assert calls["launch"].call_args.kwargs["options"].launch_model is None
 
     def test_passes_configured_claude_defaults_to_writer(self, monkeypatch):
         managed = {

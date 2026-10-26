@@ -14,6 +14,7 @@ import sys
 import threading
 import traceback
 from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from ucode.config_io import (
@@ -84,6 +85,7 @@ from ucode.managed_files import (
     windows_claude_managed_settings_path,
     withdrawn_list_items,
 )
+from ucode.managed_resolve import managed_claude_family_models, managed_default_model
 from ucode.mcp_oauth import (
     CLAUDE_CODE_CIMD_CLIENT_ID,
     MCP_OAUTH_CALLBACK_PORT,
@@ -764,6 +766,35 @@ def default_model_picker_catalog(
         model_id_to_description=descriptions,
         error_msg=discovered_catalog.error_msg if discovered_catalog is not None else None,
     )
+
+
+@dataclass(frozen=True)
+class ManagedModelInputs:
+    """Model inputs ``write_tool_config`` derives from a managed config for the plain source.
+
+    ``ug configure`` and a plain launch both build this, so the files Claude reads cannot differ
+    between them. Per-launch choices (budget recommendation, ``--model``) are not part of it.
+    """
+
+    coding_agent_config_defaults: dict[str, str]
+    route_root_model: str | None
+    picker_catalog: AnthropicModelCatalog | None
+
+
+def managed_model_inputs(state: dict, managed: dict | None) -> ManagedModelInputs:
+    """The managed-file model inputs for a Claude source with no provider or UC location.
+
+    The root model is the admin's ``default_model`` only. A budget recommendation or ``--model``
+    must reach the session through Claude Code's own ``--model`` flag, never the managed file.
+    """
+    if managed is None:
+        return ManagedModelInputs({}, None, None)
+    defaults = managed_claude_family_models(managed) or {}
+    root_model = managed_default_model(managed, "claude")
+    picker_catalog = None
+    if defaults and not state.get("claude_static_models"):
+        picker_catalog = default_model_picker_catalog(defaults, launch_model=root_model)
+    return ManagedModelInputs(defaults, root_model, picker_catalog)
 
 
 def _enforce_model_default_hierarchy(
@@ -2465,6 +2496,14 @@ def launch(
     pinned_model = (
         maybe_add_gpt_1m_suffix(options.user_pinned_model) if options.user_pinned_model else None
     )
+    # Launch-only start model (e.g. a budget recommendation) that differs from the model `ug
+    # configure` wrote to ANTHROPIC_MODEL. A managed ANTHROPIC_MODEL outranks the process env and
+    # --settings, so only Claude Code's own `--model` flag can override it without a file write.
+    session_model = (
+        maybe_add_gpt_1m_suffix(options.launch_model)
+        if options.launch_model and not pinned_model
+        else None
+    )
     routing_setup_failed = False
     if options.launch_smart_routing:
         try:
@@ -2476,7 +2515,11 @@ def launch(
                 # With no user pin, let Claude resolve its starting model from its own settings.
                 launch_model=pinned_model,
                 compose_settings=_compose_v2_settings,
-                launch_model_args=_launch_model_args,
+                launch_model_args=(
+                    _launch_model_args
+                    if not session_model
+                    else lambda args, model: _launch_model_args(args, model or session_model)
+                ),
                 model_name=_maybe_add_1m_suffix,
             )
         except smart_routing_v2.ClaudeRoutingSetupError:
@@ -2488,12 +2531,12 @@ def launch(
         os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
     settings_override = None
     launch_args = list(tool_args)
-    if pinned_model:
+    if start_model := pinned_model or session_model:
         # Pass the exact ID: managed family defaults can override temporary aliases.
-        os.environ["ANTHROPIC_MODEL"] = pinned_model
-        settings_override = {"env": {"ANTHROPIC_MODEL": pinned_model}}
+        os.environ["ANTHROPIC_MODEL"] = start_model
+        settings_override = {"env": {"ANTHROPIC_MODEL": start_model}}
         launch_args = [
-            *_launch_model_args(tool_args, pinned_model),
+            *_launch_model_args(tool_args, start_model),
             *tool_args,
         ]
     else:
