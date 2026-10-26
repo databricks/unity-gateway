@@ -826,8 +826,11 @@ def remove_legacy_mcp_config() -> bool:
     existed = LEGACY_MCP_CONFIG_PATH.exists() or LEGACY_MCP_BACKUP_PATH.exists()
     if is_dry_run():
         return existed
-    LEGACY_MCP_CONFIG_PATH.unlink(missing_ok=True)
-    LEGACY_MCP_BACKUP_PATH.unlink(missing_ok=True)
+    for path in (LEGACY_MCP_CONFIG_PATH, LEGACY_MCP_BACKUP_PATH):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            raise RuntimeError(f"Failed to remove {path}") from exc
     return existed
 
 

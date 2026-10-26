@@ -457,8 +457,12 @@ def revert_mcp_configs(state: dict) -> dict[str, bool]:
     all_servers = list(state.get("mcp_servers") or []) + list(
         state.get("managed_mcp_servers") or []
     )
-    if copilot.remove_legacy_mcp_config():
-        results["copilot"] = True
+    # One agent's unreadable config must not stop the revert of the others.
+    try:
+        if copilot.remove_legacy_mcp_config():
+            results["copilot"] = True
+    except RuntimeError as exc:
+        print_warning(f"Could not remove ug's old Copilot MCP file: {exc}")
     for server in all_servers:
         name = server.get("name")
         if not isinstance(name, str) or not name:
@@ -466,7 +470,12 @@ def revert_mcp_configs(state: dict) -> dict[str, bool]:
         for client in server.get("clients") or []:
             if client not in MCP_CLIENTS:
                 continue
-            removed_scopes = remove_client_mcp_server(client, name)
+            try:
+                removed_scopes = remove_client_mcp_server(client, name)
+            except RuntimeError as exc:
+                display = MCP_CLIENTS[client]["display"]
+                print_warning(f"Could not remove MCP server `{name}` from {display}: {exc}")
+                continue
             results[client] = bool(removed_scopes) or results.get(client, False)
 
     return results

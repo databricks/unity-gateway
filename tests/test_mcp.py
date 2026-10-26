@@ -3103,6 +3103,27 @@ class TestRevertMcpConfigs:
             "copilot": True,
         }
 
+    def test_one_agents_failed_removal_does_not_stop_the_others(self, monkeypatch, capsys):
+        removed: list[tuple[str, str]] = []
+
+        def remove(client, name):
+            if client == "copilot":
+                raise RuntimeError("Failed to remove MCP server via copilot CLI.")
+            removed.append((client, name))
+            return ["user"]
+
+        monkeypatch.setattr(mcp, "remove_client_mcp_server", remove)
+
+        result = mcp.revert_mcp_configs(
+            {"mcp_servers": [{"name": "svc", "clients": ["copilot", "claude", "codex"]}]}
+        )
+
+        assert removed == [("claude", "svc"), ("codex", "svc")]
+        assert result == {"claude": True, "codex": True}
+        assert "Could not remove MCP server `svc` from GitHub Copilot CLI" in _unwrap(
+            capsys.readouterr().out
+        )
+
     def test_removes_copilot_servers_from_its_user_config_and_the_legacy_side_file(self):
         user_config = mcp.copilot.copilot_mcp_config_path()
         user_config.parent.mkdir(parents=True, exist_ok=True)
