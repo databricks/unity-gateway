@@ -168,6 +168,7 @@ from ucode.smart_routing.session_env import (
     session_env_path,
     set_session_environment,
 )
+from ucode.startup_timing import startup_mark, startup_phase
 from ucode.state import (
     MANAGED_OVERLAY_KEY,
     SELF_MANAGED_AGENTS_KEY,
@@ -504,6 +505,7 @@ def _parse_profile_option(profile: str) -> list[tuple[str, str | None]]:
     return [(workspace, name)]
 
 
+@startup_phase("shared_configuration")
 def configure_shared_state(
     workspace: str,
     profile: str | None = None,
@@ -594,7 +596,8 @@ def configure_shared_state(
 
     cli_custom_oauth = state.get("custom_oauth") if custom_oauth_cli_enabled(custom_oauth) else None
     if cli_custom_oauth:
-        token = ensure_custom_oauth_cli_token(workspace, cli_custom_oauth)
+        with startup_phase("custom_oauth"):
+            token = ensure_custom_oauth_cli_token(workspace, cli_custom_oauth)
 
     if skip_preflight:
         # A prior `ug configure` created the profile; resolve it locally (no
@@ -614,41 +617,43 @@ def configure_shared_state(
 
     # ── Preflight (bypassed above under --skip-preflight): validate Databricks
     #    auth + the AI Gateway, then discover the available models. ──
-    if cli_custom_oauth:
-        pass  # The dedicated profile was authenticated above.
-    elif use_pat:
-        if not profile:
-            raise RuntimeError(
-                "--use-pat requires a Databricks CLI profile. Pass one via `--profile <name>`."
-            )
-        pat = resolve_pat_token(profile)
-        if not pat:
-            raise RuntimeError(
-                f"--use-pat: profile '{profile}' has no personal access token in "
-                "~/.databrickscfg (its auth_type must be `pat`). Add a `token = <PAT>` "
-                f"entry under [{profile}], or re-run without --use-pat to use OAuth."
-            )
-        # Export the PAT for this process and launched agent subprocesses so
-        # every token fetch takes the static-bearer path. ensure_pat_bearer
-        # keeps a non-empty pre-set bearer (CI escape hatch) but treats an
-        # empty one as absent, so it never shadows the PAT. Pass the validated
-        # token to avoid re-reading ~/.databrickscfg.
-        ensure_pat_bearer(profile, pat)
-        ensure_databricks_auth(workspace, profile)
-    elif force_login and not external_bearer_configured():
-        run_databricks_login(workspace, profile)
-    else:
-        ensure_databricks_auth(workspace, profile)
+    with startup_phase("authentication"):
+        if cli_custom_oauth:
+            pass  # The dedicated profile was authenticated above.
+        elif use_pat:
+            if not profile:
+                raise RuntimeError(
+                    "--use-pat requires a Databricks CLI profile. Pass one via `--profile <name>`."
+                )
+            pat = resolve_pat_token(profile)
+            if not pat:
+                raise RuntimeError(
+                    f"--use-pat: profile '{profile}' has no personal access token in "
+                    "~/.databrickscfg (its auth_type must be `pat`). Add a `token = <PAT>` "
+                    f"entry under [{profile}], or re-run without --use-pat to use OAuth."
+                )
+            # Export the PAT for this process and launched agent subprocesses so
+            # every token fetch takes the static-bearer path. ensure_pat_bearer
+            # keeps a non-empty pre-set bearer (CI escape hatch) but treats an
+            # empty one as absent, so it never shadows the PAT. Pass the validated
+            # token to avoid re-reading ~/.databrickscfg.
+            ensure_pat_bearer(profile, pat)
+            ensure_databricks_auth(workspace, profile)
+        elif force_login and not external_bearer_configured():
+            run_databricks_login(workspace, profile)
+        else:
+            ensure_databricks_auth(workspace, profile)
     # After login the profile exists in ~/.databrickscfg, so a host->profile
     # lookup is reliable even when it returned nothing above.
     if profile is None:
         profile = find_profile_name_for_host(workspace)
         if profile:
             state["profile"] = profile
-    with spinner("Verifying Unity AI Gateway..."):
-        if not cli_custom_oauth:
-            token = get_databricks_token(workspace, profile)
-        model_service_probe = probe_unity_gateway_capabilities(workspace, token)
+    with startup_phase("gateway_preflight"):
+        with spinner("Verifying Unity AI Gateway..."):
+            if not cli_custom_oauth:
+                token = get_databricks_token(workspace, profile)
+            model_service_probe = probe_unity_gateway_capabilities(workspace, token)
     if model_service_probe.resource_available:
         print_success("Unity Gateway connected")
     else:
@@ -686,52 +691,53 @@ def configure_shared_state(
     oss_models = []
     opencode_models: dict[str, list[str]] = {}
     web_search_model: str | None = None
-    if skip_model_discovery:
-        # Provider mode: the agent routes through a Model Provider Service and
-        # pins no Databricks model, so the full family discovery is unused. Web
-        # search (claude only) still needs one Responses-capable model, so fetch
-        # just that with a single call.
-        if want_claude:
-            with spinner("Fetching available models..."):
-                ws_models, _ = discover_codex_models(workspace, token)
-            if ws_models:
-                web_search_model = ws_models[0]
-    else:
-        # UC-first, best-effort: one UC model-services call yields all families
-        # as `system.ai.<model-name>` ids, bucketed by name. If a family comes
-        # back empty (workspace without UC model-services, or the listing
-        # failed), fall back to the per-family AI Gateway listing for that
-        # family only.
-        with spinner("Fetching available models..."):
-            ms_claude, ms_codex, ms_gemini, ms_oss, ms_reason = discover_model_services(
-                workspace, token
-            )
+    with startup_phase("model_discovery"):
+        if skip_model_discovery:
+            # Provider mode: the agent routes through a Model Provider Service and
+            # pins no Databricks model, so the full family discovery is unused. Web
+            # search (claude only) still needs one Responses-capable model, so fetch
+            # just that with a single call.
             if want_claude:
-                claude_models, claude_reason = ms_claude, ms_reason
-                if not claude_models:
-                    claude_models, claude_reason = discover_claude_models(workspace, token)
-            if want_gemini:
-                gemini_models, gemini_reason = ms_gemini, ms_reason
-                if not gemini_models:
-                    gemini_models, gemini_reason = discover_gemini_models(workspace, token)
-            if want_codex:
-                codex_models, codex_reason = ms_codex, ms_reason
-                if not codex_models:
-                    codex_models, codex_reason = discover_codex_models(workspace, token)
-            if want_oss:
-                oss_models, oss_reason = ms_oss, ms_reason
-            if want_copilot:
-                copilot_models = copilot_agent.catalog_from_listings(
-                    cached_model_service_entries(workspace),
-                    [*claude_models.values(), *codex_models],
+                with spinner("Fetching available models..."):
+                    ws_models, _ = discover_codex_models(workspace, token)
+                if ws_models:
+                    web_search_model = ws_models[0]
+        else:
+            # UC-first, best-effort: one UC model-services call yields all families
+            # as `system.ai.<model-name>` ids, bucketed by name. If a family comes
+            # back empty (workspace without UC model-services, or the listing
+            # failed), fall back to the per-family AI Gateway listing for that
+            # family only.
+            with spinner("Fetching available models..."):
+                ms_claude, ms_codex, ms_gemini, ms_oss, ms_reason = discover_model_services(
+                    workspace, token
                 )
-                copilot_reason = ms_reason or claude_reason or codex_reason
-        if claude_models:
-            opencode_models["anthropic"] = list(claude_models.values())
-        if gemini_models:
-            opencode_models["gemini"] = gemini_models
-        if oss_models:
-            opencode_models["oss"] = oss_models
+                if want_claude:
+                    claude_models, claude_reason = ms_claude, ms_reason
+                    if not claude_models:
+                        claude_models, claude_reason = discover_claude_models(workspace, token)
+                if want_gemini:
+                    gemini_models, gemini_reason = ms_gemini, ms_reason
+                    if not gemini_models:
+                        gemini_models, gemini_reason = discover_gemini_models(workspace, token)
+                if want_codex:
+                    codex_models, codex_reason = ms_codex, ms_reason
+                    if not codex_models:
+                        codex_models, codex_reason = discover_codex_models(workspace, token)
+                if want_oss:
+                    oss_models, oss_reason = ms_oss, ms_reason
+                if want_copilot:
+                    copilot_models = copilot_agent.catalog_from_listings(
+                        cached_model_service_entries(workspace),
+                        [*claude_models.values(), *codex_models],
+                    )
+                    copilot_reason = ms_reason or claude_reason or codex_reason
+            if claude_models:
+                opencode_models["anthropic"] = list(claude_models.values())
+            if gemini_models:
+                opencode_models["gemini"] = gemini_models
+            if oss_models:
+                opencode_models["oss"] = oss_models
 
     if skip_model_discovery:
         # Don't clobber any previously-discovered Databricks model lists; provider
@@ -2861,6 +2867,7 @@ def claude_router_hook_cmd(
         sys.stdout.write(json.dumps(output))
 
 
+@startup_phase("auto_configure")
 def _auto_configure_tool(
     tool: str, custom_oauth: CustomOAuthConfig | None = None, provider: str | None = None
 ) -> None:
@@ -3029,6 +3036,7 @@ def _reject_managed_launch_source_options(
         )
 
 
+@startup_phase("managed_config")
 def _fetch_managed_config(state: dict) -> ManagedConfigResult:
     """The workspace's managed config for this launch, plus whether the feature is disabled.
 
@@ -3058,6 +3066,7 @@ def _note_recommended_agent(recommendation: dict | None, tool: str) -> None:
     )
 
 
+@startup_phase("budget_recommendation")
 def _fetch_budget_recommendation(state: dict, managed: dict | None) -> dict | None:
     """The agent and model the caller's budget tier allows, or None when no tier is configured.
 
@@ -3295,6 +3304,7 @@ def _launch_tool(
     custom_oauth: CustomOAuthConfig | None = None,
     routing_already_chosen: bool = False,
 ) -> None:
+    startup_mark("launch_start")
     previous = {}
     try:
         tool = normalize_tool(tool_name)
@@ -3343,10 +3353,11 @@ def _launch_tool(
             gate_managed, _ = early_managed
         if not _launches_self_managed(gate_managed, existing, tool):
             _reject_disabled_agent(gate_managed, tool)
-        ensure_bootstrap_dependencies(
-            tool,
-            skip_cli_version_check=skip_preflight,
-        )
+        with startup_phase("bootstrap"):
+            ensure_bootstrap_dependencies(
+                tool,
+                skip_cli_version_check=skip_preflight,
+            )
         if needs_auto_configure:
             # Configure through this launch's --provider: a default-gateway setup would write the
             # managed auth keys that a relayed provider's launch then refuses to start over.
@@ -3555,12 +3566,13 @@ def _launch_tool(
             )
         )
         if should_fetch_claude_picker_catalog:
-            token = get_databricks_token(state["workspace"], catalog_profile)
-            picker_catalog = list_anthropic_model_catalog(
-                state["workspace"],
-                token,
-                **({"provider": provider} if provider else {"parent_schema": parent_schema}),
-            )
+            with startup_phase("model_picker"):
+                token = get_databricks_token(state["workspace"], catalog_profile)
+                picker_catalog = list_anthropic_model_catalog(
+                    state["workspace"],
+                    token,
+                    **({"provider": provider} if provider else {"parent_schema": parent_schema}),
+                )
             error = picker_catalog.error_msg
             if error:
                 if provider:
@@ -3646,10 +3658,11 @@ def _launch_tool(
             and not parent_schema
             and family_defaults is None
         ):
-            discovered = list_anthropic_model_catalog(
-                state["workspace"],
-                get_databricks_token(state["workspace"], catalog_profile),
-            )
+            with startup_phase("model_picker"):
+                discovered = list_anthropic_model_catalog(
+                    state["workspace"],
+                    get_databricks_token(state["workspace"], catalog_profile),
+                )
             if discovered.model_ids:
                 picker_catalog = claude_agent.default_model_picker_catalog(
                     state.get("claude_models") or {},
@@ -3663,19 +3676,20 @@ def _launch_tool(
                 launch_model=model or forwarded_model or route_root_model,
                 discovered_catalog=picker_catalog,
             )
-        state = configure_tool(
-            tool,
-            state,
-            resolved_model,
-            provider=provider,
-            provider_models=provider_models,
-            picker_catalog=picker_catalog,
-            relayed=relayed,
-            route_root_model=route_root_model,
-            custom_model=None,
-            coding_agent_config_defaults=coding_agent_config_defaults,
-            parent_schema=parent_schema,
-        )
+        with startup_phase("configure_tool"):
+            state = configure_tool(
+                tool,
+                state,
+                resolved_model,
+                provider=provider,
+                provider_models=provider_models,
+                picker_catalog=picker_catalog,
+                relayed=relayed,
+                route_root_model=route_root_model,
+                custom_model=None,
+                coding_agent_config_defaults=coding_agent_config_defaults,
+                parent_schema=parent_schema,
+            )
         # A plain launch keeps Claude Code's own starting model, as its own picker did.
         if (
             picker_catalog
@@ -3694,7 +3708,8 @@ def _launch_tool(
                     or picker_catalog.model_ids[0]
                 )
         if not skip_preflight:
-            refresh_downloaded_skills_on_launch(state)
+            with startup_phase("skills_refresh"):
+                refresh_downloaded_skills_on_launch(state)
         # Relayed = a Claude subscription: forward the model to Claude Code's own flag, like `-- --model X`.
         should_forward_relayed_model = (
             tool == "claude"
@@ -3747,6 +3762,7 @@ def _launch_tool(
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
         with _smart_routing_v2_flag(True if managed_smart_routing_applies else None, agent=tool):
+            startup_mark("agent_prepare")
             launch_agent(tool, state, ctx.args, options=launch_options)
     except RuntimeError as exc:
         print_err(str(exc))
@@ -3894,7 +3910,8 @@ def _launch_managed_default(
         managed = load_managed_state(current)
     else:
         with spinner("Loading..."):
-            managed, coding_agent_config_feature_disabled = refresh_managed_config(state)
+            with startup_phase("managed_config"):
+                managed, coding_agent_config_feature_disabled = refresh_managed_config(state)
     if coding_agent_config_feature_disabled:
         print_note(
             "Run `ug configure` to set up your coding agents, then launch one with "

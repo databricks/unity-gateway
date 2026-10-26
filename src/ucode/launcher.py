@@ -7,6 +7,7 @@ import signal
 import sys
 
 from ucode.os_compatibility import subprocess_cross_os
+from ucode.startup_timing import startup_phase
 
 
 def exec_or_spawn(argv: list[str]) -> None:
@@ -23,10 +24,12 @@ def exec_or_spawn(argv: list[str]) -> None:
     agents (gemini/opencode/copilot/pi) already use.
     """
     if os.name != "nt":
-        os.execvp(argv[0], argv)
+        with startup_phase("harness_handoff"):
+            os.execvp(argv[0], argv)
         return  # unreachable on POSIX; keeps type-checkers happy
 
-    proc = subprocess_cross_os.popen(argv)
+    with startup_phase("harness_handoff"):
+        proc = subprocess_cross_os.popen(argv)
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:

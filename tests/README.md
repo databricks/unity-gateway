@@ -1,5 +1,11 @@
 # Test suites and user journeys
 
+Opt-in startup timing has offline component coverage in `test_startup_timing.py`,
+`test_startup_imports.py`, `test_cli.py`, and `test_launcher.py` (all under `tests/`).
+It checks silence when disabled, real CLI import timing, phase boundaries and failures,
+stdout preservation, and handoff ordering. Gateway calls and agent execution are mocked;
+these checks do not establish live startup latency or successful inference.
+
 MCP/Skills browsing has component coverage in `tests/test_catalog_browsing.py`
 (repository-relative path): paginated BASIC metadata, streamed rows, missing metadata,
 UTC dates, keyboard selection/filtering/cancellation, loader cancellation, and rendered

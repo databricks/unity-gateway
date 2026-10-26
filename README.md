@@ -550,6 +550,38 @@ Claude Desktop profile updates wait up to five seconds for the file lock across
 platforms. A timeout leaves the operation holding the lock undisturbed. The Desktop
 auth helper retains its existing shared deadline.
 
+## Diagnosing startup latency
+
+Set `UG_STARTUP_TIMING=1` for an individual launch to emit JSON timing records on stderr:
+
+```sh
+UG_STARTUP_TIMING=1 ug claude --workspace <workspace-url>
+```
+
+Records have `event: "ug_startup_timing"`, fixed `stage` and `outcome` labels, and numeric
+`pid`, `elapsed_ms`, and `duration_ms` fields. No command arguments, workspace URLs,
+model names, credentials, or exception text are recorded. Timing is disabled otherwise;
+`ug --version` retains its minimal entry point even when the variable is set.
+
+`cli_import` measures imports after entering UG, excluding interpreter startup. Launch
+stages separate managed configuration, bootstrap, authentication, gateway preflight, model
+discovery/picker, budget recommendation, agent configuration, and skill refresh. Claude
+preparation also records binary resolution, routing authentication/catalog/configuration,
+and local routing socket readiness. Detailed agent-adapter phases currently cover Claude;
+other agents record shared CLI preparation and any `exec_or_spawn` handoff. Codex smart-routing
+app-server/TUI subprocess setup is not individually timed. A `started` record precedes each measured phase, with
+`ok` or `error` when it returns or raises; a best-effort operation that handles its own failure
+can still return `ok`. Nested durations overlap and must not be summed.
+
+`agent_prepare` marks dispatch into the agent adapter. `harness_handoff` starts immediately
+before spawning/replacing the process (a mark before forking Claude's PTY), so time before this record
+is UG startup work. A successful POSIX exec has no closing record because it replaces UG;
+a spawn completion does not mean Claude is interactive. PTY fork failure emits
+`harness_handoff_failed`; the forked child emits no diagnostics before exec. Group records by PID and
+compare the same host, UG/Isaac build, and workspace. The variable is inherited by child
+processes, whose helper invocations may produce separate records. Redirecting all stderr
+also captures ordinary application output; share only the timing records if needed.
+
 ## Documentation
 
 - [Databricks AI Gateway overview](https://docs.databricks.com/aws/en/ai-gateway/overview-beta)

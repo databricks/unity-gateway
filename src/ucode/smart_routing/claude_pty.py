@@ -27,6 +27,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from ucode.startup_timing import startup_mark, startup_phase
+
 MAX_MODEL_NAME_LEN = 200
 CONFIRM_TIMEOUT_S = 3.0
 SWITCH_TIMEOUT_S = 6.0
@@ -372,27 +374,36 @@ def run_claude_pty(
     def on_submitted_prompt(_prompt: str) -> None:
         submitted_event.set()
 
-    server_thread = serve_first_prompt_socket(
-        socket_path,
-        route_prompt,
-        on_blocked_prompt,
-        stop,
-        on_submitted_prompt=on_submitted_prompt,
-        log=log,
-    )
-    socket_deadline = time.monotonic() + 2.0
-    while (
-        not socket_path.exists() and server_thread.is_alive() and time.monotonic() < socket_deadline
-    ):
-        time.sleep(0.01)
-    if not socket_path.exists():
-        log("[ERR] first-prompt socket was not ready before Claude launch")
-        stop.set()
-        raise RuntimeError(
-            "Smart routing could not start its local prompt-routing socket; Claude was not launched."
+    with startup_phase("routing_socket"):
+        server_thread = serve_first_prompt_socket(
+            socket_path,
+            route_prompt,
+            on_blocked_prompt,
+            stop,
+            on_submitted_prompt=on_submitted_prompt,
+            log=log,
         )
+        socket_deadline = time.monotonic() + 2.0
+        while (
+            not socket_path.exists()
+            and server_thread.is_alive()
+            and time.monotonic() < socket_deadline
+        ):
+            time.sleep(0.01)
+        if not socket_path.exists():
+            log("[ERR] first-prompt socket was not ready before Claude launch")
+            stop.set()
+            raise RuntimeError(
+                "Smart routing could not start its local prompt-routing socket; Claude was not launched."
+            )
 
-    pid, master_fd = pty.fork()
+    # Emit before fork: the child must exec without touching inherited stderr locks.
+    startup_mark("harness_handoff")
+    try:
+        pid, master_fd = pty.fork()
+    except OSError:
+        startup_mark("harness_handoff_failed")
+        raise
     if pid == 0:
         os.execvp(argv[0], argv)
         os._exit(127)

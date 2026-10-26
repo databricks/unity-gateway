@@ -1115,3 +1115,57 @@ def test_routing_hook_command_keeps_posix_quoting_on_windows(monkeypatch):
     monkeypatch.setattr(subprocess_cross_os.platform, "system", lambda: "Windows")
     hook = claude_hooks._routing_command_hook([r"C:\Users\me\.local\bin\ug.EXE", "route-subagent"])
     assert hook["command"] == r"'C:\Users\me\.local\bin\ug.EXE' route-subagent"
+
+
+def test_smart_routing_startup_timings_reach_the_process_boundary(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("UG_STARTUP_TIMING", "1")
+    TestV2HeadlessClaude._launch(monkeypatch, tmp_path, ["-p", "private-prompt"])
+    records = [
+        json.loads(line)
+        for line in capsys.readouterr().err.splitlines()
+        if line.startswith('{"event":')
+    ]
+    assert [row["stage"] for row in records if row["outcome"] == "ok"] == [
+        "routing_authentication",
+        "routing_model_picker",
+        "routing_configuration",
+        "harness_handoff",
+    ]
+    assert "private-prompt" not in str(records)
+
+
+@requires_pty
+@pytest.mark.parametrize("fork_fails", [False, True])
+def test_pty_timing_emits_before_fork_and_never_in_child(monkeypatch, tmp_path, capsys, fork_fails):
+    monkeypatch.setenv("UG_STARTUP_TIMING", "1")
+    socket_path = tmp_path / "ready.sock"
+    socket_path.touch()
+    monkeypatch.setattr(claude_pty, "serve_first_prompt_socket", Mock())
+
+    def fork():
+        records = [json.loads(line) for line in capsys.readouterr().err.splitlines()]
+        assert [(row["stage"], row["outcome"]) for row in records] == [
+            ("routing_socket", "started"),
+            ("routing_socket", "ok"),
+            ("harness_handoff", "mark"),
+        ]
+        if fork_fails:
+            raise OSError("private-fork-error")
+        return 0, 0
+
+    def execvp(*_args):
+        assert capsys.readouterr().err == ""
+        raise SystemExit(0)
+
+    monkeypatch.setattr(claude_pty.pty, "fork", fork)
+    monkeypatch.setattr(claude_pty.os, "execvp", execvp)
+    with pytest.raises(OSError if fork_fails else SystemExit):
+        claude_pty.run_claude_pty(
+            ["claude", "private-prompt"],
+            route_prompt=Mock(),
+            socket_path=socket_path,
+        )
+    if fork_fails:
+        failure = json.loads(capsys.readouterr().err)
+        assert failure["stage"] == "harness_handoff_failed"
+        assert "private" not in str(failure)

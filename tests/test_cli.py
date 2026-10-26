@@ -7584,3 +7584,61 @@ class TestLaunchWithManagedFilePicker:
         assert result.exit_code == 0, result.output
         # The launch's own source supplies the models, so the picker neither seeds nor skips.
         assert calls["configure"].call_args.args[1]["claude_models"] == discovered
+
+
+class TestStartupTiming:
+    def test_launch_times_picker_and_configuration_before_handoff(self, monkeypatch):
+        monkeypatch.setenv("UG_STARTUP_TIMING", "1")
+        with _launch_policy_patches(None) as calls:
+            result = runner.invoke(app, ["claude", "--", "private-prompt"])
+        assert result.exit_code == 0, result.output
+        records = [
+            json.loads(line) for line in result.stderr.splitlines() if line.startswith('{"event":')
+        ]
+        completed = [row["stage"] for row in records if row["outcome"] == "ok"]
+        assert "bootstrap" in completed
+        assert "model_picker" in completed
+        assert "configure_tool" in completed
+        assert records[-1]["stage"] == "agent_prepare"
+        assert all("private-prompt" not in str(row) for row in records)
+        calls["launch"].assert_called_once()
+
+    @pytest.mark.parametrize(
+        "fail_stage", [None, "authentication", "gateway_preflight", "model_discovery"]
+    )
+    def test_shared_configuration_times_real_phase_boundaries(
+        self, monkeypatch, capsys, fail_stage
+    ):
+        module, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token="private-pat")
+        monkeypatch.setenv("UG_STARTUP_TIMING", "1")
+        if fail_stage:
+            dependency = {
+                "authentication": "ensure_databricks_auth",
+                "gateway_preflight": "probe_unity_gateway_capabilities",
+                "model_discovery": "discover_model_services",
+            }[fail_stage]
+            monkeypatch.setattr(
+                module, dependency, MagicMock(side_effect=RuntimeError("private-error"))
+            )
+            with pytest.raises(RuntimeError, match="private-error"):
+                module.configure_shared_state(
+                    "https://private-workspace", profile="private-profile"
+                )
+        else:
+            module.configure_shared_state("https://private-workspace", profile="private-profile")
+        records = [
+            json.loads(line)
+            for line in capsys.readouterr().err.splitlines()
+            if line.startswith('{"event":')
+        ]
+        assert "private" not in str(records)
+        if fail_stage:
+            failures = [row["stage"] for row in records if row["outcome"] == "error"]
+            assert failures == [fail_stage, "shared_configuration"]
+        else:
+            assert [row["stage"] for row in records if row["outcome"] == "ok"] == [
+                "authentication",
+                "gateway_preflight",
+                "model_discovery",
+                "shared_configuration",
+            ]
