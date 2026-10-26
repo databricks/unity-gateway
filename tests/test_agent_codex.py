@@ -15,7 +15,7 @@ import pytest
 
 from ucode import custom_oauth, gateway_proxy, managed_files
 from ucode.agents import LaunchOptions, codex
-from ucode.config_io import read_toml_safe
+from ucode.config_io import read_toml_safe, write_toml_file
 from ucode.smart_routing import codex_routing
 from ucode.telemetry import client_platform
 
@@ -179,19 +179,42 @@ class TestRenderOverlay:
         headers = overlay["model_providers"]["Databricks"]["http_headers"]
         assert "Databricks-Model-Provider-Service" not in headers
 
-    def test_request_tags_header_added_when_env_set(self, monkeypatch):
+    def test_overlay_omits_environment_headers(self, monkeypatch):
+        # Env-derived headers are launch-scoped and must never be rendered into a config file.
+        monkeypatch.setenv("AI_GATEWAY_REQUEST_TAGS", '{"team":"infra"}')
+        monkeypatch.setenv(codex.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        monkeypatch.setenv("SMART_ROUTER_NAME", "r1")
+        overlay = codex.render_overlay(WS)
+        headers = overlay["model_providers"]["Databricks"]["http_headers"]
+        assert codex.AI_GATEWAY_REQUEST_TAGS_HEADER not in headers
+        assert codex.SMART_ROUTER_RECIPE_HEADER not in headers
+
+    def test_launch_env_headers_added_from_environment(self, monkeypatch):
         # A JSON value stored as a TOML http_headers string is preserved verbatim.
         tags = '{"team":"infra","env":"prod"}'
         monkeypatch.setenv("AI_GATEWAY_REQUEST_TAGS", tags)
-        overlay = codex.render_overlay(WS)
-        headers = overlay["model_providers"]["Databricks"]["http_headers"]
-        assert headers["Databricks-Ai-Gateway-Request-Tags"] == tags
+        monkeypatch.setenv(codex.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        monkeypatch.setenv("SMART_ROUTER_NAME", "r1")
+        config = {"model_providers": {"Databricks": {"http_headers": {}}}}
+        codex._add_launch_env_headers(config, None)
+        headers = config["model_providers"]["Databricks"]["http_headers"]
+        assert headers[codex.AI_GATEWAY_REQUEST_TAGS_HEADER] == tags
+        assert headers[codex.SMART_ROUTER_RECIPE_HEADER] == "r1"
 
-    def test_request_tags_header_absent_when_env_unset(self, monkeypatch):
-        monkeypatch.delenv("AI_GATEWAY_REQUEST_TAGS", raising=False)
-        overlay = codex.render_overlay(WS)
-        headers = overlay["model_providers"]["Databricks"]["http_headers"]
-        assert "Databricks-Ai-Gateway-Request-Tags" not in headers
+    def test_launch_env_headers_drop_stale_and_respect_admin(self, monkeypatch):
+        monkeypatch.setenv("AI_GATEWAY_REQUEST_TAGS", '{"a":"b"}')
+        monkeypatch.delenv(codex.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
+        config = {
+            "model_providers": {
+                "Databricks": {
+                    "http_headers": {codex.SMART_ROUTER_RECIPE_HEADER: "stale"},
+                }
+            }
+        }
+        codex._add_launch_env_headers(config, {codex.AI_GATEWAY_REQUEST_TAGS_HEADER.lower(): "x"})
+        headers = config["model_providers"]["Databricks"]["http_headers"]
+        assert codex.SMART_ROUTER_RECIPE_HEADER not in headers
+        assert codex.AI_GATEWAY_REQUEST_TAGS_HEADER not in headers
 
     def test_parent_adds_discovery_header(self):
         overlay = codex.render_overlay(WS, parent_schema="main.default")
@@ -1051,14 +1074,13 @@ class TestCodexLaunch:
         monkeypatch.setenv("UG_CODEX_SMART_ROUTER_RECIPE", "stale")
         monkeypatch.setenv("UG_CODEX_REQUEST_TAGS", "stale")
         tags = '{"team": "data"}'
-        headers = {
-            codex.SMART_ROUTER_RECIPE_HEADER: "task_v3",
-            codex.AI_GATEWAY_REQUEST_TAGS_HEADER: tags,
-        }
+        monkeypatch.setenv("AI_GATEWAY_REQUEST_TAGS", tags)
+        monkeypatch.setenv(codex.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        monkeypatch.setenv("SMART_ROUTER_NAME", "task_v3")
         monkeypatch.setattr(
             codex,
             "render_overlay",
-            lambda *a, **k: {"model_providers": {"Databricks": {"http_headers": headers}}},
+            lambda *a, **k: {"model_providers": {"Databricks": {"http_headers": {}}}},
         )
 
         codex._render_launch_overlay(WS)
@@ -1504,6 +1526,25 @@ class TestCodexLaunch:
         assert "testenv://liteswap/a" in provider_arg
         assert profile_path.read_text(encoding="utf-8") == before
 
+    def test_launch_adds_environment_headers_without_writing_files(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        profile_path = tmp_path / "ucode.config.toml"
+        before = profile_path.read_text(encoding="utf-8")
+        monkeypatch.setenv(codex.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        monkeypatch.setenv("SMART_ROUTER_NAME", "r1")
+        monkeypatch.setenv("AI_GATEWAY_REQUEST_TAGS", '{"team":"infra"}')
+
+        codex.launch({"workspace": WS}, [], options=LaunchOptions())
+
+        provider_arg = next(
+            arg for arg in launches[0] if arg.startswith("model_providers.Databricks=")
+        )
+        assert "Databricks-Smart-Router-Recipe" in provider_arg
+        assert "r1" in provider_arg
+        assert "Databricks-Ai-Gateway-Request-Tags" in provider_arg
+        assert os.environ["UG_CODEX_SMART_ROUTER_RECIPE"] == "r1"
+        assert profile_path.read_text(encoding="utf-8") == before
+
     def test_smart_routing_overlay_adds_ug_headers_keeping_existing_ones(self, monkeypatch):
         monkeypatch.setenv("UG_HEADERS", "x-team: other\nX-New: 1")
         monkeypatch.setattr(
@@ -1760,6 +1801,39 @@ class TestCodexManagedConfig:
         assert "model" not in doc
         assert "Databricks" in doc["model_providers"]
         assert read_toml_safe(config_path)["model_provider"] == "Databricks"
+
+    def test_managed_file_independent_of_launching_shell(self, tmp_path, monkeypatch):
+        state = {"workspace": WS, "codex_models": ["gpt-5"]}
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+        for key in (
+            "AI_GATEWAY_REQUEST_TAGS",
+            "SMART_ROUTER_NAME",
+            codex.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR,
+        ):
+            monkeypatch.delenv(key, raising=False)
+        codex.write_tool_config(dict(state))
+        clean = read_toml_safe(managed_path)
+
+        # Seed a stale model in both files, then configure from a smart-routed shell.
+        for path in (config_path, managed_path):
+            doc = read_toml_safe(path)
+            doc["model"] = "stale-model"
+            write_toml_file(path, doc)
+        monkeypatch.setenv(codex.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        monkeypatch.setenv("SMART_ROUTER_NAME", "r9296-quality")
+        monkeypatch.setenv("AI_GATEWAY_REQUEST_TAGS", '{"team":"infra"}')
+        codex.write_tool_config(dict(state))
+
+        assert read_toml_safe(managed_path) == clean
+        assert "model" not in clean
+        managed_headers = clean["model_providers"]["Databricks"]["http_headers"]
+        assert codex.SMART_ROUTER_RECIPE_HEADER not in managed_headers
+        assert codex.AI_GATEWAY_REQUEST_TAGS_HEADER not in managed_headers
+        local = read_toml_safe(config_path)
+        headers = local["model_providers"]["Databricks"]["http_headers"]
+        assert codex.SMART_ROUTER_RECIPE_HEADER not in headers
+        assert codex.AI_GATEWAY_REQUEST_TAGS_HEADER not in headers
+        assert local["model"] == "stale-model"  # smart routing keeps the user-local model
 
     def test_windows_writes_requirements_shaped_config(self, tmp_path, monkeypatch):
         config_path, _ = self._patch(tmp_path, monkeypatch)
