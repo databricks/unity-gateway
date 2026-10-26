@@ -46,14 +46,22 @@ const card = ($: any, e: any, record: RoutingRecord) => {
   return Box({ flexDirection: 'column', paddingLeft: 2, marginBottom: 1, children: lines })
 }
 
+// Calls not yet drawn, in call order. They live outside registration so the register
+// module's one turn.complete handler can drop them.
+const cards = { unplaced: [] as string[] }
+
+// A turn that ends without a reply draws no cards, so its calls never reach a later turn.
+export function endSubagentRoutingTurn(): void {
+  cards.unplaced = []
+}
+
 export const registerSubagentRouting = (on: On, options: PluginOptions): void => {
   // Calls waiting on the router, by when routing started, shown with a spinner and timer.
   const pending = new Map<string, number | undefined>()
   // Claude folds parallel Agent rows into its own block, which no hook reaches, so every
   // decision is drawn above the parent's next reply instead, single calls included.
   const records = new Map<string, RoutingRecord>()
-  // Calls not yet drawn, in call order, and the reply each batch is drawn above.
-  let unplaced: string[] = []
+  // The reply each batch is drawn above.
   const anchors = new Map<string, string[]>()
   // Replies already drawn before a batch was routed are never its anchor.
   const seen = new Set<string>()
@@ -66,7 +74,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     let spinner: { cancel: () => void } | undefined
     if (tool_use_id) {
       pending.set(tool_use_id, await now($))
-      unplaced.push(tool_use_id)
+      cards.unplaced.push(tool_use_id)
       // Mods have no global timers; $.clock redraws the spinner while the router answers.
       // The frame comes from the clock, so parallel calls do not speed it up.
       try {
@@ -147,8 +155,8 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     if (!seen.has(e.requestId)) {
       seen.add(e.requestId)
       // A call still routing waits for a later reply; one that failed routing is dropped.
-      const ready = unplaced.filter((id) => records.has(id))
-      unplaced = unplaced.filter((id) => pending.has(id))
+      const ready = cards.unplaced.filter((id) => records.has(id))
+      cards.unplaced = cards.unplaced.filter((id) => pending.has(id))
       if (ready.length) anchors.set(e.requestId, ready)
     }
     const ids = anchors.get(e.requestId)

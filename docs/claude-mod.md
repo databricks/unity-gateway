@@ -25,7 +25,8 @@ into its own "Running N agents" block, which raises no render hook, so single an
 calls alike draw their cards above the parent's first reply after routing, in call order.
 A reply drawn before routing finished is never used, a call still routing waits for a
 later reply, and a call whose routing failed draws no card. If the parent writes no reply
-in that turn, no card is drawn. Nothing is drawn above the prompt and nothing is logged.
+in that turn, its cards are dropped when the turn ends, not drawn in a later turn.
+Nothing is drawn above the prompt and nothing is logged.
 Cards are kept for the session; a plugin reload clears them from the screen, and the
 routing decision audit log is unchanged.
 Disabled routing, command failures, and invalid responses keep the original call;

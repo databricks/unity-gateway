@@ -45,7 +45,8 @@ See [the mod guide](../docs/claude-mod.md).
 
 Native mod component tests cover routing cards drawn above the parent's next reply in call
 order, replies drawn before routing never used, calls still routing waiting for a later
-reply, distinct IDs for identical tasks, nothing above the prompt or on the Agent row once
+reply, cards from a turn that ended without a reply never drawn in a later turn, distinct IDs
+for identical tasks, nothing above the prompt or on the Agent row once
 routed, pending row and turn-spinner routing timers, and disabled/failed routing. They do not establish live
 parallel-agent TUI or gateway coverage.
 

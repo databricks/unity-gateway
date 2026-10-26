@@ -130,6 +130,50 @@ test('parallel cards keep call order, skip replies drawn earlier, and wait for r
   await prompt.unmount();
 });
 
+test('a turn that ends without a reply leaves no card for the next turn', async ($, on) => {
+  let release: () => void = () => {};
+  let started: () => void = () => {};
+  const routed = new Promise<void>((resolve) => { release = resolve; });
+  const routing = new Promise<void>((resolve) => { started = resolve; });
+  on('session.id', () => ({ value: 'session-1' }));
+  on('process.run', async ($, e) => {
+    const { tool_use_id, tool_input } = JSON.parse(e.init.stdin);
+    if (tool_use_id === 'call-b') {
+      started();
+      await routed;
+    }
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+      model: 'system.ai.claude-sonnet-5', rationale: `Selected for ${tool_use_id}`,
+      updatedInput: { ...tool_input, subagent_type: `ug-smart-router:${tool_use_id}` },
+    }) } };
+  });
+  on('tool.call', () => ({ result: 'ok' }));
+  on('prompt.submit', ($, e) => ({ text: e.text }));
+  on('turn.complete', () => ({ text: '' }));
+  on('ui.render', () => ({ type: 'Text', props: {}, children: ['other row'] }));
+
+  // One call is routed and another is still routing when the user interrupts the turn.
+  await $.prompt.submit({ text: 'inspect the parser' });
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'call-a', ...originalInput });
+  const waiting = $.tool.call({ tool: 'Agent', tool_use_id: 'call-b', ...originalInput, description: 'Inspect lexer' });
+  await routing;
+  await $.turn.complete({ answer: '' });
+  release();
+  await waiting;
+
+  await $.prompt.submit({ text: 'something unrelated' });
+  const unrelated = await $.ui.mount(reply('unrelated'));
+  expect(await unrelated.find({ type: 'Text', text: /Selected Model|Inspect parser|Inspect lexer/ })).toBeUndefined();
+  await unrelated.unmount();
+
+  // The next turn's own calls still draw above its reply.
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'call-c', ...originalInput, description: 'Inspect tokens' });
+  const cards = await $.ui.mount(reply('after'));
+  expect(await cards.find({ type: 'Text', text: 'Inspect tokens' })).toBeDefined();
+  expect(await cards.find({ type: 'Text', text: /Inspect parser|Inspect lexer/ })).toBeUndefined();
+  await cards.unmount();
+});
+
 for (const [name, result, warningCount] of [
   ['disabled', { value: { exitCode: 0, stdout: '', stderr: '' } }, 0],
   ['command failure', { value: { exitCode: 1, stdout: '', stderr: 'failure' } }, 1],
