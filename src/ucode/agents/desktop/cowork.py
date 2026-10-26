@@ -20,6 +20,7 @@ from ucode.ui import print_warning
 
 MARKETPLACE_NAME = "unity-gateway-cowork"
 PLUGIN_NAME = "unity-gateway"
+PLUGIN_DISPLAY_NAME = "ug"
 PLUGIN_ID = f"{PLUGIN_NAME}@{MARKETPLACE_NAME}"
 STATE_FILENAME = "claude-cowork.json"
 MARKETPLACE_DIRECTORY_NAME = "claude-cowork-marketplace"
@@ -303,6 +304,7 @@ def _write_marketplace(
             "plugins": [
                 {
                     "name": PLUGIN_NAME,
+                    "displayName": PLUGIN_DISPLAY_NAME,
                     "description": "Unity Gateway workspace skills and MCP servers for Cowork",
                     "source": f"./plugins/{PLUGIN_NAME}",
                 }
@@ -310,6 +312,7 @@ def _write_marketplace(
         }
         plugin: dict[str, object] = {
             "name": PLUGIN_NAME,
+            "displayName": PLUGIN_DISPLAY_NAME,
             "description": "Unity Gateway workspace skills and MCP servers for Cowork",
             "author": {"name": "Databricks"},
         }

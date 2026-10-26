@@ -164,7 +164,8 @@ workspace's managed skills and Claude-targeted MCP servers. The source lives at
 account/org root for cleanup. Cowork must have started once. Setup and cleanup use scoped
 `claude plugin ... --cowork --json` commands with `CLAUDE_CONFIG_DIR`; failures stay best-effort.
 Cowork uses short service-first aliases for generated UC MCP names, with collision qualifiers;
-custom registration names and full proxy URLs are preserved.
+custom registration names and full proxy URLs are preserved. Its display name is `ug`;
+the plugin identity remains `unity-gateway@unity-gateway-cowork`.
 See `docs/claude-desktop.md` for native validation limits and revert behavior.
 
 <details>

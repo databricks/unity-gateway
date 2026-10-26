@@ -140,6 +140,14 @@ def test_configure_generates_plugin_and_installs_in_cowork_scope(tmp_path, monke
 
     plugin_root = app_dir / cowork.MARKETPLACE_DIRECTORY_NAME / "plugins" / cowork.PLUGIN_NAME
     plugin = json.loads((plugin_root / ".claude-plugin" / "plugin.json").read_text())
+    assert (plugin["name"], plugin["displayName"]) == ("unity-gateway", "ug")
+    marketplace = json.loads(
+        (
+            app_dir / cowork.MARKETPLACE_DIRECTORY_NAME / ".claude-plugin" / "marketplace.json"
+        ).read_text()
+    )
+    entry = marketplace["plugins"][0]
+    assert (entry["name"], entry["displayName"]) == ("unity-gateway", "ug")
     assert plugin["mcpServers"] == "./.mcp.json"
     mcp = json.loads((plugin_root / ".mcp.json").read_text())
     assert mcp == {
@@ -169,6 +177,13 @@ def test_configure_generates_plugin_and_installs_in_cowork_scope(tmp_path, monke
         ["plugin", "install"],
     ]
     assert all(call[1]["env"]["CLAUDE_CONFIG_DIR"] == str(cowork_root) for call in calls)
+    assert calls[-1][0][1:] == [
+        "plugin",
+        "install",
+        "unity-gateway@unity-gateway-cowork",
+        "--cowork",
+        "--json",
+    ]
     assert json.loads((app_dir / cowork.STATE_FILENAME).read_text())["cowork_root"] == str(
         cowork_root
     )
