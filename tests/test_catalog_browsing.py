@@ -274,11 +274,12 @@ def test_rendered_browser_scrolls_details_in_small_terminals(columns, rows):
 
         async def eventually_shows(*expected):
             # Windows delivers pipe input via an executor thread; poll rather than sleep.
+            text = rendered()
             with contextlib.suppress(TimeoutError):
                 async with asyncio.timeout(5):
-                    while not all(item in rendered() for item in expected):
+                    while not all(item in text for item in expected):
                         await asyncio.sleep(0.02)
-            text = rendered()
+                        text = rendered()
             for item in expected:
                 assert item in text
 
