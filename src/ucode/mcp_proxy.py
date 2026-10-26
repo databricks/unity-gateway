@@ -273,10 +273,10 @@ class _McpBridge:
         return {
             "name": AUTHENTICATE_TOOL_NAME,
             "description": (
-                f"Sign in to the Unity Gateway {connection} connection when its normal tools "
-                "are unavailable. After sign-in, immediately retry the user's original request "
-                "in the same turn using the newly available tools; do not ask the user to send "
-                "another message."
+                f"Sign in to the Unity Gateway {connection} connection. Call this when the user "
+                "requests this service but its normal tools are unavailable. After sign-in, "
+                "immediately retry the user's original request in the same turn using the newly "
+                "available tools; do not ask the user to send another message."
             ),
             "inputSchema": {
                 "type": "object",

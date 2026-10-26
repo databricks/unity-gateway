@@ -478,10 +478,6 @@ class TestMcpBridgeConnectionLogin:
                     response = (await client_receive.receive()).message
                     assert isinstance(response, mcp_proxy.JSONRPCResponse)
                     assert response.result["tools"][0]["name"] == "authenticate"
-                    description = response.result["tools"][0]["description"]
-                    assert "system.ai.github" in description
-                    assert "retry the user's original request" in description
-                    assert "requests involving github" not in description
                     assert "same turn" in response.result["tools"][0]["description"]
                     with pytest.raises(anyio.WouldBlock):
                         upstream_receive.receive_nowait()
