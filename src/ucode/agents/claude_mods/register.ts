@@ -109,7 +109,10 @@ export function register(on: On, options: PluginOptions): void {
     if (!isRoutingEnabled(current) || current.ENABLE_SMART_ROUTER_ORCHESTRATOR !== '1') {
       return next(e);
     }
-    return next({...e, description: instructions});
+    // Preserve the host's waiting and follow-up mechanics without its ownership policy.
+    const notes = e.description.split('\n## Usage notes\n')[1]?.split('\n## ')[0].trim();
+    const description = notes ? `${instructions}\n\n## Usage notes\n\n${notes}` : instructions;
+    return next({...e, description});
   });
 
   // The installed smart-router skill already supplies the slash command.

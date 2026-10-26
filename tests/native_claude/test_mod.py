@@ -87,7 +87,7 @@ def test_native_options_are_launch_local(native_binary, tmp_path):
 
 
 def test_orchestrator_instructions_follow_native_toggles(native_binary, tmp_path):
-    """Native request construction follows on/off/on without changing the Agent schema.
+    """Native requests retain lifecycle guidance and the Agent schema across on/off/on.
 
     Inference deliberately fails without credentials; this checks the serialized request,
     not a model response or delegation quality.
@@ -125,9 +125,21 @@ def test_orchestrator_instructions_follow_native_toggles(native_binary, tmp_path
         ) as session:
             native_tool = agent_tool(session)
         assert native_tool["description"] != orchestrator.CLAUDE_AGENT_DESCRIPTION
-        routed_tool = {**native_tool, "description": orchestrator.CLAUDE_AGENT_DESCRIPTION}
         with Session(native_binary, tmp_path / "routed", env) as session:
-            assert agent_tool(session) == routed_tool
+            routed_tool = agent_tool(session)
+            assert {**routed_tool, "description": native_tool["description"]} == native_tool
+            description = routed_tool["description"]
+            assert description.startswith(orchestrator.CLAUDE_AGENT_DESCRIPTION)
+            assert "Agents run in the background by default." in description
+            assert "do NOT sleep, poll, or proactively check on its progress" in description
+            assert "starts a fresh agent with no memory of prior runs" in description
+            for policy in (
+                "## When not to use",
+                "## When to fork",
+                "Never delegate understanding",
+                "When in doubt, don't spawn",
+            ):
+                assert policy not in description
             for action in ("off", "on"):
                 result = session.send(f"/smart-router {action}")
                 assert f"Smart Router is {action}" in result["result"]

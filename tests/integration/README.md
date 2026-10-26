@@ -1390,6 +1390,7 @@ launch recipe, `DISABLED`, then the launch recipe again, omit the recipe header,
 responses, with only the existing verified native compatibility retries accepted.
 The same requests must carry the orchestrator's Agent/Task guidance only while
 orchestration is active, with the native "When in doubt, don't spawn" advice absent.
+Native background completion and follow-up guidance must remain present.
 Native request-construction component checks also compare the Agent schema across
 toggles and check ineligible launches; their unauthenticated requests are not live
 inference coverage.

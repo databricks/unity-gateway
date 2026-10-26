@@ -35,7 +35,9 @@ failures also log a diagnostic.
 
 In eligible Smart Router Orchestrator launches, `tool.describe` replaces the native
 Agent/Task delegation advice with the orchestrator's instructions. It changes only the
-description, preserving the native input schema and execution. Routing toggles invalidate
+description, preserving the native input schema and execution. The host's `Usage notes`
+section stays intact, including background completion and follow-up mechanics. Other
+native ownership and task-selection advice is replaced. Routing toggles invalidate
 Claude's description cache: off restores native advice, and on restores the launch's
 orchestrator advice. Routing-only launches retain native advice. The same concise
 instructions lead the Claude activation context so its delegation rule survives a
@@ -154,7 +156,8 @@ spawning when unsure.
 
 The `Claude mod · 2.1.290` CI job validates the packaged module and checks event
 forwarding and launch-local options. Native request-construction checks cover description
-changes across on/off/on, an unchanged Agent schema, and ineligible launches. They inspect
+changes across on/off/on, retained lifecycle guidance, an unchanged Agent schema, and
+ineligible launches. They inspect
 Claude's recorded request shapes after deliberately unauthenticated requests; they do not
 establish successful inference or delegation quality. To run those component checks locally:
 

@@ -34,9 +34,9 @@ its assignment directly without delegating again.
 
 Use the available agent types and native input schema, following the workflow's role and
 model selection. Give the owner the goal, context, constraints, and acceptance criteria.
-Do not duplicate assigned work. Wait for actual completion before reporting results, and
-use the existing agent's ID for follow-ups when supported. The parent reviews the result
-and answers the user."""
+Do not duplicate assigned work or launch another worker to wait for an existing one.
+Wait for actual completion before reporting results, and use the existing agent's ID for
+follow-ups when supported. The parent reviews the result and answers the user."""
 DISABLED_CONTEXT = (
     "Smart Router Orchestrator is off for this session. This supersedes earlier "
     "Smart Router Orchestrator instructions. Continue in the root unless the user explicitly "
