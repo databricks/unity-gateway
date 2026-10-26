@@ -12,10 +12,11 @@ import threading
 import time
 from collections.abc import Callable
 from contextlib import suppress
+from datetime import UTC
 from typing import Any
 
 import questionary
-from prompt_toolkit.application import Application
+from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.filters import Condition, IsDone
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
@@ -23,9 +24,12 @@ from prompt_toolkit.layout import ConditionalContainer, HSplit, Layout, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.shortcuts import PromptSession
+from prompt_toolkit.utils import get_cwidth
 from questionary.prompts.common import InquirerControl
 from questionary.question import Question
 from questionary.styles import merge_styles_default
+
+from ucode.time_utils import parse_update_time
 
 PICKER_VISIBLE_ROWS = 10
 
@@ -56,6 +60,51 @@ def _description_footer_tokens(description: str) -> list[tuple[str, str]]:
     return [("bold", f"{label}{sep}"), ("class:instruction", _description_preview(body))]
 
 
+def picker_details(
+    name: str,
+    description: object,
+    *,
+    created_by: object = None,
+    create_time: object = None,
+    update_time: object = None,
+    bundle_name: str | None = None,
+) -> str:
+    """Build plain-text detail lines from list metadata; never fetch bundles or credentials.
+
+    Creator is labeled as such: UC does not expose the bundle's author. Missing fields
+    remain explicit rather than implying that the owner is the author.
+    """
+
+    def text(value: object, fallback: str = "Not available") -> str:
+        return " ".join(value.split()) if isinstance(value, str) and value.strip() else fallback
+
+    def date(value: object) -> str:
+        parsed = parse_update_time(value) if isinstance(value, str) else None
+        return parsed.astimezone(UTC).strftime("%Y-%m-%d") if parsed else "Not available"
+
+    lines = [f"Full name: {text(name)}"]
+    if bundle_name:
+        lines.append(f"Bundle: {text(bundle_name)}")
+    lines.extend(
+        [
+            f"Description: {text(description, 'No description provided')}",
+            f"Created by: {text(created_by)}",
+            f"Created: {date(create_time)}",
+            f"Updated: {date(update_time)}",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _detail_tokens(description: str) -> list[tuple[str, str]]:
+    tokens: list[tuple[str, str]] = []
+    for index, line in enumerate(description.splitlines()):
+        if index:
+            tokens.append(("", "\n"))
+        tokens.extend(_description_footer_tokens(line))
+    return tokens
+
+
 class _Back:
     """Sentinel type: a wizard step returns the `_BACK` instance when the user
     presses Left (←) to go back. Distinct from None (cancel) and [] (empty)."""
@@ -76,6 +125,63 @@ def picker_style() -> questionary.Style:
     )
 
 
+class CatalogChoice(questionary.Choice):
+    """A searchable choice whose table cells are independent of its selection state."""
+
+    def __init__(
+        self,
+        title: str,
+        value: str,
+        *,
+        name: str,
+        location: str,
+        status: str,
+        checked: bool = False,
+        disabled: str | None = None,
+        description: str | None = None,
+    ):
+        super().__init__(
+            title, value=value, checked=checked, disabled=disabled, description=description
+        )
+        self.name = name
+        self.location = location
+        self.status = status
+
+
+def _table_cell(value: str, width: int) -> str:
+    value = " ".join(value.split())
+    if get_cwidth(value) > width:
+        clipped = ""
+        for char in value:
+            if get_cwidth(clipped + char) > width - 1:
+                break
+            clipped += char
+        value = clipped + "…"
+    return value + " " * max(0, width - get_cwidth(value))
+
+
+def _table_columns(width: int) -> tuple[int, int, int]:
+    # Keep the table compact on wide terminals. Stretching short values across the full
+    # viewport makes related cells harder to scan and leaves the status far from the name.
+    width = min(width, 96)
+    status = 16 if width >= 60 else 6
+    remaining = max(2, width - 9 - 4 - status)
+    return remaining // 2, remaining - remaining // 2, status
+
+
+def _table_cells(name: str, location: str, status: str, width: int) -> str:
+    name_width, location_width, status_width = _table_columns(width)
+    if width < 60 and status.startswith(("✓", "✗")):
+        status = status[0]
+    return "  ".join(
+        [
+            _table_cell(name, name_width),
+            _table_cell(location, location_width),
+            _table_cell(status, status_width),
+        ]
+    )
+
+
 class StreamingInquirerControl(InquirerControl):
     """`InquirerControl` that tolerates an empty or all-disabled choice list.
 
@@ -86,6 +192,10 @@ class StreamingInquirerControl(InquirerControl):
     and fills it in via the background loader, and `ug mcp add` can legitimately show only
     already-configured (disabled) rows. Default the cursor and treat "nothing selectable" as valid
     so construction, rendering, and navigation don't crash."""
+
+    def __init__(self, choices, *, table: bool = False, **kwargs):
+        self.table = table
+        super().__init__(choices, **kwargs)
 
     def is_selection_valid(self) -> bool:
         if getattr(self, "pointed_at", None) is None:
@@ -99,6 +209,10 @@ class StreamingInquirerControl(InquirerControl):
             return True
         if self.pointed_at >= len(self.choices):
             return False
+        if self.table and isinstance(self.get_pointed_at(), CatalogChoice):
+            # Configured/managed rows stay browsable for their details; Space and
+            # select-all still exclude their disabled choices.
+            return True
         return super().is_selection_valid()
 
     def _get_choice_tokens(self):
@@ -106,17 +220,67 @@ class StreamingInquirerControl(InquirerControl):
         # empty list. Render nothing when there are no rows (the picker is still streaming them in).
         if not self.filtered_choices:
             return []
-        return super()._get_choice_tokens()
+        if not self.table:
+            return super()._get_choice_tokens()
+        tokens = []
+        width = get_app().output.get_size().columns
+        for index, choice in enumerate(self.filtered_choices):
+            if index:
+                tokens.append(("", "\n"))
+            pointed = index == self.pointed_at
+            tokens.append(("class:pointer", "› " if pointed else "  "))
+            if pointed:
+                tokens.append(("[SetCursorPosition]", ""))
+            selected = choice.value in self.selected_options
+            checkbox = "[-]" if choice.disabled else "[x]" if selected else "[ ]"
+            tokens.append(("class:text", checkbox + "    "))
+            if isinstance(choice, CatalogChoice):
+                name, location, status = choice.name, choice.location, choice.status
+            else:
+                # Legacy MCP registrations have no UC location, but remain removable.
+                name = str(choice.title)
+                location = "—"
+                status = "✓ Configured" if choice.checked else "✗ Not configured"
+            style = (
+                "class:disabled"
+                if choice.disabled
+                else "class:highlighted"
+                if pointed
+                else "class:text"
+            )
+            tokens.append((style, _table_cells(name, location, status, width)))
+        return tokens
 
 
 def merge_new_choices(
     existing: list[questionary.Choice | questionary.Separator],
     new_choices: list[questionary.Choice],
-) -> list[questionary.Choice]:
-    """Return the choices from ``new_choices`` not already present in ``existing`` (compared by
-    Choice value). Used to dedupe background-streamed picker rows against what's already shown."""
-    shown = {c.value for c in existing if isinstance(c, questionary.Choice)}
-    return [c for c in new_choices if isinstance(c, questionary.Choice) and c.value not in shown]
+) -> tuple[list[questionary.Choice | questionary.Separator], int]:
+    """Merge streamed choices by value and return the rows plus the number newly discovered.
+
+    A rich catalog row replaces a plain initial row with the same value. This preserves the
+    selection (which is value-based) while adding the streamed location and detail metadata.
+    """
+    incoming = {choice.value: choice for choice in new_choices}
+    merged: list[questionary.Choice | questionary.Separator] = []
+    seen: set[Any] = set()
+    added = 0
+    for choice in existing:
+        if isinstance(choice, questionary.Choice) and choice.value in incoming:
+            replacement = incoming[choice.value]
+            if isinstance(replacement, CatalogChoice) and not isinstance(choice, CatalogChoice):
+                merged.append(replacement)
+            else:
+                merged.append(choice)
+            seen.add(choice.value)
+        else:
+            merged.append(choice)
+    for choice in new_choices:
+        if choice.value not in seen:
+            merged.append(choice)
+            seen.add(choice.value)
+            added += 1
+    return merged, added
 
 
 def scrolling_checkbox(
@@ -131,6 +295,7 @@ def scrolling_checkbox(
     | None = None,
     loading_noun: str = "MCP services",
     show_description: bool = False,
+    table: bool = False,
 ) -> Question:
     """Multi-select checkbox picker.
 
@@ -141,6 +306,7 @@ def scrolling_checkbox(
     "Loading more {loading_noun}, this might take a few seconds..." count while it runs.
 
     ``show_description`` adds a footer previewing the highlighted row's ``Choice.description``.
+    Newline-separated metadata retains its labels; Page Up/Down scroll the detail pane.
     It's a separate window rather than questionary's inline ``show_description`` because the
     choices window is sized to the row count, so an inline line would be clipped."""
     merged_style = merge_styles_default(
@@ -155,6 +321,7 @@ def scrolling_checkbox(
         choices,
         pointer="›",
         show_description=False,
+        table=table,
     )
     # Live loading state for the background-loader footer (see below).
     loading: dict[str, Any] = {"active": background_loader is not None, "found": 0, "message": None}
@@ -176,10 +343,19 @@ def scrolling_checkbox(
         control.error_message = None
         return True
 
+    def detail_height() -> int:
+        return min(8, max(1, app.output.get_size().rows // 3))
+
+    def visible_choice_rows() -> int:
+        # Reserve the prompt and optional loading/search/scroll footers. Re-evaluate
+        # on resize so the detail pane cannot push the choices out of a short terminal.
+        reserved = 5 + int(table) + (detail_height() + 1 if show_description else 0)
+        return min(PICKER_VISIBLE_ROWS, max(1, app.output.get_size().rows - reserved))
+
     @Condition
     def has_more_choices() -> bool:
         # Live so the scroll hint appears as background-loaded rows stream in.
-        return len(control.choices) > PICKER_VISIBLE_ROWS
+        return len(control.choices) > visible_choice_rows()
 
     @Condition
     def show_loading_footer() -> bool:
@@ -210,11 +386,13 @@ def scrolling_checkbox(
         description = getattr(pointed, "description", None)
         return description if isinstance(description, str) and description else None
 
+    detail_line = {"offset": 0}
+
     def description_tokens() -> list[tuple[str, str]]:
         description = pointed_description()
         if description is None:
             return []
-        return _description_footer_tokens(description)
+        return _detail_tokens("\n".join(description.splitlines()[detail_line["offset"] :]))
 
     @Condition
     def has_description() -> bool:
@@ -232,13 +410,33 @@ def scrolling_checkbox(
                     content=FormattedTextControl(get_prompt_tokens),
                 ),
                 ConditionalContainer(
+                    Window(
+                        height=Dimension.exact(1),
+                        content=FormattedTextControl(
+                            lambda: [
+                                (
+                                    "bold",
+                                    "  Select "
+                                    + _table_cells(
+                                        "Name",
+                                        "UC location",
+                                        "Status",
+                                        app.output.get_size().columns,
+                                    ),
+                                )
+                            ]
+                        ),
+                    ),
+                    filter=Condition(lambda: table) & ~IsDone(),
+                ),
+                ConditionalContainer(
                     # Height tracks the live choice count (capped at the visible max) so the
                     # window grows as background-loaded rows stream in, with no blank gap when
                     # only a few choices are present.
                     Window(
                         control,
                         height=lambda: Dimension.exact(
-                            min(PICKER_VISIBLE_ROWS, max(1, len(control.choices)))
+                            min(visible_choice_rows(), max(1, len(control.choices)))
                         ),
                     ),
                     filter=~IsDone(),
@@ -277,8 +475,13 @@ def scrolling_checkbox(
                         [
                             Window(height=Dimension.exact(1)),
                             Window(
-                                height=Dimension.exact(2),
-                                content=FormattedTextControl(description_tokens),
+                                height=lambda: Dimension(
+                                    min=1, preferred=detail_height(), max=detail_height()
+                                ),
+                                content=FormattedTextControl(
+                                    description_tokens,
+                                    show_cursor=False,
+                                ),
                                 wrap_lines=True,
                                 get_line_prefix=lambda line, wrap: _DESCRIPTION_INDENT,
                             ),
@@ -332,6 +535,7 @@ def scrolling_checkbox(
         perform_validation()
 
     def move_cursor_down(event: Any) -> None:
+        detail_line["offset"] = 0
         if control.choice_count == 0:
             return
         control.select_next()
@@ -342,6 +546,7 @@ def scrolling_checkbox(
             tries += 1
 
     def move_cursor_up(event: Any) -> None:
+        detail_line["offset"] = 0
         if control.choice_count == 0:
             return
         control.select_previous()
@@ -351,6 +556,7 @@ def scrolling_checkbox(
             tries += 1
 
     def search_filter(event: Any) -> None:
+        detail_line["offset"] = 0
         control.add_search_character(event.key_sequence[0].key)
 
     for character in string.printable:
@@ -363,6 +569,19 @@ def scrolling_checkbox(
     bindings.add(Keys.Up, eager=True)(move_cursor_up)
     bindings.add(Keys.ControlN, eager=True)(move_cursor_down)
     bindings.add(Keys.ControlP, eager=True)(move_cursor_up)
+
+    if show_description:
+
+        @bindings.add(Keys.PageDown, eager=True)
+        def _(_event: Any) -> None:
+            description = pointed_description() or ""
+            detail_line["offset"] = min(
+                max(0, len(description.splitlines()) - 1), detail_line["offset"] + 3
+            )
+
+        @bindings.add(Keys.PageUp, eager=True)
+        def _(_event: Any) -> None:
+            detail_line["offset"] = max(0, detail_line["offset"] - 3)
 
     @bindings.add(Keys.ControlM, eager=True)
     def _(event: Any) -> None:
@@ -412,10 +631,10 @@ def scrolling_checkbox(
             def apply() -> None:
                 # On the UI thread: rebind choices (atomic; render reads the list live) and repaint.
                 # Selections track by value, so appended rows never disturb checkboxes/scroll/filter.
-                additions = merge_new_choices(control.choices, new_choices)
-                if additions:
-                    control.choices = [*control.choices, *additions]
-                    loading["found"] += len(additions)
+                merged, added = merge_new_choices(control.choices, new_choices)
+                if merged != control.choices:
+                    control.choices = merged
+                    loading["found"] += added
                     app.invalidate()
 
             run_on_loop(apply)

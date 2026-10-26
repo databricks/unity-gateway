@@ -12,6 +12,10 @@ Databricks-hosted ids (system.ai / OSS) take the gateway-auth path while relayed
 subscription models keep the OAuth passthrough, so one Claude Code session can use
 both.
 
+The gateway-auth proxy serves agents that can only hold a static credential
+(Copilot CLI): the agent authenticates to the proxy with a per-session secret,
+and the proxy swaps it for a fresh Databricks token on allowlisted gateway paths.
+
 Security invariants (mirroring `databricks.py` token handling):
   - Binds 127.0.0.1 only; never exposed off-host.
   - Never logs header values or bodies. The Databricks token lives in memory,
@@ -23,17 +27,21 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hmac
 import json
 import os
 import sys
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import cast
+from urllib.parse import unquote
 
 import httpx
+
+from ucode.env import env_bool
 
 # Header we overwrite with the freshly-minted Databricks credential. Any
 # client-supplied value is replaced, so a stale settings.json value can't leak.
@@ -74,11 +82,10 @@ _DEFAULT_TTL_S = 3600
 # contain locally-generated request ids, timings, status codes, byte counts,
 # and exception class names — never headers, bodies, or credentials.
 _DIAGNOSTICS_ENV = "UCODE_RELAYED_PROXY_DIAGNOSTICS"
-_DIAGNOSTICS_TRUE = frozenset({"1", "true", "yes", "on"})
 
 
 def _diagnostics_enabled() -> bool:
-    return os.environ.get(_DIAGNOSTICS_ENV, "").strip().lower() in _DIAGNOSTICS_TRUE
+    return env_bool(_DIAGNOSTICS_ENV)
 
 
 def log_proxy_diagnostic(event: str, **fields: object) -> None:
@@ -127,12 +134,15 @@ class TokenCache:
         token_provider: Callable[[bool], str],
         *,
         force_refresh_near_expiry: bool = False,
+        on_refresh_failure: Callable[[BaseException], None] = log_token_refresh_failure,
     ) -> None:
         # token_provider(force_refresh) mints a fresh token from the same source the
         # client agent uses, so the proxy authenticates as the same principal (e.g.
         # a per-user custom-OAuth token, not the default CLI profile).
         self._token_provider = token_provider
         self._force_refresh_near_expiry = force_refresh_near_expiry
+        # Agents that own the terminal (a TUI) need failures kept off stderr.
+        self._on_refresh_failure = on_refresh_failure
         self._state_lock = threading.Lock()  # guards _token / _expiry (brief)
         self._refresh_lock = threading.Lock()  # single-flights the CLI refresh
         self._stop = threading.Event()
@@ -165,13 +175,16 @@ class TokenCache:
             except RuntimeError as exc:
                 # Keep serving the current token; a request that then 401s triggers
                 # a forced refresh + retry (see _ProxyHandler._handle).
-                log_token_refresh_failure(exc)
+                self._on_refresh_failure(exc)
 
     @property
     def token(self) -> str:
         self._ensure_fresh()
         with self._state_lock:
             return self._token
+
+    def report_refresh_failure(self, exc: BaseException) -> None:
+        self._on_refresh_failure(exc)
 
     def refresh(self) -> None:
         """Force a fresh mint now (used by the retry-on-401 path)."""
@@ -185,7 +198,7 @@ class TokenCache:
             except Exception as exc:  # noqa: BLE001 - a stray error must NOT kill the thread
                 # If this thread dies, nothing refreshes and the session lapses at
                 # the ~1h mark until restart. Log and keep looping instead.
-                log_token_refresh_failure(exc)
+                self._on_refresh_failure(exc)
 
     def stop(self) -> None:
         self._stop.set()
@@ -257,11 +270,23 @@ class _ProxyHandler(BaseHTTPRequestHandler):
     def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
         return self.token_header, frozenset(), "forward"
 
+    def _request_body(self, body: bytes | None) -> bytes | None:
+        """The body to forward; ``body`` unchanged unless a subclass rewrites it."""
+        return body
+
+    def _added_headers(self) -> dict[str, str]:
+        return {}
+
+    def _on_refresh_failure(self, exc: RuntimeError) -> bool:
+        """Report a failed forced refresh; True means a response was already sent."""
+        log_token_refresh_failure(exc)
+        return False
+
     def _handle(self) -> None:
         diagnostic_id = uuid.uuid4().hex[:12]
         started = time.monotonic()
         length = int(self.headers.get("Content-Length", 0) or 0)
-        body = self.rfile.read(length) if length else None
+        body = self._request_body(self.rfile.read(length) if length else None)
         url = self.path.lstrip("/")
         token_header, extra_strip, route_label = self._forward_target(body)
         log_proxy_diagnostic(
@@ -273,9 +298,11 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         )
 
         def request_headers() -> dict[str, str]:
-            return forwarded_request_headers(
+            headers = forwarded_request_headers(
                 self, self.cache.token, token_header, extra_strip=extra_strip
             )
+            headers.update(self._added_headers())
+            return headers
 
         try:
             # First attempt with the current token.
@@ -308,7 +335,8 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 # `databricks auth login` hint rather than silently relaying a bare 401,
                 # which otherwise reads as an Anthropic `/login` prompt and sends the
                 # user to the wrong re-auth. Still retry + relay with the existing token.
-                log_token_refresh_failure(exc)
+                if self._on_refresh_failure(exc):
+                    return
             headers = request_headers()
             with self.client.stream(self.command, url, headers=headers, content=body) as resp:
                 log_proxy_diagnostic(
@@ -428,6 +456,116 @@ class _RelayProxyHandler(_ProxyHandler):
         return self.token_header, frozenset(), "relay"
 
 
+# Gateway model routes a gateway-auth proxy session may reach. Everything else
+# (workspace REST APIs included) is refused, so the session secret only buys inference.
+GATEWAY_MODEL_PATH_PREFIXES = (
+    "/ai-gateway/anthropic/",
+    "/ai-gateway/mlflow/v1/",
+    "/ai-gateway/openai/v1/",
+)
+_ANTHROPIC_PATH_PREFIX = "/ai-gateway/anthropic/"
+# The agent's credential headers carry the session secret, never a Databricks token.
+_SESSION_CREDENTIAL_HEADERS = frozenset({"authorization", "x-api-key"})
+
+
+def _is_allowed_gateway_path(path: str, prefixes: tuple[str, ...]) -> bool:
+    decoded = path.split("?", 1)[0]
+    # Decode until stable so a double-encoded dot segment can't reach another API.
+    while (next_decoded := unquote(decoded)) != decoded:
+        decoded = next_decoded
+    if any(segment in (".", "..") for segment in decoded.split("/")):
+        return False
+    return decoded.startswith(prefixes)
+
+
+def _bearer_value(value: str | None) -> str | None:
+    if not value:
+        return None
+    scheme, _, credential = value.partition(" ")
+    return credential.strip() if scheme.lower() == "bearer" else None
+
+
+class _GatewayAuthProxyHandler(_ProxyHandler):
+    # Set by the server factory.
+    session_secret: str
+    added_headers: Mapping[str, str]
+    allowed_path_prefixes: tuple[str, ...]
+    sign_in_hint: str
+    dropped_chat_completions_fields: frozenset[str]
+
+    def _request_body(self, body: bytes | None) -> bytes | None:
+        if not body or not self.dropped_chat_completions_fields:
+            return body
+        if not self.path.split("?", 1)[0].endswith("/chat/completions"):
+            return body
+        try:
+            payload = json.loads(body)
+        except ValueError:
+            return body
+        if not isinstance(payload, dict) or self.dropped_chat_completions_fields.isdisjoint(
+            payload
+        ):
+            return body
+        for field in self.dropped_chat_completions_fields:
+            payload.pop(field, None)
+        return json.dumps(payload).encode()
+
+    def _has_session_secret(self) -> bool:
+        expected = self.session_secret.encode()
+        for presented in (
+            _bearer_value(self.headers.get(AUTHORIZATION_HEADER)),
+            self.headers.get("x-api-key"),
+        ):
+            if presented and hmac.compare_digest(presented.encode(), expected):
+                return True
+        return False
+
+    def _reject(self, status: int, message: str) -> None:
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        if length:
+            self.rfile.read(length)
+        self._send_json_error(status, message)
+
+    def _send_json_error(self, status: int, message: str) -> None:
+        # Shaped like the upstream dialect so the agent shows the message instead of
+        # a generic transport failure.
+        if self.path.startswith(_ANTHROPIC_PATH_PREFIX):
+            error_type = "authentication_error" if status == 401 else "not_found_error"
+            payload = {"type": "error", "error": {"type": error_type, "message": message}}
+        else:
+            payload = {"error": {"message": message, "type": "invalid_request_error"}}
+        body = json.dumps(payload).encode()
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except OSError:
+            pass
+
+    def _handle(self) -> None:
+        if not _is_allowed_gateway_path(self.path, self.allowed_path_prefixes):
+            self._reject(404, "This path is not served by the Unity Gateway proxy.")
+            return
+        if not self._has_session_secret():
+            self._reject(401, "Missing or invalid Unity Gateway session credential.")
+            return
+        super()._handle()
+
+    def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
+        added = frozenset(name.lower() for name in self.added_headers)
+        return self.token_header, _SESSION_CREDENTIAL_HEADERS | added, "gateway"
+
+    def _added_headers(self) -> dict[str, str]:
+        return dict(self.added_headers)
+
+    def _on_refresh_failure(self, exc: RuntimeError) -> bool:
+        self.cache.report_refresh_failure(exc)
+        self._send_json_error(401, f"Databricks sign-in expired. {self.sign_in_hint}")
+        return True
+
+
 class _LoopbackHTTPServer(ThreadingHTTPServer):
     # Windows permits sharing an active listener when SO_REUSEADDR is enabled.
     allow_reuse_address = ThreadingHTTPServer.allow_reuse_address and os.name != "nt"
@@ -443,6 +581,8 @@ def _start_proxy(
     handler_type: type[_ProxyHandler],
     force_refresh_near_expiry: bool,
     fallback_on_bind_error: bool = True,
+    handler_attrs: Mapping[str, object] | None = None,
+    on_refresh_failure: Callable[[BaseException], None] = log_token_refresh_failure,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     """Start the loopback refresh proxy + its background token refresher.
 
@@ -457,7 +597,11 @@ def _start_proxy(
     thread) and calls shutdown()/cache.stop()/client.close() on exit.
     """
     upstream_base = f"{workspace.rstrip('/')}/{upstream_path.lstrip('/')}"
-    cache = TokenCache(token_provider, force_refresh_near_expiry=force_refresh_near_expiry)
+    cache = TokenCache(
+        token_provider,
+        force_refresh_near_expiry=force_refresh_near_expiry,
+        on_refresh_failure=on_refresh_failure,
+    )
     # One pooled, keep-alive client shared across handler threads: reuses TCP+TLS
     # to the gateway instead of a fresh handshake per request. Don't follow
     # redirects — a proxy relays 3xx verbatim.
@@ -472,6 +616,7 @@ def _start_proxy(
                 "cache": cache,
                 "client": client,
                 "token_header": token_header,
+                **(handler_attrs or {}),
             },
         ),
     )
@@ -524,4 +669,42 @@ def start_otel_proxy(
         handler_type=_ProxyHandler,
         force_refresh_near_expiry=True,
         fallback_on_bind_error=False,
+    )
+
+
+def start_gateway_auth_proxy(
+    workspace: str,
+    token_provider: Callable[[bool], str],
+    *,
+    session_secret: str,
+    added_headers: Mapping[str, str],
+    sign_in_hint: str,
+    on_refresh_failure: Callable[[BaseException], None] = log_token_refresh_failure,
+    dropped_chat_completions_fields: Iterable[str] = (),
+) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
+    """Start a per-session proxy for agents that only hold a static credential.
+
+    The agent sends ``session_secret`` as its API key; the proxy accepts it only on
+    gateway model paths and forwards with a fresh Databricks token plus
+    ``added_headers``, after removing ``dropped_chat_completions_fields`` from Chat
+    Completions request bodies. Binds an OS-assigned port, read from
+    ``server.server_address[1]``.
+    """
+    return _start_proxy(
+        workspace,
+        token_provider,
+        0,
+        upstream_path="",
+        token_header=AUTHORIZATION_HEADER,
+        handler_type=_GatewayAuthProxyHandler,
+        force_refresh_near_expiry=True,
+        fallback_on_bind_error=False,
+        handler_attrs={
+            "session_secret": session_secret,
+            "added_headers": dict(added_headers),
+            "allowed_path_prefixes": GATEWAY_MODEL_PATH_PREFIXES,
+            "sign_in_hint": sign_in_hint,
+            "dropped_chat_completions_fields": frozenset(dropped_chat_completions_fields),
+        },
+        on_refresh_failure=on_refresh_failure,
     )

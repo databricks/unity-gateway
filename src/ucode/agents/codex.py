@@ -5,14 +5,17 @@ from __future__ import annotations
 import copy
 import hashlib
 import os
+import plistlib
 import re
 import signal
 import socket
+import sys
 import tempfile
 import threading
 from collections.abc import Callable
 from pathlib import Path
-from subprocess import CalledProcessError
+from subprocess import CalledProcessError, list2cmdline
+from xml.sax.saxutils import escape
 
 import tomlkit
 from tomlkit.exceptions import ParseError
@@ -50,7 +53,7 @@ from ucode.custom_oauth import (
     CUSTOM_OAUTH_TIMEOUT_MS,
     CustomOAuthConfig,
     build_custom_auth_token_argv,
-    get_custom_client_token,
+    launch_token,
 )
 from ucode.databricks import (
     CodexCatalogSource,
@@ -58,7 +61,6 @@ from ucode.databricks import (
     _fetch_codex_model_catalog,
     build_auth_token_argv,
     build_tool_base_url,
-    get_databricks_token,
     ug_binary,
 )
 from ucode.launcher import exec_or_spawn
@@ -66,7 +68,6 @@ from ucode.managed_files import (
     CODEX_REQUIREMENTS_FILE,
     OS,
     ManagedFileWriteUnavailable,
-    check_skipped_managed_overrides,
     current_os,
     managed_file_conflicts,
     managed_file_is_verified,
@@ -79,6 +80,7 @@ from ucode.managed_files import (
     read_managed_file,
     reconcile_managed_file,
     revert_managed_file,
+    warn_managed_write_skipped,
 )
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.smart_routing import v2 as smart_routing_v2
@@ -90,7 +92,8 @@ from ucode.smart_routing.codex_hooks import (
 from ucode.smart_routing.codex_routing import codex_model_id
 from ucode.smart_routing.routing import configured_router_name
 from ucode.state import get_provider_service, is_tool_managed, mark_tool_managed, save_state
-from ucode.telemetry import agent_version, ug_version
+from ucode.telemetry import agent_version, ucode_user_agent, ug_version
+from ucode.ug_headers import ug_headers
 from ucode.ui import print_warning_err
 
 from .args import LaunchOptions
@@ -144,6 +147,8 @@ MANAGED_KEYS: list[list[str]] = [
 ]
 CODEX_OTEL_SERVICE_NAME = "ug-codex-otel.service"
 _CODEX_OTEL_UNIT_MARKER = "# Managed by unity-gateway; do not edit."
+# The macOS LaunchAgent label and the Windows scheduled task name.
+CODEX_OTEL_SERVICE_LABEL = "com.databricks.ug-codex-otel"
 
 LEGACY_MANAGED_KEYS: list[list[str]] = [
     ["profile"],
@@ -225,7 +230,7 @@ def _provider_block(
             auth_argv.append("--browser-login")
     base_url = build_tool_base_url("codex", workspace)
     http_headers = {
-        "User-Agent": f"ucode/{ug_version()} codex/{agent_version('codex')}",
+        "User-Agent": ucode_user_agent(ug_version(), f"codex/{agent_version('codex')}"),
     }
     if provider:
         http_headers[MODEL_PROVIDER_SERVICE_HEADER] = provider
@@ -398,13 +403,16 @@ def revert_legacy_shared_config() -> bool:
     through the workspace gateway. ``ucode revert`` only restored the
     per-profile file, leaving those edits in place. Surgically strip them here.
 
-    Also remove the shared app catalog reference and desktop trace exporter installed by modern
-    ucode. Returns True if anything was removed.
+    Also remove the shared app catalog reference, the per-launch model catalogs, and the desktop
+    trace exporter installed by modern ucode. Returns True if anything was removed from config.
     """
     legacy_changed = _strip_legacy_ucode_entries(_legacy_config_path())
     app_catalog_changed = detach_app_model_catalog()
     if app_catalog_changed and CODEX_MODEL_CATALOG_PATH.exists():
         CODEX_MODEL_CATALOG_PATH.unlink()
+    # Launch-scoped catalogs from _model_catalog_path; only the reverted ug profile names them.
+    for path in CODEX_MODEL_CATALOG_PATH.parent.glob(f"{CODEX_MODEL_CATALOG_PATH.stem}-*.json"):
+        path.unlink(missing_ok=True)
     desktop_tracing_changed = _sync_desktop_tracing(None)
     return legacy_changed or app_catalog_changed or desktop_tracing_changed
 
@@ -616,6 +624,11 @@ def revert_managed_config() -> str:
 
 
 def _otel_service_path() -> Path:
+    if current_os() == OS.MACOS:
+        return Path.home() / "Library" / "LaunchAgents" / f"{CODEX_OTEL_SERVICE_LABEL}.plist"
+    if current_os() == OS.WINDOWS:
+        # Task Scheduler keeps its own copy; this one records ownership, the port, and changes.
+        return APP_DIR / f"{CODEX_OTEL_SERVICE_LABEL}.xml"
     config_home = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
     return config_home.expanduser() / "systemd" / "user" / CODEX_OTEL_SERVICE_NAME
 
@@ -628,6 +641,103 @@ def _run_systemctl(args: list[str]) -> None:
     except (OSError, CalledProcessError) as exc:
         detail = exc.stderr if isinstance(exc, CalledProcessError) else str(exc)
         raise RuntimeError(f"systemctl --user {' '.join(args)} failed: {detail}") from exc
+
+
+def _run_service_command(argv: list[str], *, check: bool = True) -> bool:
+    """Run a service manager command; without ``check``, a failed exit returns False."""
+    try:
+        subprocess_cross_os.run(argv, check=True, capture_output=True, text=True)
+    except CalledProcessError as exc:
+        if not check:
+            return False
+        raise RuntimeError(f"{' '.join(argv)} failed: {exc.stderr}") from exc
+    except OSError as exc:
+        raise RuntimeError(f"{' '.join(argv)} failed: {exc}") from exc
+    return True
+
+
+def _otel_service_env() -> dict[str, str]:
+    """The configuring shell's settings that the proxy's token provider needs after login."""
+    env = {}
+    for name in (
+        "PATH",
+        "DATABRICKS_CONFIG_FILE",
+        "DATABRICKS_AUTH_STORAGE",
+        CUSTOM_OAUTH_CLI_ENV_VAR,
+    ):
+        value = os.environ.get(name)
+        if name == "DATABRICKS_CONFIG_FILE" and value:
+            value = str(Path(value).expanduser().absolute())
+        if value:
+            env[name] = value
+    return env
+
+
+def _ensure_launch_agent(path: Path, argv: list[str]) -> None:
+    plist = plistlib.dumps(
+        {
+            "Label": CODEX_OTEL_SERVICE_LABEL,
+            "ProgramArguments": argv,
+            "EnvironmentVariables": _otel_service_env(),
+            "RunAtLoad": True,
+            # Restart only after a failure, like the systemd unit's Restart=on-failure.
+            "KeepAlive": {"SuccessfulExit": False},
+        }
+    ).decode("utf-8")
+    text = plist.replace("<plist", f"<!-- {_CODEX_OTEL_UNIT_MARKER} -->\n<plist", 1)
+    changed = not path.is_file() or path.read_text(encoding="utf-8") != text
+    if changed:
+        write_text_file(path, text)
+    domain = f"gui/{os.getuid()}"
+    target = f"{domain}/{CODEX_OTEL_SERVICE_LABEL}"
+    loaded = _run_service_command(["launchctl", "print", target], check=False)
+    if loaded and not changed:
+        return  # KeepAlive keeps a loaded agent running.
+    if loaded:
+        # A loaded agent keeps its old definition; only a reload reads the new plist.
+        _run_service_command(["launchctl", "bootout", target])
+    _run_service_command(["launchctl", "bootstrap", domain, str(path)])
+
+
+def _ensure_scheduled_task(path: Path, argv: list[str]) -> None:
+    # A non-admin may only register a logon trigger for their own account.
+    user = "\\".join(filter(None, (os.environ.get("USERDOMAIN"), os.environ.get("USERNAME"))))
+    text = f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Description>{_CODEX_OTEL_UNIT_MARKER}</Description></RegistrationInfo>
+  <Triggers><LogonTrigger><UserId>{escape(user)}</UserId></LogonTrigger></Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{escape(argv[0])}</Command>
+      <Arguments>{escape(list2cmdline(argv[1:]))}</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"""
+    changed = not path.is_file() or _read_otel_service(path) != text
+    if changed:
+        write_text_file(path, text, encoding="utf-16")
+    task = ["/TN", CODEX_OTEL_SERVICE_LABEL]
+    if changed or not _run_service_command(["schtasks", "/Query", *task], check=False):
+        # /Create /F leaves a running proxy on its old command line, so end it first.
+        _run_service_command(["schtasks", "/End", *task], check=False)
+        _run_service_command(["schtasks", "/Create", *task, "/XML", str(path), "/F"])
+    # IgnoreNew keeps this from starting a second proxy next to a running one.
+    # shortcut: RestartOnFailure ignores a nonzero exit, so a crashed proxy waits for the next
+    # login or launch; add a watchdog if that proves too slow.
+    _run_service_command(["schtasks", "/Run", *task])
 
 
 def _systemd_quote(value: str, *, exec_start: bool = False) -> str:
@@ -646,21 +756,40 @@ def _allocate_otel_port() -> int:
         return int(sock.getsockname()[1])
 
 
+def _read_otel_service(path: Path) -> str:
+    # UTF-16 is the encoding Task Scheduler exports and the only one schtasks documents reading.
+    return path.read_text(encoding="utf-16" if current_os() == OS.WINDOWS else "utf-8")
+
+
 def _owned_otel_service(path: Path) -> bool:
-    return path.is_file() and _CODEX_OTEL_UNIT_MARKER in path.read_text(encoding="utf-8")
+    return path.is_file() and _CODEX_OTEL_UNIT_MARKER in _read_otel_service(path)
 
 
 def _ensure_otel_service(workspace: str, port: int) -> None:
     path = _otel_service_path()
     if path.is_symlink():
-        raise RuntimeError(f"Refusing to replace a symlinked systemd unit: {path}")
+        raise RuntimeError(f"Refusing to replace a symlinked service file: {path}")
     if path.exists() and not _owned_otel_service(path):
-        raise RuntimeError(f"Refusing to replace an unmanaged systemd unit: {path}")
+        raise RuntimeError(f"Refusing to replace an unmanaged service file: {path}")
+    if current_os() == OS.WINDOWS:
+        # pythonw runs the proxy without a console window that closing would kill.
+        # shortcut: the task gets the logon environment, not this shell's DATABRICKS_* overrides;
+        # pass them through if a Windows user needs them.
+        pythonw = Path(sys.executable).with_name("pythonw.exe")
+        python = str(pythonw if pythonw.is_file() else sys.executable)
+        argv = [python, "-m", "ucode.cli", "otel-proxy", "--host", workspace, "--port", str(port)]
+        _ensure_scheduled_task(path, argv)
+        return
     ug_path = ug_binary()
     if not os.path.isabs(ug_path):
         raise RuntimeError(
             "Could not resolve an absolute ug executable for the Codex OTEL service."
         )
+    if current_os() == OS.MACOS:
+        _ensure_launch_agent(
+            path, [ug_path, "otel-proxy", "--host", workspace, "--port", str(port)]
+        )
+        return
     lines = [
         _CODEX_OTEL_UNIT_MARKER,
         "[Service]",
@@ -670,17 +799,8 @@ def _ensure_otel_service(workspace: str, port: int) -> None:
         "Restart=on-failure",
         "RestartSec=1s",
     ]
-    for name in (
-        "PATH",
-        "DATABRICKS_CONFIG_FILE",
-        "DATABRICKS_AUTH_STORAGE",
-        CUSTOM_OAUTH_CLI_ENV_VAR,
-    ):
-        value = os.environ.get(name)
-        if name == "DATABRICKS_CONFIG_FILE" and value:
-            value = str(Path(value).expanduser().absolute())
-        if value:
-            lines.append(f"Environment={_systemd_quote(f'{name}={value}')}")
+    for name, value in _otel_service_env().items():
+        lines.append(f"Environment={_systemd_quote(f'{name}={value}')}")
     lines.extend(["", "[Install]", "WantedBy=default.target", ""])
     text = "\n".join(lines)
     if path.is_file() and path.read_text(encoding="utf-8") == text:
@@ -697,8 +817,22 @@ def _ensure_otel_service(workspace: str, port: int) -> None:
 def _remove_otel_service() -> None:
     path = _otel_service_path()
     if path.is_symlink():
-        raise RuntimeError(f"Refusing to remove a symlinked systemd unit: {path}")
+        raise RuntimeError(f"Refusing to remove a symlinked service file: {path}")
     if not _owned_otel_service(path):
+        return
+    if current_os() == OS.MACOS:
+        # An already-unloaded agent is fine to remove.
+        _run_service_command(
+            ["launchctl", "bootout", f"gui/{os.getuid()}/{CODEX_OTEL_SERVICE_LABEL}"], check=False
+        )
+        path.unlink(missing_ok=True)
+        return
+    if current_os() == OS.WINDOWS:
+        # An already-stopped or deleted task is fine to remove.
+        task = ["/TN", CODEX_OTEL_SERVICE_LABEL]
+        _run_service_command(["schtasks", "/End", *task], check=False)
+        _run_service_command(["schtasks", "/Delete", *task, "/F"], check=False)
+        path.unlink(missing_ok=True)
         return
     _run_systemctl(["disable", "--now", CODEX_OTEL_SERVICE_NAME])
     path.unlink(missing_ok=True)
@@ -710,12 +844,12 @@ def _desktop_trace_exporter(port: int) -> dict:
 
 
 def _sync_desktop_tracing(workspace: str | None) -> bool:
-    """Point Codex desktop's trace exporter at ug's login service on Linux; None removes both.
+    """Point Codex desktop's trace exporter at ug's login service; None removes both.
 
     It goes in the Codex App settings, which a ``ug codex`` session's own ``-c`` exporter outranks.
     Returns whether that file changed; setup problems only warn.
     """
-    if current_os() != OS.LINUX or is_dry_run():
+    if current_os() == OS.OTHER or is_dry_run():
         return False
     try:
         doc = _read_app_config()
@@ -724,8 +858,10 @@ def _sync_desktop_tracing(workspace: str | None) -> bool:
             raise RuntimeError(f"otel in {_legacy_config_path()} is not a table")
         # ug's own unit records the port, so only an exporter at that port is ug's.
         unit = _otel_service_path()
-        unit_text = unit.read_text(encoding="utf-8") if _owned_otel_service(unit) else ""
+        unit_text = _read_otel_service(unit) if _owned_otel_service(unit) else ""
         match = re.search(r" --port (\d+)$", unit_text, re.MULTILINE)
+        # A plist puts the port in its own <string>; task XML ends it with </Arguments>.
+        match = match or re.search(r"--port\D+(\d+)", unit_text)
         port = int(match[1]) if match else None
         ours = port is not None and otel.get("trace_exporter") == _desktop_trace_exporter(port)
         if workspace is None:
@@ -763,13 +899,7 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
     if path is not None and path.name == CODEX_REQUIREMENTS_FILE:
         compose = _as_requirements(compose)
     if managed_settings_skipped():
-        check_skipped_managed_overrides(
-            path,
-            parser=_parse_managed_config,
-            compose=compose,
-            owned_paths=MANAGED_KEYS,
-            display="Codex",
-        )
+        # Opted out: trust whatever OS-managed file exists and leave it untouched.
         return
     if path is None:
         print_warning_err(
@@ -794,6 +924,7 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
     desired_doc = compose(existing)
     conflicts = managed_file_conflicts(managed_before, desired_doc, MANAGED_KEYS)
     if not managed_writes_allowed() and not conflicts:
+        warn_managed_write_skipped(path, managed_before, desired_doc)
         mark_managed_file_verified(state, "codex", path, scope="local-compatible")
         return
     try:
@@ -945,7 +1076,12 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
     platform or a non-interactive run), so the caller routes those servers to the user-scope
     registration instead."""
     path = codex_managed_config_path()
-    if path is None or path.name == CODEX_REQUIREMENTS_FILE or not managed_writes_allowed():
+    if (
+        path is None
+        or path.name == CODEX_REQUIREMENTS_FILE
+        or managed_settings_skipped()
+        or not managed_writes_allowed()
+    ):
         return False
     if path.is_symlink():
         raise RuntimeError(
@@ -1091,7 +1227,19 @@ def _export_launch_routing_headers(config: dict) -> None:
 def _render_launch_overlay(*args, **kwargs) -> dict:
     overlay = render_overlay(*args, **kwargs)
     _export_launch_routing_headers(overlay)
+    _add_launch_headers(overlay)
     return overlay
+
+
+def _add_launch_headers(config: dict) -> None:
+    """Add this launch's ``ug --header`` / ``UG_HEADERS`` to the provider's ``-c`` headers.
+
+    A header ug or the admin already sends keeps its value. The headers reach only this launch's
+    ``-c`` flags, never a config file."""
+    present = {name.casefold() for name in _managed_provider_headers(config) or {}}
+    for name, value in ug_headers().items():
+        if name.casefold() not in present:
+            _set_routing_header(config, name, value)
 
 
 def _set_routing_header(config: dict, header: str, value: str | None) -> None:
@@ -1227,17 +1375,7 @@ def _launch_token(state: dict, workspace: str, *, force_refresh: bool = False) -
     """The token Codex authenticates with: a custom-OAuth client token when configured,
     else the CLI profile. The single auth-selection point — the OTLP proxy's token
     provider (_otel_token_provider) delegates here so both mint the same principal."""
-    custom_oauth = state.get("custom_oauth")
-    if isinstance(custom_oauth, dict):
-        return get_custom_client_token(
-            workspace,
-            custom_oauth["client_id"],
-            custom_oauth["redirect_url"],
-            scopes=custom_oauth["scopes"],
-            profile=custom_oauth.get("profile"),
-            force_refresh=force_refresh,
-        )
-    return get_databricks_token(workspace, state.get("profile"), force_refresh=force_refresh)
+    return launch_token(state, workspace, force_refresh=force_refresh)
 
 
 def _tool_args_select_model(tool_args: list[str]) -> bool:
@@ -1400,6 +1538,7 @@ def launch(
     _set_provider_header(profile_doc, provider)
     _set_parent_schema_header(profile_doc, parent_schema if not provider else None)
     _export_launch_routing_headers(profile_doc)
+    _add_launch_headers(profile_doc)
     updating = tool_args[:1] == ["update"]
     if updating and _is_ucode_catalog_reference(profile_doc.get("model_catalog_json")):
         profile_doc.pop("model_catalog_json")

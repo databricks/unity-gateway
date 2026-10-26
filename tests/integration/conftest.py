@@ -27,7 +27,8 @@ def pytest_collection_modifyitems(config, items):
         if "monkeypatch" in item.fixturenames:
             raise pytest.UsageError("Use the integration runner; unit fixtures were inherited.")
         if any(
-            item.get_closest_marker(a) and a not in agents for a in ("claude", "codex", "opencode")
+            item.get_closest_marker(a) and a not in agents
+            for a in ("claude", "codex", "opencode", "copilot")
         ):
             deselected.append(item)
         else:
@@ -143,25 +144,33 @@ def session(request, installed_binary):
         try:
             yield user
         finally:
-            # Restore machine-level settings through the same public CLI that
-            # created them. A later fresh-home test must not inherit this setup.
-            if any(
-                (user.home / ".ucode" / name).is_file()
-                for name in ("state.json", "managed-backups/manifest.json")
-            ):
-                if os.name == "posix":
-                    # Import PTY support only when a live-capable run actually
-                    # created state that teardown must revert.
-                    from utils.terminal import TerminalProcess
+            try:
+                # Restore machine-level settings through the same public CLI that
+                # created them. A later fresh-home test must not inherit this setup.
+                if any(
+                    (user.home / ".ucode" / name).is_file()
+                    for name in ("state.json", "managed-backups/manifest.json")
+                ):
+                    if os.name == "posix":
+                        # Import PTY support only when a live-capable run actually
+                        # created state that teardown must revert.
+                        from utils.terminal import TerminalProcess
 
-                    with TerminalProcess(
-                        user, "ug", [str(user.binary), "revert"], "cleanup-revert"
-                    ) as terminal:
-                        terminal.finish()
-                else:
-                    # Installation checks are noninteractive; if a regression
-                    # creates state, still clean it through the installed CLI.
-                    user.run("revert", timeout=120)
+                        with TerminalProcess(
+                            user, "ug", [str(user.binary), "revert"], "cleanup-revert"
+                        ) as terminal:
+                            terminal.finish()
+                    else:
+                        # Installation checks are noninteractive; if a regression
+                        # creates state, still clean it through the installed CLI.
+                        user.run("revert", timeout=120)
+            finally:
+                # Backstop: `ug revert` removes the workspace policy, but it can fail or be
+                # skipped, and a later fresh-home case or the next run's preflight must start clean.
+                policy = Path("/etc/unitygateway/managed-settings.json")
+                sudo = shutil.which("sudo")
+                if os.name == "posix" and policy.exists() and sudo:
+                    user.run("-n", "rm", "-f", str(policy), binary=Path(sudo), timeout=30, ok=False)
 
 
 @pytest.fixture
@@ -181,6 +190,12 @@ def claude_provider():
 @pytest.fixture(scope="session")
 def claude_relayed_provider():
     return os.environ["UG_INTEGRATION_CLAUDE_RELAYED_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def claude_bedrock_provider():
+    # A Bedrock MPS that restricts its allowed models to an explicit set (Sonnet + Haiku, no Opus).
+    return os.environ["UG_INTEGRATION_CLAUDE_BEDROCK_PROVIDER"]
 
 
 @pytest.fixture(scope="session")
@@ -222,6 +237,26 @@ def codex_provider():
 @pytest.fixture(scope="session")
 def codex_provider_model():
     return os.environ["UG_INTEGRATION_CODEX_PROVIDER_MODEL"]
+
+
+@pytest.fixture(scope="session")
+def codex_azure_provider():
+    return os.environ["UG_INTEGRATION_CODEX_AZURE_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def codex_azure_provider_model():
+    return os.environ["UG_INTEGRATION_CODEX_AZURE_PROVIDER_MODEL"]
+
+
+@pytest.fixture(scope="session")
+def codex_foundry_provider():
+    return os.environ["UG_INTEGRATION_CODEX_FOUNDRY_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def codex_foundry_provider_model():
+    return os.environ["UG_INTEGRATION_CODEX_FOUNDRY_PROVIDER_MODEL"]
 
 
 @pytest.fixture(scope="session")

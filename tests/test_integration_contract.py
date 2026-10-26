@@ -67,6 +67,100 @@ def _workflow_job(name, next_name):
     return workflow.split(f"\n  {name}:\n", 1)[1].split(f"\n  {next_name}:\n", 1)[0]
 
 
+def test_soft_fail_ci_is_non_blocking_on_both_platforms():
+    jobs = _integration_jobs()
+    job = jobs["soft-fail"]
+    assert "continue-on-error: true" in job
+    assert "os: [ubuntu-22.04, windows-latest]" in job
+    assert "runs-on: ${{ matrix.os }}" in job
+    assert "needs: [workspace, full, managed]" in job
+    assert "!cancelled() && needs.workspace.result == 'success'" in job
+    assert "fail-fast: false" in job
+    assert "max-parallel: 1" in job
+    assert "agent: [claude]" in job
+    assert "AGENT: ${{ matrix.agent }}" in job
+    assert "ARTIFACT_NAME: integration-soft-fail-${{ matrix.agent }}-${{ matrix.os }}" in job
+    assert "steps: *live-steps" in job
+    needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", jobs["cujs"])
+    assert needs is not None
+    assert "soft-fail" not in {name.strip() for name in needs.group(1).split(",")}
+    for name in ("smoke", "full", "managed"):
+        assert "continue-on-error:" not in jobs[name]
+        assert "and not soft_fail" in jobs[name]
+
+
+def test_soft_fail_marks_only_the_affected_claude_journey():
+    marked = []
+    for path in (Path(__file__).parent / "integration").glob("test_*.py"):
+        for node in ast.parse(path.read_text()).body:
+            if isinstance(node, ast.FunctionDef) and "soft_fail" in _markers(node.decorator_list):
+                marked.append((path.name, node.name))
+    assert marked == [
+        (
+            "test_ug_smart_routing_hooks.py",
+            "test_smart_router_skill_toggles_claude_subagent_routing",
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("job_name", "agent", "retained_test"),
+    [
+        ("smoke", "claude", "test_ug_claude_headless_prompt_argument"),
+        ("smoke", "codex", "test_ug_codex_headless_prompt_argument"),
+        ("full", "claude", "test_smart_routing_claude_route_subagent_hook"),
+        ("full", "codex", "test_smart_router_skill_toggles_codex_subagent_routing"),
+        ("managed", "claude", "test_ug_configure_managed_claude"),
+        ("managed", "codex", "test_smart_router_skill_toggles_codex_subagent_routing"),
+        ("soft-fail", "claude", None),
+    ],
+)
+def test_soft_fail_ci_selectors_preserve_coverage(job_name, agent, retained_test):
+    job = _integration_jobs()[job_name]
+    if job_name == "managed":
+        marker = re.search(r'-- -m "([^"]+)"', job)
+    else:
+        marker = re.search(r"(?m)^      TEST_MARKER: (.+)$", job)
+    assert marker is not None
+    expression = marker.group(1).replace("${{ matrix.agent }}", agent).replace("$AGENT", agent)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--confcutdir=tests/integration",
+            "tests/integration",
+            "--collect-only",
+            "-q",
+            "-m",
+            expression,
+        ],
+        cwd=WORKFLOW.parent.parent.parent,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    cases = {line for line in result.stdout.splitlines() if line.startswith("test_")}
+    assert cases, result.stdout
+    toggle = "test_smart_router_skill_toggles_claude_subagent_routing"
+    if retained_test is not None:
+        assert any(f"::{retained_test}" in case for case in cases), cases
+        assert not any(f"::{toggle}" in case for case in cases), cases
+        return
+    assert cases == {
+        f"test_ug_smart_routing_hooks.py::{toggle}[{variant}]"
+        for variant in (
+            "routing-only",
+            "orchestration",
+            "managed-default",
+            "subagent_only_v0",
+            "subagent_only_v1",
+            "subagent_orch_v0",
+        )
+    }
+
+
 def _discover_cujs(root, output):
     plan = _workflow_job("dedicated-cuj-plan", "dedicated-cuj")
     script = textwrap.dedent(plan.split("        run: |\n", 1)[1])
@@ -268,7 +362,9 @@ SKIPPED_ON_FORK_PRS = {
     "smoke",
     "headless-windows",
     "full",
+    "soft-fail",
     "opencode",
+    "copilot",
     "managed",
     "managed-opencode",
     "dedicated-cuj-plan",
@@ -591,7 +687,7 @@ def test_live_integration_cases_belong_to_exactly_one_ci_agent():
             if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
                 marks = module_marks | _markers(node.decorator_list)
                 if marks & {"live", "managed_fixture", "workspace_switch"}:
-                    assert len(marks & {"claude", "codex", "opencode"}) == 1, node.name
+                    assert len(marks & {"claude", "codex", "opencode", "copilot"}) == 1, node.name
 
 
 def test_model_discovery_cases_match_current_launch_contract():

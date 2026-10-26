@@ -7,7 +7,7 @@ and tracing are disabled. Tests neither provision nor validate fixture definitio
 
 | Service under `ug_e2e.models` | Claude Code | Codex |
 | --- | --- | --- |
-| `gpt_luna` | Excluded | Included; default |
+| `gpt_luna` | Included | Included; default |
 | `claude_haiku` | Included | Excluded |
 | `claude_sonnet` | Included; default | Excluded |
 | `kimi` | Included | Included |
@@ -17,10 +17,11 @@ Independent gateway catalogs, Codex's native model/list, and exact TUI picker in
 Claude's built-in Default action is not a catalog entry; banners use catalog display names,
 while gateway inference checks require the exact service/alias.
 Compatible `ug_e2e.other_models.claude_decoy` and `codex_decoy` must be discoverable in their
-own schema but absent from the scoped picker. Claude discovery aliases must be enabled;
-Kimi uses `anthropic-aigw-<8-character SHA-256 prefix>-<service FQN>`.
+own schema but absent from the scoped picker. Claude's decoy catalog includes both decoys.
+Claude discovery aliases must be enabled;
+Kimi and GPT Luna use `anthropic-aigw-<8-character SHA-256 prefix>-<service FQN>`.
 
-Ten independently configured cases cover picker discovery, default launches, and explicit models.
+Eleven independently configured cases cover picker discovery, default launches, and explicit models.
 Picker cases dismiss the menu without changing selection, then complete a task on the default.
 Separate cases cover bare `ug`, `ug claude`, and `ug codex` TUI first tasks and Claude print/Codex
 exec defaults. Each additional compatible model gets its own headless task case.
@@ -62,12 +63,20 @@ uv run pytest -c tests/e2e_cuj/pytest.ini --confcutdir=tests/e2e_cuj \
   --collect-only tests/e2e_cuj
 ```
 
+CUJ1 and CUJ2's configuration cases read their dedicated workspaces' published CodingAgentConfig
+without `UCODE_MANAGED_CONFIG_STUB`. They enable Claude Desktop's isolated Linux profile path
+before running installed `ug configure`, then verify the fixed profile uses either the published
+Databricks-hosted Claude models or the published Anthropic provider service and selected model.
+They do not launch Desktop or execute the credential helper.
+
 ## Smart-routing CUJ
 
 `test_cuj4_smart_routing.py` uses its own read-only workspace with managed smart routing enabled.
-It runs the original routed/explicit-model journeys and six
+It runs the managed-default and explicit-model journeys and six
 `SMART_ROUTER_CONFIG_VERSION` cases using the shared version constants; each launches Claude
-and Codex once.
+and Codex once. With no selector, managed smart routing leaves the first prompt unrouted: the
+admin's default model completes the file task, no `routes:select` request is sent, and the
+Smart Router Orchestrator context reaches that inference request.
 The CUJ derives routing and orchestration assertions from each agent's resolved preset flags.
 Component tests independently verify the preset values. The resulting expectations are:
 

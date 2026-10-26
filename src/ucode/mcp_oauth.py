@@ -6,12 +6,8 @@ registers the service as a **direct HTTP** MCP server, the agent itself drives
 that login via OAuth against the workspace ``/oidc`` — and `/oidc` has no dynamic
 client registration, so the agent must present a **pre-registered public client**.
 
-``claude-code`` is that published client for Claude Code: it has the loopback
-``/callback`` redirect Claude Code uses registered (``databricks-cli`` does not,
-so Claude's direct-HTTP OAuth is rejected against it). Where a workspace has
-``claude-code``, ucode registers these services as direct HTTP so ``/mcp`` shows
-"needs authentication" and Authenticate drives the login natively. Not every
-workspace has it yet, so we probe — and cache the answer per workspace.
+Claude Code uses its URL client ID where published. We probe each candidate and
+cache the result per workspace.
 """
 
 from __future__ import annotations
@@ -22,20 +18,20 @@ import urllib.request
 from urllib.parse import urlencode
 
 from ucode.config_io import APP_DIR, read_json_safe, write_json_file
+from ucode.ug_headers import ug_headers
 
-# Published public OAuth client Claude Code authenticates with. Any loopback
-# callback port works — `/oidc` strips the port when matching loopback redirects
-# (RFC 8252 §8.4) — but the redirect *path* (`/callback`) must be registered,
-# which this client has and `databricks-cli` does not.
-CLAUDE_CODE_OAUTH_CLIENT_ID = "claude-code"
+# Claude Code's published URL client ID (Client ID Metadata Document). The
+# workspace must recognize it before ug registers it; merely serving the
+# document at this URL does not make an OAuth client available on every workspace.
+CLAUDE_CODE_CIMD_CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata"
+
 MCP_OAUTH_CALLBACK_PORT = 3118
 
 # Published public OAuth client Cursor authenticates with for OAuth MCP servers.
 # Cursor's `mcp.json` accepts a pre-registered `auth.CLIENT_ID` (no dynamic client
 # registration, which `/oidc` lacks) and drives the login to Cursor's fixed loopback
 # redirect `http://localhost:8787/callback`. `/oidc` matches loopback redirects by
-# path (RFC 8252 §8.4), so the registered `/callback` path is what matters — the
-# same requirement `claude-code` satisfies.
+# path (RFC 8252 §8.4), so the registered `/callback` path is required.
 CURSOR_OAUTH_CLIENT_ID = "cursor-desktop"
 
 # Published public OAuth client Codex authenticates with for OAuth MCP servers
@@ -43,11 +39,12 @@ CURSOR_OAUTH_CLIENT_ID = "cursor-desktop"
 # (`/callback/<hash>`) that can't be pre-registered on a shared app, so `/oidc` gates
 # it behind the `enableCodexLoopbackRedirectExemption` SAFE flag: for this client on a
 # loopback host it accepts any path (RFC 8252 already waives the port; the flag waives
-# the path). `databricks-cli` does not get that exemption.
+# the path). The ChatGPT/Codex CIMD document lists only ChatGPT's hosted redirect,
+# so it cannot replace this client for Codex CLI's loopback callback.
 CODEX_CLI_OAUTH_CLIENT_ID = "codex-cli"
 
-# Published apps rarely appear/disappear, so a per-workspace probe result is good
-# for a while; delete the cache file to force a re-probe.
+# A published app stays available, but an absent app may be published at any time.
+# Cache positive results only, so the next run detects a newly published app.
 _CACHE_PATH = APP_DIR / "oauth_client_cache.json"
 _CACHE_TTL_SECONDS = 7 * 24 * 3600
 
@@ -81,7 +78,7 @@ def _probe_oauth_client(workspace: str, client_id: str) -> bool | None:
         f"{workspace.rstrip('/')}/oidc/v1/token",
         data=body,
         method="POST",
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers={**ug_headers(), "Content-Type": "application/x-www-form-urlencoded"},
     )
     try:
         urllib.request.urlopen(request, timeout=10)  # noqa: S310 - fixed https workspace URL
@@ -113,31 +110,46 @@ def oauth_client_available(workspace: str, client_id: str) -> bool:
     """Whether the workspace has ``client_id`` as a registered OAuth app, cached
     per (workspace, client_id).
 
-    Cached in ``APP_DIR`` with a weekly TTL so ``ug mcp add`` doesn't probe every
-    run. Negative results are cached too (workspaces that don't have it yet)."""
+    Positive results are cached in ``APP_DIR`` with a weekly TTL. Negative and
+    inconclusive results are re-probed on the next run so a newly published app
+    becomes usable without waiting for a cache expiration."""
     ws = workspace.rstrip("/")
     cache = _read_cache()
     entry = cache.get(ws, {}).get(client_id)
-    if entry and (time.time() - entry.get("checked_at", 0)) < _CACHE_TTL_SECONDS:
-        return bool(entry.get("available"))
+    if (
+        entry
+        and entry.get("available")
+        and (time.time() - entry.get("checked_at", 0)) < _CACHE_TTL_SECONDS
+    ):
+        return True
     available = _probe_oauth_client(ws, client_id)
     if available is None:
         # Inconclusive probe (transient status / network error): fall back to the
         # stdio proxy and do NOT cache, so a transient failure isn't sticky for the
         # TTL — we re-probe on the next run.
         return False
-    cache.setdefault(ws, {})[client_id] = {
-        "available": available,
-        "checked_at": time.time(),
-    }
-    _write_cache(cache)
+    if available:
+        cache.setdefault(ws, {})[client_id] = {
+            "available": True,
+            "checked_at": time.time(),
+        }
+        _write_cache(cache)
     return available
 
 
+def first_available_oauth_client(workspace: str, client_ids: tuple[str, ...]) -> str | None:
+    """Choose the first published client for this workspace, preserving fallback order."""
+    return next(
+        (client_id for client_id in client_ids if oauth_client_available(workspace, client_id)),
+        None,
+    )
+
+
 __all__ = [
-    "CLAUDE_CODE_OAUTH_CLIENT_ID",
+    "CLAUDE_CODE_CIMD_CLIENT_ID",
     "CURSOR_OAUTH_CLIENT_ID",
     "CODEX_CLI_OAUTH_CLIENT_ID",
     "MCP_OAUTH_CALLBACK_PORT",
     "oauth_client_available",
+    "first_available_oauth_client",
 ]

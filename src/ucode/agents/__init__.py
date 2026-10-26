@@ -11,7 +11,6 @@ below and to `TOOL_ALIASES` if needed.
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -26,8 +25,9 @@ from ucode.databricks import (
     map_claude_family_models,
     resolve_provider_service,
 )
+from ucode.env import env_bool
 from ucode.managed_config import refresh_managed_config
-from ucode.managed_files import managed_write_batch
+from ucode.managed_files import config_scope, managed_write_batch
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import get_model_location, get_provider_service, load_state, save_state
 from ucode.telemetry import agent_version
@@ -87,7 +87,6 @@ _NATIVE_UPGRADE_COMMANDS = {
 # Lets launchers that already own the agent install (e.g. Isaac) skip the
 # required-upgrade confirmation; declining it would only fail the launch.
 AUTO_UPGRADE_AGENT_ENV = "UG_AUTO_UPGRADE_AGENT"
-_TRUE_VALUES = {"1", "true", "yes", "on"}
 
 # ucode tool -> `databricks aitools` agent id. gemini/pi aren't supported.
 AITOOLS_AGENT_TOKENS = {
@@ -160,7 +159,7 @@ def _update_installed_tool_binary(tool: str, version: str | None = None) -> bool
 
 
 def _auto_upgrade_agent_enabled() -> bool:
-    return os.environ.get(AUTO_UPGRADE_AGENT_ENV, "").strip().lower() in _TRUE_VALUES
+    return env_bool(AUTO_UPGRADE_AGENT_ENV)
 
 
 def _minimum_version_error(tool: str) -> str | None:
@@ -415,6 +414,39 @@ def resolve_gemini_provider_model(
     )
 
 
+def refuse_user_scope_over_managed_files(tools: list[str]) -> None:
+    """Run by ``ug configure`` before any agent is configured; launches use the files present."""
+    if config_scope() != "user":
+        return
+    for tool in tools:
+        if tool == AGENT_CLAUDE:
+            display, path = "Claude Code", claude.managed_settings_path()
+        elif tool == AGENT_CODEX:
+            display, path = "Codex", codex.codex_managed_config_path()
+        else:
+            continue
+        if path is not None and path.exists():
+            raise RuntimeError(
+                f"`ug configure --user` can't be used while {display} managed settings exist at "
+                f"{path}; they take precedence over user settings. Run `ug revert` if ug wrote "
+                "them, ask your administrator to remove them, or use `ug configure --global`."
+            )
+
+
+def refuse_user_scope_over_managed_config(workspace: str | None, managed: dict | None) -> None:
+    """Run by ``ug configure`` right after its forced managed-config read, before any agent is set up.
+
+    A workspace that publishes a managed config must install it machine-wide, so ``--user`` cannot
+    apply. ``managed`` is the manifest from that read; None means no managed config is present.
+    """
+    if config_scope() != "user" or managed is None:
+        return
+    raise RuntimeError(
+        f"`ug configure --user` can't be used with {workspace}: it publishes a managed config, "
+        "which must be installed machine-wide. Use `ug configure --global` (the default)."
+    )
+
+
 def configure_tool(
     tool: str,
     state: dict,
@@ -450,6 +482,11 @@ def configure_tool(
             parent_schema=parent_schema,
             picker_catalog=picker_catalog,
         )
+    elif tool == "copilot":
+        # Under a model provider service, Copilot starts on one of the service's models, chosen at launch.
+        if not model and not provider:
+            raise RuntimeError(f"A {tool} model must be selected before configuration.")
+        result = copilot.write_tool_config(state, model)
     else:
         # Every tool in this branch needs a model — including gemini under a provider,
         # which still pins the service's target model in the URL.
@@ -457,15 +494,13 @@ def configure_tool(
             raise RuntimeError(f"A {tool} model must be selected before configuration.")
         if tool == "gemini":
             result = gemini.write_tool_config(state, model, provider=provider)
-        elif tool == "copilot":
-            result = copilot.write_tool_config(state, model)
         elif tool == "pi":
             result = pi.write_tool_config(state, model)
         elif tool == "kilo":
             result = kilo.write_tool_config(state, model)
         else:
             result = opencode.write_tool_config(state, model)
-    # gemini/opencode/copilot/pi return (state, token); codex/claude return state
+    # gemini/opencode/kilo/pi return (state, token); codex/claude/copilot return state
     if isinstance(result, tuple):
         return result[0]
     return result
@@ -511,7 +546,7 @@ def check_gateway_endpoint(state: dict, tool: str) -> bool:
     if tool == "gemini":
         return bool(state.get("gemini_models"))
     if tool == "copilot":
-        return bool(state.get("claude_models")) or bool(state.get("codex_models"))
+        return bool(copilot.copilot_catalog(state))
     if tool == "pi":
         return (
             bool(state.get("claude_models"))
@@ -527,7 +562,7 @@ _TOOL_DISCOVERY_SOURCES: dict[str, tuple[str, ...]] = {
     "kilo": ("claude", "gemini", "oss"),
     "codex": ("codex",),
     "gemini": ("gemini",),
-    "copilot": ("claude", "codex"),
+    "copilot": ("copilot",),
     "pi": ("claude", "codex", "gemini"),
 }
 

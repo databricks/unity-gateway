@@ -4,17 +4,20 @@ from __future__ import annotations
 
 import json
 import os
+import plistlib
 import re
 import sys
 from pathlib import Path
+from subprocess import CalledProcessError
 from unittest.mock import Mock
 
 import pytest
 
-from ucode import gateway_proxy, managed_files
+from ucode import custom_oauth, gateway_proxy, managed_files
 from ucode.agents import LaunchOptions, codex
 from ucode.config_io import read_toml_safe
 from ucode.smart_routing import codex_routing
+from ucode.telemetry import client_platform
 
 WS = "https://example.databricks.com"
 
@@ -214,7 +217,7 @@ class TestRenderOverlay:
         headers = overlay["model_providers"]["Databricks"]["http_headers"]
         # Admin wins on a case-insensitive collision, leaving no duplicate spelling of the header.
         assert headers == {
-            "User-Agent": "ucode/0.1.0 codex/0.123.0",
+            "User-Agent": f"ucode/0.1.0 codex/0.123.0 {client_platform()}",
             "databricks-model-provider-service": "admin.override",
         }
 
@@ -225,7 +228,10 @@ class TestRenderOverlayUserAgent:
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.123.0")
         overlay = codex.render_overlay(WS)
         provider = overlay["model_providers"]["Databricks"]
-        assert provider["http_headers"]["User-Agent"] == "ucode/0.1.0 codex/0.123.0"
+        assert (
+            provider["http_headers"]["User-Agent"]
+            == f"ucode/0.1.0 codex/0.123.0 {client_platform()}"
+        )
 
     def test_managed_keys_include_http_headers(self):
         # Revert must clean up the new key.
@@ -787,6 +793,8 @@ class TestCodexRevertLegacySharedConfig:
         shared_path.parent.mkdir()
         catalog_path = codex.CODEX_MODEL_CATALOG_PATH
         catalog_path.write_text("{}", encoding="utf-8")
+        launch_catalog = codex._model_catalog_path("https://example.com", "provider")
+        launch_catalog.write_text("{}", encoding="utf-8")
         shared_path.write_text(
             "model_catalog_json = "
             + json.dumps(str(catalog_path))
@@ -797,6 +805,7 @@ class TestCodexRevertLegacySharedConfig:
 
         assert read_toml_safe(shared_path) == {"personality": "friendly"}
         assert not catalog_path.exists()
+        assert not launch_catalog.exists()
         assert "codex app-server daemon restart" in " ".join(capsys.readouterr().err.split())
 
 
@@ -996,7 +1005,7 @@ class TestCodexLaunch:
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.134.0")
         monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: launches.append(argv))
         monkeypatch.setattr(
-            codex,
+            custom_oauth,
             "get_databricks_token",
             lambda workspace, profile=None, force_refresh=False: "tok",
         )
@@ -1061,7 +1070,7 @@ class TestCodexLaunch:
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         launches = self._patch(tmp_path, monkeypatch)
         monkeypatch.setattr(
-            codex,
+            custom_oauth,
             "get_databricks_token",
             lambda workspace, profile=None, force_refresh=False: "fresh-token",
         )
@@ -1480,13 +1489,45 @@ class TestCodexLaunch:
         )
         assert "Databricks-Model-Provider-Service" not in provider_arg
 
+    def test_launch_adds_ug_headers_without_writing_the_profile(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        profile_path = tmp_path / "ucode.config.toml"
+        before = profile_path.read_text(encoding="utf-8")
+        monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: testenv://liteswap/a")
+
+        codex.launch({"workspace": WS}, [], options=LaunchOptions())
+
+        provider_arg = next(
+            arg for arg in launches[0] if arg.startswith("model_providers.Databricks=")
+        )
+        assert "x-databricks-traffic-id" in provider_arg
+        assert "testenv://liteswap/a" in provider_arg
+        assert profile_path.read_text(encoding="utf-8") == before
+
+    def test_smart_routing_overlay_adds_ug_headers_keeping_existing_ones(self, monkeypatch):
+        monkeypatch.setenv("UG_HEADERS", "x-team: other\nX-New: 1")
+        monkeypatch.setattr(
+            codex,
+            "render_overlay",
+            lambda *a, **k: {
+                "model_providers": {"Databricks": {"http_headers": {"X-Team": "eng"}}}
+            },
+        )
+
+        overlay = codex._render_launch_overlay(WS)
+
+        assert overlay["model_providers"]["Databricks"]["http_headers"] == {
+            "X-Team": "eng",
+            "X-New": "1",
+        }
+
     def test_provider_discovery_uses_custom_oauth_token(self, tmp_path, monkeypatch):
         self._patch(tmp_path, monkeypatch)
         catalog_path = tmp_path / "models.json"
         seen = {}
         monkeypatch.setattr(codex, "_model_catalog_path", lambda workspace, provider: catalog_path)
         monkeypatch.setattr(
-            codex,
+            custom_oauth,
             "get_databricks_token",
             lambda *args, **kwargs: pytest.fail("standard token used"),
         )
@@ -1497,7 +1538,7 @@ class TestCodexLaunch:
             seen["profile"] = profile
             return "custom-token"
 
-        monkeypatch.setattr(codex, "get_custom_client_token", custom_token)
+        monkeypatch.setattr(custom_oauth, "get_custom_client_token", custom_token)
 
         def fetch(workspace, token, **kwargs):
             seen.update(workspace=workspace, token=token, provider=kwargs["identifier"])
@@ -1649,7 +1690,7 @@ class TestCodexLaunch:
         monkeypatch.setattr(codex, "LEGACY_CODEX_BACKUP_PATH", tmp_path / "legacy-backup.toml")
         monkeypatch.setattr(codex, "agent_version", lambda binary: version)
         monkeypatch.setattr(codex, "save_state", lambda state: None)
-        monkeypatch.setattr(codex, "get_databricks_token", lambda *_args, **_kw: "tok")
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kw: "tok")
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         launches: list[list[str]] = []
         monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: launches.append(argv))
@@ -1677,7 +1718,7 @@ class TestCodexLaunch:
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.134.0")
         launches = []
         monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: launches.append(argv))
-        monkeypatch.setattr(codex, "get_databricks_token", lambda *_args, **_kw: "tok")
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kw: "tok")
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
 
         with pytest.raises(RuntimeError, match="ug configure --agents codex"):
@@ -1744,9 +1785,13 @@ class TestCodexManagedConfig:
         assert profile["model"] == "gpt-5"
         assert "env_http_headers" not in profile["model_providers"]["Databricks"]
 
-    def test_skip_env_bypasses_managed_config(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("opt_out", ["env", "user_scope"])
+    def test_skip_env_bypasses_managed_config(self, tmp_path, monkeypatch, opt_out):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)
-        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        if opt_out == "env":
+            monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        else:
+            managed_files.set_config_scope("user")
         # A privileged write must never be attempted when the developer opted out.
         monkeypatch.setattr(
             codex, "reconcile_managed_file", lambda *a, **kw: pytest.fail("must not write managed")
@@ -1758,9 +1803,28 @@ class TestCodexManagedConfig:
         assert read_toml_safe(config_path)["model_provider"] == "Databricks"
         assert not managed_path.exists()
 
-    def test_skip_env_errors_on_stale_managed_override(self, tmp_path, monkeypatch):
+    def test_skip_env_trusts_a_stale_managed_file(self, tmp_path, monkeypatch):
+        """The opt-out trusts whatever OS-managed file exists: no check, no write, no error."""
         config_path, managed_path = self._patch(tmp_path, monkeypatch)
-        # A managed file left from an earlier workspace still points at that workspace's gateway.
+        managed_path.parent.mkdir(parents=True, exist_ok=True)
+        stale = (
+            'model_provider = "Databricks"\n'
+            "[model_providers.Databricks]\n"
+            'base_url = "https://old-workspace.databricks.com/ai-gateway/openai/v1"\n'
+        )
+        managed_path.write_text(stale, encoding="utf-8")
+        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        monkeypatch.setattr(
+            codex, "reconcile_managed_file", lambda *a, **kw: pytest.fail("must not write managed")
+        )
+
+        codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+
+        assert config_path.exists()
+        assert managed_path.read_text(encoding="utf-8") == stale
+
+    def test_user_scope_launches_over_stale_managed_override(self, tmp_path, monkeypatch):
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
         managed_path.parent.mkdir(parents=True, exist_ok=True)
         managed_path.write_text(
             'model_provider = "Databricks"\n'
@@ -1768,21 +1832,12 @@ class TestCodexManagedConfig:
             'base_url = "https://old-workspace.databricks.com/ai-gateway/openai/v1"\n',
             encoding="utf-8",
         )
-        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
-        monkeypatch.setattr(
-            codex, "reconcile_managed_file", lambda *a, **kw: pytest.fail("must not write managed")
-        )
+        managed_files.set_config_scope("user")
 
-        # A stale override silently defeats the reconfigure, so launching must fail loudly.
-        with pytest.raises(RuntimeError) as excinfo:
-            codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+        codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
 
-        # The stale managed file is left in place and the user is told how to clear it.
-        assert managed_path.exists()
-        message = str(excinfo.value)
-        assert managed_files.SKIP_OS_SETTINGS_ENV in message
-        assert "stale" in message
-        assert "ug revert" in message
+        assert read_toml_safe(config_path)["model_provider"] == "Databricks"
+        assert "old-workspace" in managed_path.read_text(encoding="utf-8")
 
     def test_skip_env_no_error_without_stale_override(self, tmp_path, monkeypatch):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)
@@ -1917,7 +1972,10 @@ class TestCodexManagedConfig:
         assert managed_path.read_bytes() == before
         private = read_toml_safe(codex.CODEX_CONFIG_PATH)
         provider = private["model_providers"][codex.CODEX_MODEL_PROVIDER_NAME]
-        assert provider["http_headers"]["User-Agent"] == f"ucode/{ug_version} codex/{agent_version}"
+        assert (
+            provider["http_headers"]["User-Agent"]
+            == f"ucode/{ug_version} codex/{agent_version} {client_platform()}"
+        )
 
     def test_version_only_user_agent_change_is_not_a_noninteractive_conflict(
         self, tmp_path, monkeypatch
@@ -1948,7 +2006,7 @@ class TestCodexManagedConfig:
             "http_headers"
         ]
         assert headers["x-team"] == "eng-ml"
-        assert headers["User-Agent"].endswith(" codex/0.135.0")
+        assert headers["User-Agent"].endswith(f" codex/0.135.0 {client_platform()}")
 
     def test_provider_settings_stay_launch_scoped(self, tmp_path, monkeypatch):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)
@@ -2002,6 +2060,24 @@ class TestCodexManagedConfig:
         assert not managed_files.MANAGED_BACKUP_DIR.exists()
         assert state["managed_file_fingerprints"]["codex"]["scope"] == "local-compatible"
         assert codex.managed_config_is_current(state)
+
+    def test_headless_configure_warns_that_the_machine_file_was_not_updated(
+        self, tmp_path, monkeypatch
+    ):
+        managed_path, sudo_writes = self._sudo_counting_env(
+            tmp_path, monkeypatch, non_interactive=True
+        )
+        warnings: list[str] = []
+        monkeypatch.setattr(managed_files, "print_warning", warnings.append)
+
+        with managed_files.managed_write_batch(["Codex"]):
+            codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+
+        assert sudo_writes == []
+        assert not managed_path.exists()
+        assert f"{managed_path} wasn't updated because no admin privileges were detected." in (
+            warnings
+        )
 
     def test_noninteractive_repairs_conflicting_managed_config_without_prompting(
         self, tmp_path, monkeypatch
@@ -2143,6 +2219,131 @@ class TestCodexManagedConfig:
         assert codex.revert_legacy_shared_config() is True
         assert "otel" not in read_toml_safe(app_path)
         assert not unit_path.exists()
+
+    def test_desktop_tracing_launch_agent_lifecycle(self, tmp_path, monkeypatch):
+        self._sudo_counting_env(tmp_path, monkeypatch)
+        app_path = codex._legacy_config_path()
+        plist_path = codex._otel_service_path()
+        ug_path = str(tmp_path / "ug")
+        monkeypatch.setattr(codex, "current_os", lambda: managed_files.OS.MACOS)
+        monkeypatch.setattr(codex.os, "getuid", lambda: 501, raising=False)
+        monkeypatch.setattr(codex, "_allocate_otel_port", lambda: 43199)
+        monkeypatch.setattr(codex, "ug_binary", lambda: ug_path)
+        monkeypatch.setenv("PATH", "/opt/homebrew/bin")
+        for name in (
+            "DATABRICKS_CONFIG_FILE",
+            "DATABRICKS_AUTH_STORAGE",
+            "ENABLE_CUSTOM_OAUTH_FROM_CLI",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        target = f"gui/501/{codex.CODEX_OTEL_SERVICE_LABEL}"
+        loaded = False
+        commands = []
+
+        def launchctl(argv, **_kwargs):
+            nonlocal loaded
+            commands.append(argv[1:])
+            if argv[1] == "bootstrap":
+                loaded = True
+            elif argv[1] == "bootout":
+                loaded = False
+            elif not loaded:
+                raise CalledProcessError(113, argv, stderr="Could not find service")
+
+        monkeypatch.setattr(codex.subprocess_cross_os, "run", Mock(side_effect=launchctl))
+        tracing = {"workspace": WS, "codex_otel_tracing": True}
+
+        codex.write_tool_config(dict(tracing))
+        exporter = codex._otel_proxy_overlay("http://127.0.0.1:43199/v1/traces")["otel"]
+        assert read_toml_safe(app_path)["otel"] == exporter
+        assert plistlib.loads(plist_path.read_bytes()) == {
+            "Label": codex.CODEX_OTEL_SERVICE_LABEL,
+            "ProgramArguments": [ug_path, "otel-proxy", "--host", WS, "--port", "43199"],
+            "EnvironmentVariables": {"PATH": "/opt/homebrew/bin"},
+            "RunAtLoad": True,
+            "KeepAlive": {"SuccessfulExit": False},
+        }
+
+        codex.write_tool_config(dict(tracing))
+        newer = "https://newer.databricks.com"
+        codex.write_tool_config({**tracing, "workspace": newer})
+        assert plistlib.loads(plist_path.read_bytes())["ProgramArguments"][3:] == [
+            newer,
+            "--port",
+            "43199",
+        ]
+        codex.write_tool_config({"workspace": newer})
+        assert "otel" not in read_toml_safe(app_path)
+        assert not plist_path.exists()
+        # An unchanged launch leaves the loaded agent alone; a new plist needs a reload.
+        assert commands == [
+            ["print", target],
+            ["bootstrap", "gui/501", str(plist_path)],
+            ["print", target],
+            ["print", target],
+            ["bootout", target],
+            ["bootstrap", "gui/501", str(plist_path)],
+            ["bootout", target],
+        ]
+
+    def test_desktop_tracing_scheduled_task_lifecycle(self, tmp_path, monkeypatch):
+        self._sudo_counting_env(tmp_path, monkeypatch)
+        app_path = codex._legacy_config_path()
+        task_path = codex._otel_service_path()
+        pythonw = tmp_path / "Scripts" / "pythonw.exe"
+        pythonw.parent.mkdir()
+        pythonw.write_text("")
+        monkeypatch.setattr(codex, "current_os", lambda: managed_files.OS.WINDOWS)
+        monkeypatch.setattr(codex.sys, "executable", str(pythonw.with_name("python.exe")))
+        monkeypatch.setattr(codex, "_allocate_otel_port", lambda: 43199)
+        monkeypatch.setenv("USERDOMAIN", "CORP")
+        monkeypatch.setenv("USERNAME", "dev")
+        registered = running = False
+        verbs = []
+
+        def schtasks(argv, **_kwargs):
+            nonlocal registered, running
+            verb = argv[1]
+            verbs.append(verb)
+            assert argv[2:4] == ["/TN", codex.CODEX_OTEL_SERVICE_LABEL]
+            if verb == "/Create":
+                assert argv[4:] == ["/XML", str(task_path), "/F"]
+                registered = True
+            elif verb == "/Delete":
+                registered = running = False
+            elif not registered or (verb == "/End" and not running):
+                raise CalledProcessError(1, argv, stderr="ERROR:")
+            elif verb in ("/Run", "/End"):
+                running = verb == "/Run"
+
+        monkeypatch.setattr(codex.subprocess_cross_os, "run", Mock(side_effect=schtasks))
+        tracing = {"workspace": WS, "codex_otel_tracing": True}
+
+        codex.write_tool_config(dict(tracing))
+        exporter = codex._otel_proxy_overlay("http://127.0.0.1:43199/v1/traces")["otel"]
+        assert read_toml_safe(app_path)["otel"] == exporter
+        # schtasks reads the UTF-16 that Task Scheduler itself exports.
+        assert task_path.read_bytes().startswith((b"\xff\xfe", b"\xfe\xff"))
+        task = task_path.read_text(encoding="utf-16")
+        assert f"<Command>{pythonw}</Command>" in task
+        assert f"<Arguments>-m ucode.cli otel-proxy --host {WS} --port 43199</Arguments>" in task
+        assert "<UserId>CORP\\dev</UserId>" in task
+
+        codex.write_tool_config(dict(tracing))
+        newer = "https://newer.databricks.com"
+        codex.write_tool_config({**tracing, "workspace": newer})
+        assert f"--host {newer} --port 43199</Arguments>" in task_path.read_text(encoding="utf-16")
+        codex.write_tool_config({"workspace": newer})
+        assert "otel" not in read_toml_safe(app_path)
+        assert not task_path.exists()
+        assert not registered
+        # IgnoreNew makes /Run a no-op for a running proxy; a new definition ends the old one.
+        assert verbs == [
+            *["/End", "/Create", "/Run"],
+            *["/Query", "/Run"],
+            *["/End", "/Create", "/Run"],
+            *["/End", "/Delete"],
+        ]
 
 
 class TestWriteConfigBackup:
@@ -2296,6 +2497,20 @@ class TestCodexReconcileManagedMcp:
         )
         assert codex.reconcile_managed_mcp({}, {"s": codex.managed_mcp_entry(self.ARGV)}) is False
 
+    def test_user_scope_returns_false_without_touching_managed_file(self, monkeypatch):
+        monkeypatch.setattr(
+            codex, "codex_managed_config_path", lambda: Path("/etc/codex/managed_config.toml")
+        )
+        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(
+            codex, "read_managed_file", lambda path: pytest.fail("must not read managed")
+        )
+        monkeypatch.setattr(
+            codex, "reconcile_managed_file", lambda *a, **k: pytest.fail("must not write")
+        )
+        managed_files.set_config_scope("user")
+        assert codex.reconcile_managed_mcp({}, {"s": codex.managed_mcp_entry(self.ARGV)}) is False
+
     def test_preserves_prior_verification_scope(self, monkeypatch):
         # An MCP-only write must refresh the fingerprint without downgrading the model reconcile's
         # scope (e.g. local-compatible).
@@ -2345,7 +2560,7 @@ class TestCodexReadManagedMcpUrls:
 class TestOtelTokenProvider:
     def test_token_provider_uses_default_profile(self, monkeypatch):
         get_token = Mock(return_value="token")
-        monkeypatch.setattr(codex, "get_databricks_token", get_token)
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", get_token)
         provider = codex._otel_token_provider({"profile": "myprof"}, WS)
         assert provider(True) == "token"
         get_token.assert_called_once_with(WS, "myprof", force_refresh=True)
@@ -2353,8 +2568,8 @@ class TestOtelTokenProvider:
     def test_token_provider_uses_custom_oauth_when_configured(self, monkeypatch):
         get_custom_token = Mock(return_value="custom-token")
         get_default_token = Mock()
-        monkeypatch.setattr(codex, "get_custom_client_token", get_custom_token)
-        monkeypatch.setattr(codex, "get_databricks_token", get_default_token)
+        monkeypatch.setattr(custom_oauth, "get_custom_client_token", get_custom_token)
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", get_default_token)
         state = {
             "custom_oauth": {
                 "client_id": "cid",

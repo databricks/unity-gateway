@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import AsyncIterator
+from threading import Lock
 from types import ModuleType, TracebackType
 from typing import Protocol, Self
 
@@ -42,6 +43,8 @@ import anyio
 from anyio import to_thread
 from mcp.client.streamable_http import streamable_http_client
 from mcp.server.stdio import stdio_server
+from mcp.shared.message import SessionMessage
+from mcp.types import JSONRPCError, JSONRPCNotification, JSONRPCRequest, JSONRPCResponse
 
 from ucode.databricks import (
     ensure_pat_bearer,
@@ -49,10 +52,14 @@ from ucode.databricks import (
     mcp_service_needs_connection_login,
 )
 from ucode.mcp_connection_login import connection_from_url, run_connection_login
+from ucode.ug_headers import ug_headers
 
 # Exit code used when the proxy cannot continue. MCP clients surface a non-zero
 # exit far more usefully than a timeout, so bail out instead of hanging.
 AUTH_FAILURE_EXIT_CODE = 2
+CONNECTION_AUTH_REQUIRED_ERROR_CODE = -32006
+AUTHENTICATE_TOOL_NAME = "authenticate"
+TOOLS_REFRESH_TIMEOUT_SECONDS = 5.0
 
 
 def _httpx() -> ModuleType:
@@ -117,7 +124,64 @@ def _fail_fast(message: str) -> None:
     raise SystemExit(AUTH_FAILURE_EXIT_CODE)
 
 
-def _build_token_auth(url: str, workspace: str, profile: str | None, *, use_pat: bool = False):
+class _ConnectionLogin:
+    """Run automatic login once per proxy session; explicit login may retry."""
+
+    def __init__(
+        self,
+        url: str,
+        workspace: str,
+        profile: str | None,
+        *,
+        use_pat: bool = False,
+    ) -> None:
+        self.url = url
+        self.workspace = workspace
+        self.profile = profile
+        self.connection = None if use_pat else connection_from_url(url)
+        self._login_attempted = False
+        self._completed = False
+        self._lock = Lock()
+
+    def run_if_needed(self) -> bool:
+        """Run automatic connection login once, returning whether the connection is ready."""
+        return self._run_if_needed(check_service=True, retry=False)
+
+    def authenticate_or_confirm_ready(self) -> bool:
+        """Authenticate explicitly, allowing retry after a cancelled or failed login."""
+        return self._run_if_needed(check_service=False, retry=True)
+
+    def _run_if_needed(self, *, check_service: bool, retry: bool) -> bool:
+        with self._lock:
+            if self.connection is None:
+                return False
+            if self._completed:
+                return True
+            if check_service:
+                try:
+                    token = get_databricks_token(self.workspace, self.profile)
+                except RuntimeError:
+                    return False
+                if not mcp_service_needs_connection_login(self.workspace, token, self.connection):
+                    return False
+            if self._login_attempted and not retry:
+                return False
+            self._login_attempted = True
+            ok, detail = run_connection_login(self.url, self.workspace, profile=self.profile)
+            if not ok:
+                raise ProxyAuthError(f"connection login for '{self.connection}' failed: {detail}")
+            self._completed = True
+            return True
+
+
+def _build_token_auth(
+    url: str,
+    workspace: str,
+    profile: str | None,
+    *,
+    use_pat: bool = False,
+    connection_login: _ConnectionLogin | None = None,
+):
     """Build an httpx ``Auth`` that injects a fresh bearer and drives the
     per-connection login **lazily, on a 401** — not eagerly at startup.
 
@@ -126,8 +190,10 @@ def _build_token_auth(url: str, workspace: str, profile: str | None, *, use_pat:
     the gateway answers with an RFC 9728 ``401`` until the user holds the per-user
     connection credential. Rather than block startup logging in every configured
     server (which pops N browsers and stalls the agent's MCP startup), we let the
-    bridge come up immediately — ``tools/list`` needs no credential — and only
-    run ``databricks auth login --resource`` when a request actually gets a 401.
+    bridge come up immediately and only run
+    ``databricks auth login --resource`` when a request actually reports missing
+    connection authentication. JSON-RPC authentication errors are handled by the
+    bridge below because httpx auth only sees HTTP responses.
     So a browser opens only for a service you actually *use*, one at a time, and
     an already-signed-in service never prompts. The login runs at most once per
     session; PAT profiles have no connection OAuth to drive, so they never do it.
@@ -137,8 +203,9 @@ def _build_token_auth(url: str, workspace: str, profile: str | None, *, use_pat:
     ``async_auth_flow``, so the blocking login runs off the event loop."""
     httpx = _httpx()
     # PAT auth has no interactive OAuth to drive, so never treat it as connection-backed.
-    connection = None if use_pat else connection_from_url(url)
-    login = {"attempted": False}
+    connection_login = connection_login or _ConnectionLogin(
+        url, workspace, profile, use_pat=use_pat
+    )
 
     def _mint(request):
         # get_databricks_token honors the DATABRICKS_BEARER short-circuit and PAT
@@ -156,30 +223,7 @@ def _build_token_auth(url: str, workspace: str, profile: str | None, *, use_pat:
         # A 401 from a connection-backed service means the per-user credential is
         # missing. Only drive the login once per session — if it doesn't resolve
         # the 401, re-running it on every subsequent request would loop browsers.
-        return connection is not None and response.status_code == 401 and not login["attempted"]
-
-    def _connection_login_or_fail() -> bool:
-        """Drive the one-time connection sign-in for a 401. Returns whether a login was actually
-        performed, so the caller retries the request only then.
-
-        A 401 is only fixable by a connection sign-in when the service is actually connection-backed
-        (its UC connection uses per-user OAuth-U2M). A no-login service (e.g. system.ai.web_search)
-        that 401s has a bad Databricks token, not a missing connection credential — so don't open a
-        doomed connection-login browser it can't complete (AIGTWY-4856), and don't bother retrying.
-        Classified once, on the first 401; a token/lookup failure also skips the login."""
-        login["attempted"] = True
-        if connection is None:  # unreachable via _needs_connection_login; narrows for the checker
-            return False
-        try:
-            token = get_databricks_token(workspace, profile)
-        except RuntimeError:
-            return False
-        if not mcp_service_needs_connection_login(workspace, token, connection):
-            return False
-        ok, detail = run_connection_login(url, workspace, profile=profile)
-        if not ok:
-            raise ProxyAuthError(f"connection login for '{connection}' failed: {detail}")
-        return True
+        return response is not None and response.status_code == 401
 
     class _DatabricksTokenAuth(httpx.Auth):
         def sync_auth_flow(self, request):
@@ -197,7 +241,7 @@ def _build_token_auth(url: str, workspace: str, profile: str | None, *, use_pat:
                 return
             # Run the blocking browser login off the event loop so the bridge's
             # other pumps aren't starved while the user completes the sign-in.
-            if not await to_thread.run_sync(_connection_login_or_fail):
+            if not await to_thread.run_sync(connection_login.run_if_needed):
                 return
             _mint(request)
             yield request
@@ -205,41 +249,280 @@ def _build_token_auth(url: str, workspace: str, profile: str | None, *, use_pat:
     return _DatabricksTokenAuth()
 
 
-async def _pump[T](
-    source: _ReceiveStream[T],
-    dest: _SendStream[T],
-) -> None:
-    """Forward every message from ``source`` to ``dest``.
+class _McpBridge:
+    """Bridge MCP messages and recover connection authentication failures."""
 
-    The proxy is transport-level: it never inspects or rewrites MCP method
-    payloads, so new methods and capabilities pass through untouched."""
-    async with source, dest:
-        async for message in source:
-            await dest.send(message)
+    def __init__(self, connection_login: _ConnectionLogin) -> None:
+        self.connection_login = connection_login
+        self.pending_requests: dict[int | str, SessionMessage] = {}
+        self.retried_requests: set[int | str] = set()
+        self.authentication_required = False
+        self.authentication_completed = False
+        self._tools_refresh_waiters: list[anyio.Event] = []
 
+    def _authentication_tool(self) -> dict:
+        connection = self.connection_login.connection or "this service"
+        return {
+            "name": AUTHENTICATE_TOOL_NAME,
+            "description": (
+                f"Sign in to the Unity Gateway {connection} connection. Call this when the user "
+                "requests this service but its normal tools are unavailable. After sign-in, "
+                "immediately retry the user's original request in the same turn using the newly "
+                "available tools; do not ask the user to send another message."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        }
 
-async def _pump_upstream[T](
-    source: _ReceiveStream[T | Exception],
-    dest: _SendStream[T],
-) -> None:
-    """Forward upstream messages, failing if the transport closes first."""
-    async with source, dest:
-        async for message in source:
-            if isinstance(message, Exception):
-                detail = " ".join(str(message).split()) or type(message).__name__
-                raise ProxyTransportError(f"upstream MCP transport failed: {detail}") from message
-            await dest.send(message)
-    raise ProxyTransportError("upstream MCP transport closed unexpectedly")
+    def _authentication_tool_list_response(self, request_id: int | str) -> SessionMessage:
+        return SessionMessage(
+            JSONRPCResponse(
+                jsonrpc="2.0",
+                id=request_id,
+                result={"tools": [self._authentication_tool()]},
+            )
+        )
+
+    @staticmethod
+    def _with_tool_list_changes(
+        message: SessionMessage,
+        original: SessionMessage | None,
+    ) -> SessionMessage:
+        payload = message.message
+        request = original.message if original is not None else None
+        if (
+            not isinstance(payload, JSONRPCResponse)
+            or not isinstance(request, JSONRPCRequest)
+            or request.method != "initialize"
+        ):
+            return message
+
+        result = dict(payload.result)
+        capabilities = dict(result.get("capabilities") or {})
+        tools = dict(capabilities.get("tools") or {})
+        tools["listChanged"] = True
+        capabilities["tools"] = tools
+        result["capabilities"] = capabilities
+        return SessionMessage(
+            JSONRPCResponse(jsonrpc="2.0", id=payload.id, result=result),
+            metadata=message.metadata,
+        )
+
+    def _mark_tools_refreshed(self) -> None:
+        waiters, self._tools_refresh_waiters = self._tools_refresh_waiters, []
+        for waiter in waiters:
+            waiter.set()
+
+    async def _handle_authentication_tool(
+        self,
+        request_id: int | str,
+        client: _SendStream[SessionMessage],
+    ) -> None:
+        try:
+            authenticated = await to_thread.run_sync(
+                self.connection_login.authenticate_or_confirm_ready
+            )
+        except ProxyAuthError as exc:
+            result = {
+                "content": [{"type": "text", "text": str(exc)}],
+                "isError": True,
+            }
+        else:
+            if not authenticated:
+                result = {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Authentication did not complete. Retry this tool after sign-in.",
+                        }
+                    ],
+                    "isError": True,
+                }
+            else:
+                self.authentication_required = False
+                self.authentication_completed = True
+                refreshed = anyio.Event()
+                self._tools_refresh_waiters.append(refreshed)
+                await client.send(
+                    SessionMessage(
+                        JSONRPCNotification(
+                            jsonrpc="2.0",
+                            method="notifications/tools/list_changed",
+                        )
+                    )
+                )
+                with anyio.move_on_after(TOOLS_REFRESH_TIMEOUT_SECONDS) as scope:
+                    await refreshed.wait()
+                if scope.cancel_called:
+                    if refreshed in self._tools_refresh_waiters:
+                        self._tools_refresh_waiters.remove(refreshed)
+                    text = (
+                        "Authentication complete, but the tool list did not refresh before the "
+                        "timeout. Retry the user's original request now. If its tools are still "
+                        "unavailable, tell the user to start a new session."
+                    )
+                else:
+                    text = (
+                        "Authentication complete. Retry the user's original request now in this "
+                        "same turn using the newly available tools. Do not ask the user to send "
+                        "another message."
+                    )
+                result = {
+                    "content": [{"type": "text", "text": text}],
+                    "isError": False,
+                }
+
+        await client.send(
+            SessionMessage(JSONRPCResponse(jsonrpc="2.0", id=request_id, result=result))
+        )
+
+    async def _authenticate_and_retry(
+        self,
+        request_id: int | str,
+        original: SessionMessage,
+        auth_error: SessionMessage,
+        client: _SendStream[SessionMessage],
+        upstream: _SendStream[SessionMessage],
+    ) -> None:
+        try:
+            authenticated = await to_thread.run_sync(self.connection_login.run_if_needed)
+        except ProxyAuthError:
+            authenticated = False
+        if authenticated:
+            await upstream.send(original)
+            return
+        self.pending_requests.pop(request_id, None)
+        self.retried_requests.discard(request_id)
+        await client.send(auth_error)
+
+    async def pump_client(
+        self,
+        source: _ReceiveStream[SessionMessage | Exception],
+        dest: _SendStream[SessionMessage],
+        client: _SendStream[SessionMessage] | None = None,
+    ) -> None:
+        async with source, dest:
+            async with anyio.create_task_group() as tg:
+                async for message in source:
+                    if isinstance(message, Exception):
+                        detail = " ".join(str(message).split()) or type(message).__name__
+                        raise ProxyTransportError(
+                            f"client MCP transport failed: {detail}"
+                        ) from message
+                    payload = message.message
+                    if isinstance(payload, JSONRPCRequest):
+                        if (
+                            client is not None
+                            and self.authentication_required
+                            and payload.method == "tools/call"
+                            and isinstance(payload.params, dict)
+                            and payload.params.get("name") == AUTHENTICATE_TOOL_NAME
+                        ):
+                            tg.start_soon(
+                                self._handle_authentication_tool,
+                                payload.id,
+                                client,
+                            )
+                            continue
+                        self.pending_requests[payload.id] = message
+                    await dest.send(message)
+
+    async def pump_upstream(
+        self,
+        source: _ReceiveStream[SessionMessage | Exception],
+        dest: _SendStream[SessionMessage],
+        upstream: _SendStream[SessionMessage],
+    ) -> None:
+        async with source, dest:
+            async with anyio.create_task_group() as tg:
+                async for message in source:
+                    if isinstance(message, Exception):
+                        detail = " ".join(str(message).split()) or type(message).__name__
+                        raise ProxyTransportError(
+                            f"upstream MCP transport failed: {detail}"
+                        ) from message
+
+                    payload = message.message
+                    original = None
+                    if isinstance(payload, (JSONRPCResponse, JSONRPCError)):
+                        original = self.pending_requests.get(payload.id)
+                    if self.connection_login.connection is not None:
+                        message = self._with_tool_list_changes(message, original)
+                    payload = message.message
+                    if isinstance(payload, JSONRPCError):
+                        request_id = payload.id
+                        request = original.message if original is not None else None
+                        if (
+                            isinstance(request, JSONRPCRequest)
+                            and request_id is not None
+                            and request.method == "tools/list"
+                            and payload.error.code == CONNECTION_AUTH_REQUIRED_ERROR_CODE
+                            and self.connection_login.connection is not None
+                            and not self.authentication_completed
+                        ):
+                            self.authentication_required = True
+                            self.pending_requests.pop(request_id, None)
+                            self.retried_requests.discard(request_id)
+                            await dest.send(self._authentication_tool_list_response(request_id))
+                            continue
+                        if (
+                            isinstance(request, JSONRPCRequest)
+                            and request_id is not None
+                            and request.method == "tools/call"
+                            and request_id not in self.retried_requests
+                            and payload.error.code == CONNECTION_AUTH_REQUIRED_ERROR_CODE
+                            and self.connection_login.connection is not None
+                        ):
+                            self.retried_requests.add(request_id)
+                            tg.start_soon(
+                                self._authenticate_and_retry,
+                                request_id,
+                                original,
+                                message,
+                                dest,
+                                upstream,
+                            )
+                            continue
+
+                    tools_refreshed = False
+                    if isinstance(payload, JSONRPCResponse) and original is not None:
+                        request = original.message
+                        tools_refreshed = (
+                            isinstance(request, JSONRPCRequest)
+                            and request.method == "tools/list"
+                            and self.authentication_completed
+                        )
+                    if (
+                        isinstance(payload, (JSONRPCResponse, JSONRPCError))
+                        and payload.id is not None
+                    ):
+                        self.pending_requests.pop(payload.id, None)
+                        self.retried_requests.discard(payload.id)
+                    await dest.send(message)
+                    if tools_refreshed:
+                        self._mark_tools_refreshed()
+        raise ProxyTransportError("upstream MCP transport closed unexpectedly")
 
 
 async def _run(url: str, workspace: str, profile: str | None, use_pat: bool = False) -> None:
     httpx = _httpx()
-    auth = _build_token_auth(url, workspace, profile, use_pat=use_pat)
+    connection_login = _ConnectionLogin(url, workspace, profile, use_pat=use_pat)
+    auth = _build_token_auth(
+        url,
+        workspace,
+        profile,
+        use_pat=use_pat,
+        connection_login=connection_login,
+    )
     # 2.x-native shape: hand the transport a pre-built AsyncClient carrying our
     # per-request auth. Works on mcp 1.28+ and 2.x; `streamable_http_client`
     # yields a (read, write) pair in both.
     async with httpx.AsyncClient(
         auth=auth,
+        headers=ug_headers(),
         timeout=httpx.Timeout(
             connect=30.0,
             read=300.0,
@@ -254,9 +537,10 @@ async def _run(url: str, workspace: str, profile: str | None, use_pat: bool = Fa
             http_read, http_write = streams[0], streams[1]
             async with stdio_server() as (stdio_read, stdio_write):
                 # Bidirectional bridge: client stdin -> Databricks, Databricks -> client stdout.
+                bridge = _McpBridge(connection_login)
                 async with anyio.create_task_group() as tg:
-                    tg.start_soon(_pump_upstream, http_read, stdio_write)
-                    await _pump(stdio_read, http_write)
+                    tg.start_soon(bridge.pump_upstream, http_read, stdio_write, http_write)
+                    await bridge.pump_client(stdio_read, http_write, stdio_write)
                     tg.cancel_scope.cancel()
 
 
@@ -303,12 +587,11 @@ def serve(url: str, workspace: str, profile: str | None = None, *, use_pat: bool
             "Set DATABRICKS_BEARER, or reconfigure the profile."
         )
 
-    # The per-connection sign-in is NOT driven here. Doing it eagerly at startup
-    # blocks the agent's MCP startup and, with N configured connection-backed
-    # servers, pops N browsers at once and stalls until each times out. Instead
-    # the bridge opens immediately (tools/list needs no credential) and the login
-    # is driven lazily, on a 401, from the httpx auth flow (see _build_token_auth)
-    # — so a browser opens only for a service whose tool you actually call.
+    # The per-connection sign-in is NOT driven before opening the bridge. The
+    # bridge starts first and drives login only when this service reports missing
+    # connection auth, either as HTTP 401 or MCP error -32006. Services whose
+    # connections are already authenticated, and services such as web search that
+    # need no connection, never open a browser.
 
     # Pre-flight the token before opening the bridge. Without this, the first
     # token failure surfaces from inside the transport's task group, where it can

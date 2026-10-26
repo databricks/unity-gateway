@@ -30,6 +30,7 @@ AGENT_PACKAGES = {
     "claude": "@anthropic-ai/claude-code",
     "codex": "@openai/codex",
     "opencode": "opencode-ai",
+    "copilot": "@github/copilot",
 }
 WINDOWS_PATHEXT = ".COM;.EXE;.BAT;.CMD"
 # Claude exports no spans on Windows, where ug writes no machine-wide Claude settings.
@@ -44,7 +45,16 @@ HEADLESS_TEST_NODES = {
     "claude": "test_ug_claude_headless.py::test_ug_claude_headless_prompt_argument",
     "codex": "test_ug_codex_headless.py::test_ug_codex_headless_prompt_argument",
     "opencode": "test_ug_opencode_headless.py::test_ug_opencode_headless_prompt_argument",
+    "copilot": "test_ug_copilot_headless.py::test_ug_copilot_headless_completes_file_task",
 }
+
+
+def agent_version_output(agent: str, output: str) -> str:
+    """The agent's ``--version`` text, normalized for exact-version matching."""
+    if agent == "copilot":
+        # "GitHub Copilot CLI 1.0.91." plus an update hint on later lines.
+        return output.splitlines()[0].removesuffix(".") if output else output
+    return output
 
 
 def redact_secrets(value: str, secrets: Iterable[str]) -> str:
@@ -83,6 +93,8 @@ def managed_policy_paths(
                 )
             paths.append(Path(program_files) / "ClaudeCode" / "managed-settings.json")
     elif platform_name == "posix":
+        # Unity Gateway's installed workspace policy affects every agent.
+        paths.append(Path("/etc/unitygateway/managed-settings.json"))
         if "codex" in selected:
             paths.extend(
                 [Path("/etc/codex/managed_config.toml"), Path("/etc/codex/requirements.toml")]
@@ -253,11 +265,13 @@ def arguments(
     parser.add_argument("--claude-version", type=exact_npm_version)
     parser.add_argument("--codex-version", type=exact_npm_version)
     parser.add_argument("--opencode-version", type=exact_npm_version)
+    parser.add_argument("--copilot-version", type=exact_npm_version)
     parser.add_argument("--claude-model", default=environment.get("UG_INTEGRATION_CLAUDE_MODEL"))
     parser.add_argument("--codex-model", default=environment.get("UG_INTEGRATION_CODEX_MODEL"))
     parser.add_argument(
         "--opencode-model", default=environment.get("UG_INTEGRATION_OPENCODE_MODEL")
     )
+    parser.add_argument("--copilot-model", default=environment.get("UG_INTEGRATION_COPILOT_MODEL"))
     parser.add_argument(
         "--claude-provider",
         default="main.ucode.ci_e2e_anthropic_nonrelay_mps",
@@ -284,6 +298,11 @@ def arguments(
         help="Explicit Bedrock model id the allow_all CUJ pins (the service declares no targets).",
     )
     parser.add_argument(
+        "--claude-bedrock-provider",
+        default="main.ucode.bedrock_e2e",
+        help="AWS Bedrock Anthropic MPS with a restricted allowed-models set (Sonnet + Haiku, no Opus), selected in the configure CUJ.",
+    )
+    parser.add_argument(
         "--codex-provider",
         default="main.ucode.ci_openai_mps",
         help="Existing OpenAI MPS selected in the configure CUJ.",
@@ -292,6 +311,26 @@ def arguments(
         "--codex-provider-model",
         default="gpt-5-nano",
         help="Model allowed by the OpenAI MPS selected in the configure CUJ.",
+    )
+    parser.add_argument(
+        "--codex-azure-provider",
+        default="main.ucode.ci_azure_openai_mps",
+        help="Existing Azure OpenAI MPS (reasoning-capable model) for the Codex azure_openai CUJ.",
+    )
+    parser.add_argument(
+        "--codex-azure-provider-model",
+        default="gpt-5-nano",
+        help="Reasoning-capable model allowed by the Azure OpenAI MPS.",
+    )
+    parser.add_argument(
+        "--codex-foundry-provider",
+        default="main.ucode.ci_foundry_mps",
+        help="Existing Microsoft Foundry MPS (reasoning-capable model) for the Codex foundry CUJ.",
+    )
+    parser.add_argument(
+        "--codex-foundry-provider-model",
+        default="gpt-5-nano",
+        help="Reasoning-capable model allowed by the Microsoft Foundry MPS.",
     )
     parser.add_argument(
         "--parent-schema",
@@ -356,9 +395,12 @@ def arguments(
             args.pytest_args.extend([flag, str(value)])
     if selected.x:
         args.pytest_args.append("-x")
-    if not (args.claude_version or args.codex_version or args.opencode_version):
+    if not (
+        args.claude_version or args.codex_version or args.opencode_version or args.copilot_version
+    ):
         parser.error(
-            "Select --claude-version, --codex-version and/or --opencode-version explicitly."
+            "Select --claude-version, --codex-version, --opencode-version and/or "
+            "--copilot-version explicitly."
         )
     if args.ug_version != "checkout" and not re.fullmatch(
         r"[0-9][0-9A-Za-z.!+_-]*", args.ug_version
@@ -516,16 +558,23 @@ def main() -> int:
             "claude": args.claude_version,
             "codex": args.codex_version,
             "opencode": args.opencode_version,
+            "copilot": args.copilot_version,
             "claude_model": args.claude_model,
             "codex_model": args.codex_model,
             "opencode_model": args.opencode_model,
+            "copilot_model": args.copilot_model,
             "claude_provider": args.claude_provider,
             "claude_relayed_provider": args.claude_relayed_provider,
             "claude_provider_model": args.claude_provider_model,
             "claude_bedrock_allow_all_provider": args.claude_bedrock_allow_all_provider,
             "claude_bedrock_allow_all_model": args.claude_bedrock_allow_all_model,
+            "claude_bedrock_provider": args.claude_bedrock_provider,
             "codex_provider": args.codex_provider,
             "codex_provider_model": args.codex_provider_model,
+            "codex_azure_provider": args.codex_azure_provider,
+            "codex_azure_provider_model": args.codex_azure_provider_model,
+            "codex_foundry_provider": args.codex_foundry_provider,
+            "codex_foundry_provider_model": args.codex_foundry_provider_model,
             "parent_schema": args.parent_schema,
             "claude_parent_model": args.claude_parent_model,
             "codex_parent_model": args.codex_parent_model,
@@ -718,6 +767,13 @@ def main() -> int:
         runtime_paths = [runtime_bin, agent_bin, tool_bin]
         if os.name == "nt":
             system_root = Path(base_env["SYSTEMROOT"])
+            # Copilot's shell tool tries pwsh first; Windows PowerShell alone can miss its 40s
+            # startup probe. pwsh loads pwsh.dll beside it, so it can't go in tool_bin; expose
+            # only a dedicated install dir, never a shared alias dir like WindowsApps.
+            pwsh = shutil.which("pwsh", path=base_env.get("PATH"))
+            pwsh_dir = Path(pwsh).resolve().parent if pwsh else None
+            if "copilot" in agents and pwsh_dir and (pwsh_dir / "pwsh.dll").is_file():
+                runtime_paths.append(pwsh_dir)
             runtime_paths.extend(
                 [
                     system_root / "System32",
@@ -731,7 +787,9 @@ def main() -> int:
         report["agents"] = {}
         for agent in agents:
             agent_command = npm_executable(agent_bin, agent)
-            version = run([agent_command, "--version"], env=runtime_env, timeout=30)
+            version = agent_version_output(
+                agent, run([agent_command, "--version"], env=runtime_env, timeout=30)
+            )
             expected = getattr(args, f"{agent}_version")
             if not re.search(rf"(?<![\w.]){re.escape(expected)}(?![\w.])", version):
                 raise RuntimeError(f"Expected {agent} {expected}, got {version!r}")
@@ -796,12 +854,17 @@ def main() -> int:
                 "UG_INTEGRATION_AGENTS": ",".join(agents),
                 "UG_INTEGRATION_CLAUDE_PROVIDER": args.claude_provider,
                 "UG_INTEGRATION_CLAUDE_RELAYED_PROVIDER": args.claude_relayed_provider,
+                "UG_INTEGRATION_CLAUDE_BEDROCK_PROVIDER": args.claude_bedrock_provider,
                 "UG_INTEGRATION_CLAUDE_OAUTH_TOKEN": oauth_token,
                 "UG_INTEGRATION_CLAUDE_PROVIDER_MODEL": args.claude_provider_model,
                 "UG_INTEGRATION_CLAUDE_BEDROCK_ALLOW_ALL_PROVIDER": args.claude_bedrock_allow_all_provider,
                 "UG_INTEGRATION_CLAUDE_BEDROCK_ALLOW_ALL_MODEL": args.claude_bedrock_allow_all_model,
                 "UG_INTEGRATION_CODEX_PROVIDER": args.codex_provider,
                 "UG_INTEGRATION_CODEX_PROVIDER_MODEL": args.codex_provider_model,
+                "UG_INTEGRATION_CODEX_AZURE_PROVIDER": args.codex_azure_provider,
+                "UG_INTEGRATION_CODEX_AZURE_PROVIDER_MODEL": args.codex_azure_provider_model,
+                "UG_INTEGRATION_CODEX_FOUNDRY_PROVIDER": args.codex_foundry_provider,
+                "UG_INTEGRATION_CODEX_FOUNDRY_PROVIDER_MODEL": args.codex_foundry_provider_model,
                 "UG_INTEGRATION_PARENT_SCHEMA": args.parent_schema,
                 "UG_INTEGRATION_CLAUDE_PARENT_MODEL": args.claude_parent_model,
                 "UG_INTEGRATION_CODEX_PARENT_MODEL": args.codex_parent_model,
@@ -877,10 +940,13 @@ def main() -> int:
             raise RuntimeError("Pytest returned success without a test report.")
         # A bootstrap/update path must not silently alter the selected agent version.
         for agent in agents:
-            after = run(
-                [npm_executable(agent_bin, agent), "--version"],
-                env=runtime_env,
-                timeout=30,
+            after = agent_version_output(
+                agent,
+                run(
+                    [npm_executable(agent_bin, agent), "--version"],
+                    env=runtime_env,
+                    timeout=30,
+                ),
             )
             if after != report["agents"][agent]:
                 raise RuntimeError(f"{agent} changed version during the suite: {after}")

@@ -31,6 +31,26 @@ def test_headless_only_selects_exact_nodes_for_requested_agents(tmp_path):
     ]
 
 
+def test_copilot_headless_target_and_exact_version(tmp_path):
+    assert runner.integration_test_targets(
+        tmp_path,
+        ["copilot"],
+        platform_name="posix",
+        installation_only=False,
+        headless_only=True,
+    ) == [
+        f"{tmp_path / 'test_ug_copilot_headless.py'}::test_ug_copilot_headless_completes_file_task"
+    ]
+    args = runner.arguments(["--copilot-version", "1.0.91", "--installation-only"], environment={})
+    assert args.copilot_version == "1.0.91"
+
+
+def test_copilot_version_output_matches_the_pinned_version():
+    output = "GitHub Copilot CLI 1.0.91.\nRun 'copilot update' to check for updates.\n"
+    assert runner.agent_version_output("copilot", output) == "GitHub Copilot CLI 1.0.91"
+    assert runner.agent_version_output("codex", "codex-cli 0.154.0") == "codex-cli 0.154.0"
+
+
 def test_windows_live_runs_select_every_module_except_unsupported_ones(tmp_path):
     (tmp_path / "test_headless.py").write_text("import json\n")
     (tmp_path / "test_tui.py").write_text("from utils.terminal import AgentTerminal\n")
@@ -116,6 +136,26 @@ def test_windows_policy_paths_match_pinned_agent_locations():
         Path("C:/ProgramData/OpenAI/Codex/requirements.toml"),
         Path("C:/ProgramData/OpenAI/Codex/config.toml"),
         Path("C:/Program Files/ClaudeCode/managed-settings.json"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("system_platform", "claude_path"),
+    [
+        ("linux", "/etc/claude-code/managed-settings.json"),
+        ("darwin", "/Library/Application Support/ClaudeCode/managed-settings.json"),
+    ],
+)
+def test_posix_policy_paths_include_the_installed_workspace_policy(system_platform, claude_path):
+    paths = runner.managed_policy_paths(
+        ["claude", "codex"], {}, platform_name="posix", system_platform=system_platform
+    )
+
+    assert paths == (
+        Path("/etc/unitygateway/managed-settings.json"),
+        Path("/etc/codex/managed_config.toml"),
+        Path("/etc/codex/requirements.toml"),
+        Path(claude_path),
     )
 
 

@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from ucode.config_io import APP_DIR, is_dry_run
+from ucode.env import env_bool
 from ucode.os_compatibility import subprocess_cross_os, system_cross_os
 from ucode.ui import console, print_note, print_success, print_warning
 
@@ -35,10 +36,13 @@ from ucode.ui import console, print_note, print_success, print_warning
 _SUDO = "/usr/bin/sudo"
 # Opt out of all OS-managed settings work (read, conflict check, and the privileged sudo write).
 SKIP_OS_SETTINGS_ENV = "UG_SKIP_OS_SETTINGS"
-_TRUE_VALUES = {"1", "true", "yes", "on"}
+CONFIG_SCOPES = ("global", "user")
+DEFAULT_CONFIG_SCOPE = "global"
+_config_scope = DEFAULT_CONFIG_SCOPE
 MANAGED_BACKUP_DIR = APP_DIR / "managed-backups"
 MANAGED_BACKUP_MANIFEST_PATH = MANAGED_BACKUP_DIR / "manifest.json"
 MANAGED_FINGERPRINT_VERSION = 1
+UNITY_GATEWAY_MANAGED_SETTINGS_PATH = Path("/etc/unitygateway/managed-settings.json")
 _MISSING = object()
 _managed_write_batch: tuple[str, ...] = ()
 _managed_write_notice_shown = False
@@ -64,17 +68,35 @@ class OS(Enum):
 
 MANAGED_FILES_SUPPORTED_OSES = (OS.LINUX, OS.MACOS, OS.WINDOWS)
 
+# ug's root-owned Claude plugin marketplace, holding the mod that adds `UG_HEADERS` to each request.
+# Claude treats a mod as the organization's only when it loads from a directory marketplace that
+# managed settings name, so it lives beside the managed file rather than in ug's own install.
+CLAUDE_HEADER_MOD_ROOTS = {
+    OS.LINUX: Path("/etc/claude-code/ucode-plugins"),
+    OS.MACOS: Path("/Library/Application Support/ClaudeCode/ucode-plugins"),
+}
+CLAUDE_HEADER_MOD_FILES = (
+    ".claude-plugin/marketplace.json",
+    "ug-headers/.claude-plugin/plugin.json",
+    "ug-headers/hooks/hooks.json",
+    "ug-headers/hooks/register.ts",
+)
+
 _SUDO_REPLACE_TARGETS = {
     OS.LINUX: frozenset(
         {
             Path("/etc/claude-code/managed-settings.json"),
             Path("/etc/codex/managed_config.toml"),
+            UNITY_GATEWAY_MANAGED_SETTINGS_PATH,
+            *(CLAUDE_HEADER_MOD_ROOTS[OS.LINUX] / name for name in CLAUDE_HEADER_MOD_FILES),
         }
     ),
     OS.MACOS: frozenset(
         {
             Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
             Path("/etc/codex/managed_config.toml"),
+            UNITY_GATEWAY_MANAGED_SETTINGS_PATH,
+            *(CLAUDE_HEADER_MOD_ROOTS[OS.MACOS] / name for name in CLAUDE_HEADER_MOD_FILES),
         }
     ),
 }
@@ -92,8 +114,19 @@ def current_os() -> OS:
     return OS.OTHER
 
 
+def set_config_scope(scope: str) -> None:
+    global _config_scope
+    if scope not in CONFIG_SCOPES:
+        raise ValueError(f"Unknown config scope {scope!r}; expected one of {CONFIG_SCOPES}.")
+    _config_scope = scope
+
+
+def config_scope() -> str:
+    return _config_scope
+
+
 def managed_settings_skipped() -> bool:
-    """Whether the developer opted out of OS-managed settings via ``UG_SKIP_OS_SETTINGS``.
+    """Whether OS-managed settings are opted out via ``UG_SKIP_OS_SETTINGS`` or the ``user`` scope.
 
     Set the variable to ``1``/``true``/``yes``/``on`` to make ucode neither read nor update the
     root-owned managed files (Claude Code ``managed-settings.json``, Codex ``managed_config.toml``
@@ -102,9 +135,11 @@ def managed_settings_skipped() -> bool:
     always launches through ``ug`` and never needs a bare ``claude``/``codex`` to reach the gateway.
     Skips the privileged ``sudo`` step entirely, so an interactive run is never prompted for a
     password and never hits the "OS-managed settings could not be updated" failure on hosts where
-    that write is blocked.
+    that write is blocked. ug also trusts whatever OS-managed files exist and doesn't check them
+    against its own settings; the agents apply their native precedence. ``ug configure --user`` has
+    the same effect.
     """
-    return os.environ.get(SKIP_OS_SETTINGS_ENV, "").strip().lower() in _TRUE_VALUES
+    return env_bool(SKIP_OS_SETTINGS_ENV) or _config_scope == "user"
 
 
 def managed_files_supported() -> bool:
@@ -117,6 +152,31 @@ def managed_files_supported() -> bool:
     if managed_settings_skipped():
         return False
     return current_os() in MANAGED_FILES_SUPPORTED_OSES
+
+
+def claude_header_mod_root() -> Path | None:
+    """Where ug installs its Claude header mod, or ``None`` where it installs none."""
+    # shortcut: no Windows install (no allowlisted admin folder), add one when Windows needs it.
+    return None if managed_settings_skipped() else CLAUDE_HEADER_MOD_ROOTS.get(current_os())
+
+
+def reconcile_privileged_files(files: dict[Path, str], *, display: str) -> None:
+    """Write each allowlisted root-owned file whose contents differ, through the sudo worker."""
+    changed = [(path, text) for path, text in files.items() if read_managed_file(path) != text]
+    if changed and _sudo_may_prompt():
+        _print_managed_write_permission(display)
+    for path, text in changed:
+        _privileged_replace(path, text)
+
+
+def remove_privileged_tree(root: Path) -> None:
+    """Remove a root-owned folder ug owns entirely, such as its header mod's, through sudo."""
+    if root.is_symlink():
+        raise RuntimeError(f"Refusing to remove {root} through a symlink.")
+    if root.exists():
+        subprocess_cross_os.run(
+            _sudo_command("rm", "-rf", "--", str(root)), capture_output=True, text=True, check=True
+        )
 
 
 def windows_claude_managed_settings_path() -> Path:
@@ -246,6 +306,17 @@ def managed_write_batch(displays: list[str]) -> Iterator[None]:
     finally:
         _managed_write_batch = previous_batch
         _managed_write_notice_shown = previous_notice
+
+
+def warn_managed_write_skipped(path: Path, current: dict, desired: dict) -> None:
+    """Tell configure that ``path`` still lacks ug's settings because this run can't write it.
+
+    Launches reconfigure on every run outside a configure batch, so they stay quiet."""
+    if not _managed_write_batch or is_dry_run():
+        return
+    if is_semantically_equal(mask_user_agent_versions(current), mask_user_agent_versions(desired)):
+        return
+    print_warning(f"{path} wasn't updated because no admin privileges were detected.")
 
 
 @contextmanager
@@ -407,55 +478,6 @@ def managed_file_conflicts(
     return conflicts
 
 
-def raise_on_skipped_managed_overrides(
-    path: Path,
-    conflicts: list[str],
-    *,
-    display: str,
-) -> None:
-    """Fail when an opt-out left a stale OS-managed file overriding the new user config."""
-    if not conflicts:
-        return
-    raise RuntimeError(
-        f"the OS-managed {display} settings at {path} are stale and conflict with your per-user settings."
-        f" {SKIP_OS_SETTINGS_ENV} is set, so the OS-managed settings were not modified. Run `ug revert` "
-        f"from an interactive terminal or remove {path}"
-    )
-
-
-def check_skipped_managed_overrides(
-    path: Path | None,
-    *,
-    parser: ManagedParser,
-    compose: Callable[[dict], dict],
-    owned_paths: list[list[str]],
-    display: str,
-) -> None:
-    """When opting out, fail if a stale OS-managed file still overrides the new user config.
-
-    `UG_SKIP_OS_SETTINGS` leaves the root-owned managed file untouched. A file from an earlier
-    workspace keeps its highest-precedence gateway values, so refuse to proceed when the conflicting
-    keys would let a bare agent silently reach the old workspace. Reads only (no sudo); best-effort,
-    so an unsupported platform, symlink, or unparseable file is left to the normal reconcile path.
-    """
-    if path is None or path.is_symlink():
-        return
-    current_text = read_managed_file(path)
-    if current_text is None:
-        return
-    try:
-        existing = parser(current_text)
-    except RuntimeError:
-        return
-    # `compose` mutates its argument in place, so snapshot the on-disk state before composing.
-    managed_before = deepcopy(existing)
-    raise_on_skipped_managed_overrides(
-        path,
-        managed_file_conflicts(managed_before, compose(existing), owned_paths),
-        display=display,
-    )
-
-
 def _unwrap(value: object) -> object:
     """Return a plain-Python view of a value, unwrapping tomlkit items so it compares by content."""
     unwrap = getattr(value, "unwrap", None)
@@ -471,19 +493,29 @@ def _unwrap(value: object) -> object:
 _VERSION = r"[0-9A-Za-z.+_-]+"
 
 
+# Optional trailing parenthesized platform; generic so new fields never break matching, and
+# absent in User-Agents written by older ug versions.
+_PLATFORM_SUFFIX = r"(?: \([^()]*\))?"
+
+
 def ug_agent_token(user_agent: str, agent: str) -> str | None:
-    """The ``<agent>/<v>`` token of ug's exact ``ucode/<v> <agent>/<v>`` User-Agent, else None."""
-    match = re.fullmatch(rf"ucode/{_VERSION} ({re.escape(agent)}/{_VERSION})", user_agent)
+    """The ``<agent>/<v>`` token of ug's exact ``ucode/<v> <agent>/<v>[ (<os>; <arch>)]`` User-Agent,
+    else None."""
+    match = re.fullmatch(
+        rf"ucode/{_VERSION} ({re.escape(agent)}/{_VERSION}){_PLATFORM_SUFFIX}", user_agent
+    )
     return match.group(1) if match else None
 
 
-_UG_USER_AGENT = re.compile(rf"ucode/{_VERSION} ([a-z][a-z0-9-]*)/{_VERSION}")
+_UG_USER_AGENT = re.compile(rf"ucode/{_VERSION} ([a-z][a-z0-9-]*)/{_VERSION}{_PLATFORM_SUFFIX}")
 
 
 def mask_user_agent_versions(value: object, key: object = None) -> object:
     """Copy of a parsed managed document with the versions in ug's ``ucode/<v> <agent>/<v>``
     User-Agent masked. They change on every ug or agent upgrade, which alone must not rewrite (and
-    prompt for sudo to replace) the root-owned file. Only User-Agent headers are masked: a
+    prompt for sudo to replace) the root-owned file. The ``(<os>; <arch>)`` suffix is dropped too:
+    it describes the machine that owns the file, and keeping it would force one sudo rewrite on the
+    first ug upgrade that adds it. Only User-Agent headers are masked: a
     ``User-Agent`` key, or a ``User-Agent:`` line in a header string; every other value compares
     exactly."""
     value = _unwrap(value)
@@ -1160,8 +1192,8 @@ _SUDO_REPLACE_SCRIPT = (
 )
 
 
-def _sudo_replace_command(mode: str, *args: str) -> list[str]:
-    return _sudo_command(
+def _sudo_replace_command(mode: str, *args: str, non_interactive: bool = False) -> list[str]:
+    command = [
         "/bin/sh",
         "-c",
         _SUDO_REPLACE_SCRIPT,
@@ -1169,7 +1201,88 @@ def _sudo_replace_command(mode: str, *args: str) -> list[str]:
         mode,
         current_os().value,
         *args,
-    )
+    ]
+    if non_interactive:
+        if os.geteuid() == 0:
+            return command
+        return [_SUDO, "-n", *command]
+    return _sudo_command(*command)
+
+
+def update_workspace_policy(
+    path: Path,
+    desired_text: str | None,
+    *,
+    interactive: bool = False,
+    allow_sudo: bool = False,
+) -> None:
+    """Install or remove changed policy; unprivileged launches never invoke sudo."""
+    if path != UNITY_GATEWAY_MANAGED_SETTINGS_PATH:
+        raise RuntimeError(f"Refusing unexpected workspace-policy target: {path}")
+    if current_os() not in (OS.LINUX, OS.MACOS):
+        raise ManagedFileWriteUnavailable(
+            "Machine-wide workspace policy is supported only on Linux and macOS."
+        )
+    if managed_settings_skipped():
+        raise ManagedFileWriteUnavailable("Machine-wide workspace policy is skipped for this run.")
+    _validate_sudo_replace_target(path)
+    current_text = read_managed_file(path)
+    if current_text == desired_text:
+        return
+    # Checked before the dry-run preview, so a dry run never shows a write the real run refuses.
+    if not allow_sudo and os.geteuid() != 0:
+        raise ManagedFileWriteUnavailable(
+            "Workspace policy updates require an administrator or root provisioning run."
+        )
+    if is_dry_run():
+        console.print(
+            f"\n[bold]\\[dry run] {path} (via sudo)[/bold]\n"
+            f"{desired_text if desired_text is not None else '(remove)'}"
+        )
+        return
+    running_as_root = os.geteuid() == 0
+    can_prompt = interactive and managed_writes_allowed() and not running_as_root
+    # Run directly as root (no sudo), the script still checks the temp source's owner against
+    # SUDO_UID. Under `sudo ug configure` that variable names the invoking user while root owns the
+    # source, so point it at root for the direct run.
+    script_env = {**os.environ, "SUDO_UID": "0"} if running_as_root else None
+    try:
+        if desired_text is not None and can_prompt:
+            _sudo_replace(path, desired_text)
+        else:
+            # Raw bytes, so removal's byte-for-byte check matches a file with a BOM or CRLF endings.
+            with tempfile.NamedTemporaryFile(mode="wb", suffix=".json") as source:
+                source.write(
+                    desired_text.encode("utf-8") if desired_text is not None else path.read_bytes()
+                )
+                source.flush()
+                subprocess_cross_os.run(
+                    _sudo_replace_command(
+                        "once" if desired_text is not None else "remove",
+                        source.name,
+                        str(path),
+                        non_interactive=not can_prompt,
+                    ),
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    # A password prompt waits on the person typing; only unattended runs time out.
+                    timeout=None if can_prompt else 30,
+                    env=script_env,
+                )
+    except (OSError, subprocess.SubprocessError) as exc:
+        stderr = getattr(exc, "stderr", None)
+        if isinstance(stderr, bytes):
+            # TimeoutExpired carries bytes even when the run used text mode.
+            stderr = stderr.decode("utf-8", "replace")
+        detail = (stderr or "").strip()
+        raise ManagedFileWriteUnavailable(
+            f"Could not update workspace policy at {path}." + (f" {detail}" if detail else "")
+        ) from exc
+    if read_managed_file(path) != desired_text:
+        raise ManagedFileWriteUnavailable(
+            f"Workspace policy at {path} changed during installation; run `ug configure` again."
+        )
 
 
 def _encode_worker_arg(value: str) -> str:

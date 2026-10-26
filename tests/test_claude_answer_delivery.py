@@ -9,6 +9,7 @@ import sys
 import pytest
 
 from ucode import claude_answer_delivery as output
+from ucode.ui import redirect_output_to_stderr
 
 _SELECTION = '{"use_agent_answer":"a"}'
 
@@ -204,7 +205,10 @@ def test_rejects_invalid_transcript(source):
 
 
 @pytest.mark.parametrize("mode", ["text", "json", "stream-json"])
-def test_subprocess_preserves_input_stderr_and_renders_selected_output(tmp_path, capfd, mode):
+@pytest.mark.parametrize("redirected", [False, True])
+def test_subprocess_preserves_input_stderr_and_renders_selected_output(
+    tmp_path, capfd, mode, redirected
+):
     source = tmp_path / "source.jsonl"
     source.write_text(_stdout(_transcript()), encoding="utf-8")
     marker = tmp_path / output.CAPABILITY_FILE
@@ -215,11 +219,17 @@ def test_subprocess_preserves_input_stderr_and_renders_selected_output(tmp_path,
         f"sys.stdout.write(Path({str(source)!r}).read_text(encoding='utf-8')); "
         "sys.stderr.write('child diagnostic\\n')"
     )
-    rc = output.run(
-        [sys.executable, "-c", script, "--output-format", mode],
-        session_path=tmp_path / "env.json",
-        stdin_prompt=b"caller input",
-    )
+    real_stdout = sys.stdout
+    try:
+        if redirected:
+            redirect_output_to_stderr()
+        rc = output.run(
+            [sys.executable, "-c", script, "--output-format", mode],
+            session_path=tmp_path / "env.json",
+            stdin_prompt=b"caller input",
+        )
+    finally:
+        sys.stdout = real_stdout
     captured = capfd.readouterr()
     assert rc == 0 and captured.err.splitlines() == ["child diagnostic"]
     if mode == "text":

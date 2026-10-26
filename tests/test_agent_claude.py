@@ -18,6 +18,7 @@ from ucode import gateway_proxy, managed_files
 from ucode.agents import LaunchOptions, claude
 from ucode.smart_routing import claude_routing, v2
 from ucode.state import MANAGED_OVERLAY_KEY
+from ucode.telemetry import client_platform
 
 WS = "https://example.databricks.com"
 # A connection MCP proxy argv, used by the Claude MCP-registration helper tests.
@@ -684,7 +685,9 @@ class TestRenderOverlayUserAgent:
         return overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
 
     def test_user_agent_present(self, monkeypatch):
-        assert "User-Agent: ucode/0.1.0 claude/2.1.136" in self._ua(monkeypatch)
+        assert f"User-Agent: ucode/0.1.0 claude/2.1.136 {client_platform()}" in self._ua(
+            monkeypatch
+        )
 
     def test_existing_databricks_header_preserved(self, monkeypatch):
         assert "x-databricks-use-coding-agent-mode: true" in self._ua(monkeypatch)
@@ -1088,11 +1091,15 @@ class TestWriteToolConfigManagedSettings:
         assert "modelPicker" not in private_writes[0][1]
         assert "modelPicker" not in json.loads(managed_writes[0][1])
 
-    def test_skip_env_bypasses_managed_file(self, monkeypatch):
+    @pytest.mark.parametrize("opt_out", ["env", "user_scope"])
+    def test_skip_env_bypasses_managed_file(self, monkeypatch, opt_out):
         private_writes: list = []
         managed_writes: list = []
         self._patch(monkeypatch, private_writes, managed_writes)
-        monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        if opt_out == "env":
+            monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        else:
+            managed_files.set_config_scope("user")
         # A privileged write must never be attempted when the developer opted out.
         monkeypatch.setattr(
             claude, "reconcile_managed_file", lambda *a, **kw: pytest.fail("must not write managed")
@@ -1103,10 +1110,10 @@ class TestWriteToolConfigManagedSettings:
         assert str(claude.CLAUDE_SETTINGS_PATH) in [p for p, _ in private_writes]
         assert managed_writes == []
 
-    def test_skip_env_errors_on_stale_managed_override(self, monkeypatch):
+    def test_skip_env_trusts_a_stale_managed_file(self, monkeypatch):
+        """The opt-out trusts whatever OS-managed file exists: no check, no write, no error."""
         private_writes: list = []
         managed_writes: list = []
-        # A managed file left from an earlier workspace still points at that workspace's gateway.
         existing = {
             str(FAKE_MANAGED_PATH): {
                 "env": {
@@ -1120,15 +1127,26 @@ class TestWriteToolConfigManagedSettings:
             claude, "reconcile_managed_file", lambda *a, **kw: pytest.fail("must not write managed")
         )
         state = {"workspace": WS, "codex_models": []}
-        # A stale override silently defeats the reconfigure, so launching must fail loudly.
-        with pytest.raises(RuntimeError) as excinfo:
-            claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
 
+        assert str(claude.CLAUDE_SETTINGS_PATH) in [p for p, _ in private_writes]
         assert managed_writes == []
-        message = str(excinfo.value)
-        assert managed_files.SKIP_OS_SETTINGS_ENV in message
-        assert "stale" in message
-        assert "ug revert" in message
+
+    def test_user_scope_launches_over_stale_managed_override(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        existing = {
+            str(FAKE_MANAGED_PATH): {
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://old-workspace.databricks.com/ai-gateway/anthropic"
+                }
+            }
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        managed_files.set_config_scope("user")
+        state = {"workspace": WS, "codex_models": []}
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        assert managed_writes == []
 
     def test_skip_env_no_error_without_stale_override(self, monkeypatch):
         private_writes: list = []
@@ -1323,11 +1341,14 @@ class TestWriteToolConfigManagedSettings:
         claude.write_tool_config(state, "databricks-claude-sonnet-4")
 
         lines = private_writes[0][1]["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
-        assert lines == [
-            "X-Foreign-Header: keep-me",  # not ug's, survives untouched
-            "x-databricks-use-coding-agent-mode: true",  # ug-managed name, replaced in place
-            "User-Agent: ucode/1.0 claude/2.0",  # ug-managed name, replaced in place
-        ]
+        assert (
+            lines
+            == [
+                "X-Foreign-Header: keep-me",  # not ug's, survives untouched
+                "x-databricks-use-coding-agent-mode: true",  # ug-managed name, replaced in place
+                f"User-Agent: ucode/1.0 claude/2.0 {client_platform()}",  # ug-managed name, replaced in place
+            ]
+        )
 
     def test_unmanaged_preserves_existing_family_defaults(self, monkeypatch):
         monkeypatch.setattr(
@@ -1836,7 +1857,10 @@ class TestWriteToolConfigManagedSettings:
         assert managed_path.read_bytes() == before
         private = json.loads((tmp_path / "ucode-settings.json").read_text())
         private_headers = private["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
-        assert f"User-Agent: ucode/{ug_version} claude/{agent_version}" in private_headers
+        assert (
+            f"User-Agent: ucode/{ug_version} claude/{agent_version} {client_platform()}"
+            in private_headers
+        )
 
     @pytest.mark.parametrize(
         "change",
@@ -1859,7 +1883,7 @@ class TestWriteToolConfigManagedSettings:
         assert len(sudo_writes) == 2
         written = json.loads(managed_path.read_text())
         headers = written["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
-        assert "User-Agent: ucode/1.0 claude/2.1" in headers
+        assert f"User-Agent: ucode/1.0 claude/2.1 {client_platform()}" in headers
 
     def test_managed_file_applies_model_default_precedence(self, monkeypatch):
         managed_defaults = self._write_managed_model_defaults(
@@ -2429,6 +2453,23 @@ class TestWriteToolConfigManagedSettings:
         claude.write_tool_config(state, "databricks-claude-sonnet-4")
 
         assert managed_writes == []
+
+    def test_unelevated_configure_warns_that_the_machine_file_was_not_updated(self, monkeypatch):
+        managed_writes: list = []
+        self._patch(monkeypatch, [], managed_writes)
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: False)
+        warnings: list[str] = []
+        monkeypatch.setattr(managed_files, "print_warning", warnings.append)
+
+        with managed_files.managed_write_batch(["Claude Code"]):
+            claude.write_tool_config(
+                {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+            )
+
+        assert managed_writes == []
+        assert f"{FAKE_MANAGED_PATH} wasn't updated because no admin privileges were detected." in (
+            warnings
+        )
 
     def test_noninteractive_repairs_conflicting_managed_settings_without_prompting(
         self, monkeypatch
@@ -4040,7 +4081,11 @@ class TestManagedMcpUsesManagedFile:
     def _wire(self, monkeypatch, *, supported=True, interactive=True, oauth=True):
         monkeypatch.setattr(claude, "managed_files_supported", lambda: supported)
         monkeypatch.setattr(claude, "managed_writes_allowed", lambda: interactive)
-        monkeypatch.setattr(claude, "oauth_client_available", lambda ws, client_id: oauth)
+        monkeypatch.setattr(
+            claude,
+            "first_available_oauth_client",
+            lambda ws, client_ids: client_ids[0] if oauth else None,
+        )
 
     def test_true_when_all_conditions_hold(self, monkeypatch):
         self._wire(monkeypatch)
@@ -4084,7 +4129,10 @@ class TestClaudeReconcileManagedMcp:
         doc = json.loads(captured["text"])
         assert doc["managedMcpServers"]["system-ai-github"]["url"] == GH_URL
         assert doc["managedMcpServers"]["system-ai-github"]["type"] == "http"
-        assert doc["managedMcpServers"]["system-ai-github"]["oauth"]["clientId"] == "claude-code"
+        assert (
+            doc["managedMcpServers"]["system-ai-github"]["oauth"]["clientId"]
+            == claude.CLAUDE_CODE_CIMD_CLIENT_ID
+        )
         assert doc["env"] == {"X": "1"}
         assert doc["apiKeyHelper"] == "ug auth-token"
         assert captured["owned_paths"] == [["managedMcpServers"]]
@@ -4122,6 +4170,21 @@ class TestClaudeReconcileManagedMcp:
             {"serverName": claude.WEB_SEARCH_MCP_NAME},
         ]
         assert ["allowedMcpServers"] in captured["owned_paths"]
+
+    def test_user_scope_returns_false_without_touching_managed_file(self, monkeypatch):
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: FAKE_MANAGED_PATH)
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(
+            claude, "read_managed_file", lambda path: pytest.fail("must not read managed")
+        )
+        monkeypatch.setattr(
+            claude, "reconcile_managed_file", lambda *a, **k: pytest.fail("must not write")
+        )
+        managed_files.set_config_scope("user")
+        used = claude.reconcile_managed_mcp(
+            {}, {"system-ai-github": claude.managed_mcp_entry(GH_URL)}
+        )
+        assert used is False
 
     def test_mcp_allowlist_not_from_agent_native_settings_is_left_alone(self, monkeypatch):
         captured: dict = {}

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -66,7 +67,7 @@ from ucode.smart_routing.claude_hooks import (
     sync_smart_routing_hooks,
 )
 from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
-from ucode.smart_routing.config import apply_config, resolve_environment
+from ucode.smart_routing.config import apply_config, apply_enabled_version, resolve_environment
 from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
 from ucode.ui import print_note, print_warning
 
@@ -195,13 +196,6 @@ def first_prompt_routing_enabled(
     )
 
 
-def enable_smart_routing(
-    env: MutableMapping[str, str] | None = None, *, agent: str
-) -> dict[str, str | None]:
-    """Set the full smart-routing env var and return the prior value of every routing var."""
-    return override_smart_routing(True, env, agent=agent)
-
-
 def override_smart_routing(
     enabled: bool,
     env: MutableMapping[str, str] | None = None,
@@ -209,13 +203,12 @@ def override_smart_routing(
     agent: str,
 ) -> dict[str, str | None]:
     """Set an explicit launch-scoped routing choice and return the prior values."""
+    if enabled:
+        return apply_enabled_version(env, agent=agent)
     target = os.environ if env is None else env
     previous = {var: target.get(var) for var in SMART_ROUTING_ENV_KEYS}
     previous.update(apply_config(target, agent=agent))
-    if enabled:
-        target[ENABLE_SMART_ROUTING_ENV_VAR] = "1"
-    else:
-        target.update(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
+    target.update(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
     return previous
 
 
@@ -340,12 +333,15 @@ def _routed_claude_agent_definitions(model_ids: list[str]) -> dict[str, dict[str
 
 def _claude_mod_launch_options(env: Mapping[str, str] | None = None) -> dict:
     source = resolve_environment(env, agent=AGENT_CLAUDE)
+    isaac = shutil.which("isaac")
     return {
         **{key: source.get(key, "") for key in SMART_ROUTING_ENV_KEYS},
         # Native plugin options cannot represent null; preserve absent versus empty values.
         "unset": [key for key in SMART_ROUTING_ENV_KEYS if key not in source],
         "recipe": source.get(routing.ROUTER_NAME_ENV_VAR, "").strip() or routing.ROUTER_NAME,
         "routeCommand": [],
+        "isaacExecutable": str(Path(isaac).absolute()) if isaac else "",
+        "isaacFeedbackDirectory": str(Path.home() / ".isaac" / "feedback"),
     }
 
 
@@ -359,6 +355,18 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
             "description": "Launch-scoped agents for Unity Gateway smart routing.",
             "author": {"name": "Databricks"},
             "userConfig": {
+                "isaacExecutable": {
+                    "type": "string",
+                    "default": "",
+                    "title": "Isaac executable",
+                    "description": "Isaac CLI resolved at launch for feedback submission",
+                },
+                "isaacFeedbackDirectory": {
+                    "type": "string",
+                    "default": "",
+                    "title": "Isaac feedback directory",
+                    "description": "Absolute directory for locally captured feedback",
+                },
                 "routeCommand": {
                     "type": "string",
                     "multiple": True,

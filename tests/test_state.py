@@ -19,10 +19,12 @@ from ucode.state import (
     get_provider_service,
     hydrate_state,
     is_self_managed,
+    load_config_scope,
     load_full_state,
     load_state,
     mark_tool_managed,
     remove_self_managed_agent,
+    save_config_scope,
     save_state,
     self_managed_agents,
     set_applied_managed_update_time,
@@ -164,6 +166,11 @@ class TestClearState:
         full = load_full_state()
         assert full["current_workspace"] is None
         assert FAKE_WS not in full.get("workspaces", {})
+
+    def test_resets_config_scope(self):
+        save_config_scope("user")
+        clear_state()
+        assert load_config_scope() == "global"
 
     def test_clear_when_no_state_is_noop(self):
         clear_state()  # should not raise

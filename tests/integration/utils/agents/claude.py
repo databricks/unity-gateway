@@ -23,7 +23,6 @@ def is_child_session(path: str, records: list[dict]) -> bool:
 
 def assistant_answers(records: list[dict]) -> list[str]:
     answers = []
-    handbacks = {}
     for record in records:
         message = record.get("message", {})
         if record.get("type") == "assistant" and message.get("role") == "assistant":
@@ -31,15 +30,7 @@ def assistant_answers(records: list[dict]) -> list[str]:
                 if part.get("type") == "text" and isinstance(part.get("text"), str):
                     answers.append(part["text"])
                 elif _is_subagent_handback(record, part):
-                    # Claude 2.1.290 can deliver a child's final answer through this
-                    # tool. The call alone is not evidence that delivery succeeded.
-                    handbacks[part["id"]] = part["input"]["message"]
-        elif _is_successful_child_turn_completion(record):
-            for part in message.get("content", []):
-                if part.get("type") == "tool_result" and not part.get("is_error"):
-                    answer = handbacks.pop(part.get("tool_use_id"), None)
-                    if answer is not None:
-                        answers.append(answer)
+                    answers.append(part["input"]["message"])
     return answers
 
 
@@ -50,16 +41,6 @@ def _is_subagent_handback(record: dict, part: dict) -> bool:
         and part.get("name") == "SubagentHandback"
         and isinstance(part.get("id"), str)
         and isinstance(part.get("input", {}).get("message"), str)
-    )
-
-
-def _is_successful_child_turn_completion(record: dict) -> bool:
-    return (
-        record.get("type") == "user"
-        and record.get("message", {}).get("role") == "user"
-        and record.get("isSidechain") is True
-        and record.get("toolEndsTurn") is True
-        and record.get("toolUseResult", {}).get("success") is True
     )
 
 

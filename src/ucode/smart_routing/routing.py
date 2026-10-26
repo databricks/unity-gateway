@@ -11,6 +11,7 @@ arms, spawn-tool detector, model-id translation, and artifact paths.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import textwrap
@@ -24,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from ucode.smart_routing.rationale import format_rationale
+from ucode.ug_headers import ug_headers
 
 ROUTER_NAME = "task_v3"
 ROUTER_NAME_ENV_VAR = "SMART_ROUTER_NAME"
@@ -238,6 +240,7 @@ def select_route(
         workspace.rstrip("/") + ROUTING_PATH,
         data=json.dumps(body).encode("utf-8"),
         headers={
+            **ug_headers(),
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         },
@@ -309,8 +312,11 @@ def resolve_spawn_route(
         ),
         default_task_label,
     )
-    decision, _ = decision_fn(task)
+    decision, reason = decision_fn(task)
     if decision is None:
+        logging.getLogger(__name__).warning(
+            "Smart Router could not route subagent: %s", reason or "no routing decision"
+        )
         return None
     routed_model = model_id_mapper(decision.model)
     return SpawnRoute(tool_input, task, decision, routed_model)

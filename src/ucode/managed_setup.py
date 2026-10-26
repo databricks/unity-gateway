@@ -14,7 +14,7 @@ inverting that module's maps rather than restated, so a new agent or MCP type on
 once.
 
 Local persistence is not duplicated here: the config lives in the one local file,
-``~/.ucode/managed-config.json``, which the launch path pulls into via
+``/etc/unitygateway/managed-settings.json``, which configuration and launch refreshes update via
 :func:`ucode.managed_config.save_managed_state` / :func:`ucode.managed_config.load_managed_state`.
 
 These validation and serialization helpers are consumed on the launch/refresh side (notably by
@@ -58,7 +58,7 @@ _AGENT_MODEL_FAMILIES: dict[str, tuple[str, ...]] = {
     "codex": ("codex", "oss"),
     "opencode": ("claude", "codex", "gemini", "oss"),
     "pi": ("claude", "codex", "gemini", "oss"),
-    "copilot": ("claude", "codex", "gemini", "oss"),
+    "copilot": ("claude", "codex"),
 }
 
 
@@ -70,10 +70,7 @@ def model_families_for_agent(tool: str) -> tuple[str, ...]:
 def supports_provider_service(tool: str, provider_type: str) -> bool:
     """True when ``tool`` can route through a ``provider_type`` Model Provider Service.
 
-    Thin pass-through to :func:`ucode.databricks.tool_supports_provider_type` so the wizard has one
-    obvious place to ask. Only claude (anthropic / amazon_bedrock / bedrock_mantle) and codex
-    (openai / azure_openai / microsoft_foundry / amazon_bedrock / bedrock_mantle) have MPS support
-    today; the other harnesses are Databricks-hosted only.
+    See :func:`ucode.databricks.tool_supports_provider_type`.
     """
     return tool_supports_provider_type(tool, provider_type)
 
@@ -102,6 +99,11 @@ def model_options_for_agent(tool: str, state: dict) -> list[str]:
         models = state.get(key)
         if isinstance(models, list):
             options.extend(m for m in models if isinstance(m, str) and m)
+    if tool == "copilot":
+        from ucode.agents.copilot import classify_copilot_model
+
+        # The codex listing also carries models Copilot can't serve, such as gpt-oss.
+        options = [m for m in options if classify_copilot_model(m)]
     # dict.fromkeys de-duplicates while preserving first-seen order (a model can match more than
     # one family bucket, e.g. an OSS id that also appears in the codex listing).
     return list(dict.fromkeys(options))

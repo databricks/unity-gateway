@@ -27,6 +27,19 @@ for a password. If that repair is denied, the agent does not launch.
 The local file is always written. The OS-managed file is additionally reconciled during interactive
 configuration, except for Claude subscription relay.
 
+## Per-user Scope
+
+`ug configure --user` (saved as `config_scope` in `~/.ucode/state.json`, default `global`) skips the
+OS-managed files like `UG_SKIP_OS_SETTINGS`: no administrator permission, and managed MCP servers
+register in user scope. Because OS-managed settings take precedence over user settings,
+`ug configure --user` fails before configuring any agent while a selected agent's OS-managed file
+exists (including Windows `requirements.toml`), whoever wrote it; `ug revert`, removal, or
+`--global` resolves it. Launches don't check: a managed file added later simply takes precedence.
+`UG_SKIP_OS_SETTINGS` doesn't check either: ug trusts the OS-managed files present and leaves them
+untouched. `ug configure` without `--user` and `ug revert` reset the scope to `global`.
+`ug configure --user` also fails when the selected workspace publishes a managed config, since that
+config must be installed machine-wide.
+
 ## Interactive Detection
 
 Standard input determines whether UG may request administrator permission interactively. Standard
@@ -41,8 +54,10 @@ prompt mode and stdin handling itself; the predicate does not probe or grant aut
 Windows has no `sudo`, so the terminal doesn't matter there: an elevated (or SYSTEM) process may
 write `C:\Program Files\ClaudeCode\managed-settings.json` directly, which lets device provisioning
 run `ug configure` headlessly. Standard users can't write under Program Files. For them, as for a
-headless Linux/macOS run, an absent or compatible file stays local-only without a message, and a
-conflicting file stops the command with a request to rerun it elevated.
+headless Linux/macOS run, an absent or compatible file stays local-only, and a conflicting file
+stops the command with a request to rerun it elevated. When the machine-wide file lacks UG's
+settings, `ug configure` warns that it wasn't updated because no admin privileges were
+detected; launches, which reconfigure on every run, stay quiet.
 
 Codex has no admin-only config layer on Windows, so the same elevated runs write
 `C:\ProgramData\OpenAI\Codex\requirements.toml`, which Codex 0.156.0 and later enforce over the
