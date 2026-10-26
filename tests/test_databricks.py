@@ -2476,7 +2476,7 @@ class TestGetDatabricksToken:
         assert profile_log.read_text() == ""
 
     def test_has_valid_auth_strips_ambient_profile_without_explicit_profile(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, caplog
     ):
         profile_log = tmp_path / "profile"
         env = self._fake_databricks(
@@ -2491,6 +2491,7 @@ class TestGetDatabricksToken:
 
         assert db_mod.has_valid_databricks_auth(WS)
         assert profile_log.read_text() == ""
+        assert not any("ug_auth_check_failed" in r.getMessage() for r in caplog.records)
 
     def test_check_auth_returns_none_when_cli_cannot_run(self, tmp_path, monkeypatch):
         env = self._fake_databricks(tmp_path, "sys.exit(0)")
@@ -2510,6 +2511,115 @@ class TestGetDatabricksToken:
         )
         monkeypatch.setattr("os.environ", env)
 
+        assert db_mod.check_databricks_auth(WS) is False
+
+    @pytest.mark.parametrize(
+        ("outcome", "expected_reason", "expected_type", "expected_return"),
+        [
+            (
+                subprocess.CompletedProcess([], 7, "private-token", "private-error"),
+                "cli_exit",
+                "none",
+                False,
+            ),
+            (
+                subprocess.CompletedProcess([], 0, '{"token_type": "private-content"}', ""),
+                "missing_token",
+                "none",
+                False,
+            ),
+            (
+                subprocess.CompletedProcess([], 0, "private-not-json", ""),
+                "invalid_response",
+                "JSONDecodeError",
+                False,
+            ),
+            (
+                subprocess.TimeoutExpired(["private-command"], 15, stderr="private-error"),
+                "timeout",
+                "TimeoutExpired",
+                None,
+            ),
+            (PermissionError(13, "private-path"), "process_error", "PermissionError", None),
+        ],
+    )
+    def test_auth_check_failure_reports_safe_reason(
+        self,
+        tmp_path,
+        monkeypatch,
+        caplog,
+        outcome,
+        expected_reason,
+        expected_type,
+        expected_return,
+    ):
+        """Scenario: cached auth cannot be checked. Expected: bounded cause, unchanged result."""
+        env = self._fake_databricks(tmp_path, "sys.exit(0)")
+        env.pop("DATABRICKS_BEARER", None)
+        env.pop("DATABRICKS_BEARER_COMMAND", None)
+        monkeypatch.setattr("os.environ", env)
+        calls = []
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "/synthetic/databricks")
+
+        def check(*args, **kwargs):
+            calls.append(args)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        monkeypatch.setattr(db_mod, "run", check)
+        assert db_mod.check_databricks_auth(WS, "synthetic") is expected_return
+        assert len(calls) == 1
+        [record] = [r for r in caplog.records if "ug_auth_check_failed" in r.getMessage()]
+        assert f"reason={expected_reason}" in record.getMessage()
+        assert f"exception_type={expected_type}" in record.getMessage()
+        assert (
+            "exit_code=7" in record.getMessage()
+            if expected_reason == "cli_exit"
+            else "exit_code=none" in record.getMessage()
+        )
+        assert "private-" not in record.getMessage()
+        assert WS not in record.getMessage()
+
+    def test_auth_check_diagnostic_reaches_launcher_stderr(self, tmp_path):
+        """Scenario: a launcher checks rejected auth. Expected: safe stderr marker, no stdout."""
+        env, argv_log = self._logging_fake(
+            tmp_path, 'print("private-cli-error", file=sys.stderr); sys.exit(7)'
+        )
+        env.pop("DATABRICKS_BEARER", None)
+        env.pop("DATABRICKS_BEARER_COMMAND", None)
+        env["DATABRICKS_CONFIG_FILE"] = str(tmp_path / "databrickscfg")
+        env["UCODE_DEBUG"] = "0"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from ucode.databricks import check_databricks_auth; "
+                f"assert check_databricks_auth({WS!r}, 'synthetic') is False",
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        )
+        assert result.stdout == ""
+        assert result.stderr.strip() == (
+            "ug_auth_check_failed reason=cli_exit exception_type=none exit_code=7"
+        )
+        assert len(argv_log.read_text().splitlines()) == 1
+
+    def test_auth_check_diagnostic_sink_failure_preserves_result(self, tmp_path, monkeypatch):
+        """Scenario: diagnostic logging fails. Expected: auth result is still False."""
+        env = self._fake_databricks(tmp_path, "sys.exit(1)")
+        env.pop("DATABRICKS_BEARER", None)
+        env.pop("DATABRICKS_BEARER_COMMAND", None)
+        monkeypatch.setattr("os.environ", env)
+
+        def broken_sink(*args, **kwargs):
+            raise OSError("diagnostic unavailable")
+
+        monkeypatch.setattr(db_mod.logging.getLogger(db_mod.__name__), "warning", broken_sink)
         assert db_mod.check_databricks_auth(WS) is False
 
     def test_timeout_does_not_suggest_logging_out(self, tmp_path, monkeypatch):
