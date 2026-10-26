@@ -29,6 +29,7 @@ import json
 import os
 import re
 import secrets
+import subprocess
 import threading
 import time
 from collections.abc import Callable, Iterable, Iterator
@@ -803,30 +804,25 @@ def build_mcp_server_entry(argv: list[str]) -> dict:
 
 
 def copilot_mcp_config_path() -> Path:
-    """The user config Copilot reads ``mcpServers`` from (and ``copilot mcp add`` writes):
-    ``$COPILOT_HOME/mcp-config.json`` when that env var is set, else ``~/.copilot/mcp-config.json``."""
+    """The user config Copilot reads ``mcpServers`` from (and ``copilot mcp add`` writes)."""
     copilot_home = os.environ.get("COPILOT_HOME")
     return Path(copilot_home) / "mcp-config.json" if copilot_home else COPILOT_MCP_CONFIG_PATH
 
 
-def _read_mcp_config_for_rewrite(path: Path) -> dict:
-    """``path`` parsed for a rewrite (``{}`` when absent). Raises rather than return ``{}`` for a
-    file that isn't a JSON object, since rewriting it would drop the developer's own servers."""
+def _read_mcp_config_for_rewrite(path: Path) -> dict | None:
+    """``path`` parsed for a rewrite: ``{}`` when absent, ``None`` when it isn't a JSON object, so
+    a caller never overwrites it. Copilot also accepts JSON with comments, which lands here."""
     if not path.exists():
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
-        data = None
-    if not isinstance(data, dict):
-        raise RuntimeError(
-            f"Can't update {path}: it isn't a valid JSON object. Fix it, then retry."
-        )
-    return data
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def remove_legacy_mcp_config() -> bool:
-    """Delete the legacy side file and its backup (on revert: everything in them is ug's)."""
+    """Delete the legacy side file and its backup (everything in them is ug's)."""
     existed = LEGACY_MCP_CONFIG_PATH.exists() or LEGACY_MCP_BACKUP_PATH.exists()
     if is_dry_run():
         return existed
@@ -835,32 +831,74 @@ def remove_legacy_mcp_config() -> bool:
     return existed
 
 
-def _take_legacy_mcp_servers() -> dict[str, dict]:
-    """The servers in the legacy side file, deleting it and its backup. Every entry there was
-    written by ug, so it moves into the user config as-is."""
+def _read_legacy_mcp_servers() -> dict[str, dict]:
+    """The servers in the legacy side file. Every entry there was written by ug, so it moves into
+    the user config as-is."""
     servers = read_json_safe(LEGACY_MCP_CONFIG_PATH).get("mcpServers")
-    remove_legacy_mcp_config()
     if not isinstance(servers, dict):
         return {}
     return {name: entry for name, entry in servers.items() if isinstance(entry, dict)}
 
 
+def _remove_mcp_server_via_cli(name: str) -> bool:
+    try:
+        result = subprocess_cross_os.run(
+            [SPEC["binary"], "mcp", "remove", name],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Timed out removing MCP server '{name}' via copilot CLI.") from exc
+    if "not found" in f"{result.stderr or ''}\n{result.stdout or ''}".lower():
+        return False
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to remove MCP server '{name}' via copilot CLI.")
+    return True
+
+
+def _add_mcp_server_via_cli(name: str, entry: dict) -> None:
+    # The CLI refuses an existing name, so a replace removes it first.
+    _remove_mcp_server_via_cli(name)
+    argv = [entry["command"], *entry.get("args", [])]
+    try:
+        subprocess_cross_os.run(
+            [SPEC["binary"], "mcp", "add", name, "--", *argv],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"Failed to add MCP server '{name}' via copilot CLI.") from exc
+
+
 def _apply_mcp_diff(add: dict[str, dict], remove: set[str]) -> set[str]:
     path = copilot_mcp_config_path()
     config = _read_mcp_config_for_rewrite(path)
+    legacy = _read_legacy_mcp_servers()
+    upserts = {name: entry for name, entry in legacy.items() if name not in remove} | add
+    if config is None:
+        # Defer to the copilot CLI, which reads the file the way Copilot does, for exactly the
+        # changed entries.
+        removed = {name for name in remove if _remove_mcp_server_via_cli(name) or name in legacy}
+        for name, entry in upserts.items():
+            _add_mcp_server_via_cli(name, entry)
+        remove_legacy_mcp_config()
+        return removed
+
     servers = config.get("mcpServers")
     if not isinstance(servers, dict):
         servers = {}
-    legacy = _take_legacy_mcp_servers()
     removed = {name for name in remove if name in servers or name in legacy}
-    if not add and not removed and not legacy:
-        return removed
-    servers.update({name: entry for name, entry in legacy.items() if name not in remove})
-    for name in remove:
-        servers.pop(name, None)
-    servers.update(add)
-    config["mcpServers"] = servers
-    write_json_file(path, config)
+    if upserts or removed:
+        for name in remove:
+            servers.pop(name, None)
+        servers.update(upserts)
+        config["mcpServers"] = servers
+        write_json_file(path, config)
+    remove_legacy_mcp_config()
     return removed
 
 

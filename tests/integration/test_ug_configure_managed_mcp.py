@@ -133,9 +133,8 @@ def test_managed_fixture_copilot_mcp_registered_in_user_config(live_session, wor
 
     listing = session.run("mcp", "list", "--json", binary=session.which("copilot"), timeout=60)
     servers = json.loads(listing.stdout)["mcpServers"]
-    entries = {name: entry for name, entry in servers.items() if "github" in name.lower()}
-    assert entries, servers
-    entry = next(iter(entries.values()))
+    assert "system-ai-github" in servers, servers
+    entry = servers["system-ai-github"]
     assert entry["source"] == "user", entry
     assert entry["enabled"] is True, entry
     assert entry["command"].endswith("ug"), entry
