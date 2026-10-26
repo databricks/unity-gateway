@@ -209,6 +209,20 @@ class TestLaunch:
         assert settings["model"] == "claude-picker"
         assert settings["env"]["ANTHROPIC_CUSTOM_HEADERS"].endswith(LINE)
 
+    def test_provider_launch_without_tags_keeps_only_the_picker_override(self, monkeypatch):
+        monkeypatch.delenv("AI_GATEWAY_REQUEST_TAGS")
+        state = {"workspace": WS, "_claude_launch_picker_models": ["claude-picker"]}
+        claude.launch(state, [], options=LaunchOptions())
+        settings = self._settings(self.calls[0])
+        assert settings["model"] == "claude-picker"
+        # Same headers as the saved file: no tags line and no extra override keys appear.
+        assert settings["env"]["ANTHROPIC_CUSTOM_HEADERS"] == "x-a: b"
+
+    def test_launch_without_tags_or_models_hands_over_the_saved_file(self, monkeypatch):
+        monkeypatch.delenv("AI_GATEWAY_REQUEST_TAGS")
+        claude.launch({"workspace": WS}, [], options=LaunchOptions())
+        assert self.calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH)]]
+
     def test_relayed_launch_passes_tags_to_the_relay(self, monkeypatch):
         relayed = Mock()
         monkeypatch.setattr(claude, "_launch_relayed", relayed)
