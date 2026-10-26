@@ -45,6 +45,7 @@ MANAGED_FINGERPRINT_VERSION = 1
 UNITY_GATEWAY_MANAGED_SETTINGS_PATH = Path("/etc/unitygateway/managed-settings.json")
 _MISSING = object()
 _managed_write_batch: tuple[str, ...] = ()
+_managed_write_explicit = 0
 _managed_write_notice_shown = False
 _managed_write_session_depth = 0
 _managed_write_worker: _SudoReplaceWorker | None = None
@@ -293,8 +294,9 @@ def _windows_admin_required_message(display: str, path: Path, command: str) -> s
 @contextmanager
 def managed_write_batch(displays: list[str]) -> Iterator[None]:
     """Group setup messaging for agents configured in one command."""
-    global _managed_write_batch, _managed_write_notice_shown
+    global _managed_write_batch, _managed_write_notice_shown, _managed_write_explicit
 
+    _managed_write_explicit += 1
     previous_batch = _managed_write_batch
     previous_notice = _managed_write_notice_shown
     _managed_write_batch = tuple(dict.fromkeys(displays))
@@ -304,8 +306,14 @@ def managed_write_batch(displays: list[str]) -> Iterator[None]:
         if _managed_write_notice_shown:
             print_success(f"Settings configured for {' and '.join(_managed_write_batch)}")
     finally:
+        _managed_write_explicit -= 1
         _managed_write_batch = previous_batch
         _managed_write_notice_shown = previous_notice
+
+
+def explicit_configure_active() -> bool:
+    """Whether the current write is part of `ug configure` rather than a launch's refresh."""
+    return _managed_write_explicit > 0
 
 
 def warn_managed_write_skipped(path: Path, current: dict, desired: dict) -> None:

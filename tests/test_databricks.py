@@ -5837,3 +5837,38 @@ def test_importing_the_cli_does_not_load_the_databricks_sdk():
         check=True,
     )
     assert result.stdout.strip() == "False"
+
+
+class TestKeepEquivalentHelper:
+    @staticmethod
+    def _exe(tmp_path, name):
+        exe = tmp_path / name / "ug"
+        exe.parent.mkdir()
+        exe.write_text("#!/bin/sh\n")
+        exe.chmod(0o755)
+        return str(exe)
+
+    def test_command_with_spaces_in_path_is_kept(self, tmp_path):
+        old = self._exe(tmp_path, "my tools")
+        new = self._exe(tmp_path, "new")
+        existing = f"'{old}' auth-token --host https://h"
+        assert (
+            db_mod.keep_equivalent_helper_command(existing, f"{new} auth-token --host https://h")
+            == existing
+        )
+
+    def test_different_subcommand_or_args_are_not_kept(self, tmp_path):
+        old = self._exe(tmp_path, "old")
+        new = self._exe(tmp_path, "new")
+        desired = f"{new} auth-token --host https://h"
+        assert (
+            db_mod.keep_equivalent_helper_command(f"{old} otel-headers --host https://h", desired)
+            == desired
+        )
+        assert db_mod.keep_equivalent_helper_command(None, desired) == desired
+
+    def test_argv_requires_existing_executable(self, tmp_path):
+        new = self._exe(tmp_path, "new")
+        desired = [new, "auth-token", "--host", "h"]
+        gone = [str(tmp_path / "gone" / "ug"), "auth-token", "--host", "h"]
+        assert db_mod.keep_equivalent_helper_argv(gone, desired) == desired

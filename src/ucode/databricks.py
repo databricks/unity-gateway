@@ -1962,6 +1962,57 @@ def ug_binary() -> str:
     return shutil.which("ug") or "ug"
 
 
+def _usable_equivalent_executable(existing: str, desired: str) -> bool:
+    """Whether ``existing`` is another installation of the executable ``desired`` names."""
+    return (
+        os.path.isabs(existing)
+        and os.path.basename(existing).casefold() == os.path.basename(desired).casefold()
+        and os.path.isfile(existing)
+        and os.access(existing, os.X_OK)
+    )
+
+
+def keep_equivalent_helper_argv(existing: list[str], desired: list[str]) -> list[str]:
+    """``existing`` when it only differs from ``desired`` in where the same ug executable lives.
+
+    The ``ug`` path a helper records depends on which installation or PATH ran the command, so a
+    launch from another installation must not rewrite an otherwise identical helper. The existing
+    executable must still exist and be executable; any other difference (subcommand, host,
+    profile, flags) returns ``desired``."""
+    if (
+        existing
+        and desired
+        and existing[1:] == desired[1:]
+        and _usable_equivalent_executable(existing[0], desired[0])
+    ):
+        return list(existing)
+    return desired
+
+
+def keep_equivalent_helper_command(existing: object, desired: str) -> str:
+    """String form of :func:`keep_equivalent_helper_argv` for a shell-quoted helper command."""
+    if not isinstance(existing, str) or existing == desired:
+        return desired
+    try:
+        desired_argv = shlex.split(desired, posix=os.name != "nt")
+    except ValueError:
+        return desired
+    if not desired_argv:
+        return desired
+    suffix = subprocess_cross_os.shell_command(desired_argv[1:])
+    if not suffix or not existing.endswith(" " + suffix):
+        return desired
+    prefix = existing[: -len(suffix) - 1]
+    try:
+        parts = shlex.split(prefix, posix=os.name != "nt")
+    except ValueError:
+        return desired
+    if len(parts) != 1:
+        return desired
+    exe = parts[0].strip('"') if os.name == "nt" else parts[0]
+    return existing if _usable_equivalent_executable(exe, desired_argv[0]) else desired
+
+
 def build_auth_token_argv(
     workspace: str, profile: str | None = None, *, use_pat: bool = False
 ) -> list[str]:
