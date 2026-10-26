@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from ucode.smart_routing.rationale import format_rationale
+from ucode.ug_headers import ug_headers
 
 ROUTER_NAME = "task_v3"
 ROUTER_NAME_ENV_VAR = "SMART_ROUTER_NAME"
@@ -226,6 +227,7 @@ def select_route(
         workspace.rstrip("/") + ROUTING_PATH,
         data=json.dumps(body).encode("utf-8"),
         headers={
+            **ug_headers(),
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         },

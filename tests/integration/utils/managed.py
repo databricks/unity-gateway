@@ -38,8 +38,16 @@ def assert_no_managed_config(payload: object) -> None:
 
 
 def is_managed_config_control_plane_cache(home: Path, path: Path) -> bool:
-    """Whether ``path`` is ug's expected fetched-config cache, not agent-owned state."""
-    return path == home / ".ucode" / "managed-config.json"
+    """Whether ``path`` is ug's workspace-policy state, not agent-owned configuration.
+
+    That is the installed policy and its refresh stamps, or, where the machine cannot hold the
+    installed policy (Windows), the per-user cache of the fetched policy.
+    """
+    return path in (
+        home / ".ucode" / "refresh_ts.json",
+        home / ".ucode" / "managed-config.json",
+        Path("/etc/unitygateway/managed-settings.json"),
+    )
 
 
 def use_smart_routing_fixture(
