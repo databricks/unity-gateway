@@ -68,8 +68,6 @@ from ucode.managed_files import (
     CODEX_REQUIREMENTS_FILE,
     OS,
     ManagedFileWriteUnavailable,
-    check_skipped_managed_overrides,
-    config_scope,
     current_os,
     managed_file_conflicts,
     managed_file_is_verified,
@@ -95,6 +93,7 @@ from ucode.smart_routing.codex_routing import codex_model_id
 from ucode.smart_routing.routing import configured_router_name
 from ucode.state import get_provider_service, is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
+from ucode.ug_headers import ug_headers
 from ucode.ui import print_warning_err
 
 from .args import LaunchOptions
@@ -900,14 +899,7 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
     if path is not None and path.name == CODEX_REQUIREMENTS_FILE:
         compose = _as_requirements(compose)
     if managed_settings_skipped():
-        if config_scope() != "user":
-            check_skipped_managed_overrides(
-                path,
-                parser=_parse_managed_config,
-                compose=compose,
-                owned_paths=MANAGED_KEYS,
-                display="Codex",
-            )
+        # Opted out: trust whatever OS-managed file exists and leave it untouched.
         return
     if path is None:
         print_warning_err(
@@ -1229,7 +1221,19 @@ def _export_launch_routing_headers(config: dict) -> None:
 def _render_launch_overlay(*args, **kwargs) -> dict:
     overlay = render_overlay(*args, **kwargs)
     _export_launch_routing_headers(overlay)
+    _add_launch_headers(overlay)
     return overlay
+
+
+def _add_launch_headers(config: dict) -> None:
+    """Add this launch's ``ug --header`` / ``UG_HEADERS`` to the provider's ``-c`` headers.
+
+    A header ug or the admin already sends keeps its value. The headers reach only this launch's
+    ``-c`` flags, never a config file."""
+    present = {name.casefold() for name in _managed_provider_headers(config) or {}}
+    for name, value in ug_headers().items():
+        if name.casefold() not in present:
+            _set_routing_header(config, name, value)
 
 
 def _set_routing_header(config: dict, header: str, value: str | None) -> None:
@@ -1528,6 +1532,7 @@ def launch(
     _set_provider_header(profile_doc, provider)
     _set_parent_schema_header(profile_doc, parent_schema if not provider else None)
     _export_launch_routing_headers(profile_doc)
+    _add_launch_headers(profile_doc)
     updating = tool_args[:1] == ["update"]
     if updating and _is_ucode_catalog_reference(profile_doc.get("model_catalog_json")):
         profile_doc.pop("model_catalog_json")

@@ -415,17 +415,18 @@ class TestCujSmartRouting(BaseCujTest):
                         )
                     }
                     assert len(completed_children) == 1, (agent, children.keys())
-                    decisions = [
-                        decision
-                        for decision in read_jsonl(decisions_path)[decision_count:]
-                        if child_task.filename in (decision.get("task_name") or "")
-                    ]
+                    decisions = read_jsonl(decisions_path)[decision_count:]
+                    decision_tasks = {
+                        decision.get("task_name")
+                        for decision in decisions
+                        if decision.get("task_name")
+                    }
                     requests = recorder.requests_after(checkpoint)
                     routes = [
                         request
                         for request in requests
                         if request.path == ROUTING_PATH
-                        and child_task.filename in request.payload["task"]["prompt"]
+                        and request.payload.get("task", {}).get("prompt") in decision_tasks
                     ]
                     assert len(routes) == int(subagent_routed), (agent, routes)
                     if subagent_routed:
