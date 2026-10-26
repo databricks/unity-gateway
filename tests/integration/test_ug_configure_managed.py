@@ -144,6 +144,11 @@ def test_ug_managed_config_launch_replays_saved_config(live_session, workspace):
     assert saved["outcome"] == "published", saved
     assert "last_checked_at" not in saved, saved
     assert refresh.stat().st_mode & 0o777 == 0o600
+    # Backdate the record as an older ug would have stamped it: the old five-minute timer would
+    # refetch and rewrite it, while a replay leaves it byte-for-byte unchanged.
+    records = json.loads(refresh.read_text())
+    records[workspace_key]["last_checked_at"] = "2000-01-01T00:00:00+00:00"
+    refresh.write_text(json.dumps(records))
     refresh_text = refresh.read_text()
 
     for label in ("replay-1", "replay-2"):

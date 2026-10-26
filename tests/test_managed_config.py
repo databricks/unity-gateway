@@ -1353,6 +1353,9 @@ class TestPolicyWithoutInstallation:
         monkeypatch.setattr(
             mc_mod, "get_managed_config", lambda *_a: pytest.fail("a saved read must be replayed")
         )
+        monkeypatch.setattr(
+            mc_mod, "get_databricks_token", lambda *_a: pytest.fail("a replay needs no token")
+        )
 
         result = refresh_managed_config(_state())
 

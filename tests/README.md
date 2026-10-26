@@ -776,7 +776,8 @@ before cache/auth/bootstrap, including bare/agent launches, dry-run, and skip-pr
 refresh metadata, and user state unchanged. This new live case has not been run locally.
 `test_ug_managed_config_launch_replays_saved_config` is the live journey for root-owned `0644`
 policy, a user-owned `0600` record with a `published` outcome and no timestamp, and unchanged
-policy and record bytes (inode/mtime/ctime for the policy) across two launches. Its live sudo/password behavior still requires a disposable clean VM.
+policy and record bytes (inode/mtime/ctime for the policy) across two launches. The record is
+backdated first, so the removed five-minute refresh would have refetched and rewritten it. Its live sudo/password behavior still requires a disposable clean VM.
 Non-root writer regressions cover terminal/script launches, initial install and removal, and
 verify that neither a sudo capability probe nor a prompting worker is started.
 
