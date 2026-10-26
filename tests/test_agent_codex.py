@@ -2586,7 +2586,7 @@ class TestOtelTokenProvider:
 class TestWriteUserMcpServers:
     """Batched user-scope `[mcp_servers]` writes for the workspace-managed reconcile path."""
 
-    def test_replaces_http_oauth_entry_without_starting_cli(self, tmp_path, monkeypatch):
+    def test_replaces_proxy_entry_without_starting_cli(self, tmp_path, monkeypatch):
         path = tmp_path / "config.toml"
         path.write_text(
             'model = "gpt-5"\n\n[mcp_servers.mine]\ncommand = "x"\n\n'
@@ -2598,10 +2598,9 @@ class TestWriteUserMcpServers:
         monkeypatch.setattr(
             mcp_mod,
             "add_codex_mcp_server",
-            lambda *args: pytest.fail("Codex CLI would start OAuth during registration"),
+            lambda *args: pytest.fail("batched write should not invoke Codex CLI"),
         )
-        url = "https://ws/ai-gateway/mcp-services/system.ai.github"
-        entry = codex.managed_mcp_http_entry(url, "https://example.com/oauth/client.json")
+        entry = codex.managed_mcp_entry(["ug", "mcp-proxy", "https://ws/x"])
         removed = codex.write_user_mcp_servers({"github": entry}, {"github"})
 
         doc = read_toml_safe(path)
@@ -2675,29 +2674,6 @@ class TestWriteUserMcpServers:
         assert path.read_text() == "this is = = not valid toml [[["  # never overwritten
         assert added == [("svc", ["ug", "mcp-proxy", "u"])]
         assert removed == ["old"]
-
-    def test_unparseable_file_does_not_start_oauth_login(self, tmp_path, monkeypatch):
-        path = tmp_path / "config.toml"
-        original = "this is = = not valid toml [[["
-        path.write_text(original)
-        monkeypatch.setattr(codex, "LEGACY_CODEX_CONFIG_PATH", path)
-        import ucode.mcp as mcp_mod
-
-        def unexpected_cli(*args):
-            pytest.fail("Codex CLI would start browser OAuth during MCP setup")
-
-        monkeypatch.setattr(mcp_mod, "add_codex_mcp_server", unexpected_cli)
-        monkeypatch.setattr(mcp_mod, "remove_codex_mcp_server", unexpected_cli)
-        with pytest.raises(RuntimeError, match="invalid Codex config"):
-            codex.write_user_mcp_servers(
-                {
-                    "gh": codex.managed_mcp_http_entry(
-                        "https://ws/x", "https://example.com/oauth/client.json"
-                    )
-                },
-                {"old"},
-            )
-        assert path.read_text() == original
 
     @pytest.fixture(autouse=True)
     def _clear_codex_home_env(self, monkeypatch):
