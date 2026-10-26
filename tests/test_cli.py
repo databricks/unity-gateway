@@ -1519,6 +1519,30 @@ class TestLaunchReplaysSavedManagedConfig:
         assert managed is None
         assert feature_disabled is True
 
+    def test_a_cache_from_before_the_outcome_stamp_is_read_once(self, monkeypatch, tmp_path):
+        """An older empty file could be "no config" or a disabled feature, so fetch and stamp it."""
+        mc_mod = self._per_user_cache(
+            monkeypatch, tmp_path, {"workspace": "https://ws", "config": {}}
+        )
+        monkeypatch.setattr(mc_mod, "get_databricks_token", lambda *a: "tok")
+        fetched: list[str] = []
+        monkeypatch.setattr(
+            mc_mod,
+            "get_managed_config",
+            lambda ws, tok: fetched.append(ws) or (None, "FEATURE_DISABLED"),
+        )
+
+        managed, feature_disabled = cli_mod._fetch_managed_config({"workspace": "https://ws"})
+
+        assert fetched == ["https://ws"]
+        assert managed is None
+        assert feature_disabled is True
+        # Stamped now, so the next launch replays it without a request.
+        monkeypatch.setattr(
+            mc_mod, "get_managed_config", lambda *a: pytest.fail("the stamped read must replay")
+        )
+        assert cli_mod._fetch_managed_config({"workspace": "https://ws"}) == (None, True)
+
     def test_configure_reads_fresh_and_saves(self, monkeypatch, tmp_path):
         import json
 

@@ -1043,8 +1043,8 @@ def _save_user_cache(workspace: str, config: dict, *, outcome: str) -> None:
 def _saved_user_result(workspace: str) -> ManagedConfigResult | None:
     """The per-user cache's read for ``workspace`` replayed as a result, or None when none is saved.
 
-    A file without an ``outcome`` is classified by its content: a non-empty config is published,
-    an empty one means "none".
+    A file written before ug recorded the outcome counts as nothing saved, so the next read fetches
+    once and stamps it: an older empty file could be either "no config" or a disabled feature.
     """
     data = config_io.read_json_safe(USER_MANAGED_CONFIG_PATH)
     stored = data.get("workspace")
@@ -1058,9 +1058,11 @@ def _saved_user_result(workspace: str) -> ManagedConfigResult | None:
     outcome = data.get("outcome")
     if outcome == _OUTCOME_FEATURE_DISABLED:
         return ManagedConfigResult(None, True)
-    if outcome == _OUTCOME_NONE or not config:
+    if outcome == _OUTCOME_NONE:
         return ManagedConfigResult(None, False)
-    return ManagedConfigResult(normalize_managed_config(config), False)
+    if outcome == _OUTCOME_PUBLISHED and config:
+        return ManagedConfigResult(normalize_managed_config(config), False)
+    return None
 
 
 def _is_feature_disabled(reason: str) -> bool:
