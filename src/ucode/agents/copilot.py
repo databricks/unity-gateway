@@ -306,14 +306,22 @@ def _catalog_sort_key(model: CopilotModel) -> tuple:
 
 
 def build_catalog(
-    models: Iterable[tuple[str, Iterable[str]]], *, provider_type: str | None = None
+    models: Iterable[tuple[str, Iterable[str]]],
+    *,
+    provider_type: str | None = None,
+    fallback_wire: str | None = None,
 ) -> tuple[list[CopilotModel], list[tuple[str, str]]]:
     """The ``(model, api_types)`` pairs Copilot can use, sorted Claude first (by family, newest
-    first) then GPT, and the skipped models with the reason (see :func:`classify_model`)."""
+    first) then GPT, and the skipped models with the reason (see :func:`classify_model`).
+
+    With ``fallback_wire``, a model whose name doesn't decide the wire uses it instead of being
+    skipped; unsupported models are still skipped."""
     usable: dict[str, CopilotModel] = {}
     skipped: dict[str, str] = {}
     for model, api_types in models:
         wire, reason = classify_model(model, api_types, provider_type=provider_type)
+        if wire is None and fallback_wire and bare_model_name(model) not in _UNSUPPORTED_MODELS:
+            wire = fallback_wire
         if wire is not None:
             usable.setdefault(model, CopilotModel(model, wire))
         elif reason is not None:
@@ -394,16 +402,12 @@ def location_catalog(state: dict, schema: str) -> list[CopilotModel]:
     listing = list_anthropic_model_catalog(
         workspace, launch_token(state, workspace), parent_schema=schema
     )
-    models = dict.fromkeys(unwrap_anthropic_gateway_model(model) for model in listing.model_ids)
-    catalog = [
-        CopilotModel(model, classify_copilot_model(model) or WIRE_ANTHROPIC)
-        for model in models
-        if bare_model_name(model) not in _UNSUPPORTED_MODELS
-    ]
+    models = (unwrap_anthropic_gateway_model(model) for model in listing.model_ids)
+    catalog, _ = build_catalog(((model, ()) for model in models), fallback_wire=WIRE_ANTHROPIC)
     if not catalog:
         reason = f": {listing.error_msg}" if listing.error_msg else ""
         raise RuntimeError(f"Found no model services to use in {schema}{reason}.")
-    return sorted(catalog, key=_catalog_sort_key)
+    return catalog
 
 
 def catalog_from_listings(

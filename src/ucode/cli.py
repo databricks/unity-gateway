@@ -3578,6 +3578,8 @@ def _launch_tool(
         route_root_model = None
         managed_model = None
         relayed_forward_model = None  # forwarded to Claude Code's --model for a relayed provider
+        # picker_catalog stands in for Claude's provider or location. Copilot picks its start model
+        # from its location catalog, and resolving one below would demand a Databricks model.
         if (
             provider
             or managed_parent_schema
