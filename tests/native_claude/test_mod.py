@@ -130,6 +130,8 @@ def test_orchestrator_instructions_follow_native_toggles(native_binary, tmp_path
             assert {**routed_tool, "description": native_tool["description"]} == native_tool
             description = routed_tool["description"]
             assert description.startswith(orchestrator.CLAUDE_AGENT_DESCRIPTION)
+            assert "notification in a later turn" in description
+            assert "end the current turn and wait for that notification" in description
             assert "Agents run in the background by default." in description
             assert "do NOT sleep, poll, or proactively check on its progress" in description
             assert "starts a fresh agent with no memory of prior runs" in description

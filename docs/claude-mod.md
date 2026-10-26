@@ -36,8 +36,10 @@ failures also log a diagnostic.
 In eligible Smart Router Orchestrator launches, `tool.describe` replaces the native
 Agent/Task delegation advice with the orchestrator's instructions. It changes only the
 description, preserving the native input schema and execution. The host's `Usage notes`
-section stays intact, including background completion and follow-up mechanics. Other
-native ownership and task-selection advice is replaced. Routing toggles invalidate
+section stays intact for native continuation mechanics. The orchestrator instructions
+explicitly tell the parent to end its current turn when only background work remains
+and wait for the completion notification, without launching another worker to wait.
+Other native ownership and task-selection advice is replaced. Routing toggles invalidate
 Claude's description cache: off restores native advice, and on restores the launch's
 orchestrator advice. Routing-only launches retain native advice. The same concise
 instructions lead the Claude activation context so its delegation rule survives a

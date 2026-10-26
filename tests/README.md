@@ -42,9 +42,10 @@ Claude mod entry-point coverage lives in `test_claude_mod.py` (generated plugin 
 TypeScript event-forwarding and launch-option tests in CI. The existing Claude
 skill-toggle integration journey checks the live recipe payload field and Agent/Task
 delegation descriptions across on/off/on. Native request-construction checks verify the
-description switches while retaining native background/follow-up guidance and the Agent
-schema, including routing-only, Omni,
-and missing-marker launches. These deliberately unauthenticated requests do not establish
+description switches, includes instructions to end the current turn while awaiting a
+background completion notification, and retains native follow-up guidance and the Agent
+schema, including routing-only, Omni, and missing-marker launches.
+These deliberately unauthenticated requests do not establish
 successful inference or delegation quality.
 See [the mod guide](../docs/claude-mod.md).
 

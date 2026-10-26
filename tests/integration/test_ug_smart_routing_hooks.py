@@ -515,6 +515,10 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
                         description = tool["description"]
                         if orchestration_enabled and routed:
                             assert "before gathering source evidence" in description, description
+                            assert "notification in a later turn" in description
+                            assert (
+                                "end the current turn and wait for that notification" in description
+                            )
                             assert (
                                 "To continue a previously spawned agent, use SendMessage"
                                 in description
