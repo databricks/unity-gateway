@@ -11,6 +11,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager, redirect_stdout
 from enum import StrEnum
 from importlib import metadata
+from pathlib import Path
 from typing import Annotated, Any
 
 import typer
@@ -1922,7 +1923,7 @@ def _not_installed_message(agents: list[str]) -> str:
 def _sync_claude_cowork_mcp_servers(
     state: dict | None = None, *, managed_mcp_servers: list[dict] | None = None
 ) -> None:
-    """Keep Claude Cowork's generated plugin aligned with Claude-targeted MCP state."""
+    """Keep Claude Cowork's generated plugin aligned with workspace MCPs and skills."""
     current_state = state if state is not None else load_state()
     configured_tools = set(current_state.get("available_tools") or []) | set(
         current_state.get("last_configured_tools") or []
@@ -1952,6 +1953,12 @@ def _configure_optional_setup(state: dict, tools: list[str]) -> None:
     configure_mcp_command()
     if "claude" in tools:
         _sync_claude_cowork_mcp_servers()
+
+
+def _sync_claude_cowork_skills(path: str | None) -> None:
+    if path is not None and os.path.normpath(path) != os.path.normpath(str(Path.home())):
+        return
+    _sync_claude_cowork_mcp_servers()
 
 
 @mcp_app.command("add")
@@ -2278,6 +2285,7 @@ def skills_add(
                     f"(invalid: {', '.join(invalid)})."
                 )
             configure_selected_skills_download_command(sorted(requested_skills), path)
+            _sync_claude_cowork_skills(path)
             return
         locations = _parse_skill_locations(location)
         if not locations:
@@ -2291,6 +2299,7 @@ def skills_add(
                     configure_skills_mcp_picker_command(agents=configured_agents)
                 else:
                     configure_skills_download_picker_command(path=path)
+                    _sync_claude_cowork_skills(path)
                 return
             raise RuntimeError("--location is required for `ug skills add`.")
         if mcp:
@@ -2300,6 +2309,7 @@ def skills_add(
             add_skills_command(locations, agents=configured_agents)
         else:
             configure_location_skills_download_command(locations, path=path)
+            _sync_claude_cowork_skills(path)
     except (RuntimeError, ValueError) as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
@@ -2397,6 +2407,7 @@ def skills_remove(
                     f"(invalid: {', '.join(invalid)})."
                 )
             remove_downloaded_skills_command([], sorted(requested_skills), path=path)
+            _sync_claude_cowork_skills(path)
             return
         locations = _parse_skill_locations(location)
         if path is not None and not locations:
@@ -2404,6 +2415,7 @@ def skills_remove(
         if not locations and not _stdin_is_interactive():
             raise RuntimeError("--location or --names is required for `ug skills remove`.")
         remove_downloaded_skills_command(locations, path=path)
+        _sync_claude_cowork_skills(path)
     except (RuntimeError, ValueError) as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
