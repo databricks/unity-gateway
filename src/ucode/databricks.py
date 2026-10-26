@@ -64,8 +64,7 @@ AI_GATEWAY_DOCS_URL = "https://docs.databricks.com/aws/en/ai-gateway/overview-be
 ANTHROPIC_MODELS_PATH = "/ai-gateway/anthropic/v1/models"
 # v1.18.0 adds `auth login --resource` for MCP connection sign-in.
 MIN_DATABRICKS_CLI_VERSION = (1, 18, 0)
-# v1.11.0 fixes `fs cp` (create -> finalize), which the skills MCP uploads rely on.
-SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION = max(MIN_DATABRICKS_CLI_VERSION, (1, 11, 0))
+SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION = MIN_DATABRICKS_CLI_VERSION
 TOKEN_REFRESH_INTERVAL_SECONDS = 1800
 # Substrings the Databricks CLI emits when it loses the token-cache write lock
 # to a concurrent `databricks auth token` (e.g. another ucode helper process
