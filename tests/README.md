@@ -270,7 +270,9 @@ workspace state; a repeated revert also returns 0.
 `test_cowork_plugin.py` covers active Cowork-root discovery, ambiguous-profile refusal,
 generated marketplace/plugin/MCP manifests, current-workspace managed-skill selection,
 Claude-only MCP filtering, absolute proxy executables, saved PAT mode, custom-OAuth refusal,
-install/update selection, idempotent cleanup, and saved-root removal. CLI component tests
+install/update selection, idempotent cleanup, and saved-root removal. Alias checks cover
+short service-first names, unchanged proxy routing, custom-name preservation,
+order-independent collisions, and repeated replacement of old keys. CLI component tests
 cover managed setup after successful skill/MCP reconciliation, preservation after transient
 reconciliation failures, and cleanup for unmanaged or non-Claude configurations. These tests
 mock the Claude plugin CLI and do not establish native Desktop policy, account-feature,

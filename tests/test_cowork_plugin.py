@@ -198,12 +198,120 @@ def test_configure_updates_installed_plugin(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cowork.subprocess_cross_os, "run", run)
 
-    assert cowork.configure_cowork(
-        {"workspace": "https://workspace.example", "profile": "chosen"},
-        [{"name": "github", "url": "https://mcp.example", "clients": ["claude"]}],
+    plugin_root = (
+        tmp_path / ".ucode" / cowork.MARKETPLACE_DIRECTORY_NAME / "plugins" / cowork.PLUGIN_NAME
     )
+    plugin_root.mkdir(parents=True)
+    mcp_path = plugin_root / ".mcp.json"
+    mcp_path.write_text(json.dumps({"mcpServers": {"system-ai-github": {"type": "stdio"}}}))
+    for _ in range(2):
+        assert cowork.configure_cowork(
+            {"workspace": "https://workspace.example", "profile": "chosen"},
+            [
+                {
+                    "name": "system-ai-github",
+                    "url": "https://workspace.example/ai-gateway/mcp-services/system.ai.github",
+                    "clients": ["claude"],
+                }
+            ],
+        )
+        assert list(json.loads(mcp_path.read_text())["mcpServers"]) == ["github"]
 
     assert calls[-1][1:3] == ["plugin", "update"]
+
+
+def test_cowork_mcp_config_shortens_uc_names_and_preserves_routing(tmp_path, monkeypatch):
+    ug_binary = tmp_path / "bin" / "ug"
+    monkeypatch.setattr(cowork.shutil, "which", lambda name: str(ug_binary.parent / name))
+    services = ["slack", "gmail", "github", "atlassian", "sales-tools"]
+    servers = [
+        {
+            "name": f"system-ai-{service}",
+            "url": f"https://workspace.example/ai-gateway/mcp-services/system.ai.{service}",
+            "clients": ["claude"],
+        }
+        for service in services
+    ]
+    servers.append(
+        {
+            "name": "main-team-slack",
+            "url": "https://workspace.example/ai-gateway/mcp-services/main.team.slack",
+            "clients": ["codex"],
+        }
+    )
+
+    config = cowork._cowork_mcp_config(servers, "https://workspace.example", "chosen")
+
+    assert list(config["mcpServers"]) == services
+    for service, server in zip(services, servers, strict=False):
+        assert config["mcpServers"][service] == {
+            "type": "stdio",
+            "command": str(ug_binary),
+            "args": [
+                "mcp-proxy",
+                "--url",
+                server["url"],
+                "--host",
+                "https://workspace.example",
+                "--profile",
+                "chosen",
+            ],
+        }
+
+
+@pytest.mark.parametrize(
+    ("name", "url"),
+    [
+        ("work-slack", "https://workspace.example/ai-gateway/mcp-services/system.ai.slack"),
+        ("system-ai-slack", "https://external.example/mcp"),
+        ("system-slack", "https://workspace.example/ai-gateway/mcp-services/system.slack"),
+    ],
+)
+def test_cowork_mcp_config_preserves_custom_names(tmp_path, monkeypatch, name, url):
+    monkeypatch.setattr(cowork.shutil, "which", lambda name: str(tmp_path / "bin" / name))
+
+    config = cowork._cowork_mcp_config(
+        [{"name": name, "url": url, "clients": ["claude"]}],
+        "https://workspace.example",
+        "chosen",
+    )
+
+    assert list(config["mcpServers"]) == [name]
+
+
+def test_cowork_mcp_config_disambiguates_names_independently_of_order(tmp_path, monkeypatch):
+    monkeypatch.setattr(cowork.shutil, "which", lambda name: str(tmp_path / "bin" / name))
+    servers = [
+        {
+            "name": "system-ai-slack",
+            "url": "https://workspace.example/ai-gateway/mcp-services/system.ai.slack",
+            "clients": ["claude"],
+        },
+        {
+            "name": "main-team-slack",
+            "url": "https://workspace.example/ai-gateway/mcp-services/main.team.slack",
+            "clients": ["claude"],
+        },
+        {"name": "slack", "url": "https://custom.example/mcp", "clients": ["claude"]},
+        {
+            "name": "slack-system-ai",
+            "url": "https://other.example/mcp",
+            "clients": ["claude"],
+        },
+    ]
+    expected_urls = {
+        "slack-system-ai-2": servers[0]["url"],
+        "slack-main-team": servers[1]["url"],
+        "slack": servers[2]["url"],
+        "slack-system-ai": servers[3]["url"],
+    }
+
+    for ordered in [servers, list(reversed(servers))]:
+        config = cowork._cowork_mcp_config(ordered, "https://workspace.example", "chosen")
+        assert {
+            name: entry["args"][entry["args"].index("--url") + 1]
+            for name, entry in config["mcpServers"].items()
+        } == expected_urls
 
 
 def test_configure_records_root_before_plugin_command_failure(tmp_path, monkeypatch):

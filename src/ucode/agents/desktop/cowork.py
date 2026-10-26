@@ -6,11 +6,14 @@ import json
 import os
 import shutil
 import tempfile
+from collections import Counter
 from pathlib import Path
+from urllib.parse import unquote
 
 from ucode import config_io
 from ucode.agents.desktop.claude import claude_desktop_root_directory
 from ucode.databricks import build_mcp_proxy_argv
+from ucode.mcp_connection_login import connection_from_url
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.skills_state import records_for_scope
 from ucode.ui import print_warning
@@ -222,6 +225,7 @@ def _cowork_mcp_config(
     custom_oauth: bool = False,
 ) -> dict:
     entries: dict[str, dict] = {}
+    urls: dict[str, str] = {}
     for server in servers:
         name = server.get("name")
         url = server.get("url")
@@ -245,7 +249,37 @@ def _cowork_mcp_config(
                 "Could not resolve the absolute `ug` executable required by Claude Cowork."
             )
         entries[name] = {"type": "stdio", "command": str(executable), "args": argv[1:]}
-    return {"mcpServers": entries}
+        urls[name] = url
+    aliases = _cowork_mcp_aliases(urls)
+    return {"mcpServers": {aliases[name]: entry for name, entry in entries.items()}}
+
+
+def _cowork_mcp_aliases(urls: dict[str, str]) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for name, url in urls.items():
+        full_name = unquote(connection_from_url(url) or "")
+        parts = full_name.split(".")
+        aliases[name] = (
+            parts[-1]
+            if len(parts) == 3 and all(parts) and name == full_name.replace(".", "-")
+            else name
+        )
+
+    counts = Counter(aliases.values())
+    used = set(aliases.values())  # Reserve custom names before allocating qualifiers.
+    for name in sorted(aliases):
+        alias = aliases[name]
+        if alias == name or counts[alias] == 1:
+            continue
+        qualified = f"{alias}-{name.removesuffix(f'-{alias}')}"
+        candidate = qualified
+        suffix = 2
+        while candidate in used:
+            candidate = f"{qualified}-{suffix}"
+            suffix += 1
+        aliases[name] = candidate
+        used.add(candidate)
+    return aliases
 
 
 def _write_marketplace(

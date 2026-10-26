@@ -44,6 +44,12 @@ Databricks AI Tools, and other-workspace skills are not copied. `ug configure --
 stored in the plugin. Saved PAT mode is supported. Custom OAuth is not yet supported for
 Cowork MCP servers.
 
+Cowork shortens generated UC connector names, for example `system-ai-slack` becomes
+`slack`. If service names collide, aliases include their catalog/schema, such as
+`slack-system-ai` and `slack-main-team`; numeric suffixes avoid conflicts with custom
+names. Custom registration names and full proxy URLs are preserved. Reconfigure and
+start a new Cowork session to refresh connector and tool names.
+
 UG owns these local files:
 
 - Generated marketplace: `~/.ucode/claude-cowork-marketplace`
