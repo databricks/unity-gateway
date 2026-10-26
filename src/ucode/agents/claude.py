@@ -1912,13 +1912,17 @@ def _enable_header_mod(settings: dict, root: Path | None) -> dict:
     return settings
 
 
-_header_mod_requested = False
+_explicit_configure = False
 
 
-def request_header_mod() -> None:
-    """Have this run add the header mod even without headers, as ``ug configure`` does."""
-    global _header_mod_requested
-    _header_mod_requested = True
+def request_explicit_configure(requested: bool = True) -> None:
+    """Mark this run as an explicit ``ug configure`` (``False`` clears it).
+
+    Only an explicit configure adds the header mod without ``UG_HEADERS`` and writes the credential
+    blanks into the managed file; a plain launch never re-adds either.
+    """
+    global _explicit_configure
+    _explicit_configure = requested
 
 
 def _install_header_mod(root: Path | None) -> bool:
@@ -1975,7 +1979,16 @@ def _settle_credential_blanks(desired: dict, existing: dict, *, add: bool) -> No
     existing_env = existing.get("env")
     existing_env = existing_env if isinstance(existing_env, dict) else {}
     for key in CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS:
-        if add:
+        held = existing_env.get(key)
+        if add and isinstance(held, str) and held.strip():
+            # Someone else's explicit value (e.g. IT's): never replace it silently.
+            env[key] = held
+            print_warning(
+                f"Claude Code managed settings at {_managed_settings_path()} set env.{key}; "
+                f"ug left it as is, so Claude may use it instead of the gateway credential and "
+                f"fail with a 401. Ask your administrator to remove it, or blank it yourself."
+            )
+        elif add:
             env[key] = ""
         elif key in existing_env:
             env[key] = existing_env[key]
@@ -2081,13 +2094,13 @@ def _reconcile_managed_settings(
     header_mod_root = claude_header_mod_root()
     # Only `ug configure` and a launch with headers add the mod: another writer of this file
     # drops entries it doesn't know, and re-adding them would rewrite it on every launch.
-    wants_mod = _header_mod_requested or bool(os.environ.get(UG_HEADERS_ENV_VAR, "").strip())
+    wants_mod = _explicit_configure or bool(os.environ.get(UG_HEADERS_ENV_VAR, "").strip())
     # Install the files before the settings name them, so a failed install never enables a
     # plugin that isn't there; a run that can't write as root leaves any earlier entries as is.
     installed = wants_mod and _install_header_mod(header_mod_root)
     desired_settings = _enable_header_mod(compose(existing), header_mod_root if installed else None)
-    # `request_header_mod()` marks the explicit `ug configure` path, which also adds the blanks.
-    _settle_credential_blanks(desired_settings, managed_before, add=_header_mod_requested)
+    # Only the explicit `ug configure` path adds the blanks.
+    _settle_credential_blanks(desired_settings, managed_before, add=_explicit_configure)
     if header_mod_root is not None:
         owned_paths = [*owned_paths, *CLAUDE_HEADER_MOD_PATHS]
     _preserve_permission_denies(managed_before, desired_settings, withdrawn=withdrawn_denies or [])

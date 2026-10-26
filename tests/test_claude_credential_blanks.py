@@ -1,18 +1,10 @@
-"""ug blanks ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY so a shell credential can't outrank its helper.
-
-The user file always has the blanks; the managed file gets them from `ug configure` only, like the
-header mod, so a second writer of that file that drops them is not fought on every launch (CUJ 8).
-"""
-
 import json
-import shutil
 from types import SimpleNamespace
 
 import pytest
 
-from ucode import managed_files
+from tests.test_claude_header_mod import _managed_env
 from ucode.agents import claude
-from ucode.managed_files import OS
 
 WS = "https://example.cloud.databricks.com"
 BLANKS = {"ANTHROPIC_AUTH_TOKEN": "", "ANTHROPIC_API_KEY": ""}
@@ -21,38 +13,13 @@ MODEL = "databricks-claude-sonnet-4"
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
-    managed_path = tmp_path / "managed-settings.json"
-    backup_dir = tmp_path / "managed-backups"
-    writes: list[str] = []
-    monkeypatch.setattr(managed_files, "managed_files_supported", lambda: True)
-    monkeypatch.setattr(managed_files, "current_os", lambda: OS.LINUX)
-    monkeypatch.setattr(managed_files, "MANAGED_BACKUP_DIR", backup_dir)
-    monkeypatch.setattr(managed_files, "MANAGED_BACKUP_MANIFEST_PATH", backup_dir / "manifest.json")
-
-    def _write(target, text):
-        writes.append(str(target))
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text, encoding="utf-8")
-
-    monkeypatch.setattr(managed_files, "_sudo_replace", _write)
-    monkeypatch.setattr(managed_files, "_sudo_remove", lambda path: path.unlink())
-    monkeypatch.setattr(claude, "remove_privileged_tree", shutil.rmtree)
-    monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
-    monkeypatch.setattr(claude, "claude_header_mod_root", lambda: None)
-    monkeypatch.setattr(claude, "managed_writes_allowed", lambda: True)
-    monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
-    monkeypatch.setattr(claude, "save_state", lambda state: None)
-    monkeypatch.setattr(claude, "ug_version", lambda: "1.0")
-    monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.0")
-    user_path = tmp_path / "ucode-settings.json"
-    monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", user_path)
-    monkeypatch.setattr(
-        claude, "refresh_managed_config", lambda *a, **kw: SimpleNamespace(manifest={"claude": {}})
+    """The header-mod tests' real reconcile flow, run as `ug configure`; tests call `request_explicit_configure(False)` for a launch."""
+    managed_path, _root, writes = _managed_env(tmp_path, monkeypatch)
+    claude.request_explicit_configure()
+    yield SimpleNamespace(
+        managed=managed_path, user=tmp_path / "ucode-settings.json", writes=writes, mp=monkeypatch
     )
-    monkeypatch.setattr(claude, "_header_mod_requested", True)  # as `ug configure` runs it
-    monkeypatch.delenv("UG_HEADERS", raising=False)
-    return SimpleNamespace(managed=managed_path, user=user_path, writes=writes, mp=monkeypatch)
+    claude.request_explicit_configure(False)
 
 
 def _env(path):
@@ -90,7 +57,7 @@ def test_configure_writes_blanks_to_both_files(env):
     claude.write_tool_config(dict(STATE), MODEL)
     assert _blanks(env.user) == BLANKS
     assert _blanks(env.managed) == BLANKS
-    assert len(env.writes) == 1  # same privileged write as the rest of the file
+    assert env.writes.count(str(env.managed)) == 1  # same privileged write as the rest of the file
 
 
 def test_plain_launch_after_second_writer_dropped_them_makes_no_write(env):
@@ -98,7 +65,7 @@ def test_plain_launch_after_second_writer_dropped_them_makes_no_write(env):
     _drop_blanks_like_a_second_writer(env.managed)
     before = env.managed.read_bytes()
     count = len(env.writes)
-    env.mp.setattr(claude, "_header_mod_requested", False)
+    claude.request_explicit_configure(False)
 
     claude.write_tool_config(dict(STATE), MODEL)  # no conflict raised, no sudo
     claude.write_tool_config(dict(STATE), MODEL)
@@ -110,7 +77,7 @@ def test_plain_launch_after_second_writer_dropped_them_makes_no_write(env):
 
 
 def test_plain_launch_does_not_add_blanks_to_a_fresh_managed_file(env):
-    env.mp.setattr(claude, "_header_mod_requested", False)
+    claude.request_explicit_configure(False)
     claude.write_tool_config(dict(STATE), MODEL)
     assert _blanks(env.managed) == {}
     assert _blanks(env.user) == BLANKS
@@ -119,7 +86,7 @@ def test_plain_launch_does_not_add_blanks_to_a_fresh_managed_file(env):
 def test_plain_launch_leaves_present_blanks_and_values_alone(env):
     claude.write_tool_config(dict(STATE), MODEL)
     count = len(env.writes)
-    env.mp.setattr(claude, "_header_mod_requested", False)
+    claude.request_explicit_configure(False)
     claude.write_tool_config(dict(STATE), MODEL)
     assert len(env.writes) == count
     assert _blanks(env.managed) == BLANKS
@@ -135,18 +102,16 @@ def test_plain_launch_leaves_present_blanks_and_values_alone(env):
 
 
 def test_conflicts_ignore_the_blanks():
-    existing = {"env": {"ANTHROPIC_API_KEY": "x"}}
-    desired = {"env": {}}
-    assert (
-        claude._managed_settings_conflicts(
-            existing, desired, claude.CLAUDE_BLANKED_CREDENTIAL_PATHS
-        )
-        == []
-    )
+    existing = {"env": {"ANTHROPIC_API_KEY": "x", "ANTHROPIC_BASE_URL": "a"}}
+    desired = {"env": {"ANTHROPIC_BASE_URL": "b"}}
+    paths = [*claude.CLAUDE_BLANKED_CREDENTIAL_PATHS, ["env", "ANTHROPIC_BASE_URL"]]
+    assert claude._managed_settings_conflicts(existing, desired, paths) == [
+        "env.ANTHROPIC_BASE_URL"
+    ]
 
 
 def test_relayed_launch_blanks_user_file_and_leaves_managed_file_alone(env):
-    env.mp.setattr(claude, "_header_mod_requested", False)
+    claude.request_explicit_configure(False)
     claude.write_tool_config(dict(STATE), MODEL, relayed=True)
     doc = json.loads(env.user.read_text())
     assert "apiKeyHelper" not in doc
@@ -174,12 +139,12 @@ def test_revert_removes_blanks_from_the_managed_file(env):
 
 def test_revert_removes_blanks_added_by_configure_after_a_launch_rewrite(env):
     claude.write_tool_config(dict(STATE), MODEL)
-    env.mp.setattr(claude, "_header_mod_requested", False)
+    claude.request_explicit_configure(False)
     claude.write_tool_config({**STATE, "claude_http_headers": {"x-team": "a"}}, MODEL)
     assert _blanks(env.managed) == BLANKS  # kept by the launch's rewrite
 
     claude.revert_managed_settings()
-    assert not env.managed.exists() or _blanks(env.managed) == {}
+    assert not env.managed.exists()
 
 
 def test_admin_passthrough_cannot_override_the_blanks(env):
@@ -193,6 +158,20 @@ def test_admin_passthrough_cannot_override_the_blanks(env):
     assert _blanks(env.user) == BLANKS
     assert _blanks(env.managed) == BLANKS
     assert _env(env.managed)["OTHER"] == "ok"
-    env.mp.setattr(claude, "_header_mod_requested", False)
+    claude.request_explicit_configure(False)
     claude.write_tool_config(state, MODEL)
     assert _blanks(env.managed) == BLANKS
+
+
+def test_configure_keeps_a_value_someone_else_set_and_warns(env, capsys):
+    env.managed.write_text(
+        json.dumps({"env": {"ANTHROPIC_API_KEY": "it-key", "ANTHROPIC_AUTH_TOKEN": ""}}),
+        encoding="utf-8",
+    )
+    claude.write_tool_config(dict(STATE), MODEL)
+    assert _env(env.managed)["ANTHROPIC_API_KEY"] == "it-key"
+    assert _env(env.managed)["ANTHROPIC_AUTH_TOKEN"] == ""
+    out = capsys.readouterr().out
+    assert "env.ANTHROPIC_API_KEY" in out and "401" in out
+    assert "env.ANTHROPIC_AUTH_TOKEN" not in out
+    assert _blanks(env.user) == BLANKS  # ug's own file is still blanked

@@ -265,7 +265,7 @@ def _check_anthropic_env_collision() -> Check | None:
     joined = ", ".join(set_vars)
     return Check(
         "Claude auth env",
-        "warn",
+        "info",
         f"{joined} is set; ug blanks it for Claude Code, so no need to unset it "
         "(re-run `ug configure` if Claude still fails with a 401)",
     )
