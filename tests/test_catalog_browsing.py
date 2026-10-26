@@ -1,6 +1,7 @@
 """Component coverage for metadata discovery and the shared MCP/Skills browser."""
 
 import asyncio
+import contextlib
 import threading
 
 import pytest
@@ -271,6 +272,14 @@ def test_rendered_browser_scrolls_details_in_small_terminals(columns, rows):
             offset = len(raw)
             return "\n".join(screen.display)
 
+        async def eventually(expected):
+            # Windows delivers pipe input via an executor thread; poll rather than sleep.
+            with contextlib.suppress(TimeoutError):
+                async with asyncio.timeout(5):
+                    while expected not in rendered():
+                        await asyncio.sleep(0.02)
+            assert expected in rendered()
+
         with create_pipe_input() as pipe, create_app_session(input=pipe, output=output):
             choices = [
                 CatalogChoice(
@@ -298,20 +307,16 @@ def test_rendered_browser_scrolls_details_in_small_terminals(columns, rows):
             )
             task = asyncio.create_task(question.ask_async())
             try:
-                await asyncio.sleep(0.1)
+                await eventually("tool0")
                 assert "Select" in rendered()
                 assert "UC location" in rendered()
-                assert "tool0" in rendered()
                 assert "[ ]" in rendered()
                 assert "✗" in rendered()
                 pipe.send_text("\x1b[6~")  # One Page Down visibly moves the detail pane
-                await asyncio.sleep(0.1)
-                text = rendered()
-                assert "Updated:" in text
-                assert "2026-10-15" in text
+                await eventually("Updated:")
+                assert "2026-10-15" in rendered()
                 pipe.send_text("\x1b[B")  # Next choice resets details to the top
-                await asyncio.sleep(0.1)
-                assert "Full name: cat.sch.tool1" in rendered()
+                await eventually("Full name: cat.sch.tool1")
                 pipe.send_text(" \r")
                 assert await asyncio.wait_for(task, 2) == ["1"]
             finally:
