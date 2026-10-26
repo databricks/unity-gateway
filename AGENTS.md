@@ -121,7 +121,7 @@ Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file 
 |-------|------------------------|---------------------|-------|
 | `apiKeyHelper` | Create/replace | Create/replace | Gateway auth-token helper |
 | `env.ANTHROPIC_BASE_URL` | Create/replace | Create/replace | Gateway endpoint URL |
-| `env.ANTHROPIC_CUSTOM_HEADERS` | Merge | Merge | Merge `ug`'s routing and attribution headers by name; other header lines left alone. Admin headers added under managed config |
+| `env.ANTHROPIC_CUSTOM_HEADERS` | Merge | Merge | Merge `ug`'s routing and attribution headers by name; other header lines left alone. Admin headers added under managed config. `AI_GATEWAY_REQUEST_TAGS` is never written: it rides `UG_HEADERS` through the header mod for that launch only (or, with no managed headers, a launch `--settings` override) |
 | `env.CLAUDE_CODE_API_KEY_HELPER_TTL_MS` | Create/replace | Create/replace | Auth-helper cache TTL |
 | `env.ENABLE_PROMPT_CACHING_1H` | Create/replace | Create/replace | Prompt-caching flag |
 | `env.ENABLE_TOOL_SEARCH` | Create/replace | Create/replace | Tool-search flag |

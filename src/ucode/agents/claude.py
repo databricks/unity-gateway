@@ -27,6 +27,7 @@ from ucode.config_io import (
     write_json_file,
 )
 from ucode.constants import (
+    AI_GATEWAY_REQUEST_TAGS_ENV_VAR,
     AI_GATEWAY_REQUEST_TAGS_HEADER,
     LOOPBACK_HOST,
     MCP_CLEANUP_SCOPES,
@@ -105,6 +106,7 @@ from ucode.smart_routing.claude_hooks import (
 )
 from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
+from ucode.ug_headers import ug_headers
 from ucode.ui import print_note, print_success, print_warning
 
 from .args import LaunchOptions, has_explicit_model_arg
@@ -544,9 +546,10 @@ def render_overlay(
         header_lines.append(f"{MODEL_PROVIDER_SERVICE_HEADER}: {provider}")
     elif parent_schema:
         header_lines.append(f"{MODEL_SERVICE_PARENT_SCHEMA_HEADER}: {parent_schema}")
-    request_tags = request_tags_header_value()
-    if request_tags:
-        header_lines.append(f"{AI_GATEWAY_REQUEST_TAGS_HEADER}: {request_tags}")
+    # Request tags are deliberately not written here: this value is persisted to
+    # ucode-settings.json and the root-owned managed file, so one launch's tags would leak
+    # into every later session and make each differing launch rewrite the managed file.
+    # `_deliver_request_tags` sends them for the launching session only.
     # Relayed: the X-Databricks-AI-Gateway-Token swap header is added per request
     # by the refresh proxy, not here — a static value would go stale mid-session.
     custom_headers = "\n".join(_apply_managed_header_lines(header_lines, managed_http_headers))
@@ -2435,6 +2438,55 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     raise SystemExit(returncode)
 
 
+def _deliver_request_tags(*, per_launch_settings: bool) -> dict | None:
+    """Send ``AI_GATEWAY_REQUEST_TAGS`` with this launch's requests only, never persisted.
+
+    With the header mod active the tags join ``UG_HEADERS`` in the process environment, which
+    the mod adds to every request even though managed settings own ``ANTHROPIC_CUSTOM_HEADERS``.
+    Otherwise, with no managed ``ANTHROPIC_CUSTOM_HEADERS`` and a launch that takes ``--settings``
+    (``per_launch_settings``), returns a settings override carrying the saved headers plus the tags.
+    Anywhere else it warns, because managed settings outrank every launch-scoped override."""
+    tags = request_tags_header_value()
+    if not tags:
+        return None
+    line = f"{AI_GATEWAY_REQUEST_TAGS_HEADER}: {tags}"
+    if header_mod_active():
+        existing = os.environ.get(UG_HEADERS_ENV_VAR, "")
+        if AI_GATEWAY_REQUEST_TAGS_HEADER.casefold() not in {
+            name.casefold() for name in ug_headers()
+        }:
+            os.environ[UG_HEADERS_ENV_VAR] = "\n".join(filter(None, [existing, line]))
+        return None
+    managed_path = _managed_settings_path()
+    managed_headers = None
+    if managed_path is not None:
+        try:
+            managed_env = _parse_managed_settings(read_managed_file(managed_path) or "{}").get(
+                "env"
+            )
+        except (OSError, RuntimeError):
+            managed_env = None
+        if isinstance(managed_env, dict):
+            managed_headers = managed_env.get("ANTHROPIC_CUSTOM_HEADERS")
+    if per_launch_settings and managed_headers is None:
+        saved_env = read_json_safe(CLAUDE_SETTINGS_PATH).get("env")
+        saved = saved_env.get("ANTHROPIC_CUSTOM_HEADERS") if isinstance(saved_env, dict) else None
+        lines = [entry for entry in str(saved or "").splitlines() if entry.strip()]
+        lines = [
+            entry
+            for entry in lines
+            if entry.split(":", 1)[0].strip().casefold()
+            != AI_GATEWAY_REQUEST_TAGS_HEADER.casefold()
+        ]
+        return {"env": {"ANTHROPIC_CUSTOM_HEADERS": "\n".join([*lines, line])}}
+    print_warning(
+        f"Claude Code won't send {AI_GATEWAY_REQUEST_TAGS_ENV_VAR}: managed settings own the "
+        "request headers and ug's header mod isn't installed. Run `ug configure` from an "
+        "interactive terminal on Linux or macOS, without UG_SKIP_OS_SETTINGS."
+    )
+    return None
+
+
 def launch(
     state: dict,
     tool_args: list[str],
@@ -2442,6 +2494,9 @@ def launch(
     options: LaunchOptions,
 ) -> None:
     tool_args = _external_web_search_args(state, tool_args)
+    tags_override = _deliver_request_tags(
+        per_launch_settings=not state.get("claude_relayed") and not options.launch_smart_routing
+    )
     binary = SPEC["binary"]
     workspace = state.get("workspace")
     if os.environ.get(UG_HEADERS_ENV_VAR, "").strip() and not header_mod_active():
@@ -2486,12 +2541,14 @@ def launch(
             return
     if workspace and not custom_oauth_cli_enabled(state.get("custom_oauth")):
         os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
-    settings_override = None
+    settings_override = tags_override
     launch_args = list(tool_args)
     if pinned_model:
         # Pass the exact ID: managed family defaults can override temporary aliases.
         os.environ["ANTHROPIC_MODEL"] = pinned_model
-        settings_override = {"env": {"ANTHROPIC_MODEL": pinned_model}}
+        settings_override = _merge_claude_settings(
+            settings_override or {}, {"env": {"ANTHROPIC_MODEL": pinned_model}}
+        )
         launch_args = [
             *_launch_model_args(tool_args, pinned_model),
             *tool_args,
@@ -2512,7 +2569,9 @@ def launch(
                 # Launch on a valid discovered model without turning it into a managed default or
                 # overwriting the user's saved selection. This also prevents Claude from appending
                 # that stale built-in selection to an otherwise replaced picker.
-                settings_override = {"model": picker_models[0]}
+                settings_override = _merge_claude_settings(
+                    settings_override or {}, {"model": picker_models[0]}
+                )
     if routing_setup_failed:
         # Override inherited and saved routing flags for this launch only. Older
         # saved hooks must not route to agents whose plugin could not be written.
