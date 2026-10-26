@@ -40,6 +40,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     from ucode.agents import antigravity as antigravity_mod
     from ucode.agents import claude as claude_mod
     from ucode.agents import codex as codex_mod
+    from ucode.agents import copilot as copilot_mod
     from ucode.agents import vscode as vscode_mod
     from ucode.agents.desktop import claude as desktop_mod
 
@@ -115,6 +116,17 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
         codex_mod, "CODEX_MODEL_CATALOG_PATH", state_dir / "codex-model-catalog.json"
     )
     monkeypatch.setattr(codex_mod, "CODEX_CONFIG_PATH", tmp_path / ".codex" / "ucode.config.toml")
+    # MCP writes and revert edit Copilot's user config and delete the legacy side file.
+    monkeypatch.setattr(
+        copilot_mod, "COPILOT_MCP_CONFIG_PATH", tmp_path / ".copilot" / "mcp-config.json"
+    )
+    monkeypatch.setattr(
+        copilot_mod, "LEGACY_MCP_CONFIG_PATH", tmp_path / ".copilot" / "ucode-mcp-config.json"
+    )
+    monkeypatch.setattr(
+        copilot_mod, "LEGACY_MCP_BACKUP_PATH", state_dir / "copilot-ucode-mcp-config.backup.json"
+    )
+    monkeypatch.delenv("COPILOT_HOME", raising=False)
 
     def reject_privileged_write(path, _desired_text):
         pytest.fail(

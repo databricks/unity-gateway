@@ -3068,21 +3068,13 @@ class TestPrintSkillsSummary:
 
 
 class TestRevertMcpConfigs:
-    def test_removes_cli_registered_servers_and_restores_copilot_config(self, monkeypatch):
+    def test_removes_cli_registered_servers_from_every_client(self, monkeypatch):
         removed: list[tuple[str, str]] = []
-        restored: list[tuple[object, object, bool]] = []
 
         monkeypatch.setattr(
             mcp,
             "remove_client_mcp_server",
             lambda client, name: removed.append((client, name)) or ["user"],
-        )
-        monkeypatch.setattr(
-            mcp,
-            "restore_file",
-            lambda config_path, backup_path, managed: (
-                restored.append((config_path, backup_path, managed)) or True
-            ),
         )
 
         result = mcp.revert_mcp_configs(
@@ -3103,9 +3095,6 @@ class TestRevertMcpConfigs:
             ("opencode", "github-mcp"),
             ("copilot", "github-mcp"),
         ]
-        assert restored == [
-            (mcp.copilot.COPILOT_MCP_CONFIG_PATH, mcp.copilot.COPILOT_MCP_BACKUP_PATH, True)
-        ]
         assert result == {
             "claude": True,
             "codex": True,
@@ -3114,6 +3103,23 @@ class TestRevertMcpConfigs:
             "copilot": True,
         }
 
+    def test_removes_copilot_servers_from_its_user_config_and_the_legacy_side_file(self):
+        user_config = mcp.copilot.copilot_mcp_config_path()
+        user_config.parent.mkdir(parents=True, exist_ok=True)
+        user_config.write_text(
+            json.dumps({"mcpServers": {"github-mcp": {"type": "local"}, "mine": {"x": 1}}})
+        )
+        legacy = mcp.copilot.LEGACY_MCP_CONFIG_PATH
+        legacy.write_text(json.dumps({"mcpServers": {"stale-ug": {"type": "local"}}}))
+
+        result = mcp.revert_mcp_configs(
+            {"mcp_servers": [{"name": "github-mcp", "clients": ["copilot"]}]}
+        )
+
+        assert result == {"copilot": True}
+        assert json.loads(user_config.read_text())["mcpServers"] == {"mine": {"x": 1}}
+        assert not legacy.exists()
+
     def test_removes_skills_registry_across_its_clients(self, monkeypatch):
         removed: list[tuple[str, str]] = []
         monkeypatch.setattr(
@@ -3121,7 +3127,6 @@ class TestRevertMcpConfigs:
             "remove_client_mcp_server",
             lambda client, name: removed.append((client, name)) or ["user"],
         )
-        monkeypatch.setattr(mcp, "restore_file", lambda *a, **kw: False)
 
         skills_entry = mcp._resolve_skills_mcp_servers(
             WS, ["claude", "codex"], _by_client(["claude", "codex"], ["a.b"]), []
@@ -4181,6 +4186,23 @@ class TestParseMcpListOutput:
             "github": mcp.LIVE_ENABLED,
         }
 
+    def test_parses_copilot_json_listing(self):
+        output = json.dumps(
+            {
+                "mcpServers": {
+                    "system-ai-github": {"type": "local", "source": "user", "enabled": True},
+                    "paused": {"type": "local", "source": "user", "enabled": False},
+                }
+            }
+        )
+        assert mcp.parse_mcp_list_output("copilot", output) == {
+            "system-ai-github": mcp.LIVE_ENABLED,
+            "paused": mcp.LIVE_DISABLED,
+        }
+
+    def test_unreadable_copilot_listing_returns_no_servers(self):
+        assert mcp.parse_mcp_list_output("copilot", "error: something broke") == {}
+
     def test_empty_listing_returns_no_servers(self):
         assert mcp.parse_mcp_list_output("gemini", "No MCP servers configured.") == {}
 
@@ -4223,14 +4245,6 @@ class TestParseMcpListOutput:
     def test_cursor_unapproved_server_is_not_reported_missing(self):
         output = "Loading MCPs…\nug-audit: not loaded (needs approval)\n"
         assert mcp.parse_mcp_list_output("cursor", output) == {"ug-audit": mcp.LIVE_NEEDS_APPROVAL}
-
-    def test_copilot_additional_config_is_reported_as_enabled(self, tmp_path, monkeypatch):
-        # Bare `copilot mcp list` does not include servers from --additional-mcp-config.
-        config = tmp_path / "ucode-mcp-config.json"
-        config.write_text('{"mcpServers":{"ug-audit":{"type":"local"}}}')
-        monkeypatch.setattr(mcp.copilot, "COPILOT_MCP_CONFIG_PATH", config)
-        monkeypatch.setattr(mcp, "_run_mcp_list", lambda client: "No MCP servers configured.")
-        assert mcp.query_live_mcp_status("copilot") == {"ug-audit": mcp.LIVE_ENABLED}
 
     def test_ansi_progress_escapes_are_stripped_before_parsing(self, monkeypatch):
         # cursor-agent redraws progress with ANSI escapes that must not leak into server names.
@@ -4493,6 +4507,15 @@ class TestListMcpCommand:
         self._patch(monkeypatch, live={"claude": {}, "codex": {}})
         assert mcp.list_mcp_command() == 0
         assert "Codex reports enabled/disabled" in _unwrap(capsys.readouterr().out)
+
+    def test_caveat_names_codex_and_copilot_when_both_reported(self, monkeypatch, capsys):
+        self._patch(
+            monkeypatch, installed=("claude", "codex", "copilot"), live={"codex": {}, "copilot": {}}
+        )
+        assert mcp.list_mcp_command() == 0
+        assert "Codex and GitHub Copilot CLI report enabled/disabled" in _unwrap(
+            capsys.readouterr().out
+        )
 
     def test_codex_caveat_omitted_when_scoped_out(self, monkeypatch, capsys):
         # Scoping Codex out drops the Codex clause from the note.

@@ -156,6 +156,15 @@ def copilot_selected_models(session) -> list[str]:
     ]
 
 
+def copilot_mcp_tool_calls(session) -> list[dict]:
+    """Every MCP tool call recorded by Copilot sessions under this home."""
+    return [
+        call
+        for records in agent_sessions(session, "copilot").values()
+        for call in copilot.mcp_tool_calls(records)
+    ]
+
+
 def assert_no_session_registry_left(session) -> None:
     """`ug copilot` removes its per-session registry, which holds the proxy secret, on exit."""
     leftovers = sorted(session.home.glob(".copilot/ug-providers-*"))
