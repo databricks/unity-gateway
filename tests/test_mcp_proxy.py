@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import tomllib
 from contextlib import asynccontextmanager
@@ -261,6 +262,23 @@ class TestDatabricksTokenAuth:
         self._drive(auth, httpx.Request("POST", CONN_URL), httpx.Response(401))
         assert logins == [1]
 
+    def test_verified_connection_can_reauthenticate_after_later_401(self, monkeypatch):
+        monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda *a: "tok")
+        monkeypatch.setattr(mcp_proxy, "mcp_service_needs_connection_login", lambda *a: True)
+        logins = []
+        monkeypatch.setattr(
+            mcp_proxy, "run_connection_login", lambda *a, **k: logins.append(1) or (True, "")
+        )
+        login = mcp_proxy._ConnectionLogin(CONN_URL, WS, "p")
+        auth = mcp_proxy._build_token_auth(CONN_URL, WS, "p", connection_login=login)
+
+        first = self._drive(auth, httpx.Request("POST", CONN_URL), httpx.Response(401))
+        login.record_success()
+        later = self._drive(auth, httpx.Request("POST", CONN_URL), httpx.Response(401))
+
+        assert len(first) == len(later) == 2
+        assert logins == [1, 1]
+
     def test_use_pat_never_drives_connection_login(self, monkeypatch):
         monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda ws, profile: "tok")
         logins: list = []
@@ -366,14 +384,19 @@ class TestMcpBridgeConnectionLogin:
         )
 
     @staticmethod
-    def _error(code=mcp_proxy.CONNECTION_AUTH_REQUIRED_ERROR_CODE, request_id=1):
+    def _error(
+        code=mcp_proxy.CONNECTION_AUTH_REQUIRED_ERROR_CODE,
+        request_id=1,
+        data=None,
+        message="authentication required",
+    ):
         from mcp.types import ErrorData
 
         return mcp_proxy.SessionMessage(
             mcp_proxy.JSONRPCError(
                 jsonrpc="2.0",
                 id=request_id,
-                error=ErrorData(code=code, message="authentication required"),
+                error=ErrorData(code=code, message=message, data=data),
             )
         )
 
@@ -387,7 +410,45 @@ class TestMcpBridgeConnectionLogin:
             )
         )
 
-    def test_auth_error_runs_login_replays_request_and_suppresses_first_error(self, monkeypatch):
+    @staticmethod
+    def _auth_error(kind, request_id=1):
+        if kind == "jsonrpc":
+            return TestMcpBridgeConnectionLogin._error(request_id=request_id)
+        if kind == "elicitation":
+            return TestMcpBridgeConnectionLogin._error(code=-32042, request_id=request_id)
+        if kind == "wrapped_401":
+            return TestMcpBridgeConnectionLogin._error(
+                code=-32603, request_id=request_id, data={"upstream_status": 401}
+            )
+        if kind == "tool_text":
+            result = {
+                "isError": True,
+                "content": [{"type": "text", "text": "Authorization expired or revoked"}],
+            }
+        elif kind == "tool_json":
+            result = {
+                "isError": True,
+                "content": [{"type": "text", "text": json.dumps({"error": "invalid_grant"})}],
+            }
+        elif kind == "tool_structured":
+            result = {
+                "isError": True,
+                "structuredContent": {"error": {"code": "TOKEN_EXPIRED"}},
+                "content": [],
+            }
+        else:
+            raise AssertionError(kind)
+        return mcp_proxy.SessionMessage(
+            mcp_proxy.JSONRPCResponse(jsonrpc="2.0", id=request_id, result=result)
+        )
+
+    @pytest.mark.parametrize(
+        "kind",
+        ["jsonrpc", "elicitation", "wrapped_401", "tool_text", "tool_json", "tool_structured"],
+    )
+    def test_auth_error_runs_login_replays_request_and_suppresses_first_error(
+        self, monkeypatch, kind
+    ):
         monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda ws, profile: "tok")
         monkeypatch.setattr(mcp_proxy, "mcp_service_needs_connection_login", lambda *a: True)
         logins: list[tuple[str, str | None]] = []
@@ -414,7 +475,7 @@ class TestMcpBridgeConnectionLogin:
                 with anyio.fail_after(1):
                     await client_send.send(request)
                     assert await upstream_receive.receive() is request
-                    await from_upstream.send(self._error())
+                    await from_upstream.send(self._auth_error(kind))
                     assert await upstream_receive.receive() is request
                     with pytest.raises(anyio.WouldBlock):
                         client_receive.receive_nowait()
@@ -457,7 +518,10 @@ class TestMcpBridgeConnectionLogin:
 
         anyio.run(scenario)
 
-    def test_tools_list_auth_error_returns_authentication_tool_without_login(self, monkeypatch):
+    @pytest.mark.parametrize("kind", ["jsonrpc", "elicitation", "wrapped_401"])
+    def test_tools_list_auth_error_returns_authentication_tool_without_login(
+        self, monkeypatch, kind
+    ):
         monkeypatch.setattr(
             mcp_proxy,
             "run_connection_login",
@@ -474,7 +538,7 @@ class TestMcpBridgeConnectionLogin:
             async with anyio.create_task_group() as tg:
                 tg.start_soon(bridge.pump_upstream, upstream_read, to_client, to_upstream)
                 with anyio.fail_after(1):
-                    await from_upstream.send(self._error())
+                    await from_upstream.send(self._auth_error(kind))
                     response = (await client_receive.receive()).message
                     assert isinstance(response, mcp_proxy.JSONRPCResponse)
                     assert response.result["tools"][0]["name"] == "authenticate"
@@ -778,6 +842,238 @@ class TestMcpBridgeConnectionLogin:
         anyio.run(scenario)
         assert logins == [1]
 
+    @pytest.mark.parametrize("kind", ["jsonrpc", "tool_json"])
+    def test_revoked_credentials_reauthenticate_in_the_same_bridge(self, monkeypatch, kind):
+        monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda *a: "tok")
+        monkeypatch.setattr(mcp_proxy, "mcp_service_needs_connection_login", lambda *a: True)
+        logins = []
+        monkeypatch.setattr(
+            mcp_proxy, "run_connection_login", lambda *a, **k: logins.append(1) or (True, "")
+        )
+
+        async def scenario():
+            client_send, client_read = anyio.create_memory_object_stream(10)
+            to_client, client_receive = anyio.create_memory_object_stream(10)
+            from_upstream, upstream_read = anyio.create_memory_object_stream(10)
+            to_upstream, upstream_receive = anyio.create_memory_object_stream(10)
+            bridge = mcp_proxy._McpBridge(mcp_proxy._ConnectionLogin(CONN_URL, WS, "p"))
+            bridge.authentication_required = True
+
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(bridge.pump_client, client_read, to_upstream, to_client)
+                tg.start_soon(bridge.pump_upstream, upstream_read, to_client, to_upstream)
+                with anyio.fail_after(2):
+                    for request_id in (1, 2):
+                        request = self._tool_call_request(request_id)
+                        await client_send.send(request)
+                        assert await upstream_receive.receive() is request
+                        await from_upstream.send(self._auth_error(kind, request_id))
+                        assert await upstream_receive.receive() is request
+                        response = self._response(request_id)
+                        await from_upstream.send(response)
+                        assert await client_receive.receive() is response
+                        assert not bridge.authentication_required
+                    assert bridge.pending_requests == {}
+                    assert bridge.pending_generations == {}
+                tg.cancel_scope.cancel()
+
+        anyio.run(scenario)
+        assert logins == [1, 1]
+
+    def test_repeated_rejection_without_success_does_not_loop_logins(self, monkeypatch):
+        monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda *a: "tok")
+        monkeypatch.setattr(mcp_proxy, "mcp_service_needs_connection_login", lambda *a: True)
+        logins = []
+        monkeypatch.setattr(
+            mcp_proxy, "run_connection_login", lambda *a, **k: logins.append(1) or (True, "")
+        )
+
+        async def scenario():
+            client_send, client_read = anyio.create_memory_object_stream(10)
+            to_client, client_receive = anyio.create_memory_object_stream(10)
+            from_upstream, upstream_read = anyio.create_memory_object_stream(10)
+            to_upstream, upstream_receive = anyio.create_memory_object_stream(10)
+            bridge = mcp_proxy._McpBridge(mcp_proxy._ConnectionLogin(CONN_URL, WS, "p"))
+
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(bridge.pump_client, client_read, to_upstream, to_client)
+                tg.start_soon(bridge.pump_upstream, upstream_read, to_client, to_upstream)
+                with anyio.fail_after(2):
+                    first = self._tool_call_request(1)
+                    await client_send.send(first)
+                    assert await upstream_receive.receive() is first
+                    await from_upstream.send(self._error())
+                    assert await upstream_receive.receive() is first
+                    repeated = self._error()
+                    await from_upstream.send(repeated)
+                    assert await client_receive.receive() is repeated
+                    assert (
+                        await client_receive.receive()
+                    ).message.method == "notifications/tools/list_changed"
+
+                    listing = self._request(3)
+                    await client_send.send(listing)
+                    assert await upstream_receive.receive() is listing
+                    await from_upstream.send(self._response(3))
+                    assert (await client_receive.receive()).message.result["tools"][0][
+                        "name"
+                    ] == "authenticate"
+
+                    later = self._tool_call_request(2)
+                    await client_send.send(later)
+                    assert await upstream_receive.receive() is later
+                    error = self._error(request_id=2)
+                    await from_upstream.send(error)
+                    assert await client_receive.receive() is error
+                    assert (
+                        await client_receive.receive()
+                    ).message.method == "notifications/tools/list_changed"
+                    with pytest.raises(anyio.WouldBlock):
+                        upstream_receive.receive_nowait()
+                tg.cancel_scope.cancel()
+
+        anyio.run(scenario)
+        assert logins == [1]
+
+    def test_auth_tool_remains_available_when_discovery_succeeds_after_login_failure(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda *a: "tok")
+        monkeypatch.setattr(mcp_proxy, "mcp_service_needs_connection_login", lambda *a: True)
+        monkeypatch.setattr(
+            mcp_proxy, "run_connection_login", lambda *a, **k: (False, "browser login timed out")
+        )
+
+        async def scenario():
+            client_send, client_read = anyio.create_memory_object_stream(10)
+            to_client, client_receive = anyio.create_memory_object_stream(10)
+            from_upstream, upstream_read = anyio.create_memory_object_stream(10)
+            to_upstream, upstream_receive = anyio.create_memory_object_stream(10)
+            bridge = mcp_proxy._McpBridge(mcp_proxy._ConnectionLogin(CONN_URL, WS, "p"))
+
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(bridge.pump_client, client_read, to_upstream, to_client)
+                tg.start_soon(bridge.pump_upstream, upstream_read, to_client, to_upstream)
+                with anyio.fail_after(2):
+                    request = self._tool_call_request(1)
+                    await client_send.send(request)
+                    assert await upstream_receive.receive() is request
+                    await from_upstream.send(self._auth_error("tool_json"))
+                    failure = (await client_receive.receive()).message
+                    assert failure.result["isError"] is True
+                    assert "browser login timed out" in failure.result["content"][-1]["text"]
+                    assert (
+                        await client_receive.receive()
+                    ).message.method == "notifications/tools/list_changed"
+
+                    listing = self._request(2)
+                    await client_send.send(listing)
+                    assert await upstream_receive.receive() is listing
+                    await from_upstream.send(
+                        mcp_proxy.SessionMessage(
+                            mcp_proxy.JSONRPCResponse(
+                                jsonrpc="2.0",
+                                id=2,
+                                result={"tools": [{"name": "search_pull_requests"}]},
+                            )
+                        )
+                    )
+                    response = (await client_receive.receive()).message
+                    assert [tool["name"] for tool in response.result["tools"]] == [
+                        "search_pull_requests",
+                        "authenticate",
+                    ]
+                tg.cancel_scope.cancel()
+
+        anyio.run(scenario)
+
+    def test_auth_tool_can_retry_when_refreshed_discovery_is_still_unauthorized(self, monkeypatch):
+        monkeypatch.setattr(mcp_proxy, "TOOLS_REFRESH_TIMEOUT_SECONDS", 0.1)
+        logins = []
+        monkeypatch.setattr(
+            mcp_proxy, "run_connection_login", lambda *a, **k: logins.append(1) or (True, "")
+        )
+
+        async def scenario():
+            client_send, client_read = anyio.create_memory_object_stream(10)
+            to_client, client_receive = anyio.create_memory_object_stream(10)
+            from_upstream, upstream_read = anyio.create_memory_object_stream(10)
+            to_upstream, upstream_receive = anyio.create_memory_object_stream(10)
+            bridge = mcp_proxy._McpBridge(mcp_proxy._ConnectionLogin(CONN_URL, WS, "p"))
+            bridge.authentication_required = True
+
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(bridge.pump_client, client_read, to_upstream, to_client)
+                tg.start_soon(bridge.pump_upstream, upstream_read, to_client, to_upstream)
+                with anyio.fail_after(2):
+                    for auth_id, list_id in ((1, 2), (3, 4)):
+                        await client_send.send(self._tool_call_request(auth_id, "authenticate"))
+                        assert (
+                            await client_receive.receive()
+                        ).message.method == "notifications/tools/list_changed"
+                        listing = self._request(list_id)
+                        await client_send.send(listing)
+                        assert await upstream_receive.receive() is listing
+                        await from_upstream.send(self._error(request_id=list_id))
+                        discovery = (await client_receive.receive()).message
+                        assert discovery.result["tools"][0]["name"] == "authenticate"
+                        authentication = (await client_receive.receive()).message
+                        assert authentication.result["isError"] is True
+                        assert "tools are not ready" in authentication.result["content"][0]["text"]
+                tg.cancel_scope.cancel()
+
+        anyio.run(scenario)
+        assert logins == [1, 1]
+
+    @pytest.mark.parametrize(
+        "result",
+        [
+            {"isError": False, "content": [{"type": "text", "text": "invalid_grant"}]},
+            {"isError": True, "content": [{"type": "text", "text": "Internal server error"}]},
+            {"isError": True, "content": [{"type": "text", "text": "403: IP allowlist denied"}]},
+            {"isError": True, "content": [{"type": "text", "text": "Request failed: 401"}]},
+            {"isError": True, "content": [{"type": "text", "text": "invalid_token_scopes"}]},
+            {
+                "isError": True,
+                "structuredContent": {"status": 403},
+                "content": [{"type": "text", "text": "invalid_token"}],
+            },
+            {
+                "isError": True,
+                "content": [{"type": "text", "text": '{"error":{"code":"PERMISSION_DENIED"}}'}],
+            },
+            {
+                "isError": True,
+                "structuredContent": {"code": -32007, "message": "invalid_token"},
+            },
+            {"isError": True, "content": None},
+        ],
+    )
+    def test_non_auth_tool_results_pass_through_without_login(self, monkeypatch, result):
+        monkeypatch.setattr(
+            mcp_proxy, "run_connection_login", lambda *a, **k: pytest.fail("must not log in")
+        )
+
+        async def scenario():
+            source_send, source_read = anyio.create_memory_object_stream(1)
+            dest_send, dest_read = anyio.create_memory_object_stream(1)
+            retry_send, retry_read = anyio.create_memory_object_stream(1)
+            bridge = mcp_proxy._McpBridge(mcp_proxy._ConnectionLogin(CONN_URL, WS, "p"))
+            bridge.pending_requests[1] = self._tool_call_request()
+            response = mcp_proxy.SessionMessage(
+                mcp_proxy.JSONRPCResponse(jsonrpc="2.0", id=1, result=result)
+            )
+            await source_send.send(response)
+            await source_send.aclose()
+
+            with pytest.raises(mcp_proxy.ProxyTransportError, match="closed unexpectedly"):
+                await bridge.pump_upstream(source_read, dest_send, retry_send)
+            assert await dest_read.receive() is response
+            with pytest.raises(anyio.WouldBlock):
+                retry_read.receive_nowait()
+
+        anyio.run(scenario)
+
     @pytest.mark.parametrize(
         ("url", "use_pat"),
         [
@@ -814,7 +1110,16 @@ class TestMcpBridgeConnectionLogin:
         anyio.run(scenario)
         assert logins == []
 
-    def test_other_jsonrpc_error_passes_through(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("code", "data", "message"),
+        [
+            (-32601, None, "method not found"),
+            (-32603, None, "internal error"),
+            (-32603, {"upstream_status": 403}, "invalid_token mentioned by provider"),
+            (-32007, None, "permission denied"),
+        ],
+    )
+    def test_other_jsonrpc_error_passes_through(self, monkeypatch, code, data, message):
         monkeypatch.setattr(
             mcp_proxy,
             "run_connection_login",
@@ -827,7 +1132,7 @@ class TestMcpBridgeConnectionLogin:
             retry_send, _ = anyio.create_memory_object_stream(1)
             bridge = mcp_proxy._McpBridge(mcp_proxy._ConnectionLogin(CONN_URL, WS, "p"))
             bridge.pending_requests[1] = self._request()
-            error = self._error(code=-32601)
+            error = self._error(code=code, data=data, message=message)
             await source_send.send(error)
             await source_send.aclose()
 
@@ -862,7 +1167,14 @@ class TestMcpBridgeConnectionLogin:
                 tg.start_soon(bridge.pump_upstream, source_read, dest_send, retry_send)
                 with anyio.fail_after(1):
                     await source_send.send(auth_error)
-                    assert await dest_read.receive() is auth_error
+                    received = (await dest_read.receive()).message
+                    assert isinstance(received, mcp_proxy.JSONRPCError)
+                    assert received.error.code == auth_error.message.error.code
+                    assert "authentication required" in received.error.message
+                    assert "user cancelled" in received.error.message
+                    notification = (await dest_read.receive()).message
+                    assert isinstance(notification, mcp_proxy.JSONRPCNotification)
+                    assert notification.method == "notifications/tools/list_changed"
                     await source_send.send(later_response)
                     assert await dest_read.receive() is later_response
                 tg.cancel_scope.cancel()

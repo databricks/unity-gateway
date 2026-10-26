@@ -33,6 +33,8 @@ especially confusing -- the user needs to be told to re-run
 
 from __future__ import annotations
 
+import json
+import re
 import sys
 from collections.abc import AsyncIterator
 from threading import Lock
@@ -58,8 +60,83 @@ from ucode.ug_headers import ug_headers
 # exit far more usefully than a timeout, so bail out instead of hanging.
 AUTH_FAILURE_EXIT_CODE = 2
 CONNECTION_AUTH_REQUIRED_ERROR_CODE = -32006
+CONNECTION_PERMISSION_DENIED_ERROR_CODE = -32007
+CONNECTION_LOGIN_URL_REQUIRED_ERROR_CODE = -32042
 AUTHENTICATE_TOOL_NAME = "authenticate"
 TOOLS_REFRESH_TIMEOUT_SECONDS = 5.0
+
+
+def _connection_auth_signal(value: object) -> bool | None:
+    """Prefer explicit status/code fields over error text; None means unclassified."""
+    if isinstance(value, dict):
+        status = value.get("upstream_status", value.get("status_code", value.get("status")))
+        if status == 401:
+            return True
+        if status in (403, 429) or (isinstance(status, int) and status >= 500):
+            return False
+        code = value.get("code", value.get("error_code"))
+        if code in (CONNECTION_AUTH_REQUIRED_ERROR_CODE, CONNECTION_LOGIN_URL_REQUIRED_ERROR_CODE):
+            return True
+        if code == CONNECTION_PERMISSION_DENIED_ERROR_CODE:
+            return False
+        for key in ("error", "error_code", "code", "message", "error_description"):
+            signal = _connection_auth_signal(value.get(key))
+            if signal is not None:
+                return signal
+        return None
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = json.loads(value)
+    except (ValueError, RecursionError):
+        parsed = None
+    if isinstance(parsed, dict):
+        return _connection_auth_signal(parsed)
+    text = value.casefold().strip()
+    if text in ("forbidden", "permission_denied"):
+        return False
+    if text in ("unauthenticated", "authentication_required", "token_expired", "token_revoked"):
+        return True
+    if re.search(r"\b(?:invalid_grant|invalid_token)\b", text) or any(
+        marker in text
+        for marker in (
+            "authorization expired or revoked",
+            "token has been expired or revoked",
+            "token has expired or been revoked",
+            "oauth token expired",
+            "oauth token has expired",
+            "oauth token is expired",
+        )
+    ):
+        return True
+    return None
+
+
+def _connection_auth_required(payload: object) -> bool:
+    if isinstance(payload, JSONRPCError):
+        if payload.error.code in (
+            CONNECTION_AUTH_REQUIRED_ERROR_CODE,
+            CONNECTION_LOGIN_URL_REQUIRED_ERROR_CODE,
+        ):
+            return True
+        if payload.error.code == CONNECTION_PERMISSION_DENIED_ERROR_CODE:
+            return False
+        return (
+            _connection_auth_signal({"error": payload.error.data, "message": payload.error.message})
+            is True
+        )
+    if not isinstance(payload, JSONRPCResponse) or payload.result.get("isError") is not True:
+        return False
+    result = payload.result
+    signal = _connection_auth_signal(result.get("structuredContent"))
+    if signal is not None:
+        return signal
+    for block in result.get("content") or []:
+        if isinstance(block, dict) and block.get("type") == "text":
+            signal = _connection_auth_signal(block.get("text"))
+            if signal is not None:
+                return signal
+    return False
 
 
 def _httpx() -> ModuleType:
@@ -125,7 +202,7 @@ def _fail_fast(message: str) -> None:
 
 
 class _ConnectionLogin:
-    """Run automatic login once per proxy session; explicit login may retry."""
+    """Share login attempts; permit new recovery after a verified credential is rejected."""
 
     def __init__(
         self,
@@ -141,22 +218,37 @@ class _ConnectionLogin:
         self.connection = None if use_pat else connection_from_url(url)
         self._login_attempted = False
         self._completed = False
+        self.generation = 0
+        self._verified_generation = -1
         self._lock = Lock()
 
-    def run_if_needed(self) -> bool:
-        """Run automatic connection login once, returning whether the connection is ready."""
-        return self._run_if_needed(check_service=True, retry=False)
+    def record_success(self) -> None:
+        self._verified_generation = self.generation
 
-    def authenticate_or_confirm_ready(self) -> bool:
+    def run_if_needed(self, rejected_generation: int | None = None) -> bool:
+        return self._run_if_needed(
+            check_service=True, retry=False, rejected_generation=rejected_generation
+        )
+
+    def authenticate_or_confirm_ready(self, rejected_generation: int | None = None) -> bool:
         """Authenticate explicitly, allowing retry after a cancelled or failed login."""
-        return self._run_if_needed(check_service=False, retry=True)
+        return self._run_if_needed(
+            check_service=False, retry=True, rejected_generation=rejected_generation
+        )
 
-    def _run_if_needed(self, *, check_service: bool, retry: bool) -> bool:
+    def _run_if_needed(
+        self, *, check_service: bool, retry: bool, rejected_generation: int | None
+    ) -> bool:
         with self._lock:
             if self.connection is None:
                 return False
             if self._completed:
-                return True
+                if rejected_generation is None or rejected_generation < self.generation:
+                    return True  # An in-flight request can still report the pre-login failure.
+                if not retry and self._verified_generation != self.generation:
+                    return False  # A login that never worked must not loop browsers.
+                self._completed = False
+                self._login_attempted = False
             if check_service:
                 try:
                     token = get_databricks_token(self.workspace, self.profile)
@@ -171,6 +263,7 @@ class _ConnectionLogin:
             if not ok:
                 raise ProxyAuthError(f"connection login for '{self.connection}' failed: {detail}")
             self._completed = True
+            self.generation += 1
             return True
 
 
@@ -196,7 +289,7 @@ def _build_token_auth(
     bridge below because httpx auth only sees HTTP responses.
     So a browser opens only for a service you actually *use*, one at a time, and
     an already-signed-in service never prompts. The login runs at most once per
-    session; PAT profiles have no connection OAuth to drive, so they never do it.
+    failure episode; PAT profiles have no connection OAuth to drive, so they never do it.
 
     The base class comes from whichever httpx the SDK uses (see ``_httpx``). Auth
     is async-only: the sync ``auth_flow`` raises, and the async client uses
@@ -221,8 +314,7 @@ def _build_token_auth(
 
     def _needs_connection_login(response) -> bool:
         # A 401 from a connection-backed service means the per-user credential is
-        # missing. Only drive the login once per session — if it doesn't resolve
-        # the 401, re-running it on every subsequent request would loop browsers.
+        # missing. Recovery stays bounded until a tool call confirms login worked.
         return response is not None and response.status_code == 401
 
     class _DatabricksTokenAuth(httpx.Auth):
@@ -235,13 +327,14 @@ def _build_token_auth(
             yield request  # unreachable — present only so httpx treats this as a generator
 
         async def async_auth_flow(self, request):
+            generation = connection_login.generation
             _mint(request)
             response = yield request
             if not _needs_connection_login(response):
                 return
             # Run the blocking browser login off the event loop so the bridge's
             # other pumps aren't starved while the user completes the sign-in.
-            if not await to_thread.run_sync(connection_login.run_if_needed):
+            if not await to_thread.run_sync(connection_login.run_if_needed, generation):
                 return
             _mint(request)
             yield request
@@ -255,6 +348,7 @@ class _McpBridge:
     def __init__(self, connection_login: _ConnectionLogin) -> None:
         self.connection_login = connection_login
         self.pending_requests: dict[int | str, SessionMessage] = {}
+        self.pending_generations: dict[int | str, int] = {}
         self.retried_requests: set[int | str] = set()
         self.authentication_required = False
         self.authentication_completed = False
@@ -323,7 +417,8 @@ class _McpBridge:
     ) -> None:
         try:
             authenticated = await to_thread.run_sync(
-                self.connection_login.authenticate_or_confirm_ready
+                self.connection_login.authenticate_or_confirm_ready,
+                self.connection_login.generation,
             )
         except ProxyAuthError as exc:
             result = {
@@ -356,9 +451,14 @@ class _McpBridge:
                 )
                 with anyio.move_on_after(TOOLS_REFRESH_TIMEOUT_SECONDS) as scope:
                     await refreshed.wait()
-                if scope.cancel_called:
-                    if refreshed in self._tools_refresh_waiters:
-                        self._tools_refresh_waiters.remove(refreshed)
+                if refreshed in self._tools_refresh_waiters:
+                    self._tools_refresh_waiters.remove(refreshed)
+                if self.authentication_required:
+                    text = (
+                        "Sign-in completed, but this connection still requires authentication. "
+                        "Its tools are not ready. Retry authenticate after checking the connection."
+                    )
+                elif scope.cancel_called:
                     text = (
                         "Authentication complete, but the tool list did not refresh before the "
                         "timeout. Retry the user's original request now. If its tools are still "
@@ -372,7 +472,7 @@ class _McpBridge:
                     )
                 result = {
                     "content": [{"type": "text", "text": text}],
-                    "isError": False,
+                    "isError": self.authentication_required,
                 }
 
         await client.send(
@@ -388,15 +488,49 @@ class _McpBridge:
         upstream: _SendStream[SessionMessage],
     ) -> None:
         try:
-            authenticated = await to_thread.run_sync(self.connection_login.run_if_needed)
-        except ProxyAuthError:
+            authenticated = await to_thread.run_sync(
+                self.connection_login.run_if_needed,
+                self.pending_generations.get(request_id, 0),
+            )
+        except ProxyAuthError as exc:
             authenticated = False
+            payload = auth_error.message
+            if isinstance(payload, JSONRPCError):
+                auth_error = SessionMessage(
+                    JSONRPCError(
+                        jsonrpc="2.0",
+                        id=request_id,
+                        error=payload.error.model_copy(
+                            update={"message": f"{payload.error.message}. {exc}"}
+                        ),
+                    ),
+                    metadata=auth_error.metadata,
+                )
+            elif isinstance(payload, JSONRPCResponse):
+                result = dict(payload.result)
+                result["content"] = [
+                    *(result.get("content") or []),
+                    {"type": "text", "text": str(exc)},
+                ]
+                auth_error = SessionMessage(
+                    JSONRPCResponse(jsonrpc="2.0", id=request_id, result=result),
+                    metadata=auth_error.metadata,
+                )
         if authenticated:
+            self.pending_generations[request_id] = self.connection_login.generation
             await upstream.send(original)
             return
         self.pending_requests.pop(request_id, None)
+        self.pending_generations.pop(request_id, None)
         self.retried_requests.discard(request_id)
+        self.authentication_required = True
+        self.authentication_completed = False
         await client.send(auth_error)
+        await client.send(
+            SessionMessage(
+                JSONRPCNotification(jsonrpc="2.0", method="notifications/tools/list_changed")
+            )
+        )
 
     async def pump_client(
         self,
@@ -428,6 +562,7 @@ class _McpBridge:
                             )
                             continue
                         self.pending_requests[payload.id] = message
+                        self.pending_generations[payload.id] = self.connection_login.generation
                     await dest.send(message)
 
     async def pump_upstream(
@@ -452,28 +587,31 @@ class _McpBridge:
                     if self.connection_login.connection is not None:
                         message = self._with_tool_list_changes(message, original)
                     payload = message.message
-                    if isinstance(payload, JSONRPCError):
+                    notify_authentication_required = False
+                    if isinstance(
+                        payload, (JSONRPCError, JSONRPCResponse)
+                    ) and _connection_auth_required(payload):
                         request_id = payload.id
                         request = original.message if original is not None else None
                         if (
                             isinstance(request, JSONRPCRequest)
                             and request_id is not None
                             and request.method == "tools/list"
-                            and payload.error.code == CONNECTION_AUTH_REQUIRED_ERROR_CODE
                             and self.connection_login.connection is not None
-                            and not self.authentication_completed
                         ):
                             self.authentication_required = True
+                            self.authentication_completed = False
                             self.pending_requests.pop(request_id, None)
+                            self.pending_generations.pop(request_id, None)
                             self.retried_requests.discard(request_id)
                             await dest.send(self._authentication_tool_list_response(request_id))
+                            self._mark_tools_refreshed()
                             continue
                         if (
                             isinstance(request, JSONRPCRequest)
                             and request_id is not None
                             and request.method == "tools/call"
                             and request_id not in self.retried_requests
-                            and payload.error.code == CONNECTION_AUTH_REQUIRED_ERROR_CODE
                             and self.connection_login.connection is not None
                         ):
                             self.retried_requests.add(request_id)
@@ -486,10 +624,40 @@ class _McpBridge:
                                 upstream,
                             )
                             continue
+                        if (
+                            isinstance(request, JSONRPCRequest)
+                            and request.method == "tools/call"
+                            and self.connection_login.connection is not None
+                        ):
+                            self.authentication_required = True
+                            self.authentication_completed = False
+                            notify_authentication_required = True
 
                     tools_refreshed = False
                     if isinstance(payload, JSONRPCResponse) and original is not None:
                         request = original.message
+                        if (
+                            isinstance(request, JSONRPCRequest)
+                            and request.method == "tools/call"
+                            and payload.result.get("isError") is not True
+                        ):
+                            # Some services list tools without checking the user's credential.
+                            self.connection_login.record_success()
+                            self.authentication_required = False
+                        if (
+                            isinstance(request, JSONRPCRequest)
+                            and request.method == "tools/list"
+                            and self.authentication_required
+                        ):
+                            result = dict(payload.result)
+                            result["tools"] = [
+                                *(result.get("tools") or []),
+                                self._authentication_tool(),
+                            ]
+                            message = SessionMessage(
+                                JSONRPCResponse(jsonrpc="2.0", id=payload.id, result=result),
+                                metadata=message.metadata,
+                            )
                         tools_refreshed = (
                             isinstance(request, JSONRPCRequest)
                             and request.method == "tools/list"
@@ -500,8 +668,17 @@ class _McpBridge:
                         and payload.id is not None
                     ):
                         self.pending_requests.pop(payload.id, None)
+                        self.pending_generations.pop(payload.id, None)
                         self.retried_requests.discard(payload.id)
                     await dest.send(message)
+                    if notify_authentication_required:
+                        await dest.send(
+                            SessionMessage(
+                                JSONRPCNotification(
+                                    jsonrpc="2.0", method="notifications/tools/list_changed"
+                                )
+                            )
+                        )
                     if tools_refreshed:
                         self._mark_tools_refreshed()
         raise ProxyTransportError("upstream MCP transport closed unexpectedly")

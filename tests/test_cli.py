@@ -4265,6 +4265,34 @@ class TestConfigureAgentFlag:
             selected_tools=["claude", "codex"],
         )
 
+    @pytest.mark.parametrize("use_pat", [False, True])
+    def test_configure_requires_connection_login_capability_only_for_oauth(self, use_pat):
+        with (
+            patch("ucode.cli.install_databricks_cli") as install_cli,
+            patch("ucode.cli.configure_workspace_command"),
+            patch("ucode.cli._parse_profile_option", return_value=[("https://example.com", "p")]),
+        ):
+            args = ["configure", "--agents", "claude", "--profile", "p"]
+            if use_pat:
+                args.append("--use-pat")
+            result = runner.invoke(app, args)
+
+        assert result.exit_code == 0, result.output
+        install_cli.assert_called_once_with(require_resource=not use_pat)
+
+    def test_incompatible_cli_stops_configure_before_writing_agent_settings(self):
+        with (
+            patch(
+                "ucode.cli.install_databricks_cli", side_effect=RuntimeError("Missing --resource")
+            ),
+            patch("ucode.cli.configure_workspace_command") as configure_workspace,
+        ):
+            result = runner.invoke(app, ["configure", "--agents", "claude"])
+
+        assert result.exit_code == 1
+        assert "Missing --resource" in result.output
+        configure_workspace.assert_not_called()
+
     def test_agents_flag_normalizes_aliases_and_dedupes(self):
         with (
             patch("ucode.cli.install_databricks_cli"),
@@ -5238,7 +5266,7 @@ class TestConfigureAgentsSelection:
         import ucode.cli as cli_mod
 
         state = {**MINIMAL_STATE, "available_tools": []}
-        monkeypatch.setattr(cli_mod, "install_databricks_cli", lambda: None)
+        monkeypatch.setattr(cli_mod, "install_databricks_cli", lambda **kwargs: None)
         monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
         monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda state, tool: False)
         monkeypatch.setattr(

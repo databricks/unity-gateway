@@ -4444,7 +4444,7 @@ def configure(
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
         if custom_oauth is not None and use_pat:
             raise RuntimeError("--client-id cannot be combined with --use-pat.")
-        install_databricks_cli()
+        install_databricks_cli(require_resource=not use_pat)
         if agent is not None and agents is not None:
             raise RuntimeError("Use either --agent or --agents, not both.")
         # --workspaces / --profiles are deprecated aliases of the singular flags.

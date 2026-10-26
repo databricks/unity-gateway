@@ -25,6 +25,7 @@ from ucode.databricks import (
     AIGW_MCP_SERVICES_SEGMENT,
     clear_databricks_token_cache,
     databricks_cli_path,
+    databricks_cli_supports_auth_resource,
 )
 from ucode.os_compatibility import subprocess_cross_os
 
@@ -47,27 +48,6 @@ def connection_from_url(url: str) -> str | None:
     # Strip any trailing path (``/tools/list``), query, or fragment.
     connection = tail.split("/")[0].split("?")[0].split("#")[0]
     return connection or None
-
-
-def _cli_supports_resource_flag(login_binary: str) -> bool:
-    """Whether ``<login_binary> auth login`` advertises the ``--resource`` flag.
-
-    The connection sign-in needs a Databricks CLI with ``--resource``
-    (databricks/cli#6621). An older CLI rejects the flag and the login exits with
-    a cryptic parse error, so we check ``--help`` up front to give a clear message
-    instead. Fail-open (assume supported) if ``--help`` can't be run — the real
-    login attempt will surface any genuine failure."""
-    try:
-        result = subprocess_cross_os.run(
-            [login_binary, "auth", "login", "--help"],
-            check=False,
-            timeout=20,
-            capture_output=True,
-            text=True,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return True
-    return "--resource" in f"{result.stdout or ''}{result.stderr or ''}"
 
 
 def run_connection_login(
@@ -93,7 +73,8 @@ def run_connection_login(
     """
     login_binary = login_binary or databricks_cli_path()
     connection = connection_from_url(resource_url) or resource_url
-    if not _cli_supports_resource_flag(login_binary):
+    # A failed probe must not hide the real login failure (missing binary, timeout, etc.).
+    if databricks_cli_supports_auth_resource(login_binary) is False:
         return False, (
             f"the Databricks CLI ('{login_binary}') has no `--resource` flag, so the "
             f"'{connection}' connection sign-in can't run. Upgrade the CLI "

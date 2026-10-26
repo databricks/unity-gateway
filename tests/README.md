@@ -349,6 +349,16 @@ on async post-login retries and recovery when a connection-backed service return
 the MCP authentication-required error. These checks do not establish live login or
 launch-time savings.
 
+MCP auth-recovery component tests cover canonical authentication/login-elicitation
+errors, explicit upstream 401s, and expired-token errors in tool results. They
+exercise one-shot replay, later reauthentication, concurrent login reuse, persistent
+failure without browser loops, and actionable cancellation/timeout errors with a
+discoverable `authenticate` tool. Generic internal errors, permission/IP failures,
+and successful results containing auth text pass through unchanged. CLI tests cover
+the configure-time `auth login --resource` capability check, one upgrade/recheck,
+probe failures, and the PAT exception. These checks replace external auth/HTTP
+boundaries; no native Desktop, browser, or live MCP recovery pass is claimed.
+
 `test_mcp_web_search_concurrency.py` drives the real stdio dispatcher with controlled
 HTTP and authentication boundaries. It covers concurrent results and catalog requests,
 the four-worker limit, active and queued cancellation, isolated worker errors, and

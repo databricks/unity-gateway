@@ -4468,6 +4468,92 @@ class TestInstallDatabricksCli:
         assert checked == []
 
 
+class TestDatabricksCliAuthResource:
+    @pytest.mark.parametrize(
+        ("returncode", "stdout", "stderr", "expected"),
+        [
+            (0, "--resource stringArray", "", True),
+            (0, "", "--resource stringArray", True),
+            (0, "usage: login [--host]", "", False),
+            (1, "--resource", "command failed", None),
+        ],
+    )
+    def test_probe_uses_selected_binary(self, monkeypatch, returncode, stdout, stderr, expected):
+        def run(args, **kwargs):
+            assert args == ["/selected/databricks", "auth", "login", "--help"]
+            assert kwargs["stdin"] == subprocess.DEVNULL
+            assert kwargs["timeout"] == 20
+            return subprocess.CompletedProcess(args, returncode, stdout, stderr)
+
+        monkeypatch.setattr(db_mod.subprocess_cross_os, "run", run)
+
+        assert db_mod.databricks_cli_supports_auth_resource("/selected/databricks") is expected
+
+    @pytest.mark.parametrize(
+        "failure", [OSError("not found"), subprocess.TimeoutExpired("cli", 20)]
+    )
+    def test_probe_failures_are_not_reported_as_an_old_cli(self, monkeypatch, failure):
+        def run(*args, **kwargs):
+            raise failure
+
+        monkeypatch.setattr(db_mod.subprocess_cross_os, "run", run)
+
+        assert db_mod.databricks_cli_supports_auth_resource("/selected/databricks") is None
+
+    @pytest.mark.parametrize("already_supported", [False, True])
+    def test_configure_upgrades_only_when_resource_flag_is_missing(
+        self, monkeypatch, already_supported
+    ):
+        clis = [("/old/databricks", (1, 0, 0))]
+        monkeypatch.setattr(db_mod, "_discover_databricks_clis", lambda **kw: list(clis))
+        upgrades = []
+        probed = []
+
+        def installer(brew_subcommand="install"):
+            upgrades.append(brew_subcommand)
+            clis[:] = [("/new/databricks", (1, 20, 0))]
+
+        def run(args, **kwargs):
+            probed.append(args[0])
+            supported = already_supported or args[0] == "/new/databricks"
+            return subprocess.CompletedProcess(args, 0, "--resource" if supported else "--host", "")
+
+        monkeypatch.setattr(db_mod, "_run_databricks_cli_installer", installer)
+        monkeypatch.setattr(db_mod.subprocess_cross_os, "run", run)
+
+        install_databricks_cli(require_resource=True)
+
+        assert upgrades == ([] if already_supported else ["upgrade"])
+        assert probed == (
+            ["/old/databricks"] if already_supported else ["/old/databricks", "/new/databricks"]
+        )
+        assert databricks_cli_path() == (
+            "/old/databricks" if already_supported else "/new/databricks"
+        )
+
+    @pytest.mark.parametrize("probe_exit", [0, 1])
+    def test_configure_stops_if_upgrade_or_probe_cannot_provide_resource(
+        self, monkeypatch, probe_exit
+    ):
+        monkeypatch.setattr(
+            db_mod, "_discover_databricks_clis", lambda **kw: [("/selected/databricks", (1, 20, 0))]
+        )
+        upgrades = []
+        monkeypatch.setattr(
+            db_mod, "_run_databricks_cli_installer", lambda **kw: upgrades.append(kw)
+        )
+        monkeypatch.setattr(
+            db_mod.subprocess_cross_os,
+            "run",
+            lambda args, **kw: subprocess.CompletedProcess(args, probe_exit, "--host", ""),
+        )
+
+        with pytest.raises(RuntimeError, match="retry `ug configure`"):
+            install_databricks_cli(require_resource=True)
+
+        assert len(upgrades) == (1 if probe_exit == 0 else 0)
+
+
 class TestDatabricksCliVersion:
     """`databricks_cli_version()` reports the version of whatever
     `databricks_cli_path()` resolves to, so these drive it through a patched

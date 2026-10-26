@@ -44,6 +44,18 @@ Databricks AI Tools, and other-workspace skills are not copied. `ug configure --
 stored in the plugin. Saved PAT mode is supported. Custom OAuth is not yet supported for
 Cowork MCP servers.
 
+For OAuth setup, `ug configure` checks that the selected Databricks CLI supports
+`auth login --resource`, upgrades it once if needed, and stops with guidance if
+connection login remains unavailable. PAT setup does not require this capability.
+
+The MCP proxy offers an `authenticate` tool when discovery requires sign-in. If a
+tool call reports an explicit expired/revoked credential or upstream 401, the proxy
+attempts connection login and retries that call once. A later rejection can trigger
+another login after a successful tool call; persistent failures do not loop browser
+prompts. Cancelled or timed-out login details reach the agent, and `authenticate`
+remains available for a deliberate retry. Generic internal errors, permission errors,
+and IP restrictions are passed through, not treated as expired credentials.
+
 UG owns these local files:
 
 - Generated marketplace: `~/.ucode/claude-cowork-marketplace`

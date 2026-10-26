@@ -470,6 +470,15 @@ owned-file cleanup. `../test_desktop_configure_cli.py` covers managed orchestrat
 cleanup. Both are mocked component coverage; the integration suite does not launch Cowork,
 connect a plugin MCP server, discover its deferred tool, or run a task through it.
 
+MCP authentication recovery is covered by component tests in `../test_mcp_proxy.py`,
+`../test_mcp_connection_login.py`, `../test_databricks.py`, and `../test_cli.py`:
+explicit auth errors in JSON-RPC/tool results, bounded replay, later reauthentication,
+login cancellation/timeout reporting, and preservation of an `authenticate` tool
+after failure. Generic internal and permission/IP errors must not launch login.
+Configure checks CLI connection-login support, upgrades once when absent, and
+bypasses that requirement for PAT mode. These tests control external auth/HTTP
+boundaries, not native Desktop, real browser consent, or live MCP recovery.
+
 Model-source tests require Desktop-only, case-insensitive `\bclaude-` filtering
 instead of copying every catalog entry. Mixed static/discovered lists exclude GPT/OSS
 aliases and lookalikes while preserving Claude IDs, order, duplicates, and source lists.

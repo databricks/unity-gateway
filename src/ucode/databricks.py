@@ -1028,10 +1028,49 @@ def upgrade_databricks_cli() -> bool:
     return True
 
 
+def databricks_cli_supports_auth_resource(cli: str) -> bool | None:
+    """Check connection-login support; None means the capability probe failed."""
+    try:
+        result = subprocess_cross_os.run(
+            [cli, "auth", "login", "--help"],
+            check=False,
+            timeout=20,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return "--resource" in f"{result.stdout or ''}{result.stderr or ''}"
+
+
+def _ensure_databricks_cli_auth_resource() -> None:
+    cli = databricks_cli_path()
+    supported = databricks_cli_supports_auth_resource(cli)
+    if supported:
+        return
+    if supported is None:
+        raise RuntimeError(
+            f"Could not check connection-login support in Databricks CLI '{cli}'. "
+            "Check `databricks auth login --help`, then retry `ug configure`."
+        )
+    print_warning("Databricks CLI has no `auth login --resource` support. Upgrading...")
+    _run_databricks_cli_installer(brew_subcommand="upgrade")
+    clear_databricks_cli_cache()
+    cli = databricks_cli_path()
+    if databricks_cli_supports_auth_resource(cli) is not True:
+        raise RuntimeError(
+            f"Databricks CLI '{cli}' still cannot provide `auth login --resource`. "
+            "Upgrade the CLI and check PATH, then retry `ug configure`."
+        )
+
+
 def install_databricks_cli(
     minimum: tuple[int, int, int] = MIN_DATABRICKS_CLI_VERSION,
     *,
     skip_version_check: bool = False,
+    require_resource: bool = False,
 ) -> None:
     """Ensure the Databricks CLI is installed and (unless skipped) new enough.
 
@@ -1046,6 +1085,8 @@ def install_databricks_cli(
     if databricks_cli_installed():
         if not skip_version_check:
             ensure_databricks_cli_version(minimum)
+        if require_resource:
+            _ensure_databricks_cli_auth_resource()
         return
 
     print_section("Bootstrap")
@@ -1058,6 +1099,8 @@ def install_databricks_cli(
         )
     if not skip_version_check:
         ensure_databricks_cli_version(minimum)
+    if require_resource:
+        _ensure_databricks_cli_auth_resource()
 
 
 def install_ai_tools(agent_tokens: list[str], profile: str | None = None) -> None:
