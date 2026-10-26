@@ -332,6 +332,7 @@ class TestConfigureClientMcpServer:
         monkeypatch.setattr(mcp, "workspace_supports_cimd", lambda ws: True)
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
+        monkeypatch.setattr(mcp, "remove_codex_mcp_server", lambda name: False)
         monkeypatch.setattr(
             mcp, "add_codex_mcp_server", lambda name, argv: proxy_calls.append((name, argv))
         )
