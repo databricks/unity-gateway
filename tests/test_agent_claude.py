@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
 import os
 import shlex
 import subprocess
@@ -4382,6 +4383,16 @@ class TestWriteUserMcpServers:
         assert not default_path.exists()  # the default location is untouched
 
 
+def _add_mcp_servers(prefix: str, count: int) -> None:
+    for index in range(count):
+        claude.write_user_mcp_servers({f"{prefix}-{index}": {"type": "http", "url": "u"}}, set())
+
+
+def _seed_hooks_modules_gate(count: int) -> None:
+    for _ in range(count):
+        claude.ensure_hooks_modules_gate()
+
+
 class TestEnsureHooksModulesGate:
     """Launch forces Claude Code's mods rollout gate on in `.claude.json`."""
 
@@ -4434,15 +4445,78 @@ class TestEnsureHooksModulesGate:
 
         assert path.read_text() == "{ not json"
 
-    def test_write_failure_does_not_raise(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", tmp_path / ".claude.json")
+    def test_write_failure_does_not_raise_or_leave_temp_files(self, tmp_path, monkeypatch):
+        path = tmp_path / ".claude.json"
+        path.write_text('{"numStartups": 7}')
+        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", path)
 
-        def fail(path, payload):
-            raise RuntimeError("read-only")
+        def fail(src, dst):
+            raise OSError("read-only")
 
-        monkeypatch.setattr(claude, "atomic_write_json", fail)
+        monkeypatch.setattr(claude.os, "replace", fail)
 
         claude.ensure_hooks_modules_gate()
+
+        assert path.read_text() == '{"numStartups": 7}'
+        assert not list(tmp_path.glob("*.tmp"))
+
+    def test_lock_timeout_does_not_raise(self, tmp_path, monkeypatch):
+        path = tmp_path / ".claude.json"
+        path.write_text("{}")
+        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", path)
+
+        def busy(lock_file, *, timeout=None):
+            raise TimeoutError
+
+        monkeypatch.setattr(claude, "acquire_exclusive_file_lock", busy)
+
+        claude.ensure_hooks_modules_gate()
+
+        assert path.read_text() == "{}"
+
+    def test_locks_a_file_claude_code_does_not_use(self, tmp_path, monkeypatch):
+        # Claude Code locks `<file>.lock` itself; ug's flock must not collide with it.
+        path = tmp_path / ".claude.json"
+        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", path)
+
+        claude.ensure_hooks_modules_gate()
+
+        assert (tmp_path / ".claude.json.ug.lock").exists()
+        assert not (tmp_path / ".claude.json.lock").exists()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+    def test_keeps_file_mode(self, tmp_path, monkeypatch):
+        path = tmp_path / ".claude.json"
+        path.write_text("{}")
+        path.chmod(0o644)
+        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", path)
+
+        claude.ensure_hooks_modules_gate()
+
+        assert path.stat().st_mode & 0o777 == 0o644
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="uses fork to share the patched path")
+    def test_concurrent_writers_keep_every_change(self, tmp_path, monkeypatch):
+        path = tmp_path / ".claude.json"
+        path.write_text(json.dumps({"numStartups": 7, "tengu_plugin_hooks_modules": False}))
+        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", path)
+        context = multiprocessing.get_context("fork")
+        workers = [
+            context.Process(target=_add_mcp_servers, args=(f"w{index}", 20)) for index in range(4)
+        ]
+        workers += [context.Process(target=_seed_hooks_modules_gate, args=(20,)) for _ in range(2)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=60)
+            assert worker.exitcode == 0
+
+        doc = json.loads(path.read_text())
+        assert doc["numStartups"] == 7
+        assert doc["cachedGrowthBookFeatures"] == {"tengu_plugin_hooks_modules": True}
+        assert "tengu_plugin_hooks_modules" not in doc
+        assert set(doc["mcpServers"]) == {f"w{w}-{i}" for w in range(4) for i in range(20)}
+        assert not list(tmp_path.glob("*.tmp"))
 
     def test_launch_enables_gate(self, tmp_path, monkeypatch):
         path = tmp_path / ".claude.json"
