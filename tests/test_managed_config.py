@@ -1388,7 +1388,6 @@ class TestPolicyWithoutInstallation:
         [
             ({"outcome": "none", "config": {}}, (None, False)),
             ({"outcome": "feature_disabled", "config": {}}, (None, True)),
-            ({"config": {}}, (None, False)),
         ],
     )
     def test_per_user_cache_replays_empty_outcomes(
@@ -1400,6 +1399,25 @@ class TestPolicyWithoutInstallation:
         )
 
         assert refresh_managed_config(_state()) == expected
+
+    def test_per_user_cache_without_an_outcome_is_read_once(self, not_installable, monkeypatch):
+        """An older empty file could be "no config" or a disabled feature; stamp it before trusting."""
+        mc_mod.USER_MANAGED_CONFIG_PATH.write_text(
+            json.dumps({"workspace": WORKSPACE, "config": {}})
+        )
+        fetched: list[str] = []
+        monkeypatch.setattr(
+            mc_mod,
+            "get_managed_config",
+            lambda ws, _tok: fetched.append(ws) or (None, "FEATURE_DISABLED"),
+        )
+
+        assert refresh_managed_config(_state()) == (None, True)
+        assert fetched == [WORKSPACE]
+        monkeypatch.setattr(
+            mc_mod, "get_managed_config", lambda *_a: pytest.fail("the stamped read must replay")
+        )
+        assert refresh_managed_config(_state()) == (None, True)
 
     def test_failed_fetch_falls_back_to_the_per_user_cache(self, not_installable, monkeypatch):
         """Unchanged from main: an outage keeps the last saved policy in force."""
