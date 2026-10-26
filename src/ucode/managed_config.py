@@ -48,6 +48,7 @@ from ucode.managed_files import (
     managed_settings_skipped,
     update_workspace_policy,
 )
+from ucode.os_compatibility import system_cross_os
 from ucode.time_utils import parse_update_time
 from ucode.ui import console, normalize_workspace_url, print_warning
 
@@ -972,6 +973,11 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
                     f"Your workspace policy changed, but {SKIP_OS_SETTINGS_ENV} is set, so the "
                     f"installed policy at {MANAGED_CONFIG_PATH} was not updated. Run `ug configure` "
                     f"without {SKIP_OS_SETTINGS_ENV} as an administrator. {fallback_message}"
+                )
+            elif system_cross_os.is_admin():
+                print_warning(
+                    "Your workspace policy changed. Run `ug configure` to apply the update on "
+                    f"this machine. {fallback_message}"
                 )
             else:
                 print_warning(

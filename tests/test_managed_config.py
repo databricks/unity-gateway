@@ -1028,7 +1028,7 @@ class TestMachinePolicyRefresh:
     @pytest.mark.parametrize("is_root", [False, True])
     def test_launch_applies_the_fetched_policy_without_installing(self, monkeypatch, is_root):
         """A first launch before any configure is managed and installs nothing, even as root."""
-        monkeypatch.setattr(os, "geteuid", lambda: 0 if is_root else 1000, raising=False)
+        monkeypatch.setattr(mc_mod.system_cross_os, "is_admin", lambda: is_root)
         warnings = []
         monkeypatch.setattr(mc_mod, "print_warning", warnings.append)
         monkeypatch.setattr(
@@ -1043,10 +1043,7 @@ class TestMachinePolicyRefresh:
         assert not mc_mod.MANAGED_CONFIG_PATH.exists()
         assert warnings == []
 
-    @pytest.mark.parametrize("is_root", [False, True])
-    def test_configure_installs_the_policy(self, monkeypatch, is_root):
-        monkeypatch.setattr(os, "geteuid", lambda: 0 if is_root else 1000, raising=False)
-
+    def test_configure_installs_the_policy(self):
         refresh_managed_config(_state(), force_refresh=True)
 
         assert load_managed_configuration(WORKSPACE) == RAW_MANIFEST
@@ -1086,7 +1083,7 @@ class TestMachinePolicyRefresh:
     def test_launch_never_removes_the_installed_policy(self, monkeypatch, is_root):
         save_managed_state(WORKSPACE, RAW_MANIFEST)
         monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (None, None))
-        monkeypatch.setattr(os, "geteuid", lambda: 0 if is_root else 1000, raising=False)
+        monkeypatch.setattr(mc_mod.system_cross_os, "is_admin", lambda: is_root)
         monkeypatch.setattr(
             mc_mod,
             "update_workspace_policy",
@@ -1097,7 +1094,11 @@ class TestMachinePolicyRefresh:
         result = refresh_managed_config(_state())
         assert result.manifest == normalize_managed_config(RAW_MANIFEST)
         assert mc_mod.MANAGED_CONFIG_PATH.exists()
-        assert "Ask your IT team or an administrator" in warnings[0]
+        if is_root:
+            assert "Run `ug configure`" in warnings[0]
+            assert "IT team" not in warnings[0]
+        else:
+            assert "Ask your IT team or an administrator" in warnings[0]
 
     @pytest.mark.parametrize("reason", [None, "FEATURE_DISABLED"])
     def test_failed_policy_removal_warns_and_preserves_installed_policy(self, monkeypatch, reason):
