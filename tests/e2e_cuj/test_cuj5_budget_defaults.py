@@ -233,36 +233,23 @@ class TestCujBudgetDefaultsExplicitClaude(_BudgetDefaultsBase):
             tui.exit_normally()
 
 
-def _claude_header_pattern(model: str) -> str:
-    """Claude's native header label for a ``system.ai.claude-<family>-<version>`` id."""
-    family, *version = model.removeprefix("system.ai.claude-").split("-")
-    return rf"Claude {family.title()} {re.escape('.'.join(version))}\s*·"
-
-
 class TestCujBudgetDefaultsExplicitClaudeModel(_BudgetDefaultsBase):
-    def test_ug_claude_model_flag_overrides_budget_without_rewriting_settings(self, cuj):
-        """Scenario: above the tier, launch ``ug claude --model <other Claude model>``, then
-        plain ``ug claude``.
+    def test_ug_claude_model_flag_keeps_settings_under_budget_tier(self, cuj):
+        """Scenario: above the tier, launch ``ug claude --model <Sonnet id>``, then plain
+        ``ug claude``.
 
-        Expected: the backend still recommends Codex/Luna and the launch displays it. The explicit
-        model drives Claude's native header, yet neither the user settings file nor the OS-managed
-        settings file changes: both keep the Sonnet ``ANTHROPIC_MODEL`` that ``ug configure``
-        wrote. The following plain launch is back on Sonnet with both files still byte-identical.
-        No task is submitted; this checks startup selection, not the model used for inference.
+        Expected: the backend still recommends Codex/Luna and the launch displays it, and Claude's
+        native header selects Sonnet. Neither launch changes the user settings file or the
+        OS-managed settings file: both stay byte-identical to what ``ug configure`` wrote, with
+        Sonnet as ``ANTHROPIC_MODEL``. The workspace publishes Sonnet as its only Claude model, so
+        the explicit model equals the admin default; this checks that an explicit ``--model``
+        writes no file, not that it switches models. No task is submitted.
         """
         session, workspace, _ = cuj
         config = workspace.config()
         claude = Workspace.agent_configs(config)[CodingAgent.CLAUDE_CODE]
         assert claude["default_models"]["default_model"] == self.SONNET_MODEL, config
-        explicit_model = next(
-            (
-                model
-                for model in claude["models"]["model_services"]
-                if model.startswith("system.ai.claude-") and model != self.SONNET_MODEL
-            ),
-            None,
-        )
-        assert explicit_model, f"CUJ 5 needs a second published Claude model: {claude}"
+        assert claude["models"]["model_services"] == [self.SONNET_MODEL], config
 
         session.configure(
             [
@@ -288,7 +275,7 @@ class TestCujBudgetDefaultsExplicitClaudeModel(_BudgetDefaultsBase):
         with AgentTerminal(
             session,
             CLAUDE,
-            [str(session.binary), CLAUDE, "--model", explicit_model],
+            [str(session.binary), CLAUDE, "--model", self.SONNET_MODEL],
             "explicit-claude-model",
         ) as tui:
             tui.boot(timeout=240)
@@ -304,8 +291,8 @@ class TestCujBudgetDefaultsExplicitClaudeModel(_BudgetDefaultsBase):
                 f"for {self.LUNA_MODEL!r}:\n{transcript}"
             )
             tui.wait_for(
-                lambda text: re.search(_claude_header_pattern(explicit_model), text),
-                f"Claude's native {explicit_model} model header",
+                lambda text: re.search(r"Claude Sonnet 4\.6\s*·", text),
+                "Claude's native Sonnet model header",
             )
             tui.exit_normally()
         for path, content in configured.items():

@@ -217,14 +217,16 @@ The explicit `ug claude` case verifies that startup displays the backend's Codex
 recommendation while its generated `ANTHROPIC_MODEL` setting and native header select
 Sonnet, then exits. It does not verify Claude's inference model.
 
-The explicit `ug claude --model <model>` case picks the first published Claude model other
-than Sonnet. It checks that the launch still displays the Codex/Luna recommendation and that
-Claude's native header shows the explicit model. It also requires `~/.claude/ucode-settings.json`
-and `/etc/claude-code/managed-settings.json` to stay byte-identical to what `ug configure` wrote,
-with Sonnet as `ANTHROPIC_MODEL`. A following plain `ug claude` must start on Sonnet without
-rewriting either file. This case also covers startup only, not inference. A Claude budget pick
-that differs from the admin default, alone or with smart routing, has unit coverage in
-`../test_agent_claude.py` and `../test_cli.py` only: no CUJ workspace publishes such a tier.
+The explicit `ug claude --model <Sonnet id>` case checks that the launch still displays the
+Codex/Luna recommendation and that Claude's native header selects Sonnet. It also requires
+`~/.claude/ucode-settings.json` and `/etc/claude-code/managed-settings.json` to stay
+byte-identical to what `ug configure` wrote, with Sonnet as `ANTHROPIC_MODEL`. A following plain
+`ug claude` must start on Sonnet without rewriting either file. The workspace publishes Sonnet as
+its only Claude model, so the explicit model equals the admin default: this proves an explicit
+`--model` writes no file, not that it switches models. That switch is covered by CUJ 1, without a
+budget. A Claude budget pick that differs from the admin default, alone or with smart routing,
+has unit coverage in `../test_agent_claude.py` and `../test_cli.py` only: no CUJ workspace
+publishes such a tier. This case also covers startup only, not inference.
 All four cases leave workspace and budget configuration unchanged.
 
 `../test_usage.py`, `../test_budget.py`, and `../test_cli.py` cover top-five selection
