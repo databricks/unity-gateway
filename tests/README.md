@@ -177,6 +177,21 @@ inference input, and a completed explicitly requested routed subagent. It does n
 automatic orchestrator delegation. Routing-disabled coverage is deferred until a separately
 preconfigured workspace is assigned.
 
+`TestEnsureDatabricksCliVersion` in `test_databricks.py` covers recovery from timeout,
+execution failure, malformed output, or nonzero exit, including valid `v1.22.1`
+output on retry. Discovery and retries share one 20-second budget across PATH
+candidates; each subprocess receives at most ten seconds or the remaining budget.
+Checks retain the initial failure and retry diagnostics, reject nonzero exits with
+parseable versions, prefer a recovered modern CLI over upgrading an old candidate,
+and preserve cached selection and PATH tie order. Incomplete discovery, including
+a retry that times out at the shared deadline, fails with diagnostics instead of
+upgrading a known old CLI while other candidates remain unverified. Presence checks
+do not probe.
+An old retry still goes through the minimum-version gate; one upgrade gets a new
+validation budget and a still-old CLI fails instead of repeatedly upgrading.
+These component checks do not establish live agent startup or first-message
+completion, or explain the underlying CLI timeout.
+
 `test_entry_points.py` also runs both installed console scripts (`ug` and `ucode`)
 and checks their version output against the `unity-gateway` distribution metadata.
 `test_startup_imports.py` guards the bare `--version` / `-V` fast path and deferred

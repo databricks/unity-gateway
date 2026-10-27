@@ -10,6 +10,7 @@ import threading
 import time
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import parse_qs
 
 import pytest
@@ -4024,6 +4025,15 @@ class TestHttpUgHeaders:
         assert requests[1].get_header("Content-type") == "application/json"
 
 
+def _discovered_clis(*entries):
+    return [
+        db_mod._DiscoveredDatabricksCli(
+            path, index, [db_mod._DatabricksCliVersionProbe(version=version)]
+        )
+        for index, (path, version) in enumerate(entries)
+    ]
+
+
 class TestParseDatabricksCliVersion:
     def test_parses_standard_format(self):
         assert _parse_databricks_cli_version("Databricks CLI v0.299.2") == (0, 299, 2)
@@ -4127,7 +4137,9 @@ class TestDatabricksCliResolution:
         monkeypatch.setattr(
             db_mod,
             "_read_databricks_cli_version",
-            lambda path: probed.append(path) or (1, 2, 3),
+            lambda path, **kw: (
+                probed.append(path) or db_mod._DatabricksCliVersionProbe(version=(1, 2, 3))
+            ),
         )
 
         discovered = db_mod._discover_databricks_clis(use_cache=False)
@@ -4138,8 +4150,8 @@ class TestDatabricksCliResolution:
             return os.path.normcase(os.path.realpath(path))
 
         assert len(discovered) == 1
-        assert _norm(discovered[0][0]) == _norm(str(real_bin))
-        assert discovered[0][1] == (1, 2, 3)
+        assert _norm(discovered[0].path) == _norm(str(real_bin))
+        assert discovered[0].version == (1, 2, 3)
         assert [_norm(path) for path in probed] == [_norm(str(real_bin))]
 
     def test_discover_orders_best_first(self, monkeypatch):
@@ -4160,9 +4172,15 @@ class TestDatabricksCliResolution:
             "/path/c/databricks": (1, 20, 0),
             "/path/d/databricks": (1, 5, 0),
         }
-        monkeypatch.setattr(db_mod, "_read_databricks_cli_version", lambda path: versions[path])
+        monkeypatch.setattr(
+            db_mod,
+            "_read_databricks_cli_version",
+            lambda path, **kw: db_mod._DatabricksCliVersionProbe(version=versions[path]),
+        )
 
-        assert db_mod._discover_databricks_clis(use_cache=False) == [
+        assert [
+            (cli.path, cli.version) for cli in db_mod._discover_databricks_clis(use_cache=False)
+        ] == [
             ("/path/c/databricks", (1, 20, 0)),
             ("/path/a/databricks", (1, 5, 0)),
             ("/path/d/databricks", (1, 5, 0)),
@@ -4176,12 +4194,16 @@ class TestDatabricksCliResolution:
             "_iter_databricks_executables",
             lambda: iter_calls.append(True) or ["/usr/bin/databricks"],
         )
-        monkeypatch.setattr(db_mod, "_read_databricks_cli_version", lambda path: (1, 2, 3))
+        monkeypatch.setattr(
+            db_mod,
+            "_read_databricks_cli_version",
+            lambda path, **kw: db_mod._DatabricksCliVersionProbe(version=(1, 2, 3)),
+        )
 
         first = db_mod._discover_databricks_clis()
         second = db_mod._discover_databricks_clis()
         assert first is second
-        assert first == [("/usr/bin/databricks", (1, 2, 3))]
+        assert [(cli.path, cli.version) for cli in first] == [("/usr/bin/databricks", (1, 2, 3))]
         assert len(iter_calls) == 1
 
         db_mod._discover_databricks_clis(use_cache=False)
@@ -4195,11 +4217,11 @@ class TestDatabricksCliResolution:
         monkeypatch.setattr(
             db_mod,
             "_discover_databricks_clis",
-            lambda **kw: [
+            lambda **kw: _discovered_clis(
                 ("/path/b/databricks", (1, 20, 0)),
                 ("/path/c/databricks", (1, 8, 0)),
                 ("/path/a/databricks", (1, 5, 0)),
-            ],
+            ),
         )
         assert db_mod._select_databricks_cli((1, 0, 0)) == ("/path/b/databricks", (1, 20, 0))
 
@@ -4207,11 +4229,11 @@ class TestDatabricksCliResolution:
         monkeypatch.setattr(
             db_mod,
             "_discover_databricks_clis",
-            lambda **kw: [
+            lambda **kw: _discovered_clis(
                 ("/path/c/databricks", (1, 3, 0)),  # meets the floor
                 ("/path/a/databricks", (0, 299, 2)),  # too old
                 ("/path/b/databricks", None),  # unparseable
-            ],
+            ),
         )
         assert db_mod._select_databricks_cli((1, 0, 0)) == ("/path/c/databricks", (1, 3, 0))
 
@@ -4219,10 +4241,10 @@ class TestDatabricksCliResolution:
         monkeypatch.setattr(
             db_mod,
             "_discover_databricks_clis",
-            lambda **kw: [
+            lambda **kw: _discovered_clis(
                 ("/path/a/databricks", (0, 299, 2)),
                 ("/path/b/databricks", None),
-            ],
+            ),
         )
         assert db_mod._select_databricks_cli((1, 0, 0)) == (None, None)
 
@@ -4233,10 +4255,10 @@ class TestDatabricksCliResolution:
         monkeypatch.setattr(
             db_mod,
             "_discover_databricks_clis",
-            lambda **kw: [
+            lambda **kw: _discovered_clis(
                 ("/path/new/databricks", (1, 20, 0)),
                 ("/path/old/databricks", (0, 299, 2)),
-            ],
+            ),
         )
         assert databricks_cli_path() == "/path/new/databricks"
 
@@ -4253,7 +4275,11 @@ class TestDatabricksCliResolution:
             "_iter_databricks_executables",
             lambda: iter_calls.append(True) or ["/path/a/databricks"],
         )
-        monkeypatch.setattr(db_mod, "_read_databricks_cli_version", lambda path: (1, 20, 0))
+        monkeypatch.setattr(
+            db_mod,
+            "_read_databricks_cli_version",
+            lambda path, **kw: db_mod._DatabricksCliVersionProbe(version=(1, 20, 0)),
+        )
 
         first = databricks_cli_path()
         second = databricks_cli_path()
@@ -4266,19 +4292,30 @@ class TestDatabricksCliResolution:
 
     # -- _read_databricks_cli_version -----------------------------------------
 
-    def test_read_version_swallows_oserror(self, monkeypatch):
+    def test_read_version_retains_oserror(self, monkeypatch):
         def boom(*a, **kw):
             raise OSError("nope")
 
         monkeypatch.setattr(db_mod, "run", boom)
-        assert db_mod._read_databricks_cli_version("/usr/bin/databricks") is None
+        probe = db_mod._read_databricks_cli_version(
+            "/usr/bin/databricks", deadline=time.monotonic() + 20
+        )
+        assert probe.version is None
+        assert probe.failure == "could not execute: nope"
 
-    def test_read_version_swallows_timeout(self, monkeypatch):
+    def test_read_version_retains_timeout_and_partial_output(self, monkeypatch):
         def boom(*a, **kw):
-            raise subprocess.TimeoutExpired("databricks", 10)
+            raise subprocess.TimeoutExpired(
+                "databricks", 10, output=b"partial stdout", stderr=b"partial stderr"
+            )
 
         monkeypatch.setattr(db_mod, "run", boom)
-        assert db_mod._read_databricks_cli_version("/usr/bin/databricks") is None
+        probe = db_mod._read_databricks_cli_version(
+            "/usr/bin/databricks", deadline=time.monotonic() + 20
+        )
+        assert probe.version is None
+        assert probe.failure == "timed out after 10 seconds"
+        assert probe.output == "partial stdout\npartial stderr"
 
     def test_read_version_parses_output(self, monkeypatch):
         monkeypatch.setattr(
@@ -4286,18 +4323,65 @@ class TestDatabricksCliResolution:
             "run",
             lambda *a, **kw: subprocess.CompletedProcess(a, 0, "Databricks CLI v1.20.0", ""),
         )
-        assert db_mod._read_databricks_cli_version("/usr/bin/databricks") == (1, 20, 0)
+        probe = db_mod._read_databricks_cli_version(
+            "/usr/bin/databricks", deadline=time.monotonic() + 20
+        )
+        assert probe.version == (1, 20, 0)
+        assert probe.returncode == 0
+        assert probe.failure is None
+
+    @pytest.mark.parametrize("as_bytes", [False, True])
+    def test_read_version_checks_stderr_when_stdout_has_other_output(self, monkeypatch, as_bytes):
+        stdout = "Starting CLI wrapper"
+        stderr = "Databricks CLI v1.20.0"
+        if as_bytes:
+            stdout, stderr = stdout.encode(), stderr.encode()
+        monkeypatch.setattr(
+            db_mod,
+            "run",
+            lambda *a, **kw: subprocess.CompletedProcess(a, 0, stdout, stderr),
+        )
+        probe = db_mod._read_databricks_cli_version(
+            "/usr/bin/databricks", deadline=time.monotonic() + 20
+        )
+        assert probe.version == (1, 20, 0)
+        assert probe.output == "Starting CLI wrapper\nDatabricks CLI v1.20.0"
+
+    def test_read_version_rejects_parseable_output_from_failed_process(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "run",
+            lambda *a, **kw: subprocess.CompletedProcess(a, 7, "Databricks CLI v1.22.1", "failed"),
+        )
+        probe = db_mod._read_databricks_cli_version(
+            "/usr/bin/databricks", deadline=time.monotonic() + 20
+        )
+        assert probe.version is None
+        assert probe.returncode == 7
+        assert probe.failure == "exited with status 7"
+        assert probe.output == "Databricks CLI v1.22.1\nfailed"
+
+    @pytest.mark.parametrize("remaining", [0, -1])
+    def test_read_version_does_not_start_after_deadline(self, monkeypatch, remaining):
+        monkeypatch.setattr(db_mod, "time", SimpleNamespace(monotonic=lambda: 50.0))
+        monkeypatch.setattr(
+            db_mod, "run", lambda *a, **kw: pytest.fail("expired budget must not start a process")
+        )
+        probe = db_mod._read_databricks_cli_version("/usr/bin/databricks", deadline=50 + remaining)
+        assert probe.version is None
+        assert probe.failure == "not run: overall probe deadline exhausted"
 
     # -- databricks_cli_installed ----------------------------------------------
 
-    def test_installed_true_when_discovery_finds_a_cli(self, monkeypatch):
+    def test_installed_true_without_running_version_probe(self, monkeypatch):
+        monkeypatch.setattr(db_mod, "_iter_databricks_executables", lambda: ["/usr/bin/databricks"])
         monkeypatch.setattr(
-            db_mod, "_discover_databricks_clis", lambda **kw: [("/usr/bin/databricks", (1, 20, 0))]
+            db_mod, "run", lambda *a, **kw: pytest.fail("presence must not probe the version")
         )
         assert databricks_cli_installed() is True
 
     def test_installed_false_when_nothing_discovered(self, monkeypatch):
-        monkeypatch.setattr(db_mod, "_discover_databricks_clis", lambda **kw: [])
+        monkeypatch.setattr(db_mod, "_iter_databricks_executables", lambda: [])
         assert databricks_cli_installed() is False
 
 
@@ -4324,29 +4408,341 @@ class TestEnsureDatabricksCliVersion:
         monkeypatch.setattr("os.environ", env)
         ensure_databricks_cli_version()  # should not raise
 
+    @pytest.mark.parametrize("first_failure", ["timeout", "oserror", "unparseable", "nonzero"])
+    def test_successful_retry_is_accepted_and_cached(self, tmp_path, monkeypatch, first_failure):
+        env = self._fake_databricks(tmp_path, "Databricks CLI v1.22.1")
+        monkeypatch.setattr("os.environ", env)
+        real_run = db_mod.run
+        calls = []
+
+        def run_with_transient_failure(args, **kwargs):
+            calls.append(args)
+            if len(calls) == 1:
+                # Inject external process failure without waiting for the ten-second timeout.
+                if first_failure == "timeout":
+                    raise subprocess.TimeoutExpired(args, 10)
+                if first_failure == "oserror":
+                    raise OSError("temporarily unavailable")
+                if first_failure == "nonzero":
+                    return subprocess.CompletedProcess(args, 1, "Databricks CLI v1.22.1", "failed")
+                return subprocess.CompletedProcess(args, 0, "incomplete output", "")
+            return real_run(args, **kwargs)
+
+        monkeypatch.setattr(db_mod, "run", run_with_transient_failure)
+
+        ensure_databricks_cli_version()
+        ensure_databricks_cli_version()
+
+        assert databricks_cli_version() == (1, 22, 1)
+        assert databricks_cli_path() == calls[0][0]
+        assert len(calls) == 2
+        assert calls[0] == calls[1]
+        probes = db_mod._discover_databricks_clis()[0].probes
+        assert len(probes) == 2
+        assert probes[0].failure
+        assert probes[1].version == (1, 22, 1)
+
+    @pytest.mark.parametrize("failure", ["timeout", "oserror"])
+    def test_repeated_probe_failure_is_bounded(self, tmp_path, monkeypatch, failure):
+        env = self._fake_databricks(tmp_path, "Databricks CLI v1.20.0")
+        monkeypatch.setattr("os.environ", env)
+        calls = []
+        error = (
+            subprocess.TimeoutExpired("databricks --version", 10)
+            if failure == "timeout"
+            else OSError("temporarily unavailable")
+        )
+
+        def fail_probe(args, **kwargs):
+            calls.append(args)
+            raise error
+
+        monkeypatch.setattr(db_mod, "run", fail_probe)
+        monkeypatch.setattr(
+            db_mod,
+            "_run_databricks_cli_installer",
+            lambda **kwargs: pytest.fail("probe failures must not trigger installation"),
+        )
+
+        with pytest.raises(RuntimeError, match="Failed to read Databricks CLI version") as exc_info:
+            ensure_databricks_cli_version()
+
+        assert len(calls) == 2
+        message = str(exc_info.value)
+        assert "initial probe" in message
+        assert "retry" in message
+        reason = "timed out after 10 seconds" if failure == "timeout" else "temporarily unavailable"
+        assert message.count(reason) == 2
+
+    @pytest.mark.parametrize("candidate_count", [1, 3])
+    def test_all_candidates_and_retries_share_one_deadline(self, monkeypatch, candidate_count):
+        paths = [f"/cli-{index}/databricks" for index in range(candidate_count)]
+        monkeypatch.setattr(db_mod, "_iter_databricks_executables", lambda: paths)
+        now = [100.0]
+        monkeypatch.setattr(db_mod, "time", SimpleNamespace(monotonic=lambda: now[0]))
+        calls = []
+
+        def time_out(args, **kwargs):
+            # Advance a fake clock instead of making the regression take 20 seconds.
+            timeout = kwargs["timeout"]
+            calls.append((args[0], timeout))
+            now[0] += timeout
+            raise subprocess.TimeoutExpired(args, timeout)
+
+        monkeypatch.setattr(db_mod, "run", time_out)
+        monkeypatch.setattr(
+            db_mod,
+            "_run_databricks_cli_installer",
+            lambda **kw: pytest.fail("unknown versions must not trigger installation"),
+        )
+
+        with pytest.raises(RuntimeError, match="20-second probe budget") as exc_info:
+            ensure_databricks_cli_version()
+
+        assert now[0] == 120
+        assert len(calls) == 2
+        assert [timeout for _, timeout in calls] == [10, 10]
+        if candidate_count == 1:
+            assert [path for path, _ in calls] == [paths[0], paths[0]]
+        else:
+            assert [path for path, _ in calls] == paths[:2]
+            assert paths[2] in str(exc_info.value)
+            assert "not run: overall probe deadline exhausted" in str(exc_info.value)
+
+    def test_retry_uses_remaining_budget_and_retains_success(self, monkeypatch):
+        paths = ["/first/databricks", "/second/databricks"]
+        monkeypatch.setattr(db_mod, "_iter_databricks_executables", lambda: paths)
+        now = [100.0]
+        monkeypatch.setattr(db_mod, "time", SimpleNamespace(monotonic=lambda: now[0]))
+        calls = []
+
+        def probe(args, **kwargs):
+            timeout = kwargs["timeout"]
+            calls.append((args[0], timeout))
+            if len(calls) == 1:
+                now[0] += timeout
+                raise subprocess.TimeoutExpired(args, timeout)
+            if len(calls) == 2:
+                now[0] += 7.5
+                return subprocess.CompletedProcess(args, 1, "", "wrapper failed")
+            if len(calls) == 3:
+                return subprocess.CompletedProcess(args, 0, "Databricks CLI v1.22.1", "")
+            now[0] += timeout
+            raise subprocess.TimeoutExpired(args, timeout)
+
+        monkeypatch.setattr(db_mod, "run", probe)
+        ensure_databricks_cli_version()
+
+        assert calls == [(paths[0], 10), (paths[1], 10), (paths[0], 2.5), (paths[1], 2.5)]
+        assert now[0] == 120
+        assert databricks_cli_path() == paths[0]
+        assert databricks_cli_version() == (1, 22, 1)
+        assert len(calls) == 4
+
+    def test_failure_message_retains_original_timeout_and_different_retry_failure(
+        self, monkeypatch
+    ):
+        path = "/cli/databricks"
+        monkeypatch.setattr(db_mod, "_iter_databricks_executables", lambda: [path])
+        failures = iter(
+            [
+                subprocess.TimeoutExpired([path, "--version"], 10, stderr=b"initial stderr"),
+                OSError("retry executable unavailable"),
+            ]
+        )
+
+        def fail_probe(*args, **kwargs):
+            raise next(failures)
+
+        monkeypatch.setattr(db_mod, "run", fail_probe)
+        with pytest.raises(RuntimeError) as exc_info:
+            ensure_databricks_cli_version()
+
+        message = str(exc_info.value)
+        assert path in message
+        assert "initial probe: timed out after 10 seconds" in message
+        assert "initial stderr" in message
+        assert "retry: could not execute: retry executable unavailable" in message
+
+    def test_retry_finds_newer_cli_before_upgrading_old_candidate(self, monkeypatch):
+        paths = ["/old/databricks", "/new/databricks"]
+        monkeypatch.setattr(db_mod, "_iter_databricks_executables", lambda: paths)
+        calls = []
+
+        def probe(args, **kwargs):
+            calls.append(args[0])
+            if args[0] == paths[0]:
+                return subprocess.CompletedProcess(args, 0, "Databricks CLI v0.299.2", "")
+            if calls.count(paths[1]) == 1:
+                raise subprocess.TimeoutExpired(args, 10)
+            return subprocess.CompletedProcess(args, 0, "Databricks CLI v1.22.1", "")
+
+        monkeypatch.setattr(db_mod, "run", probe)
+        monkeypatch.setattr(
+            db_mod,
+            "_run_databricks_cli_installer",
+            lambda **kw: pytest.fail("a usable existing CLI must not trigger upgrade"),
+        )
+        ensure_databricks_cli_version()
+
+        assert calls == [paths[0], paths[1], paths[1]]
+        assert databricks_cli_path() == paths[1]
+        assert databricks_cli_version() == (1, 22, 1)
+
+    def test_incomplete_discovery_does_not_upgrade_known_old_cli(self, monkeypatch):
+        paths = ["/old/databricks", "/transient/databricks", "/other/databricks"]
+        monkeypatch.setattr(db_mod, "_iter_databricks_executables", lambda: paths)
+        now = [100.0]
+        monkeypatch.setattr(db_mod, "time", SimpleNamespace(monotonic=lambda: now[0]))
+        calls = []
+
+        def probe(args, **kwargs):
+            calls.append(args[0])
+            if args[0] == paths[0]:
+                return subprocess.CompletedProcess(args, 0, "Databricks CLI v0.299.2", "")
+            now[0] += kwargs["timeout"]
+            raise subprocess.TimeoutExpired(args, kwargs["timeout"], stderr=b"probe stalled")
+
+        monkeypatch.setattr(db_mod, "run", probe)
+        monkeypatch.setattr(
+            db_mod,
+            "_run_databricks_cli_installer",
+            lambda **kw: pytest.fail("an unverified candidate may already meet the minimum"),
+        )
+
+        with pytest.raises(RuntimeError, match="20-second probe budget") as exc_info:
+            ensure_databricks_cli_version()
+
+        assert calls == paths
+        assert now[0] == 120
+        message = str(exc_info.value)
+        assert "version v0.299.2" in message
+        assert "initial probe: timed out after 10 seconds" in message
+        assert "probe stalled" in message
+        assert "retry: not run: overall probe deadline exhausted" in message
+
+    def test_shortened_retry_timeout_does_not_upgrade_known_old_cli(self, monkeypatch):
+        paths = ["/old/databricks", "/unknown/databricks"]
+        monkeypatch.setattr(db_mod, "_iter_databricks_executables", lambda: paths)
+        now = [100.0]
+        monkeypatch.setattr(db_mod, "time", SimpleNamespace(monotonic=lambda: now[0]))
+        calls = []
+
+        def probe(args, **kwargs):
+            timeout = kwargs["timeout"]
+            calls.append((args[0], timeout))
+            if args[0] == paths[0]:
+                now[0] += 7.5
+                return subprocess.CompletedProcess(args, 0, "Databricks CLI v0.299.2", "")
+            now[0] += timeout
+            raise subprocess.TimeoutExpired(args, timeout)
+
+        monkeypatch.setattr(db_mod, "run", probe)
+        monkeypatch.setattr(
+            db_mod,
+            "_run_databricks_cli_installer",
+            lambda **kw: pytest.fail("a deadline-limited retry must not trigger an upgrade"),
+        )
+
+        with pytest.raises(RuntimeError, match="20-second probe budget") as exc_info:
+            ensure_databricks_cli_version()
+
+        assert calls == [(paths[0], 10), (paths[1], 10), (paths[1], 2.5)]
+        assert now[0] == 120
+        message = str(exc_info.value)
+        assert "version v0.299.2" in message
+        assert "initial probe: timed out after 10 seconds" in message
+        assert "retry: timed out after 2.5 seconds" in message
+
+    def test_qualifying_initial_probe_avoids_retries(self, monkeypatch):
+        paths = ["/broken/databricks", "/valid/databricks"]
+        monkeypatch.setattr(db_mod, "_iter_databricks_executables", lambda: paths)
+        calls = []
+
+        def probe(args, **kwargs):
+            calls.append(args[0])
+            if args[0] == paths[0]:
+                raise OSError("cannot execute")
+            return subprocess.CompletedProcess(args, 0, "Databricks CLI v1.22.1", "")
+
+        monkeypatch.setattr(db_mod, "run", probe)
+        ensure_databricks_cli_version()
+        assert databricks_cli_path() == paths[1]
+        assert calls == paths
+
+    def test_retry_keeps_original_path_order_for_equal_old_versions(self, monkeypatch):
+        paths = ["/first/databricks", "/second/databricks"]
+        monkeypatch.setattr(db_mod, "_iter_databricks_executables", lambda: paths)
+        calls = []
+
+        def probe(args, **kwargs):
+            calls.append(args[0])
+            if len(calls) == 1:
+                raise OSError("temporarily unavailable")
+            return subprocess.CompletedProcess(args, 0, "Databricks CLI v0.299.2", "")
+
+        monkeypatch.setattr(db_mod, "run", probe)
+
+        def stop_upgrade(**kwargs):
+            # Observe the selected cached path before replacing any installation.
+            assert databricks_cli_path() == paths[0]
+            raise RuntimeError("installer unavailable")
+
+        monkeypatch.setattr(db_mod, "_run_databricks_cli_installer", stop_upgrade)
+        with pytest.raises(RuntimeError, match="installer unavailable"):
+            ensure_databricks_cli_version()
+        assert calls == [paths[0], paths[1], paths[0]]
+
+    def test_retry_below_custom_minimum_still_upgrades(self, tmp_path, monkeypatch):
+        env = self._fake_databricks(tmp_path, "Databricks CLI v1.8.0")
+        monkeypatch.setattr("os.environ", env)
+        real_run = db_mod.run
+        calls = []
+        upgrades = []
+        now = [100.0]
+        monkeypatch.setattr(db_mod, "time", SimpleNamespace(monotonic=lambda: now[0]))
+
+        def run_with_initial_timeout(args, **kwargs):
+            calls.append(args)
+            if len(calls) == 1:
+                now[0] += kwargs["timeout"]
+                raise subprocess.TimeoutExpired(args, 10)
+            return real_run(args, **kwargs)
+
+        def install_newer_cli(brew_subcommand="install"):
+            # Replace the external installer so the test only updates its temporary CLI.
+            upgrades.append(brew_subcommand)
+            now[0] += 30
+            self._fake_databricks(tmp_path, "Databricks CLI v1.11.0")
+            clear_databricks_cli_cache()
+
+        monkeypatch.setattr(db_mod, "run", run_with_initial_timeout)
+        monkeypatch.setattr(db_mod, "_run_databricks_cli_installer", install_newer_cli)
+
+        ensure_databricks_cli_version((1, 11, 0))
+
+        assert upgrades == ["upgrade"]
+        assert databricks_cli_version() == (1, 11, 0)
+        assert len(calls) == 3
+        assert now[0] == 140
+
     def test_auto_upgrades_when_version_too_old(self, tmp_path, monkeypatch):
         import ucode.databricks as db_mod
 
         env = self._fake_databricks(tmp_path, "Databricks CLI v0.299.2")
         monkeypatch.setattr("os.environ", env)
         upgraded = []
-        monkeypatch.setattr(
-            db_mod,
-            "_run_databricks_cli_installer",
-            lambda brew_subcommand="install": upgraded.append(brew_subcommand),
-        )
-        # Stop the recursive re-check after upgrade
-        call_count = [0]
-        original = db_mod.ensure_databricks_cli_version
 
-        def once(*a, **kw):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                original()
+        def install_newer_cli(brew_subcommand="install"):
+            # Keep the installer isolated to the temporary test binary.
+            upgraded.append(brew_subcommand)
+            self._fake_databricks(tmp_path, "Databricks CLI v1.22.1")
+            clear_databricks_cli_cache()
 
-        monkeypatch.setattr(db_mod, "ensure_databricks_cli_version", once)
-        once()
+        monkeypatch.setattr(db_mod, "_run_databricks_cli_installer", install_newer_cli)
+        ensure_databricks_cli_version()
         assert upgraded == ["upgrade"]
+        assert databricks_cli_version() == (1, 22, 1)
 
     def test_raises_when_version_unparseable(self, tmp_path, monkeypatch):
         env = self._fake_databricks(tmp_path, "completely broken output")
@@ -4366,17 +4762,30 @@ class TestEnsureDatabricksCliVersion:
             "_run_databricks_cli_installer",
             lambda brew_subcommand="install": upgraded.append(brew_subcommand),
         )
-        call_count = [0]
-        original = db_mod.ensure_databricks_cli_version
-
-        def once(*a, **kw):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                original(*a, **kw)
-
-        monkeypatch.setattr(db_mod, "ensure_databricks_cli_version", once)
-        once(db_mod.SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
+        with pytest.raises(RuntimeError, match="still too old after upgrade") as exc_info:
+            ensure_databricks_cli_version(db_mod.SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
         assert upgraded == ["upgrade"]
+        assert "v1.8.0" in str(exc_info.value)
+        required = ".".join(map(str, db_mod.SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION))
+        assert f"need v{required}" in str(exc_info.value)
+
+    def test_cached_version_still_enforces_a_higher_minimum(self, tmp_path, monkeypatch):
+        env = self._fake_databricks(tmp_path, "Databricks CLI v1.8.0")
+        monkeypatch.setattr("os.environ", env)
+        ensure_databricks_cli_version()
+        upgrades = []
+
+        def install_newer_cli(brew_subcommand="install"):
+            # Upgrade only the temporary CLI once a stronger caller requires it.
+            upgrades.append(brew_subcommand)
+            self._fake_databricks(tmp_path, "Databricks CLI v1.11.0")
+            clear_databricks_cli_cache()
+
+        monkeypatch.setattr(db_mod, "_run_databricks_cli_installer", install_newer_cli)
+        ensure_databricks_cli_version((1, 11, 0))
+
+        assert upgrades == ["upgrade"]
+        assert databricks_cli_version() == (1, 11, 0)
 
 
 class TestInstallDatabricksCli:
@@ -4423,9 +4832,7 @@ class TestInstallDatabricksCli:
         assert databricks_cli_version() == (1, 20, 0)
 
     def test_checks_version_when_present(self, monkeypatch):
-        monkeypatch.setattr(
-            db_mod, "_discover_databricks_clis", lambda **kw: [("/usr/bin/databricks", (1, 20, 0))]
-        )
+        monkeypatch.setattr(db_mod, "_iter_databricks_executables", lambda: ["/usr/bin/databricks"])
         checked = []
         monkeypatch.setattr(
             db_mod, "ensure_databricks_cli_version", lambda *a, **kw: checked.append(True)
@@ -4437,8 +4844,9 @@ class TestInstallDatabricksCli:
         """`--skip-preflight` sets skip_version_check: an already-installed CLI is
         trusted without the minimum-version gate, so a public-preview build is no
         longer a false positive."""
+        monkeypatch.setattr(db_mod, "_iter_databricks_executables", lambda: ["/usr/bin/databricks"])
         monkeypatch.setattr(
-            db_mod, "_discover_databricks_clis", lambda **kw: [("/usr/bin/databricks", (1, 20, 0))]
+            db_mod, "run", lambda *a, **kw: pytest.fail("skip-preflight must not probe versions")
         )
         checked = []
         monkeypatch.setattr(
@@ -4450,12 +4858,15 @@ class TestInstallDatabricksCli:
     def test_skip_version_check_still_installs_when_missing(self, monkeypatch):
         """A missing CLI is installed even under skip_version_check — only the
         version *check* is bypassed, not the install."""
-        discovered: list[tuple[str, tuple[int, int, int] | None]] = []
-        monkeypatch.setattr(db_mod, "_discover_databricks_clis", lambda **kw: list(discovered))
+        discovered = []
+        monkeypatch.setattr(db_mod, "_iter_databricks_executables", lambda: list(discovered))
+        monkeypatch.setattr(
+            db_mod, "run", lambda *a, **kw: pytest.fail("skip-preflight must not probe versions")
+        )
         installed = []
 
         def fake_installer(brew_subcommand="install"):
-            discovered.append(("/usr/bin/databricks", (1, 20, 0)))
+            discovered.append("/usr/bin/databricks")
             installed.append(brew_subcommand)
 
         monkeypatch.setattr(db_mod, "_run_databricks_cli_installer", fake_installer)
@@ -4466,6 +4877,30 @@ class TestInstallDatabricksCli:
         install_databricks_cli(skip_version_check=True)
         assert installed == ["install"]
         assert checked == []
+
+    def test_fresh_install_does_not_probe_before_version_gate(self, monkeypatch):
+        discovered = []
+        monkeypatch.setattr(db_mod, "_iter_databricks_executables", lambda: list(discovered))
+
+        def install_cli(**kwargs):
+            discovered.append("/new/databricks")
+
+        monkeypatch.setattr(db_mod, "_run_databricks_cli_installer", install_cli)
+        now = [100.0]
+        monkeypatch.setattr(db_mod, "time", SimpleNamespace(monotonic=lambda: now[0]))
+        calls = []
+
+        def probe(args, **kwargs):
+            calls.append(args[0])
+            if len(calls) == 1:
+                now[0] += kwargs["timeout"]
+                raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+            return subprocess.CompletedProcess(args, 0, "Databricks CLI v1.22.1", "")
+
+        monkeypatch.setattr(db_mod, "run", probe)
+        install_databricks_cli()
+        assert calls == ["/new/databricks", "/new/databricks"]
+        assert databricks_cli_version() == (1, 22, 1)
 
 
 class TestDatabricksCliVersion:
@@ -4486,13 +4921,17 @@ class TestDatabricksCliVersion:
 
     def test_parses_installed_version(self, monkeypatch):
         monkeypatch.setattr(
-            db_mod, "_discover_databricks_clis", lambda **kw: [("/usr/bin/databricks", (0, 299, 2))]
+            db_mod,
+            "_discover_databricks_clis",
+            lambda **kw: _discovered_clis(("/usr/bin/databricks", (0, 299, 2))),
         )
         assert databricks_cli_version() == (0, 299, 2)
 
     def test_none_on_unparseable_output(self, monkeypatch):
         monkeypatch.setattr(
-            db_mod, "_discover_databricks_clis", lambda **kw: [("/usr/bin/databricks", None)]
+            db_mod,
+            "_discover_databricks_clis",
+            lambda **kw: _discovered_clis(("/usr/bin/databricks", None)),
         )
         assert databricks_cli_version() is None
 
