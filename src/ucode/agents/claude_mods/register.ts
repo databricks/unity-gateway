@@ -24,6 +24,27 @@ async function readEnvironment($: EngineInterface): Promise<Environment> {
   };
 }
 
+async function readOrchestratorState($: EngineInterface, options: PluginOptions): Promise<boolean> {
+  if (!options.orchestratorInstructions) return false;
+  const current = await readEnvironment($);
+  const sessionFile = await $.env.get('UCODE_SESSION_ENV_FILE');
+  if (sessionFile) {
+    try {
+      const overrides = JSON.parse(await $.fs.read(sessionFile));
+      for (const key of [
+        'ENABLE_SMART_ROUTING_V2',
+        'ENABLE_SMART_ROUTING_SUBAGENT_ONLY',
+        'ENABLE_SMART_ROUTER_ORCHESTRATOR',
+      ]) {
+        if (typeof overrides?.[key] === 'string') current[key] = overrides[key];
+      }
+    } catch {
+      // Match the routing hooks' inherited-environment fallback for unreadable controls.
+    }
+  }
+  return isRoutingEnabled(current) && current.ENABLE_SMART_ROUTER_ORCHESTRATOR === '1';
+}
+
 async function writeEnvironment($: EngineInterface, env: Environment): Promise<void> {
   // Claude's capability scanner requires literal environment-variable names.
   await $.env.set('ENABLE_SMART_ROUTING_V2', env.ENABLE_SMART_ROUTING_V2);
@@ -93,6 +114,7 @@ async function setRouting(
 export function register(on: On, options: PluginOptions): void {
   const feedback = createIsaacFeedbackState();
   const launchedEnabled = isRoutingEnabled(options);
+  let orchestratorActive = Boolean(options.orchestratorInstructions);
 
   on('session.start', async ($, e, next) => {
     if (launchedEnabled) {
@@ -102,13 +124,19 @@ export function register(on: On, options: PluginOptions): void {
     return next(e);
   });
 
+  on('turn.step', async function* ($, e, next) {
+    const active = await readOrchestratorState($, options);
+    if (active !== orchestratorActive) {
+      orchestratorActive = active;
+      // A CLI/skill toggle changes the session file without notifying this process.
+      $.ui.invalidate('tool.describe');
+    }
+    return yield* next(e);
+  });
+
   on('tool.describe', {tool: ['Agent', 'Task']}, async ($, e, next) => {
     const instructions = options.orchestratorInstructions as string;
-    if (!instructions) return next(e);
-    const current = await readEnvironment($);
-    if (!isRoutingEnabled(current) || current.ENABLE_SMART_ROUTER_ORCHESTRATOR !== '1') {
-      return next(e);
-    }
+    if (!await readOrchestratorState($, options)) return next(e);
     // Preserve the host's waiting and follow-up mechanics without its ownership policy.
     const notes = e.description.split('\n## Usage notes\n')[1]?.split('\n## ')[0].trim();
     const description = notes ? `${instructions}\n\n## Usage notes\n\n${notes}` : instructions;

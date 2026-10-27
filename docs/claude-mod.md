@@ -39,8 +39,10 @@ description, preserving the native input schema and execution. The host's `Usage
 section stays intact for native continuation mechanics. The orchestrator instructions
 explicitly tell the parent to end its current turn when only background work remains
 and wait for the completion notification, without launching another worker to wait.
-Other native ownership and task-selection advice is replaced. Routing toggles invalidate
-Claude's description cache: off restores native advice, and on restores the launch's
+Other native ownership and task-selection advice is replaced. The description reads the
+same saved session overrides as routing. Before each model request, a changed
+orchestration state invalidates Claude's description cache, including changes made by
+the CLI/skill fallback: off restores native advice, and on restores the launch's
 orchestrator advice. Routing-only launches retain native advice. The same concise
 instructions lead the Claude activation context so its delegation rule survives a
 truncated preview of the full workflow.
@@ -158,8 +160,8 @@ spawning when unsure.
 
 The `Claude mod · 2.1.290` CI job validates the packaged module and checks event
 forwarding and launch-local options. Native request-construction checks cover description
-changes across on/off/on, retained lifecycle guidance, an unchanged Agent schema, and
-ineligible launches. They inspect
+changes across native and CLI on/off/on toggles, retained lifecycle guidance, an
+unchanged Agent schema, and ineligible launches. They inspect
 Claude's recorded request shapes after deliberately unauthenticated requests; they do not
 establish successful inference or delegation quality. To run those component checks locally:
 

@@ -87,7 +87,7 @@ def test_native_options_are_launch_local(native_binary, tmp_path):
 
 
 def test_orchestrator_instructions_follow_native_toggles(native_binary, tmp_path):
-    """Native requests retain lifecycle guidance and the Agent schema across on/off/on.
+    """Native and CLI toggles update request guidance without changing the Agent schema.
 
     Inference deliberately fails without credentials; this checks the serialized request,
     not a model response or delegation quality.
@@ -151,6 +151,20 @@ def test_orchestrator_instructions_follow_native_toggles(native_binary, tmp_path
                     assert saved == {}
                 else:
                     assert saved["ENABLE_SMART_ROUTER_ORCHESTRATOR"] == "0"
+            for action, flag in (
+                ("off", "--disable-smart-routing"),
+                ("on", "--enable-smart-routing"),
+            ):
+                result = subprocess.run(
+                    [sys.executable, "-m", "ucode.cli", "claude", flag],
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                assert result.returncode == 0, result.stderr
+                assert f"Smart Router is {action}" in result.stdout
+                assert agent_tool(session) == (routed_tool if action == "on" else native_tool)
         for label, overrides in (
             ("omni", {"ISAAC_LAUNCH_MODE": "omni"}),
             ("no-marker", {"UCODE_SESSION_ENV_FILE": str(tmp_path / "missing.json")}),

@@ -1393,8 +1393,8 @@ orchestration is active, with the native "When in doubt, don't spawn" advice abs
 Background completion and native follow-up guidance must remain present, including
 instructions to end the current turn and wait for a later completion notification.
 Native request-construction component checks also compare the Agent schema across
-toggles and check ineligible launches; their unauthenticated requests are not live
-inference coverage.
+native commands and CLI session toggles and check ineligible launches; their
+unauthenticated requests are not live inference coverage.
 The expected launch recipe comes from the recorded routing request, so a default
 recipe change does not require editing the test.
 Local Claude mod confirmation replaces the old saved-control-file/assistant-turn wait;
