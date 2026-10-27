@@ -43,6 +43,14 @@ TypeScript event-forwarding and launch-option tests in CI. The existing Claude
 skill-toggle integration journey checks the live recipe payload field across on/off/on.
 See [the mod guide](../docs/claude-mod.md).
 
+Native mod component tests cover a lone call's decision under its Agent row, parallel calls
+drawn as cards above the parent's next reply in call order (replies drawn before routing
+never used, calls still routing waiting for a later reply, cards kept across a turn that
+ends while a background agent runs and dropped on abort), distinct IDs for identical tasks,
+nothing above the prompt, pending row and turn-spinner routing timers, and disabled/failed
+routing. They do not establish live
+parallel-agent TUI or gateway coverage.
+
 `test_ug_headers.py` covers the `UG_HEADERS` parser and the `--header` flag, `test_databricks.py`
 ug's own requests carrying them, and `test_agent_codex.py` `UG_HEADERS` reaching a Codex launch's
 `-c` headers (plain and smart-routed) without writing its profile. No automated test checks the
@@ -268,13 +276,26 @@ exit code 0, deletes the UG profile, and restores the previous selection without
 workspace state; a repeated revert also returns 0.
 
 `test_cowork_plugin.py` covers active Cowork-root discovery, ambiguous-profile refusal,
-generated marketplace/plugin/MCP manifests, current-workspace managed-skill selection,
+generated marketplace/plugin/MCP manifests, the generated connector skill naming Claude-only
+MCP servers, current-workspace managed-skill selection,
 Claude-only MCP filtering, absolute proxy executables, saved PAT mode, custom-OAuth refusal,
-install/update selection, idempotent cleanup, and saved-root removal. CLI component tests
+install/update selection, idempotent cleanup, and saved-root removal. Alias checks cover
+short service-first names, unchanged proxy routing, custom-name preservation,
+order-independent collisions, and repeated replacement of old keys. Manifest checks require
+the `ug` name and display name in both manifests. Legacy-registration checks cover
+replacement after successful install/update, preservation on install failure, scoped
+cleanup, and unrelated-plugin preservation. CLI component tests
 cover managed setup after successful skill/MCP reconciliation, preservation after transient
 reconciliation failures, and cleanup for unmanaged or non-Claude configurations. These tests
 mock the Claude plugin CLI and do not establish native Desktop policy, account-feature,
 late MCP connection, tool discovery, or inference behavior.
+
+`test_cowork_skills.py` checks current-workspace managed and user-downloaded skill copies,
+project/other-workspace/user-authored exclusions, and add/update/remove CLI flows using
+names, schemas, and the picker. It checks generated bundle contents and stale-file cleanup
+while preserving managed skills; project-local skills stay excluded during plugin refreshes.
+Skill APIs and the native plugin CLI are substituted; native Cowork skill invocation
+remains unverified.
 
 Model-source tests require Desktop-only, case-insensitive `\bclaude-` filtering
 instead of copying every catalog entry. Mixed static/discovered lists exclude GPT/OSS
@@ -405,8 +426,17 @@ default, a family default, or both, while preserving startup selection and famil
 `TestBuildClaudeArgv` also checks that caller permission denies survive ug's technical
 native-search deny in direct, relayed, and routing settings composition. Inline/file
 inputs, repeated settings, and empty launch overrides retain restrictions and leave
-source files unchanged. These are actual argv/configuration assertions, not native
-classifier or parent/child acceptance coverage.
+source files unchanged. `test_claude_launch_settings.py` drives normal and relayed
+launches with oversized Windows settings, preserving merged values and literal
+prompt arguments while keeping the settings file alive until the child exits.
+Success, nonzero exit, interruption, and spawn failures clean up temporary files;
+relayed failures also stop the proxy. Separate launches use separate files, and
+short Windows commands and POSIX keep their existing argv. Real Python children
+read the file for large catalogs and commands containing non-BMP characters.
+Windows command limits and child lifecycle are otherwise simulated; the native
+Bedrock integration journey still supplies live Windows/Claude coverage.
+These are actual argv/configuration assertions, not native classifier acceptance
+coverage.
 `test_databricks.py` checks bounded Anthropic catalog requests with `limit=1000`, including
 scoped routing headers and model display metadata. It also verifies that Windows CLI install
 and upgrade use WinGet and report an actionable error when WinGet is unavailable. Windows
@@ -581,7 +611,7 @@ With Claude and Codex selected there are **88 live cases** (12 marked TUI cases)
 the CodingAgentConfig input injected from a JSON file in `fixtures/managed_config/`), and **7 installation checks**. The 14 retained numbered scenarios
 comprise **24 explicit journeys**: 12 managed configured/fresh executions and 12 unmanaged
 executions. The remaining managed-fixture cases cover focused model, MCP, skills,
-cache-TTL, and lifecycle shapes, including two Claude defaults cases. Parametrization varies
+saved-config replay, and lifecycle shapes, including two Claude defaults cases. Parametrization varies
 argument spelling or external routing selector, never hides the agent/provider in the test name. Duplicate boot-only cases
 are incorporated into the Databricks configuration TUI journeys.
 Generated-file cleanup and strict app-server stdout assertions remain enforced.
@@ -765,19 +795,20 @@ service running, and leaving another exporter alone. They do not establish a liv
 desktop GUI, a real `launchctl` or `schtasks` run, or a login/reboot pass.
 
 `test_managed_config.py` and `test_managed_files.py` cover machine policy versus user-owned
-`refresh_ts.json`, five-minute throttling, no privileged write for unchanged policy or
+`refresh_ts.json`, launches replaying the saved read without a request, no privileged write for unchanged policy or
 retrieval-only drift, configure-only sudo selection, deferred-update warning/fallback, matching
 removal, workspace isolation, fingerprint invalidation, and dry-run behavior.
-Pending-change regressions cover one warning across expired checks, distinct-change warnings,
+Pending-change regressions cover one warning across rechecks, distinct-change warnings,
 retrieval/key-order stability, removal, and clearing after remote/MDM/configure reconciliation.
 Workspace-lock regressions in `test_managed_config.py` and `test_cli.py` refuse foreign workspaces
 before cache/auth/bootstrap, including bare/agent launches, dry-run, and skip-preflight.
 `test_ug_managed_machine_refuses_foreign_workspace_launch` adds the black-box managed journey
 (stubbed managed config): configure followed by rejected bare/Claude/Codex workspace overrides, with policy,
 refresh metadata, and user state unchanged. This new live case has not been run locally.
-`test_ug_managed_config_launch_reuses_cache_within_ttl` is the live journey for root-owned `0644`
-policy, user-owned `0600` timestamps, and unchanged policy bytes/inode/mtime/ctime after an
-expired unchanged check. Its live sudo/password behavior still requires a disposable clean VM.
+`test_ug_managed_config_launch_replays_saved_config` is the live journey for root-owned `0644`
+policy, a user-owned `0600` record with a `published` outcome and no timestamp, and unchanged
+policy and record bytes (inode/mtime/ctime for the policy) across two launches. The record is
+backdated first, so the removed five-minute refresh would have refetched and rewritten it. Its live sudo/password behavior still requires a disposable clean VM.
 Non-root writer regressions cover terminal/script launches, initial install and removal, and
 verify that neither a sudo capability probe nor a prompting worker is started.
 

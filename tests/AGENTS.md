@@ -124,3 +124,15 @@ subset. Live checks require the e2e workspace and bearer/profile. Model override
 are optional inputs for reproducing an explicit-model failure.
 Report passes, failures and what was not run. Collection/lint/package checks
 are not evidence of a live integration pass.
+
+## Diagnosing flaky tests
+
+CI failures land in `main.eng_unity_ai_gateway.ug_cli_test_failures` (one row per
+failed test, with `branch`, `ts`, `error` and `job_url`). Before changing a test:
+
+- Group failures by error, branch and time. Failures that stop when a fix merges are
+  fixed, and failures on one branch are usually that branch's bug.
+- If every test in a file fails in the same run with a backend error, it is workspace
+  state (for example a FAILED UC connection), not the test.
+- Read the job's evidence artifact. Compare the agent's stdout with its transcript
+  before blaming the prompt or the model.

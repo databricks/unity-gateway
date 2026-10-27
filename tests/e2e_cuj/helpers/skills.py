@@ -1,5 +1,7 @@
 """Managed-skill checks shared by the CUJs that publish a skills selector."""
 
+import json
+
 from tests.integration.utils.evidence import assistant_answer_contains
 from tests.integration.utils.terminal import AgentTerminal
 
@@ -83,12 +85,31 @@ def assert_fixture_summary_invoked(session, recorder, agent: str) -> None:
             "Skill,Read",
             timeout=240,
         )
+        answered = assistant_answer_contains(session, agent, FIXTURE_SUMMARY_TOKEN)
     else:
-        session.run(CODEX, "--", "exec", "--skip-git-repo-check", "--json", prompt, timeout=240)
-    assert assistant_answer_contains(session, agent, FIXTURE_SUMMARY_TOKEN), (
-        f"{agent} never answered with the token from the skill's reference file"
-    )
+        result = session.run(
+            CODEX, "--", "exec", "--skip-git-repo-check", "--json", prompt, timeout=240
+        )
+        # The rollout file sometimes lacks task_complete after `codex exec` exits; its --json
+        # event stream is the structured final result.
+        answered = FIXTURE_SUMMARY_TOKEN in codex_exec_final_answer(result.stdout)
+    assert answered, f"{agent} never answered with the token from the skill's reference file"
     request = recorder.expect_request(
         method="POST", path=INFERENCE_PATHS[agent], after=checkpoint, timeout=240
     )
     assert recorder.response_for(request, timeout=240).status_code == 200
+
+
+def codex_exec_final_answer(stdout: str) -> str:
+    """The last agent message of a `codex exec --json` turn that completed, else empty."""
+    answer = ""
+    for line in stdout.splitlines():
+        if not line.startswith("{"):
+            continue
+        event = json.loads(line)
+        item = event.get("item") or {}
+        if event.get("type") == "item.completed" and item.get("type") == "agent_message":
+            answer = item.get("text", "")
+        elif event.get("type") == "turn.completed":
+            return answer
+    return ""
