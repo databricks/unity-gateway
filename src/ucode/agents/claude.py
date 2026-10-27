@@ -2279,6 +2279,23 @@ def _resolve_launch_binary(binary: str) -> str:
     )
 
 
+def _relayed_mcp_config_args(tool_args: list[str]) -> list[str]:
+    """``--mcp-config`` args that re-supply Claude's user-scope MCP servers to a relayed launch.
+
+    ``--setting-sources project,local`` excludes the user scope, which is where ``ug mcp add``
+    registers every managed server (``~/.claude.json`` top-level ``mcpServers``), so without this a
+    relayed session starts none of them while ``claude mcp list`` still reports them Connected.
+    Only ``mcpServers`` is passed back, never user settings, so the apiKeyHelper exclusion holds.
+    Skipped when the caller passes ``--strict-mcp-config``, which asks for only its own servers.
+    The flag is variadic, so callers must place it before another option (``--settings``)."""
+    if "--strict-mcp-config" in tool_args:
+        return []
+    servers = read_json_safe(claude_mcp_config_path()).get("mcpServers")
+    if not isinstance(servers, dict) or not servers:
+        return []
+    return ["--mcp-config", json.dumps({"mcpServers": servers}, separators=(",", ":"))]
+
+
 def _build_claude_argv(
     binary: str,
     tool_args: list[str],
@@ -2303,9 +2320,15 @@ def _build_claude_argv(
 
     ``relayed`` adds ``--setting-sources`` to exclude the user scope (see
     :data:`_RELAYED_SETTING_SOURCES`), so a stale user-scope apiKeyHelper cannot
-    filter through and shadow the subscription OAuth.
+    filter through and shadow the subscription OAuth. That also drops the user-scope
+    MCP servers, so they are handed back via ``--mcp-config`` (see
+    :func:`_relayed_mcp_config_args`).
     """
-    source_args = ["--setting-sources", _RELAYED_SETTING_SOURCES] if relayed else []
+    source_args = (
+        ["--setting-sources", _RELAYED_SETTING_SOURCES, *_relayed_mcp_config_args(tool_args)]
+        if relayed
+        else []
+    )
     caller_values, remaining = _extract_caller_settings(tool_args)
     if not caller_values and settings_override is None:
         # No caller --settings: hand Claude ucode's settings file directly (the
