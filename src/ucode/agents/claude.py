@@ -21,8 +21,10 @@ from tempfile import TemporaryDirectory
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
+    atomic_write_json,
     backup_existing_file,
     deep_merge_dict,
+    ensure_parent_dir,
     is_dry_run,
     prune_key_paths,
     read_json_safe,
@@ -100,6 +102,10 @@ from ucode.mcp_web_search import (
     external_provider_selected,
 )
 from ucode.os_compatibility import subprocess_cross_os
+from ucode.os_compatibility.file_lock_cross_os import (
+    acquire_exclusive_file_lock,
+    release_file_lock,
+)
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
@@ -119,7 +125,10 @@ GATEWAY_MODEL_DISCOVERY_ENV_VAR = "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"
 CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR = "CLAUDE_CODE_OAUTH_TOKEN"
 CLAUDE_CONFIG_DIR = Path.home() / ".claude"
 CLAUDE_SETTINGS_PATH = CLAUDE_CONFIG_DIR / "ucode-settings.json"
-CLAUDE_MCP_CONFIG_PATH = Path.home() / ".claude.json"
+CLAUDE_CODE_CONFIG_PATH = Path.home() / ".claude.json"
+# Claude Code locks `.claude.json` with its own `<file>.lock`; ug's flock must use another name.
+CLAUDE_CONFIG_LOCK_SUFFIX = ".ug.lock"
+CLAUDE_CONFIG_LOCK_TIMEOUT_SECONDS = 5
 # The default model is stored in Claude's default user settings, not the ucode settings.
 CLAUDE_USER_SETTINGS_PATH = CLAUDE_CONFIG_DIR / "settings.json"
 CLAUDE_BACKUP_PATH = APP_DIR / "claude-ucode-settings.backup.json"
@@ -905,13 +914,14 @@ def user_stdio_mcp_entry(argv: list[str], *, always_load: bool = False) -> dict:
     return entry
 
 
-def claude_mcp_config_path() -> Path:
-    """The file Claude Code reads user-scope ``mcpServers`` from: ``$CLAUDE_CONFIG_DIR/.claude.json``
-    when that env var is set (the ``claude`` CLI honors it), else the default ``~/.claude.json``. ug
-    elsewhere shells out to the CLI, which resolves this itself; a direct write must resolve the same
-    path or it silently writes to a file Claude never reads."""
+def claude_code_config_path() -> Path:
+    """Claude Code's global config file (user-scope ``mcpServers``, feature cache, auth state):
+    ``$CLAUDE_CONFIG_DIR/.claude.json`` when that env var is set (the ``claude`` CLI honors it),
+    else the default ``~/.claude.json``. ug elsewhere shells out to the CLI, which resolves this
+    itself; a direct write must resolve the same path or it silently writes to a file Claude never
+    reads."""
     config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
-    return Path(config_dir) / ".claude.json" if config_dir else CLAUDE_MCP_CONFIG_PATH
+    return Path(config_dir) / ".claude.json" if config_dir else CLAUDE_CODE_CONFIG_PATH
 
 
 def _read_claude_config_for_rewrite(path: Path) -> dict | None:
@@ -927,6 +937,70 @@ def _read_claude_config_for_rewrite(path: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def _update_claude_config(path: Path, mutate: Callable[[dict], bool]) -> bool:
+    """Read-modify-write Claude's ``.claude.json`` at ``path`` under an exclusive file lock.
+
+    ``mutate`` edits the loaded dict in place (``{}`` when the file is absent) and returns True to
+    write it back. The re-read happens inside the lock, so concurrent ug processes don't lose each
+    other's changes; the write is atomic and keeps the file's mode, since the file also holds
+    Claude's auth state. Returns False, without writing, when the file isn't a JSON object. Raises
+    ``RuntimeError`` on a lock timeout or a failed write. Claude Code's own writes don't take this
+    lock, so a race with it remains possible."""
+    if is_dry_run():
+        config = _read_claude_config_for_rewrite(path)
+        if config is not None and mutate(config):
+            write_json_file(path, config)
+        return config is not None
+    ensure_parent_dir(path)
+    try:
+        with path.with_name(path.name + CLAUDE_CONFIG_LOCK_SUFFIX).open("a+b") as lock_file:
+            acquire_exclusive_file_lock(lock_file, timeout=CLAUDE_CONFIG_LOCK_TIMEOUT_SECONDS)
+            try:
+                config = _read_claude_config_for_rewrite(path)
+                if config is not None and mutate(config):
+                    mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
+                    atomic_write_json(path, config)
+                    os.chmod(path, mode)
+                return config is not None
+            finally:
+                release_file_lock(lock_file)
+    except TimeoutError as exc:
+        raise RuntimeError(f"Timed out waiting for another ug process to update {path}") from exc
+    except OSError as exc:
+        raise RuntimeError(f"Failed to write config file: {path}") from exc
+
+
+CLAUDE_HOOKS_MODULES_GATE = "tengu_plugin_hooks_modules"
+
+
+def ensure_hooks_modules_gate() -> None:
+    """Force Claude Code's mods rollout gate on in its cached feature flags.
+
+    Claude Code loads hooks modules (mods) from installed plugins only when the
+    ``tengu_plugin_hooks_modules`` gate is on, and no settings key can force it on. The only
+    source is the feature cache in ``.claude.json``, so seed ``true`` there before each launch.
+    A stale top-level copy of the gate is dropped. Best-effort: an unreadable file is left alone
+    and a write failure never blocks the launch."""
+
+    def mutate(config: dict) -> bool:
+        features = config.get("cachedGrowthBookFeatures")
+        if not isinstance(features, dict):
+            features = config["cachedGrowthBookFeatures"] = {}
+        if (
+            features.get(CLAUDE_HOOKS_MODULES_GATE) is True
+            and CLAUDE_HOOKS_MODULES_GATE not in config
+        ):
+            return False
+        config.pop(CLAUDE_HOOKS_MODULES_GATE, None)
+        features[CLAUDE_HOOKS_MODULES_GATE] = True
+        return True
+
+    try:
+        _update_claude_config(claude_code_config_path(), mutate)
+    except RuntimeError:
+        _debug("Could not enable the Claude Code mods gate", traceback.format_exc())
+
+
 def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
     """Apply ``add``/``remove`` to Claude's user-scope ``mcpServers`` (``~/.claude.json``, or under
     ``$CLAUDE_CONFIG_DIR``) in a single read-modify-write, instead of one ``claude mcp`` subprocess
@@ -936,10 +1010,20 @@ def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
 
     If the file exists but can't be parsed as a JSON object, we must not clobber it, so we defer to
     the per-server ``claude`` CLI (which edits the file in place) for exactly the changed entries."""
-    path = claude_mcp_config_path()
-    config = _read_claude_config_for_rewrite(path)
-    if config is None:
-        removed: set[str] = set()
+    removed: set[str] = set()
+
+    def mutate(config: dict) -> bool:
+        servers = config.get("mcpServers")
+        if not isinstance(servers, dict):
+            servers = {}
+        removed.update(name for name in remove if name in servers)
+        for name in remove:
+            servers.pop(name, None)
+        servers.update(add)
+        config["mcpServers"] = servers
+        return True
+
+    if not _update_claude_config(claude_code_config_path(), mutate):
         for name in remove:
             # Clean every scope (not short-circuited), recording the name if any scope had it.
             if [scope for scope in MCP_CLEANUP_SCOPES if remove_claude_mcp_server(name, scope)]:
@@ -955,17 +1039,6 @@ def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
                 )
             else:
                 add_claude_mcp_server(name, entry, MCP_USER_SCOPE)
-        return removed
-
-    servers = config.get("mcpServers")
-    if not isinstance(servers, dict):
-        servers = {}
-    removed = {name for name in remove if name in servers}
-    for name in remove:
-        servers.pop(name, None)
-    servers.update(add)
-    config["mcpServers"] = servers
-    write_json_file(path, config)
     return removed
 
 
@@ -1105,7 +1178,7 @@ def _register_web_search_mcp(
     Returns True if registration succeeded. Failures are non-blocking: we warn
     and return False so the rest of `ucode claude` setup can complete.
     """
-    config = _read_claude_config_for_rewrite(claude_mcp_config_path())
+    config = _read_claude_config_for_rewrite(claude_code_config_path())
     servers = config.get("mcpServers", {}) if config is not None else None
     existing = servers.get(WEB_SEARCH_MCP_NAME) if isinstance(servers, dict) else None
     if not isinstance(servers, dict) or (
@@ -1139,7 +1212,7 @@ def _web_search_mcp_is_current(state: dict, entry: dict) -> bool:
     """
     if state.get(WEB_SEARCH_MCP_STATE_KEY) != entry:
         return False
-    config = read_json_safe(claude_mcp_config_path())
+    config = read_json_safe(claude_code_config_path())
     servers = config.get("mcpServers")
     return isinstance(servers, dict) and servers.get(WEB_SEARCH_MCP_NAME) == entry
 
@@ -1214,7 +1287,7 @@ def _prepare_external_web_search_args(state: dict, tool_args: list[str]) -> list
     options = tool_args[:end]
     if "--strict-mcp-config" in options:
         return tool_args
-    config = _search_config(claude_mcp_config_path())
+    config = _search_config(claude_code_config_path())
     entry = _search_servers(config).get(WEB_SEARCH_MCP_NAME)
     if entry is None:
         return tool_args
@@ -2314,7 +2387,7 @@ def _relayed_mcp_config_args(tool_args: list[str]) -> list[str]:
     The flag is variadic, so callers must place it before another option (``--settings``)."""
     if "--strict-mcp-config" in tool_args:
         return []
-    servers = read_json_safe(claude_mcp_config_path()).get("mcpServers")
+    servers = read_json_safe(claude_code_config_path()).get("mcpServers")
     if not isinstance(servers, dict) or not servers:
         return []
     return ["--mcp-config", json.dumps({"mcpServers": servers}, separators=(",", ":"))]
@@ -2520,6 +2593,7 @@ def launch(
     tool_args = _external_web_search_args(state, tool_args)
     binary = SPEC["binary"]
     workspace = state.get("workspace")
+    ensure_hooks_modules_gate()
     if os.environ.get(UG_HEADERS_ENV_VAR, "").strip() and not header_mod_active():
         print_warning(
             "Claude Code won't send your `ug --header` / UG_HEADERS headers: ug's header mod isn't "
