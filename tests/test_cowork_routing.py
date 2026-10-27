@@ -12,12 +12,14 @@ from ucode.agents.desktop import cowork, cowork_routing
 
 def test_routing_guidance_names_configured_integrations():
     guidance = cowork_routing.routing_guidance(
-        ["system-ai-github", "system-ai-atlassian", "custom-service"]
+        ["system-ai-github", "system-ai-atlassian", "custom-service", "system-ai-github"]
     )
 
-    assert "GitHub (`unity-gateway:system-ai-github`)" in guidance
-    assert "Atlassian, Jira, and Confluence (`unity-gateway:system-ai-atlassian`)" in guidance
-    assert "Custom Service (`unity-gateway:custom-service`)" in guidance
+    assert guidance.startswith(
+        "Unity Gateway integrations available in this Cowork session: "
+        "`unity-gateway:system-ai-github`, `unity-gateway:system-ai-atlassian`, "
+        "`unity-gateway:custom-service`. "
+    )
     assert "before saying the connector is unavailable" in guidance
 
 

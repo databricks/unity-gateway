@@ -6,19 +6,9 @@ import argparse
 import json
 import sys
 
-_SERVICE_LABELS = {
-    "atlassian": "Atlassian, Jira, and Confluence",
-    "github": "GitHub",
-}
-
 
 def routing_guidance(server_names: list[str]) -> str:
-    integrations = []
-    for name in dict.fromkeys(server_names):
-        service = name.removeprefix("system-ai-").removeprefix("system.ai.")
-        label = _SERVICE_LABELS.get(service, service.replace("-", " ").title())
-        integrations.append(f"{label} (`unity-gateway:{name}`)")
-    available = ", ".join(integrations)
+    available = ", ".join(f"`unity-gateway:{name}`" for name in dict.fromkeys(server_names))
     return (
         f"Unity Gateway integrations available in this Cowork session: {available}. "
         "When a request matches one of these services, use that integration before saying the "

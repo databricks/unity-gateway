@@ -470,10 +470,11 @@ owned-file cleanup. `../test_desktop_configure_cli.py` covers managed orchestrat
 cleanup. Both are mocked component coverage; the integration suite does not launch Cowork,
 connect a plugin MCP server, discover its deferred tool, or run a task through it.
 
-`../test_cowork_routing.py` covers `SessionStart` guidance for startup, resume, clear,
-and compact, ignored prompt/invalid payloads, and the generated command's real Python
-subprocess output. Plugin generation registers only `SessionStart`. These component
-checks do not establish native Cowork hook execution.
+`../test_cowork_routing.py` covers exact configured names with duplicates removed,
+`SessionStart` guidance for startup, resume, clear, and compact, ignored prompt/invalid
+payloads, and the generated command's real Python subprocess output. Plugin generation
+registers only `SessionStart`. These component checks do not establish native Cowork
+hook execution.
 
 Model-source tests require Desktop-only, case-insensitive `\bclaude-` filtering
 instead of copying every catalog entry. Mixed static/discovered lists exclude GPT/OSS
