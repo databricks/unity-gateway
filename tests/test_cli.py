@@ -1480,6 +1480,56 @@ class TestSubcommandRouting:
             route.assert_not_called()
 
 
+class TestLaunchManagedConfigReuse:
+    @pytest.mark.parametrize("failure", ["auth", "api"])
+    def test_failed_policy_is_read_once_per_launch(self, monkeypatch, tmp_path, failure):
+        from ucode import managed_config
+        from ucode.agents import claude, configure_tool
+
+        # Keep policy refresh and both config dispatch/writing layers real. Isolate external
+        # auth/API calls, agent handoff, and MCP registration from this component test.
+        fetch = cli_mod._fetch_managed_config
+        token = MagicMock(return_value="token")
+        if failure == "auth":
+            token.side_effect = RuntimeError("Injected auth failure")
+        get_config = MagicMock(return_value=(None, "HTTP 503: injected API failure"))
+        monkeypatch.setattr(managed_config, "get_databricks_token", token)
+        monkeypatch.setattr(managed_config, "get_managed_config", get_config)
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", tmp_path / "settings.json")
+        monkeypatch.setattr(claude, "CLAUDE_BACKUP_PATH", tmp_path / "backup.json")
+        monkeypatch.setattr(claude, "_register_web_search_mcp", lambda *a, **kw: None)
+        monkeypatch.setattr(cli_mod, "databricks_cli_installed", lambda: True)
+        with (
+            _launch_policy_patches(None) as calls,
+            patch("ucode.cli._fetch_managed_config", side_effect=fetch),
+            patch("ucode.cli.configure_tool", side_effect=configure_tool),
+        ):
+            for _ in range(2):
+                result = runner.invoke(app, ["claude"])
+                assert result.exit_code == 0, result.output
+
+        assert token.call_count == 2
+        assert get_config.call_count == (2 if failure == "api" else 0)
+        assert calls["launch"].call_count == 2
+        assert json.loads((tmp_path / "settings.json").read_text())["apiKeyHelper"]
+        assert not managed_config.REFRESH_TS_PATH.exists()
+
+    @pytest.mark.parametrize("manifest", [None, {}, {"enabled_agents": {"claude": {}}}])
+    @pytest.mark.parametrize("self_managed", [False, True])
+    def test_passes_resolved_policy_presence_to_settings(self, manifest, self_managed):
+        with (
+            _launch_policy_patches(manifest) as calls,
+            patch("ucode.cli._launches_self_managed", return_value=self_managed),
+        ):
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["configure"].call_args.kwargs["managed_config_present"] is (
+            manifest is not None
+        )
+        calls["launch"].assert_called_once()
+
+
 class TestManagedConfigLaunchSourceGuard:
     @pytest.mark.parametrize(
         ("tool", "option", "value"),

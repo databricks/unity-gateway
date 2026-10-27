@@ -1416,3 +1416,8 @@ For a managed workspace other than the two CI workspaces, set
 `UCODE_TEST_CODEX_ROUTING_FIXTURE` to the basename of a checked-in fixture whose model menu has
 been validated in that workspace. The suite never guesses a model menu or silently changes the
 workspace.
+
+Managed-config launch reuse has component coverage in `test_cli.py` and
+`test_agent_claude.py`: managed, empty, absent and self-managed launch decisions reach
+Claude settings without a second refresh; header ownership is preserved and standalone
+configuration still refreshes. This does not establish live gateway or startup latency coverage.

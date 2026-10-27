@@ -461,6 +461,7 @@ def configure_tool(
     coding_agent_config_defaults: dict[str, str] | None = None,
     parent_schema: str | None = None,
     picker_catalog: AnthropicModelCatalog | None = None,
+    managed_config_present: bool | None = None,
 ) -> dict:
     result: dict | tuple[dict, str]
     if tool == AGENT_CODEX:
@@ -483,6 +484,7 @@ def configure_tool(
             coding_agent_config_defaults=coding_agent_config_defaults,
             parent_schema=parent_schema,
             picker_catalog=picker_catalog,
+            managed_config_present=managed_config_present,
         )
     elif tool == "copilot":
         # Under a model provider service or a model location, Copilot starts on one of its models,

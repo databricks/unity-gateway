@@ -56,7 +56,9 @@ configuration, not just headers; ug preserves raw fields rather than silently re
 - `ug configure` sets the machine's workspace: configuring a workspace that publishes no policy
   also removes another workspace's installed policy. A launch never changes the machine's
   workspace; selecting another workspace is refused.
-- Fetch/authentication failures retain existing local fallback and record nothing.
+- Fetch/authentication failures retain existing local fallback and record nothing. Claude settings
+  reuse the launch's resolved policy presence, including fallback and no-policy results, instead of
+  retrying that read while writing settings. A later launch or explicit configure can try again.
 - Launch dry-run is local/offline. Configure dry-run may fetch to preview but does not install.
 
 The one file holds one active workspace for the machine. Installing another workspace replaces

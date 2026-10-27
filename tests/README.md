@@ -877,3 +877,8 @@ rejects stale or unrelated panels. Live audit correlation and child answers rema
 After Codex compaction removes a prompt, display correlation may instead use the
 native Spawned row immediately following the routing box. Unit checks reject later
 answer text, intervening prompts, and nonadjacent or unrelated spawn rows.
+
+Managed-config launch reuse has component coverage in `test_cli.py` and
+`test_agent_claude.py`: managed, empty, absent and self-managed launch decisions reach
+Claude settings without a second refresh; header ownership is preserved and standalone
+configuration still refreshes. This does not establish live gateway or startup latency coverage.
