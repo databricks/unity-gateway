@@ -255,9 +255,10 @@ def _check_anthropic_env_collision() -> Check | None:
 
     Claude Code ranks `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` above ucode's
     `apiKeyHelper`. `ug configure` and `ug claude` blank both in ucode's Claude
-    settings, so the shell's value is hidden from Claude only and needn't be
-    unset; a bare `claude` that doesn't load those settings still sees it.
-    Advisory (no fix). Returns None when nothing collides.
+    settings, so Claude launched via ug ignores the shell's value; a bare `claude`
+    sees the blanks only once `ug configure` has written them to the managed file.
+    Says so, and names the supported ways to use your own token. Advisory (no fix).
+    Returns None when nothing collides.
     """
     set_vars = [name for name in _CLAUDE_TOKEN_ENV_VARS if os.environ.get(name, "").strip()]
     if not set_vars:
@@ -266,8 +267,9 @@ def _check_anthropic_env_collision() -> Check | None:
     return Check(
         "Claude auth env",
         "info",
-        f"{joined} is set; ug blanks it for Claude Code, so no need to unset it "
-        "(re-run `ug configure` if Claude still fails with a 401)",
+        f"{joined} is set; Claude Code launched via ug ignores it. To use your own Databricks "
+        "token, set DATABRICKS_BEARER or run `ug configure --profile <name> --use-pat` "
+        "(re-run `ug configure` if bare `claude` still fails with a 401)",
     )
 
 

@@ -257,10 +257,11 @@ class TestAnthropicEnvCollision:
             monkeypatch.delenv(var, raising=False)
         monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "secret")
         check = _check_anthropic_env_collision()
-        assert check.status == "info"  # no action needed: ug blanks it for Claude Code
+        assert check.status == "info"  # advisory: ug blanks it for Claude Code
         assert check.detail == (
-            "ANTHROPIC_AUTH_TOKEN is set; ug blanks it for Claude Code, so no need to unset it "
-            "(re-run `ug configure` if Claude still fails with a 401)"
+            "ANTHROPIC_AUTH_TOKEN is set; Claude Code launched via ug ignores it. To use your own "
+            "Databricks token, set DATABRICKS_BEARER or run `ug configure --profile <name> "
+            "--use-pat` (re-run `ug configure` if bare `claude` still fails with a 401)"
         )
         # Advisory only — no auto-fix for a parent shell's env.
         assert check.suggestion is None
