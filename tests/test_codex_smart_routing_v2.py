@@ -796,7 +796,6 @@ class TestInterposerSession:
             return (
                 codex_interposer.routing.RoutingDecision(
                     model="claude-opus-4-8",
-                    raw_model="claude-opus-4-8",
                     rationale="Task classified as bugfix.",
                 ),
                 None,
@@ -822,7 +821,6 @@ class TestInterposerSession:
             return (
                 codex_interposer.routing.RoutingDecision(
                     model="system.ai.gpt-5-6-luna",
-                    raw_model="gpt-5-6-luna",
                     rationale="Trivial task.",
                 ),
                 None,
@@ -852,7 +850,6 @@ class TestInterposerSession:
             return (
                 codex_interposer.routing.RoutingDecision(
                     model="system.ai.glm-5-2",
-                    raw_model="glm-5-2",
                     rationale="Short isolated task.",
                 ),
                 None,
@@ -895,7 +892,6 @@ class TestInterposerSession:
             route_decision=lambda _p: (
                 codex_interposer.routing.RoutingDecision(
                     model="gpt-5.6-luna",
-                    raw_model="gpt-5-6-luna",
                     rationale="trivial",
                 ),
                 None,
@@ -932,7 +928,7 @@ def test_routing_request_uses_models_prompt_and_same_token(monkeypatch):
     captured = {}
     logged = []
 
-    def select_route(workspace, token, task, route_options, resolve, *, router_name, timeout):
+    def select_route(workspace, token, task, route_options, *, router_name, timeout):
         captured.update(
             workspace=workspace,
             token=token,
@@ -943,8 +939,7 @@ def test_routing_request_uses_models_prompt_and_same_token(monkeypatch):
         )
         return (
             codex_interposer.routing.RoutingDecision(
-                model=resolve("gpt-5-6-sol"),
-                raw_model="gpt-5-6-sol",
+                model="system.ai.gpt-5-6-sol",
                 rationale="Bugfix needs deeper reasoning.",
             ),
             None,
@@ -974,10 +969,10 @@ def test_routing_request_uses_models_prompt_and_same_token(monkeypatch):
         "router_name": codex_routing.routing.ROUTER_NAME,
         "timeout": codex_routing.REQUEST_TIMEOUT_S,
         "route_options": [
-            ("kimi-k3-neo", "codex"),
-            ("gpt-5-6-sol", "codex"),
-            ("gpt-5-6-luna", "codex"),
-            ("glm-5-2", "codex"),
+            ("system.ai.kimi-k3-neo", "codex"),
+            ("system.ai.gpt-5-6-sol", "codex"),
+            ("system.ai.gpt-5-6-luna", "codex"),
+            ("system.ai.glm-5-2", "codex"),
         ],
     }
     assert len(logged) == 1
@@ -985,10 +980,10 @@ def test_routing_request_uses_models_prompt_and_same_token(monkeypatch):
     request_payload = json.loads(logged[0].split(": ", 1)[1])
     assert request_payload == {
         "route_options": [
-            {"model": "kimi-k3-neo", "harness": "codex"},
-            {"model": "gpt-5-6-sol", "harness": "codex"},
-            {"model": "gpt-5-6-luna", "harness": "codex"},
-            {"model": "glm-5-2", "harness": "codex"},
+            {"model": "system.ai.kimi-k3-neo", "harness": "codex"},
+            {"model": "system.ai.gpt-5-6-sol", "harness": "codex"},
+            {"model": "system.ai.gpt-5-6-luna", "harness": "codex"},
+            {"model": "system.ai.glm-5-2", "harness": "codex"},
         ],
         "task": {"prompt": "Fix the parser"},
         "route_selector": {"router_name": codex_routing.routing.ROUTER_NAME},
@@ -996,10 +991,10 @@ def test_routing_request_uses_models_prompt_and_same_token(monkeypatch):
     assert "same-oauth-token" not in logged[0]
 
 
-def test_routing_request_deduplicates_equivalent_gpt_spellings(monkeypatch):
+def test_routing_request_sends_each_model_id_once_as_given(monkeypatch):
     captured = {}
 
-    def select_route(workspace, token, task, route_options, resolve, *, router_name, timeout):
+    def select_route(workspace, token, task, route_options, *, router_name, timeout):
         captured["route_options"] = list(route_options)
         return None, "not selected"
 
@@ -1012,12 +1007,13 @@ def test_routing_request_deduplicates_equivalent_gpt_spellings(monkeypatch):
         [
             "system.ai.gpt-5-6-sol",
             "gpt-5.6-sol",
+            "system.ai.gpt-5-6-sol",
             "system.ai.gpt-5-6-luna",
-            "gpt-5.6-luna",
         ],
     )
 
     assert captured["route_options"] == [
-        ("gpt-5-6-sol", "codex"),
-        ("gpt-5-6-luna", "codex"),
+        ("system.ai.gpt-5-6-sol", "codex"),
+        ("gpt-5.6-sol", "codex"),
+        ("system.ai.gpt-5-6-luna", "codex"),
     ]
