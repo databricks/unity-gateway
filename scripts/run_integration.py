@@ -294,7 +294,7 @@ def arguments(
     )
     parser.add_argument(
         "--claude-bedrock-allow-all-model",
-        default="anthropic.claude-sonnet-5-5",
+        default="global.anthropic.claude-haiku-4-5-20251001-v1:0",
         help="Explicit Bedrock model id the allow_all CUJ pins (the service declares no targets).",
     )
     parser.add_argument(
