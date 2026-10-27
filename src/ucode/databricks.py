@@ -20,7 +20,9 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -3451,6 +3453,27 @@ def list_all_mcp_services(
     return sorted(names), None
 
 
+_AnthropicModelsCacheKey = tuple[str, str, tuple[tuple[str, str], ...]]
+_ANTHROPIC_MODELS_CACHE: ContextVar[dict[_AnthropicModelsCacheKey, dict] | None] = ContextVar(
+    "anthropic_models_cache", default=None
+)
+
+
+@contextmanager
+def model_discovery_session() -> Iterator[None]:
+    """Share successful Claude catalog reads within one launch, then discard them."""
+    previous = _ANTHROPIC_MODELS_CACHE.set({})
+    try:
+        yield
+    finally:
+        _ANTHROPIC_MODELS_CACHE.reset(previous)
+
+
+def finish_model_discovery() -> None:
+    """Release startup responses before handing off to a possibly long-lived agent."""
+    _ANTHROPIC_MODELS_CACHE.set(None)
+
+
 def _get_anthropic_models_json(
     workspace: str,
     token: str,
@@ -3464,12 +3487,25 @@ def _get_anthropic_models_json(
         headers = {MODEL_PROVIDER_SERVICE_HEADER: provider}
     elif parent_schema is not None:
         headers = {MODEL_SERVICE_PARENT_SCHEMA_HEADER: parent_schema}
-    return _http_get_json(
+    cache = _ANTHROPIC_MODELS_CACHE.get()
+    key = (origin, token, tuple(sorted({**ug_headers(), **(headers or {})}.items())))
+    if cache is not None and key in cache:
+        return cache[key], None
+    payload, reason = _http_get_json(
         f"{origin}{ANTHROPIC_MODELS_PATH}?limit=1000",
         token,
         max_retries=_ANTHROPIC_MODEL_DISCOVERY_SETUP_MAX_RETRIES,
         **({"headers": headers} if headers is not None else {}),
     )
+    # A failed or malformed read must not suppress recovery later in the launch.
+    if (
+        cache is not None
+        and reason is None
+        and isinstance(payload, dict)
+        and isinstance(payload.get("data"), list)
+    ):
+        cache[key] = payload
+    return payload, reason
 
 
 def list_anthropic_models(workspace: str, token: str) -> tuple[list[str], str | None]:

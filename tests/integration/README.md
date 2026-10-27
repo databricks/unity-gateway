@@ -28,6 +28,10 @@ percent consumed, spend, and threshold are treated like missing optional fields,
 individually or together, without discarding valid statuses. Redundant client error
 variants are reduced to one opaque passthrough case; later-page failure checks remain.
 
+`../test_launch_model_catalog.py` exercises launch-scoped Claude catalog reuse against a local HTTP
+server. It checks family/picker results, authentication and source isolation, failed-read recovery,
+and a fresh catalog on the next launch. This is component coverage, not live agent startup.
+
 MCP/Skills browsing has component coverage in `tests/test_catalog_browsing.py`
 (repository-relative path): paginated BASIC metadata, streamed rows, missing metadata,
 UTC dates, keyboard selection/filtering/cancellation, loader cancellation, and rendered
