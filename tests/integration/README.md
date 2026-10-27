@@ -1302,7 +1302,7 @@ omits macOS extended attributes that Linux cannot unpack.
 ### Complete local checkout run on the Databricks network
 
 Run from the checkout root in Bash on a clean Ubuntu 22.04 machine/VM with
-Python 3.12, uv 0.9.8, Node 22.19.0/npm, Databricks CLI 1.9.0, `sudo`, and
+Python 3.12, uv 0.13.5, Node 22.19.0/npm, Databricks CLI 1.9.0, `sudo`, and
 `bubblewrap`. Install bubblewrap with `sudo apt-get install bubblewrap`. Verify
 the normal sandbox before starting:
 

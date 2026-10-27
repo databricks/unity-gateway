@@ -70,7 +70,7 @@ jobs:
           node-version: 22.19.0
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
         with:
-          version: 0.9.8
+          version: 0.13.5
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
         with:
           version: 1.17.0
