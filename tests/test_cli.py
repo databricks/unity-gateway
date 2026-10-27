@@ -1941,7 +1941,14 @@ class TestClaudeModelFlag:
         monkeypatch.setattr(claude, "_resolve_launch_binary", lambda binary: binary)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_: "token")
         native_calls: list[list[str]] = []
-        monkeypatch.setattr(claude, "exec_or_spawn", native_calls.append)
+
+        def capture_launch(argv: list[str]) -> None:
+            captured = list(argv)
+            if "ug-claude-settings-" in captured[2]:
+                captured[2] = Path(captured[2]).read_text(encoding="utf-8")
+            native_calls.append(captured)
+
+        monkeypatch.setattr(claude, "exec_or_spawn", capture_launch)
 
         with _launch_policy_patches(None) as calls:
             calls["launch"].side_effect = lambda tool, state, args, *, options: claude.launch(
