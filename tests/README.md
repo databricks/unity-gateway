@@ -410,8 +410,17 @@ default, a family default, or both, while preserving startup selection and famil
 `TestBuildClaudeArgv` also checks that caller permission denies survive ug's technical
 native-search deny in direct, relayed, and routing settings composition. Inline/file
 inputs, repeated settings, and empty launch overrides retain restrictions and leave
-source files unchanged. These are actual argv/configuration assertions, not native
-classifier or parent/child acceptance coverage.
+source files unchanged. `test_claude_launch_settings.py` drives normal and relayed
+launches with oversized Windows settings, preserving merged values and literal
+prompt arguments while keeping the settings file alive until the child exits.
+Success, nonzero exit, interruption, and spawn failures clean up temporary files;
+relayed failures also stop the proxy. Separate launches use separate files, and
+short Windows commands and POSIX keep their existing argv. Real Python children
+read the file for large catalogs and commands containing non-BMP characters.
+Windows command limits and child lifecycle are otherwise simulated; the native
+Bedrock integration journey still supplies live Windows/Claude coverage.
+These are actual argv/configuration assertions, not native classifier acceptance
+coverage.
 `test_databricks.py` checks bounded Anthropic catalog requests with `limit=1000`, including
 scoped routing headers and model display metadata. It also verifies that Windows CLI install
 and upgrade use WinGet and report an actionable error when WinGet is unavailable. Windows
