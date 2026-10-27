@@ -21,45 +21,57 @@ const secondsSince = async ($: any, start: number | undefined): Promise<number |
   return current === undefined || start === undefined ? undefined : Math.max(0, current - start) / 1000
 }
 
-// One routing decision: the task, the selected model and routing time, then the reason.
-const card = ($: any, e: any, record: RoutingRecord) => {
+// The selected model with its routing time, then the reason. Labels recede so the routed
+// model, in the status band's ON green, stands out; the time is omitted without a clock.
+const selection = ($: any, e: any, record: RoutingRecord, arrow: string, reasonPadding: number) => {
   const { Box, Text } = $.ui.resolve(e)
-  const lines = [
-    Text({ bold: true, children: [record.task] }),
-    Box({
-      flexDirection: 'row',
-      children: [
-        Text({ dimColor: true, children: ['↳ Selected Model: '] }),
-        Text({ color: 'green', bold: true, children: [record.model] }),
-        ...(record.seconds === undefined ? [] : [
-          Text({ dimColor: true, children: [` (routed in ${record.seconds.toFixed(1)}s)`] }),
-        ]),
-      ],
-    }),
-  ]
+  const lines = [Box({
+    flexDirection: 'row',
+    children: [
+      Text({ dimColor: true, children: [`${arrow}Selected Model: `] }),
+      Text({ color: 'green', bold: true, children: [shortModel(record.model)] }),
+      ...(record.seconds === undefined ? [] : [
+        Text({ dimColor: true, children: [` (routed in ${record.seconds.toFixed(1)}s)`] }),
+      ]),
+    ],
+  })]
   if (record.rationale) {
     lines.push(Box({
-      paddingLeft: 2,
+      paddingLeft: reasonPadding,
       children: [Text({ children: [Text({ dimColor: true, children: ['Reason: '] }), record.rationale] })],
     }))
   }
-  return Box({ flexDirection: 'column', paddingLeft: 2, marginBottom: 1, children: lines })
+  return lines
 }
 
-// Calls not yet drawn, in call order. They live outside registration so the register
-// module's one turn.complete handler can drop them.
+// A grouped call's decision: its task, then the selection.
+const card = ($: any, e: any, record: RoutingRecord) => {
+  const { Box, Text } = $.ui.resolve(e)
+  return Box({
+    flexDirection: 'column',
+    paddingLeft: 2,
+    marginBottom: 1,
+    children: [Text({ bold: true, children: [record.task] }), ...selection($, e, record, '↳ ', 2)],
+  })
+}
+
+// Grouped calls not yet drawn, in call order. They live outside registration so the
+// register module's one turn.complete handler can drop them.
 const cards = { unplaced: [] as string[] }
 
-// A turn that ends without a reply draws no cards, so its calls never reach a later turn.
-export function endSubagentRoutingTurn(): void {
-  cards.unplaced = []
+// An aborted turn draws no reply, so its calls must not reach a later turn. A turn that
+// merely ends, as when the reply waits on a background agent, keeps them.
+export function endSubagentRoutingTurn(aborted: boolean): void {
+  if (aborted) cards.unplaced = []
 }
 
 export const registerSubagentRouting = (on: On, options: PluginOptions): void => {
   // Calls waiting on the router, by when routing started, shown with a spinner and timer.
   const pending = new Map<string, number | undefined>()
-  // Claude folds parallel Agent rows into its own block, which no hook reaches, so every
-  // decision is drawn above the parent's next reply instead, single calls included.
+  // Claude folds parallel Agent rows into its own block, which no hook reaches, so a call
+  // that was routing alongside another is drawn as a card above the parent's next reply.
+  // A lone call keeps its decision under its own row.
+  const grouped = new Set<string>()
   const records = new Map<string, RoutingRecord>()
   // The reply each batch is drawn above.
   const anchors = new Map<string, string[]>()
@@ -73,8 +85,19 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     let route
     let spinner: { cancel: () => void } | undefined
     if (tool_use_id) {
+      // Parallel calls start together, so one still routing means this call is not alone.
+      if (pending.size) {
+        for (const id of pending.keys()) {
+          if (!grouped.has(id)) {
+            grouped.add(id)
+            cards.unplaced.push(id)
+          }
+        }
+        grouped.add(tool_use_id)
+        cards.unplaced.push(tool_use_id)
+      }
+      pending.set(tool_use_id, undefined)
       pending.set(tool_use_id, await now($))
-      cards.unplaced.push(tool_use_id)
       // Mods have no global timers; $.clock redraws the spinner while the router answers.
       // The frame comes from the clock, so parallel calls do not speed it up.
       try {
@@ -123,20 +146,27 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
 
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
     const original = await next(e)
-    if (!pending.has(e.requestId)) return original
+    const record = records.get(e.requestId)
+    if (!record && !pending.has(e.requestId)) return original
 
     const { Box, Text } = $.ui.resolve(e)
-    const glyph = SPINNER[Math.floor(((await now($)) ?? 0) / SPINNER_INTERVAL_MS) % SPINNER.length]
-    const seconds = await secondsSince($, pending.get(e.requestId))
-    const elapsed = seconds === undefined ? '' : ` ${Math.floor(seconds)}s`
-    return Box({ flexDirection: 'column', children: [original, Box({
-      flexDirection: 'row',
-      children: [
-        Text({ dimColor: true, children: ['  ↳ '] }),
-        Text({ color: 'green', children: [`${glyph} `] }),
-        Text({ dimColor: true, children: [`Selecting a model…${elapsed}`] }),
-      ],
-    })] })
+    if (!record) {
+      const glyph = SPINNER[Math.floor(((await now($)) ?? 0) / SPINNER_INTERVAL_MS) % SPINNER.length]
+      const seconds = await secondsSince($, pending.get(e.requestId))
+      const elapsed = seconds === undefined ? '' : ` ${Math.floor(seconds)}s`
+      return Box({ flexDirection: 'column', children: [original, Box({
+        flexDirection: 'row',
+        children: [
+          Text({ dimColor: true, children: ['  ↳ '] }),
+          Text({ color: 'green', children: [`${glyph} `] }),
+          Text({ dimColor: true, children: [`Selecting a model…${elapsed}`] }),
+        ],
+      })] })
+    }
+    if (grouped.has(e.requestId)) return original
+    // Claude's row can name only the agent type, so the routed model is always shown,
+    // with the reason aligned under "Selected Model" after the arrow.
+    return Box({ flexDirection: 'column', children: [original, ...selection($, e, record, '  ↳ ', 4)] })
   })
 
   // Claude's parallel-agent block hides the row spinner, so the turn's own spinner line

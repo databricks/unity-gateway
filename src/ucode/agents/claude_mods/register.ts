@@ -133,7 +133,7 @@ export function register(on: On, options: PluginOptions): void {
   registerSubagentRouting(on, options);
   // Claude allows one unmatched turn.complete handler per plugin, so both modules share it.
   on('turn.complete', ($, e, next) => {
-    endSubagentRoutingTurn();
+    endSubagentRoutingTurn(e.isAborted);
     if (endStatusBandTurn()) $.ui.invalidate('ui.render');
     return next(e);
   });

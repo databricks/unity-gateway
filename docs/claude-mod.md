@@ -19,15 +19,16 @@ matching Agent row shows a spinner and elapsed seconds while the router answers.
 hides that row once a second Agent call joins it, so while any call is routing, the turn's
 spinner line also reads `Selecting a model… Ns` or `Selecting models for N agents… Ns`,
 timed from the oldest waiting call; Claude's own glyph and counters stay.
-Each successful decision is drawn as a card in the transcript: bold task, green selected
-model with its routing time, and the indented rationale. Claude folds parallel Agent rows
-into its own "Running N agents" block, which raises no render hook, so single and parallel
-calls alike draw their cards above the parent's first reply after routing, in call order.
-A reply drawn before routing finished is never used, a call still routing waits for a
-later reply, and a call whose routing failed draws no card. If the parent writes no reply
-in that turn, its cards are dropped when the turn ends, not drawn in a later turn.
-Nothing is drawn above the prompt and nothing is logged.
-Cards are kept for the session; a plugin reload clears them from the screen, and the
+A lone call's decision is drawn under its Agent row: `↳ Selected Model:` in green with its
+routing time, then the indented `Reason:`. Claude folds parallel Agent rows into its own
+"Running N agents" block, which raises no render hook, so calls that were routing at the same
+time are drawn instead as cards (bold task, selected model, rationale) above the parent's
+next reply, in call order. A reply is claimed by its message id on its first block drawn after
+routing; the message that issued the calls is drawn before routing finishes and is never used,
+a call still routing waits for a later reply, and a call whose routing failed draws no card.
+Cards survive a turn that ends while the reply waits on a background agent and are dropped
+only when the turn is aborted. Nothing is drawn above the prompt and nothing is logged.
+Decisions are kept for the session; a plugin reload clears them from the screen, and the
 routing decision audit log is unchanged.
 Disabled routing, command failures, and invalid responses keep the original call;
 failures also log a diagnostic.

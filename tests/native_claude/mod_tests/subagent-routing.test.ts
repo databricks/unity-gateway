@@ -10,12 +10,13 @@ const row = (id: string) => ({
   ...panel, component: 'ToolUse' as const, requestId: id,
   props: { tool_use_id: id, tool: 'Agent', input: originalInput, isRunning: true, isErrored: false, isInterrupted: false },
 });
-// The parent's reply, which draws the routing cards above itself.
+// One block of the parent's reply: Claude calls the hook once per block, and every block of
+// a message shares its requestId.
 const reply = (id: string) => ({
   ...panel, component: 'AssistantMessage' as const, requestId: id,
   props: { text: 'reply', isFirstOfReply: true },
 });
-test('routing keeps distinct results for identical tasks as cards above the next reply', async ($, on) => {
+test('a lone call keeps its decision under its own row and draws no card', async ($, on) => {
   const calls: any[] = [];
   const logs: string[] = [];
   on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined }; });
@@ -44,24 +45,22 @@ test('routing keeps distinct results for identical tasks as cards above the next
   expect(calls[1].subagent_type).toBe('ug-smart-router:call-b');
   expect(logs).toEqual([]);
 
-  for (const id of ['call-a', 'call-b']) {
+  for (const [id, model] of [['call-a', 'claude-sonnet-5'], ['call-b', 'claude-opus-4-8']]) {
     const done = await $.ui.mount(row(id));
-    expect(await done.find({ type: 'Text', text: /Selected Model|claude-/ })).toBeUndefined();
+    expect(await done.find({ type: 'Text', text: 'original Agent row' })).toBeDefined();
+    expect(await done.find({ type: 'Text', text: '  ↳ Selected Model: ' })).toBeDefined();
+    expect(await done.find({ type: 'Text', text: model })).toBeDefined();
+    expect(await done.find({ type: 'Text', text: new RegExp(`Selected for ${id}`) })).toBeDefined();
+    expect(await done.find({ type: 'Text', text: /ug-smart-router:|�/ })).toBeUndefined();
+    expect(JSON.stringify(await done.drawn())).toContain('"color":"green"');
     await done.unmount();
   }
-  const cards = await $.ui.mount(reply('after'));
-  expect(await cards.find({ type: 'Text', text: 'original Agent row' })).toBeDefined();
-  expect(await cards.find({ type: 'Text', text: 'claude-sonnet-5' })).toBeDefined();
-  expect(await cards.find({ type: 'Text', text: 'claude-opus-4-8' })).toBeDefined();
-  expect(await cards.find({ type: 'Text', text: /Selected for call-a/ })).toBeDefined();
-  expect(await cards.find({ type: 'Text', text: /Selected for call-b/ })).toBeDefined();
-  expect(await cards.find({ type: 'Text', text: /ug-smart-router:|�/ })).toBeUndefined();
-  expect(JSON.stringify(await cards.drawn())).toContain('"color":"green"');
-  await cards.unmount();
-  // The batch stays on that reply; a later reply draws no cards.
-  const later = await $.ui.mount(reply('later'));
-  expect(await later.find({ type: 'Text', text: /Selected Model/ })).toBeUndefined();
-  await later.unmount();
+  // Each reply block, whatever its message, draws no card for a call its row already shows.
+  for (const block of [reply('first'), reply('first'), reply('second')]) {
+    const ui = await $.ui.mount(block);
+    expect(await ui.find({ type: 'Text', text: /Selected Model/ })).toBeUndefined();
+    await ui.unmount();
+  }
   const prompt = await $.ui.mount(panel);
   expect(await prompt.find({ type: 'Text', text: /Selected Model|claude-/ })).toBeUndefined();
   await prompt.unmount();
@@ -130,18 +129,17 @@ test('parallel cards keep call order, skip replies drawn earlier, and wait for r
   await prompt.unmount();
 });
 
-test('a turn that ends without a reply leaves no card for the next turn', async ($, on) => {
-  let release: () => void = () => {};
+test('an aborted turn leaves no card for the next turn, but a finished one keeps them for the reply', async ($, on) => {
+  const gates = new Map<string, () => void>();
   let started: () => void = () => {};
-  const routed = new Promise<void>((resolve) => { release = resolve; });
-  const routing = new Promise<void>((resolve) => { started = resolve; });
+  const bothStarted = new Promise<void>((resolve) => { started = resolve; });
   on('session.id', () => ({ value: 'session-1' }));
   on('process.run', async ($, e) => {
     const { tool_use_id, tool_input } = JSON.parse(e.init.stdin);
-    if (tool_use_id === 'call-b') {
-      started();
-      await routed;
-    }
+    await new Promise<void>((resolve) => {
+      gates.set(tool_use_id, resolve);
+      if (gates.size === 2) started();
+    });
     return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
       model: 'system.ai.claude-sonnet-5', rationale: `Selected for ${tool_use_id}`,
       updatedInput: { ...tool_input, subagent_type: `ug-smart-router:${tool_use_id}` },
@@ -151,27 +149,63 @@ test('a turn that ends without a reply leaves no card for the next turn', async 
   on('prompt.submit', ($, e) => ({ text: e.text }));
   on('turn.complete', () => ({ text: '' }));
   on('ui.render', () => ({ type: 'Text', props: {}, children: ['other row'] }));
+  const parallel = async (ids: string[]) => {
+    gates.clear()
+    const calls = ids.map((id) => $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput, description: `Inspect ${id}` }));
+    await bothStarted;
+    for (const id of ids) gates.get(id)!();
+    await Promise.all(calls);
+  };
 
-  // One call is routed and another is still routing when the user interrupts the turn.
+  // The user interrupts the turn after its parallel calls were routed.
   await $.prompt.submit({ text: 'inspect the parser' });
-  await $.tool.call({ tool: 'Agent', tool_use_id: 'call-a', ...originalInput });
-  const waiting = $.tool.call({ tool: 'Agent', tool_use_id: 'call-b', ...originalInput, description: 'Inspect lexer' });
-  await routing;
-  await $.turn.complete({ answer: '' });
-  release();
-  await waiting;
-
+  await parallel(['call-a', 'call-b']);
+  await $.turn.complete({ answer: '', isAborted: true });
   await $.prompt.submit({ text: 'something unrelated' });
   const unrelated = await $.ui.mount(reply('unrelated'));
-  expect(await unrelated.find({ type: 'Text', text: /Selected Model|Inspect parser|Inspect lexer/ })).toBeUndefined();
+  expect(await unrelated.find({ type: 'Text', text: /Selected Model|call-a|call-b/ })).toBeUndefined();
   await unrelated.unmount();
+});
 
-  // The next turn's own calls still draw above its reply.
-  await $.tool.call({ tool: 'Agent', tool_use_id: 'call-c', ...originalInput, description: 'Inspect tokens' });
-  const cards = await $.ui.mount(reply('after'));
-  expect(await cards.find({ type: 'Text', text: 'Inspect tokens' })).toBeDefined();
-  expect(await cards.find({ type: 'Text', text: /Inspect parser|Inspect lexer/ })).toBeUndefined();
-  await cards.unmount();
+test('a turn that ends while the reply waits on a background agent keeps its cards for that reply', async ($, on) => {
+  const gates = new Map<string, () => void>();
+  let started: () => void = () => {};
+  const bothStarted = new Promise<void>((resolve) => { started = resolve; });
+  on('session.id', () => ({ value: 'session-1' }));
+  on('process.run', async ($, e) => {
+    const { tool_use_id, tool_input } = JSON.parse(e.init.stdin);
+    await new Promise<void>((resolve) => {
+      gates.set(tool_use_id, resolve);
+      if (gates.size === 2) started();
+    });
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+      model: 'system.ai.claude-sonnet-5', rationale: `Selected for ${tool_use_id}`,
+      updatedInput: { ...tool_input, subagent_type: `ug-smart-router:${tool_use_id}` },
+    }) } };
+  });
+  on('tool.call', () => ({ result: 'ok' }));
+  on('turn.complete', () => ({ text: '' }));
+  on('ui.render', () => ({ type: 'Text', props: {}, children: ['other row'] }));
+
+  // The message that issued the calls is drawn before they are routed, in two blocks.
+  for (let block = 0; block < 2; block++) {
+    const issuing = await $.ui.mount(reply('issuing'));
+    await issuing.unmount();
+  }
+  const calls = ['call-a', 'call-b'].map((id) => $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput, run_in_background: true, description: `Inspect ${id}` }));
+  await bothStarted;
+  for (const gate of gates.values()) gate();
+  await Promise.all(calls);
+  await $.turn.complete({ answer: 'The subagents are running.', isAborted: false });
+
+  const issuing = await $.ui.mount(reply('issuing'));
+  expect(await issuing.find({ type: 'Text', text: /Selected Model/ })).toBeUndefined();
+  await issuing.unmount();
+  const final = await $.ui.mount(reply('final'));
+  expect(await final.findAll({ type: 'Text', text: 'claude-sonnet-5' })).toHaveLength(2);
+  expect(await final.find({ type: 'Text', text: 'Inspect call-a' })).toBeDefined();
+  expect(await final.find({ type: 'Text', text: 'Inspect call-b' })).toBeDefined();
+  await final.unmount();
 });
 
 for (const [name, result, warningCount] of [
