@@ -39,13 +39,16 @@ description, preserving the native input schema and execution. The host's `Usage
 section stays intact for native continuation mechanics. The orchestrator instructions
 explicitly tell the parent to end its current turn when only background work remains
 and wait for the completion notification, without launching another worker to wait.
+The notification must arrive from the host; the parent must not invent a completion
+or predict the result. A waiting status hands control back to the host without
+ending the assignment.
 Other native ownership and task-selection advice is replaced. The description reads the
 same saved session overrides as routing. Before each model request, a changed
 orchestration state invalidates Claude's description cache, including changes made by
 the CLI/skill fallback: off restores native advice, and on restores the launch's
-orchestrator advice. Routing-only launches retain native advice. The same concise
-instructions lead the Claude activation context so its delegation rule survives a
-truncated preview of the full workflow.
+orchestrator advice. Routing-only launches retain native advice. The activation context
+puts the skill location and loading instruction before the delegation guidance so
+Claude can recover the full workflow when its hook output is truncated.
 
 The old routing PreToolUse hook is no longer written, so a call is not routed twice. A
 `route-subagent` hook that an earlier UG version persisted still gets its PreToolUse
