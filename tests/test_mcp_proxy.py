@@ -192,8 +192,11 @@ class TestDatabricksTokenAuth:
             lambda *args, **kwargs: calls.append(kwargs.get("force_refresh", False)) or "token",
         )
         auth = mcp_proxy._build_token_auth(URL, WS, "p")
-        for _ in range(2):
-            self._drive(auth, httpx.Request("GET", URL), httpx.Response(401), httpx.Response(401))
+        for expected_requests in (2, 1):
+            yielded = self._drive(
+                auth, httpx.Request("GET", URL), httpx.Response(401), httpx.Response(401)
+            )
+            assert len(yielded) == expected_requests
         assert calls.count(True) == 1
         now[0] += mcp_proxy.WORKSPACE_REFRESH_INTERVAL_SECONDS
         self._drive(auth, httpx.Request("GET", URL), httpx.Response(401), httpx.Response(401))
@@ -241,10 +244,16 @@ class TestDatabricksTokenAuth:
     @pytest.mark.parametrize("method", ["initialize", "tools/call"])
     def test_failed_workspace_refresh_does_not_start_connection_login(self, monkeypatch, method):
         logins = []
+        now = [100.0]
+        refreshes = []
+        monkeypatch.setattr(mcp_proxy.time, "monotonic", lambda: now[0])
 
         def token(ws, profile, **kwargs):
             if kwargs.get("force_refresh"):
-                raise RuntimeError("Databricks session expired")
+                refreshes.append(1)
+                if len(refreshes) == 1:
+                    raise RuntimeError("Databricks token request timed out")
+                return "refreshed"
             return "cached"
 
         monkeypatch.setattr(mcp_proxy, "get_databricks_token", token)
@@ -254,14 +263,32 @@ class TestDatabricksTokenAuth:
             "run_connection_login",
             lambda *a, **k: logins.append(1) or (True, "signed in"),
         )
-        request = httpx.Request(
-            "POST", CONN_URL, json={"jsonrpc": "2.0", "id": 1, "method": method}
-        )
-        auth = mcp_proxy._build_token_auth(CONN_URL, WS, "p")
+        httpx_module = mcp_proxy._httpx()
 
-        with pytest.raises(mcp_proxy.ProxyAuthError, match="Databricks session expired"):
-            self._drive(auth, request, httpx.Response(401))
+        def upstream(request):
+            if request.headers["Authorization"] == "Bearer refreshed":
+                return httpx_module.Response(200, json={"ok": True})
+            return httpx_module.Response(401, json={"error": "workspace rejected token"})
 
+        async def scenario():
+            async with httpx_module.AsyncClient(
+                auth=mcp_proxy._build_token_auth(CONN_URL, WS, "p"),
+                transport=httpx_module.MockTransport(upstream),
+            ) as client:
+                body = {"jsonrpc": "2.0", "id": 1, "method": method}
+                failed = await client.post(CONN_URL, json=body)
+                during_cooldown = await client.post(CONN_URL, json=body)
+                now[0] += mcp_proxy.WORKSPACE_REFRESH_INTERVAL_SECONDS
+                recovered = await client.post(CONN_URL, json=body)
+                return failed, during_cooldown, recovered
+
+        failed, during_cooldown, recovered = anyio.run(scenario)
+
+        assert failed.status_code == 401
+        assert failed.json() == {"error": "workspace rejected token"}
+        assert during_cooldown.status_code == 401
+        assert recovered.status_code == 200
+        assert len(refreshes) == 2
         assert logins == []
 
     @pytest.mark.parametrize(

@@ -260,6 +260,7 @@ def _build_token_auth(
         def __init__(self):
             self._refresh_lock = anyio.Lock()
             self._refresh_at = 0.0
+            self._refresh_failed = False
 
         def sync_auth_flow(self, request):
             # The proxy always drives this Auth from an httpx AsyncClient (see `_run`), so only
@@ -275,12 +276,21 @@ def _build_token_auth(
             response = yield request
             if not _is_unauthorized(response) or use_pat:
                 return
+            authorization = request.headers["Authorization"]
             async with self._refresh_lock:
                 refresh = time.monotonic() >= self._refresh_at
                 if refresh:
                     self._refresh_at = time.monotonic() + WORKSPACE_REFRESH_INTERVAL_SECONDS
-                await to_thread.run_sync(_mint, request, refresh)
-            response = yield request
+                elif self._refresh_failed:
+                    return
+                try:
+                    await to_thread.run_sync(_mint, request, refresh)
+                except ProxyAuthError:
+                    self._refresh_failed = True
+                    return
+                self._refresh_failed = False
+            if refresh or request.headers["Authorization"] != authorization:
+                response = yield request
             if not _is_unauthorized(response) or request.method != "POST":
                 return
             try:
