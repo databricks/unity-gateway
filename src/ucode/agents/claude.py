@@ -1442,6 +1442,7 @@ def write_tool_config(
     coding_agent_config_defaults: dict[str, str] | None = None,
     parent_schema: str | None = None,
     picker_catalog: AnthropicModelCatalog | None = None,
+    managed_config_present: bool | None = None,
 ) -> dict:
     external_search = external_provider_selected()
     # Back up only a file that predates ucode's management of the tool. A
@@ -1450,9 +1451,10 @@ def write_tool_config(
     if not is_tool_managed(state, "claude"):
         backup_existing_file(CLAUDE_SETTINGS_PATH, CLAUDE_BACKUP_PATH)
     # A managed config makes ug authoritative over the whole custom-header value, so it is
-    # overwritten wholesale; without one, preserve the developer's own pre-existing headers. Reuses
-    # the managed config `ug configure` saved (no network round trip unless none is saved yet).
-    managed_config_present = refresh_managed_config(state).manifest is not None
+    # overwritten wholesale; without one, preserve the developer's own pre-existing headers.
+    # Launch already resolved this, including failures that the disk cache does not retain.
+    if managed_config_present is None:
+        managed_config_present = refresh_managed_config(state).manifest is not None
     previous_keys = ((state.get("managed_configs") or {}).get("claude") or {}).get("keys", [])
     web_search_model = _resolve_web_search_model(state)
     should_write_tracing_settings = (

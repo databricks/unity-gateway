@@ -3391,6 +3391,7 @@ def _launch_tool(
                 managed, coding_agent_config_feature_disabled = early_managed
             else:
                 managed, coding_agent_config_feature_disabled = _fetch_managed_config(state)
+        managed_config_present = managed is not None
         # Must precede both managed-config rejections, which would otherwise block the launch.
         if _launches_self_managed(managed, state, tool):
             managed = None
@@ -3688,6 +3689,7 @@ def _launch_tool(
             custom_model=None,
             coding_agent_config_defaults=coding_agent_config_defaults,
             parent_schema=parent_schema,
+            managed_config_present=managed_config_present,
         )
         # A plain launch keeps Claude Code's own starting model, as its own picker did.
         if (

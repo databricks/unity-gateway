@@ -1048,6 +1048,40 @@ class TestWriteToolConfigManagedSettings:
 
         monkeypatch.setattr(claude, "reconcile_managed_file", fake_write_managed)
 
+    @pytest.mark.parametrize("managed_config_present", [None, False, True])
+    def test_launch_policy_result_controls_header_ownership_without_refetch(
+        self, monkeypatch, managed_config_present
+    ):
+        from ucode.agents import configure_tool
+
+        private_writes: list = []
+        managed_writes: list = []
+        existing = {
+            str(claude.CLAUDE_SETTINGS_PATH): {
+                "env": {"ANTHROPIC_CUSTOM_HEADERS": "X-Foreign-Header: keep-me"}
+            },
+            str(FAKE_MANAGED_PATH): {
+                "env": {"ANTHROPIC_CUSTOM_HEADERS": "X-Foreign-Header: keep-me"}
+            },
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        # Standalone configuration still reads; a launch must use its existing decision.
+        refresh = Mock(return_value=_managed_config_result(None))
+        monkeypatch.setattr(claude, "refresh_managed_config", refresh)
+        state = {"workspace": WS, "codex_models": []}
+
+        configure_tool(
+            "claude",
+            state,
+            "databricks-claude-sonnet-4",
+            managed_config_present=managed_config_present,
+        )
+
+        assert refresh.call_count == (1 if managed_config_present is None else 0)
+        for settings in [private_writes[0][1], json.loads(managed_writes[0][1])]:
+            headers = settings["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
+            assert ("X-Foreign-Header: keep-me" in headers) is not bool(managed_config_present)
+
     def _write_managed_model_defaults(
         self,
         monkeypatch,
