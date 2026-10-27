@@ -50,6 +50,18 @@ describe("Chat Completions", () => {
     assert.deepEqual(replies, [new LanguageModelTextPart("Checking."), new LanguageModelToolCallPart("c1", "get_weather", { city: "Paris" })]);
   });
 
+  it("takes the text out of content blocks and drops a thinking model's reasoning", async () => {
+    const replies = await collect(
+      chatCompletionsReplies(
+        events(
+          { choices: [{ delta: { content: [{ type: "reasoning", summary: [{ type: "summary_text", text: "The file may not exist." }] }] } }] },
+          { choices: [{ delta: { content: [{ type: "text", text: "Checking." }, { type: "text", text: " Done." }] } }] },
+        ),
+      ),
+    );
+    assert.deepEqual(replies, [new LanguageModelTextPart("Checking. Done.")]);
+  });
+
   it("fails on a length stop and on arguments that aren't an object", async () => {
     await rejectsWith(collect(chatCompletionsReplies(events({ choices: [{ finish_reason: "length" }] }))), "output token limit");
     await rejectsWith(

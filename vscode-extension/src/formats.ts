@@ -109,19 +109,32 @@ export function chatCompletionsRequest(turn: Turn): object {
   };
 }
 
+type ChatContent = string | { type?: string; text?: string }[] | null;
+
 interface ChatChunk {
   choices?: {
-    delta?: { content?: string | null; tool_calls?: { index?: number; id?: string; function?: { name?: string; arguments?: string } }[] };
+    delta?: { content?: ChatContent; tool_calls?: { index?: number; id?: string; function?: { name?: string; arguments?: string } }[] };
     finish_reason?: string | null;
   }[];
 }
+
+/** While a Claude model thinks, the gateway sends `content` as blocks rather than a string. Only the
+ * text ones are the reply: passing a block along would make Copilot Chat fail the turn. */
+const deltaText = (content: ChatContent | undefined): string =>
+  typeof content === "string"
+    ? content
+    : (content ?? [])
+        .filter((block) => block.type === "text")
+        .map((block) => block.text ?? "")
+        .join("");
 
 export async function* chatCompletionsReplies(events: AsyncIterable<unknown>): AsyncGenerator<Reply> {
   const calls: { id: string; name: string; args: string }[] = [];
   for await (const event of events) {
     for (const choice of (event as ChatChunk).choices ?? []) {
-      if (choice.delta?.content) {
-        yield new vscode.LanguageModelTextPart(choice.delta.content);
+      const text = deltaText(choice.delta?.content);
+      if (text) {
+        yield new vscode.LanguageModelTextPart(text);
       }
       for (const fragment of choice.delta?.tool_calls ?? []) {
         const call = (calls[fragment.index ?? 0] ??= { id: "", name: "", args: "" });
