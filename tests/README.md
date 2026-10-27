@@ -270,7 +270,12 @@ workspace state; a repeated revert also returns 0.
 `test_cowork_plugin.py` covers active Cowork-root discovery, ambiguous-profile refusal,
 generated marketplace/plugin/MCP manifests, current-workspace managed-skill selection,
 Claude-only MCP filtering, absolute proxy executables, saved PAT mode, custom-OAuth refusal,
-install/update selection, idempotent cleanup, and saved-root removal. CLI component tests
+install/update selection, idempotent cleanup, and saved-root removal. Alias checks cover
+short service-first names, unchanged proxy routing, custom-name preservation,
+order-independent collisions, and repeated replacement of old keys. Manifest checks require
+the `ug` name and display name in both manifests. Legacy-registration checks cover
+replacement after successful install/update, preservation on install failure, scoped
+cleanup, and unrelated-plugin preservation. CLI component tests
 cover managed setup after successful skill/MCP reconciliation, preservation after transient
 reconciliation failures, and cleanup for unmanaged or non-Claude configurations. These tests
 mock the Claude plugin CLI and do not establish native Desktop policy, account-feature,
@@ -405,8 +410,17 @@ default, a family default, or both, while preserving startup selection and famil
 `TestBuildClaudeArgv` also checks that caller permission denies survive ug's technical
 native-search deny in direct, relayed, and routing settings composition. Inline/file
 inputs, repeated settings, and empty launch overrides retain restrictions and leave
-source files unchanged. These are actual argv/configuration assertions, not native
-classifier or parent/child acceptance coverage.
+source files unchanged. `test_claude_launch_settings.py` drives normal and relayed
+launches with oversized Windows settings, preserving merged values and literal
+prompt arguments while keeping the settings file alive until the child exits.
+Success, nonzero exit, interruption, and spawn failures clean up temporary files;
+relayed failures also stop the proxy. Separate launches use separate files, and
+short Windows commands and POSIX keep their existing argv. Real Python children
+read the file for large catalogs and commands containing non-BMP characters.
+Windows command limits and child lifecycle are otherwise simulated; the native
+Bedrock integration journey still supplies live Windows/Claude coverage.
+These are actual argv/configuration assertions, not native classifier acceptance
+coverage.
 `test_databricks.py` checks bounded Anthropic catalog requests with `limit=1000`, including
 scoped routing headers and model display metadata. It also verifies that Windows CLI install
 and upgrade use WinGet and report an actionable error when WinGet is unavailable. Windows
