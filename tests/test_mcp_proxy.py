@@ -202,7 +202,7 @@ class TestDatabricksTokenAuth:
 
         def launch(argv, **kwargs):
             browser_calls.append(argv)
-            assert "webbrowser.open" in argv[2]
+            assert "webbrowser.open" in argv[3]
             return subprocess.CompletedProcess(argv, 0)
 
         monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)

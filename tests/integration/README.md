@@ -1439,3 +1439,6 @@ by the remaining deadline and never reports success from a late response. These 
 and do not establish live browser sign-in or endpoint availability.
 
 Pre-browser credential reads retry transient HTTP/network failures twice before reporting failure.
+
+Credential validation rejects malformed initial responses before browser launch and non-string
+states during polling. The browser subprocess runs Python in isolated mode.

@@ -102,7 +102,8 @@ class TestRunConnectionLogin:
 
         argv, kwargs = launches[0]
         assert argv[0] == sys.executable
-        assert "webbrowser.open" in argv[2]
+        assert argv[1:3] == ["-I", "-c"]
+        assert "webbrowser.open" in argv[3]
         assert "--resource" not in argv
         parsed = urlsplit(argv[-1])
         assert f"{parsed.scheme}://{parsed.netloc}{parsed.path}" == f"{WS}/mcp-service-login"
@@ -183,6 +184,8 @@ class TestRunConnectionLogin:
             {},
             {"provisioning_info": None},
             {"provisioning_info": {"state": "UNKNOWN"}},
+            {"provisioning_info": {"state": []}},
+            {"provisioning_info": {"state": {}}},
         ],
     )
     def test_inconclusive_or_denied_status_never_reports_success(self, sign_in, failure):
@@ -192,6 +195,18 @@ class TestRunConnectionLogin:
         assert not ok
         assert "could not check connection sign-in" in message
         assert len(requests) == 3
+
+    @pytest.mark.parametrize("credential", [{}, {"provisioning_info": {"state": []}}])
+    def test_malformed_initial_credential_fails_before_browser(self, sign_in, credential):
+        states, requests, launches, _ = sign_in
+        states[:] = [credential, ACTIVE]
+
+        ok, message = mcl.run_connection_login(AIGW_URL, WS, profile="selected")
+
+        assert not ok
+        assert "missing or unknown credential state" in message
+        assert len(requests) == 2
+        assert launches == []
 
     @pytest.mark.parametrize(
         "failure",

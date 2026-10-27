@@ -30,6 +30,20 @@ def _retryable_credential_error(reason: str) -> bool:
     return re.match(r"^(?:HTTP (?:429|5[0-9]{2}) |network error:)", reason) is not None
 
 
+def _credential_state(credential: object) -> str | None:
+    provisioning = credential.get("provisioning_info") if isinstance(credential, dict) else None
+    state = provisioning.get("state") if isinstance(provisioning, dict) else None
+    if isinstance(state, str) and state in {
+        "ACTIVE",
+        "FAILED",
+        "PROVISIONING",
+        "UPDATING",
+        "DELETING",
+    }:
+        return state
+    return None
+
+
 def connection_from_url(url: str) -> str | None:
     """Return the connection FQN of an AI Gateway MCP service URL, or ``None``.
 
@@ -84,11 +98,10 @@ def run_connection_login(
         time.sleep(_POLL_INTERVAL_SECONDS)
     if reason and not reason.startswith("HTTP 404 "):
         return False, f"could not check connection sign-in: {reason}"
-    initial_active = (
-        isinstance(initial_credential, dict)
-        and isinstance(initial_credential.get("provisioning_info"), dict)
-        and initial_credential["provisioning_info"].get("state") == "ACTIVE"
-    )
+    initial_state = _credential_state(initial_credential)
+    if not reason and initial_state is None:
+        return False, "could not check connection sign-in: missing or unknown credential state"
+    initial_active = initial_state == "ACTIVE"
     login_url = f"{origin}/mcp-service-login?{urlencode({'name': connection, 'o': org_id})}"
     print(
         f"Signing in to '{connection}'. Complete provider sign-in using the same Databricks "
@@ -103,6 +116,7 @@ def run_connection_login(
         result = subprocess_cross_os.run(
             [
                 sys.executable,
+                "-I",
                 "-c",
                 "import sys, webbrowser; sys.exit(0 if webbrowser.open(sys.argv[1]) else 1)",
                 login_url,
@@ -134,14 +148,11 @@ def run_connection_login(
             if not reason.startswith("HTTP 404 ") and not _retryable_credential_error(reason):
                 return False, f"could not check connection sign-in: {reason}"
         else:
-            provisioning = (
-                credential.get("provisioning_info") if isinstance(credential, dict) else None
-            )
-            state = provisioning.get("state") if isinstance(provisioning, dict) else None
+            state = _credential_state(credential)
             if state == "ACTIVE":
                 if not initial_active or credential != initial_credential:
                     return True, "signed in"
-            elif state not in {"FAILED", "PROVISIONING", "UPDATING", "DELETING"}:
+            elif state is None:
                 return (
                     False,
                     "could not check connection sign-in: missing or unknown credential state",
