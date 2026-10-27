@@ -2159,11 +2159,12 @@ _NOT_FOUND_REASON_MARKERS = ("http 404", "not_found")
 def _get_model_services_page(
     url: str, token: str, *, retries: int = _MODEL_SERVICES_PAGE_RETRIES
 ) -> tuple[dict | list | None, str | None]:
-    """GET one model-services page, retrying on failure.
+    """Retry transient page failures, preserving definitive client errors.
 
     The endpoint intermittently 499/504s under load; a retry usually succeeds.
-    Returns the same (payload, reason) shape as ``_http_get_json`` — the last
-    attempt's result when all retries are exhausted."""
+    Repeating authentication, permission, or missing-endpoint failures with the
+    same request only delays the caller's fallback or error reporting.
+    """
     payload: dict | list | None = None
     reason: str | None = None
     for attempt in range(retries):
@@ -2171,6 +2172,8 @@ def _get_model_services_page(
         if payload is not None:
             return payload, None
         _debug("model-services page", f"attempt {attempt + 1}/{retries} failed: {reason}")
+        if re.match(r"^HTTP (?:400|401|403|404|405|410|422)\b", reason or ""):
+            break
     return payload, reason
 
 

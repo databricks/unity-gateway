@@ -13,6 +13,11 @@ percent consumed, spend, and threshold are treated like missing optional fields,
 individually or together, without discarding valid statuses. Redundant client error
 variants are reduced to one opaque passthrough case; later-page failure checks remain.
 
+`../test_model_service_retries.py` exercises model discovery against a local HTTP server: definitive
+client errors return after one request, while transient HTTP failures retain bounded retries.
+It covers returned models/error reasons and request counts; it does not establish live gateway
+or interactive startup recovery.
+
 MCP/Skills browsing has component coverage in `tests/test_catalog_browsing.py`
 (repository-relative path): paginated BASIC metadata, streamed rows, missing metadata,
 UTC dates, keyboard selection/filtering/cancellation, loader cancellation, and rendered
