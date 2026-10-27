@@ -1,5 +1,20 @@
 # Integration tests
 
+Native mod component tests in `../native_claude/test_mod.py` cover a lone call's decision under
+its Agent row, parallel calls as cards above the parent's next reply in call order, calls
+still routing waiting for a later reply, distinct
+IDs for identical tasks, pending row and turn-spinner routing timers, and disabled/failed routing. These are not live
+parallel-agent TUI or gateway checks.
+
+`../test_claude_launch_settings.py` covers oversized Windows Claude launch
+settings with controlled process boundaries: UTF-16 command length, merged
+settings, literal prompts, temporary-file lifetime and cleanup, launch failures,
+proxy cleanup, and simultaneous launches. Real Python children verify that the
+settings file can be read for large catalogs and non-BMP prompts. Short Windows
+commands and POSIX argv are preserved. This does not establish a live Windows
+Claude/Bedrock pass; `test_ug_claude_headless_allow_all_bedrock_provider` remains
+the existing real-provider journey in the full Claude Windows lane.
+
 The spend-status client's workspace authentication, optional percentage handling,
 pagination, validation, and failure propagation are covered by component tests in
 `../test_budget.py`, importing the client from `src/ucode/budget.py`.
@@ -203,9 +218,9 @@ recommendation while its generated `ANTHROPIC_MODEL` setting and native header s
 Sonnet, then exits. It does not verify Claude's inference model. All three cases leave
 workspace and budget configuration unchanged.
 
-`../test_usage.py`, `../test_budget.py`, and `../test_cli.py` cover budget selection,
-`--all` and its help text, display, resource-name ID extraction, unavailable expanded views,
-and errors.
+`../test_usage.py`, `../test_budget.py`, and `../test_cli.py` cover top-five selection
+by usage percentage without category grouping, `--all` and its help text, short IDs
+on every entry, resource-name ID extraction, unavailable expanded views, and errors.
 The expanded view has unit/component coverage only; CUJ5 tests the standard summary.
 
 Shared subprocess command resolution is covered by `../test_subprocess_cross_os.py` and
@@ -272,14 +287,17 @@ and then a GPT task chosen with Copilot's `dbx-responses/<model>` form, an unkno
 fails before Copilot starts,
 and the TUI switches from Claude to GPT with `/model` mid-session. Model evidence comes
 from Copilot's own `~/.copilot/session-state/*/events.jsonl` (`utils/agents/copilot.py`).
+`test_ug_copilot_model_location.py` launches Copilot from fresh state with `--model-location` on the
+model-discovery schema and completes a file task on its Claude-compatible model service.
 `test_ug_copilot_providers.py` runs Copilot through the MPS fixtures below: a file task on the
 Anthropic service's model, on the OpenAI, Azure OpenAI and Microsoft Foundry services' `gpt-5-nano`, and
 on a named model of the Bedrock allow-all service; launching on the relayed service fails before Copilot starts.
 
-The managed TTL journey installs `/etc/unitygateway/managed-settings.json` through real configure,
-checks root ownership and readable modes, then ages only user-owned `~/.ucode/refresh_ts.json`.
-Warm launch leaves the timestamp unchanged; expired launch advances it without changing installed
-policy bytes, inode, mtime, or ctime when the workspace policy is unchanged. Unit/component tests
+The managed saved-config journey installs `/etc/unitygateway/managed-settings.json` through real
+configure, checks root ownership and readable modes, and checks the user-owned
+`~/.ucode/refresh_ts.json` record has a `published` outcome and no timestamp. Two launches then
+replay the saved config without changing that record or the installed policy bytes, inode, mtime,
+or ctime. Unit/component tests
 cover configure-only elevation, non-root read-only launches, IT guidance, removal, and
 metadata-only drift. Root/non-root packaged-writer checks in a disposable Linux container are
 component evidence, not live MDM provisioning or Claude/Codex launch evidence. Running the full MDM
@@ -466,9 +484,20 @@ a repeated revert also returns 0. This does not establish native Desktop coverag
 
 `../test_cowork_plugin.py` covers Cowork-root discovery, generated plugin contents,
 scoped Claude plugin commands, install/update selection, PAT/custom-OAuth behavior, and
-owned-file cleanup. `../test_desktop_configure_cli.py` covers managed orchestration and
+owned-file cleanup. Alias checks cover short UC names, unchanged proxy routing, custom-name
+preservation, order-independent collisions, and repeated replacement of old keys.
+Manifest checks require the `ug` name and display name in both manifests.
+Legacy-registration component checks cover replacement after successful install/update,
+preservation on install failure, scoped cleanup, and unrelated-plugin preservation.
+`../test_desktop_configure_cli.py` covers managed orchestration and
 cleanup. Both are mocked component coverage; the integration suite does not launch Cowork,
 connect a plugin MCP server, discover its deferred tool, or run a task through it.
+
+`../test_cowork_skills.py` adds component coverage for user-downloaded skills reaching
+the current workspace's plugin and refreshing on named, schema, and picker add/update/remove
+commands. It preserves managed skills and excludes project-local, other-workspace, and
+user-authored skills. These checks substitute skill APIs and the native plugin CLI;
+the integration suite does not validate native Cowork skill discovery or invocation.
 
 Model-source tests require Desktop-only, case-insensitive `\bclaude-` filtering
 instead of copying every catalog entry. Mixed static/discovered lists exclude GPT/OSS
@@ -517,6 +546,7 @@ test_ug_copilot_headless.py             # Copilot via the session proxy: Claude 
 test_ug_copilot_lifecycle.py            # Copilot refresh after revocation, sign-in expired, configure/revert, upgrade
 test_ug_copilot_models.py               # Copilot model registry: Claude then GPT, unknown model, TUI /model switch
 test_ug_copilot_providers.py            # Copilot via Model Provider Services: Anthropic, OpenAI, Azure OpenAI, Foundry, Bedrock allow-all; relayed refused
+test_ug_copilot_model_location.py       # Copilot on a Unity Catalog model location: fresh --model-location file task
 test_ug_codex_tracing.py                # Codex OTLP export reaches the configured trace table
 test_ug_claude_commands.py              # command help forwarding
 test_ug_codex_commands.py               # command help and parser error forwarding
@@ -531,7 +561,7 @@ test_ug_claude_managed_model_discovery.py # Claude MPS policy cases (claude_mps.
 test_ug_codex_managed_model_discovery.py  # Codex MPS policy cases (codex_mps.json)
 test_ug_claude_model_discovery.py       # unmanaged scenarios 9, 11, 13
 test_ug_codex_model_discovery.py        # unmanaged scenarios 10, 12, 14
-test_ug_configure_managed.py            # stubbed static model list/catalog pointer, no agent selector, cache TTL
+test_ug_configure_managed.py            # stubbed static model list/catalog pointer, no agent selector, saved-config replay
 test_ug_configure_managed_models.py     # stubbed model sources, smart-routing banner, Codex fallback metadata
 test_ug_configure_managed_mcp.py        # stubbed managed MCP list
 test_ug_configure_managed_skills.py     # stubbed managed skills: download, coexist, reconcile away
@@ -723,14 +753,14 @@ cases instead complete real file tasks through `--workspace` and `--model-locati
 journeys check setup and launch with existing services, without inference.
 
 There are **88 live cases** (including 12 marked TUI journeys) and **7 installation
-checks** with Claude and Codex; selecting OpenCode adds one live headless case and two `managed_fixture` cases; selecting Copilot adds sixteen live cases. One
+checks** with Claude and Codex; selecting OpenCode adds one live headless case and two `managed_fixture` cases; selecting Copilot adds seventeen live cases. One
 **`workspace_switch` case** uses two real workspaces and checks skills MCP cleanup and a completed
 Claude task. A further **44 `managed_fixture` cases** (twelve of them also `live`) run on the
 managed workspace with a checked-in JSON CodingAgentConfig from `tests/fixtures/managed_config/`
 injected through `UCODE_MANAGED_CONFIG_STUB`; there are no cases that read a published config.
 Twelve explicit configured/fresh Claude and Codex discovery and source-override journeys use the
 `claude_mps.json` / `codex_mps.json` fixtures, which set each agent's source to its dedicated MPS.
-The other cases cover focused model, MCP, skills, cache-TTL, foreign-workspace refusal, and lifecycle shapes, including
+The other cases cover focused model, MCP, skills, saved-config replay, foreign-workspace refusal, and lifecycle shapes, including
 per-agent model reconciliation and managed skill cleanup. Of the two Claude default-model cases,
 the MPS case stubs a `main.default.ci_e2e_anthropic_mps` source and the `system.ai` parent-schema
 case stubs a Unity Catalog source; both verify the generated settings
@@ -949,7 +979,7 @@ A second non-blocking job, **Managed OpenCode self-managed** (`managed_fixture a
 in `test_ug_agents_self_managed.py`), installs Claude, Codex and OpenCode and runs against the
 managed e2e workspace (`E2E_ADMIN_WORKSPACE`) with the injected `managed_workspace_default` config,
 which enables Claude/Codex but not OpenCode. It is likewise outside `cujs`.
-A non-blocking **Copilot** job (`live and copilot`, fifteen cases) runs on Linux and Windows the
+A non-blocking **Copilot** job (`live and copilot`, sixteen cases) runs on Linux and Windows the
 same way and is likewise outside `cujs` until it is stable.
 
 Each lane installs only the agent CLIs it needs (one, except the managed OpenCode lane's
@@ -1047,8 +1077,8 @@ checked-in files, that switch is mechanical.
 `test_ug_configure_managed.py` uses `managed_workspace_default.json`. `ug configure` applies the
 config with no agent selector, and each agent's generated config exposes exactly its static
 `model_services` (Claude's `availableModels`/`modelPicker`, Codex's model catalog). The stub takes
-the same cache path as a live read (`published` outcome, `retrieved_at` stamp, TTL), so the
-cache-TTL journey holds unchanged. The Codex case also checks stderr guidance to restart the
+the same cache path as a live read (`published` outcome, no timestamp), so the
+saved-config replay journey holds unchanged. The Codex case also checks stderr guidance to restart the
 daemon after publication, that the shared app config points at the stable catalog, and that a
 fresh bare Codex app-server returns the expected visible model before the existing TUI
 prompt/input assertion. It does not claim GUI rendering or inference coverage.
@@ -1278,7 +1308,7 @@ omits macOS extended attributes that Linux cannot unpack.
 ### Complete local checkout run on the Databricks network
 
 Run from the checkout root in Bash on a clean Ubuntu 22.04 machine/VM with
-Python 3.12, uv 0.9.8, Node 22.19.0/npm, Databricks CLI 1.9.0, `sudo`, and
+Python 3.12, uv 0.13.5, Node 22.19.0/npm, Databricks CLI 1.9.0, `sudo`, and
 `bubblewrap`. Install bubblewrap with `sudo apt-get install bubblewrap`. Verify
 the normal sandbox before starting:
 

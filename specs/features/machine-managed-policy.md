@@ -7,7 +7,7 @@ created: 2026-10-12
 
 ## Intent
 
-Install workspace policy in `/etc/unitygateway/managed-settings.json` during `ug configure` and read it during agent launches. Preserve five-minute launch refreshes without rewriting the privileged file or requesting sudo when policy content is unchanged.
+Install workspace policy in `/etc/unitygateway/managed-settings.json` during `ug configure` and read it during agent launches. Launches replay the saved read instead of refreshing it (superseded: the five-minute TTL was removed, so an admin's change is picked up by the next `ug configure`); never rewrite the privileged file or requesting sudo when policy content is unchanged.
 
 ## Context
 

@@ -158,11 +158,18 @@ When `claude_otel_tracing` is enabled, Desktop's reserved profile also owns
 for the existing `otel-headers` command. Native sessions rerun it as tokens rotate;
 no bearer is persisted. Disable/revert removes the wrapper, with atomic writes and
 rollback shared with the profile. Disabled tracing omits these fields on replacement.
-Managed Claude setup also installs a generated Cowork plugin containing only the current
-workspace's managed skills and Claude-targeted MCP servers. The source lives at
+Claude setup also installs a generated Cowork plugin containing only the current
+workspace's managed and user-downloaded home-level skills and Claude-targeted MCP servers.
+Downloaded skill additions and removals resync the plugin; project-local,
+user-authored, and other-workspace skills are excluded. The source lives at
 `~/.ucode/claude-cowork-marketplace`, and `~/.ucode/claude-cowork.json` records the selected
 account/org root for cleanup. Cowork must have started once. Setup and cleanup use scoped
 `claude plugin ... --cowork --json` commands with `CLAUDE_CONFIG_DIR`; failures stay best-effort.
+Cowork uses short service-first aliases for generated UC MCP names, with collision qualifiers;
+custom registration names and full proxy URLs are preserved. Its name and display name
+are `ug`, with plugin ID `ug@unity-gateway-cowork`. Reconfigure removes the old
+`unity-gateway@unity-gateway-cowork` registration only after installing/updating `ug`;
+revert removes both IDs. New sessions use the `mcp__plugin_ug_...` tool namespace.
 See `docs/claude-desktop.md` for native validation limits and revert behavior.
 
 <details>
