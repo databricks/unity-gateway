@@ -686,7 +686,7 @@ class TestApplyMcpServerChanges:
             json.dumps({"mcpServers": {name: {"type": "http", "url": AIGW_MCP_URL}}}),
             encoding="utf-8",
         )
-        monkeypatch.setattr(mcp.claude, "claude_mcp_config_path", lambda: config_path)
+        monkeypatch.setattr(mcp.claude, "claude_code_config_path", lambda: config_path)
         monkeypatch.setattr(mcp, "workspace_supports_cimd", lambda ws: True)
         monkeypatch.setattr(mcp, "oauth_client_available", lambda ws, client_id: True)
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")

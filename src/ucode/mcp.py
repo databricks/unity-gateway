@@ -314,7 +314,7 @@ def _native_oauth_http_entry(
 def _needs_native_cimd_rewrite(client: str, name: str, url: str, client_id: str) -> bool:
     """An existing UG server lacks the desired native CIMD registration."""
     if client == "claude":
-        servers = read_json_safe(claude.claude_mcp_config_path()).get("mcpServers")
+        servers = read_json_safe(claude.claude_code_config_path()).get("mcpServers")
         entry = servers.get(name) if isinstance(servers, dict) else None
         oauth = entry.get("oauth") if isinstance(entry, dict) else None
         return not (
