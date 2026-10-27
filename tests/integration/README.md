@@ -13,6 +13,10 @@ percent consumed, spend, and threshold are treated like missing optional fields,
 individually or together, without discarding valid statuses. Redundant client error
 variants are reduced to one opaque passthrough case; later-page failure checks remain.
 
+Component tests outside this suite isolate Copilot's configuration, provider registries,
+backups, and proxy logs through their existing state fixture. That fixture does not apply
+to installed-CLI integration tests or establish live gateway coverage.
+
 MCP/Skills browsing has component coverage in `tests/test_catalog_browsing.py`
 (repository-relative path): paginated BASIC metadata, streamed rows, missing metadata,
 UTC dates, keyboard selection/filtering/cancellation, loader cancellation, and rendered

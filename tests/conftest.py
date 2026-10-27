@@ -39,12 +39,25 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     from ucode import desktop_auth as desktop_auth_mod
     from ucode.agents import claude as claude_mod
     from ucode.agents import codex as codex_mod
+    from ucode.agents import copilot as copilot_mod
     from ucode.agents.desktop import claude as desktop_mod
 
     state_dir = tmp_path / ".ucode"
     state_dir.mkdir()
     monkeypatch.setattr(state_mod, "STATE_PATH", state_dir / "state.json")
     monkeypatch.setattr(config_io_mod, "APP_DIR", state_dir)
+    copilot_dir = tmp_path / ".copilot"
+    for name, path in {
+        "COPILOT_CONFIG_DIR": copilot_dir,
+        "COPILOT_ENV_PATH": copilot_dir / "ucode.env",
+        "COPILOT_MCP_CONFIG_PATH": copilot_dir / "ucode-mcp-config.json",
+        "COPILOT_BACKUP_PATH": state_dir / "copilot-ucode-env.backup",
+        "COPILOT_MCP_BACKUP_PATH": state_dir / "copilot-ucode-mcp-config.backup.json",
+        "COPILOT_PROXY_LOG_PATH": state_dir / "logs" / "copilot-proxy.log",
+    }.items():
+        monkeypatch.setattr(copilot_mod, name, path)
+    monkeypatch.setitem(copilot_mod.SPEC, "config_path", copilot_mod.COPILOT_ENV_PATH)
+    monkeypatch.setitem(copilot_mod.SPEC, "backup_path", copilot_mod.COPILOT_BACKUP_PATH)
     monkeypatch.setattr(codex_mod, "_otel_service_path", lambda: state_dir / "otel.service")
     monkeypatch.setattr(desktop_mod, "APP_DIR", state_dir)
     monkeypatch.setattr(desktop_auth_mod, "_AUTH_LOCK_PATH", state_dir / "claude-desktop-auth.lock")

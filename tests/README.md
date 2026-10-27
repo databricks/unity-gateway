@@ -1,5 +1,10 @@
 # Test suites and user journeys
 
+The existing component state-isolation fixture redirects Copilot's config, provider
+registries, backups, and proxy logs into each test's temporary directory. CLI launch
+and Copilot component cases exercise these paths without writing developer settings;
+their authentication and proxy boundaries remain controlled. This adds no live coverage.
+
 MCP/Skills browsing has component coverage in `tests/test_catalog_browsing.py`
 (repository-relative path): paginated BASIC metadata, streamed rows, missing metadata,
 UTC dates, keyboard selection/filtering/cancellation, loader cancellation, and rendered
