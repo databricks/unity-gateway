@@ -789,7 +789,10 @@ class TestSubcommandRouting:
 
         assert options.launch_smart_routing is expected
 
-    @pytest.mark.parametrize(("tool_args", "model"), [(["--model", "fixed"], None), ([], "fixed")])
+    @pytest.mark.parametrize(
+        ("tool_args", "model"),
+        [(["--model", "fixed"], None), (["-p", "hi", "--model", "fixed"], None), ([], "fixed")],
+    )
     @pytest.mark.parametrize(
         ("tool", "omnigent", "routing_env", "expected"),
         [
@@ -952,25 +955,30 @@ class TestSubcommandRouting:
         assert _routing_env() == env_before
 
     @pytest.mark.parametrize(
-        ("omnigent", "launch_args", "routed"),
+        ("omnigent", "routing", "launch_args", "routed"),
         [
-            ("1", [], True),
-            ("1", ["--disable-smart-routing"], False),
-            (None, [], False),
+            ("1", "preset", [], True),
+            ("1", "managed", [], True),
+            ("1", "preset", ["--disable-smart-routing"], False),
+            (None, "preset", [], False),
         ],
-        ids=["omnigent", "omnigent-disable-flag", "no-marker"],
+        ids=["omnigent", "omnigent-managed", "omnigent-disable-flag", "no-marker"],
     )
-    def test_omnigent_forwarded_model_keeps_preset_subagent_routing(
-        self, monkeypatch, omnigent, launch_args, routed
+    def test_omnigent_forwarded_model_keeps_subagent_routing(
+        self, monkeypatch, omnigent, routing, launch_args, routed
     ):
         if omnigent is not None:
             monkeypatch.setenv("OMNIGENT", omnigent)
-        monkeypatch.setenv(
-            "SMART_ROUTER_CONFIG_VERSION", smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY
-        )
+        managed = None
+        if routing == "preset":
+            monkeypatch.setenv(
+                "SMART_ROUTER_CONFIG_VERSION", smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY
+            )
+        else:
+            managed = {"enabled_agents": {"claude": {"smart_routing_enabled": True}}}
         observed = []
 
-        with _launch_policy_patches(None) as calls:
+        with _launch_policy_patches(managed) as calls:
             calls["launch"].side_effect = lambda *_args, options, **_kwargs: observed.append(
                 options.launch_smart_routing
             )
