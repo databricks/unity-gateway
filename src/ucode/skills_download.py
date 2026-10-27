@@ -69,11 +69,11 @@ SKILL_UPDATE_BUDGET_SECONDS = 60.0
 
 
 def skill_dir_roots(project_dir: str | None) -> list[Path]:
-    """The ``.claude/skills`` and ``.agents/skills`` roots to download into.
+    """The Claude Code and shared agent skill directories to download into.
 
     ``project_dir`` must be an existing absolute directory when given; when
-    omitted, roots default to user scope: Claude's config directory (which
-    honors ``$CLAUDE_CONFIG_DIR``) and ``~/.agents/skills``.
+    omitted, roots default to user scope: ``skills`` under Claude's config
+    directory (which honors ``$CLAUDE_CONFIG_DIR``) and ``~/.agents/skills``.
     """
     if project_dir is None:
         return [claude_config_dir() / "skills", Path.home() / ".agents/skills"]
