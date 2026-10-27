@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+import time
 from collections.abc import AsyncIterator
 from threading import Lock
 from types import ModuleType, TracebackType
@@ -65,6 +66,8 @@ CONNECTION_AUTH_REQUIRED_ERROR_CODE = -32006
 URL_ELICITATION_REQUIRED_ERROR_CODE = -32042
 AUTHENTICATE_TOOL_NAME = "authenticate"
 TOOLS_REFRESH_TIMEOUT_SECONDS = 5.0
+WORKSPACE_REFRESH_INTERVAL_SECONDS = 30.0
+METADATA_RETRY_INTERVAL_SECONDS = 5.0
 
 
 def _httpx() -> ModuleType:
@@ -147,15 +150,18 @@ class _ConnectionLogin:
         self._login_attempted = False
         self._completed = False
         self._login_supported: bool | None = None
+        self._metadata_retry_at = 0.0
         self._metadata_lock = Lock()
         self._lock = Lock()
 
-    def supports_login(self) -> bool:
+    def supports_login(self, *, force: bool = False) -> bool:
         """Check connection metadata without opening a browser."""
         if self.connection is None:
             return False
         with self._metadata_lock:
             if self._login_supported is None:
+                if not force and time.monotonic() < self._metadata_retry_at:
+                    return False
                 try:
                     token = get_databricks_token(self.workspace, self.profile)
                 except RuntimeError:
@@ -163,6 +169,8 @@ class _ConnectionLogin:
                 self._login_supported = mcp_service_needs_connection_login(
                     self.workspace, token, self.connection
                 )
+                if self._login_supported is None:
+                    self._metadata_retry_at = time.monotonic() + METADATA_RETRY_INTERVAL_SECONDS
             return self._login_supported is True
 
     def is_login_url(self, url: str) -> bool:
@@ -195,7 +203,7 @@ class _ConnectionLogin:
                 return False
             if self._completed and not retry:
                 return True
-            if check_service and not self.supports_login():
+            if check_service and not self.supports_login(force=True):
                 return False
             if self._login_attempted and not retry:
                 return False
@@ -248,6 +256,10 @@ def _build_token_auth(
         return response is not None and response.status_code == 401
 
     class _DatabricksTokenAuth(httpx.Auth):
+        def __init__(self):
+            self._refresh_lock = anyio.Lock()
+            self._refresh_at = 0.0
+
         def sync_auth_flow(self, request):
             # The proxy always drives this Auth from an httpx AsyncClient (see `_run`), so only
             # `async_auth_flow` is implemented. Fail loudly on the sync entry point so a future sync
@@ -262,7 +274,11 @@ def _build_token_auth(
             response = yield request
             if not _is_unauthorized(response) or use_pat:
                 return
-            await to_thread.run_sync(_mint, request, True)
+            async with self._refresh_lock:
+                refresh = time.monotonic() >= self._refresh_at
+                if refresh:
+                    self._refresh_at = time.monotonic() + WORKSPACE_REFRESH_INTERVAL_SECONDS
+                await to_thread.run_sync(_mint, request, refresh)
             response = yield request
             if not _is_unauthorized(response) or request.method != "POST":
                 return
@@ -373,7 +389,9 @@ class _McpBridge:
         tools = payload.result.get("tools")
         if not isinstance(tools, list):
             return message
-        if any(tool.get("name") == AUTHENTICATE_TOOL_NAME for tool in tools):
+        if any(
+            isinstance(tool, dict) and tool.get("name") == AUTHENTICATE_TOOL_NAME for tool in tools
+        ):
             self._upstream_authentication_tool = True
             self.authentication_tool_available = False
         if self._upstream_authentication_tool or payload.result.get("nextCursor"):
@@ -389,6 +407,37 @@ class _McpBridge:
             ),
             metadata=message.metadata,
         )
+
+    async def _send_tool_list_response(
+        self, message: SessionMessage, client: _SendStream[SessionMessage]
+    ) -> None:
+        payload = message.message
+        if (
+            isinstance(payload, (JSONRPCResponse, JSONRPCError))
+            and payload.id is not None
+            and self._is_connection_auth_error(payload)
+            and not self._upstream_authentication_tool
+        ):
+            connection_error = (
+                isinstance(payload, JSONRPCError)
+                and payload.error.code == CONNECTION_AUTH_REQUIRED_ERROR_CODE
+            )
+            if not connection_error and not await to_thread.run_sync(
+                self.connection_login.supports_login
+            ):
+                await client.send(message)
+                return
+            self.authentication_required = True
+            self.authentication_completed = False
+            self.authentication_tool_available = True
+            response = self._authentication_tool_list_response(payload.id)
+            response.metadata = message.metadata
+            await client.send(response)
+            self._mark_tools_refreshed()
+            return
+        await client.send(await self._with_authentication_tool(message))
+        if isinstance(payload, JSONRPCResponse) and self.authentication_completed:
+            self._mark_tools_refreshed()
 
     @staticmethod
     def _with_tool_list_changes(
@@ -568,24 +617,8 @@ class _McpBridge:
                         if (
                             isinstance(request, JSONRPCRequest)
                             and request_id is not None
-                            and request.method == "tools/list"
-                            and self._is_connection_auth_error(payload)
-                            and not self._upstream_authentication_tool
-                        ):
-                            self.authentication_required = True
-                            self.authentication_completed = False
-                            self.authentication_tool_available = True
-                            self.pending_requests.pop(request_id, None)
-                            self.retried_requests.discard(request_id)
-                            response = self._authentication_tool_list_response(request_id)
-                            response.metadata = message.metadata
-                            await dest.send(response)
-                            self._mark_tools_refreshed()
-                            continue
-                        if (
-                            isinstance(request, JSONRPCRequest)
-                            and request_id is not None
                             and request.method == "tools/call"
+                            and not self._upstream_authentication_tool
                             and request_id not in self.retried_requests
                             and self._is_connection_auth_error(payload)
                         ):
@@ -600,25 +633,18 @@ class _McpBridge:
                             )
                             continue
 
-                    tools_refreshed = False
-                    if isinstance(payload, JSONRPCResponse) and original is not None:
-                        request = original.message
-                        if isinstance(request, JSONRPCRequest) and request.method == "tools/list":
-                            message = await self._with_authentication_tool(message)
-                        tools_refreshed = (
-                            isinstance(request, JSONRPCRequest)
-                            and request.method == "tools/list"
-                            and self.authentication_completed
-                        )
-                    if (
-                        isinstance(payload, (JSONRPCResponse, JSONRPCError))
-                        and payload.id is not None
-                    ):
+                    if isinstance(payload, (JSONRPCResponse, JSONRPCError)):
                         self.pending_requests.pop(payload.id, None)
                         self.retried_requests.discard(payload.id)
+                    request = original.message if original is not None else None
+                    if (
+                        isinstance(payload, (JSONRPCResponse, JSONRPCError))
+                        and isinstance(request, JSONRPCRequest)
+                        and request.method == "tools/list"
+                    ):
+                        tg.start_soon(self._send_tool_list_response, message, dest)
+                        continue
                     await dest.send(message)
-                    if tools_refreshed:
-                        self._mark_tools_refreshed()
         raise ProxyTransportError("upstream MCP transport closed unexpectedly")
 
 

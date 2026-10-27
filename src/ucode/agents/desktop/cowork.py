@@ -369,17 +369,21 @@ def _write_connector_skill(destination: Path, server_names: list[str]) -> None:
     if skill_dir.exists():
         return
     connectors = ", ".join(f"`{name}`" for name in server_names)
-    description = (
-        f"Unity Gateway connectors configured for this session: {connectors}. "
-        "Use the matching connector for any request about the user's own resources on "
-        "those services, such as their pull requests, issues, tickets, pages, mail, or "
-        "files. Search for its tools, including `authenticate`, before reporting it unavailable. "
-        "If sign-in is required or access is denied, call the discovered `authenticate` tool "
-        "once, guide the user through sign-in, then retry their original request after "
-        "authentication succeeds."
+    prefix = "Unity Gateway connectors: "
+    suffix = (
+        ". Use for requests about the user's resources on these services. "
+        "Search connector tools before reporting them unavailable. "
+        "Load this skill for the full connector list and sign-in recovery."
     )
+    visible = []
+    for name in server_names:
+        candidate = ", ".join([*visible, f"`{name}`"])
+        if len(prefix + candidate + suffix) > 1024:
+            break
+        visible.append(f"`{name}`")
+    description = prefix + (", ".join(visible) or "configured workspace services") + suffix
     guidance = (
-        f"{description}\n\n"
+        f"Configured Unity Gateway connectors: {connectors}.\n\n"
         "Configured does not mean signed in. Missing tools alone do not establish an "
         "authentication failure. Use only tools actually discovered for the matching connector.\n\n"
         "If a connector returns a sign-in URL or asks the user to reconnect, use its discovered "

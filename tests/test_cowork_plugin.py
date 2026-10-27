@@ -177,15 +177,10 @@ def test_configure_generates_plugin_and_installs_in_cowork_scope(tmp_path, monke
     assert "codex-only" not in connector_skill
     description_line = connector_skill.splitlines()[2]
     description = json.loads(description_line.removeprefix("description: "))
-    assert "`authenticate`" in description
-    assert "retry their original request" in description
-    assert "access is denied" in description
-    assert "Configured does not mean signed in" in connector_skill
-    assert "including an IP-address denial" in connector_skill
-    assert "stop retrying authentication" in connector_skill
-    assert "before falling back to manual login instructions" in connector_skill
+    assert len(description) <= 1024
+    assert "sign-in recovery" in description
     assert "`authenticate` is the recovery action" in connector_skill
-    assert "Do not claim success" in connector_skill
+    assert "task in the same turn" in connector_skill
     assert [call[0][1:3] for call in calls] == [
         ["plugin", "validate"],
         ["plugin", "marketplace"],
@@ -673,3 +668,12 @@ def test_revert_retains_owned_files_when_claude_cli_is_missing(tmp_path, monkeyp
 
     assert marketplace.exists()
     assert state_path.exists()
+
+
+def test_connector_skill_description_is_bounded_with_many_connectors(tmp_path):
+    names = [f"connector_{i:03}_with_a_long_service_name" for i in range(100)]
+    cowork._write_connector_skill(tmp_path, names)
+    text = (tmp_path / cowork.CONNECTOR_SKILL_NAME / "SKILL.md").read_text()
+    description = json.loads(text.splitlines()[2].removeprefix("description: "))
+    assert len(description) <= 1024
+    assert all(f"`{name}`" in text.split("---\n", 2)[2] for name in names)
