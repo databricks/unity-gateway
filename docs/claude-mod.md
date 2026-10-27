@@ -46,7 +46,12 @@ Other native ownership and task-selection advice is replaced. The description re
 same saved session overrides as routing. Before each model request, a changed
 orchestration state invalidates Claude's description cache, including changes made by
 the CLI/skill fallback: off restores native advice, and on restores the launch's
-orchestrator advice. Routing-only launches retain native advice. The activation context
+orchestrator advice. Eligible launches also pass `--system-prompt-snapshot off`:
+Claude's saved prompt snapshots otherwise override refreshed tool descriptions after
+a successful request or resume. This disables native prompt-snapshot recording and
+reuse for those launches; conversation persistence and API prompt caching stay enabled.
+Routing-only and ineligible launches keep Claude's default snapshot behavior and
+native advice. The activation context
 puts the skill location and loading instruction before the delegation guidance so
 Claude can recover the full workflow when its hook output is truncated.
 
@@ -163,8 +168,9 @@ spawning when unsure.
 
 The `Claude mod · 2.1.290` CI job validates the packaged module and checks event
 forwarding and launch-local options. Native request-construction checks cover description
-changes across native and CLI on/off/on toggles, retained lifecycle guidance, an
-unchanged Agent schema, and ineligible launches. They inspect
+changes across native and CLI on/off/on toggles, a resume input containing a saved
+prompt snapshot, retained lifecycle guidance, an unchanged Agent schema, and
+ineligible launches. They inspect
 Claude's recorded request shapes after deliberately unauthenticated requests; they do not
 establish successful inference or delegation quality. To run those component checks locally:
 

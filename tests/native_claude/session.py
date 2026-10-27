@@ -13,15 +13,22 @@ from ucode.constants import AGENT_CLAUDE
 from ucode.smart_routing.config import resolve_environment
 from ucode.smart_routing.v2 import (
     CLAUDE_ROUTING_PLUGIN_NAME,
+    _claude_mod_launch_args,
     _claude_mod_launch_options,
     _write_routed_claude_plugin,
 )
 
 
 class Session:
-    def __init__(self, binary, root, env, api="http://127.0.0.1:1", route_command=()):
+    def __init__(self, binary, root, env, api="http://127.0.0.1:1", route_command=(), resume=None):
         self.root = root
         root.mkdir()
+        resume_args = []
+        if resume is not None:
+            target = root / "resume" / resume.name
+            target.parent.mkdir()
+            shutil.copyfile(resume, target)
+            resume_args = ["--resume", str(target)]
         self.plugin = root / "plugin"
         _write_routed_claude_plugin(self.plugin, [])
         shutil.copyfile(Path(__file__).with_name("observe.ts"), self.plugin / "hooks/observe.ts")
@@ -31,19 +38,13 @@ class Session:
         shutil.copyfile(
             Path(__file__).parents[2] / "skills/smart-router/SKILL.md", skill / "SKILL.md"
         )
+        options = {**_claude_mod_launch_options(env), "routeCommand": list(route_command)}
         settings = {
             "env": {
                 **resolve_environment(env, agent=AGENT_CLAUDE),
                 "CLAUDE_CODE_EXTRA_BODY": '{"caller_field":"keep"}',
             },
-            "pluginConfigs": {
-                CLAUDE_ROUTING_PLUGIN_NAME: {
-                    "options": {
-                        **_claude_mod_launch_options(env),
-                        "routeCommand": list(route_command),
-                    }
-                }
-            },
+            "pluginConfigs": {CLAUDE_ROUTING_PLUGIN_NAME: {"options": options}},
         }
         process_env = {
             **{
@@ -69,6 +70,8 @@ class Session:
                 "--output-format",
                 "stream-json",
                 "--verbose",
+                *resume_args,
+                *_claude_mod_launch_args(options),
                 "--setting-sources",
                 "user",
                 "--settings",

@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from session import Session
@@ -97,7 +98,7 @@ def test_orchestrator_instructions_follow_native_toggles(native_binary, tmp_path
         session.send("Reply with OK.", expect_error=True)
         records = [
             json.loads(line)
-            for path in session.root.glob("config/projects/*/*.jsonl")
+            for path in session.root.rglob("*.jsonl")
             for line in path.read_text().splitlines()
         ]
         shapes = {
@@ -164,6 +165,31 @@ def test_orchestrator_instructions_follow_native_toggles(native_binary, tmp_path
                 )
                 assert result.returncode == 0, result.stderr
                 assert f"Smart Router is {action}" in result.stdout
+                assert agent_tool(session) == (routed_tool if action == "on" else native_tool)
+        transcript = next(session.root.glob("config/projects/*/*.jsonl"))
+        records = [json.loads(line) for line in transcript.read_text().splitlines()]
+        last = next(record for record in reversed(records) if record.get("type") == "assistant")
+        # Successful inference records this attachment. Seed that resume input without
+        # a model service; the real host must ignore its stale description after toggling.
+        snapshot = {
+            "type": "attachment",
+            "uuid": str(uuid4()),
+            "parentUuid": last["parentUuid"],
+            "sessionId": last["sessionId"],
+            "timestamp": last["timestamp"],
+            "attachment": {
+                "type": "prompt_snapshot",
+                "systemPrompt": ["Saved session prompt."],
+                "tools": [{"name": "Agent", "description": routed_tool["description"]}],
+            },
+        }
+        records.insert(records.index(last), snapshot)
+        last["parentUuid"] = snapshot["uuid"]
+        transcript.write_text("".join(json.dumps(record) + "\n" for record in records))
+        with Session(native_binary, tmp_path / "resumed", env, resume=transcript) as session:
+            for action in ("off", "on"):
+                result = session.send(f"/smart-router {action}")
+                assert f"Smart Router is {action}" in result["result"]
                 assert agent_tool(session) == (routed_tool if action == "on" else native_tool)
         for label, overrides in (
             ("omni", {"ISAAC_LAUNCH_MODE": "omni"}),
