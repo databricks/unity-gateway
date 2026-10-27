@@ -11,7 +11,7 @@ from utils.terminal import AgentTerminal, ConfigureTerminal
 pytestmark = [pytest.mark.live, pytest.mark.tui, pytest.mark.claude]
 
 # Bedrock reports the bare Anthropic id, not the us.anthropic.*-v1:0 slug the MPS targets.
-BEDROCK_SONNET_RESPONSE_MODEL = "claude-sonnet-4-5-20250929"
+BEDROCK_SONNET_RESPONSE_MODEL = "claude-sonnet-5-5"
 
 
 @pytest.mark.smoke
