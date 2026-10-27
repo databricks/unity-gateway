@@ -1,7 +1,6 @@
 import json
 import sys
 import threading
-from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -87,7 +86,6 @@ def _configured_session(recorder, tmp_path, commands):
                 json.dumps(
                     {
                         recorder.upstream: {
-                            "last_checked_at": "2000-01-01T00:00:00+00:00",
                             "outcome": "published",
                             "policy_fingerprint": {"exists": False},
                         }
@@ -120,7 +118,7 @@ def test_configures_isolated_session_state_for_recorder(recorder, tmp_path, monk
     assert state["workspaces"][recorder.url] == state["workspaces"][recorder.upstream]
     refresh = json.loads((tmp_path / ".ucode/refresh_ts.json").read_text())
     assert refresh[recorder.url] == refresh[recorder.upstream]
-    # Without an installed policy, launches fetch it through the recorder: nothing to refresh.
+    # Without an installed policy there is nothing to retarget before a launch.
     recorder.prepare_launch()
     assert json.loads((tmp_path / ".ucode/refresh_ts.json").read_text()) == refresh
 
@@ -144,5 +142,5 @@ def test_retargets_an_installed_policy_to_the_recorder(recorder, tmp_path, monke
     assert copies == [str(policy)]
     assert json.loads(policy.read_text())["workspace"] == recorder.url
     entry = json.loads((tmp_path / ".ucode/refresh_ts.json").read_text())[recorder.url]
-    assert datetime.fromisoformat(entry["last_checked_at"]).year > 2000
+    assert "last_checked_at" not in entry
     assert entry["policy_fingerprint"]["exists"] is True
