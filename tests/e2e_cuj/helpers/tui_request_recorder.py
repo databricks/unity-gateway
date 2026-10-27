@@ -4,7 +4,6 @@ import json
 import subprocess
 import tempfile
 from copy import deepcopy
-from datetime import UTC, datetime
 from pathlib import Path
 
 from tests.integration.utils.request_recorder import (
@@ -35,10 +34,10 @@ class TuiRequestRecorder(RequestRecorder):
         self.retarget_session(session.home)
 
     def prepare_launch(self) -> None:
-        """Keep the recorder's policy check fresh for a no-preflight launch.
+        """Keep the recorded policy fingerprint current for a no-preflight launch.
 
-        A configure without a terminal installs no machine policy, so its launches fetch the
-        policy through the recorder and there is nothing to refresh.
+        A launch replays the saved policy without refetching. A configure without a terminal
+        installs no machine policy, so there is nothing to update.
         """
         if self._session_home is None:
             raise RuntimeError("configure_session must run before prepare_launch")
@@ -50,7 +49,6 @@ class TuiRequestRecorder(RequestRecorder):
         refresh = json.loads(refresh_path.read_text())
         refresh[self.url] = {
             **refresh[self.url],
-            "last_checked_at": datetime.now(UTC).isoformat(),
             "policy_fingerprint": managed_file_fingerprint(WORKSPACE_POLICY_PATH),
         }
         refresh_path.write_text(json.dumps(refresh, indent=2) + "\n")
