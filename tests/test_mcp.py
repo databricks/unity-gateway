@@ -3576,7 +3576,8 @@ class TestReconcileManagedMcpServers:
         self, monkeypatch
     ):
         # Claude's managed file only takes native mcp-services entries; any other URL falls back to
-        # the user-scope proxy (matching configure_client_mcp_server). Codex proxies both.
+        # the user-scope proxy (matching configure_client_mcp_server). Codex keeps both in its file:
+        # native HTTP+OAuth for the mcp-service, the stdio proxy for the other URL.
         github_url = f"https://host{mcp.AIGW_MCP_SERVICES_SEGMENT}github"
         custom_url = "https://apps.example/custom/mcp"
         state = {"workspace": WS, "profile": None, "managed_mcp_servers": []}
@@ -3603,14 +3604,38 @@ class TestReconcileManagedMcpServers:
             {"mcp_servers": {"names": ["system.ai.github", "system.ai.custom"]}},
             {"claude", "codex"},
         )
-        # Only the mcp-services server reaches Claude's managed file; Codex proxies both.
+        # Only the mcp-services server reaches Claude's managed file; Codex gets both.
         assert set(captured["claude"]) == {"system-ai-github"}
         assert set(captured["codex"]) == {"system-ai-github", "custom"}
+        assert captured["codex"]["system-ai-github"] == mcp.codex.managed_mcp_http_entry(
+            github_url, mcp.CODEX_CLI_OAUTH_CLIENT_ID
+        )
+        assert captured["codex"]["custom"]["command"] and "url" not in captured["codex"]["custom"]
         # The non-mcp-services server stays on the user-scope proxy for Claude only.
         assert [s["name"] for s in applied["working"]] == ["custom"]
         assert applied["working"][0]["clients"] == ["claude"]
         assert applied["clients"] == ["claude"]
         assert [s["name"] for s in saved["managed_mcp_servers"]] == ["custom"]
+
+    def test_codex_managed_file_entry_is_stdio_when_native_oauth_unavailable(self, monkeypatch):
+        # No-login service, PAT, or unpublished client: the managed file keeps the stdio proxy.
+        url = f"https://host{mcp.AIGW_MCP_SERVICES_SEGMENT}web_search"
+        servers = [{"name": "ws", "url": url, "clients": ["codex"]}]
+
+        def entries(**over):
+            return mcp._agent_managed_file_entries(
+                "codex", servers, WS, None, over.pop("use_pat", False)
+            )
+
+        monkeypatch.setattr(mcp, "first_available_oauth_client", lambda ws, ids: ids[0])
+        monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: False)
+        assert "command" in entries()["ws"] and "url" not in entries()["ws"]
+        monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
+        assert entries()["ws"]["oauth"] == {"client_id": mcp.CODEX_CLI_OAUTH_CLIENT_ID}
+        assert "command" in entries(use_pat=True)["ws"]
+        monkeypatch.setattr(mcp, "first_available_oauth_client", lambda ws, ids: None)
+        assert "command" in entries()["ws"]
 
     def test_pat_claude_falls_back_codex_uses_managed_file(self, monkeypatch):
         # Claude can't use the managed file (PAT/old/no-OAuth), so its servers stay at user scope

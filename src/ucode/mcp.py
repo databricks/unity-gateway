@@ -1060,14 +1060,17 @@ def _agent_managed_file_entries(
 ) -> dict[str, dict]:
     """Build the OS-managed-file entry map (name -> entry) for ``agent`` from the resolved set.
 
-    Claude gets a direct HTTP + OAuth entry, but only for a *connection-backed* mcp-service (one that
-    needs a per-user connection sign-in, e.g. ``system.ai.github``); no-login services (``web_search``)
-    and its other URLs fall back to the proxy (like ``configure_client_mcp_server``). Codex gets the
-    same ``ug mcp-proxy`` stdio command it would register at user scope, for any URL. Only servers
-    that name ``agent`` in their ``clients`` are included.
+    Claude and Codex get a direct HTTP + OAuth entry, but only for a *connection-backed* mcp-service
+    (one that needs a per-user connection sign-in, e.g. ``system.ai.github``). Codex reports stdio
+    servers as auth-unsupported, so the Codex app would offer no sign-in for a proxy entry. For Claude,
+    no-login services (``web_search``) and other URLs fall back to the proxy (like
+    ``configure_client_mcp_server``); Codex gets the same ``ug mcp-proxy`` stdio command it would
+    register at user scope. Only servers that name ``agent`` in their ``clients`` are included.
     """
-    claude_oauth = (
-        _oauth_http_client("claude", workspace, use_pat=use_pat) if agent == "claude" else None
+    oauth_client = (
+        _oauth_http_client(agent, workspace, use_pat=use_pat)
+        if agent in ("claude", "codex")
+        else None
     )
     entries: dict[str, dict] = {}
     for server in servers:
@@ -1079,13 +1082,18 @@ def _agent_managed_file_entries(
             # Native HTTP+OAuth only for a connection-backed mcp-service; a no-login service
             # (web_search) or non-mcp-services URL stays on the stdio proxy, so both delivery
             # paths resolve identically and no-login services aren't forced into an OAuth flow.
-            native_client = _native_oauth_http_entry(claude_oauth, url, workspace, profile)
+            native_client = _native_oauth_http_entry(oauth_client, url, workspace, profile)
             if native_client is None:
                 continue
             entries[name] = claude.managed_mcp_entry(url, client_id=native_client)
         elif agent == "codex":
-            entries[name] = codex.managed_mcp_entry(
-                build_mcp_proxy_argv(url, workspace, profile, use_pat=use_pat)
+            native_client = _native_oauth_http_entry(oauth_client, url, workspace, profile)
+            entries[name] = (
+                codex.managed_mcp_http_entry(url, native_client)
+                if native_client is not None
+                else codex.managed_mcp_entry(
+                    build_mcp_proxy_argv(url, workspace, profile, use_pat=use_pat)
+                )
             )
     return entries
 
