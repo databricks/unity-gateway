@@ -175,6 +175,17 @@ def test_configure_generates_plugin_and_installs_in_cowork_scope(tmp_path, monke
     assert connector_skill.startswith(f'---\nname: {cowork.CONNECTOR_SKILL_NAME}\ndescription: "')
     assert all(f"`{name}`" in connector_skill for name in mcp["mcpServers"])
     assert "codex-only" not in connector_skill
+    description_line = connector_skill.splitlines()[2]
+    description = json.loads(description_line.removeprefix("description: "))
+    assert "`authenticate`" in description
+    assert "retry their original request" in description
+    assert "access is denied" in description
+    assert "Configured does not mean signed in" in connector_skill
+    assert "including an IP-address denial" in connector_skill
+    assert "stop retrying authentication" in connector_skill
+    assert "before falling back to manual login instructions" in connector_skill
+    assert "`authenticate` is the recovery action" in connector_skill
+    assert "Do not claim success" in connector_skill
     assert [call[0][1:3] for call in calls] == [
         ["plugin", "validate"],
         ["plugin", "marketplace"],

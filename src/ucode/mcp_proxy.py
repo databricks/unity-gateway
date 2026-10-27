@@ -33,11 +33,14 @@ especially confusing -- the user needs to be told to re-run
 
 from __future__ import annotations
 
+import json
+import re
 import sys
 from collections.abc import AsyncIterator
 from threading import Lock
 from types import ModuleType, TracebackType
 from typing import Protocol, Self
+from urllib.parse import parse_qs, urlsplit
 
 import anyio
 from anyio import to_thread
@@ -50,6 +53,7 @@ from ucode.databricks import (
     ensure_pat_bearer,
     get_databricks_token,
     mcp_service_needs_connection_login,
+    workspace_origin,
 )
 from ucode.mcp_connection_login import connection_from_url, run_connection_login
 from ucode.ug_headers import ug_headers
@@ -58,6 +62,7 @@ from ucode.ug_headers import ug_headers
 # exit far more usefully than a timeout, so bail out instead of hanging.
 AUTH_FAILURE_EXIT_CODE = 2
 CONNECTION_AUTH_REQUIRED_ERROR_CODE = -32006
+URL_ELICITATION_REQUIRED_ERROR_CODE = -32042
 AUTHENTICATE_TOOL_NAME = "authenticate"
 TOOLS_REFRESH_TIMEOUT_SECONDS = 5.0
 
@@ -141,32 +146,61 @@ class _ConnectionLogin:
         self.connection = None if use_pat else connection_from_url(url)
         self._login_attempted = False
         self._completed = False
+        self._login_supported: bool | None = None
+        self._metadata_lock = Lock()
         self._lock = Lock()
+
+    def supports_login(self) -> bool:
+        """Check connection metadata without opening a browser."""
+        if self.connection is None:
+            return False
+        with self._metadata_lock:
+            if self._login_supported is None:
+                try:
+                    token = get_databricks_token(self.workspace, self.profile)
+                except RuntimeError:
+                    return False
+                self._login_supported = mcp_service_needs_connection_login(
+                    self.workspace, token, self.connection
+                )
+            return self._login_supported is True
+
+    def is_login_url(self, url: str) -> bool:
+        if self.connection is None:
+            return False
+        try:
+            parsed = urlsplit(url)
+            origin = urlsplit(workspace_origin(self.workspace))
+            return (
+                parsed.scheme == "https"
+                and parsed.netloc.lower() == origin.netloc.lower()
+                and parsed.path == "/mcp-service-login"
+                and not parsed.fragment
+                and parse_qs(parsed.query).get("name") == [self.connection]
+            )
+        except (ValueError, RuntimeError):
+            return False
 
     def run_if_needed(self) -> bool:
         """Run automatic connection login once, returning whether the connection is ready."""
         return self._run_if_needed(check_service=True, retry=False)
 
     def authenticate_or_confirm_ready(self) -> bool:
-        """Authenticate explicitly, allowing retry after a cancelled or failed login."""
+        """Authenticate explicitly, including after earlier success or cancellation."""
         return self._run_if_needed(check_service=False, retry=True)
 
     def _run_if_needed(self, *, check_service: bool, retry: bool) -> bool:
         with self._lock:
             if self.connection is None:
                 return False
-            if self._completed:
+            if self._completed and not retry:
                 return True
-            if check_service:
-                try:
-                    token = get_databricks_token(self.workspace, self.profile)
-                except RuntimeError:
-                    return False
-                if not mcp_service_needs_connection_login(self.workspace, token, self.connection):
-                    return False
+            if check_service and not self.supports_login():
+                return False
             if self._login_attempted and not retry:
                 return False
             self._login_attempted = True
+            self._completed = False
             ok, detail = run_connection_login(self.url, self.workspace, profile=self.profile)
             if not ok:
                 raise ProxyAuthError(f"connection login for '{self.connection}' failed: {detail}")
@@ -182,47 +216,35 @@ def _build_token_auth(
     use_pat: bool = False,
     connection_login: _ConnectionLogin | None = None,
 ):
-    """Build an httpx ``Auth`` that injects a fresh bearer and drives the
-    per-connection login **lazily, on a 401** — not eagerly at startup.
+    """Inject workspace auth; persistent tool-call 401s may trigger connection login.
 
-    The bearer is the Databricks *workspace* token (read from the CLI session,
-    refreshed as it nears expiry). For a connection-backed AI Gateway service,
-    the gateway answers with an RFC 9728 ``401`` until the user holds the per-user
-    connection credential. Rather than block startup logging in every configured
-    server (which pops N browsers and stalls the agent's MCP startup), we let the
-    bridge come up immediately and only open the MCP service sign-in page
-    when a request reports missing
-    connection authentication. JSON-RPC authentication errors are handled by the
-    bridge below because httpx auth only sees HTTP responses.
-    So a browser opens only for a service you actually *use*, one at a time, and
-    an already-signed-in service never prompts. The login runs at most once per
-    session; PAT profiles have no connection OAuth to drive, so they never do it.
-
-    The base class comes from whichever httpx the SDK uses (see ``_httpx``). Auth
-    is async-only: the sync ``auth_flow`` raises, and the async client uses
-    ``async_auth_flow``, so the blocking login runs off the event loop."""
+    Initialization and discovery must never open connector login. A 401 first
+    retries with a silently refreshed workspace token. Only an actual tools/call
+    still returning 401 can drive per-user sign-in, once per proxy session.
+    JSON-RPC authentication errors are handled by the bridge below.
+    """
     httpx = _httpx()
     # PAT auth has no interactive OAuth to drive, so never treat it as connection-backed.
     connection_login = connection_login or _ConnectionLogin(
         url, workspace, profile, use_pat=use_pat
     )
 
-    def _mint(request):
+    def _mint(request, force_refresh=False):
         # get_databricks_token honors the DATABRICKS_BEARER short-circuit and PAT
         # profiles internally. A RuntimeError means the session is dead (expired
         # refresh token, logged-out profile); raising from inside auth_flow would
         # tear through the transport's task group and stall the process, so
         # translate it into a terminal ProxyAuthError.
         try:
-            token = get_databricks_token(workspace, profile)
+            if force_refresh:
+                token = get_databricks_token(workspace, profile, force_refresh=True)
+            else:
+                token = get_databricks_token(workspace, profile)
         except RuntimeError as exc:
             raise ProxyAuthError(str(exc)) from exc
         request.headers["Authorization"] = f"Bearer {token}"
 
-    def _needs_connection_login(response) -> bool:
-        # A 401 from a connection-backed service means the per-user credential is
-        # missing. Only drive the login once per session — if it doesn't resolve
-        # the 401, re-running it on every subsequent request would loop browsers.
+    def _is_unauthorized(response) -> bool:
         return response is not None and response.status_code == 401
 
     class _DatabricksTokenAuth(httpx.Auth):
@@ -235,9 +257,24 @@ def _build_token_auth(
             yield request  # unreachable — present only so httpx treats this as a generator
 
         async def async_auth_flow(self, request):
+            await request.aread()
             _mint(request)
             response = yield request
-            if not _needs_connection_login(response):
+            if not _is_unauthorized(response) or use_pat:
+                return
+            await to_thread.run_sync(_mint, request, True)
+            response = yield request
+            if not _is_unauthorized(response) or request.method != "POST":
+                return
+            try:
+                payload = json.loads(request.content)
+            except ValueError:
+                return
+            if (
+                not isinstance(payload, dict)
+                or payload.get("method") != "tools/call"
+                or payload.get("id") is None
+            ):
                 return
             # Run the blocking browser login off the event loop so the bridge's
             # other pumps aren't starved while the user completes the sign-in.
@@ -258,7 +295,45 @@ class _McpBridge:
         self.retried_requests: set[int | str] = set()
         self.authentication_required = False
         self.authentication_completed = False
+        self.authentication_tool_available = False
+        self._upstream_authentication_tool = False
         self._tools_refresh_waiters: list[anyio.Event] = []
+
+    def _is_connection_auth_error(self, payload: JSONRPCResponse | JSONRPCError) -> bool:
+        if self.connection_login.connection is None:
+            return False
+        if isinstance(payload, JSONRPCError):
+            if payload.error.code == CONNECTION_AUTH_REQUIRED_ERROR_CODE:
+                return True
+            if payload.error.code != URL_ELICITATION_REQUIRED_ERROR_CODE:
+                return False
+            data = payload.error.data
+            elicitations = data.get("elicitations") if isinstance(data, dict) else None
+            # Mixed challenges may include policy approval that login must not replace.
+            return (
+                isinstance(elicitations, list)
+                and bool(elicitations)
+                and all(
+                    isinstance(item, dict)
+                    and item.get("mode") == "url"
+                    and isinstance(item.get("url"), str)
+                    and self.connection_login.is_login_url(item["url"])
+                    for item in elicitations
+                )
+            )
+        if payload.result.get("isError") is not True:
+            return False
+        content = payload.result.get("content")
+        if not isinstance(content, list):
+            return False
+        return any(
+            self.connection_login.is_login_url(url.rstrip(".,;)"))
+            for item in content
+            if isinstance(item, dict)
+            and item.get("type") == "text"
+            and isinstance(item.get("text"), str)
+            for url in re.findall(r"https://[^\s<>\"'`]+", item["text"])
+        )
 
     def _authentication_tool(self) -> dict:
         connection = self.connection_login.connection or "this service"
@@ -266,7 +341,12 @@ class _McpBridge:
             "name": AUTHENTICATE_TOOL_NAME,
             "description": (
                 f"Sign in to the Unity Gateway {connection} connection. Call this when the user "
-                "requests this service but its normal tools are unavailable. After sign-in, "
+                "requests this service and its tools report missing or expired sign-in, or "
+                "authentication is required to discover its tools. For an access denial, "
+                "including an IP-address denial, try sign-in once before recommending "
+                "administrator or network changes. If the denial persists after sign-in and "
+                "retry, report the original error and stop retrying authentication. Do not use "
+                "this for other generic tool failures. After sign-in, "
                 "immediately retry the user's original request in the same turn using the newly "
                 "available tools; do not ask the user to send another message."
             ),
@@ -284,6 +364,30 @@ class _McpBridge:
                 id=request_id,
                 result={"tools": [self._authentication_tool()]},
             )
+        )
+
+    async def _with_authentication_tool(self, message: SessionMessage) -> SessionMessage:
+        payload = message.message
+        if not isinstance(payload, JSONRPCResponse):
+            return message
+        tools = payload.result.get("tools")
+        if not isinstance(tools, list):
+            return message
+        if any(tool.get("name") == AUTHENTICATE_TOOL_NAME for tool in tools):
+            self._upstream_authentication_tool = True
+            self.authentication_tool_available = False
+        if self._upstream_authentication_tool or payload.result.get("nextCursor"):
+            return message
+        if not await to_thread.run_sync(self.connection_login.supports_login):
+            return message
+        self.authentication_tool_available = True
+        return SessionMessage(
+            JSONRPCResponse(
+                jsonrpc="2.0",
+                id=payload.id,
+                result={**payload.result, "tools": [*tools, self._authentication_tool()]},
+            ),
+            metadata=message.metadata,
         )
 
     @staticmethod
@@ -356,7 +460,12 @@ class _McpBridge:
                 )
                 with anyio.move_on_after(TOOLS_REFRESH_TIMEOUT_SECONDS) as scope:
                     await refreshed.wait()
-                if scope.cancel_called:
+                if self.authentication_required:
+                    text = (
+                        "Sign-in finished, but this service still requires authentication. "
+                        "Retry the authenticate tool to sign in again."
+                    )
+                elif scope.cancel_called:
                     if refreshed in self._tools_refresh_waiters:
                         self._tools_refresh_waiters.remove(refreshed)
                     text = (
@@ -372,7 +481,7 @@ class _McpBridge:
                     )
                 result = {
                     "content": [{"type": "text", "text": text}],
-                    "isError": False,
+                    "isError": self.authentication_required,
                 }
 
         await client.send(
@@ -416,7 +525,8 @@ class _McpBridge:
                     if isinstance(payload, JSONRPCRequest):
                         if (
                             client is not None
-                            and self.authentication_required
+                            and (self.authentication_required or self.authentication_tool_available)
+                            and not self._upstream_authentication_tool
                             and payload.method == "tools/call"
                             and isinstance(payload.params, dict)
                             and payload.params.get("name") == AUTHENTICATE_TOOL_NAME
@@ -452,29 +562,32 @@ class _McpBridge:
                     if self.connection_login.connection is not None:
                         message = self._with_tool_list_changes(message, original)
                     payload = message.message
-                    if isinstance(payload, JSONRPCError):
+                    if isinstance(payload, (JSONRPCResponse, JSONRPCError)):
                         request_id = payload.id
                         request = original.message if original is not None else None
                         if (
                             isinstance(request, JSONRPCRequest)
                             and request_id is not None
                             and request.method == "tools/list"
-                            and payload.error.code == CONNECTION_AUTH_REQUIRED_ERROR_CODE
-                            and self.connection_login.connection is not None
-                            and not self.authentication_completed
+                            and self._is_connection_auth_error(payload)
+                            and not self._upstream_authentication_tool
                         ):
                             self.authentication_required = True
+                            self.authentication_completed = False
+                            self.authentication_tool_available = True
                             self.pending_requests.pop(request_id, None)
                             self.retried_requests.discard(request_id)
-                            await dest.send(self._authentication_tool_list_response(request_id))
+                            response = self._authentication_tool_list_response(request_id)
+                            response.metadata = message.metadata
+                            await dest.send(response)
+                            self._mark_tools_refreshed()
                             continue
                         if (
                             isinstance(request, JSONRPCRequest)
                             and request_id is not None
                             and request.method == "tools/call"
                             and request_id not in self.retried_requests
-                            and payload.error.code == CONNECTION_AUTH_REQUIRED_ERROR_CODE
-                            and self.connection_login.connection is not None
+                            and self._is_connection_auth_error(payload)
                         ):
                             self.retried_requests.add(request_id)
                             tg.start_soon(
@@ -490,6 +603,8 @@ class _McpBridge:
                     tools_refreshed = False
                     if isinstance(payload, JSONRPCResponse) and original is not None:
                         request = original.message
+                        if isinstance(request, JSONRPCRequest) and request.method == "tools/list":
+                            message = await self._with_authentication_tool(message)
                         tools_refreshed = (
                             isinstance(request, JSONRPCRequest)
                             and request.method == "tools/list"
@@ -589,7 +704,7 @@ def serve(url: str, workspace: str, profile: str | None = None, *, use_pat: bool
 
     # The per-connection sign-in is NOT driven before opening the bridge. The
     # bridge starts first and drives login only when this service reports missing
-    # connection auth, either as HTTP 401 or MCP error -32006. Services whose
+    # connection auth, via HTTP 401, MCP auth errors, or a service-scoped login URL. Services whose
     # connections are already authenticated, and services such as web search that
     # need no connection, never open a browser.
 

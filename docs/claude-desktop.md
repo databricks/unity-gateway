@@ -69,6 +69,46 @@ Claude's `mcp__plugin_<plugin>_<server>__<tool>` pattern. When the plugin has MC
 also generates a `unity-gateway-connectors` skill whose description names them, so Claude knows
 the connectors exist on the first turn instead of asking whether they are connected.
 
+The skill distinguishes configured connectors from authenticated connections. It directs
+Claude to discover the matching tools, call a discovered `authenticate` tool when sign-in
+is required, and retry the original task after successful sign-in and tool discovery.
+Missing tools and permission denials alone do not establish an authentication failure.
+When access is denied and an authentication tool is available, the guidance directs Claude
+to attempt sign-in once before recommending administrator or network changes. This includes
+IP-address denials: in a reported Atlassian session, the same Jira query succeeded after
+fresh sign-in despite that error. If the denial persists after sign-in and retry, Claude
+must report the original error and stop retrying authentication. This guidance does not
+reclassify upstream permission/network errors or validate their root cause.
+
+For OAuth U2M services, the proxy keeps a local `authenticate` tool alongside the service's
+normal tools, including after successful login. Calling it starts a fresh login even if an
+earlier login succeeded in the same session. Discovery checks service metadata without
+opening a browser or waiting for an interactive login already in progress. Failed or
+incomplete metadata lookups remain retryable on later discovery or authentication errors.
+PAT and non-U2M services do not gain this action, and an upstream tool
+named `authenticate` keeps its own behavior. Discovery auth errors (`-32006`) and login-URL
+challenges (`-32042`) expose recovery, including after earlier login success. Login challenges
+must target `/mcp-service-login` on the configured workspace with this service's exact name;
+mixed challenges containing policy approval retain their upstream responses.
+
+A tool call that returns such a login challenge, or a failed tool result containing that
+service-scoped sign-in URL, triggers the existing browser-login flow and replays the original
+call once. This handles Gmail/Calendar errors that otherwise tell Claude to show a link and
+wait for the user. Automatic login is still limited to one attempt per proxy session, and
+requires confirmed U2M metadata. Canceled or failed login and persistent errors are returned
+to the client. Successful results, ordinary errors, and other URLs do not trigger this path.
+
+HTTP 401 responses first retry with a silently refreshed Databricks workspace token. Only
+an actual `tools/call` that still returns 401 can trigger connector login. Initialization,
+tool discovery, notifications, and background HTTP requests never start connector sign-in;
+persistent HTTP errors remain errors. PAT mode does not refresh or open connector login.
+Databricks workspace login through the Desktop credential helper is separate from connector
+login: restoring the workspace session must not sign in unrelated connectors.
+
+The skill provides guidance; native recovery still depends on Claude discovering and using
+the action when automatic recovery is unavailable. The proxy does not infer expired credentials
+from generic error wording.
+
 Connector sign-in opens the workspace's MCP service sign-in page. Sign in with the same
 Databricks account as the selected CLI profile, then complete the provider flow. The proxy
 checks that profile user's credential for up to five minutes and retries the original request
@@ -76,6 +116,20 @@ when it is active. Browser launch alone does not establish success. If the brows
 popup does not open, follow the URL in the MCP server log and click Login. On timeout, complete
 sign-in and retry authentication in the agent. This flow does not run CLI `auth login --resource`
 or replace the workspace session.
+
+To validate recovery in native Cowork, start a fresh task with a connector that needs sign-in.
+Request a real operation and confirm Claude discovers the sign-in action, prompts for browser
+authentication, refreshes the tools, and completes the original operation without another user
+message. Repeat after credential expiry and with canceled sign-in. Record the UG/Desktop
+versions, configured proxy executable, and redacted discovery/tool errors for failures; exclude
+tokens and private tool results. Generated-plugin component tests do not validate this flow.
+Also test Gmail and Google Calendar with missing connection credentials: request mail or today's
+events and confirm the browser opens and the original operation finishes without a second message.
+To check workspace-login isolation, log out of the configured Databricks CLI session, start a
+new Cowork task, and send an unrelated prompt such as "What is 2 + 2?". The credential helper
+may restore Databricks sign-in, but no Atlassian or other connector login should open. Then
+request Jira issues and verify that connector sign-in opens only if that operation needs it.
+
 
 Cowork plugin support can still be disabled by Anthropic account feature flags or managed
 Desktop policy. UG treats installation as best-effort: failure warns but does not fail Claude

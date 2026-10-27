@@ -207,9 +207,21 @@ cover Desktop token-only stdout, explicit workspace/profile arguments, interacti
 browser recovery, bounded login/lock waits, cancellation, and lock contention.
 Recovery regressions check token recheck before browser login, lock release after
 success/failure, one shared deadline, and network/CLI failures at each recovery stage.
-Proxy bridge coverage also checks that unauthenticated tool discovery exposes a temporary
-authentication tool, advertises dynamic tool-list changes, refreshes the real tools after login,
-and tells the model to retry the original request in the same turn.
+Proxy bridge coverage checks that OAuth U2M discovery retains an authentication action
+alongside normal tools, without opening a browser. It covers confirmed metadata caching,
+retry after failed metadata lookup, PAT/non-U2M exclusion, pagination, upstream name collisions,
+and result/transport metadata preservation. Discovery and unrelated replies continue during
+interactive login. Metadata-helper cases distinguish unsupported services from failed or
+incomplete lookups; Claude registration retains the proxy when classification is unknown.
+A stream scenario covers tool failure, explicit login, tool refresh, task retry, and later
+reauthentication; explicit retry also works after cancellation. Discovery auth errors and
+service-scoped login-URL challenges expose recovery after earlier success. Gmail/Calendar
+tool-error and login-elicitation regressions check automatic sign-in and one request replay,
+cancel/persistent-error pass-through, PAT/non-U2M/unknown exclusions, and nonblocking discovery.
+Success results, other services/hosts, malformed URLs, and policy or mixed elicitations retain
+their responses. Generated guidance distinguishes authentication from retrying data tools.
+A refresh that still requires authentication returns a failed auth result. These
+checks replace external login and do not prove native Cowork recovery.
 Invalid token output must not appear in helper errors or stdout/stderr.
 Shared CLI discovery selects the newest absolute binary for cached tokens and every
 recovery subprocess; a missing CLI fails before token fetch or browser login.
@@ -277,7 +289,8 @@ workspace state; a repeated revert also returns 0.
 
 `test_cowork_plugin.py` covers active Cowork-root discovery, ambiguous-profile refusal,
 generated marketplace/plugin/MCP manifests, the generated connector skill naming Claude-only
-MCP servers, current-workspace managed-skill selection,
+MCP servers and directing one sign-in recovery attempt for access/IP denials with a stop
+on persistent denial, current-workspace managed-skill selection,
 Claude-only MCP filtering, absolute proxy executables, saved PAT mode, custom-OAuth refusal,
 install/update selection, idempotent cleanup, and saved-root removal. Alias checks cover
 short service-first names, unchanged proxy routing, custom-name preservation,
@@ -372,10 +385,15 @@ timeout, manual URL fallback, and workspace-token failures. Success requires an 
 credential; success, denial, and timeout preserve the workspace profile and token memo.
 These replace obsolete resource-flag support, CLI resource-login, and token-invalidation
 cases because connector browser sign-in no longer runs CLI login or replaces its session.
-`test_mcp_proxy.py` checks credential readiness, preserved workspace profile/token, and
-replay of the original HTTP request after browser sign-in. The existing MCP
-authentication-required recovery remains covered. These checks do not establish live
-provider sign-in, deployed credential API availability, or native Desktop behavior.
+`test_mcp_proxy.py` checks async post-login retries and recovery when a service returns
+the MCP authentication-required error. HTTP 401 regressions cover silent workspace-token
+refresh before connector login, no browser on initialization/discovery/background requests,
+failed workspace refresh, and connector login only after a tool call still returns 401.
+Async HTTP-client checks replace the upstream network and verify refreshed bearer headers
+and unchanged tool-call bodies across retries. The combined browser-flow case verifies
+workspace refresh, connector readiness polling, profile/token preservation, and replay.
+PAT and non-401 errors retain their behavior.
+These checks do not establish live login or launch-time savings.
 
 `test_mcp_web_search_concurrency.py` drives the real stdio dispatcher with controlled
 HTTP and authentication boundaries. It covers concurrent results and catalog requests,

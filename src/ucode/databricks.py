@@ -2745,19 +2745,28 @@ def get_mcp_service_user_credential(
     return _http_get_json(url, token, timeout=timeout)
 
 
-def mcp_service_needs_connection_login(workspace: str, token: str, full_name: str) -> bool:
+def mcp_service_needs_connection_login(workspace: str, token: str, full_name: str) -> bool | None:
     """Whether an AI Gateway mcp-service is backed by a per-user OAuth (U2M) connection, and so
     needs a one-time connection sign-in before it vends tools.
 
     Reads the service's ``config.source_connection.securable_kind`` via a per-service GET (the
-    listing omits it). No source connection (e.g. ``system.ai.web_search``), a non-U2M kind, or a
-    failed lookup all return ``False`` — the safe default: such services work with only the
-    Databricks token that ``ug mcp-proxy`` injects, and must not be pushed into a connection-login
-    OAuth flow they can't complete (AIGTWY-4856)."""
+    listing omits it). No source connection (e.g. ``system.ai.web_search``) or a non-U2M kind
+    returns ``False``. Failed or incomplete lookups return ``None`` so callers can retry without
+    caching an unsupported classification. Neither outcome starts an OAuth flow (AIGTWY-4856)."""
     details, err = get_mcp_service(workspace, token, full_name)
     if err is not None or not isinstance(details, dict):
+        return None
+    config = details.get("config")
+    if not isinstance(config, dict):
+        return None
+    source = config.get("source_connection")
+    if source is None:
         return False
-    kind = ((details.get("config") or {}).get("source_connection") or {}).get("securable_kind")
+    if not isinstance(source, dict):
+        return None
+    kind = source.get("securable_kind")
+    if not isinstance(kind, str) or not kind:
+        return None
     return kind in OAUTH_U2M_CONNECTION_KINDS
 
 
