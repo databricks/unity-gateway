@@ -770,8 +770,6 @@ class TestSubcommandRouting:
             (["fix this"], True, None, None, True),
             (["fix this"], False, None, None, False),
             (["update"], False, None, None, False),
-            (["--model", "fixed"], False, None, None, False),
-            ([], False, "fixed", None, False),
             ([], False, None, "catalog.schema.service", False),
         ],
     )
@@ -794,20 +792,17 @@ class TestSubcommandRouting:
         [(["--model", "fixed"], None), (["-p", "hi", "--model", "fixed"], None), ([], "fixed")],
     )
     @pytest.mark.parametrize(
-        ("tool", "omnigent", "routing_env", "expected"),
+        ("tool", "routing_env", "expected"),
         [
-            ("claude", "1", {"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1"}, True),
-            ("claude", None, {"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1"}, False),
-            ("claude", "0", {"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1"}, False),
-            ("claude", "1", {"ENABLE_SMART_ROUTING_V2": "1"}, False),
-            ("codex", "1", {"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1"}, False),
+            ("claude", {"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1"}, True),
+            ("claude", {"ENABLE_SMART_ROUTING_V2": "1"}, False),
+            ("codex", {"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1"}, False),
+            ("codex", {"ENABLE_SMART_ROUTING_V2": "1"}, False),
         ],
     )
-    def test_omnigent_explicit_model_keeps_claude_subagent_routing(
-        self, monkeypatch, tool_args, model, tool, omnigent, routing_env, expected
+    def test_explicit_model_keeps_only_claude_subagent_routing(
+        self, monkeypatch, tool_args, model, tool, routing_env, expected
     ):
-        if omnigent is not None:
-            monkeypatch.setenv("OMNIGENT", omnigent)
         for name, value in routing_env.items():
             monkeypatch.setenv(name, value)
 
@@ -834,7 +829,10 @@ class TestSubcommandRouting:
             (["--session-id", "session-123", "--model", "fixed"], False),
         ],
     )
-    def test_claude_options_allow_smart_routing_except_model(self, tool_args, expected):
+    def test_claude_options_allow_smart_routing_except_model(
+        self, monkeypatch, tool_args, expected
+    ):
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
         options = cli_mod._launch_options(
             "claude",
             tool_args,
@@ -955,27 +953,23 @@ class TestSubcommandRouting:
         assert _routing_env() == env_before
 
     @pytest.mark.parametrize(
-        ("omnigent", "routing", "launch_args", "routed"),
+        ("version", "launch_args", "routed"),
         [
-            ("1", "preset", [], True),
-            ("1", "managed", [], True),
-            ("1", "preset", ["--disable-smart-routing"], False),
-            (None, "preset", [], False),
+            (smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, [], True),
+            (None, [], True),
+            (smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, ["--disable-smart-routing"], False),
+            (smart_routing_config.FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0, [], False),
         ],
-        ids=["omnigent", "omnigent-managed", "omnigent-disable-flag", "no-marker"],
+        ids=["subagent-version", "managed", "disable-flag", "first-prompt-version"],
     )
-    def test_omnigent_forwarded_model_keeps_subagent_routing(
-        self, monkeypatch, omnigent, routing, launch_args, routed
+    def test_forwarded_model_keeps_subagent_routing(
+        self, monkeypatch, version, launch_args, routed
     ):
-        if omnigent is not None:
-            monkeypatch.setenv("OMNIGENT", omnigent)
         managed = None
-        if routing == "preset":
-            monkeypatch.setenv(
-                "SMART_ROUTER_CONFIG_VERSION", smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY
-            )
-        else:
+        if version is None:
             managed = {"enabled_agents": {"claude": {"smart_routing_enabled": True}}}
+        else:
+            monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", version)
         observed = []
 
         with _launch_policy_patches(managed) as calls:

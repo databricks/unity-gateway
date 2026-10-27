@@ -393,10 +393,9 @@ main session stays on its default model.
 Like any version, it overrides individually set routing env vars. `--disable-smart-routing`
 turns routing off for the launch, including over a workspace config.
 
-An explicit model skips routing. The exception is a Claude launch inside an Omnigent session
-(`OMNIGENT=1`, set by Omnigent's runner), since Omnigent always pins the main model: there,
-subagent routing stays on when first-prompt routing is off, and the main session stays on the
-pinned model.
+An explicit Claude `--model`, from `ug claude --model` or a launcher such as Omnigent, keeps
+subagent routing when first-prompt routing is off; the main session stays on that model.
+With first-prompt routing on, or for Codex, an explicit model still skips routing.
 
 ### Smart Router Orchestrator
 
