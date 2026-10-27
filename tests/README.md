@@ -460,7 +460,7 @@ orchestration on and off. It mocks the router response, not native Claude render
 Existing launch tests cover caller argument preservation and file removal after exit. These checks
 do not cover plugin-write/process-start failures, native plugin refresh, or daemon behavior.
 
-`test_claude_routing.py` checks that the decision log retains the exact candidate
+`test_claude_smart_routing_v2.py` checks that the decision log retains the exact candidate
 models and router name sent in the request. `test_codex_routing.py` checks that
 Codex decisions carry the same request metadata. These use mocked HTTP responses.
 
