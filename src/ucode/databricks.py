@@ -328,7 +328,7 @@ def _http_get_bytes(
     url: str,
     token: str,
     *,
-    timeout: int = 10,
+    timeout: float = 10,
     max_retries: int = 0,
     headers: dict[str, str] | None = None,
 ) -> tuple[bytes | None, str | None]:
@@ -401,7 +401,7 @@ def _http_get_json(
     url: str,
     token: str,
     *,
-    timeout: int = 10,
+    timeout: float = 10,
     max_retries: int = 0,
     headers: dict[str, str] | None = None,
 ) -> tuple[dict | list | None, str | None]:
@@ -744,6 +744,8 @@ def _without_mcp_login_resources(text: str, workspace: str, profile: str) -> str
             return False
 
     remaining = [value for value in resources if not is_mcp_resource(value)]
+    if any("\n" in value or "\r" in value for value in remaining):
+        raise configparser.Error("Malformed multiline resource entry")
     if remaining == resources:
         return text
     lines = []
@@ -2847,10 +2849,10 @@ def get_mcp_service(
 
 
 def get_mcp_service_user_credential(
-    workspace: str, token: str, full_name: str
+    workspace: str, token: str, full_name: str, *, timeout: float = 10
 ) -> tuple[dict | list | None, str | None]:
     url = f"{workspace_origin(workspace)}/api/2.1/unity-catalog/mcp-services/{quote(full_name, safe='')}/user-credentials"
-    return _http_get_json(url, token)
+    return _http_get_json(url, token, timeout=timeout)
 
 
 def mcp_service_needs_connection_login(workspace: str, token: str, full_name: str) -> bool:

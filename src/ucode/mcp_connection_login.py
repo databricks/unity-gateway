@@ -115,7 +115,11 @@ def run_connection_login(
             token = get_databricks_token(workspace, profile)
         except RuntimeError as exc:
             return False, str(exc)
-        credential, reason = get_mcp_service_user_credential(workspace, token, connection)
+        credential, reason = get_mcp_service_user_credential(
+            workspace, token, connection, timeout=min(10, max(0.001, deadline - time.monotonic()))
+        )
+        if time.monotonic() >= deadline:
+            break
         if reason:
             if not reason.startswith(
                 (

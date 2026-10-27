@@ -5987,3 +5987,15 @@ class TestWorkspaceMcpResourceCleanup:
 
         assert db_mod.build_databricks_cli_env(self.WS, "workspace")["DATABRICKS_HOST"] == self.WS
         assert config.read_text() == original
+
+    def test_malformed_retained_resource_does_not_corrupt_config(self, monkeypatch, tmp_path):
+        config = tmp_path / "databrickscfg"
+        original = (
+            f"[workspace]\nhost = {self.WS}\nauth_type = databricks-cli\n"
+            f"resources = {self.MCP}, custom-resource\n    malformed-continuation\n"
+        )
+        config.write_text(original)
+        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(config))
+        with pytest.raises(RuntimeError, match="Remove its MCP service URLs"):
+            db_mod.prepare_databricks_login_env(self.WS, "workspace")
+        assert config.read_text() == original

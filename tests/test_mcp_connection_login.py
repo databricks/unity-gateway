@@ -296,3 +296,19 @@ class TestRunConnectionLogin:
         ok, message = mcl.run_connection_login(url, WS, profile="selected")
         assert not ok and "catalog.schema.service" in message
         assert not requests and not launches
+
+    def test_poll_finishing_after_deadline_never_reports_success(self, sign_in, monkeypatch):
+        _, _, launches, _ = sign_in
+        original = db_mod.urllib_request.urlopen
+        timeouts = []
+
+        def slow_poll(request, **kwargs):
+            if launches and request.full_url.endswith("/user-credentials"):
+                timeouts.append(kwargs["timeout"])
+                mcl.time.sleep(7)
+            return original(request, **kwargs)
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", slow_poll)
+        ok, detail = mcl.run_connection_login(AIGW_URL, WS, profile="selected")
+        assert not ok and "timed out" in detail
+        assert timeouts == [6]
