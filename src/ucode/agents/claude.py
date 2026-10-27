@@ -11,7 +11,6 @@ import signal
 import socket
 import subprocess
 import sys
-import tempfile
 import threading
 import traceback
 from collections.abc import Callable, Iterable, Iterator, Sequence
@@ -22,8 +21,10 @@ from tempfile import TemporaryDirectory
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
+    atomic_write_json,
     backup_existing_file,
     deep_merge_dict,
+    ensure_parent_dir,
     is_dry_run,
     prune_key_paths,
     read_json_safe,
@@ -954,52 +955,33 @@ def _update_claude_config(path: Path, mutate: Callable[[dict], bool]) -> bool:
     """Read-modify-write Claude's ``.claude.json`` at ``path`` under an exclusive file lock.
 
     ``mutate`` edits the loaded dict in place (``{}`` when the file is absent) and returns True to
-    write it back; False leaves the file untouched. The re-read happens inside the lock, so
-    concurrent ug processes don't lose each other's changes. Returns False, without writing, when
-    the file is present but not a JSON object. The write goes through a unique temp file and a
-    replace and keeps the file's mode, so an interrupted write can't truncate it; the file also
-    holds Claude's auth and onboarding state. Raises ``RuntimeError`` on a lock timeout or a
-    failed write. Claude Code's own writes don't take this lock, so a race with it remains
-    possible."""
+    write it back. The re-read happens inside the lock, so concurrent ug processes don't lose each
+    other's changes; the write is atomic and keeps the file's mode, since the file also holds
+    Claude's auth state. Returns False, without writing, when the file isn't a JSON object. Raises
+    ``RuntimeError`` on a lock timeout or a failed write. Claude Code's own writes don't take this
+    lock, so a race with it remains possible."""
     if is_dry_run():
         config = _read_claude_config_for_rewrite(path)
-        if config is None:
-            return False
-        if mutate(config):
+        if config is not None and mutate(config):
             write_json_file(path, config)
-        return True
-    lock_path = path.with_name(path.name + CLAUDE_CONFIG_LOCK_SUFFIX)
-    tmp_path = None
+        return config is not None
+    ensure_parent_dir(path)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with lock_path.open("a+b") as lock_file:
+        with path.with_name(path.name + CLAUDE_CONFIG_LOCK_SUFFIX).open("a+b") as lock_file:
             acquire_exclusive_file_lock(lock_file, timeout=CLAUDE_CONFIG_LOCK_TIMEOUT_SECONDS)
             try:
                 config = _read_claude_config_for_rewrite(path)
-                if config is None:
-                    return False
-                if not mutate(config):
-                    return True
-                mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
-                fd, tmp_name = tempfile.mkstemp(
-                    dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
-                )
-                tmp_path = Path(tmp_name)
-                with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                    handle.write(json.dumps(config, indent=2) + "\n")
-                os.chmod(tmp_path, mode)  # mkstemp creates 0600
-                os.replace(tmp_path, path)
-                tmp_path = None
-                return True
+                if config is not None and mutate(config):
+                    mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
+                    atomic_write_json(path, config)
+                    os.chmod(path, mode)
+                return config is not None
             finally:
                 release_file_lock(lock_file)
     except TimeoutError as exc:
         raise RuntimeError(f"Timed out waiting for another ug process to update {path}") from exc
     except OSError as exc:
         raise RuntimeError(f"Failed to write config file: {path}") from exc
-    finally:
-        if tmp_path is not None:
-            tmp_path.unlink(missing_ok=True)
 
 
 CLAUDE_HOOKS_MODULES_GATE = "tengu_plugin_hooks_modules"
@@ -1017,7 +999,7 @@ def ensure_hooks_modules_gate() -> None:
     def mutate(config: dict) -> bool:
         features = config.get("cachedGrowthBookFeatures")
         if not isinstance(features, dict):
-            features = {}
+            features = config["cachedGrowthBookFeatures"] = {}
         if (
             features.get(CLAUDE_HOOKS_MODULES_GATE) is True
             and CLAUDE_HOOKS_MODULES_GATE not in config
@@ -1025,7 +1007,6 @@ def ensure_hooks_modules_gate() -> None:
             return False
         config.pop(CLAUDE_HOOKS_MODULES_GATE, None)
         features[CLAUDE_HOOKS_MODULES_GATE] = True
-        config["cachedGrowthBookFeatures"] = features
         return True
 
     try:
