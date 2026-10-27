@@ -11,9 +11,9 @@ from collections.abc import Callable
 from pathlib import Path
 
 from ucode.codex_config import ModelVisibility
-from ucode.databricks import model_picker_label
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.smart_routing.codex_routing import codex_model_id
+from ucode.string_utils import model_picker_label
 from ucode.ui import print_warning
 
 _TIMEOUT_SECONDS = 30

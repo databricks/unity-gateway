@@ -52,7 +52,6 @@ from ucode.databricks import (
     build_tool_base_url,
     get_databricks_token,
     maybe_add_gpt_1m_suffix,
-    model_picker_label,
     ug_binary,
 )
 from ucode.launcher import exec_or_spawn
@@ -107,6 +106,7 @@ from ucode.smart_routing.claude_hooks import (
     sync_smart_routing_hooks,
 )
 from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
+from ucode.string_utils import model_picker_label
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
 from ucode.ui import print_note, print_success, print_warning
 
