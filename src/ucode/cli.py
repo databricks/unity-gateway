@@ -3191,15 +3191,19 @@ def _should_launch_smart_routing(
     explicit_prompt: bool,
     model: str | None,
 ) -> bool:
-    if model is not None or has_explicit_model_arg(tool_args):
-        # Omnigent always pins the root model, so its Claude sessions still route subagents.
-        if not (
-            tool == "claude"
-            and env_bool(OMNIGENT_SESSION_ENV_VAR)
-            and not smart_routing_v2.first_prompt_routing_enabled(agent=tool)
-        ):
-            return False
+    pinned = model is not None or has_explicit_model_arg(tool_args)
+    if pinned and not _omnigent_keeps_subagent_routing(tool):
+        return False
     return _smart_routing_launch_shape(tool, tool_args, explicit_prompt)
+
+
+def _omnigent_keeps_subagent_routing(tool: str) -> bool:
+    """Omnigent always pins the root model, so its Claude sessions still route subagents."""
+    return (
+        tool == "claude"
+        and env_bool(OMNIGENT_SESSION_ENV_VAR)
+        and not smart_routing_v2.first_prompt_routing_enabled(agent=tool)
+    )
 
 
 def _smart_routing_launch_shape(tool: str, tool_args: list[str], explicit_prompt: bool) -> bool:

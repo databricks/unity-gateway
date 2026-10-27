@@ -19,6 +19,7 @@ SMART_ROUTING_ENV_KEYS = (
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
 )
+
 # Set by the Omnigent runner on every process in an Omnigent session.
 OMNIGENT_SESSION_ENV_VAR = "OMNIGENT"
 
