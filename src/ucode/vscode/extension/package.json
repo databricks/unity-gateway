@@ -83,13 +83,12 @@
   "scripts": {
     "build": "esbuild src/extension.ts --bundle --minify --legal-comments=none --outfile=../src/ucode/vscode/extension/out/extension.js --external:vscode --format=cjs --platform=node --target=node22 && node -e \"require('fs').copyFileSync('package.json', '../src/ucode/vscode/extension/package.json')\"",
     "typecheck": "tsc",
-    "test": "vitest run"
+    "test": "esbuild test/*.test.ts --bundle --platform=node --format=cjs --target=node22 --outdir=.test-out --alias:vscode=./test/vscode.ts --log-level=warning && node --test .test-out/*.test.js"
   },
   "devDependencies": {
     "@types/node": "^22.20.3",
     "@types/vscode": "1.125.0",
     "esbuild": "^0.28.2",
-    "typescript": "^5.9.3",
-    "vitest": "^4.1.12"
+    "typescript": "^5.9.3"
   }
 }

@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -52,3 +53,10 @@ export const collect = async <T>(items: AsyncIterable<T>): Promise<T[]> => {
   }
   return out;
 };
+
+/** Asserts that `promise` rejects with an error whose message contains `text`. */
+export const rejectsWith = (promise: Promise<unknown>, text: string) =>
+  assert.rejects(promise, (error: Error) => {
+    assert.ok(error.message.includes(text), `expected "${error.message}" to contain "${text}"`);
+    return true;
+  });
