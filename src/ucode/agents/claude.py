@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import copy
 import json
 import os
@@ -11,6 +12,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import traceback
 from collections.abc import Callable, Iterable, Iterator, Sequence
@@ -2297,6 +2299,30 @@ def _relayed_mcp_config_args(tool_args: list[str]) -> list[str]:
     return ["--mcp-config", json.dumps({"mcpServers": servers}, separators=(",", ":"))]
 
 
+# Merged settings above this many characters go to a private temp file instead of argv. Windows'
+# CreateProcess caps the whole command line at 32,767 characters (WinError 206), and the all-models
+# Bedrock settings alone can exceed that. The margin leaves room for the other launch arguments.
+_MAX_INLINE_SETTINGS_CHARS = 8000
+
+
+def _settings_argument(merged: dict) -> str:
+    """Return the ``--settings`` value for *merged*: inline JSON, or a temp file path when large.
+
+    The file lives in a fresh owner-only directory (``mkdtemp`` creates it 0700) so concurrent
+    launches never share or overwrite one another's merge. It is removed at interpreter exit,
+    which covers the Windows spawn-and-wait path; a POSIX ``exec`` replaces the process first, so
+    the small leftover directory there is left to the OS temp cleaner.
+    """
+    payload = json.dumps(merged, separators=(",", ":"))
+    if len(payload) <= _MAX_INLINE_SETTINGS_CHARS:
+        return payload
+    directory = tempfile.mkdtemp(prefix="ug-claude-settings-")
+    atexit.register(shutil.rmtree, directory, ignore_errors=True)
+    path = Path(directory) / "settings.json"
+    path.write_text(payload, encoding="utf-8")
+    return str(path)
+
+
 def _build_claude_argv(
     binary: str,
     tool_args: list[str],
@@ -2313,7 +2339,8 @@ def _build_claude_argv(
     of the two silently dropped. To let ucode compose with any prior command,
     we merge a caller-supplied ``--settings`` with ucode's — ucode's gateway
     keys win, hooks and denies from both are unioned — and hand Claude a single merged
-    ``--settings`` (inline JSON). The merge is per-launch and is never written
+    ``--settings`` (inline JSON, or a per-launch temp file path when the JSON is large; see
+    :func:`_settings_argument`). The merge is per-launch and is never written
     back to the shared ucode settings file, so concurrent launches cannot
     accumulate one another's hooks. A caller ``--settings`` value ucode cannot
     resolve raises (see :func:`_load_caller_settings`) rather than being passed
@@ -2350,7 +2377,7 @@ def _build_claude_argv(
         binary,
         *source_args,
         "--settings",
-        json.dumps(merged, separators=(",", ":")),
+        _settings_argument(merged),
         *remaining,
     ]
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -3830,6 +3831,43 @@ class TestBuildClaudeArgv:
         stop_cmds = [h["command"] for e in merged["hooks"]["Stop"] for h in e["hooks"]]
         assert "ucode-stop" in stop_cmds
         assert "caller-stop" in stop_cmds
+
+    def test_large_merged_settings_go_to_private_temp_file(self, monkeypatch):
+        ucode_settings = {"apiKeyHelper": "u", "env": {"ANTHROPIC_BASE_URL": "https://gw"}}
+        monkeypatch.setattr(claude, "read_json_safe", lambda p: ucode_settings)
+        registered = []
+        monkeypatch.setattr(claude.atexit, "register", lambda *a, **k: registered.append(a))
+        big_env = {f"MODEL_{i}": "m" * 100 for i in range(200)}
+
+        argv = claude._build_claude_argv("claude", ["-p", "hi"], settings_override={"env": big_env})
+
+        assert argv[:2] == ["claude", "--settings"]
+        assert argv[3:] == ["-p", "hi"]
+        assert sum(len(a) for a in argv) < 1000  # nothing large left on the command line
+        path = Path(argv[2])
+        try:
+            merged = json.loads(path.read_text(encoding="utf-8"))
+            assert merged["apiKeyHelper"] == "u"
+            assert merged["env"]["MODEL_199"] == "m" * 100
+            assert merged["env"]["ANTHROPIC_BASE_URL"] == "https://gw"
+            if os.name != "nt":
+                assert path.parent.stat().st_mode & 0o077 == 0
+            # Cleanup is registered for the per-launch directory.
+            assert registered and registered[0][1] == str(path.parent)
+        finally:
+            shutil.rmtree(path.parent, ignore_errors=True)
+
+    def test_large_settings_use_distinct_files_per_launch(self, monkeypatch):
+        monkeypatch.setattr(claude, "read_json_safe", lambda p: {})
+        monkeypatch.setattr(claude.atexit, "register", lambda *a, **k: None)
+        override = {"env": {f"K{i}": "v" * 100 for i in range(200)}}
+        first = claude._build_claude_argv("claude", [], settings_override=override)
+        second = claude._build_claude_argv("claude", [], settings_override=override)
+        try:
+            assert first[2] != second[2]
+        finally:
+            shutil.rmtree(Path(first[2]).parent, ignore_errors=True)
+            shutil.rmtree(Path(second[2]).parent, ignore_errors=True)
 
     def test_equals_form_is_handled(self, monkeypatch):
         monkeypatch.setattr(claude, "read_json_safe", lambda p: {"apiKeyHelper": "u"})
