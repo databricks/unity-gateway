@@ -48,7 +48,7 @@ permissions:
 
 concurrency:
   group: integration-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}-${{ github.event_name }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name != 'schedule' }}
 
 env:
   EXPECTED_WORKSPACE: https://eng-ml-inference-team-us-east-1.cloud.databricks.com
@@ -76,7 +76,7 @@ jobs:
           node-version: 22.19.0
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
         with:
-          version: 0.9.8
+          version: 0.13.5
           enable-cache: ${{ inputs.ref == '' }}
       - name: Test a fresh installed package without credentials
         run: |
@@ -113,7 +113,7 @@ jobs:
           node-version: 22.19.0
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
         with:
-          version: 0.9.8
+          version: 0.13.5
           enable-cache: ${{ inputs.ref == '' }}
       - name: Test a fresh installed package without workspace credentials
         shell: pwsh
@@ -198,7 +198,7 @@ jobs:
           node-version: 22.19.0
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
         with:
-          version: 0.9.8
+          version: 0.13.5
           enable-cache: ${{ inputs.ref == '' }}
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
         with:
@@ -257,7 +257,7 @@ jobs:
           node-version: 22.19.0
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
         with:
-          version: 0.9.8
+          version: 0.13.5
           enable-cache: ${{ inputs.ref == '' }}
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
         with:
@@ -429,7 +429,7 @@ jobs:
           node-version: 22.19.0
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
         with:
-          version: 0.9.8
+          version: 0.13.5
           enable-cache: ${{ inputs.ref == '' }}
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
         with:
@@ -488,7 +488,7 @@ jobs:
           node-version: 22.19.0
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
         with:
-          version: 0.9.8
+          version: 0.13.5
           enable-cache: ${{ inputs.ref == '' }}
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
         with:
@@ -583,7 +583,7 @@ jobs:
           node-version: 22.19.0
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
         with:
-          version: 0.9.8
+          version: 0.13.5
           enable-cache: ${{ inputs.ref == '' }}
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
         with:

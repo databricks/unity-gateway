@@ -1,6 +1,8 @@
 name: CI
 
 on:
+  schedule:
+    - cron: '5 * * * *'
   workflow_dispatch:
   pull_request:
   merge_group:
@@ -15,7 +17,7 @@ env:
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name != 'schedule' }}
 
 jobs:
   lint:

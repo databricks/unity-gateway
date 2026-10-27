@@ -119,14 +119,12 @@ def test_ug_configure_managed_is_idempotent(live_session, workspace):
 
 @pytest.mark.managed_fixture
 @pytest.mark.claude
-def test_ug_managed_config_launch_reuses_cache_within_ttl(live_session, workspace):
-    """Scenario: after a managed `ug configure`, launch Claude within the cache TTL, then again
-    after the user-owned refresh timestamp is backdated past it.
+def test_ug_managed_config_launch_replays_saved_config(live_session, workspace):
+    """Scenario: after a managed `ug configure`, launch Claude twice.
 
-    Expected: configure installs a readable machine policy and records a published refresh outcome.
-    A warm launch leaves both files unchanged; after expiry, a fresh read advances only the
-    user-owned timestamp when remote policy content has not changed. The stub takes the same
-    refresh path as a live read.
+    Expected: configure installs a readable machine policy and records a published outcome with no
+    expiry stamp. Launches replay that saved config without re-reading it or rewriting either file,
+    however much time passes (an admin's later change is picked up by re-running `ug configure`).
     """
     session = live_session
     use_managed_config_fixture(session, "managed_workspace_default")
@@ -142,32 +140,26 @@ def test_ug_managed_config_launch_reuses_cache_within_ttl(live_session, workspac
     assert policy.parent.stat().st_uid == 0
     assert policy.parent.stat().st_mode & 0o777 == 0o755
     assert set(json.loads(installed)) == {"workspace", "config"}
-    fresh = json.loads(refresh.read_text())[workspace_key]
-    assert fresh["outcome"] == "published", fresh
+    saved = json.loads(refresh.read_text())[workspace_key]
+    assert saved["outcome"] == "published", saved
+    assert "last_checked_at" not in saved, saved
     assert refresh.stat().st_mode & 0o777 == 0o600
-    stamped = fresh["last_checked_at"]
+    # Backdate the record as an older ug would have stamped it: the old five-minute timer would
+    # refetch and rewrite it, while a replay leaves it byte-for-byte unchanged.
+    records = json.loads(refresh.read_text())
+    records[workspace_key]["last_checked_at"] = "2000-01-01T00:00:00+00:00"
+    refresh.write_text(json.dumps(records))
+    refresh_text = refresh.read_text()
 
-    with AgentTerminal(session, "claude", [str(session.binary), "claude"], "ttl-cache-hit") as tui:
-        tui.boot()
-        tui.check_input_and_exit()
-    assert json.loads(refresh.read_text())[workspace_key]["last_checked_at"] == stamped
-    assert policy.read_bytes() == installed
-    assert policy.stat().st_ino == installed_stat.st_ino
-    assert policy.stat().st_mtime_ns == installed_stat.st_mtime_ns
-    assert policy.stat().st_ctime_ns == installed_stat.st_ctime_ns
-
-    backdated = "2000-01-01T00:00:00+00:00"
-    refresh_data = json.loads(refresh.read_text())
-    refresh_data[workspace_key]["last_checked_at"] = backdated
-    refresh.write_text(json.dumps(refresh_data))
-    with AgentTerminal(session, "claude", [str(session.binary), "claude"], "ttl-expired") as tui:
-        tui.boot()
-        tui.check_input_and_exit()
-    assert json.loads(refresh.read_text())[workspace_key]["last_checked_at"] != backdated
-    assert policy.read_bytes() == installed
-    assert policy.stat().st_ino == installed_stat.st_ino
-    assert policy.stat().st_mtime_ns == installed_stat.st_mtime_ns
-    assert policy.stat().st_ctime_ns == installed_stat.st_ctime_ns
+    for label in ("replay-1", "replay-2"):
+        with AgentTerminal(session, "claude", [str(session.binary), "claude"], label) as tui:
+            tui.boot()
+            tui.check_input_and_exit()
+        assert refresh.read_text() == refresh_text
+        assert policy.read_bytes() == installed
+        assert policy.stat().st_ino == installed_stat.st_ino
+        assert policy.stat().st_mtime_ns == installed_stat.st_mtime_ns
+        assert policy.stat().st_ctime_ns == installed_stat.st_ctime_ns
 
 
 @pytest.mark.managed_fixture
