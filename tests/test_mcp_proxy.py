@@ -895,9 +895,17 @@ class TestMcpBridgeConnectionLogin:
 
         anyio.run(scenario)
 
-    def test_failed_metadata_discovery_has_retry_cooldown(self, monkeypatch):
+    @pytest.mark.parametrize("failure", ["token", "metadata"])
+    def test_failed_discovery_has_retry_cooldown(self, monkeypatch, failure):
         calls = []
-        monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda *a: "tok")
+
+        def token(*args):
+            if failure == "token":
+                calls.append(1)
+                raise RuntimeError("token unavailable")
+            return "tok"
+
+        monkeypatch.setattr(mcp_proxy, "get_databricks_token", token)
         monkeypatch.setattr(
             mcp_proxy, "mcp_service_needs_connection_login", lambda *a: calls.append(1)
         )

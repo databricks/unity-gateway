@@ -165,6 +165,7 @@ class _ConnectionLogin:
                 try:
                     token = get_databricks_token(self.workspace, self.profile)
                 except RuntimeError:
+                    self._metadata_retry_at = time.monotonic() + METADATA_RETRY_INTERVAL_SECONDS
                     return False
                 self._login_supported = mcp_service_needs_connection_login(
                     self.workspace, token, self.connection
