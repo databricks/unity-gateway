@@ -160,7 +160,7 @@ no bearer is persisted. Disable/revert removes the wrapper, with atomic writes a
 rollback shared with the profile. Disabled tracing omits these fields on replacement.
 Claude setup also installs a generated Cowork plugin containing only the current
 workspace's managed and user-downloaded home-level skills and Claude-targeted MCP servers.
-Downloaded skill additions and removals without `--path` resync the plugin; project-local,
+Downloaded skill additions and removals resync the plugin; project-local,
 user-authored, and other-workspace skills are excluded. The source lives at
 `~/.ucode/claude-cowork-marketplace`, and `~/.ucode/claude-cowork.json` records the selected
 account/org root for cleanup. Cowork must have started once. Setup and cleanup use scoped

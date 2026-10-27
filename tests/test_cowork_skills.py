@@ -139,11 +139,9 @@ def test_skills_add_update_remove_refreshes_cowork(cowork_home, monkeypatch, add
     assert (cowork_home / ".claude" / "skills" / "managed" / "SKILL.md").read_text() == "managed"
 
 
-def test_project_skill_changes_do_not_refresh_cowork(cowork_home):
+def test_project_skill_changes_keep_cowork_home_skills(cowork_home):
     _record_skill(cowork_home, "managed", scope="managed")
     cowork.configure_cowork(state.load_state(), [])
-    manifest = _plugin_root() / ".claude-plugin" / "plugin.json"
-    modified = manifest.stat().st_mtime_ns
     project = cowork_home / "project"
     project.mkdir()
 
@@ -154,8 +152,8 @@ def test_project_skill_changes_do_not_refresh_cowork(cowork_home):
             ["skills", action, "--names", "main.default.review", "--path", str(project)],
         )
         assert result.exit_code == 0, result.output
-        assert manifest.stat().st_mtime_ns == modified
         assert {path.name for path in (_plugin_root() / "skills").iterdir()} == {"managed"}
+        assert (_plugin_root() / "skills" / "managed" / "SKILL.md").read_text() == "managed"
 
 
 @pytest.mark.parametrize("limit_to_home", [False, True], ids=["all-bases", "home-path"])

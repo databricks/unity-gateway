@@ -40,7 +40,7 @@ user-level skills, plus any managed MCP servers and skills. Add skills with `ug 
 (picker, `--names`, or `--location`); omit `--path` to make them available in Cowork.
 Project-level, user-authored, unmanaged Databricks AI Tools, and other-workspace skills
 are not copied. `ug configure --mcp`, `ug mcp add`, and `ug mcp remove` resync the plugin,
-as do downloaded skill additions and removals without `--path`. Start a new Cowork session
+as do downloaded skill additions and removals. Start a new Cowork session
 to use the updated skills. MCP entries run the absolute
 `ug mcp-proxy` executable with the selected workspace and CLI profile; no bearer token is
 stored in the plugin. Saved PAT mode is supported. Custom OAuth is not yet supported for

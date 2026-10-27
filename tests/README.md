@@ -293,7 +293,7 @@ late MCP connection, tool discovery, or inference behavior.
 `test_cowork_skills.py` checks current-workspace managed and user-downloaded skill copies,
 project/other-workspace/user-authored exclusions, and add/update/remove CLI flows using
 names, schemas, and the picker. It checks generated bundle contents and stale-file cleanup
-while preserving managed skills; project-local changes do not rewrite the plugin.
+while preserving managed skills; project-local skills stay excluded during plugin refreshes.
 Skill APIs and the native plugin CLI are substituted; native Cowork skill invocation
 remains unverified.
 

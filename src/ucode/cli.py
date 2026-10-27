@@ -11,7 +11,6 @@ from collections.abc import Iterator
 from contextlib import contextmanager, redirect_stdout
 from enum import StrEnum
 from importlib import metadata
-from pathlib import Path
 from typing import Annotated, Any
 
 import typer
@@ -1955,12 +1954,6 @@ def _configure_optional_setup(state: dict, tools: list[str]) -> None:
         _sync_claude_cowork_plugin()
 
 
-def _sync_claude_cowork_skills(path: str | None) -> None:
-    if path is not None and os.path.normpath(path) != os.path.normpath(str(Path.home())):
-        return
-    _sync_claude_cowork_plugin()
-
-
 @mcp_app.command("add")
 def mcp_add(
     ctx: typer.Context,
@@ -2304,7 +2297,7 @@ def skills_add(
                 configure_location_skills_download_command(locations, path=path)
             else:
                 configure_skills_download_picker_command(path=path)
-        _sync_claude_cowork_skills(path)
+        _sync_claude_cowork_plugin()
     except (RuntimeError, ValueError) as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
@@ -2402,7 +2395,7 @@ def skills_remove(
                     f"(invalid: {', '.join(invalid)})."
                 )
             remove_downloaded_skills_command([], sorted(requested_skills), path=path)
-            _sync_claude_cowork_skills(path)
+            _sync_claude_cowork_plugin()
             return
         locations = _parse_skill_locations(location)
         if path is not None and not locations:
@@ -2410,7 +2403,7 @@ def skills_remove(
         if not locations and not _stdin_is_interactive():
             raise RuntimeError("--location or --names is required for `ug skills remove`.")
         remove_downloaded_skills_command(locations, path=path)
-        _sync_claude_cowork_skills(path)
+        _sync_claude_cowork_plugin()
     except (RuntimeError, ValueError) as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
