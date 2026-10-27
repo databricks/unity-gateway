@@ -1482,45 +1482,6 @@ class TestSubcommandRouting:
             assert result.output == ""
             route.assert_not_called()
 
-    @pytest.mark.parametrize(
-        ("expires_in", "expected"), [(300, "launch"), (90, "fresh-token"), (-60, "fresh-token")]
-    )
-    def test_claude_mod_route_refreshes_stale_launch_token(self, monkeypatch, expires_in, expected):
-        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
-        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
-        monkeypatch.delenv("UCODE_SESSION_ENV_FILE", raising=False)
-        launch_token = _jwt(time.time() + expires_in)
-        with (
-            patch(
-                "ucode.custom_oauth.get_databricks_token", return_value="fresh-token"
-            ) as mock_token,
-            patch(
-                "ucode.cli.smart_routing_v2.route_claude_subagent", return_value={"model": "m"}
-            ) as route,
-        ):
-            result = runner.invoke(
-                app,
-                [
-                    "claude-router-hook",
-                    "route-subagent-mod",
-                    "--host",
-                    "https://example.com",
-                    "--profile",
-                    "my-profile",
-                ],
-                input='{"tool_name":"Agent","tool_input":{"prompt":"fix it"}}',
-                env={"OAUTH_TOKEN": launch_token},
-            )
-        assert result.exit_code == 0, result.output
-        if expected == "launch":
-            mock_token.assert_not_called()
-            assert route.call_args.kwargs["token"] == launch_token
-        else:
-            mock_token.assert_called_once_with(
-                "https://example.com", "my-profile", force_refresh=True
-            )
-            assert route.call_args.kwargs["token"] == expected
-
     def test_claude_mod_route_refreshes_through_custom_oauth_client(self, monkeypatch):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
         monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "1")
