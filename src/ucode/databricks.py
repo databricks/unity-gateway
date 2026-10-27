@@ -1028,6 +1028,8 @@ def ensure_databricks_cli_version(
     # Installation has its own timeout. Only a changed installation starts a new
     # discovery budget; PATH candidates and diagnostic retries share one deadline.
     for upgraded in (False, True):
+        # A fresh version scan must also refresh capabilities at the same executable path.
+        clear_databricks_cli_cache()
         deadline = time.monotonic() + _CLI_VERSION_DISCOVERY_TIMEOUT_SECONDS
         clis = _discover_databricks_clis(use_cache=False, deadline=deadline)
         if not clis:

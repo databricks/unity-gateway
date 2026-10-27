@@ -4787,6 +4787,50 @@ class TestEnsureDatabricksCliVersion:
         assert upgrades == ["upgrade"]
         assert databricks_cli_version() == (1, 11, 0)
 
+    @pytest.mark.parametrize("initial_support", [False, True])
+    def test_fresh_version_check_refreshes_auth_capabilities(
+        self, tmp_path, monkeypatch, initial_support
+    ):
+        env = self._fake_databricks(tmp_path, "Databricks CLI v1.0.0")
+        initial_help = "--no-browser" if initial_support else "auth login"
+        _write_fake_executable(
+            tmp_path,
+            "databricks",
+            f"print({initial_help!r} if '--help' in sys.argv else 'Databricks CLI v1.0.0')\n",
+        )
+        monkeypatch.setattr("os.environ", env)
+        real_run = db_mod.run
+        calls = []
+
+        def record_probe(args, **kwargs):
+            calls.append(args)
+            return real_run(args, **kwargs)
+
+        monkeypatch.setattr(db_mod, "run", record_probe)
+        assert databricks_cli_version() == (1, 0, 0)
+        executable = databricks_cli_path()
+        assert db_mod._auth_login_supports_no_browser(executable) is initial_support
+
+        updated_help = "auth login" if initial_support else "--no-browser"
+        _write_fake_executable(
+            tmp_path,
+            "databricks",
+            f"print({updated_help!r} if '--help' in sys.argv else 'Databricks CLI v1.22.1')\n",
+        )
+        ensure_databricks_cli_version((1, 11, 0))
+
+        assert databricks_cli_version() == (1, 22, 1)
+        assert databricks_cli_path() == executable
+        assert db_mod._auth_login_supports_no_browser(executable) is not initial_support
+        ensure_databricks_cli_version((1, 11, 0))
+        assert db_mod._auth_login_supports_no_browser(executable) is not initial_support
+        assert calls == [
+            [executable, "--version"],
+            [executable, "auth", "login", "--help"],
+            [executable, "--version"],
+            [executable, "auth", "login", "--help"],
+        ]
+
 
 class TestInstallDatabricksCli:
     @pytest.mark.parametrize(

@@ -164,6 +164,8 @@ upgrading a known old CLI while other candidates remain unverified. Presence che
 do not probe.
 An old retry still goes through the minimum-version gate; one upgrade gets a new
 validation budget and a still-old CLI fails instead of repeatedly upgrading.
+Fresh validation after a same-path CLI replacement also refreshes cached auth-login
+capabilities in both directions; subsequent checks reuse the new version and capabilities.
 These component checks do not establish live agent startup or first-message
 completion, or explain the underlying CLI timeout.
 
