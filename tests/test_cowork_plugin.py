@@ -169,6 +169,12 @@ def test_configure_generates_plugin_and_installs_in_cowork_scope(tmp_path, monke
     }
     assert (plugin_root / "skills" / "review" / "SKILL.md").read_text() == "managed skill"
     assert not (plugin_root / "skills" / "foreign").exists()
+    connector_skill = (
+        plugin_root / "skills" / cowork.CONNECTOR_SKILL_NAME / "SKILL.md"
+    ).read_text()
+    assert connector_skill.startswith(f'---\nname: {cowork.CONNECTOR_SKILL_NAME}\ndescription: "')
+    assert all(f"`{name}`" in connector_skill for name in mcp["mcpServers"])
+    assert "codex-only" not in connector_skill
     assert [call[0][1:3] for call in calls] == [
         ["plugin", "validate"],
         ["plugin", "marketplace"],
