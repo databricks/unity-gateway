@@ -89,7 +89,8 @@ from ucode.managed_files import (
 from ucode.mcp_oauth import (
     CLAUDE_CODE_CIMD_CLIENT_ID,
     MCP_OAUTH_CALLBACK_PORT,
-    first_available_oauth_client,
+    oauth_client_available,
+    workspace_supports_cimd,
 )
 from ucode.mcp_web_search import (
     AUTOMATIC_PROVIDER,
@@ -853,10 +854,8 @@ def add_claude_http_mcp_server(
     per-user connection state), a direct HTTP server lets Claude Code do MCP OAuth
     against ``/oidc`` with the ``resource`` indicator: on a missing/expired
     connection credential, ``/mcp`` shows "needs authentication" and Authenticate
-    runs the login (``/oidc`` -> ``/mcp-service-login``). ``client_id`` is the
-    published CIMD URL client ID. It has the loopback ``/callback`` redirect registered; the port
-    is arbitrary because ``/oidc`` ignores the port
-    for loopback redirects."""
+    runs the login (``/oidc`` -> ``/mcp-service-login``). The callback port is
+    arbitrary because ``/oidc`` ignores it for loopback redirects."""
     cmd = [
         "claude",
         "mcp",
@@ -865,8 +864,7 @@ def add_claude_http_mcp_server(
         "http",
         "-s",
         scope,
-        "--client-id",
-        client_id,
+        *(["--client-id", client_id] if client_id else []),
         "--callback-port",
         str(callback_port),
         name,
@@ -991,27 +989,25 @@ def managed_mcp_uses_managed_file(workspace: str, *, use_pat: bool) -> bool:
     servers) but Claude Code reads it only from a real managed source, and only as a remote HTTP
     server it can drive OAuth against itself. So it fits only when the platform supports the sudo
     reconcile, the run is interactive, the developer is not on PAT auth (which needs the stdio
-    proxy), and the workspace publishes a Claude Code OAuth client. Every other case falls back to the user-scope registration."""
+    proxy), and the workspace publishes the pinned CIMD client. Other cases use user scope."""
     return (
         managed_files_supported()
         and managed_writes_allowed()
         and not use_pat
-        and first_available_oauth_client(workspace, (CLAUDE_CODE_CIMD_CLIENT_ID,)) is not None
+        and workspace_supports_cimd(workspace)
+        and oauth_client_available(workspace, CLAUDE_CODE_CIMD_CLIENT_ID)
     )
 
 
 def managed_mcp_entry(url: str, *, client_id: str = CLAUDE_CODE_CIMD_CLIENT_ID) -> dict:
     """A ``managedMcpServers`` entry: a direct HTTP server Claude Code drives OAuth against itself.
 
-    Mirrors :func:`add_claude_http_mcp_server`: a published Claude Code OAuth client and an
-    arbitrary loopback callback port, which ``/oidc`` ignores for loopback redirects."""
+    Mirrors :func:`add_claude_http_mcp_server` with the pinned CIMD client."""
+    oauth = {"callbackPort": MCP_OAUTH_CALLBACK_PORT, "clientId": client_id}
     return {
         "type": "http",
         "url": url,
-        "oauth": {
-            "clientId": client_id,
-            "callbackPort": MCP_OAUTH_CALLBACK_PORT,
-        },
+        "oauth": oauth,
     }
 
 

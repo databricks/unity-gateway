@@ -2586,6 +2586,29 @@ class TestOtelTokenProvider:
 class TestWriteUserMcpServers:
     """Batched user-scope `[mcp_servers]` writes for the workspace-managed reconcile path."""
 
+    def test_replaces_proxy_entry_without_starting_cli(self, tmp_path, monkeypatch):
+        path = tmp_path / "config.toml"
+        path.write_text(
+            'model = "gpt-5"\n\n[mcp_servers.mine]\ncommand = "x"\n\n'
+            '[mcp_servers.github]\ncommand = "old-proxy"\n'
+        )
+        monkeypatch.setattr(codex, "LEGACY_CODEX_CONFIG_PATH", path)
+        import ucode.mcp as mcp_mod
+
+        monkeypatch.setattr(
+            mcp_mod,
+            "add_codex_mcp_server",
+            lambda *args: pytest.fail("batched write should not invoke Codex CLI"),
+        )
+        entry = codex.managed_mcp_entry(["ug", "mcp-proxy", "https://ws/x"])
+        removed = codex.write_user_mcp_servers({"github": entry}, {"github"})
+
+        doc = read_toml_safe(path)
+        assert removed == {"github"}
+        assert doc["model"] == "gpt-5"
+        assert doc["mcp_servers"]["mine"]["command"] == "x"
+        assert dict(doc["mcp_servers"]["github"]) == entry
+
     def test_adds_and_preserves_other_tables(self, tmp_path, monkeypatch):
         path = tmp_path / "config.toml"
         path.write_text('model = "gpt-5"\n\n[mcp_servers.mine]\ncommand = "x"\nargs = []\n')
@@ -2634,38 +2657,34 @@ class TestWriteUserMcpServers:
         path.write_text("this is = = not valid toml [[[")
         monkeypatch.setattr(codex, "LEGACY_CODEX_CONFIG_PATH", path)
         added: list[tuple[str, list]] = []
-        http_added: list[tuple[str, str, str]] = []
         removed: list[str] = []
         import ucode.mcp as mcp_mod
 
         monkeypatch.setattr(
             mcp_mod, "add_codex_mcp_server", lambda n, argv: added.append((n, argv))
         )
-        monkeypatch.setattr(
-            mcp_mod,
-            "add_codex_http_mcp_server",
-            lambda n, url, client_id: http_added.append((n, url, client_id)),
-        )
         monkeypatch.setattr(mcp_mod, "remove_codex_mcp_server", lambda n: removed.append(n) or True)
 
-        # An HTTP+OAuth entry (no `command`) alongside a stdio one: the fallback must dispatch on
-        # shape, not blindly read entry["command"] (which KeyError'd), and register HTTP as HTTP.
+        # A malformed file is left intact while stdio registration uses the CLI fallback.
         codex.write_user_mcp_servers(
-            {
-                "svc": {"command": "ug", "args": ["mcp-proxy", "u"]},
-                "gh": {
-                    "url": "https://ws/x",
-                    "oauth_resource": "https://ws/x",
-                    "oauth": {"client_id": "codex-cli"},
-                },
-            },
+            {"svc": {"command": "ug", "args": ["mcp-proxy", "u"]}},
             {"old"},
         )
 
         assert path.read_text() == "this is = = not valid toml [[["  # never overwritten
         assert added == [("svc", ["ug", "mcp-proxy", "u"])]
-        assert http_added == [("gh", "https://ws/x", "codex-cli")]
         assert removed == ["old"]
+
+    def test_unparseable_file_does_not_start_native_oauth_login(self, tmp_path, monkeypatch):
+        path = tmp_path / "config.toml"
+        path.write_text("this is = = not valid toml [[[", encoding="utf-8")
+        monkeypatch.setattr(codex, "LEGACY_CODEX_CONFIG_PATH", path)
+        with pytest.raises(RuntimeError, match="invalid TOML"):
+            codex.write_user_mcp_servers(
+                {"github": codex.managed_mcp_http_entry("https://ws/mcp", "https://client/id")},
+                {"github"},
+            )
+        assert path.read_text(encoding="utf-8") == "this is = = not valid toml [[["
 
     @pytest.fixture(autouse=True)
     def _clear_codex_home_env(self, monkeypatch):

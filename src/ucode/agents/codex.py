@@ -997,11 +997,7 @@ def managed_mcp_entry(argv: list[str]) -> dict:
 
 
 def managed_mcp_http_entry(url: str, client_id: str) -> dict:
-    """A ``[mcp_servers.<name>]`` **direct HTTP+OAuth** entry: Codex is the OAuth client and drives
-    the connection login itself (the batched analogue of ``add_codex_http_mcp_server``). ``url`` is
-    both the server URL and the RFC 8707 ``oauth_resource``; ``client_id`` is the published
-    ``codex-cli`` app. Codex derives its per-server loopback ``/callback/<hash>`` redirect at login,
-    so no callback need be written here."""
+    """A native HTTP MCP entry using Codex's published CIMD client."""
     return {"url": url, "oauth_resource": url, "oauth": {"client_id": client_id}}
 
 
@@ -1031,25 +1027,19 @@ def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
     per server. Other tables and the developer's own servers are preserved. Returns the subset of
     ``remove`` names that were actually present (so callers can report only real removals).
 
-    If the file exists but can't be parsed, defer to the per-server ``codex`` CLI rather than
-    overwrite it."""
-    from ucode.mcp import (
-        add_codex_http_mcp_server,
-        add_codex_mcp_server,
-        remove_codex_mcp_server,
-    )
+    If the file exists but can't be parsed, defer entries to the per-server ``codex`` CLI."""
+    from ucode.mcp import add_codex_mcp_server, remove_codex_mcp_server
 
     path = user_mcp_config_path()
     doc = _read_user_config_for_rewrite(path)
     if doc is None:
+        if any("url" in entry for entry in add.values()):
+            raise RuntimeError(
+                f"Cannot register native OAuth MCP server: Codex config is invalid TOML at {path}."
+            )
         removed = {name for name in remove if remove_codex_mcp_server(name)}
         for name, entry in add.items():
-            # Dispatch on entry shape: a native HTTP+OAuth entry has `url` (+ `oauth.client_id`)
-            # and no `command`, so it must go through the HTTP CLI path, not the stdio proxy one.
-            if "url" in entry:
-                add_codex_http_mcp_server(name, entry["url"], entry["oauth"]["client_id"])
-            else:
-                add_codex_mcp_server(name, [entry["command"], *entry.get("args", [])])
+            add_codex_mcp_server(name, [entry["command"], *entry.get("args", [])])
         return removed
 
     table = doc.get(MANAGED_MCP_CONFIG_KEY)
