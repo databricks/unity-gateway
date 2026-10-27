@@ -782,6 +782,16 @@ def _iter_databricks_executables() -> list[str]:
     return found
 
 
+def _databricks_cli_version_output(path: str) -> str:
+    result = run([path, "--version"], check=False, capture_output=True, text=True, timeout=10)
+    # A wrapper can write to stdout while the CLI reports its version on stderr.
+    return "\n".join(
+        stream if isinstance(stream, str) else stream.decode(errors="replace")
+        for stream in (result.stdout, result.stderr)
+        if stream
+    ).strip()
+
+
 def _read_databricks_cli_version(path: str) -> tuple[int, int, int] | None:
     """Run ``<path> --version`` and parse it. None on any subprocess or parse failure.
 
@@ -789,11 +799,9 @@ def _read_databricks_cli_version(path: str) -> tuple[int, int, int] | None:
     place — every other caller reads a version through ``databricks_cli_path()``.
     """
     try:
-        result = run([path, "--version"], check=False, capture_output=True, text=True, timeout=10)
+        output = _databricks_cli_version_output(path)
     except (OSError, subprocess.TimeoutExpired):
         return None
-    raw = result.stdout or result.stderr or ""
-    output = (raw if isinstance(raw, str) else raw.decode(errors="replace")).strip()
     return _parse_databricks_cli_version(output)
 
 
@@ -972,23 +980,22 @@ def ensure_databricks_cli_version(
 
     parsed = [(path, version) for path, version in clis if version is not None]
     if not parsed:
-        # Best-effort sample for the error message: the binary we'd run's raw
-        # `--version` output (already known unparseable, but worth showing why).
+        # Discovery can fail transiently; the diagnostic probe is also one bounded retry.
+        retry_path = clis[0][0]
         try:
-            result = run(
-                [databricks_cli_path(), "--version"],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            raw = result.stdout or result.stderr or ""
-            output = (raw if isinstance(raw, str) else raw.decode(errors="replace")).strip()
+            output = _databricks_cli_version_output(retry_path)
         except (OSError, subprocess.TimeoutExpired) as exc:
-            output = f"<error reading version: {exc}>"
-        raise RuntimeError(
-            f"Could not parse Databricks CLI version from `databricks --version` output: {output!r}"
-        )
+            raise RuntimeError(
+                f"Failed to read Databricks CLI version from {retry_path!r} after retry: {exc}"
+            ) from exc
+        retry_version = _parse_databricks_cli_version(output)
+        if retry_version is None:
+            raise RuntimeError(
+                f"Could not parse Databricks CLI version from `databricks --version` output: {output!r}"
+            )
+        # The cache shares this list; the other candidates still have unknown versions.
+        clis[0] = (retry_path, retry_version)
+        parsed = [(retry_path, retry_version)]
 
     newest_path, newest_version = max(parsed, key=lambda item: item[1])
     if newest_version < minimum:
@@ -1001,10 +1008,10 @@ def ensure_databricks_cli_version(
         ensure_databricks_cli_version(minimum)
         return
 
-    # A discovered CLI already meets the floor: drop the cached resolution so
-    # `databricks_cli_path()` re-resolves to it (it may differ from whatever was
-    # cached before this call, e.g. right after an install).
-    clear_databricks_cli_cache()
+    # Discovery already refreshed the cache. Keep the successful probe for later
+    # CLI calls instead of repeating a possibly transient failure.
+    with _AUTH_LOGIN_NO_BROWSER_SUPPORT_LOCK:
+        _AUTH_LOGIN_NO_BROWSER_SUPPORT.clear()
 
 
 def databricks_cli_version() -> tuple[int, int, int] | None:

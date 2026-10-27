@@ -4288,6 +4288,19 @@ class TestDatabricksCliResolution:
         )
         assert db_mod._read_databricks_cli_version("/usr/bin/databricks") == (1, 20, 0)
 
+    @pytest.mark.parametrize("as_bytes", [False, True])
+    def test_read_version_checks_stderr_when_stdout_has_other_output(self, monkeypatch, as_bytes):
+        stdout = "Starting CLI wrapper"
+        stderr = "Databricks CLI v1.20.0"
+        if as_bytes:
+            stdout, stderr = stdout.encode(), stderr.encode()
+        monkeypatch.setattr(
+            db_mod,
+            "run",
+            lambda *a, **kw: subprocess.CompletedProcess(a, 0, stdout, stderr),
+        )
+        assert db_mod._read_databricks_cli_version("/usr/bin/databricks") == (1, 20, 0)
+
     # -- databricks_cli_installed ----------------------------------------------
 
     def test_installed_true_when_discovery_finds_a_cli(self, monkeypatch):
@@ -4323,6 +4336,107 @@ class TestEnsureDatabricksCliVersion:
         env = self._fake_databricks(tmp_path, "Databricks CLI v1.0.0")
         monkeypatch.setattr("os.environ", env)
         ensure_databricks_cli_version()  # should not raise
+
+    def test_version_check_refreshes_auth_capabilities(self, tmp_path, monkeypatch):
+        env = self._fake_databricks(tmp_path, "Databricks CLI v1.20.0")
+        monkeypatch.setattr("os.environ", env)
+        cli = databricks_cli_path()
+        assert not db_mod._auth_login_supports_no_browser(cli)
+
+        _write_fake_executable(
+            tmp_path,
+            "databricks",
+            "print('--no-browser' if '--help' in sys.argv else 'Databricks CLI v1.21.0')\n",
+        )
+
+        ensure_databricks_cli_version()
+
+        assert databricks_cli_version() == (1, 21, 0)
+        assert db_mod._auth_login_supports_no_browser(cli)
+
+    @pytest.mark.parametrize("first_failure", ["timeout", "oserror", "unparseable"])
+    def test_successful_retry_is_accepted_and_cached(self, tmp_path, monkeypatch, first_failure):
+        env = self._fake_databricks(tmp_path, "Databricks CLI v1.20.0")
+        monkeypatch.setattr("os.environ", env)
+        real_run = db_mod.run
+        calls = []
+
+        def run_with_transient_failure(args, **kwargs):
+            calls.append(args)
+            if len(calls) == 1:
+                # Inject external process failure without waiting for the ten-second timeout.
+                if first_failure == "timeout":
+                    raise subprocess.TimeoutExpired(args, 10)
+                if first_failure == "oserror":
+                    raise OSError("temporarily unavailable")
+                return subprocess.CompletedProcess(args, 0, "incomplete output", "")
+            return real_run(args, **kwargs)
+
+        monkeypatch.setattr(db_mod, "run", run_with_transient_failure)
+
+        ensure_databricks_cli_version()
+
+        assert databricks_cli_version() == (1, 20, 0)
+        assert databricks_cli_path() == calls[0][0]
+        assert len(calls) == 2
+        assert calls[0] == calls[1]
+
+    @pytest.mark.parametrize("failure", ["timeout", "oserror"])
+    def test_repeated_probe_failure_is_bounded(self, tmp_path, monkeypatch, failure):
+        env = self._fake_databricks(tmp_path, "Databricks CLI v1.20.0")
+        monkeypatch.setattr("os.environ", env)
+        calls = []
+        error = (
+            subprocess.TimeoutExpired("databricks --version", 10)
+            if failure == "timeout"
+            else OSError("temporarily unavailable")
+        )
+
+        def fail_probe(args, **kwargs):
+            calls.append(args)
+            raise error
+
+        monkeypatch.setattr(db_mod, "run", fail_probe)
+        monkeypatch.setattr(
+            db_mod,
+            "_run_databricks_cli_installer",
+            lambda **kwargs: pytest.fail("probe failures must not trigger installation"),
+        )
+
+        with pytest.raises(RuntimeError, match="Failed to read Databricks CLI version") as exc_info:
+            ensure_databricks_cli_version()
+
+        assert len(calls) == 2
+        assert exc_info.value.__cause__ is error
+        assert str(error) in str(exc_info.value)
+
+    def test_retry_below_custom_minimum_still_upgrades(self, tmp_path, monkeypatch):
+        env = self._fake_databricks(tmp_path, "Databricks CLI v1.8.0")
+        monkeypatch.setattr("os.environ", env)
+        real_run = db_mod.run
+        calls = []
+        upgrades = []
+
+        def run_with_initial_timeout(args, **kwargs):
+            calls.append(args)
+            if len(calls) == 1:
+                raise subprocess.TimeoutExpired(args, 10)
+            return real_run(args, **kwargs)
+
+        def install_newer_cli(brew_subcommand="install"):
+            # Replace the external installer so the test only updates its temporary CLI.
+            upgrades.append(brew_subcommand)
+            self._fake_databricks(tmp_path, "Databricks CLI v1.11.0")
+            clear_databricks_cli_cache()
+
+        monkeypatch.setattr(db_mod, "run", run_with_initial_timeout)
+        monkeypatch.setattr(db_mod, "_run_databricks_cli_installer", install_newer_cli)
+
+        ensure_databricks_cli_version((1, 11, 0))
+
+        assert upgrades == ["upgrade"]
+        assert databricks_cli_version() == (1, 11, 0)
+        assert len(calls) == 3
 
     def test_auto_upgrades_when_version_too_old(self, tmp_path, monkeypatch):
         import ucode.databricks as db_mod

@@ -152,6 +152,14 @@ timeout. Offline PTY checks cover this ordering.
 The shared wait also runs before CUJ4's Claude preset sessions exit, after delegated-task
 evidence is checked, because Claude can resume a child after its first completed answer.
 
+`TestEnsureDatabricksCliVersion` in `../test_databricks.py` covers one bounded
+version-probe retry after timeout, process failure, or malformed output; a successful
+retry remains subject to the minimum version and is retained for subsequent CLI calls.
+Component checks also cover version output on stderr alongside unrelated stdout,
+preserve process-failure diagnostics after the retry, and refresh auth capabilities
+when a CLI changes at the same path. These checks do not establish live agent startup
+latency or explain the underlying CLI timeout.
+
 `../test_startup_imports.py` covers the bare version fast path, deferred imports,
 metadata fallback, and other-argument dispatch as component checks. Installation
 checks still exercise real console-script help and version output; neither suite
