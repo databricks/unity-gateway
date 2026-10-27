@@ -268,7 +268,8 @@ exit code 0, deletes the UG profile, and restores the previous selection without
 workspace state; a repeated revert also returns 0.
 
 `test_cowork_plugin.py` covers active Cowork-root discovery, ambiguous-profile refusal,
-generated marketplace/plugin/MCP manifests, current-workspace managed-skill selection,
+generated marketplace/plugin/MCP manifests, the generated connector skill naming Claude-only
+MCP servers, current-workspace managed-skill selection,
 Claude-only MCP filtering, absolute proxy executables, saved PAT mode, custom-OAuth refusal,
 install/update selection, idempotent cleanup, and saved-root removal. Alias checks cover
 short service-first names, unchanged proxy routing, custom-name preservation,

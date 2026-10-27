@@ -71,7 +71,8 @@ to discovery or change ug's saved default.
 `ug copilot` lists every Claude and GPT model you can use on the workspace in
 Copilot's `/model` picker, and you can switch between them mid-session. Claude
 models use the Anthropic Messages API, GPT-5 and newer use Responses, and older
-GPT models use Chat Completions. Gemini and open-source models aren't offered.
+GPT models use Chat Completions. Gemini and open-source models aren't offered, except under
+`--model-location` (below).
 `ug copilot --model claude-opus-5-5` (or `system.ai.claude-opus-5-5`, or Copilot's
 own `dbx-anthropic/system.ai.claude-opus-5-5`) picks the model a session starts on;
 an unknown or unsupported model fails before Copilot starts and lists the
@@ -95,15 +96,17 @@ Bedrock service, and the chat models of an OpenAI, Azure OpenAI or Microsoft Fou
 allows every model, `/model` lists the models the gateway reports for it, which the provider
 account may not serve; name the one to start on with `--model`. Services that relay a Claude subscription work only with Claude Code. Interactive
 `ug configure` offers the matching services under **External Models**, and a managed workspace
-config can set one for Copilot.
+config can set one for Copilot. `ug copilot --model-location <catalog>.<schema>` uses the model
+services of one schema instead: services named like Claude or GPT models use their usual API, and
+the rest go through the gateway's Anthropic endpoint, as for Claude Code.
 
 Without a managed workspace config, `ug claude` automatically discovers gateway
 models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when
 no provider or model location is selected. Use `--provider` or `--model-location`
 to select another model source; managed workspace configs control their own sources.
 Interactive `ug configure` also offers a **Custom Model Location** (`<catalog>.<schema>`) for
-Claude Code and Codex alongside Databricks Hosted and External Models. The choice is saved
-with the rest of the configuration, so later `ug claude` / `ug codex` launches use it; an
+Claude Code, Codex and Copilot alongside Databricks Hosted and External Models. The choice is saved
+with the rest of the configuration, so later `ug claude` / `ug codex` / `ug copilot` launches use it; an
 explicit `--provider` or `--model-location` still overrides it for that launch.
 
 `ug codex` validates discovered models with the installed Codex binary and publishes

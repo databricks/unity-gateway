@@ -63,7 +63,9 @@ UG owns these local files:
 Start a new Cowork session after configure. Plugin MCP servers connect asynchronously and
 may take a few seconds to appear, so a tool can be absent on the first model turn. Deferred
 tool search or a retry after another tool call should find it. The resulting tool name follows
-Claude's `mcp__plugin_<plugin>_<server>__<tool>` pattern.
+Claude's `mcp__plugin_<plugin>_<server>__<tool>` pattern. When the plugin has MCP servers, UG
+also generates a `unity-gateway-connectors` skill whose description names them, so Claude knows
+the connectors exist on the first turn instead of asking whether they are connected.
 
 Cowork plugin support can still be disabled by Anthropic account feature flags or managed
 Desktop policy. UG treats installation as best-effort: failure warns but does not fail Claude
