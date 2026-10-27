@@ -20,6 +20,7 @@ PLUGIN_NAME = "unity-gateway"
 PLUGIN_ID = f"{PLUGIN_NAME}@{MARKETPLACE_NAME}"
 STATE_FILENAME = "claude-cowork.json"
 MARKETPLACE_DIRECTORY_NAME = "claude-cowork-marketplace"
+CONNECTOR_SKILL_NAME = "unity-gateway-connectors"
 
 _COWORK_MARKERS = (
     "cowork_settings.json",
@@ -285,6 +286,8 @@ def _write_marketplace(
         _write_json(staging / ".claude-plugin" / "marketplace.json", marketplace)
         _write_json(staging_plugin / ".claude-plugin" / "plugin.json", plugin)
         _copy_skills(staging_plugin / "skills", skill_records)
+        if mcp_config["mcpServers"]:
+            _write_connector_skill(staging_plugin / "skills", list(mcp_config["mcpServers"]))
 
         if backup.exists():
             shutil.rmtree(backup)
@@ -315,6 +318,28 @@ def _copy_skills(destination: Path, records: list[dict]) -> None:
         destination.mkdir(parents=True, exist_ok=True)
         shutil.copytree(source, destination / bundle_name)
         copied.add(bundle_name)
+
+
+def _write_connector_skill(destination: Path, server_names: list[str]) -> None:
+    # Skill descriptions are in context from the first turn; plugin MCP tools connect
+    # lazily, so without this Claude asks whether a connector exists instead of using it.
+    skill_dir = destination / CONNECTOR_SKILL_NAME
+    if skill_dir.exists():
+        return
+    connectors = ", ".join(f"`{PLUGIN_NAME}:{name}`" for name in server_names)
+    description = (
+        f"Unity Gateway connectors are available in this session: {connectors}. "
+        "Use the matching connector for any request about the user's own resources on "
+        "those services, such as their pull requests, issues, tickets, pages, mail, or "
+        "files. If its tools are not loaded yet, search for them. Do not ask whether the "
+        "service is connected or say it is unavailable before trying the connector."
+    )
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {CONNECTOR_SKILL_NAME}\ndescription: {json.dumps(description)}\n---\n\n"
+        f"{description}\n",
+        encoding="utf-8",
+    )
 
 
 def _claude_skill_directory(record: dict) -> Path | None:
