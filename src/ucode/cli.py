@@ -2695,7 +2695,7 @@ def _router_hook_token(host: str, profile: str | None, use_pat: bool) -> str | N
     # Refresh through the same client the launch used, including CLI-backed custom OAuth.
     state = {**load_full_state().get("workspaces", {}).get(host, {}), "profile": profile}
     try:
-        return smart_routing_v2.routing_token(state, host, force_refresh=True)
+        return custom_oauth.launch_token(state, host, force_refresh=True)
     except RuntimeError:
         return None
 

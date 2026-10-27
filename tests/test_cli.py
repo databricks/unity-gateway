@@ -1332,7 +1332,7 @@ class TestSubcommandRouting:
         }
         with (
             patch(
-                "ucode.smart_routing.v2.get_databricks_token", return_value="fresh-token"
+                "ucode.custom_oauth.get_databricks_token", return_value="fresh-token"
             ) as mock_token,
             patch(
                 "ucode.smart_routing.codex_routing.route_pre_tool_use",
@@ -1492,7 +1492,7 @@ class TestSubcommandRouting:
         launch_token = _jwt(time.time() + expires_in)
         with (
             patch(
-                "ucode.smart_routing.v2.get_databricks_token", return_value="fresh-token"
+                "ucode.custom_oauth.get_databricks_token", return_value="fresh-token"
             ) as mock_token,
             patch(
                 "ucode.cli.smart_routing_v2.route_claude_subagent", return_value={"model": "m"}
@@ -1537,9 +1537,9 @@ class TestSubcommandRouting:
                 "ucode.cli.load_full_state",
                 return_value={"workspaces": {"https://example.com": {"custom_oauth": custom}}},
             ),
-            patch("ucode.smart_routing.v2.get_databricks_token") as default_token,
+            patch("ucode.custom_oauth.get_databricks_token") as default_token,
             patch(
-                "ucode.smart_routing.v2.get_custom_client_token", return_value="custom-token"
+                "ucode.custom_oauth.get_custom_client_token", return_value="custom-token"
             ) as custom_token,
             patch(
                 "ucode.cli.smart_routing_v2.route_claude_subagent", return_value={"model": "m"}
