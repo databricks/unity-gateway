@@ -7584,3 +7584,41 @@ class TestLaunchWithManagedFilePicker:
         assert result.exit_code == 0, result.output
         # The launch's own source supplies the models, so the picker neither seeds nor skips.
         assert calls["configure"].call_args.args[1]["claude_models"] == discovered
+
+
+def test_launch_reuses_catalog_but_next_launch_reads_again(monkeypatch):
+    """Family discovery, picker setup and the next launch retain matching model metadata."""
+    shared = cli_mod.configure_shared_state
+    requests = []
+
+    def gateway_get(url, token, **kwargs):
+        requests.append(url)
+        return {"data": [{"id": "databricks-claude-sonnet-4", "display_name": "Sonnet"}]}, None
+
+    # Substitute external authentication/UC services and the final agent boundary;
+    # run actual shared-state configuration, family discovery and picker construction.
+    monkeypatch.setattr(db_mod, "_http_get_json", gateway_get)
+    monkeypatch.setattr(cli_mod, "ensure_databricks_auth", lambda *_a: None)
+    monkeypatch.setattr(
+        cli_mod, "probe_unity_gateway_capabilities", lambda *_a: MODEL_SERVICE_PROBE
+    )
+    monkeypatch.setattr(
+        cli_mod, "discover_model_services", lambda *_a: ({}, [], [], [], "no UC models")
+    )
+    monkeypatch.setattr(cli_mod, "discover_codex_models", lambda *_a: (["gpt-5"], None))
+    with _launch_policy_patches(None) as calls:
+        calls["state"]["profile"] = "test-profile"
+        calls["shared"].side_effect = shared
+        calls["list_catalog"].side_effect = db_mod.list_anthropic_model_catalog
+
+        def handoff(*_args, **_kwargs):
+            assert db_mod._ANTHROPIC_MODELS_CACHE.get() is None
+
+        calls["launch"].side_effect = handoff
+        for _ in range(2):
+            result = runner.invoke(app, ["claude"])
+            assert result.exit_code == 0, result.output
+            catalog = calls["configure"].call_args.kwargs["picker_catalog"]
+            assert "databricks-claude-sonnet-4" in catalog.model_ids
+            assert catalog.model_id_to_display_name["databricks-claude-sonnet-4"] == "Sonnet"
+    assert len(requests) == 2

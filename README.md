@@ -58,6 +58,9 @@ ug cursor   # Cursor Agent, MCP-only
 On first launch of a model-backed agent, `ug` prompts for a Databricks
 workspace, authenticates, and writes local agent config. Later launches reuse
 the saved workspace and credentials.
+Within a launch, Claude family selection and picker setup share a successful catalog response
+for the same workspace, credentials, and request headers. The next launch reads a fresh catalog;
+failed reads are not cached.
 
 When Claude Code or Codex is older than the minimum version `ug` supports, `ug`
 asks before upgrading it in place. Set `UG_AUTO_UPGRADE_AGENT=1` to upgrade
