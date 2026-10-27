@@ -194,7 +194,8 @@ class TestRunConnectionLogin:
         assert len(requests) == 3
 
     @pytest.mark.parametrize(
-        "failure", [429, 500, 502, 503, 504, urllib_error.URLError("offline"), TimeoutError("slow")]
+        "failure",
+        [429, 500, 501, 502, 503, 504, 599, urllib_error.URLError("offline"), TimeoutError("slow")],
     )
     def test_transient_status_errors_can_recover(self, sign_in, failure):
         states, _, _, _ = sign_in

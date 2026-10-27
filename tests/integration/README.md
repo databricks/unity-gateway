@@ -499,9 +499,7 @@ FAILED, and 404 states keep waiting; transient errors can recover; denied/malfor
 workspace-token failures, and timeout fail. A blocked browser retains the manual URL.
 Success requires ACTIVE; browser launch alone is insufficient. Proxy coverage combines
 this browser flow with request replay, preserving the profile and token
-memo. Temporary-config regressions also check legacy MCP-resource cleanup before workspace
-CLI login and Desktop-helper token refresh, unrelated-setting preservation, and safe write
-failure. These are component tests; live provider sign-in, popup behavior, and native
+memo. These are component tests; live provider sign-in, popup behavior, and native
 Desktop/Cowork recovery remain unverified.
 
 `../test_cowork_skills.py` adds component coverage for user-downloaded skills reaching
@@ -1436,11 +1434,8 @@ workspace.
 
 Browser MCP review regressions check stale ACTIVE credentials wait for a changed credential
 or an observed non-ACTIVE state, pending provisioning continues, and missing services fail
-before browser launch even with a cached workspace ID. Config migration runs only before
-workspace login; ordinary token retrieval leaves saved resources untouched. Malformed
-unrelated profile hosts remain unchanged; malformed retained resource lists fail
-without changing the file. Polling bounds each HTTP call by the remaining deadline
-and never reports success from a late response. These component tests control external boundaries
+before browser launch even with a cached workspace ID. Polling bounds each HTTP call
+by the remaining deadline and never reports success from a late response. These component tests control external boundaries
 and do not establish live browser sign-in or endpoint availability.
 
 Pre-browser credential reads retry transient HTTP/network failures twice before reporting failure.

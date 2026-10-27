@@ -41,10 +41,7 @@ from ucode.constants import (
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
 )
 from ucode.os_compatibility import subprocess_cross_os
-from ucode.os_compatibility.file_lock_cross_os import (
-    acquire_exclusive_file_lock,
-    release_file_lock,
-)
+from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock
 from ucode.telemetry import ucode_user_agent, ug_version
 from ucode.ug_headers import ug_headers
 from ucode.ui import (
@@ -712,113 +709,6 @@ def run(
             else {"stdout": status_subprocess_stdout()}
         ),
     )
-
-
-def _without_mcp_login_resources(text: str, workspace: str, profile: str) -> str:
-    """Remove legacy MCP resources without rewriting unrelated profile settings."""
-    parser = configparser.ConfigParser(default_section="@ucode-no-defaults@", interpolation=None)
-    parser.read_string(text)
-    if not parser.has_section(profile):
-        return text
-    section = parser[profile]
-    if section.get("auth_type") != "databricks-cli" or not section.get("host"):
-        return text
-    origin = workspace_origin(workspace)
-    try:
-        if workspace_origin(section["host"].lower()) != origin.lower():
-            return text
-    except (RuntimeError, ValueError):
-        return text
-    resources = [value.strip() for value in section.get("resources", "").split(",")]
-
-    def is_mcp_resource(value: str) -> bool:
-        try:
-            parsed = urlparse(value)
-            if f"{parsed.scheme}://{parsed.netloc}".lower() != origin.lower():
-                return False
-            if not parsed.path.startswith(AIGW_MCP_SERVICES_SEGMENT):
-                return False
-            name = parsed.path[len(AIGW_MCP_SERVICES_SEGMENT) :]
-            return "/" not in name and len(name.split(".")) == 3 and all(name.split("."))
-        except ValueError:
-            return False
-
-    remaining = [value for value in resources if not is_mcp_resource(value)]
-    if any("\n" in value or "\r" in value for value in remaining):
-        raise configparser.Error("Malformed multiline resource entry")
-    if remaining == resources:
-        return text
-    lines = []
-    current_section = None
-    resource_indent = None
-    for line in text.splitlines(keepends=True):
-        header = re.match(r"[ \t]*\[([^]]+)\]", line)
-        if header:
-            current_section = header[1]
-            resource_indent = None
-        resource = re.match(r"([ \t]*resources[ \t]*[=:][ \t]*)", line, re.IGNORECASE)
-        if current_section == profile and resource:
-            resource_indent = len(line) - len(line.lstrip())
-            if remaining:
-                newline = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
-                lines.append(f"{resource[1]}{','.join(remaining)}{newline}")
-            continue
-        if (
-            resource_indent is not None
-            and line.strip()
-            and not line.lstrip().startswith(("#", ";"))
-        ):
-            if len(line) - len(line.lstrip()) > resource_indent:
-                continue
-            resource_indent = None
-        lines.append(line)
-    return "".join(lines)
-
-
-def _clear_mcp_login_resources(workspace: str, profile: str | None) -> None:
-    if profile is None:
-        return
-    try:
-        path = (
-            Path(os.environ.get("DATABRICKS_CONFIG_FILE") or "~/.databrickscfg")
-            .expanduser()
-            .resolve()
-        )
-        if not path.is_file():
-            return
-        raw = path.read_bytes()
-        if b"resources" not in raw.lower():
-            return
-        if _without_mcp_login_resources(raw.decode("utf-8"), workspace, profile).encode() == raw:
-            return
-        with path.with_name(f".{path.name}.ug.lock").open("a+b") as lock_file:
-            acquire_exclusive_file_lock(lock_file, timeout=5)
-            try:
-                raw = path.read_bytes()
-                updated = _without_mcp_login_resources(raw.decode("utf-8"), workspace, profile)
-                if updated.encode("utf-8") == raw:
-                    return
-                fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
-                try:
-                    with os.fdopen(fd, "wb") as handle:
-                        handle.write(updated.encode("utf-8"))
-                    os.chmod(temporary, path.stat().st_mode & 0o777)
-                    os.replace(temporary, path)
-                finally:
-                    Path(temporary).unlink(missing_ok=True)
-            finally:
-                release_file_lock(lock_file)
-    except (OSError, UnicodeError, configparser.Error) as exc:
-        raise RuntimeError(
-            f"Could not remove saved MCP login resources from Databricks CLI profile '{profile}'. "
-            "Remove its MCP service URLs from the `resources` setting and retry."
-        ) from exc
-
-
-def prepare_databricks_login_env(workspace: str, profile: str | None) -> dict[str, str]:
-    # CLI login inherits saved resources, which would sign in unrelated connectors.
-    _clear_mcp_login_resources(workspace, profile)
-    return build_databricks_cli_env(workspace, profile)
 
 
 def build_databricks_cli_env(workspace: str, profile: str | None = None) -> dict[str, str]:
@@ -1490,7 +1380,7 @@ def run_databricks_login(workspace: str, profile: str | None = None) -> None:
             workspace,
             *_profile_args(profile_name),
         ]
-        run(cmd, env=prepare_databricks_login_env(workspace, profile_name), timeout=300)
+        run(cmd, env=build_databricks_cli_env(workspace, profile_name), timeout=300)
     except subprocess.CalledProcessError as exc:
         raise RuntimeError("`databricks auth login` failed.") from exc
     except subprocess.TimeoutExpired as exc:
@@ -1707,6 +1597,7 @@ def _auth_login_supports_no_browser(cli: str) -> bool:
 def _browser_login(
     workspace: str,
     profile: str | None,
+    env: dict[str, str],
     fetch: Callable[[], tuple[str, float | None]],
 ) -> tuple[str, float | None]:
     """Serialize browser sign-in across helpers sharing the CLI's callback port."""
@@ -1736,7 +1627,7 @@ def _browser_login(
                 stdin=subprocess.DEVNULL,
                 stdout=sys.stderr,
                 stderr=sys.stderr,
-                env=prepare_databricks_login_env(workspace, profile),
+                env=env,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             _debug("auth login", f"exception: {type(exc).__name__}: {exc}")
@@ -1876,7 +1767,7 @@ def _fetch_databricks_token_for_profile(
     token, lifetime_s = _fetch_with_lock_retry()
     if not token and browser_login and not transient_failure:
         # A desktop app's helper has no terminal to finish a non-browser login.
-        token, lifetime_s = _browser_login(workspace, profile, _fetch_with_lock_retry)
+        token, lifetime_s = _browser_login(workspace, profile, env, _fetch_with_lock_retry)
     elif not token and _auth_login_supports_no_browser(cli):
         # Session may have expired — attempt non-interactive re-auth and retry once.
         _debug("auth token", "empty on first fetch; attempting auth login --no-browser")
@@ -1893,7 +1784,7 @@ def _fetch_databricks_token_for_profile(
                 ],
                 capture_output=True,
                 text=True,
-                env=prepare_databricks_login_env(workspace, profile),
+                env=env,
                 timeout=30,
             )
             _debug("auth login", _format_subprocess_result(reauth))

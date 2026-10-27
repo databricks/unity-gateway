@@ -6,6 +6,7 @@ session stays unchanged. Poll that user's credential before retrying the MCP req
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 import time
@@ -26,9 +27,7 @@ _POLL_INTERVAL_SECONDS = 2
 
 
 def _retryable_credential_error(reason: str) -> bool:
-    return reason.startswith(
-        ("HTTP 429 ", "HTTP 500 ", "HTTP 502 ", "HTTP 503 ", "HTTP 504 ", "network error:")
-    )
+    return re.match(r"^(?:HTTP (?:429|5[0-9]{2}) |network error:)", reason) is not None
 
 
 def connection_from_url(url: str) -> str | None:

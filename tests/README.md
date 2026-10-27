@@ -364,11 +364,7 @@ Concurrent callers share a per-profile fetch, and an in-flight result cannot
 restore a memo invalidated by login.
 Fake CLI subprocesses check that re-auth runs only when a successful help probe
 advertises `--no-browser`. Search component tests verify token reuse and transient
-timeout retries. Saved-resource cleanup regressions use real temporary config files
-to check matching OAuth profiles, literal `DEFAULT`, mixed/multiline resource lists,
-comments, LF/CRLF, permissions, and preservation of unrelated profiles and settings.
-Workspace login and Desktop-helper cases verify cleanup before invoking CLI authentication;
-atomic-write failures preserve the original config and fail without starting CLI auth.
+timeout retries.
 `test_mcp_connection_login.py` controls only browser, HTTP, and clock boundaries. It checks
 service-name encoding, workspace-ID resolution, the selected profile user's credential,
 pending/FAILED/404 states, transient errors, denial, malformed responses, wrong-account
@@ -898,11 +894,8 @@ answer text, intervening prompts, and nonadjacent or unrelated spawn rows.
 
 Browser MCP review regressions check stale ACTIVE credentials wait for a changed credential
 or an observed non-ACTIVE state, pending provisioning continues, and missing services fail
-before browser launch even with a cached workspace ID. Config migration runs only before
-workspace login; ordinary token retrieval leaves saved resources untouched. Malformed
-unrelated profile hosts remain unchanged; malformed retained resource lists fail
-without changing the file. Polling bounds each HTTP call by the remaining deadline
-and never reports success from a late response. These component tests control external boundaries
+before browser launch even with a cached workspace ID. Polling bounds each HTTP call
+by the remaining deadline and never reports success from a late response. These component tests control external boundaries
 and do not establish live browser sign-in or endpoint availability.
 
 Pre-browser credential reads retry transient HTTP/network failures twice before reporting failure.

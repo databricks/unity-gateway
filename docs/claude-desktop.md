@@ -75,14 +75,7 @@ checks that profile user's credential for up to five minutes and retries the ori
 when it is active. Browser launch alone does not establish success. If the browser or provider
 popup does not open, follow the URL in the MCP server log and click Login. On timeout, complete
 sign-in and retry authentication in the agent. This flow does not run CLI `auth login --resource`
-or replace the workspace session. Before CLI token refresh or workspace login, UG removes
-legacy MCP resources saved by the old flow from the selected OAuth profile. Other profile
-settings, resource values, and unrelated profiles are preserved.
-
-Also rerun `ug configure --profile <your-profile> --agents claude` with a profile previously
-used for connector login. Workspace sign-in must not request Atlassian or another connector.
-Confirm its old MCP `resources` entries are gone and other settings remain. In a fresh task,
-request Jira issues to validate connector sign-in and same-turn retry through the browser flow.
+or replace the workspace session.
 
 Cowork plugin support can still be disabled by Anthropic account feature flags or managed
 Desktop policy. UG treats installation as best-effort: failure warns but does not fail Claude
@@ -294,5 +287,3 @@ marked ACTIVE before login must change (for example its expiry metadata), or lea
 and return, before UG confirms reauthentication. PROVISIONING, UPDATING, and DELETING
 continue polling. Missing services fail before launching a browser; a credential 404
 means the selected user has not signed in yet and continues polling until the timeout.
-Legacy resource migration runs only before workspace login. Existing token retrieval
-continues without reading or changing those entries; migration errors block login only.

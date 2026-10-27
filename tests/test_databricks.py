@@ -2611,7 +2611,7 @@ class TestGetDatabricksToken:
         monkeypatch.setattr(
             db_mod.subprocess_cross_os, "run", lambda *_a, **_k: pytest.fail("login ran")
         )
-        assert db_mod._browser_login(WS, None, lambda: ("fresh-token", None)) == (
+        assert db_mod._browser_login(WS, None, {}, lambda: ("fresh-token", None)) == (
             "fresh-token",
             None,
         )
@@ -2626,7 +2626,7 @@ class TestGetDatabricksToken:
         monkeypatch.setattr(
             db_mod.subprocess_cross_os, "run", lambda *_a, **_k: pytest.fail("login ran")
         )
-        assert db_mod._browser_login(WS, None, lambda: ("", None)) == ("", None)
+        assert db_mod._browser_login(WS, None, {}, lambda: ("", None)) == ("", None)
 
     def test_retries_on_cache_lock_contention(self, tmp_path, monkeypatch):
         # Concurrent `databricks auth token` calls racing on the shared token
@@ -5837,165 +5837,3 @@ def test_importing_the_cli_does_not_load_the_databricks_sdk():
         check=True,
     )
     assert result.stdout.strip() == "False"
-
-
-class TestWorkspaceMcpResourceCleanup:
-    WS = "https://workspace.example.com"
-    MCP = f"{WS}/ai-gateway/mcp-services/system.ai.atlassian"
-
-    @pytest.mark.parametrize("profile", ["workspace", "DEFAULT"])
-    @pytest.mark.parametrize("line_end", ["\n", "\r\n"])
-    def test_workspace_login_env_removes_only_saved_mcp_resource(
-        self, monkeypatch, tmp_path, profile, line_end
-    ):
-        config = tmp_path / "databrickscfg"
-        prefix = (
-            f"# keep comments\n[{profile}]\nhost = {self.WS}\nauth_type = databricks-cli\n"
-            "cluster_id = keep-cluster\n"
-        )
-        suffix = (
-            "# keep this too\n[other]\nhost = https://other.example.com\nresources = keep-other\n"
-        )
-        original = prefix + f"resources = {self.MCP}\n" + suffix
-        config.write_bytes(original.replace("\n", line_end).encode())
-        config.chmod(0o600)
-        mode = config.stat().st_mode & 0o777
-        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(config))
-
-        env = db_mod.prepare_databricks_login_env(self.WS, profile)
-
-        assert config.read_bytes() == (prefix + suffix).replace("\n", line_end).encode()
-        assert config.stat().st_mode & 0o777 == mode
-        assert env["DATABRICKS_CONFIG_FILE"] == str(config)
-        db_mod.prepare_databricks_login_env(self.WS, profile)
-        assert config.read_bytes() == (prefix + suffix).replace("\n", line_end).encode()
-
-    def test_cleanup_preserves_unrelated_resource_values(self, monkeypatch, tmp_path):
-        config = tmp_path / "databrickscfg"
-        other = "https://other.example.com/ai-gateway/mcp-services/system.ai.gmail"
-        config.write_text(
-            f"[workspace]\nhost = {self.WS}\nauth_type = databricks-cli\n"
-            f"resources = custom-resource, {self.MCP}, {other}\n"
-        )
-        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(config))
-
-        db_mod.prepare_databricks_login_env(self.WS, "workspace")
-
-        assert config.read_text().endswith(f"resources = custom-resource,{other}\n")
-
-    @pytest.mark.parametrize(
-        ("host", "auth_type", "resource"),
-        [
-            (WS, "databricks-cli", "https://workspace.example.com/not-an-mcp"),
-            (WS, "databricks-cli", "https://workspace.example.com/ai-gateway/mcp-services/"),
-            (
-                WS,
-                "databricks-cli",
-                "https://other.example.com/ai-gateway/mcp-services/system.ai.gmail",
-            ),
-            ("https://other.example.com", "databricks-cli", MCP),
-            (WS, "pat", MCP),
-            ("https://[invalid", "databricks-cli", MCP),
-        ],
-    )
-    def test_unrelated_profiles_and_resources_are_unchanged(
-        self, monkeypatch, tmp_path, host, auth_type, resource
-    ):
-        config = tmp_path / "databrickscfg"
-        original = f"[workspace]\nhost = {host}\nauth_type = {auth_type}\nresources = {resource}\n"
-        config.write_text(original)
-        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(config))
-
-        db_mod.prepare_databricks_login_env(self.WS, "workspace")
-
-        assert config.read_text() == original
-
-    def test_multiline_resources_preserve_comments_and_following_settings(
-        self, monkeypatch, tmp_path
-    ):
-        config = tmp_path / "databrickscfg"
-        prefix = f"[workspace]\nhost = {self.WS.upper()}\nauth_type = databricks-cli\n"
-        suffix = "# keep comment\ncluster_id = keep-cluster\n"
-        config.write_text(prefix + f"Resources = {self.MCP},\n  custom-resource\n" + suffix)
-        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(config))
-
-        db_mod.prepare_databricks_login_env(self.WS, "workspace")
-
-        assert config.read_text() == prefix + "Resources = custom-resource\n" + suffix
-
-    def test_workspace_login_cleans_profile_before_cli_auth(self, monkeypatch, tmp_path):
-        config = tmp_path / "databrickscfg"
-        cleaned = f"[workspace]\nhost = {self.WS}\nauth_type = databricks-cli\n"
-        config.write_text(cleaned + f"resources = {self.MCP}\n")
-        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(config))
-        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "/opt/databricks/databricks")
-        calls = []
-
-        def run(argv, **kwargs):
-            calls.append(argv)
-            assert config.read_text() == cleaned
-            return subprocess.CompletedProcess(argv, 0)
-
-        monkeypatch.setattr(db_mod, "run", run)
-
-        db_mod.run_databricks_login(self.WS, "workspace")
-
-        assert calls == [
-            [
-                "/opt/databricks/databricks",
-                "auth",
-                "login",
-                "--host",
-                self.WS,
-                "--profile",
-                "workspace",
-            ]
-        ]
-        assert config.read_text() == cleaned
-
-    def test_failed_atomic_write_leaves_original_config_and_no_temporary_file(
-        self, monkeypatch, tmp_path
-    ):
-        config = tmp_path / "databrickscfg"
-        original = (
-            f"[workspace]\nhost = {self.WS}\nauth_type = databricks-cli\nresources = {self.MCP}\n"
-        )
-        config.write_text(original)
-        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(config))
-
-        def replace(*args):
-            raise PermissionError("read-only configuration")
-
-        monkeypatch.setattr(db_mod.os, "replace", replace)
-
-        with pytest.raises(RuntimeError, match="Remove its MCP service URLs"):
-            db_mod.prepare_databricks_login_env(self.WS, "workspace")
-
-        assert config.read_text() == original
-        assert [p.name for p in tmp_path.glob(".databrickscfg.*")] == [".databrickscfg.ug.lock"]
-
-    def test_token_environment_does_not_read_or_rewrite_profile(self, monkeypatch, tmp_path):
-        config = tmp_path / "databrickscfg"
-        original = f"[workspace]\nhost = {self.WS}\nresources = {self.MCP}\n"
-        config.write_text(original)
-        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(config))
-
-        def cleanup(*args):
-            raise AssertionError("Token fetch must not migrate configuration")
-
-        monkeypatch.setattr(db_mod, "_clear_mcp_login_resources", cleanup)
-
-        assert db_mod.build_databricks_cli_env(self.WS, "workspace")["DATABRICKS_HOST"] == self.WS
-        assert config.read_text() == original
-
-    def test_malformed_retained_resource_does_not_corrupt_config(self, monkeypatch, tmp_path):
-        config = tmp_path / "databrickscfg"
-        original = (
-            f"[workspace]\nhost = {self.WS}\nauth_type = databricks-cli\n"
-            f"resources = {self.MCP}, custom-resource\n    malformed-continuation\n"
-        )
-        config.write_text(original)
-        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(config))
-        with pytest.raises(RuntimeError, match="Remove its MCP service URLs"):
-            db_mod.prepare_databricks_login_env(self.WS, "workspace")
-        assert config.read_text() == original
