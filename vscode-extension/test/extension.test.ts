@@ -3,7 +3,7 @@ import { afterEach, describe, it } from "node:test";
 import type * as vscode from "vscode";
 import packageJson from "../package.json";
 import { Tokens } from "../src/auth";
-import { DatabricksModels, readSettings, type Settings } from "../src/extension";
+import { DatabricksModels, readSettings, userAgent, type Settings } from "../src/extension";
 import { streamEvents } from "../src/gateway";
 import { collect, message, rejectsWith, text, tokenCommand, USER } from "./support";
 import { LanguageModelChatToolMode, LanguageModelTextPart } from "./vscode";
@@ -71,6 +71,13 @@ describe("settings", () => {
   it("are read from user settings only", () => {
     const properties = Object.values(packageJson.contributes.configuration.properties);
     assert.deepEqual(properties.map((property) => property.scope), ["application", "application", "application"]);
+  });
+});
+
+describe("userAgent", () => {
+  it("names ug's extension and Copilot Chat's version", () => {
+    assert.equal(userAgent("0.71.0"), `ucode/${packageJson.version} githubcopilotchat/0.71.0`);
+    assert.equal(userAgent(undefined), `ucode/${packageJson.version} githubcopilotchat`);
   });
 });
 

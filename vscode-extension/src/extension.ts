@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import packageJson from "../package.json";
+import { version } from "../package.json";
 import { Tokens } from "./auth";
 import { chatCompletionsReplies, chatCompletionsRequest, estimateTokens, responsesReplies, responsesRequest, type Reply } from "./formats";
 import { streamEvents } from "./gateway";
@@ -26,6 +26,10 @@ export const readSettings = (get: (key: string) => unknown): Settings => {
     authCommand: String(get("authCommand") ?? ""),
   };
 };
+
+/** The gateway attributes requests by this User-Agent. */
+export const userAgent = (copilotChatVersion: unknown): string =>
+  `ucode/${version} githubcopilotchat${typeof copilotChatVersion === "string" ? `/${copilotChatVersion}` : ""}`;
 
 type Model = vscode.LanguageModelChatInformation & { readonly api: ModelSetting["api"] };
 
@@ -58,7 +62,7 @@ export class DatabricksModels implements vscode.LanguageModelChatProvider<Model>
       name: id,
       // Copilot Chat tunes its prompts and tools by family, so this is the model's own name.
       family: id.split(".").pop() ?? id,
-      version: packageJson.version,
+      version,
       detail: "Databricks",
       // The gateway reports no limits for these models.
       maxInputTokens: 128_000,
@@ -108,11 +112,7 @@ export function activate(context: vscode.ExtensionContext): void {
     const configuration = vscode.workspace.getConfiguration("unityGateway");
     return readSettings((key) => configuration.get(key));
   };
-  // The gateway attributes requests by this User-Agent.
-  const headers = () => {
-    const version: unknown = vscode.extensions.getExtension("GitHub.copilot-chat")?.packageJSON?.version;
-    return { "User-Agent": `ucode/${packageJson.version} githubcopilotchat${typeof version === "string" ? `/${version}` : ""}` };
-  };
+  const headers = () => ({ "User-Agent": userAgent(vscode.extensions.getExtension("GitHub.copilot-chat")?.packageJSON?.version) });
   const provider = new DatabricksModels(settings, (line) => output.info(line), headers);
   context.subscriptions.push(
     output,
