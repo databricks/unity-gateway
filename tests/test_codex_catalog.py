@@ -43,10 +43,33 @@ def test_gpt_metadata_preserved_with_admin_identity_and_order(bundled):
                 assert model[key] == value
         assert model["priority"] == priority
         assert model["visibility"] == "list"
-        assert model["display_name"] == names[priority]
+        assert model["display_name"] == native["display_name"]
         assert model["supported_in_api"] is True
     models[0]["future_field"]["nested"].append(2)
     assert bundled == original
+
+
+def test_hosted_services_get_readable_labels_and_keep_full_slugs(bundled):
+    names = ["system.ai.kimi-k3", "main.team.custom", "plain"]
+    models = catalog.build_codex_catalog(bundled, names)["models"]
+    assert [(m["slug"], m["display_name"]) for m in models] == [
+        ("system.ai.kimi-k3", "Kimi K3"),
+        ("main.team.custom", "Custom"),
+        ("plain", "Plain"),
+    ]
+
+
+def test_duplicate_labels_fall_back_to_full_ids_but_not_hidden_aliases(bundled):
+    names = ["system.ai.kimi-k3", "main.team.kimi-k3", "system.ai.other", "system.ai.gpt-6-astra"]
+    models = catalog.build_codex_catalog(bundled, names)["models"]
+    assert [m["display_name"] for m in models[:4]] == [
+        "system.ai.kimi-k3",
+        "main.team.kimi-k3",
+        "Other",
+        "gpt-6-astra",
+    ]
+    assert models[4]["slug"] == "gpt-6-astra"
+    assert models[4]["visibility"] == "hide"
 
 
 def test_only_selected_gpt_models_get_hidden_routing_aliases(bundled):
