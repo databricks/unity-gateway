@@ -493,6 +493,12 @@ preservation on install failure, scoped cleanup, and unrelated-plugin preservati
 cleanup. Both are mocked component coverage; the integration suite does not launch Cowork,
 connect a plugin MCP server, discover its deferred tool, or run a task through it.
 
+`../test_cowork_skills.py` adds component coverage for user-downloaded skills reaching
+the current workspace's plugin and refreshing on named, schema, and picker add/update/remove
+commands. It preserves managed skills and excludes project-local, other-workspace, and
+user-authored skills. These checks substitute skill APIs and the native plugin CLI;
+the integration suite does not validate native Cowork skill discovery or invocation.
+
 Model-source tests require Desktop-only, case-insensitive `\bclaude-` filtering
 instead of copying every catalog entry. Mixed static/discovered lists exclude GPT/OSS
 aliases and lookalikes while preserving Claude IDs, order, duplicates, and source lists.

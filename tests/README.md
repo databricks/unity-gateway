@@ -290,6 +290,13 @@ reconciliation failures, and cleanup for unmanaged or non-Claude configurations.
 mock the Claude plugin CLI and do not establish native Desktop policy, account-feature,
 late MCP connection, tool discovery, or inference behavior.
 
+`test_cowork_skills.py` checks current-workspace managed and user-downloaded skill copies,
+project/other-workspace/user-authored exclusions, and add/update/remove CLI flows using
+names, schemas, and the picker. It checks generated bundle contents and stale-file cleanup
+while preserving managed skills; project-local skills stay excluded during plugin refreshes.
+Skill APIs and the native plugin CLI are substituted; native Cowork skill invocation
+remains unverified.
+
 Model-source tests require Desktop-only, case-insensitive `\bclaude-` filtering
 instead of copying every catalog entry. Mixed static/discovered lists exclude GPT/OSS
 aliases and lookalikes while preserving Claude IDs, order, duplicates, and source lists.

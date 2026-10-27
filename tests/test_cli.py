@@ -2304,7 +2304,7 @@ class TestMcpSubcommands:
     def test_mcp_add_syncs_claude_cowork(self):
         with (
             patch("ucode.cli.add_mcp_command") as mock_add,
-            patch("ucode.cli._sync_claude_cowork_mcp_servers") as mock_sync,
+            patch("ucode.cli._sync_claude_cowork_plugin") as mock_sync,
         ):
             result = runner.invoke(app, ["mcp", "add", "--names", "system.ai.github"])
 
@@ -2315,7 +2315,7 @@ class TestMcpSubcommands:
     def test_mcp_remove_syncs_claude_cowork(self):
         with (
             patch("ucode.cli.remove_mcp_command") as mock_remove,
-            patch("ucode.cli._sync_claude_cowork_mcp_servers") as mock_sync,
+            patch("ucode.cli._sync_claude_cowork_plugin") as mock_sync,
         ):
             result = runner.invoke(app, ["mcp", "remove"])
 
@@ -4256,7 +4256,7 @@ class TestConfigureAgentFlag:
             patch("ucode.cli.load_state", return_value=state),
             patch("ucode.agents.desktop.setup.configure_claude_cowork") as mock_configure,
         ):
-            cli_mod._sync_claude_cowork_mcp_servers(state, managed_mcp_servers=managed)
+            cli_mod._sync_claude_cowork_plugin(state, managed_mcp_servers=managed)
 
         mock_configure.assert_called_once_with(state, [*state["mcp_servers"], *managed])
 
@@ -4280,7 +4280,7 @@ class TestConfigureAgentFlag:
             patch("ucode.cli.load_managed_mcp_servers", return_value=managed) as mock_managed,
             patch("ucode.agents.desktop.setup.configure_claude_cowork") as mock_configure,
         ):
-            cli_mod._sync_claude_cowork_mcp_servers(state)
+            cli_mod._sync_claude_cowork_plugin(state)
 
         mock_managed.assert_called_once_with(state, {"claude"})
         mock_configure.assert_called_once_with(state, managed)
@@ -4300,7 +4300,7 @@ class TestConfigureAgentFlag:
             ),
             patch("ucode.agents.desktop.setup.configure_claude_cowork") as mock_configure,
         ):
-            cli_mod._sync_claude_cowork_mcp_servers(state, managed_mcp_servers=[])
+            cli_mod._sync_claude_cowork_plugin(state, managed_mcp_servers=[])
 
         mock_configure.assert_called_once_with(state, [])
 
@@ -4309,7 +4309,7 @@ class TestConfigureAgentFlag:
 
         state = {**MINIMAL_STATE, "available_tools": ["codex"]}
         with patch("ucode.agents.desktop.setup.configure_claude_cowork") as mock_configure:
-            cli_mod._sync_claude_cowork_mcp_servers(state)
+            cli_mod._sync_claude_cowork_plugin(state)
 
         mock_configure.assert_not_called()
 
@@ -4608,7 +4608,7 @@ class TestConfigureMcpFlag:
             patch("ucode.cli.install_tool_binary"),
             patch("ucode.cli.configure_workspace_command") as mock_cfg,
             patch("ucode.cli.configure_mcp_command") as mock_mcp,
-            patch("ucode.cli._sync_claude_cowork_mcp_servers") as mock_sync,
+            patch("ucode.cli._sync_claude_cowork_plugin") as mock_sync,
         ):
             result = runner.invoke(
                 app,
@@ -4629,7 +4629,7 @@ class TestConfigureMcpFlag:
             patch("ucode.cli.configure_workspace_command") as mock_cfg,
             patch("ucode.cli._configure_shared_workspace_states") as mock_shared,
             patch("ucode.cli.configure_mcp_command") as mock_mcp,
-            patch("ucode.cli._sync_claude_cowork_mcp_servers") as mock_sync,
+            patch("ucode.cli._sync_claude_cowork_plugin") as mock_sync,
         ):
             result = runner.invoke(
                 app,
@@ -5365,7 +5365,7 @@ class TestConfigureAgentsSelection:
         calls: list = []
         monkeypatch.setattr(cli_mod, "_configure_managed_mcp_servers", lambda m: calls.append(m))
         cowork_sync = MagicMock()
-        monkeypatch.setattr(cli_mod, "_sync_claude_cowork_mcp_servers", cowork_sync)
+        monkeypatch.setattr(cli_mod, "_sync_claude_cowork_plugin", cowork_sync)
 
         assert (
             cli_mod.configure_workspace_command(

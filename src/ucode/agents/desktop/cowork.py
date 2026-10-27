@@ -43,7 +43,7 @@ def configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
         raise RuntimeError("No Databricks workspace is configured for Cowork.")
 
     previous_state = config_io.read_json_safe(_state_path())
-    skill_records = _managed_skill_records(workspace)
+    skill_records = _workspace_skill_records(workspace)
     if not previous_state and not skill_records and not mcp_servers:
         return False
     if not previous_state and not _cowork_sessions_root_exists():
@@ -213,11 +213,12 @@ def _cowork_mtime(candidate: Path) -> int:
     return max(mtimes, default=0)
 
 
-def _managed_skill_records(workspace: str) -> list[dict]:
+def _workspace_skill_records(workspace: str) -> list[dict]:
     normalized_workspace = workspace.rstrip("/")
     return [
         record
-        for record in records_for_scope("managed", str(Path.home()))
+        for scope in ("managed", "user")
+        for record in records_for_scope(scope, str(Path.home()))
         if str(record.get("workspace") or "").rstrip("/") == normalized_workspace
     ]
 
