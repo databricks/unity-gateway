@@ -41,6 +41,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     from ucode.agents import antigravity as antigravity_mod
     from ucode.agents import claude as claude_mod
     from ucode.agents import codex as codex_mod
+    from ucode.agents import vscode as vscode_mod
     from ucode.agents.desktop import claude as desktop_mod
 
     state_dir = tmp_path / ".ucode"
@@ -49,6 +50,11 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.setattr(config_io_mod, "APP_DIR", state_dir)
     monkeypatch.setattr(codex_mod, "_otel_service_path", lambda: state_dir / "otel.service")
     monkeypatch.setattr(desktop_mod, "APP_DIR", state_dir)
+    # No test may run the developer's `code` or edit their VS Code settings.
+    monkeypatch.setattr(vscode_mod, "find_code", lambda: None)
+    monkeypatch.setattr(
+        vscode_mod, "settings_path", lambda product: tmp_path / product / "User" / "settings.json"
+    )
     monkeypatch.setattr(desktop_auth_mod, "_AUTH_LOCK_PATH", state_dir / "claude-desktop-auth.lock")
     # Antigravity's customization root is shared with the developer's Antigravity app and CLI.
     agy_dir = tmp_path / ".gemini" / "config"

@@ -240,6 +240,11 @@ def _wire_from_name(name: str) -> str | None:
     return WIRE_COMPLETIONS if gpt else None
 
 
+def uses_responses_api(model: str) -> bool:
+    """Whether Copilot calls ``model`` through the Responses API: GPT 5+ and o-series models."""
+    return _wire_from_name(bare_model_name(model)) == WIRE_RESPONSES
+
+
 def copilot_catalog_model_id(model: str) -> str | None:
     """Copilot's catalog id for a Claude model, e.g. ``system.ai.claude-sonnet-5-5`` -> ``claude-sonnet-5.5``.
 

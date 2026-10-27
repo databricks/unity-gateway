@@ -266,3 +266,179 @@ def parse_dotenv(path: Path) -> dict[str, str]:
 def write_dotenv(path: Path, env: dict[str, str]) -> None:
     content = "".join(f'{key}="{val}"\n' for key, val in env.items())
     write_text_file(path, content)
+
+
+# --- JSONC (JSON with comments and trailing commas, e.g. VS Code's settings.json) ---------------
+
+_JSONC_PUNCTUATION = frozenset("{}[]:,")
+
+
+def _jsonc_tokens(text: str) -> list[tuple[str, int, int]]:
+    """``(token, start, end)`` for each token in ``text``, skipping whitespace and comments.
+
+    Raises ValueError on an unterminated string or comment.
+    """
+    tokens: list[tuple[str, int, int]] = []
+    i, length = 0, len(text)
+    while i < length:
+        char = text[i]
+        if char.isspace():
+            i += 1
+        elif text.startswith("//", i):
+            newline = text.find("\n", i)
+            i = length if newline < 0 else newline + 1
+        elif text.startswith("/*", i):
+            close = text.find("*/", i + 2)
+            if close < 0:
+                raise ValueError("unterminated comment")
+            i = close + 2
+        elif char == '"':
+            end = i + 1
+            while end < length and text[end] != '"':
+                end += 2 if text[end] == "\\" else 1
+            if end >= length:
+                raise ValueError("unterminated string")
+            tokens.append((text[i : end + 1], i, end + 1))
+            i = end + 1
+        elif char in _JSONC_PUNCTUATION:
+            tokens.append((char, i, i + 1))
+            i += 1
+        else:
+            end = i
+            while end < length and not text[end].isspace() and text[end] not in _JSONC_PUNCTUATION:
+                if text.startswith(("//", "/*"), end):
+                    break
+                end += 1
+            tokens.append((text[i:end], i, end))
+            i = end
+    return tokens
+
+
+def loads_jsonc(text: str) -> object:
+    """Parse JSONC: comments and trailing commas are dropped, then it's read as JSON."""
+    tokens = _jsonc_tokens(text)
+    kept = [
+        token
+        for index, (token, _, _) in enumerate(tokens)
+        if not (token == "," and index + 1 < len(tokens) and tokens[index + 1][0] in "}]")
+    ]
+    return json.loads(" ".join(kept)) if kept else None
+
+
+class _JsoncEntry(TypedDict):
+    key: str
+    key_start: int
+    value_start: int
+    value_end: int
+    comma_end: int | None
+
+
+def _jsonc_top_level(text: str) -> tuple[int, int, list[_JsoncEntry]]:
+    """The top-level object's ``{`` and ``}`` offsets and its entries; ValueError if it isn't one."""
+    tokens = _jsonc_tokens(text)
+    if not tokens or tokens[0][0] != "{":
+        raise ValueError("the top level isn't an object")
+    entries: list[_JsoncEntry] = []
+    index = 1
+    while index < len(tokens) and tokens[index][0] != "}":
+        key, key_start, _ = tokens[index]
+        if not key.startswith('"') or index + 2 >= len(tokens) or tokens[index + 1][0] != ":":
+            raise ValueError("expected a key and a value")
+        index += 2
+        value_start = tokens[index][1]
+        depth = 0
+        while True:
+            token = tokens[index][0]
+            depth += 1 if token in "{[" else -1 if token in "}]" else 0
+            if depth <= 0:
+                break
+            index += 1
+            if index >= len(tokens):
+                raise ValueError("unterminated value")
+        value_end = tokens[index][2]
+        index += 1
+        comma_end = None
+        if index < len(tokens) and tokens[index][0] == ",":
+            comma_end = tokens[index][2]
+            index += 1
+        entries.append(
+            {
+                "key": json.loads(key),
+                "key_start": key_start,
+                "value_start": value_start,
+                "value_end": value_end,
+                "comma_end": comma_end,
+            }
+        )
+    if index >= len(tokens) or index != len(tokens) - 1:
+        raise ValueError("unexpected content after the top-level object")
+    return tokens[0][1], tokens[index][1], entries
+
+
+def _line_start(text: str, offset: int) -> int:
+    """The start of ``offset``'s line when only whitespace precedes it there, else ``offset``."""
+    start = text.rfind("\n", 0, offset) + 1
+    return start if not text[start:offset].strip() else offset
+
+
+def _line_end(text: str, offset: int) -> int:
+    newline = text.find("\n", offset)
+    return len(text) if newline < 0 else newline
+
+
+def _remove_jsonc_entry(text: str, entries: list[_JsoncEntry], position: int) -> str:
+    entry = entries[position]
+    start = _line_start(text, entry["key_start"])
+    end = entry["comma_end"] if entry["comma_end"] is not None else entry["value_end"]
+    rest = text[end : _line_end(text, end)].strip()
+    # A comment after the entry on its own line goes with it.
+    if start != entry["key_start"] and (not rest or rest.startswith("//")):
+        end = min(_line_end(text, end) + 1, len(text))
+    text = text[:start] + text[end:]
+    previous_comma = entries[position - 1]["comma_end"] if position > 0 else None
+    if entry["comma_end"] is None and previous_comma is not None:
+        text = text[: previous_comma - 1] + text[previous_comma:]
+    return text
+
+
+def update_jsonc_keys(text: str, values: dict[str, object], remove: tuple[str, ...] = ()) -> str:
+    """Set ``values`` and delete ``remove`` among the top-level keys of a JSONC object, leaving
+    every other byte (comments included) as it was. Raises ValueError if ``text`` isn't one."""
+    if not _jsonc_tokens(text):
+        text = text + ("\n" if text.strip() else "") + "{}"
+    for key in remove:
+        _, _, entries = _jsonc_top_level(text)
+        position = next((i for i, entry in enumerate(entries) if entry["key"] == key), None)
+        if position is not None:
+            text = _remove_jsonc_entry(text, entries, position)
+    for key, value in values.items():
+        open_brace, close_brace, entries = _jsonc_top_level(text)
+        first = entries[0]["key_start"] if entries else None
+        indent = text[_line_start(text, first) : first] if first is not None else ""
+        indent = indent if indent and not indent.strip() else "    "
+        rendered = json.dumps(value, indent=indent).replace("\n", "\n" + indent)
+        existing = next((entry for entry in entries if entry["key"] == key), None)
+        if existing is not None:
+            text = text[: existing["value_start"]] + rendered + text[existing["value_end"] :]
+            continue
+        line = f"{indent}{json.dumps(key)}: {rendered}"
+        if not entries:
+            text = text[: open_brace + 1] + f"\n{line}\n" + text[open_brace + 1 :].lstrip(" \t")
+            continue
+        last = entries[-1]
+        if last["comma_end"] is None:
+            text = text[: last["value_end"]] + "," + text[last["value_end"] :]
+            close_brace += 1
+            after = last["value_end"] + 1
+        else:
+            after = last["comma_end"]
+        # After the last entry's line, so a comment on that line stays with it.
+        at = _line_end(text, after)
+        at = after if close_brace < at else at
+        text = text[:at] + f"\n{line}" + text[at:]
+    loaded = loads_jsonc(text)
+    if not isinstance(loaded, dict) or any(
+        loaded.get(key) != value for key, value in values.items()
+    ):
+        raise ValueError("the edited file doesn't hold the expected values")
+    return text
