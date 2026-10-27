@@ -48,7 +48,7 @@ permissions:
 
 concurrency:
   group: integration-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}-${{ github.event_name }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name != 'schedule' }}
 
 env:
   EXPECTED_WORKSPACE: https://eng-ml-inference-team-us-east-1.cloud.databricks.com
