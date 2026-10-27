@@ -1,5 +1,9 @@
 # Integration tests
 
+Truncated HTTP-body recovery is covered by `TestHttpIncompleteRead` in
+`../test_databricks.py`: bounded GET recovery, exhausted/no-retry failures, and
+mutation failures without replay. This suite does not force live response truncation.
+
 Native mod component tests in `../native_claude/test_mod.py` cover a lone call's decision under
 its Agent row, parallel calls as cards above the parent's next reply in call order, calls
 still routing waiting for a later reply, distinct

@@ -20,6 +20,11 @@ mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 | Integration CUJs | `integration/test_*.py` | Public configure, TUI, script, command, protocol, and lifecycle journeys |
 | Installation | `integration/test_installation.py` | Fresh installed package, CLI, and local helpers without credentials on Linux and advisory native Windows |
 
+`TestHttpIncompleteRead` in `test_databricks.py` feeds truncated HTTP responses
+through the standard-library parser. GETs discard partial bytes and respect the
+existing retry budget; POST/PATCH/DELETE report failure without replay. Diagnostics
+omit partial response contents. These are component checks, not live gateway coverage.
+
 `test_budget.py` covers the workspace-authenticated spend-status client in
 `src/ucode/budget.py`:
 workspace URL/token reuse without account discovery or account CLI authentication,
