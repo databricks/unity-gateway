@@ -217,7 +217,8 @@ The explicit `ug claude` case verifies that startup displays the backend's Codex
 recommendation while its generated `ANTHROPIC_MODEL` setting and native header select
 Sonnet, then exits. It does not verify Claude's inference model.
 
-The explicit `ug claude --model <Sonnet id>` case checks that the launch still displays the
+The explicit `ug claude --model <Sonnet id>` case runs `ug configure` in a terminal, so it writes the
+OS-managed file through the runner's passwordless sudo. It checks that the launch still displays the
 Codex/Luna recommendation and that Claude's native header selects Sonnet. It also requires
 `~/.claude/ucode-settings.json` and `/etc/claude-code/managed-settings.json` to stay
 byte-identical to what `ug configure` wrote, with Sonnet as `ANTHROPIC_MODEL`. A following plain

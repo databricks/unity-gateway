@@ -4,7 +4,7 @@ import json
 import re
 from decimal import ROUND_HALF_UP, Decimal
 
-from tests.integration.utils.terminal import AgentTerminal
+from tests.integration.utils.terminal import AgentTerminal, TerminalProcess
 
 from .base import BaseCujTest
 from .helpers.constants import CLAUDE, CODEX, MANAGED_PATHS, CodingAgent
@@ -241,7 +241,8 @@ class TestCujBudgetDefaultsExplicitClaudeModel(_BudgetDefaultsBase):
         Expected: the backend still recommends Codex/Luna and the launch displays it, and Claude's
         native header selects Sonnet. Neither launch changes the user settings file or the
         OS-managed settings file: both stay byte-identical to what ``ug configure`` wrote, with
-        Sonnet as ``ANTHROPIC_MODEL``. The workspace publishes Sonnet as its only Claude model, so
+        Sonnet as ``ANTHROPIC_MODEL``. Configure runs in a terminal so it writes the OS-managed
+        file. The workspace publishes Sonnet as its only Claude model, so
         the explicit model equals the admin default; this checks that an explicit ``--model``
         writes no file, not that it switches models. No task is submitted.
         """
@@ -251,15 +252,22 @@ class TestCujBudgetDefaultsExplicitClaudeModel(_BudgetDefaultsBase):
         assert claude["default_models"]["default_model"] == self.SONNET_MODEL, config
         assert claude["models"]["model_services"] == [self.SONNET_MODEL], config
 
-        session.configure(
+        # Unlike `session.configure`, a terminal lets configure write the OS-managed file through
+        # the runner's passwordless sudo, as an interactive user's configure does.
+        with TerminalProcess(
+            session,
+            "ug",
             [
+                str(session.binary),
                 "configure",
                 "--workspace",
                 self.WORKSPACE_URL,
                 "--skip-upgrade",
                 "--disable-databricks-ai-tools",
-            ]
-        )
+            ],
+            "configure-with-managed-settings",
+        ) as terminal:
+            terminal.finish(timeout=240)
         recommendation = workspace.client.api_client.do(
             "POST", path="/api/ai-gateway/v2/coding-agent-configs:recommendModel", body={}
         )
@@ -268,6 +276,7 @@ class TestCujBudgetDefaultsExplicitClaudeModel(_BudgetDefaultsBase):
 
         user_settings = session.home / ".claude" / "ucode-settings.json"
         managed_settings = MANAGED_PATHS[0]
+        assert managed_settings.is_file(), "configure in a terminal wrote no managed settings"
         configured = {path: path.read_bytes() for path in (user_settings, managed_settings)}
         for path, content in configured.items():
             assert json.loads(content)["env"]["ANTHROPIC_MODEL"] == self.SONNET_MODEL, path
