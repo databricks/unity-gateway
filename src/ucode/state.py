@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import cast
 
-from ucode.config_io import APP_DIR, is_dry_run
+from ucode.config_io import APP_DIR, atomic_write_json, is_dry_run
 from ucode.custom_oauth import (
     CUSTOM_OAUTH_TIMEOUT_MS,
     CustomOAuthConfig,
@@ -54,9 +54,8 @@ def save_config_scope(scope: str) -> None:
     full = load_full_state()
     full[CONFIG_SCOPE_KEY] = scope
     try:
-        APP_DIR.mkdir(parents=True, exist_ok=True)
-        STATE_PATH.write_text(json.dumps(full, indent=2), encoding="utf-8")
-    except OSError as exc:
+        atomic_write_json(STATE_PATH, full)
+    except RuntimeError as exc:
         raise RuntimeError(f"Failed to write state file: {STATE_PATH}") from exc
 
 
@@ -88,9 +87,8 @@ def save_state(state: dict) -> None:
         full["current_workspace"] = workspace
         full["workspaces"][workspace] = hydrate_state(_without_managed_overlay(state))
     try:
-        APP_DIR.mkdir(parents=True, exist_ok=True)
-        STATE_PATH.write_text(json.dumps(full, indent=2), encoding="utf-8")
-    except OSError as exc:
+        atomic_write_json(STATE_PATH, full)
+    except RuntimeError as exc:
         raise RuntimeError(f"Failed to write state file: {STATE_PATH}") from exc
 
 
@@ -125,9 +123,8 @@ def set_current_workspace(workspace: str | None) -> None:
         return
     full["current_workspace"] = workspace
     try:
-        APP_DIR.mkdir(parents=True, exist_ok=True)
-        STATE_PATH.write_text(json.dumps(full, indent=2), encoding="utf-8")
-    except OSError as exc:
+        atomic_write_json(STATE_PATH, full)
+    except RuntimeError as exc:
         raise RuntimeError(f"Failed to write state file: {STATE_PATH}") from exc
 
 
@@ -267,9 +264,8 @@ def clear_state() -> None:
         full.get("workspaces", {}).pop(workspace, None)
         full["current_workspace"] = None
     try:
-        APP_DIR.mkdir(parents=True, exist_ok=True)
-        STATE_PATH.write_text(json.dumps(full, indent=2), encoding="utf-8")
-    except OSError as exc:
+        atomic_write_json(STATE_PATH, full)
+    except RuntimeError as exc:
         raise RuntimeError(f"Failed to clear state file: {STATE_PATH}") from exc
 
 

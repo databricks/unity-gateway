@@ -1,5 +1,12 @@
 # Test suites and user journeys
 
+`test_config_io.py` and `test_state.py` cover atomic JSON persistence:
+readers retain the previous complete document during a write, and partial-write or
+replacement failures preserve it and remove temporary files. Checks also cover
+symlink targets, existing POSIX permissions, private new files, and all four state
+mutation paths. These component checks do not establish power-loss durability,
+concurrent read-modify-write serialization, or live authentication recovery.
+
 MCP/Skills browsing has component coverage in `tests/test_catalog_browsing.py`
 (repository-relative path): paginated BASIC metadata, streamed rows, missing metadata,
 UTC dates, keyboard selection/filtering/cancellation, loader cancellation, and rendered
