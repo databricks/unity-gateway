@@ -151,6 +151,7 @@ class TestHelp:
             "otel-headers",
             "codex-router-hook",
             "claude-router-hook",
+            "smart-router-describe",
         ):
             assert command not in output
 

@@ -466,6 +466,12 @@ selects `subagent_orch_v0`.
 Version names require an explicit suffix. Future revisions use new `_v1`, `_v2`,
 etc. names without changing existing versions.
 
+Launchers can ask ug what a launch with their environment would route, without reading
+version names themselves. The hidden `ug smart-router-describe` command prints one JSON
+object, such as `{"schema": 1, "harnesses": ["claude"]}`, listing the agents that would be
+routed. The output depends only on the environment: it works offline, so a workspace's managed
+config and launch flags such as `--disable-smart-routing` are not reflected.
+
 Version definitions require both Claude and Codex mappings and fail validation at module import if any flag in
 `SMART_ROUTING_ENV_KEYS` is missing, has a value other than `"0"` or `"1"`,
 or an unknown flag is present. Register new managed flags in that tuple and

@@ -99,3 +99,27 @@ def test_ug_and_ucode_web_search_helpers_preserve_mcp_stdio(session):
         assert responses[0]["result"]["serverInfo"]["name"] == "ucode-web-search"
         assert [tool["name"] for tool in responses[1]["result"]["tools"]] == ["web_search"]
         assert result.stderr == ""
+
+
+def test_ucode_smart_router_describe_reports_the_launch_environment_offline(session):
+    """Scenario: a launcher such as Isaac asks the installed ucode command what a launch with
+    the Claude-only preset would route, then asks again without a preset, in a fresh home.
+
+    Expected: stdout is exactly one JSON object listing Claude alone under the preset, and no
+    agents without it. No stderr and no saved ug state. This covers the reported routing
+    settings, not a routed launch or a managed config.
+    """
+    binary = sibling_entry_point(session.binary, "ucode")
+    assert binary.is_file()
+
+    session.env["SMART_ROUTER_CONFIG_VERSION"] = "subagent_orch_v0_claude_only"
+    result = session.run("smart-router-describe", binary=binary, strip_ansi=False, timeout=30)
+    assert json.loads(result.stdout) == {"schema": 1, "harnesses": ["claude"]}
+    assert result.stdout.count("\n") == 1
+    assert result.stderr == ""
+
+    del session.env["SMART_ROUTER_CONFIG_VERSION"]
+    result = session.run("smart-router-describe", binary=binary, strip_ansi=False, timeout=30)
+    assert json.loads(result.stdout) == {"schema": 1, "harnesses": []}
+    assert result.stderr == ""
+    assert not (session.home / ".ucode/state.json").exists()
