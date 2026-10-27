@@ -12,8 +12,9 @@ from ucode.ug_headers import ug_headers
 
 MCP_OAUTH_CALLBACK_PORT = 3118
 
-# Published CIMD documents for agents whose no-ID OAuth flow does not select a
-# client accepted by Databricks. Claude Code supplies its own document URL.
+# Published CIMD documents for native MCP OAuth. Pin all three client IDs until
+# agent-selected client discovery is supported across the workspace rollout.
+CLAUDE_CODE_CIMD_CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata"
 CODEX_CIMD_CLIENT_ID = "https://chatgpt.com/oauth/codex/client.json"
 CURSOR_CIMD_CLIENT_ID = "https://cursor.com/oauth/mcp-client.json"
 
@@ -72,6 +73,7 @@ def oauth_client_available(workspace: str, client_id: str) -> bool:
 
 
 __all__ = [
+    "CLAUDE_CODE_CIMD_CLIENT_ID",
     "CODEX_CIMD_CLIENT_ID",
     "CURSOR_CIMD_CLIENT_ID",
     "MCP_OAUTH_CALLBACK_PORT",

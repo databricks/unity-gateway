@@ -2799,7 +2799,7 @@ class TestWriteToolConfigManagedSettings:
 
 
 class TestAddClaudeMcpServer:
-    def test_http_lets_claude_select_its_cimd_client(self, monkeypatch):
+    def test_http_pins_claude_cimd_client(self, monkeypatch):
         calls = []
         monkeypatch.setattr(
             claude.subprocess_cross_os,
@@ -2818,6 +2818,8 @@ class TestAddClaudeMcpServer:
                 "http",
                 "-s",
                 "user",
+                "--client-id",
+                claude.CLAUDE_CODE_CIMD_CLIENT_ID,
                 "--callback-port",
                 "3118",
                 "github",
@@ -3785,23 +3787,6 @@ class TestBuildClaudeArgv:
         argv = claude._build_claude_argv("claude", ["-p", "hi"])
         assert argv == ["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), "-p", "hi"]
 
-    def test_windows_launch_writes_merged_settings_to_private_temporary_file(self):
-        settings = json.dumps({"availableModels": ["model-" + "x" * 40000]})
-        argv = ["claude", "--settings", settings, "-p", "hi"]
-        with claude._launch_settings_file(argv, windows=True) as launch_argv:
-            path = Path(launch_argv[2])
-            assert path.name == "settings.json"
-            assert json.loads(path.read_text(encoding="utf-8")) == json.loads(settings)
-            assert launch_argv[3:] == ["-p", "hi"]
-            assert len(" ".join(launch_argv)) < 1000
-        assert not path.exists()
-        assert argv[2] == settings
-
-    def test_windows_launch_keeps_existing_settings_path(self):
-        argv = ["claude", "--settings", "settings.json", "-p", "hi"]
-        with claude._launch_settings_file(argv, windows=True) as launch_argv:
-            assert launch_argv == argv
-
     def test_non_relayed_does_not_set_setting_sources(self, monkeypatch):
         # Normal launches must keep loading user settings (hooks/permissions) —
         # no --setting-sources so nothing changes for the stored-key path.
@@ -3829,6 +3814,54 @@ class TestBuildClaudeArgv:
         argv = claude._build_claude_argv("claude", ["--settings", caller], relayed=True)
         assert argv[:3] == ["claude", "--setting-sources", claude._RELAYED_SETTING_SOURCES]
         assert argv.count("--settings") == 1
+
+    def _write_user_mcp(self, tmp_path, monkeypatch, servers):
+        config = tmp_path / ".claude.json"
+        config.write_text(json.dumps({"mcpServers": servers, "projects": {"/r": {"x": 1}}}))
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", tmp_path / "ucode-settings.json")
+
+    def test_relayed_passes_user_scope_mcp_servers_back(self, tmp_path, monkeypatch):
+        # --setting-sources project,local also drops user-scope mcpServers, where `ug mcp add`
+        # registers managed servers; the relayed launch must hand them back via --mcp-config.
+        servers = {"system-ai-slack": {"type": "stdio", "command": "ug", "args": ["mcp-proxy"]}}
+        self._write_user_mcp(tmp_path, monkeypatch, servers)
+        argv = claude._build_claude_argv("claude", ["-p", "hi"], relayed=True)
+        i = argv.index("--mcp-config")
+        assert json.loads(argv[i + 1]) == {"mcpServers": servers}
+        # Variadic --mcp-config must be closed by an option, not swallow the prompt.
+        assert argv[i + 2] == "--settings"
+        assert argv[-2:] == ["-p", "hi"]
+
+    def test_relayed_mcp_servers_kept_with_caller_settings(self, tmp_path, monkeypatch):
+        servers = {"genie": {"type": "http", "url": "https://w/mcp"}}
+        self._write_user_mcp(tmp_path, monkeypatch, servers)
+        caller = json.dumps({"statusLine": {"type": "command", "command": "sl"}})
+        argv = claude._build_claude_argv("claude", ["--settings", caller], relayed=True)
+        i = argv.index("--mcp-config")
+        assert json.loads(argv[i + 1]) == {"mcpServers": servers}
+        assert argv[i + 2] == "--settings"
+
+    def test_non_relayed_does_not_pass_mcp_config(self, tmp_path, monkeypatch):
+        # Normal launches read user scope themselves; no duplicate --mcp-config.
+        self._write_user_mcp(tmp_path, monkeypatch, {"s": {"type": "http", "url": "u"}})
+        argv = claude._build_claude_argv("claude", ["-p", "hi"], relayed=False)
+        assert "--mcp-config" not in argv
+
+    def test_relayed_respects_caller_strict_mcp_config(self, tmp_path, monkeypatch):
+        self._write_user_mcp(tmp_path, monkeypatch, {"s": {"type": "http", "url": "u"}})
+        argv = claude._build_claude_argv(
+            "claude", ["--strict-mcp-config", "--mcp-config", "{}"], relayed=True
+        )
+        assert argv.count("--mcp-config") == 1
+
+    @pytest.mark.parametrize("content", [None, "{not json", json.dumps({"mcpServers": {}})])
+    def test_relayed_without_user_mcp_servers_adds_nothing(self, tmp_path, monkeypatch, content):
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        if content is not None:
+            (tmp_path / ".claude.json").write_text(content)
+        argv = claude._build_claude_argv("claude", ["-p", "hi"], relayed=True)
+        assert "--mcp-config" not in argv
 
     def test_inline_caller_settings_merged_into_single_flag(self, monkeypatch):
         ucode_settings = {
@@ -4158,6 +4191,7 @@ class TestManagedMcpUsesManagedFile:
         monkeypatch.setattr(claude, "managed_files_supported", lambda: supported)
         monkeypatch.setattr(claude, "managed_writes_allowed", lambda: interactive)
         monkeypatch.setattr(claude, "workspace_supports_cimd", lambda ws: oauth)
+        monkeypatch.setattr(claude, "oauth_client_available", lambda ws, client_id: oauth)
 
     def test_true_when_all_conditions_hold(self, monkeypatch):
         self._wire(monkeypatch)
@@ -4201,7 +4235,10 @@ class TestClaudeReconcileManagedMcp:
         doc = json.loads(captured["text"])
         assert doc["managedMcpServers"]["system-ai-github"]["url"] == GH_URL
         assert doc["managedMcpServers"]["system-ai-github"]["type"] == "http"
-        assert "clientId" not in doc["managedMcpServers"]["system-ai-github"]["oauth"]
+        assert (
+            doc["managedMcpServers"]["system-ai-github"]["oauth"]["clientId"]
+            == claude.CLAUDE_CODE_CIMD_CLIENT_ID
+        )
         assert doc["env"] == {"X": "1"}
         assert doc["apiKeyHelper"] == "ug auth-token"
         assert captured["owned_paths"] == [["managedMcpServers"]]

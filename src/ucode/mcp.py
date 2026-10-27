@@ -37,6 +37,7 @@ from ucode.databricks import (
 )
 from ucode.mcp_connection_login import connection_from_url
 from ucode.mcp_oauth import (
+    CLAUDE_CODE_CIMD_CLIENT_ID,
     CODEX_CIMD_CLIENT_ID,
     CURSOR_CIMD_CLIENT_ID,
     oauth_client_available,
@@ -73,12 +74,11 @@ MCP_VECTOR_SEARCH_PATH = "/api/2.0/mcp/vector-search/"
 MCP_FUNCTIONS_PATH = "/api/2.0/mcp/functions/"
 MCP_SQL_PATH = "/api/2.0/mcp/sql"
 
-# Claude Code supplies its own CIMD URL. Codex and Cursor need their published
-# CIMD URLs in the native HTTP entries because their no-ID flows fail with /oidc.
-# An empty internal client ID means the agent chooses its own CIMD URL. It is
-# never written into an agent config or sent to the authorization server by ug.
-AUTO_CIMD_CLIENT_ID = ""
-PINNED_CIMD_CLIENT_IDS = {"codex": CODEX_CIMD_CLIENT_ID, "cursor": CURSOR_CIMD_CLIENT_ID}
+PINNED_CIMD_CLIENT_IDS = {
+    "claude": CLAUDE_CODE_CIMD_CLIENT_ID,
+    "codex": CODEX_CIMD_CLIENT_ID,
+    "cursor": CURSOR_CIMD_CLIENT_ID,
+}
 
 MCP_CLIENTS = {
     "claude": {
@@ -266,22 +266,19 @@ def configured_mcp_clients(state: dict, installed_clients: list[str]) -> list[st
 def _oauth_http_client(client: str, workspace: str, *, use_pat: bool) -> str | None:
     """The OAuth client choice for a native HTTP MCP entry, or ``None`` for the proxy.
 
-    Claude Code chooses its own client when the workspace advertises CIMD; the
-    empty internal value represents that choice. Codex and supported Cursor
-    builds use their published CIMD client IDs. PAT always uses the proxy.
+    Claude Code, Codex, and supported Cursor builds use their published CIMD
+    client IDs. PAT always uses the proxy.
     This is the client-level half of the choice, shared by the per-server
     (:func:`configure_client_mcp_server`) and batched (:func:`_managed_mcp_entry`) paths. It is
     URL-independent, so callers can compute it once per (client, workspace); the per-server half
     (:func:`_native_oauth_http_entry`) decides whether a *specific* URL warrants the native entry."""
     if use_pat:
         return None
-    if client not in ("claude", *PINNED_CIMD_CLIENT_IDS):
+    if client not in PINNED_CIMD_CLIENT_IDS:
         return None
     if client == "cursor" and not cursor.supports_cimd():
         return None
     if workspace_supports_cimd(workspace):
-        if client == "claude":
-            return AUTO_CIMD_CLIENT_ID
         client_id = PINNED_CIMD_CLIENT_IDS[client]
         return client_id if oauth_client_available(workspace, client_id) else None
     return None
@@ -315,7 +312,18 @@ def _native_oauth_http_entry(
 
 
 def _needs_native_cimd_rewrite(client: str, name: str, url: str, client_id: str) -> bool:
-    """An existing UG server still has a proxy entry after native CIMD becomes available."""
+    """An existing UG server lacks the desired native CIMD registration."""
+    if client == "claude":
+        servers = read_json_safe(claude.claude_mcp_config_path()).get("mcpServers")
+        entry = servers.get(name) if isinstance(servers, dict) else None
+        oauth = entry.get("oauth") if isinstance(entry, dict) else None
+        return not (
+            isinstance(entry, dict)
+            and entry.get("type") == "http"
+            and entry.get("url") == url
+            and isinstance(oauth, dict)
+            and oauth.get("clientId") == client_id
+        )
     if client == "codex":
         servers = read_toml_safe(codex.user_mcp_config_path()).get("mcp_servers")
         entry = servers.get(name) if isinstance(servers, Mapping) else None
@@ -1523,9 +1531,9 @@ def apply_mcp_server_changes(
         if not isinstance(url, str) or not url:
             continue
         if original == server:
-            # The server selection is unchanged, but an older ug may have left a
-            # stdio proxy in Codex or Cursor. Reapply only when its native CIMD
-            # entry is now usable and the on-disk entry differs.
+            # The selection is unchanged, but an older ug may have left a proxy
+            # or an unpinned Claude HTTP entry. Reapply only when the native CIMD
+            # entry is usable and the on-disk entry differs.
             for client in clients:
                 if client not in PINNED_CIMD_CLIENT_IDS or client not in _mcp_server_clients(
                     server

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 from unittest.mock import MagicMock
 
@@ -247,9 +248,10 @@ class TestKiloMcpClient:
 
 
 class TestConfigureClientMcpServer:
-    def test_claude_uses_agent_selected_client_when_cimd_is_advertised(self, monkeypatch):
+    def test_claude_uses_pinned_client_when_cimd_is_advertised(self, monkeypatch):
         monkeypatch.setattr(mcp, "workspace_supports_cimd", lambda ws: True)
-        assert mcp._oauth_http_client("claude", WS, use_pat=False) == mcp.AUTO_CIMD_CLIENT_ID
+        monkeypatch.setattr(mcp, "oauth_client_available", lambda ws, client_id: True)
+        assert mcp._oauth_http_client("claude", WS, use_pat=False) == mcp.CLAUDE_CODE_CIMD_CLIENT_ID
         monkeypatch.setattr(mcp, "workspace_supports_cimd", lambda ws: False)
         assert mcp._oauth_http_client("claude", WS, use_pat=False) is None
 
@@ -272,6 +274,9 @@ class TestConfigureClientMcpServer:
         http_calls: list[tuple[str, str]] = []
         proxy_calls: list[tuple[str, list[str]]] = []
         monkeypatch.setattr(mcp, "workspace_supports_cimd", lambda ws: claude_code_available)
+        monkeypatch.setattr(
+            mcp, "oauth_client_available", lambda ws, client_id: claude_code_available
+        )
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
         monkeypatch.setattr(claude, "remove_claude_mcp_server", lambda name, scope: False)
@@ -674,6 +679,35 @@ class TestApplyMcpServerChanges:
         assert mcp._needs_native_cimd_rewrite(client, name, url, expected_id) is False
         assert mcp.apply_mcp_server_changes([server], [server], [client], WS, "p") is False
 
+    def test_repeated_add_pins_existing_claude_http_client_id(self, tmp_path, monkeypatch):
+        name = "system-ai-github"
+        config_path = tmp_path / ".claude.json"
+        config_path.write_text(
+            json.dumps({"mcpServers": {name: {"type": "http", "url": AIGW_MCP_URL}}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(mcp.claude, "claude_mcp_config_path", lambda: config_path)
+        monkeypatch.setattr(mcp, "workspace_supports_cimd", lambda ws: True)
+        monkeypatch.setattr(mcp, "oauth_client_available", lambda ws, client_id: True)
+        monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
+        server = {"name": name, "url": AIGW_MCP_URL, "clients": ["claude"]}
+
+        assert (
+            mcp.apply_mcp_server_changes(
+                [server], [server], ["claude"], WS, "p", batch_agents=frozenset({"claude"})
+            )
+            is True
+        )
+        entry = json.loads(config_path.read_text(encoding="utf-8"))["mcpServers"][name]
+        assert entry == mcp.claude.managed_mcp_entry(AIGW_MCP_URL)
+        assert (
+            mcp.apply_mcp_server_changes(
+                [server], [server], ["claude"], WS, "p", batch_agents=frozenset({"claude"})
+            )
+            is False
+        )
+
     def test_batch_agents_collapse_to_one_write_each(self, monkeypatch):
         # With batch_agents, each listed agent (any client, not just claude/codex) gets ONE file
         # write for the whole diff instead of a subprocess/write per server; unlisted clients keep
@@ -734,6 +768,7 @@ class TestApplyMcpServerChanges:
             mcp.claude, "write_user_mcp_servers", lambda a, r: writes.append((a, r))
         )
         monkeypatch.setattr(mcp, "workspace_supports_cimd", lambda ws: True)
+        monkeypatch.setattr(mcp, "oauth_client_available", lambda ws, client_id: True)
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
         url = f"{WS}/ai-gateway/mcp-services/system.ai.github"
@@ -776,7 +811,7 @@ class TestManagedMcpEntry:
             None,
             use_pat=False,
             always_load=False,
-            http_client=mcp.AUTO_CIMD_CLIENT_ID,
+            http_client=mcp.CLAUDE_CODE_CIMD_CLIENT_ID,
         )
         assert e == mcp.claude.managed_mcp_entry(self.MCP_URL)
         assert e["type"] == "http" and e["url"] == self.MCP_URL
@@ -791,7 +826,7 @@ class TestManagedMcpEntry:
             None,
             use_pat=False,
             always_load=False,
-            http_client=mcp.AUTO_CIMD_CLIENT_ID,
+            http_client=mcp.CLAUDE_CODE_CIMD_CLIENT_ID,
         )
         assert e["type"] == "stdio"
 
@@ -808,7 +843,7 @@ class TestManagedMcpEntry:
             None,
             use_pat=False,
             always_load=False,
-            http_client=mcp.AUTO_CIMD_CLIENT_ID,
+            http_client=mcp.CLAUDE_CODE_CIMD_CLIENT_ID,
         )
         assert e["type"] == "stdio"
 
@@ -3495,6 +3530,7 @@ class TestReconcileManagedMcpServers:
         )
         monkeypatch.setattr(mcp.codex, "managed_mcp_uses_managed_file", lambda: codex_eligible)
         monkeypatch.setattr(mcp, "workspace_supports_cimd", lambda ws: True)
+        monkeypatch.setattr(mcp, "oauth_client_available", lambda ws, client_id: True)
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
 
