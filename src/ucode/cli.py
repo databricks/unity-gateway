@@ -3841,8 +3841,8 @@ def default(
         list[str] | None,
         typer.Option(
             "--header",
-            help="Extra `Name: value` header for this launch's Codex and ug Databricks requests "
-            "(repeatable). A header already sent keeps its value.",
+            help="Extra `Name: value` header for this launch's Claude Code, Codex, and ug "
+            "Databricks requests (repeatable). A header already sent keeps its value.",
         ),
     ] = None,
 ) -> None:
@@ -4440,6 +4440,7 @@ def configure(
             raise RuntimeError("Use either --global or --user, not both.")
         scope = "user" if user_scope else "global"
         set_config_scope(scope)
+        claude_agent.request_header_mod()
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
         if custom_oauth is not None and use_pat:
             raise RuntimeError("--client-id cannot be combined with --use-pat.")

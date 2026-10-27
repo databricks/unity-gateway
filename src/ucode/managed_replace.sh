@@ -10,6 +10,8 @@ set -u
 set -f
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH
+# Folders `mkdir -p` creates must stay readable to the agents whatever the caller's umask.
+umask 022
 
 mode=$1
 platform=$2
@@ -31,9 +33,17 @@ target_is_allowed() {
         "linux:/etc/claude-code/managed-settings.json"|\
         "linux:/etc/codex/managed_config.toml"|\
         "linux:/etc/unitygateway/managed-settings.json"|\
+        "linux:/etc/claude-code/ucode-plugins/.claude-plugin/marketplace.json"|\
+        "linux:/etc/claude-code/ucode-plugins/ug-headers/.claude-plugin/plugin.json"|\
+        "linux:/etc/claude-code/ucode-plugins/ug-headers/hooks/hooks.json"|\
+        "linux:/etc/claude-code/ucode-plugins/ug-headers/hooks/register.ts"|\
         "macos:/Library/Application Support/ClaudeCode/managed-settings.json"|\
         "macos:/etc/codex/managed_config.toml"|\
-        "macos:/etc/unitygateway/managed-settings.json") return 0 ;;
+        "macos:/etc/unitygateway/managed-settings.json"|\
+        "macos:/Library/Application Support/ClaudeCode/ucode-plugins/.claude-plugin/marketplace.json"|\
+        "macos:/Library/Application Support/ClaudeCode/ucode-plugins/ug-headers/.claude-plugin/plugin.json"|\
+        "macos:/Library/Application Support/ClaudeCode/ucode-plugins/ug-headers/hooks/hooks.json"|\
+        "macos:/Library/Application Support/ClaudeCode/ucode-plugins/ug-headers/hooks/register.ts") return 0 ;;
         *) return 1 ;;
     esac
 }

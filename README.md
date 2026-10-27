@@ -91,7 +91,7 @@ restart `ug copilot`. Proxy errors are logged to `~/.ucode/logs/copilot-proxy.lo
 
 `ug copilot --provider <catalog>.<schema>.<name>` routes the session through a Model Provider
 Service instead, and `/model` lists that service's models: Claude models of an Anthropic or
-Bedrock service, and the chat models of an OpenAI or Azure OpenAI service. For a service that
+Bedrock service, and the chat models of an OpenAI, Azure OpenAI or Microsoft Foundry service. For a service that
 allows every model, `/model` lists the models the gateway reports for it, which the provider
 account may not serve; name the one to start on with `--model`. Services that relay a Claude subscription work only with Claude Code. Interactive
 `ug configure` offers the matching services under **External Models**, and a managed workspace
@@ -135,7 +135,8 @@ ug configure --user
 
 `--global` (the default) writes the machine-wide Claude Code and Codex managed settings with sudo.
 `--user` skips them, like `UG_SKIP_OS_SETTINGS`, and needs no sudo; use it when you launch through
-`ug`. Configure fails while a managed file for the agent exists, since managed settings take
+`ug`. `UG_SKIP_OS_SETTINGS=1` neither writes nor checks the OS-managed files: ug trusts whatever is
+there and the agents apply their native precedence. Configure fails while a managed file for the agent exists, since managed settings take
 precedence; later launches use whatever files are present.
 The choice is saved for launches after a successful configure; `ug configure` without `--user`
 and `ug revert` return to `--global`.
@@ -145,14 +146,19 @@ machine-wide; use `--global` for it.
 ### Extra headers for one session
 
 ```bash
-ug --header "x-databricks-traffic-id: testenv://liteswap/<pod>" codex
+ug --header "x-databricks-traffic-id: testenv://liteswap/<pod>" claude
 UG_HEADERS="X-Team: eng" ug codex
 ```
 
 `--header` (repeatable) and `UG_HEADERS` (one `Name: value` per line) add headers to that launch's
-Databricks requests only: Codex's gateway requests, through the launch's `-c` provider headers, and
-ug's own requests (workspace APIs, MCP proxy, web search, smart routing). A header already sent
-keeps its value. Nothing is written to a config file.
+Databricks requests only: Claude Code's and Codex's gateway requests, and ug's own requests
+(workspace APIs, MCP proxy, web search, smart routing). A header already sent keeps its value.
+Nothing is written to a config file.
+
+- **Codex**: added to the launch's `-c` provider headers.
+- **Claude Code**: added by a mod, even when managed settings set `ANTHROPIC_CUSTOM_HEADERS`.
+  `ug configure` installs it beside the managed settings (Linux and macOS, with sudo, not under
+  `--user`); without it the launch warns and Claude doesn't send them.
 
 Available coding agents are `codex`, `claude`, `gemini`, `opencode`,
 `copilot`, and `pi`. `cursor` can be included in `--agents` for MCP-only setup;
@@ -335,11 +341,15 @@ ug skills remove --location main.default --via mcp
 ENABLE_UG_USAGE_SPEND_API=1 ug usage
 ```
 
-The expanded view shows up to five budget limits, prioritizing the most-used limits
-across personal/shared and daily/monthly budgets. It tells you when more limits exist.
+The expanded view shows up to five budget limits with the highest usage percentages,
+with a short budget ID on each entry. It tells you when more limits exist.
 Add `--all` to show every limit: `ENABLE_UG_USAGE_SPEND_API=1 ug usage --all`.
 It uses your configured workspace login; no separate login is needed.
 Leave `ENABLE_UG_USAGE_SPEND_API` unset to keep the standard summary.
+
+A launch (`ug claude`, `ug codex`) uses the workspace's managed coding agent config that
+`ug configure` last saved and does not refetch it. After an admin changes that config, run
+`ug configure` to pick it up.
 
 Databricks AI Tools are installed only by `ug configure`, never by agent launch
 commands. Use `--enable-databricks-ai-tools` or `--disable-databricks-ai-tools`
