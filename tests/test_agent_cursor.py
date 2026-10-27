@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
+
+import pytest
 
 from ucode.agents import cursor
 
@@ -18,6 +21,24 @@ class TestMcpServerEntry:
         # the proxy authenticates itself.
         assert entry == {"command": "ucode", "args": PROXY_ARGV[1:]}
         assert "headers" not in entry
+
+    def test_http_entry_pins_cursor_cimd_client(self):
+        assert cursor.build_http_mcp_server_entry("https://ws/mcp", "https://cursor.com/id") == {
+            "url": "https://ws/mcp",
+            "auth": {"CLIENT_ID": "https://cursor.com/id"},
+        }
+
+    @pytest.mark.parametrize(
+        ("version", "supported"),
+        [("2026.01.23-abc", False), ("2026.10.22-abc", True)],
+    )
+    def test_native_cimd_requires_supported_cursor_build(self, monkeypatch, version, supported):
+        monkeypatch.setattr(
+            cursor.subprocess_cross_os,
+            "run",
+            lambda *a, **k: SimpleNamespace(returncode=0, stdout=version),
+        )
+        assert cursor.supports_cimd() is supported
 
 
 class TestWriteMcpServerConfig:

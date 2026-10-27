@@ -36,7 +36,7 @@ class TestMcpChangeSummary:
 # is the resolved `ug` binary path, so tests assert the tail (the stable part).
 GH_URL = f"{WS}/api/2.0/mcp/external/github"
 # A connection-backed AI Gateway MCP service (3-part FQN) — the URL form that
-# registers as direct HTTP for Claude when its CIMD client is available.
+# registers as direct HTTP for supported CIMD clients.
 AIGW_MCP_URL = f"{WS}/ai-gateway/mcp-services/system.ai.github"
 PROXY_TAIL = ["mcp-proxy", "--url", GH_URL, "--host", WS, "--profile", "p"]
 
@@ -326,25 +326,62 @@ class TestConfigureClientMcpServer:
         assert http_calls == []
         assert len(proxy_calls) == 1
 
-    @pytest.mark.parametrize("client", ["codex", "cursor"])
-    def test_agents_without_accepted_auto_cimd_use_proxy(self, monkeypatch, client):
-        proxy_calls = []
+    @pytest.mark.parametrize(
+        ("client", "expected_id"),
+        [
+            ("codex", mcp.CODEX_CIMD_CLIENT_ID),
+            ("cursor", mcp.CURSOR_CIMD_CLIENT_ID),
+        ],
+    )
+    def test_codex_and_cursor_pin_native_cimd_for_connection_services(
+        self, monkeypatch, client, expected_id
+    ):
         monkeypatch.setattr(mcp, "workspace_supports_cimd", lambda ws: True)
+        monkeypatch.setattr(mcp.cursor, "supports_cimd", lambda: True)
+        monkeypatch.setattr(mcp, "oauth_client_available", lambda ws, client_id: True)
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
-        monkeypatch.setattr(mcp, "remove_codex_mcp_server", lambda name: False)
+        written = []
         monkeypatch.setattr(
-            mcp, "add_codex_mcp_server", lambda name, argv: proxy_calls.append((name, argv))
+            mcp.codex,
+            "write_user_mcp_servers",
+            lambda add, remove: written.append((add, remove)) or set(),
         )
         monkeypatch.setattr(
             mcp.cursor,
-            "write_mcp_server_config",
-            lambda name, argv: proxy_calls.append((name, argv)) or False,
+            "write_http_mcp_server_config",
+            lambda name, url, client_id: written.append((name, url, client_id)) or False,
         )
 
-        assert mcp._oauth_http_client(client, WS, use_pat=False) is None
+        assert mcp._oauth_http_client(client, WS, use_pat=False) == expected_id
         mcp.configure_client_mcp_server(client, "github", AIGW_MCP_URL, WS, "p")
-        assert proxy_calls == [("github", mcp.build_mcp_proxy_argv(AIGW_MCP_URL, WS, "p"))]
+        if client == "codex":
+            assert written == [
+                (
+                    {"github": mcp.codex.managed_mcp_http_entry(AIGW_MCP_URL, expected_id)},
+                    {"github"},
+                )
+            ]
+        else:
+            assert written == [("github", AIGW_MCP_URL, expected_id)]
+
+    @pytest.mark.parametrize("client", ["codex", "cursor"])
+    def test_native_cimd_requires_workspace_support(self, monkeypatch, client):
+        monkeypatch.setattr(mcp, "workspace_supports_cimd", lambda ws: False)
+        monkeypatch.setattr(mcp.cursor, "supports_cimd", lambda: True)
+        assert mcp._oauth_http_client(client, WS, use_pat=False) is None
+
+    def test_old_cursor_uses_proxy(self, monkeypatch):
+        monkeypatch.setattr(mcp, "workspace_supports_cimd", lambda ws: True)
+        monkeypatch.setattr(mcp.cursor, "supports_cimd", lambda: False)
+        assert mcp._oauth_http_client("cursor", WS, use_pat=False) is None
+
+    @pytest.mark.parametrize("client", ["codex", "cursor"])
+    def test_missing_published_client_uses_proxy(self, monkeypatch, client):
+        monkeypatch.setattr(mcp, "workspace_supports_cimd", lambda ws: True)
+        monkeypatch.setattr(mcp.cursor, "supports_cimd", lambda: True)
+        monkeypatch.setattr(mcp, "oauth_client_available", lambda ws, client_id: False)
+        assert mcp._oauth_http_client(client, WS, use_pat=False) is None
 
     def test_gemini_keeps_proxy(self, monkeypatch):
         proxy_calls: list[tuple[str, list[str]]] = []
@@ -610,6 +647,33 @@ class TestApplyMcpServerChanges:
 
         assert mcp.apply_mcp_server_changes(servers, servers, ["claude"], WS) is False
 
+    @pytest.mark.parametrize("client", ["codex", "cursor"])
+    def test_repeated_add_migrates_existing_proxy_to_native_cimd(
+        self, tmp_path, monkeypatch, client
+    ):
+        url = AIGW_MCP_URL
+        name = "system-ai-github"
+        if client == "codex":
+            monkeypatch.setattr(mcp.codex, "user_mcp_config_path", lambda: tmp_path / "config.toml")
+            mcp.codex.write_user_mcp_servers(
+                {name: mcp.codex.managed_mcp_entry(mcp.build_mcp_proxy_argv(url, WS, "p"))},
+                set(),
+            )
+        else:
+            monkeypatch.setattr(mcp.cursor, "CURSOR_MCP_CONFIG_PATH", tmp_path / "mcp.json")
+            monkeypatch.setattr(mcp.cursor, "supports_cimd", lambda: True)
+            mcp.cursor.write_mcp_server_config(name, mcp.build_mcp_proxy_argv(url, WS, "p"))
+        monkeypatch.setattr(mcp, "workspace_supports_cimd", lambda ws: True)
+        monkeypatch.setattr(mcp, "oauth_client_available", lambda ws, client_id: True)
+        monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
+        server = {"name": name, "url": url, "clients": [client]}
+
+        assert mcp.apply_mcp_server_changes([server], [server], [client], WS, "p") is True
+        expected_id = mcp.PINNED_CIMD_CLIENT_IDS[client]
+        assert mcp._needs_native_cimd_rewrite(client, name, url, expected_id) is False
+        assert mcp.apply_mcp_server_changes([server], [server], [client], WS, "p") is False
+
     def test_batch_agents_collapse_to_one_write_each(self, monkeypatch):
         # With batch_agents, each listed agent (any client, not just claude/codex) gets ONE file
         # write for the whole diff instead of a subprocess/write per server; unlisted clients keep
@@ -766,6 +830,35 @@ class TestManagedMcpEntry:
         assert mcp._managed_mcp_entry(
             "opencode", self.MCP_URL, WS, None, use_pat=False, always_load=False, http_client=None
         ) == mcp.opencode.build_mcp_server_entry(argv)
+
+    @pytest.mark.parametrize(
+        ("client", "client_id"),
+        [("codex", mcp.CODEX_CIMD_CLIENT_ID), ("cursor", mcp.CURSOR_CIMD_CLIENT_ID)],
+    )
+    def test_codex_and_cursor_batched_entries_use_native_cimd(self, monkeypatch, client, client_id):
+        monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
+        entry = mcp._managed_mcp_entry(
+            client, self.MCP_URL, WS, None, use_pat=False, always_load=False, http_client=client_id
+        )
+        expected = (
+            mcp.codex.managed_mcp_http_entry(self.MCP_URL, client_id)
+            if client == "codex"
+            else mcp.cursor.build_http_mcp_server_entry(self.MCP_URL, client_id)
+        )
+        assert entry == expected
+
+    def test_codex_os_managed_entry_uses_native_cimd(self, monkeypatch):
+        monkeypatch.setattr(mcp, "workspace_supports_cimd", lambda ws: True)
+        monkeypatch.setattr(mcp, "oauth_client_available", lambda ws, client_id: True)
+        monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
+        servers = [{"name": "system-ai-github", "url": self.MCP_URL, "clients": ["codex"]}]
+        assert mcp._agent_managed_file_entries("codex", servers, WS, None, False) == {
+            "system-ai-github": mcp.codex.managed_mcp_http_entry(
+                self.MCP_URL, mcp.CODEX_CIMD_CLIENT_ID
+            )
+        }
 
 
 class TestApplySkillsMcpChanges:

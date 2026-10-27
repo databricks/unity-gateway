@@ -996,6 +996,11 @@ def managed_mcp_entry(argv: list[str]) -> dict:
     }
 
 
+def managed_mcp_http_entry(url: str, client_id: str) -> dict:
+    """A native HTTP MCP entry using Codex's published CIMD client."""
+    return {"url": url, "oauth_resource": url, "oauth": {"client_id": client_id}}
+
+
 def user_mcp_config_path() -> Path:
     """The file ``codex mcp add`` writes user-scope MCP servers to: ``$CODEX_HOME/config.toml`` when
     that env var is set (the ``codex`` CLI honors it), else the default ``~/.codex/config.toml``. A
@@ -1028,6 +1033,10 @@ def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
     path = user_mcp_config_path()
     doc = _read_user_config_for_rewrite(path)
     if doc is None:
+        if any("url" in entry for entry in add.values()):
+            raise RuntimeError(
+                f"Cannot register native OAuth MCP server: Codex config is invalid TOML at {path}."
+            )
         removed = {name for name in remove if remove_codex_mcp_server(name)}
         for name, entry in add.items():
             add_codex_mcp_server(name, [entry["command"], *entry.get("args", [])])

@@ -2675,6 +2675,17 @@ class TestWriteUserMcpServers:
         assert added == [("svc", ["ug", "mcp-proxy", "u"])]
         assert removed == ["old"]
 
+    def test_unparseable_file_does_not_start_native_oauth_login(self, tmp_path, monkeypatch):
+        path = tmp_path / "config.toml"
+        path.write_text("this is = = not valid toml [[[", encoding="utf-8")
+        monkeypatch.setattr(codex, "LEGACY_CODEX_CONFIG_PATH", path)
+        with pytest.raises(RuntimeError, match="invalid TOML"):
+            codex.write_user_mcp_servers(
+                {"github": codex.managed_mcp_http_entry("https://ws/mcp", "https://client/id")},
+                {"github"},
+            )
+        assert path.read_text(encoding="utf-8") == "this is = = not valid toml [[["
+
     @pytest.fixture(autouse=True)
     def _clear_codex_home_env(self, monkeypatch):
         monkeypatch.delenv("CODEX_HOME", raising=False)

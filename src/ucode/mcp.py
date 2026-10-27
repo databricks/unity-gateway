@@ -7,7 +7,7 @@ import re
 import shutil
 import subprocess
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 from urllib.parse import urlparse
@@ -16,7 +16,7 @@ import questionary
 from rich.table import Table
 
 from ucode.agents import claude, codex, copilot, cursor, gemini, kilo, opencode
-from ucode.config_io import read_json_safe, restore_file
+from ucode.config_io import read_json_safe, read_toml_safe, restore_file
 from ucode.constants import MCP_CLEANUP_SCOPES, MCP_USER_SCOPE
 from ucode.databricks import (
     AIGW_MCP_SERVICES_SEGMENT,
@@ -36,7 +36,12 @@ from ucode.databricks import (
     workspace_hostname,
 )
 from ucode.mcp_connection_login import connection_from_url
-from ucode.mcp_oauth import workspace_supports_cimd
+from ucode.mcp_oauth import (
+    CODEX_CIMD_CLIENT_ID,
+    CURSOR_CIMD_CLIENT_ID,
+    oauth_client_available,
+    workspace_supports_cimd,
+)
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.skills_api import (
     _SKILLS_WALK_DEADLINE_SECONDS,
@@ -68,13 +73,12 @@ MCP_VECTOR_SEARCH_PATH = "/api/2.0/mcp/vector-search/"
 MCP_FUNCTIONS_PATH = "/api/2.0/mcp/functions/"
 MCP_SQL_PATH = "/api/2.0/mcp/sql"
 
-# Claude Code supplies its own CIMD client URL for native HTTP MCP OAuth.
-# Codex currently generates a per-server URL that the workspace rejects, while
-# Cursor attempts unsupported dynamic registration without an explicit ID. Both
-# use the Databricks CLI-backed proxy until their no-ID flows work with /oidc.
+# Claude Code supplies its own CIMD URL. Codex and Cursor need their published
+# CIMD URLs in the native HTTP entries because their no-ID flows fail with /oidc.
 # An empty internal client ID means the agent chooses its own CIMD URL. It is
 # never written into an agent config or sent to the authorization server by ug.
 AUTO_CIMD_CLIENT_ID = ""
+PINNED_CIMD_CLIENT_IDS = {"codex": CODEX_CIMD_CLIENT_ID, "cursor": CURSOR_CIMD_CLIENT_ID}
 
 MCP_CLIENTS = {
     "claude": {
@@ -263,16 +267,23 @@ def _oauth_http_client(client: str, workspace: str, *, use_pat: bool) -> str | N
     """The OAuth client choice for a native HTTP MCP entry, or ``None`` for the proxy.
 
     Claude Code chooses its own client when the workspace advertises CIMD; the
-    empty internal value represents that choice. Other agents use the proxy
-    until they can choose a client accepted by /oidc. PAT always uses the proxy.
+    empty internal value represents that choice. Codex and supported Cursor
+    builds use their published CIMD client IDs. PAT always uses the proxy.
     This is the client-level half of the choice, shared by the per-server
     (:func:`configure_client_mcp_server`) and batched (:func:`_managed_mcp_entry`) paths. It is
     URL-independent, so callers can compute it once per (client, workspace); the per-server half
     (:func:`_native_oauth_http_entry`) decides whether a *specific* URL warrants the native entry."""
     if use_pat:
         return None
-    if client == "claude" and workspace_supports_cimd(workspace):
-        return AUTO_CIMD_CLIENT_ID
+    if client not in ("claude", *PINNED_CIMD_CLIENT_IDS):
+        return None
+    if client == "cursor" and not cursor.supports_cimd():
+        return None
+    if workspace_supports_cimd(workspace):
+        if client == "claude":
+            return AUTO_CIMD_CLIENT_ID
+        client_id = PINNED_CIMD_CLIENT_IDS[client]
+        return client_id if oauth_client_available(workspace, client_id) else None
     return None
 
 
@@ -303,6 +314,30 @@ def _native_oauth_http_entry(
     return oauth_client
 
 
+def _needs_native_cimd_rewrite(client: str, name: str, url: str, client_id: str) -> bool:
+    """An existing UG server still has a proxy entry after native CIMD becomes available."""
+    if client == "codex":
+        servers = read_toml_safe(codex.user_mcp_config_path()).get("mcp_servers")
+        entry = servers.get(name) if isinstance(servers, Mapping) else None
+        oauth = entry.get("oauth") if isinstance(entry, Mapping) else None
+        return not (
+            isinstance(entry, Mapping)
+            and entry.get("url") == url
+            and entry.get("oauth_resource") == url
+            and isinstance(oauth, Mapping)
+            and oauth.get("client_id") == client_id
+        )
+    servers = read_json_safe(cursor.CURSOR_MCP_CONFIG_PATH).get("mcpServers")
+    entry = servers.get(name) if isinstance(servers, dict) else None
+    auth = entry.get("auth") if isinstance(entry, dict) else None
+    return not (
+        isinstance(entry, dict)
+        and entry.get("url") == url
+        and isinstance(auth, dict)
+        and auth.get("CLIENT_ID") == client_id
+    )
+
+
 def configure_client_mcp_server(
     client: str,
     name: str,
@@ -313,9 +348,9 @@ def configure_client_mcp_server(
     use_pat: bool = False,
     always_load: bool = False,
 ) -> list[str]:
-    # Claude registers connection-backed services as direct HTTP when it can use its own CIMD URL.
-    # Other cases use the stdio proxy: no-login services, unrelated URLs, PAT, agents without an
-    # accepted automatic CIMD flow, and workspaces without CIMD support.
+    # Connection-backed services use native HTTP OAuth for CIMD-capable agents.
+    # Other cases keep the stdio proxy: no-login services, unrelated URLs, PAT,
+    # unsupported agents, and workspaces without CIMD support.
     http_client = _native_oauth_http_entry(
         _oauth_http_client(client, workspace, use_pat=use_pat), url, workspace, profile
     )
@@ -328,6 +363,16 @@ def configure_client_mcp_server(
             ]
             claude.add_claude_http_mcp_server(name, url, client_id=http_client)
             return removed_scopes
+        if client == "cursor":
+            removed = cursor.write_http_mcp_server_config(name, url, client_id=http_client)
+            return [MCP_USER_SCOPE] if removed else []
+        if client == "codex":
+            # The CLI's `mcp add --url` starts OAuth immediately. Write its TOML
+            # entry so registration can finish before the user signs in.
+            removed = codex.write_user_mcp_servers(
+                {name: codex.managed_mcp_http_entry(url, http_client)}, {name}
+            )
+            return [MCP_USER_SCOPE] if removed else []
 
     # Every other case registers the `ug mcp-proxy ...` stdio command; the proxy
     # forwards to `url` and refreshes the token through the Databricks CLI profile.
@@ -1010,14 +1055,14 @@ def _agent_managed_file_entries(
 ) -> dict[str, dict]:
     """Build the OS-managed-file entry map (name -> entry) for ``agent`` from the resolved set.
 
-    Claude gets a direct HTTP + OAuth entry, but only for a *connection-backed* mcp-service (one that
-    needs a per-user connection sign-in, e.g. ``system.ai.github``); no-login services (``web_search``)
-    and its other URLs fall back to the proxy (like ``configure_client_mcp_server``). Codex gets the
-    same ``ug mcp-proxy`` stdio command it would register at user scope, for any URL. Only servers
-    that name ``agent`` in their ``clients`` are included.
+    Claude and Codex get native HTTP OAuth entries for connection-backed services.
+    No-login services and other URLs use the proxy. Only servers naming ``agent``
+    in their ``clients`` are included.
     """
-    claude_oauth = (
-        _oauth_http_client("claude", workspace, use_pat=use_pat) if agent == "claude" else None
+    oauth_client = (
+        _oauth_http_client(agent, workspace, use_pat=use_pat)
+        if agent in ("claude", "codex")
+        else None
     )
     entries: dict[str, dict] = {}
     for server in servers:
@@ -1025,18 +1070,21 @@ def _agent_managed_file_entries(
         url = server.get("url")
         if not name or not isinstance(url, str) or agent not in (server.get("clients") or []):
             continue
-        if agent == "claude":
+        if agent in ("claude", "codex"):
             # Native HTTP+OAuth only for a connection-backed mcp-service; a no-login service
             # (web_search) or non-mcp-services URL stays on the stdio proxy, so both delivery
             # paths resolve identically and no-login services aren't forced into an OAuth flow.
-            native_client = _native_oauth_http_entry(claude_oauth, url, workspace, profile)
+            native_client = _native_oauth_http_entry(oauth_client, url, workspace, profile)
             if native_client is None:
-                continue
-            entries[name] = claude.managed_mcp_entry(url, client_id=native_client)
-        elif agent == "codex":
-            entries[name] = codex.managed_mcp_entry(
-                build_mcp_proxy_argv(url, workspace, profile, use_pat=use_pat)
-            )
+                if agent == "claude":
+                    continue
+                entries[name] = codex.managed_mcp_entry(
+                    build_mcp_proxy_argv(url, workspace, profile, use_pat=use_pat)
+                )
+            elif agent == "claude":
+                entries[name] = claude.managed_mcp_entry(url, client_id=native_client)
+            else:
+                entries[name] = codex.managed_mcp_http_entry(url, native_client)
     return entries
 
 
@@ -1407,6 +1455,10 @@ def _managed_mcp_entry(
             return claude.managed_mcp_entry(url, client_id=native_client)
         argv = build_mcp_proxy_argv(url, workspace, profile, use_pat=use_pat)
         return claude.user_stdio_mcp_entry(argv, always_load=always_load)
+    if client == "cursor" and native_client is not None:
+        return cursor.build_http_mcp_server_entry(url, native_client)
+    if client == "codex" and native_client is not None:
+        return codex.managed_mcp_http_entry(url, native_client)
     argv = build_mcp_proxy_argv(url, workspace, profile, use_pat=use_pat)
     if client == "codex":
         return codex.managed_mcp_entry(argv)
@@ -1451,6 +1503,7 @@ def apply_mcp_server_changes(
     # The HTTP+OAuth choice is URL-independent, so read CIMD metadata once per batched
     # client here rather than once per server inside the entry-building loop below.
     batch_http_client = {c: _oauth_http_client(c, workspace, use_pat=use_pat) for c in batched}
+    migration_http_client: dict[str, str | None] = {}
     changed = False
 
     for name, server in original_by_name.items():
@@ -1470,6 +1523,44 @@ def apply_mcp_server_changes(
         if not isinstance(url, str) or not url:
             continue
         if original == server:
+            # The server selection is unchanged, but an older ug may have left a
+            # stdio proxy in Codex or Cursor. Reapply only when its native CIMD
+            # entry is now usable and the on-disk entry differs.
+            for client in clients:
+                if client not in PINNED_CIMD_CLIENT_IDS or client not in _mcp_server_clients(
+                    server
+                ):
+                    continue
+                if client not in migration_http_client:
+                    migration_http_client[client] = batch_http_client.get(client)
+                    if client not in batched:
+                        migration_http_client[client] = _oauth_http_client(
+                            client, workspace, use_pat=use_pat
+                        )
+                native_client = _native_oauth_http_entry(
+                    migration_http_client[client], url, workspace, profile
+                )
+                if native_client is None or not _needs_native_cimd_rewrite(
+                    client, name, url, native_client
+                ):
+                    continue
+                if client in batched:
+                    batch_add[client][name] = _managed_mcp_entry(
+                        client,
+                        url,
+                        workspace,
+                        profile,
+                        use_pat=use_pat,
+                        always_load=False,
+                        http_client=native_client,
+                    )
+                else:
+                    work[client].append(
+                        lambda c=client, n=name, u=url: configure_client_mcp_server(
+                            c, n, u, workspace, profile, use_pat=use_pat
+                        )
+                    )
+                changed = True
             continue
         # alwaysLoad (Claude-only) keeps the skills registry's utility tools
         # discoverable without an explicit mention; other clients ignore it.
