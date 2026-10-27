@@ -345,6 +345,7 @@ means the selected user has not signed in yet and continues polling until the ti
 The generated connector skill keeps its discovery description within 1,024 characters;
 the body lists every configured connector and carries sign-in recovery instructions.
 The proxy limits forced workspace refresh after repeated 401s to once per 30 seconds.
+If that refresh fails, the original HTTP 401 is returned; a later request can retry refresh.
 Failed metadata discovery retries after five seconds; a tool-call auth failure can
 recheck immediately. Slow metadata discovery does not delay unrelated MCP responses.
 

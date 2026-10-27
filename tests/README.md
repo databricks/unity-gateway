@@ -961,6 +961,10 @@ Pre-browser credential reads retry transient HTTP/network failures twice before 
 Credential validation rejects malformed initial responses before browser launch and non-string
 states during polling. The browser subprocess runs Python in isolated mode.
 
+Workspace-refresh failure coverage preserves the original HTTP 401 and verifies a later
+request can refresh successfully without opening connector sign-in or restarting the proxy.
+
+
 MCP review regressions cover bounded connector descriptions with a complete body list,
 malformed upstream tool entries, rate-limited workspace refresh, and slow metadata
 discovery while unrelated replies continue. Failed metadata discovery has a short retry
