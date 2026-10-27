@@ -187,7 +187,7 @@ class TestDatabricksTokenAuth:
             assert request.get_header("Authorization") == "Bearer selected-user-token"
             if request.full_url.endswith("/user-credentials"):
                 credential_requests.append(request.full_url)
-                body = {"provisioning_info": {"state": "ACTIVE"}}
+                body = {"provisioning_info": {"state": "ACTIVE" if browser_calls else "FAILED"}}
             else:
                 body = {
                     "config": {
@@ -229,7 +229,7 @@ class TestDatabricksTokenAuth:
         assert sent == [("Bearer selected-user-token", body)] * 2
         assert config.read_text() == original_config
         assert len(browser_calls) == 1
-        assert len(credential_requests) == 1
+        assert len(credential_requests) == 2
         memo = db_mod._memoized_token(db_mod._token_memo_key(WS, "p"))
         assert memo is not None and memo.token == "selected-user-token"
 

@@ -1433,3 +1433,10 @@ For a managed workspace other than the two CI workspaces, set
 `UCODE_TEST_CODEX_ROUTING_FIXTURE` to the basename of a checked-in fixture whose model menu has
 been validated in that workspace. The suite never guesses a model menu or silently changes the
 workspace.
+
+Browser MCP review regressions check stale ACTIVE credentials wait for a changed credential
+or an observed non-ACTIVE state, pending provisioning continues, and missing services fail
+before browser launch even with a cached workspace ID. Config migration runs only before
+workspace login; ordinary token retrieval leaves saved resources untouched. Malformed
+unrelated profile hosts remain unchanged. These component tests control external boundaries
+and do not establish live browser sign-in or endpoint availability.

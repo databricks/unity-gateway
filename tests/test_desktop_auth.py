@@ -82,12 +82,13 @@ def test_omitted_profile_is_not_selected_from_host(cli, monkeypatch):
 
 
 @pytest.mark.parametrize("needs_login", [False, True])
-def test_workspace_helper_clears_legacy_connector_resource_before_cli(
+def test_workspace_helper_clears_legacy_connector_resource_only_before_login(
     cli, monkeypatch, tmp_path, needs_login
 ):
     config = tmp_path / "databrickscfg"
     cleaned = f"[{PROFILE}]\nhost = {HOST}\nauth_type = databricks-cli\n"
-    config.write_text(cleaned + f"resources = {HOST}/ai-gateway/mcp-services/system.ai.atlassian\n")
+    original = cleaned + f"resources = {HOST}/ai-gateway/mcp-services/system.ai.atlassian\n"
+    config.write_text(original)
     monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(config))
     monkeypatch.setenv(desktop_auth.CLAUDE_HELPER_CONTEXT_ENV, "interactive")
     calls = []
@@ -96,7 +97,7 @@ def test_workspace_helper_clears_legacy_connector_resource_before_cli(
     def run(argv, **kwargs):
         nonlocal signed_in
         calls.append(argv)
-        assert config.read_text() == cleaned
+        assert config.read_text() == (cleaned if signed_in or argv[2] == "login" else original)
         if argv[1:3] == ["auth", "login"]:
             signed_in = True
             return _result()
@@ -107,7 +108,7 @@ def test_workspace_helper_clears_legacy_connector_resource_before_cli(
     monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", run)
 
     assert desktop_auth.get_claude_desktop_databricks_token(HOST, PROFILE) == "workspace-token"
-    assert config.read_text() == cleaned
+    assert config.read_text() == (cleaned if needs_login else original)
     assert [argv[1:3] for argv in calls] == (
         [["auth", "token"], ["auth", "token"], ["auth", "login"], ["auth", "token"]]
         if needs_login
@@ -124,7 +125,7 @@ def test_resource_cleanup_failure_is_config_error_without_login(cli, monkeypatch
     )
     monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(config))
     monkeypatch.setenv(desktop_auth.CLAUDE_HELPER_CONTEXT_ENV, "interactive")
-    cli_run = Mock(side_effect=AssertionError("CLI must not run with stale resources"))
+    cli_run = Mock(return_value=_result(1, stderr="no cached credentials"))
     monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", cli_run)
 
     def replace(*args):
@@ -138,7 +139,7 @@ def test_resource_cleanup_failure_is_config_error_without_login(cli, monkeypatch
         desktop_auth.get_claude_desktop_databricks_token(HOST, PROFILE)
 
     assert exc.value.kind == "config"
-    assert cli_run.call_count == 0
+    assert [call.args[0][1:3] for call in cli_run.call_args_list] == [["auth", "token"]] * 2
 
 
 def test_external_bearer_uses_shared_token_path(monkeypatch):

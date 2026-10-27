@@ -22,6 +22,7 @@ from ucode.databricks import (
     databricks_cli_path,
     external_bearer_configured,
     get_databricks_token,
+    prepare_databricks_login_env,
 )
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import (
@@ -182,8 +183,6 @@ def _fetch_token(
             env=build_databricks_cli_env(host, profile),
             timeout=timeout,
         )
-    except RuntimeError as exc:
-        raise ClaudeDesktopAuthError(str(exc), kind="config") from None
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise _subprocess_error(exc) from None
     return _read_token(result)
@@ -198,17 +197,19 @@ def _run_login(
 ) -> None:
     """Run login with all CLI output routed to stderr, never helper stdout."""
     try:
+        env = prepare_databricks_login_env(host, profile)
+    except RuntimeError as exc:
+        raise ClaudeDesktopAuthError(str(exc), kind="config") from None
+    try:
         result = subprocess_cross_os.run(
             [cli_path, "auth", "login", "--host", host, *_profile_args(profile)],
             check=False,
             stdin=subprocess.DEVNULL,
             stdout=sys.stderr,
             stderr=sys.stderr,
-            env=build_databricks_cli_env(host, profile),
+            env=env,
             timeout=timeout,
         )
-    except RuntimeError as exc:
-        raise ClaudeDesktopAuthError(str(exc), kind="config") from None
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise _subprocess_error(exc) from None
 

@@ -287,3 +287,12 @@ profile after restart, completes a gateway task, refreshes credentials silently,
 opens browser login when interactive recovery is needed, and preserves unrelated
 settings through repeat configure and revert. Run these checks on the supported
 app version and packaging used by your organization.
+
+Browser connector recovery requires the workspace's `/mcp-service-login` page and
+`/api/2.1/unity-catalog/mcp-services/<service>/user-credentials` API. A credential already
+marked ACTIVE before login must change (for example its expiry metadata), or leave ACTIVE
+and return, before UG confirms reauthentication. PROVISIONING, UPDATING, and DELETING
+continue polling. Missing services fail before launching a browser; a credential 404
+means the selected user has not signed in yet and continues polling until the timeout.
+Legacy resource migration runs only before workspace login. Existing token retrieval
+continues without reading or changing those entries; migration errors block login only.

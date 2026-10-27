@@ -9,12 +9,13 @@ from __future__ import annotations
 import subprocess
 import sys
 import time
-from urllib.parse import quote, unquote, urlencode
+from urllib.parse import unquote, urlencode
 
 from ucode.databricks import (
     AIGW_MCP_SERVICES_SEGMENT,
-    _http_get_json,
     get_databricks_token,
+    get_mcp_service,
+    get_mcp_service_user_credential,
     workspace_org_id,
     workspace_origin,
 )
@@ -55,20 +56,30 @@ def run_connection_login(
     if len(connection.split(".")) != 3 or not all(connection.split(".")):
         return False, "connection sign-in requires an MCP service name (catalog.schema.service)"
     origin = workspace_origin(workspace)
-    service_url = f"{origin}/api/2.1/unity-catalog/mcp-services/{quote(connection, safe='')}"
     try:
         token = get_databricks_token(workspace, profile)
     except RuntimeError as exc:
         return False, str(exc)
+    service, reason = get_mcp_service(workspace, token, connection)
+    if reason or not isinstance(service, dict):
+        return (
+            False,
+            f"could not find MCP service for connection sign-in: {reason or 'invalid metadata'}",
+        )
     org_id = workspace_org_id(workspace)
     if not org_id:
-        _, reason = _http_get_json(service_url, token)
-        org_id = workspace_org_id(workspace)
-        if not org_id:
-            return False, (
-                "could not determine workspace ID for connection sign-in"
-                + (f": {reason}" if reason else " (workspace response omitted its ID)")
-            )
+        return (
+            False,
+            "could not determine workspace ID for connection sign-in (workspace response omitted its ID)",
+        )
+    initial_credential, reason = get_mcp_service_user_credential(workspace, token, connection)
+    if reason and not reason.startswith("HTTP 404 "):
+        return False, f"could not check connection sign-in: {reason}"
+    initial_active = (
+        isinstance(initial_credential, dict)
+        and isinstance(initial_credential.get("provisioning_info"), dict)
+        and initial_credential["provisioning_info"].get("state") == "ACTIVE"
+    )
     login_url = f"{origin}/mcp-service-login?{urlencode({'name': connection, 'o': org_id})}"
     print(
         f"Signing in to '{connection}'. Complete provider sign-in using the same Databricks "
@@ -104,7 +115,7 @@ def run_connection_login(
             token = get_databricks_token(workspace, profile)
         except RuntimeError as exc:
             return False, str(exc)
-        credential, reason = _http_get_json(f"{service_url}/user-credentials", token)
+        credential, reason = get_mcp_service_user_credential(workspace, token, connection)
         if reason:
             if not reason.startswith(
                 (
@@ -124,12 +135,15 @@ def run_connection_login(
             )
             state = provisioning.get("state") if isinstance(provisioning, dict) else None
             if state == "ACTIVE":
-                return True, "signed in"
-            if state != "FAILED":
+                if not initial_active or credential != initial_credential:
+                    return True, "signed in"
+            elif state not in {"FAILED", "PROVISIONING", "UPDATING", "DELETING"}:
                 return (
                     False,
                     "could not check connection sign-in: missing or unknown credential state",
                 )
+        if (reason and reason.startswith("HTTP 404 ")) or (not reason and state != "ACTIVE"):
+            initial_active = False
         time.sleep(min(_POLL_INTERVAL_SECONDS, max(0, deadline - time.monotonic())))
     return False, (
         f"connection sign-in timed out after {_LOGIN_TIMEOUT_SECONDS} seconds. "

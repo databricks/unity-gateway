@@ -232,9 +232,13 @@ provider authentication, UG opens the workspace's MCP service sign-in page and
 waits up to five minutes for the selected CLI profile's user credential, then retries
 the original request. Use the same Databricks account in the browser and CLI profile.
 If no browser opens, use the URL in the MCP server log; click Login if the provider
-popup is blocked. This flow does not require CLI `auth login --resource` or a CLI upgrade.
-Before workspace CLI authentication, UG removes legacy MCP service resources saved by
-the old flow from the selected OAuth profile, preserving other settings and resources.
+popup is blocked. This flow requires the workspace's MCP service login page and user-credential API;
+it does not require CLI `auth login --resource` or a CLI upgrade.
+Before workspace CLI login, UG removes same-workspace MCP service URLs from the
+selected OAuth profile's `resources`, including URLs saved by other clients. Browser
+sign-in replaces that behavior; other settings/resources remain unchanged. Token
+retrieval does not modify the config. Cleanup failures block login with manual recovery
+instructions, while cached token retrieval remains available.
 This prevents workspace sign-in from requesting unrelated connector logins.
 V2 AI Gateway servers can be added with typed selectors such as
 `vector-search:main.docs`, `uc-functions:main.tools`, `external:<name>`,

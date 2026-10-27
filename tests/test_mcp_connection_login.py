@@ -46,7 +46,7 @@ def sign_in(monkeypatch):
     db_mod._remember_token(db_mod._token_memo_key(WS, "selected"), "selected-user-token", 3600)
     requests = []
     launches = []
-    states = [ACTIVE]
+    states = [404, ACTIVE]
     metadata = [{}]
 
     def urlopen(request, **kwargs):
@@ -79,7 +79,7 @@ class TestRunConnectionLogin:
         self, sign_in, monkeypatch, tmp_path, credential
     ):
         states, _, launches, _ = sign_in
-        states[:] = [credential]
+        states[:] = [404, credential]
         config = tmp_path / "databrickscfg"
         original = f"# user-owned\n[selected]\nhost = {WS}\nauth_type = databricks-cli\nclient_id = custom\n"
         config.write_text(original)
@@ -136,11 +136,13 @@ class TestRunConnectionLogin:
         assert parse_qs(parsed.query) == {"name": ["my catalog.schema.slack+prod"], "o": ["12345"]}
         assert requests[0].full_url.endswith("/my%20catalog.schema.slack%2Bprod")
 
-    def test_cached_workspace_id_avoids_metadata_lookup(self, sign_in):
+    def test_cached_workspace_id_still_validates_service(self, sign_in):
         _, requests, _, _ = sign_in
         db_mod._WORKSPACE_ORG_IDS[urlsplit(WS).hostname] = "777"
         assert mcl.run_connection_login(AIGW_URL, WS, profile="selected")[0]
-        assert [r.full_url for r in requests] == [f"{SERVICE_URL}/user-credentials"]
+        assert [r.full_url for r in requests] == [SERVICE_URL] + [
+            f"{SERVICE_URL}/user-credentials"
+        ] * 2
 
     @pytest.mark.parametrize(
         "outcome", [1, OSError("no browser"), subprocess.TimeoutExpired("browser", 10)]
@@ -168,7 +170,7 @@ class TestRunConnectionLogin:
         assert "same Databricks account" in message
         assert "selected" in message
         assert "/mcp-service-login?" in message
-        assert len(requests) == 4
+        assert len(requests) == 5
 
     @pytest.mark.parametrize(
         "failure",
@@ -185,26 +187,49 @@ class TestRunConnectionLogin:
     )
     def test_inconclusive_or_denied_status_never_reports_success(self, sign_in, failure):
         states, requests, _, _ = sign_in
-        states[:] = [failure]
+        states[:] = [404, failure]
         ok, message = mcl.run_connection_login(AIGW_URL, WS, profile="selected")
         assert not ok
         assert "could not check connection sign-in" in message
-        assert len(requests) == 2
+        assert len(requests) == 3
 
     @pytest.mark.parametrize(
         "failure", [429, 500, 502, 503, 504, urllib_error.URLError("offline"), TimeoutError("slow")]
     )
     def test_transient_status_errors_can_recover(self, sign_in, failure):
         states, _, _, _ = sign_in
-        states[:] = [failure, ACTIVE]
+        states[:] = [404, failure, ACTIVE]
         assert mcl.run_connection_login(AIGW_URL, WS, profile="selected")[0]
 
     def test_transient_status_errors_are_bounded(self, sign_in):
         states, requests, _, _ = sign_in
-        states[:] = [503]
+        states[:] = [404, 503]
         ok, message = mcl.run_connection_login(AIGW_URL, WS, profile="selected")
         assert not ok and "timed out" in message
-        assert len(requests) == 4
+        assert len(requests) == 5
+
+    @pytest.mark.parametrize("state", ["PROVISIONING", "UPDATING", "DELETING"])
+    def test_pending_credential_state_waits_for_active(self, sign_in, state):
+        states, _, _, _ = sign_in
+        states[:] = [404, {"provisioning_info": {"state": state}}, ACTIVE]
+        assert mcl.run_connection_login(AIGW_URL, WS, profile="selected")[0]
+
+    @pytest.mark.parametrize("changed", [False, True])
+    def test_existing_active_credential_requires_observed_update(self, sign_in, changed):
+        states, _, _, _ = sign_in
+        updated = {**ACTIVE, "options": {"access_token_expiration": "later"}}
+        states[:] = [ACTIVE, ACTIVE, updated] if changed else [ACTIVE]
+        ok, detail = mcl.run_connection_login(AIGW_URL, WS, profile="selected")
+        assert ok == changed
+        assert ("timed out" in detail) == (not changed)
+
+    def test_missing_service_with_cached_workspace_id_fails_before_browser(self, sign_in):
+        _, _, launches, metadata = sign_in
+        db_mod._WORKSPACE_ORG_IDS[urlsplit(WS).hostname] = "777"
+        metadata[:] = [404]
+        ok, detail = mcl.run_connection_login(AIGW_URL, WS, profile="selected")
+        assert not ok and "HTTP 404" in detail
+        assert not launches
 
     def test_missing_workspace_id_does_not_open_wrong_workspace(self, sign_in, monkeypatch):
         _, _, launches, _ = sign_in
@@ -226,7 +251,7 @@ class TestRunConnectionLogin:
         states, requests, _, _ = sign_in
         states[:] = [404, ACTIVE]
         calls = []
-        tokens = iter(["initial", "initial", "refreshed"])
+        tokens = iter(["initial", "refreshed"])
 
         def get_token(workspace, profile):
             calls.append((workspace, profile))
@@ -234,7 +259,7 @@ class TestRunConnectionLogin:
 
         monkeypatch.setattr(mcl, "get_databricks_token", get_token)
         assert mcl.run_connection_login(AIGW_URL, WS, profile="selected")[0]
-        assert calls == [(WS, "selected")] * 3
+        assert calls == [(WS, "selected")] * 2
         assert [r.get_header("Authorization") for r in requests] == [
             "Bearer initial",
             "Bearer initial",

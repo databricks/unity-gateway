@@ -99,6 +99,15 @@ then `just lint`. These component checks do not establish live agent or gateway 
 - Preserve existing Rich UI conventions, including `print_warning`, `print_err`, `print_success`, `print_section`, and `spinner`.
 - Avoid broad refactors while fixing a narrow bug.
 
+## Legacy MCP authentication migration
+
+Before workspace CLI login, UG removes same-workspace MCP service URLs from the
+selected `databricks-cli` profile's `resources` field, regardless of which client
+saved them. These URLs have no writer marker. Browser MCP sign-in replaces this
+resource behavior; unrelated resources, profiles, and settings remain unchanged.
+Token retrieval never performs this migration. A migration failure blocks only
+login, with instructions to remove the matching entries manually.
+
 ## Fields `ug` manages
 
 This is the allow list of fields `ug` owns. Every field not listed is left

@@ -895,3 +895,10 @@ rejects stale or unrelated panels. Live audit correlation and child answers rema
 After Codex compaction removes a prompt, display correlation may instead use the
 native Spawned row immediately following the routing box. Unit checks reject later
 answer text, intervening prompts, and nonadjacent or unrelated spawn rows.
+
+Browser MCP review regressions check stale ACTIVE credentials wait for a changed credential
+or an observed non-ACTIVE state, pending provisioning continues, and missing services fail
+before browser launch even with a cached workspace ID. Config migration runs only before
+workspace login; ordinary token retrieval leaves saved resources untouched. Malformed
+unrelated profile hosts remain unchanged. These component tests control external boundaries
+and do not establish live browser sign-in or endpoint availability.

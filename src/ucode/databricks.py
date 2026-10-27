@@ -724,7 +724,10 @@ def _without_mcp_login_resources(text: str, workspace: str, profile: str) -> str
     if section.get("auth_type") != "databricks-cli" or not section.get("host"):
         return text
     origin = workspace_origin(workspace)
-    if workspace_origin(section["host"].lower()) != origin.lower():
+    try:
+        if workspace_origin(section["host"].lower()) != origin.lower():
+            return text
+    except (RuntimeError, ValueError):
         return text
     resources = [value.strip() for value in section.get("resources", "").split(",")]
 
@@ -810,9 +813,13 @@ def _clear_mcp_login_resources(workspace: str, profile: str | None) -> None:
         ) from exc
 
 
-def build_databricks_cli_env(workspace: str, profile: str | None = None) -> dict[str, str]:
+def prepare_databricks_login_env(workspace: str, profile: str | None) -> dict[str, str]:
     # CLI login inherits saved resources, which would sign in unrelated connectors.
     _clear_mcp_login_resources(workspace, profile)
+    return build_databricks_cli_env(workspace)
+
+
+def build_databricks_cli_env(workspace: str, profile: str | None = None) -> dict[str, str]:
     env = os.environ.copy()
     env["DATABRICKS_HOST"] = workspace
     if profile is None:
@@ -1481,7 +1488,7 @@ def run_databricks_login(workspace: str, profile: str | None = None) -> None:
             workspace,
             *_profile_args(profile_name),
         ]
-        run(cmd, env=build_databricks_cli_env(workspace, profile_name), timeout=300)
+        run(cmd, env=prepare_databricks_login_env(workspace, profile_name), timeout=300)
     except subprocess.CalledProcessError as exc:
         raise RuntimeError("`databricks auth login` failed.") from exc
     except subprocess.TimeoutExpired as exc:
@@ -1728,7 +1735,7 @@ def _browser_login(
                 stdin=subprocess.DEVNULL,
                 stdout=sys.stderr,
                 stderr=sys.stderr,
-                env=env,
+                env=prepare_databricks_login_env(workspace, profile),
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             _debug("auth login", f"exception: {type(exc).__name__}: {exc}")
@@ -1885,7 +1892,7 @@ def _fetch_databricks_token_for_profile(
                 ],
                 capture_output=True,
                 text=True,
-                env=env,
+                env=prepare_databricks_login_env(workspace, profile),
                 timeout=30,
             )
             _debug("auth login", _format_subprocess_result(reauth))
@@ -2830,6 +2837,20 @@ OAUTH_U2M_CONNECTION_KINDS = frozenset(
         "CONNECTION_SLACK_OAUTH_U2M_MAPPING",
     }
 )
+
+
+def get_mcp_service(
+    workspace: str, token: str, full_name: str
+) -> tuple[dict | list | None, str | None]:
+    url = f"{workspace_origin(workspace)}/api/2.1/unity-catalog/mcp-services/{quote(full_name, safe='')}"
+    return _http_get_json(url, token)
+
+
+def get_mcp_service_user_credential(
+    workspace: str, token: str, full_name: str
+) -> tuple[dict | list | None, str | None]:
+    url = f"{workspace_origin(workspace)}/api/2.1/unity-catalog/mcp-services/{quote(full_name, safe='')}/user-credentials"
+    return _http_get_json(url, token)
 
 
 def mcp_service_needs_connection_login(workspace: str, token: str, full_name: str) -> bool:
