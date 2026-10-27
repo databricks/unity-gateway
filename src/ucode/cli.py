@@ -56,6 +56,7 @@ from ucode.constants import (
     AGENT_CODEX,
     AGENT_COPILOT,
     ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
+    OMNIGENT_SESSION_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
     UG_HEADERS_ENV_VAR,
 )
@@ -3191,8 +3192,12 @@ def _should_launch_smart_routing(
     model: str | None,
 ) -> bool:
     if model is not None or has_explicit_model_arg(tool_args):
-        # A caller-pinned root model (e.g. Omnigent's --model) still allows subagent-only routing.
-        if tool != "claude" or smart_routing_v2.first_prompt_routing_enabled(agent=tool):
+        # Omnigent always pins the root model, so its Claude sessions still route subagents.
+        if not (
+            tool == "claude"
+            and env_bool(OMNIGENT_SESSION_ENV_VAR)
+            and not smart_routing_v2.first_prompt_routing_enabled(agent=tool)
+        ):
             return False
     return _smart_routing_launch_shape(tool, tool_args, explicit_prompt)
 
