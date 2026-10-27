@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
 import os
 import shlex
 import subprocess
@@ -4391,7 +4392,7 @@ class TestWriteUserMcpServers:
                 {"numStartups": 7, "mcpServers": {"mine": {"type": "stdio", "command": "x"}}}
             )
         )
-        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", path)
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
 
         entry = claude.user_stdio_mcp_entry(["ug", "mcp-proxy", "https://ws/svc"])
         claude.write_user_mcp_servers({"system-ai-github": entry}, set())
@@ -4414,7 +4415,7 @@ class TestWriteUserMcpServers:
         path.write_text(
             json.dumps({"mcpServers": {"gone": {"type": "http"}, "mine": {"type": "stdio"}}})
         )
-        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", path)
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
 
         claude.write_user_mcp_servers({}, {"gone"})
 
@@ -4424,7 +4425,7 @@ class TestWriteUserMcpServers:
 
     def test_writes_to_a_missing_file(self, tmp_path, monkeypatch):
         path = tmp_path / ".claude.json"
-        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", path)
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
 
         claude.write_user_mcp_servers({"a": {"type": "http", "url": "u"}}, set())
 
@@ -4433,7 +4434,7 @@ class TestWriteUserMcpServers:
     def test_unparseable_file_falls_back_to_cli_and_does_not_clobber(self, tmp_path, monkeypatch):
         path = tmp_path / ".claude.json"
         path.write_text("{ this is not valid json")
-        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", path)
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
         added: list[tuple[str, object]] = []
         removed: list[tuple[str, str]] = []
         monkeypatch.setattr(claude, "add_claude_mcp_server", lambda n, e, s: added.append((n, e)))
@@ -4479,13 +4480,152 @@ class TestWriteUserMcpServers:
         config_dir.mkdir()
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
         default_path = tmp_path / "default.claude.json"
-        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", default_path)
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", default_path)
 
         claude.write_user_mcp_servers({"svc": {"type": "http", "url": "u"}}, set())
 
         written = config_dir / ".claude.json"
         assert json.loads(written.read_text())["mcpServers"]["svc"] == {"type": "http", "url": "u"}
         assert not default_path.exists()  # the default location is untouched
+
+
+def _add_mcp_servers(prefix: str, count: int) -> None:
+    for index in range(count):
+        claude.write_user_mcp_servers({f"{prefix}-{index}": {"type": "http", "url": "u"}}, set())
+
+
+def _seed_hooks_modules_gate(count: int) -> None:
+    for _ in range(count):
+        claude.ensure_hooks_modules_gate()
+
+
+class TestEnsureHooksModulesGate:
+    """Launch forces Claude Code's mods rollout gate on in `.claude.json`."""
+
+    def test_overwrites_false_and_preserves_other_keys(self, tmp_path, monkeypatch):
+        path = tmp_path / ".claude.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "numStartups": 7,
+                    "tengu_plugin_hooks_modules": False,
+                    "cachedGrowthBookFeatures": {"other": 1, "tengu_plugin_hooks_modules": False},
+                }
+            )
+        )
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
+
+        claude.ensure_hooks_modules_gate()
+
+        assert json.loads(path.read_text()) == {
+            "numStartups": 7,
+            "cachedGrowthBookFeatures": {"other": 1, "tengu_plugin_hooks_modules": True},
+        }
+
+    def test_creates_feature_cache_when_absent(self, tmp_path, monkeypatch):
+        path = tmp_path / ".claude.json"
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
+
+        claude.ensure_hooks_modules_gate()
+
+        assert json.loads(path.read_text()) == {
+            "cachedGrowthBookFeatures": {"tengu_plugin_hooks_modules": True}
+        }
+
+    def test_leaves_file_untouched_when_already_on(self, tmp_path, monkeypatch):
+        path = tmp_path / ".claude.json"
+        original = json.dumps({"cachedGrowthBookFeatures": {"tengu_plugin_hooks_modules": True}})
+        path.write_text(original)
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
+
+        claude.ensure_hooks_modules_gate()
+
+        assert path.read_text() == original
+
+    def test_unparseable_file_is_not_clobbered(self, tmp_path, monkeypatch):
+        path = tmp_path / ".claude.json"
+        path.write_text("{ not json")
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
+
+        claude.ensure_hooks_modules_gate()
+
+        assert path.read_text() == "{ not json"
+
+    @pytest.mark.parametrize(
+        ("target", "error"),
+        [("os.replace", OSError("read-only")), ("acquire_exclusive_file_lock", TimeoutError())],
+    )
+    def test_failure_does_not_raise_or_change_file(self, tmp_path, monkeypatch, target, error):
+        path = tmp_path / ".claude.json"
+        path.write_text('{"numStartups": 7}')
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
+
+        def fail(*args, **kwargs):
+            raise error
+
+        monkeypatch.setattr(f"ucode.agents.claude.{target}", fail)
+
+        claude.ensure_hooks_modules_gate()
+
+        assert path.read_text() == '{"numStartups": 7}'
+        assert not list(tmp_path.glob("*.tmp"))
+
+    def test_locks_a_file_claude_code_does_not_use(self, tmp_path, monkeypatch):
+        # Claude Code locks `<file>.lock` itself; ug's flock must not collide with it.
+        path = tmp_path / ".claude.json"
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
+
+        claude.ensure_hooks_modules_gate()
+
+        assert (tmp_path / ".claude.json.ug.lock").exists()
+        assert not (tmp_path / ".claude.json.lock").exists()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+    def test_keeps_file_mode(self, tmp_path, monkeypatch):
+        path = tmp_path / ".claude.json"
+        path.write_text("{}")
+        path.chmod(0o644)
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
+
+        claude.ensure_hooks_modules_gate()
+
+        assert path.stat().st_mode & 0o777 == 0o644
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="uses fork to share the patched path")
+    def test_concurrent_writers_keep_every_change(self, tmp_path, monkeypatch):
+        path = tmp_path / ".claude.json"
+        path.write_text(json.dumps({"numStartups": 7, "tengu_plugin_hooks_modules": False}))
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
+        context = multiprocessing.get_context("fork")
+        workers = [
+            context.Process(target=_add_mcp_servers, args=(f"w{index}", 20)) for index in range(4)
+        ]
+        workers += [context.Process(target=_seed_hooks_modules_gate, args=(20,)) for _ in range(2)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=60)
+            assert worker.exitcode == 0
+
+        doc = json.loads(path.read_text())
+        assert doc["numStartups"] == 7
+        assert doc["cachedGrowthBookFeatures"] == {"tengu_plugin_hooks_modules": True}
+        assert "tengu_plugin_hooks_modules" not in doc
+        assert set(doc["mcpServers"]) == {f"w{w}-{i}" for w in range(4) for i in range(20)}
+        assert not list(tmp_path.glob("*.tmp"))
+
+    def test_launch_enables_gate(self, tmp_path, monkeypatch):
+        path = tmp_path / ".claude.json"
+        path.write_text(
+            json.dumps({"cachedGrowthBookFeatures": {"tengu_plugin_hooks_modules": False}})
+        )
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
+        monkeypatch.setattr(claude, "_launch_relayed", lambda *args: None)
+
+        claude.launch({"workspace": WS, "claude_relayed": True}, [], options=LaunchOptions())
+
+        features = json.loads(path.read_text())["cachedGrowthBookFeatures"]
+        assert features["tengu_plugin_hooks_modules"] is True
 
 
 class TestManagedUserAgent:
