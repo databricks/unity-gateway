@@ -20,6 +20,8 @@ from ucode.config_io import APP_DIR
 from ucode.databricks import (
     build_databricks_cli_env,
     databricks_cli_path,
+    external_bearer_configured,
+    get_databricks_token,
 )
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import (
@@ -273,6 +275,9 @@ def get_claude_desktop_databricks_token(
         if not isinstance(profile, str) or not profile.strip() or any(c in profile for c in "\r\n"):
             raise ClaudeDesktopAuthError("The configured Databricks profile is invalid.")
         profile = profile.strip()
+
+    if external_bearer_configured():
+        return get_databricks_token(host, profile, force_refresh=force_refresh)
 
     cli_path = databricks_cli_path()
     if not os.path.isabs(cli_path):

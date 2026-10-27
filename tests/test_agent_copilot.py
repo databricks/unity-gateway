@@ -336,6 +336,9 @@ class TestClassifyProviderModel:
             ("o3-mini", "openai", "responses"),
             ("gpt-4o", "azure_openai", "completions"),
             ("my-gpt4o-deployment", "azure_openai", "completions"),
+            ("claude-opus-4-8", "microsoft_foundry", "anthropic"),
+            ("gpt-5-nano", "microsoft_foundry", "responses"),
+            ("deepseek", "microsoft_foundry", "completions"),
         ],
     )
     def test_provider_type_and_id_decide_the_wire(self, model, provider_type, wire):
@@ -390,6 +393,20 @@ class TestBuildProviderCatalog:
         assert skipped == [
             ("text-embedding-3-small", "it isn't a chat model (it serves openai/v1/embeddings)")
         ]
+
+    def test_foundry_claude_uses_anthropic_whatever_it_declares(self):
+        chat = ["openai/v1/chat/completions"]
+        models, skipped = provider_models(
+            ["deepseek", "claude-opus-4-8"],
+            "microsoft_foundry",
+            {"deepseek": chat, "claude-opus-4-8": chat},
+        )
+
+        assert [(m.id, m.wire) for m in models] == [
+            ("claude-opus-4-8", "anthropic"),
+            ("deepseek", "completions"),
+        ]
+        assert skipped == []
 
     def test_orders_dotted_provider_versions_newest_first(self):
         models, _ = provider_models(

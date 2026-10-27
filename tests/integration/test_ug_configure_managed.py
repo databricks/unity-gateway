@@ -10,6 +10,7 @@ model catalog). The expected model ids mirror that fixture; update both together
 
 import json
 import tomllib
+from pathlib import Path
 
 import pytest
 from utils.managed import use_managed_config_fixture
@@ -118,34 +119,83 @@ def test_ug_configure_managed_is_idempotent(live_session, workspace):
 
 @pytest.mark.managed_fixture
 @pytest.mark.claude
-def test_ug_managed_config_launch_reuses_cache_within_ttl(live_session, workspace):
-    """Scenario: after a managed `ug configure`, launch Claude within the cache TTL, then again
-    after the cached read is backdated past it.
+def test_ug_managed_config_launch_replays_saved_config(live_session, workspace):
+    """Scenario: after a managed `ug configure`, launch Claude twice.
 
-    Expected: configure stamps managed-config.json with a `published` outcome and a `retrieved_at`;
-    a launch within the TTL is served from that cache and leaves the stamp untouched (no re-read of
-    the config source), and once the stamp is backdated past the TTL the next launch reads fresh
-    and advances it. The stub takes the same cache path as a live read.
+    Expected: configure installs a readable machine policy and records a published outcome with no
+    expiry stamp. Launches replay that saved config without re-reading it or rewriting either file,
+    however much time passes (an admin's later change is picked up by re-running `ug configure`).
     """
     session = live_session
     use_managed_config_fixture(session, "managed_workspace_default")
-    cache = session.home / ".ucode" / "managed-config.json"
+    policy = Path("/etc/unitygateway/managed-settings.json")
+    refresh = session.home / ".ucode" / "refresh_ts.json"
+    workspace_key = workspace.rstrip("/")
 
     session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
-    fresh = json.loads(cache.read_text())
-    assert fresh["outcome"] == "published", fresh
-    stamped = fresh["retrieved_at"]
+    installed = policy.read_bytes()
+    installed_stat = policy.stat()
+    assert installed_stat.st_uid == 0
+    assert installed_stat.st_mode & 0o777 == 0o644
+    assert policy.parent.stat().st_uid == 0
+    assert policy.parent.stat().st_mode & 0o777 == 0o755
+    assert set(json.loads(installed)) == {"workspace", "config"}
+    saved = json.loads(refresh.read_text())[workspace_key]
+    assert saved["outcome"] == "published", saved
+    assert "last_checked_at" not in saved, saved
+    assert refresh.stat().st_mode & 0o777 == 0o600
+    # Backdate the record as an older ug would have stamped it: the old five-minute timer would
+    # refetch and rewrite it, while a replay leaves it byte-for-byte unchanged.
+    records = json.loads(refresh.read_text())
+    records[workspace_key]["last_checked_at"] = "2000-01-01T00:00:00+00:00"
+    refresh.write_text(json.dumps(records))
+    refresh_text = refresh.read_text()
 
-    # A launch within the TTL reuses the cached read: the stamp must not move.
-    with AgentTerminal(session, "claude", [str(session.binary), "claude"], "ttl-cache-hit") as tui:
-        tui.boot()
-        tui.check_input_and_exit()
-    assert json.loads(cache.read_text())["retrieved_at"] == stamped
+    for label in ("replay-1", "replay-2"):
+        with AgentTerminal(session, "claude", [str(session.binary), "claude"], label) as tui:
+            tui.boot()
+            tui.check_input_and_exit()
+        assert refresh.read_text() == refresh_text
+        assert policy.read_bytes() == installed
+        assert policy.stat().st_ino == installed_stat.st_ino
+        assert policy.stat().st_mtime_ns == installed_stat.st_mtime_ns
+        assert policy.stat().st_ctime_ns == installed_stat.st_ctime_ns
 
-    # Backdate the stamp past the TTL; the next launch reads fresh and advances it.
-    backdated = "2000-01-01T00:00:00+00:00"
-    cache.write_text(json.dumps({**json.loads(cache.read_text()), "retrieved_at": backdated}))
-    with AgentTerminal(session, "claude", [str(session.binary), "claude"], "ttl-expired") as tui:
-        tui.boot()
-        tui.check_input_and_exit()
-    assert json.loads(cache.read_text())["retrieved_at"] != backdated
+
+@pytest.mark.managed_fixture
+@pytest.mark.claude
+def test_ug_managed_machine_refuses_foreign_workspace_launch(live_session, workspace):
+    """Scenario: configure a managed machine, then select a foreign workspace for launch.
+
+    Expected: bare ug, Claude, and Codex refuse the foreign workspace even with skip-preflight
+    or dry-run, without changing user state, refresh metadata, or the installed policy.
+    """
+    session = live_session
+    use_managed_config_fixture(session, "managed_workspace_default")
+    session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
+    policy = Path("/etc/unitygateway/managed-settings.json")
+    refresh = session.home / ".ucode" / "refresh_ts.json"
+    state = session.home / ".ucode" / "state.json"
+    before = {path: path.read_bytes() for path in (policy, refresh, state)}
+    installed_stat = policy.stat()
+    foreign = "https://not-the-managed-workspace.invalid"
+    for tool in (None, "claude", "codex"):
+        for dry_run in (False, True):
+            args = [tool] if tool else []
+            args += ["--workspace", foreign, "--skip-preflight"]
+            if dry_run:
+                args = ["--dry-run", *args]
+            result = session.run(*args, ok=False, timeout=30)
+            assert result.returncode == 1, (result.stdout, result.stderr)
+            output = " ".join((result.stdout + result.stderr).split())
+            assert "Launch refused" in output, output
+            assert workspace.rstrip("/") in output, output
+            assert foreign in output, output
+            assert "IT team or an administrator" in output, output
+            assert {path: path.read_bytes() for path in before} == before
+            after_stat = policy.stat()
+            assert (after_stat.st_ino, after_stat.st_mtime_ns, after_stat.st_ctime_ns) == (
+                installed_stat.st_ino,
+                installed_stat.st_mtime_ns,
+                installed_stat.st_ctime_ns,
+            )

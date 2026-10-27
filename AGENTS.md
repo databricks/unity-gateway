@@ -135,6 +135,7 @@ Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file 
 | Smart-routing hooks | Merge | Merge | `PreToolUse`, `SessionStart`, `SubagentStart`; only `ug`'s own marked handlers, other hooks left alone |
 | Admin `agent_native_settings` | Ignore | Create/replace | Managed file only; copied as-is. Keys `ug` owns are skipped, `permissions.deny` and hooks are merged, and `ug`'s MCP servers are added to an admin `allowedMcpServers`. Removed when the admin drops them, unless edited by hand |
 | Smart Router Orchestrator hooks | Merge | Merge | Launch-only `UserPromptSubmit` and compact `SessionStart` handlers for smart-routed sessions with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`; read the same session controls as routing |
+| Header mod | Merge | Merge | Managed file only, Linux and macOS: `extraKnownMarketplaces.ucode-managed`, `enabledPlugins["ug-headers@ucode-managed"]`, and `ug-headers@ucode-managed` first in `prependPlugins` (an unset list becomes the mod plus `sec-default@builtin`). The mod's files live in a root-owned `ucode-plugins` folder beside the managed file and add `UG_HEADERS` to each request. Added by `ug configure` or a launch with `UG_HEADERS`, never by a plain launch, so another writer of the file that drops them isn't fought on every launch. The entries are written only once the files are in place; revert removes both, keeping `sec-default@builtin` when an admin has extended the list |
 
 </details>
 
@@ -162,6 +163,11 @@ workspace's managed skills and Claude-targeted MCP servers. The source lives at
 `~/.ucode/claude-cowork-marketplace`, and `~/.ucode/claude-cowork.json` records the selected
 account/org root for cleanup. Cowork must have started once. Setup and cleanup use scoped
 `claude plugin ... --cowork --json` commands with `CLAUDE_CONFIG_DIR`; failures stay best-effort.
+Cowork uses short service-first aliases for generated UC MCP names, with collision qualifiers;
+custom registration names and full proxy URLs are preserved. Its name and display name
+are `ug`, with plugin ID `ug@unity-gateway-cowork`. Reconfigure removes the old
+`unity-gateway@unity-gateway-cowork` registration only after installing/updating `ug`;
+revert removes both IDs. New sessions use the `mcp__plugin_ug_...` tool namespace.
 See `docs/claude-desktop.md` for native validation limits and revert behavior.
 
 <details>
@@ -174,7 +180,7 @@ Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`
 | `model_provider` | Create/replace | Create/replace | Gateway provider (`Databricks`) |
 | `model` | Ignore | Create/replace | The config's default model |
 | `model_providers.Databricks` | Merge | Merge | Provider block: name, gateway base URL, wire API, `ug` auth command; other keys left alone |
-| `http_headers` | Merge | Merge | In `[model_providers.Databricks]`; merge `ug`'s routing headers by name, admin headers added under managed config |
+| `http_headers` | Merge | Merge | In `[model_providers.Databricks]`; merge `ug`'s routing headers by name, admin headers added under managed config. `UG_HEADERS` names not already present are added to the launch's `-c` flags only, never a file |
 | `model_catalog_json` | Create/replace | Create/replace | In `~/.codex/config.toml`; `ug`'s own catalog reference, for a static model list |
 | `otel.trace_exporter` | Ignore | Create/replace | In `~/.codex/config.toml` when the config enables tracing, for Codex desktop; another exporter and other telemetry settings left alone |
 | `mcp_servers` | Ignore | Merge | Managed file; add/update the config's MCP server entries, other entries left alone |

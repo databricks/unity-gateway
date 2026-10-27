@@ -43,6 +43,7 @@ from ucode.constants import (
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock
 from ucode.telemetry import ucode_user_agent, ug_version
+from ucode.ug_headers import ug_headers
 from ucode.ui import (
     err_console,
     normalize_workspace_url,
@@ -339,7 +340,7 @@ def _http_get_bytes(
     if max_retries < 0:
         raise ValueError("max_retries must be non-negative")
 
-    request_headers = {"Authorization": f"Bearer {token}"}
+    request_headers = {**ug_headers(), "Authorization": f"Bearer {token}"}
     request_headers.update(headers or {})
     request = urllib_request.Request(url, headers=request_headers)
     for attempt in range(max_retries + 1):
@@ -443,7 +444,11 @@ def _http_send_json(
     empty body there is the expected result, not a decode failure.
     """
     body_bytes = json.dumps(payload).encode("utf-8") if payload is not None else None
-    request_headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    request_headers = {
+        **ug_headers(),
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
     if body_bytes is not None:
         request_headers["Content-Type"] = "application/json"
     request_headers.update(headers or {})
@@ -2763,15 +2768,22 @@ def build_skills_mcp_url(workspace: str, locations: list[str]) -> str:
 # the `openai`, `azure_openai`, `microsoft_foundry`, `amazon_bedrock`, and
 # `bedrock_mantle` provider types all serve (the gateway fronts them with the
 # OpenAI surface); gemini speaks Google's, served by a Gemini Enterprise
-# provider. copilot speaks Anthropic's for the Claude targets of anthropic and
-# Bedrock services, and OpenAI's for openai and azure_openai services, on the
-# gateway's native route for each API. Tags are the short form produced by `_provider_type_tag`
+# provider. copilot speaks Anthropic's for the Claude targets of anthropic, Bedrock and
+# microsoft_foundry services, and OpenAI's for the other targets of openai, azure_openai and
+# microsoft_foundry services, on the gateway's native route for each API. Tags are the short form produced by `_provider_type_tag`
 # (e.g. `amazon_bedrock`).
 _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
     "claude": ("anthropic", "amazon_bedrock", "bedrock_mantle"),
     "codex": ("openai", "azure_openai", "microsoft_foundry", "amazon_bedrock", "bedrock_mantle"),
     "gemini": ("gemini_enterprise",),
-    "copilot": ("anthropic", "amazon_bedrock", "bedrock_mantle", "openai", "azure_openai"),
+    "copilot": (
+        "anthropic",
+        "amazon_bedrock",
+        "bedrock_mantle",
+        "openai",
+        "azure_openai",
+        "microsoft_foundry",
+    ),
 }
 
 # Agents that can only use a Bedrock service's Claude targets.
@@ -2782,6 +2794,7 @@ _CLAUDE_ONLY_BEDROCK_TOOLS = ("claude", "copilot")
 # Mantle) instead of the agent's canonical model names, so ucode must pin them
 # explicitly.
 BEDROCK_PROVIDER_TYPES: tuple[str, ...] = ("amazon_bedrock", "bedrock_mantle")
+MICROSOFT_FOUNDRY_PROVIDER_TYPE = "microsoft_foundry"
 # Provider types the gateway serves on its Anthropic Messages route.
 ANTHROPIC_API_PROVIDER_TYPES: tuple[str, ...] = ("anthropic", *BEDROCK_PROVIDER_TYPES)
 

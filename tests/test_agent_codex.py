@@ -1489,6 +1489,38 @@ class TestCodexLaunch:
         )
         assert "Databricks-Model-Provider-Service" not in provider_arg
 
+    def test_launch_adds_ug_headers_without_writing_the_profile(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        profile_path = tmp_path / "ucode.config.toml"
+        before = profile_path.read_text(encoding="utf-8")
+        monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: testenv://liteswap/a")
+
+        codex.launch({"workspace": WS}, [], options=LaunchOptions())
+
+        provider_arg = next(
+            arg for arg in launches[0] if arg.startswith("model_providers.Databricks=")
+        )
+        assert "x-databricks-traffic-id" in provider_arg
+        assert "testenv://liteswap/a" in provider_arg
+        assert profile_path.read_text(encoding="utf-8") == before
+
+    def test_smart_routing_overlay_adds_ug_headers_keeping_existing_ones(self, monkeypatch):
+        monkeypatch.setenv("UG_HEADERS", "x-team: other\nX-New: 1")
+        monkeypatch.setattr(
+            codex,
+            "render_overlay",
+            lambda *a, **k: {
+                "model_providers": {"Databricks": {"http_headers": {"X-Team": "eng"}}}
+            },
+        )
+
+        overlay = codex._render_launch_overlay(WS)
+
+        assert overlay["model_providers"]["Databricks"]["http_headers"] == {
+            "X-Team": "eng",
+            "X-New": "1",
+        }
+
     def test_provider_discovery_uses_custom_oauth_token(self, tmp_path, monkeypatch):
         self._patch(tmp_path, monkeypatch)
         catalog_path = tmp_path / "models.json"
@@ -1771,31 +1803,25 @@ class TestCodexManagedConfig:
         assert read_toml_safe(config_path)["model_provider"] == "Databricks"
         assert not managed_path.exists()
 
-    def test_skip_env_errors_on_stale_managed_override(self, tmp_path, monkeypatch):
+    def test_skip_env_trusts_a_stale_managed_file(self, tmp_path, monkeypatch):
+        """The opt-out trusts whatever OS-managed file exists: no check, no write, no error."""
         config_path, managed_path = self._patch(tmp_path, monkeypatch)
-        # A managed file left from an earlier workspace still points at that workspace's gateway.
         managed_path.parent.mkdir(parents=True, exist_ok=True)
-        managed_path.write_text(
+        stale = (
             'model_provider = "Databricks"\n'
             "[model_providers.Databricks]\n"
-            'base_url = "https://old-workspace.databricks.com/ai-gateway/openai/v1"\n',
-            encoding="utf-8",
+            'base_url = "https://old-workspace.databricks.com/ai-gateway/openai/v1"\n'
         )
+        managed_path.write_text(stale, encoding="utf-8")
         monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
         monkeypatch.setattr(
             codex, "reconcile_managed_file", lambda *a, **kw: pytest.fail("must not write managed")
         )
 
-        # A stale override silently defeats the reconfigure, so launching must fail loudly.
-        with pytest.raises(RuntimeError) as excinfo:
-            codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+        codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
 
-        # The stale managed file is left in place and the user is told how to clear it.
-        assert managed_path.exists()
-        message = str(excinfo.value)
-        assert managed_files.SKIP_OS_SETTINGS_ENV in message
-        assert "stale" in message
-        assert "ug revert" in message
+        assert config_path.exists()
+        assert managed_path.read_text(encoding="utf-8") == stale
 
     def test_user_scope_launches_over_stale_managed_override(self, tmp_path, monkeypatch):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)
