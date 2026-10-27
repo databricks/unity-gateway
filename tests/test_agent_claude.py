@@ -4493,34 +4493,24 @@ class TestEnsureHooksModulesGate:
 
         assert path.read_text() == "{ not json"
 
-    def test_write_failure_does_not_raise_or_leave_temp_files(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        ("target", "error"),
+        [("os.replace", OSError("read-only")), ("acquire_exclusive_file_lock", TimeoutError())],
+    )
+    def test_failure_does_not_raise_or_change_file(self, tmp_path, monkeypatch, target, error):
         path = tmp_path / ".claude.json"
         path.write_text('{"numStartups": 7}')
         monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
 
-        def fail(src, dst):
-            raise OSError("read-only")
+        def fail(*args, **kwargs):
+            raise error
 
-        monkeypatch.setattr(claude.os, "replace", fail)
+        monkeypatch.setattr(f"ucode.agents.claude.{target}", fail)
 
         claude.ensure_hooks_modules_gate()
 
         assert path.read_text() == '{"numStartups": 7}'
         assert not list(tmp_path.glob("*.tmp"))
-
-    def test_lock_timeout_does_not_raise(self, tmp_path, monkeypatch):
-        path = tmp_path / ".claude.json"
-        path.write_text("{}")
-        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
-
-        def busy(lock_file, *, timeout=None):
-            raise TimeoutError
-
-        monkeypatch.setattr(claude, "acquire_exclusive_file_lock", busy)
-
-        claude.ensure_hooks_modules_gate()
-
-        assert path.read_text() == "{}"
 
     def test_locks_a_file_claude_code_does_not_use(self, tmp_path, monkeypatch):
         # Claude Code locks `<file>.lock` itself; ug's flock must not collide with it.
