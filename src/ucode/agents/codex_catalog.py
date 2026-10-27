@@ -65,8 +65,9 @@ def build_codex_catalog(
     """Copy native presets or derive generic compatibility defaults, in admin order.
 
     Preserve all native metadata (including unknown future fields), except picker
-    identity/visibility/order. Only requested slugs are visible. Hidden aliases
-    for selected GPTs support the smart router's native-ID translation.
+    slug/visibility/order. Services without native metadata are labeled by their last
+    name segment, or the full id when labels collide. Only requested slugs are visible.
+    Hidden aliases for selected GPTs support the smart router's native-ID translation.
     """
     by_slug = {model["slug"]: model for model in bundled_models}
     by_key = {_model_key(slug): model for slug, model in by_slug.items()}
@@ -105,14 +106,19 @@ def build_codex_catalog(
                     ],
                 )
             model["description"] = f"{name} served on the Databricks AI Gateway."
+            model["display_name"] = name.rsplit(".", 1)[-1]
         model.update(
             slug=name,
-            display_name=name,
             visibility=ModelVisibility.LIST,
             supported_in_api=True,
             priority=len(models),
         )
         models.append(model)
+    labels = [model["display_name"] for model in models]
+    for model in models:
+        # Readable labels may collide across catalogs/schemas; the full id is unique.
+        if labels.count(model["display_name"]) > 1:
+            model["display_name"] = model["slug"]
     requested = set(names)
     aliases = {}
     for model in models:
