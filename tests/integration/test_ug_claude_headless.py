@@ -295,6 +295,38 @@ def test_ug_claude_reports_unsupported_short_model_option(live_session, workspac
     assert "unknown option '-m'" in actual.stderr
 
 
+def _json_size(value) -> int:
+    return len(json.dumps(value, separators=(",", ":")))
+
+
+def _record_claude_settings_size(session, name: str) -> None:
+    """Record where the ucode Claude settings' serialized size goes, without their values.
+
+    Temporary: diagnoses which keys push the inline ``--settings`` past Windows' 32,767-character
+    command line (WinError 206).
+    """
+    path = session.home / ".claude" / "ucode-settings.json"
+    if not path.exists():
+        session.record(name, {"exists": False})
+        return
+    settings = json.loads(path.read_text(encoding="utf-8"))
+
+    def breakdown(value):
+        if isinstance(value, dict):
+            return {
+                key: {"chars": _json_size(child), **breakdown(child)}
+                for key, child in sorted(value.items(), key=lambda item: -_json_size(item[1]))
+            }
+        if isinstance(value, list):
+            return {
+                "items": len(value),
+                "largest_item_chars": max(map(_json_size, value), default=0),
+            }
+        return {}
+
+    session.record(name, {"total_chars": _json_size(settings), "keys": breakdown(settings)})
+
+
 def test_ug_claude_headless_allow_all_bedrock_provider(
     live_session, workspace, claude_bedrock_allow_all_provider, claude_bedrock_allow_all_model
 ):
@@ -316,19 +348,23 @@ def test_ug_claude_headless_allow_all_bedrock_provider(
         "--skip-upgrade",
         "--disable-databricks-ai-tools",
     )
-    result = session.run(
-        "claude",
-        "--provider",
-        claude_bedrock_allow_all_provider,
-        "--model",
-        claude_bedrock_allow_all_model,
-        "--",
-        "-p",
-        task.prompt,
-        "--output-format",
-        "json",
-        "--allowedTools",
-        "Read",
-        timeout=240,
-    )
+    _record_claude_settings_size(session, "settings-size-after-configure.json")
+    try:
+        result = session.run(
+            "claude",
+            "--provider",
+            claude_bedrock_allow_all_provider,
+            "--model",
+            claude_bedrock_allow_all_model,
+            "--",
+            "-p",
+            task.prompt,
+            "--output-format",
+            "json",
+            "--allowedTools",
+            "Read",
+            timeout=240,
+        )
+    finally:
+        _record_claude_settings_size(session, "settings-size-after-launch.json")
     task.assert_headless_answer("claude", result)
