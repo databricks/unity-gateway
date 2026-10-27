@@ -370,16 +370,38 @@ def _write_connector_skill(destination: Path, server_names: list[str]) -> None:
         return
     connectors = ", ".join(f"`{name}`" for name in server_names)
     description = (
-        f"Unity Gateway connectors are available in this session: {connectors}. "
+        f"Unity Gateway connectors configured for this session: {connectors}. "
         "Use the matching connector for any request about the user's own resources on "
         "those services, such as their pull requests, issues, tickets, pages, mail, or "
-        "files. If its tools are not loaded yet, search for them. Do not ask whether the "
-        "service is connected or say it is unavailable before trying the connector."
+        "files. Search for its tools, including `authenticate`, before reporting it unavailable. "
+        "If sign-in is required or access is denied, call the discovered `authenticate` tool "
+        "once, guide the user through sign-in, then retry their original request after "
+        "authentication succeeds."
+    )
+    guidance = (
+        f"{description}\n\n"
+        "Configured does not mean signed in. Missing tools alone do not establish an "
+        "authentication failure. Use only tools actually discovered for the matching connector.\n\n"
+        "If a connector returns a sign-in URL or asks the user to reconnect, use its discovered "
+        "`authenticate` tool before falling back to manual login instructions. A warning not to "
+        "retry service tools applies until sign-in succeeds; `authenticate` is the recovery "
+        "action. Do not ask the user to report back after signing in.\n\n"
+        "On an access denial, including an IP-address denial, try the connector's discovered "
+        "`authenticate` tool once before recommending administrator or network changes. Describe "
+        "this as a sign-in recovery attempt; the error alone does not establish its root cause. "
+        "If the denial persists after successful sign-in and retry, report the original error "
+        "and stop retrying authentication. Do not recommend disabling access controls.\n\n"
+        "After successful sign-in, discover the connector's tools again and continue the original "
+        "task in the same turn. If sign-in is canceled, fails, or times out, explain the observed "
+        "failure and the recovery instructions returned by the tool. Do not claim success.\n\n"
+        "If no authentication tool is available, relay any sign-in link or recovery instructions "
+        "returned by the connector. Do not invent a settings path or assume an access denial or "
+        "generic tool failure means the user's token expired."
     )
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
         f"---\nname: {CONNECTOR_SKILL_NAME}\ndescription: {json.dumps(description)}\n---\n\n"
-        f"{description}\n",
+        f"{guidance}\n",
         encoding="utf-8",
     )
 

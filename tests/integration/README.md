@@ -565,12 +565,36 @@ preservation on install failure, scoped cleanup, and unrelated-plugin preservati
 cleanup. Both are mocked component coverage; the integration suite does not launch Cowork,
 connect a plugin MCP server, discover its deferred tool, or run a task through it.
 
+`../test_mcp_proxy.py` covers persistent OAuth U2M authentication-tool discovery, explicit
+reauthentication after success/cancellation, refresh and task retry over in-memory MCP
+streams, and renewed discovery-auth failures. Failed metadata lookups remain retryable, and
+discovery and unrelated replies continue during interactive login. Metadata/pagination and
+upstream tool names are preserved; PAT/non-U2M discovery, permission errors, and policy URL
+elicitation stay unchanged. `../test_databricks.py` distinguishes unsupported services from
+failed or incomplete lookups; `../test_mcp.py` retains proxy registration for unknown
+classification. `../test_cowork_plugin.py` also checks generated sign-in/retry guidance. These
+component tests replace external login and do not establish native Cowork browser recovery.
+Generated-guidance checks include one sign-in attempt for access/IP denials and stopping
+authentication retries if the denial persists. They verify the instructions, not model compliance.
+Gmail/Calendar component regressions cover service-scoped login URLs in failed tool results
+and structured login elicitations: automatic sign-in, one request replay, cancellation,
+persistent failures, and unrelated replies during login. Success results, unsupported/unknown
+metadata, PAT profiles, other/malformed URLs, and policy or mixed challenges stay unchanged.
+Discovery login elicitations expose `authenticate` without starting login. No live signed-out
+Gmail/Calendar operation or native browser flow was exercised by these component tests.
+HTTP 401 component coverage separately verifies silent workspace-token refresh and no
+connector login during initialization, discovery, notifications, or background requests.
+Actual tool-call 401s can open connector login only after workspace refresh also returns 401;
+failed workspace refresh, PAT mode, malformed requests, and other HTTP failures do not open
+it. Async HTTP-client cases replace only external network/login boundaries and verify bearer
+rotation and identical request bodies. They do not establish native logout/relogin behavior.
+
 `../test_mcp_connection_login.py` substitutes browser, HTTP, and clock boundaries to check
 workspace sign-in URL construction and polling the selected CLI user's credential. Pending,
 FAILED, and 404 states keep waiting; transient errors can recover; denied/malformed states,
 workspace-token failures, and timeout fail. A blocked browser retains the manual URL.
 Success requires ACTIVE; browser launch alone is insufficient. Proxy coverage combines
-this browser flow with request replay, preserving the profile and token
+workspace-token refresh with this browser flow and replay, preserving the profile and token
 memo. These are component tests; live provider sign-in, popup behavior, and native
 Desktop/Cowork recovery remain unverified.
 

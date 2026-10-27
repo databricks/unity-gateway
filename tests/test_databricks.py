@@ -5777,10 +5777,22 @@ class TestMcpServiceNeedsConnectionLogin:
         )
         assert db_mod.mcp_service_needs_connection_login(WS, "t", "system.ai.pg") is False
 
-    def test_false_on_lookup_error(self, monkeypatch):
-        # Safe default: an unreachable API must not push a service into an OAuth flow.
+    def test_unknown_on_lookup_error(self, monkeypatch):
         self._mock_http(monkeypatch, details=None, err="HTTP 500")
-        assert db_mod.mcp_service_needs_connection_login(WS, "t", "system.ai.github") is False
+        assert db_mod.mcp_service_needs_connection_login(WS, "t", "system.ai.github") is None
+
+    @pytest.mark.parametrize(
+        "details",
+        [
+            None,
+            {},
+            {"config": {"source_connection": {}}},
+            {"config": {"source_connection": {"securable_kind": None}}},
+        ],
+    )
+    def test_unknown_on_incomplete_metadata(self, monkeypatch, details):
+        self._mock_http(monkeypatch, details=details)
+        assert db_mod.mcp_service_needs_connection_login(WS, "t", "system.ai.github") is None
 
 
 class TestRunDecodesUtf8:
