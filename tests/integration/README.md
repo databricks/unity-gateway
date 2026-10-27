@@ -195,7 +195,7 @@ does not yet assert live `recommendModel` request counts for configs with and wi
 ## Dedicated-workspace CUJ5
 
 [`../e2e_cuj/test_cuj5_budget_defaults.py`](../e2e_cuj/test_cuj5_budget_defaults.py) runs
-three budget cases in the shared `E2E CUJs` job against the fixed 1% tier. The above-tier
+four budget cases in the shared `E2E CUJs` job against the fixed 1% tier. The above-tier
 cases use `UG_CUJ_SP_CLIENT_ID` / `UG_CUJ_SP_CLIENT_SECRET`; the below-tier case uses
 `UG_BUDGET_CUJ_SP_CLIENT_ID` / `UG_BUDGET_CUJ_SP_CLIENT_SECRET`.
 
@@ -208,15 +208,24 @@ uv run --with pexpect==4.9.0 --with pyte==0.8.2 \
   pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj -v
 ```
 
-All three cases submit no inference tasks. The above-tier bare-launch case checks
+All four cases submit no inference tasks. The above-tier bare-launch case checks
 `ug usage`, the Luna recommendation, and Codex startup; it does not assert that Codex
 applies Luna. The below-tier case verifies Claude/Sonnet selection and checks the
 spend percentage when the backend supplies budget figures.
 
 The explicit `ug claude` case verifies that startup displays the backend's Codex/Luna
 recommendation while its generated `ANTHROPIC_MODEL` setting and native header select
-Sonnet, then exits. It does not verify Claude's inference model. All three cases leave
-workspace and budget configuration unchanged.
+Sonnet, then exits. It does not verify Claude's inference model.
+
+The explicit `ug claude --model <model>` case picks the first published Claude model other
+than Sonnet. It checks that the launch still displays the Codex/Luna recommendation and that
+Claude's native header shows the explicit model. It also requires `~/.claude/ucode-settings.json`
+and `/etc/claude-code/managed-settings.json` to stay byte-identical to what `ug configure` wrote,
+with Sonnet as `ANTHROPIC_MODEL`. A following plain `ug claude` must start on Sonnet without
+rewriting either file. This case also covers startup only, not inference. A Claude budget pick
+that differs from the admin default, alone or with smart routing, has unit coverage in
+`../test_agent_claude.py` and `../test_cli.py` only: no CUJ workspace publishes such a tier.
+All four cases leave workspace and budget configuration unchanged.
 
 `../test_usage.py`, `../test_budget.py`, and `../test_cli.py` cover top-five selection
 by usage percentage without category grouping, `--all` and its help text, short IDs
