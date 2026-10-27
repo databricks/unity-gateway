@@ -4140,6 +4140,24 @@ class TestEnsureDatabricksCliVersion:
         with pytest.raises(RuntimeError, match="Could not parse"):
             ensure_databricks_cli_version()
 
+    def test_soft_fails_when_version_unreadable_and_env_set(self, tmp_path, monkeypatch):
+        env = self._fake_databricks(tmp_path, "completely broken output")
+        env["DATABRICKS_CLI_SOFT_FAIL_VERSION_CHECK"] = "1"
+        monkeypatch.setattr("os.environ", env)
+        ensure_databricks_cli_version()  # should not raise
+
+    def test_soft_fails_when_version_times_out_and_env_set(self, monkeypatch):
+        import ucode.databricks as db_mod
+
+        monkeypatch.setenv("DATABRICKS_CLI_SOFT_FAIL_VERSION_CHECK", "1")
+        monkeypatch.setattr(db_mod, "_iter_databricks_executables", lambda: ["/fake/databricks"])
+
+        def timeout(*a, **kw):
+            raise subprocess.TimeoutExpired("databricks", 10)
+
+        monkeypatch.setattr(db_mod, "run", timeout)
+        ensure_databricks_cli_version()  # should not raise
+
     def test_custom_minimum_upgrades_version_below_it(self, tmp_path, monkeypatch):
         import ucode.databricks as db_mod
 

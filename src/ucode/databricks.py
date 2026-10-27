@@ -37,6 +37,7 @@ from ucode.constants import (
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
 )
+from ucode.env import env_bool
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock
 from ucode.telemetry import ug_version
@@ -56,6 +57,7 @@ UNIX_DATABRICKS_INSTALL_URL = (
     "https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh"
 )
 WINDOWS_DATABRICKS_WINGET_PACKAGE = "Databricks.DatabricksCLI"
+SOFT_FAIL_VERSION_CHECK_ENV = "DATABRICKS_CLI_SOFT_FAIL_VERSION_CHECK"
 AI_GATEWAY_DOCS_URL = "https://docs.databricks.com/aws/en/ai-gateway/overview-beta"
 ANTHROPIC_MODELS_PATH = "/ai-gateway/anthropic/v1/models"
 # v1.0.0 is the release that ships `databricks aitools`.
@@ -959,6 +961,13 @@ def ensure_databricks_cli_version(
         raise RuntimeError("Failed to read Databricks CLI version.")
 
     parsed = [(path, version) for path, version in clis if version is not None]
+    if not parsed and env_bool(SOFT_FAIL_VERSION_CHECK_ENV):
+        # `--version` timed out or was unparseable; proceed with the CLI as-is.
+        print_warning(
+            "Could not read Databricks CLI version; skipping the version check "
+            f"because {SOFT_FAIL_VERSION_CHECK_ENV} is set."
+        )
+        return
     if not parsed:
         # Best-effort sample for the error message: the binary we'd run's raw
         # `--version` output (already known unparseable, but worth showing why).
