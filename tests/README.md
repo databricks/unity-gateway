@@ -960,3 +960,10 @@ Pre-browser credential reads retry transient HTTP/network failures twice before 
 
 Credential validation rejects malformed initial responses before browser launch and non-string
 states during polling. The browser subprocess runs Python in isolated mode.
+
+MCP review regressions cover bounded connector descriptions with a complete body list,
+malformed upstream tool entries, rate-limited workspace refresh, and slow metadata
+discovery while unrelated replies continue. Failed metadata discovery has a short retry
+cooldown; an actual tool-call auth failure can recheck immediately. These are component
+checks, not native Cowork invocation or live provider sign-in.
+

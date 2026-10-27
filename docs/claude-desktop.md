@@ -342,6 +342,12 @@ and return, before UG confirms reauthentication. PROVISIONING, UPDATING, and DEL
 continue polling. Missing services fail before launching a browser; a credential 404
 means the selected user has not signed in yet and continues polling until the timeout.
 
+The generated connector skill keeps its discovery description within 1,024 characters;
+the body lists every configured connector and carries sign-in recovery instructions.
+The proxy limits forced workspace refresh after repeated 401s to once per 30 seconds.
+Failed metadata discovery retries after five seconds; a tool-call auth failure can
+recheck immediately. Slow metadata discovery does not delay unrelated MCP responses.
+
 Two automated Desktop journeys run in the existing Linux/Windows Claude integration jobs:
 system.ai models and subscription-relay MPS. Each asserts the generated profile, executes its
 credential helper, completes real Messages inference, installs Cowork through the Claude CLI,

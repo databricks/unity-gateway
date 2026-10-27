@@ -182,6 +182,23 @@ class TestDatabricksTokenAuth:
         assert token_calls == [{}, {"force_refresh": True}]
         assert len(yielded) == 2
 
+    def test_repeated_401s_rate_limit_workspace_refresh(self, monkeypatch):
+        calls = []
+        now = [100.0]
+        monkeypatch.setattr(mcp_proxy.time, "monotonic", lambda: now[0])
+        monkeypatch.setattr(
+            mcp_proxy,
+            "get_databricks_token",
+            lambda *args, **kwargs: calls.append(kwargs.get("force_refresh", False)) or "token",
+        )
+        auth = mcp_proxy._build_token_auth(URL, WS, "p")
+        for _ in range(2):
+            self._drive(auth, httpx.Request("GET", URL), httpx.Response(401), httpx.Response(401))
+        assert calls.count(True) == 1
+        now[0] += mcp_proxy.WORKSPACE_REFRESH_INTERVAL_SECONDS
+        self._drive(auth, httpx.Request("GET", URL), httpx.Response(401), httpx.Response(401))
+        assert calls.count(True) == 2
+
     @pytest.mark.parametrize("method", ["initialize", "tools/call"])
     def test_workspace_refresh_recovers_401_without_connection_login(self, monkeypatch, method):
         token_calls = []
@@ -613,8 +630,9 @@ class TestMcpBridgeConnectionLogin:
             )
         return mcp_proxy.SessionMessage(payload)
 
-    @pytest.mark.parametrize("service", ["gmail", "google_calendar"])
-    @pytest.mark.parametrize("kind", ["tool-error", "elicitation"])
+    @pytest.mark.parametrize(
+        ("service", "kind"), [("gmail", "tool-error"), ("google_calendar", "elicitation")]
+    )
     @pytest.mark.parametrize("outcome", ["success", "canceled", "still-unauthenticated"])
     def test_login_url_failure_runs_login_and_retries_once(
         self, monkeypatch, service, kind, outcome
@@ -717,6 +735,8 @@ class TestMcpBridgeConnectionLogin:
     def test_other_login_and_approval_urls_do_not_start_authentication(
         self, monkeypatch, kind, login_url
     ):
+        monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda *a: "tok")
+        monkeypatch.setattr(mcp_proxy, "mcp_service_needs_connection_login", lambda *a: True)
         monkeypatch.setattr(
             mcp_proxy, "run_connection_login", lambda *a, **k: pytest.fail("unexpected login")
         )
@@ -744,6 +764,8 @@ class TestMcpBridgeConnectionLogin:
         "case", ["success", "missing-error-marker", "nontext", "mixed-elicitation", "other-code"]
     )
     def test_login_links_outside_auth_failures_are_unchanged(self, monkeypatch, case):
+        monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda *a: "tok")
+        monkeypatch.setattr(mcp_proxy, "mcp_service_needs_connection_login", lambda *a: True)
         monkeypatch.setattr(
             mcp_proxy, "run_connection_login", lambda *a, **k: pytest.fail("unexpected login")
         )
@@ -821,6 +843,7 @@ class TestMcpBridgeConnectionLogin:
                     assert await dest_read.receive() is initial
                     assert logins == []
                     if next_operation == "discovery":
+                        bridge.connection_login._metadata_retry_at = 0.0
                         await source_send.send(self._response(2))
                         received = (await dest_read.receive()).message
                         assert received.result["tools"] == [bridge._authentication_tool()]
@@ -836,7 +859,57 @@ class TestMcpBridgeConnectionLogin:
 
         anyio.run(scenario)
 
-    @pytest.mark.parametrize("normal_tools", [[], [{"name": "search_pull_requests"}]])
+    def test_slow_discovery_metadata_does_not_block_other_responses(self, monkeypatch):
+        started, release = Event(), Event()
+        monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda *a: "tok")
+
+        def metadata(*args):
+            started.set()
+            assert release.wait(2), "metadata boundary was not released"
+            return True
+
+        monkeypatch.setattr(mcp_proxy, "mcp_service_needs_connection_login", metadata)
+
+        async def scenario():
+            source_send, source_read = anyio.create_memory_object_stream(2)
+            dest_send, dest_read = anyio.create_memory_object_stream(2)
+            retry_send, _ = anyio.create_memory_object_stream(2)
+            bridge = mcp_proxy._McpBridge(mcp_proxy._ConnectionLogin(CONN_URL, WS, "p"))
+            bridge.pending_requests = {1: self._request(1), 2: self._tool_call_request(2)}
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(bridge.pump_upstream, source_read, dest_send, retry_send)
+                try:
+                    with anyio.fail_after(1):
+                        await source_send.send(self._response(1))
+                        assert await anyio.to_thread.run_sync(started.wait, 1)
+                        other = self._response(2)
+                        await source_send.send(other)
+                        assert await dest_read.receive() is other
+                        release.set()
+                        assert (await dest_read.receive()).message.result["tools"] == [
+                            bridge._authentication_tool()
+                        ]
+                finally:
+                    release.set()
+                    tg.cancel_scope.cancel()
+
+        anyio.run(scenario)
+
+    def test_failed_metadata_discovery_has_retry_cooldown(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda *a: "tok")
+        monkeypatch.setattr(
+            mcp_proxy, "mcp_service_needs_connection_login", lambda *a: calls.append(1)
+        )
+        login = mcp_proxy._ConnectionLogin(CONN_URL, WS, "p")
+        assert not login.supports_login()
+        assert not login.supports_login()
+        assert len(calls) == 1
+        login._metadata_retry_at = 0.0
+        assert not login.supports_login()
+        assert len(calls) == 2
+
+    @pytest.mark.parametrize("normal_tools", [[], [{"name": "search_pull_requests"}], [None]])
     def test_successful_discovery_keeps_authentication_available(self, monkeypatch, normal_tools):
         from mcp.shared.message import ClientMessageMetadata
 
@@ -921,7 +994,8 @@ class TestMcpBridgeConnectionLogin:
         anyio.run(scenario)
         assert lookups == ([1] if mode == "non-u2m" else [])
 
-    def test_upstream_authenticate_tool_is_not_shadowed(self, monkeypatch):
+    @pytest.mark.parametrize("kind", ["auth-code", "elicitation"])
+    def test_upstream_authenticate_tool_is_not_shadowed(self, monkeypatch, kind):
         monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda *a: "tok")
         monkeypatch.setattr(mcp_proxy, "mcp_service_needs_connection_login", lambda *a: True)
         monkeypatch.setattr(
@@ -946,6 +1020,15 @@ class TestMcpBridgeConnectionLogin:
                     request = self._tool_call_request(2, "authenticate")
                     await client_send.send(request)
                     assert await retry_read.receive() is request
+                    failure = (
+                        self._error(request_id=2)
+                        if kind == "auth-code"
+                        else self._login_url_failure(kind, service="github", request_id=2)
+                    )
+                    await source_send.send(failure)
+                    assert await dest_read.receive() is failure
+                    with pytest.raises(anyio.WouldBlock):
+                        retry_read.receive_nowait()
                 tg.cancel_scope.cancel()
 
         anyio.run(scenario)
@@ -1184,6 +1267,8 @@ class TestMcpBridgeConnectionLogin:
     def test_tools_list_auth_error_returns_authentication_tool_without_login(
         self, monkeypatch, authenticated_before, kind
     ):
+        monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda *a: "tok")
+        monkeypatch.setattr(mcp_proxy, "mcp_service_needs_connection_login", lambda *a: True)
         monkeypatch.setattr(
             mcp_proxy,
             "run_connection_login",
@@ -1211,6 +1296,26 @@ class TestMcpBridgeConnectionLogin:
                     with pytest.raises(anyio.WouldBlock):
                         upstream_receive.receive_nowait()
                 tg.cancel_scope.cancel()
+
+        anyio.run(scenario)
+
+    @pytest.mark.parametrize("classification", [False, None])
+    def test_discovery_uses_local_login_only_for_supported_elicitation(
+        self, monkeypatch, classification
+    ):
+        monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda *a: "tok")
+        monkeypatch.setattr(
+            mcp_proxy, "mcp_service_needs_connection_login", lambda *a: classification
+        )
+
+        async def scenario():
+            send, receive = anyio.create_memory_object_stream(1)
+            bridge = mcp_proxy._McpBridge(mcp_proxy._ConnectionLogin(CONN_URL, WS, "p"))
+            error = self._login_url_failure("elicitation", service="github")
+            await bridge._send_tool_list_response(error, send)
+            assert await receive.receive() is error
+            assert not bridge.authentication_tool_available
+            assert not bridge.authentication_required
 
         anyio.run(scenario)
 
