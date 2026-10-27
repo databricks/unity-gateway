@@ -53,9 +53,9 @@ def test_hosted_services_get_readable_labels_and_keep_full_slugs(bundled):
     names = ["system.ai.kimi-k3", "main.team.custom", "plain"]
     models = catalog.build_codex_catalog(bundled, names)["models"]
     assert [(m["slug"], m["display_name"]) for m in models] == [
-        ("system.ai.kimi-k3", "kimi-k3"),
-        ("main.team.custom", "custom"),
-        ("plain", "plain"),
+        ("system.ai.kimi-k3", "Kimi K3"),
+        ("main.team.custom", "Custom"),
+        ("plain", "Plain"),
     ]
 
 
@@ -65,7 +65,7 @@ def test_duplicate_labels_fall_back_to_full_ids_but_not_hidden_aliases(bundled):
     assert [m["display_name"] for m in models[:4]] == [
         "system.ai.kimi-k3",
         "main.team.kimi-k3",
-        "other",
+        "Other",
         "gpt-6-astra",
     ]
     assert models[4]["slug"] == "gpt-6-astra"

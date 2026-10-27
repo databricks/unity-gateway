@@ -11,6 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from ucode.codex_config import ModelVisibility
+from ucode.databricks import model_picker_label
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.smart_routing.codex_routing import codex_model_id
 from ucode.ui import print_warning
@@ -65,8 +66,8 @@ def build_codex_catalog(
     """Copy native presets or derive generic compatibility defaults, in admin order.
 
     Preserve all native metadata (including unknown future fields), except picker
-    slug/visibility/order. Services without native metadata are labeled by their last
-    name segment, or the full id when labels collide. Only requested slugs are visible.
+    slug/visibility/order. Services without native metadata get a picker label from their
+    last name segment, or the full id when labels collide. Only requested slugs are visible.
     Hidden aliases for selected GPTs support the smart router's native-ID translation.
     """
     by_slug = {model["slug"]: model for model in bundled_models}
@@ -106,7 +107,7 @@ def build_codex_catalog(
                     ],
                 )
             model["description"] = f"{name} served on the Databricks AI Gateway."
-            model["display_name"] = name.rsplit(".", 1)[-1]
+            model["display_name"] = model_picker_label(name.rsplit(".", 1)[-1])
         model.update(
             slug=name,
             visibility=ModelVisibility.LIST,
