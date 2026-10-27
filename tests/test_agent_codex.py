@@ -2463,6 +2463,21 @@ class TestCodexReconcileManagedMcp:
         assert captured["owned_paths"] == [["mcp_servers"]]
         assert captured["tool"] == "codex"
 
+    def test_writes_native_http_oauth_entry(self, monkeypatch):
+        import tomllib
+
+        captured: dict = {}
+        self._wire(monkeypatch, "", captured)
+        url = "https://ws/ai-gateway/mcp-services/system.ai.github"
+        assert codex.reconcile_managed_mcp(
+            {}, {"gh": codex.managed_mcp_http_entry(url, "codex-cli")}
+        )
+        assert tomllib.loads(captured["text"])["mcp_servers"]["gh"] == {
+            "url": url,
+            "oauth_resource": url,
+            "oauth": {"client_id": "codex-cli"},
+        }
+
     def test_empty_map_clears_table_preserving_model_keys(self, monkeypatch):
         import tomllib
 
