@@ -14,6 +14,7 @@ from pathlib import Path
 
 import questionary
 
+from ucode.agents.claude import claude_config_dir
 from ucode.databricks import get_databricks_token, workspace_org_id
 from ucode.mcp import register_schemaless_skills_connection, setup_mcp_clients
 from ucode.skills_api import (
@@ -71,16 +72,16 @@ def skill_dir_roots(project_dir: str | None) -> list[Path]:
     """The ``.claude/skills`` and ``.agents/skills`` roots to download into.
 
     ``project_dir`` must be an existing absolute directory when given; when
-    omitted, roots default to the user's home directory (user scope).
+    omitted, roots default to user scope: Claude's config directory (which
+    honors ``$CLAUDE_CONFIG_DIR``) and ``~/.agents/skills``.
     """
     if project_dir is None:
-        base = Path.home()
-    else:
-        base = Path(project_dir)
-        if not base.is_absolute():
-            raise ValueError(f"--path must be an absolute path, got `{project_dir}`.")
-        if not base.is_dir():
-            raise ValueError(f"--path directory does not exist: `{project_dir}`.")
+        return [claude_config_dir() / "skills", Path.home() / ".agents/skills"]
+    base = Path(project_dir)
+    if not base.is_absolute():
+        raise ValueError(f"--path must be an absolute path, got `{project_dir}`.")
+    if not base.is_dir():
+        raise ValueError(f"--path directory does not exist: `{project_dir}`.")
     return [base / name for name in SKILL_BASE_DIR_NAMES]
 
 

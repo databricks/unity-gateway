@@ -1,4 +1,4 @@
-"""Claude Code agent: writes ~/.claude/settings.json env block."""
+"""Claude Code agent: writes the settings env block under Claude Code's config directory."""
 
 from __future__ import annotations
 
@@ -123,7 +123,15 @@ from .request_tags import request_tags_header_value
 GATEWAY_MODEL_DISCOVERY_ENV_VAR = "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"
 # If set, Claude Code launches in headless mode instead of the interactive login flow.
 CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR = "CLAUDE_CODE_OAUTH_TOKEN"
-CLAUDE_CONFIG_DIR = Path.home() / ".claude"
+
+
+def claude_config_dir() -> Path:
+    """Claude Code's user config directory: ``$CLAUDE_CONFIG_DIR`` when set, else ``~/.claude``."""
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(config_dir) if config_dir else Path.home() / ".claude"
+
+
+CLAUDE_CONFIG_DIR = claude_config_dir()
 CLAUDE_SETTINGS_PATH = CLAUDE_CONFIG_DIR / "ucode-settings.json"
 CLAUDE_CODE_CONFIG_PATH = Path.home() / ".claude.json"
 # Claude Code locks `.claude.json` with its own `<file>.lock`; ug's flock must use another name.
@@ -1327,12 +1335,7 @@ def _prepare_external_web_search_args(state: dict, tool_args: list[str]) -> list
         raise _external_search_conflict("managed MCP scope cannot be inspected on this platform")
     if managed_path.with_name("managed-mcp.json").exists():
         raise _external_search_conflict("managed-mcp.json has exclusive control over MCP servers")
-    user_settings = (
-        Path(os.environ["CLAUDE_CONFIG_DIR"]) / "settings.json"
-        if os.environ.get("CLAUDE_CONFIG_DIR")
-        else CLAUDE_USER_SETTINGS_PATH
-    )
-    settings_paths = [managed_path, user_settings, CLAUDE_SETTINGS_PATH]
+    settings_paths = [managed_path, CLAUDE_USER_SETTINGS_PATH, CLAUDE_SETTINGS_PATH]
     settings_paths.extend(sorted(managed_path.with_name("managed-settings.d").glob("*.json")))
     for directory in directories:
         settings_paths.extend(
