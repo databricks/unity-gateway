@@ -117,7 +117,8 @@ def remove_smart_router_session_skills(agent: str) -> None:
             print_warning(f"Could not remove the {skill} skill: {exc}")
 
 
-def _launch_token(state: dict, workspace: str) -> str:
+def routing_token(state: dict, workspace: str, *, force_refresh: bool = False) -> str:
+    """The router's bearer: the CLI-backed custom client's when enabled, else the profile's."""
     custom_oauth = state.get("custom_oauth")
     if custom_oauth_cli_enabled(custom_oauth) and isinstance(custom_oauth, dict):
         return get_custom_client_token(
@@ -126,8 +127,9 @@ def _launch_token(state: dict, workspace: str) -> str:
             custom_oauth["redirect_url"],
             scopes=custom_oauth["scopes"],
             profile=custom_oauth.get("profile"),
+            force_refresh=force_refresh,
         )
-    return get_databricks_token(workspace, state.get("profile"))
+    return get_databricks_token(workspace, state.get("profile"), force_refresh=force_refresh)
 
 
 def _model_picker_catalog() -> AnthropicModelCatalog | None:
@@ -644,7 +646,7 @@ def launch_claude(
         raise RuntimeError(
             "Smart routing needs a configured workspace; run `ucode configure claude` first."
         )
-    token = _launch_token(state, workspace)
+    token = routing_token(state, workspace)
     os.environ[OAUTH_TOKEN_ENV_VAR] = token
     # if modelPicker is defined, then skip model discovery.
     picker_catalog = _model_picker_catalog()
@@ -822,7 +824,7 @@ def launch_codex(
             "Smart routing could not determine a starting Codex model for this workspace."
         )
 
-    os.environ[OAUTH_TOKEN_ENV_VAR] = _launch_token(state, workspace)
+    os.environ[OAUTH_TOKEN_ENV_VAR] = routing_token(state, workspace)
     catalog_models = custom_catalog_models()
     available_models = catalog_models or _cached_routing_models(state)
     if not available_models:
@@ -882,7 +884,7 @@ def launch_codex(
             app_server_url,
             available_models=available_models,
             workspace=workspace,
-            token_provider=lambda: _launch_token(state, workspace),
+            token_provider=lambda: routing_token(state, workspace),
             switch_message_fn=format_routing_notice,
             log_path=CODEX_INTERPOSER_LOG,
         )

@@ -2682,6 +2682,24 @@ def _oauth_token_is_fresh(token: str, buffer_seconds: float = 120) -> bool:
     return time.time() < expires_at - buffer_seconds
 
 
+def _router_hook_token(host: str, profile: str | None, use_pat: bool) -> str | None:
+    # The launch-time OAUTH_TOKEN is never refreshed, so a long session must not reuse it expired.
+    if use_pat and not ensure_pat_bearer(profile):
+        return None
+    token = os.environ.get("DATABRICKS_BEARER", "").strip()
+    if token:
+        return token
+    token = os.environ.get("OAUTH_TOKEN", "").strip()
+    if _oauth_token_is_fresh(token):
+        return token
+    # Refresh through the same client the launch used, including CLI-backed custom OAuth.
+    state = {**load_full_state().get("workspaces", {}).get(host, {}), "profile": profile}
+    try:
+        return smart_routing_v2.routing_token(state, host, force_refresh=True)
+    except RuntimeError:
+        return None
+
+
 @app.command("codex-router-hook", hidden=True)
 def codex_router_hook_cmd(
     event: str,
@@ -2741,16 +2759,9 @@ def codex_router_hook_cmd(
         return
     if event != "route-subagent" or not host:
         return
-    if use_pat and not ensure_pat_bearer(profile):
-        return
-    token = os.environ.get("DATABRICKS_BEARER", "").strip()
+    token = _router_hook_token(host, profile, use_pat)
     if not token:
-        token = os.environ.get("OAUTH_TOKEN", "").strip()
-        if not _oauth_token_is_fresh(token):
-            try:
-                token = get_databricks_token(host, profile, force_refresh=True)
-            except RuntimeError:
-                return
+        return
     output = route_pre_tool_use(
         payload,
         workspace=host,
@@ -2842,14 +2853,9 @@ def claude_router_hook_cmd(
         return
     if event not in {"route-subagent", ROUTE_SUBAGENT_MOD_EVENT} or not host:
         return
-    token = os.environ.get("OAUTH_TOKEN") or os.environ.get("DATABRICKS_BEARER")
+    token = _router_hook_token(host, profile, use_pat)
     if not token:
-        if use_pat and not ensure_pat_bearer(profile):
-            return
-        try:
-            token = get_databricks_token(host, profile)
-        except RuntimeError:
-            return
+        return
     output = smart_routing_v2.route_claude_subagent(
         payload,
         workspace=host,
