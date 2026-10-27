@@ -326,7 +326,7 @@ def _write_connector_skill(destination: Path, server_names: list[str]) -> None:
     skill_dir = destination / CONNECTOR_SKILL_NAME
     if skill_dir.exists():
         return
-    connectors = ", ".join(f"`{PLUGIN_NAME}:{name}`" for name in server_names)
+    connectors = ", ".join(f"`{name}`" for name in server_names)
     description = (
         f"Unity Gateway connectors are available in this session: {connectors}. "
         "Use the matching connector for any request about the user's own resources on "
