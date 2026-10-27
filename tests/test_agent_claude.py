@@ -4334,7 +4334,7 @@ class TestWriteUserMcpServers:
                 {"numStartups": 7, "mcpServers": {"mine": {"type": "stdio", "command": "x"}}}
             )
         )
-        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", path)
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
 
         entry = claude.user_stdio_mcp_entry(["ug", "mcp-proxy", "https://ws/svc"])
         claude.write_user_mcp_servers({"system-ai-github": entry}, set())
@@ -4357,7 +4357,7 @@ class TestWriteUserMcpServers:
         path.write_text(
             json.dumps({"mcpServers": {"gone": {"type": "http"}, "mine": {"type": "stdio"}}})
         )
-        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", path)
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
 
         claude.write_user_mcp_servers({}, {"gone"})
 
@@ -4367,7 +4367,7 @@ class TestWriteUserMcpServers:
 
     def test_writes_to_a_missing_file(self, tmp_path, monkeypatch):
         path = tmp_path / ".claude.json"
-        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", path)
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
 
         claude.write_user_mcp_servers({"a": {"type": "http", "url": "u"}}, set())
 
@@ -4376,7 +4376,7 @@ class TestWriteUserMcpServers:
     def test_unparseable_file_falls_back_to_cli_and_does_not_clobber(self, tmp_path, monkeypatch):
         path = tmp_path / ".claude.json"
         path.write_text("{ this is not valid json")
-        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", path)
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
         added: list[tuple[str, object]] = []
         removed: list[tuple[str, str]] = []
         monkeypatch.setattr(claude, "add_claude_mcp_server", lambda n, e, s: added.append((n, e)))
@@ -4422,7 +4422,7 @@ class TestWriteUserMcpServers:
         config_dir.mkdir()
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
         default_path = tmp_path / "default.claude.json"
-        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", default_path)
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", default_path)
 
         claude.write_user_mcp_servers({"svc": {"type": "http", "url": "u"}}, set())
 
@@ -4455,7 +4455,7 @@ class TestEnsureHooksModulesGate:
                 }
             )
         )
-        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", path)
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
 
         claude.ensure_hooks_modules_gate()
 
@@ -4466,7 +4466,7 @@ class TestEnsureHooksModulesGate:
 
     def test_creates_feature_cache_when_absent(self, tmp_path, monkeypatch):
         path = tmp_path / ".claude.json"
-        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", path)
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
 
         claude.ensure_hooks_modules_gate()
 
@@ -4478,7 +4478,7 @@ class TestEnsureHooksModulesGate:
         path = tmp_path / ".claude.json"
         original = json.dumps({"cachedGrowthBookFeatures": {"tengu_plugin_hooks_modules": True}})
         path.write_text(original)
-        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", path)
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
 
         claude.ensure_hooks_modules_gate()
 
@@ -4487,7 +4487,7 @@ class TestEnsureHooksModulesGate:
     def test_unparseable_file_is_not_clobbered(self, tmp_path, monkeypatch):
         path = tmp_path / ".claude.json"
         path.write_text("{ not json")
-        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", path)
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
 
         claude.ensure_hooks_modules_gate()
 
@@ -4496,7 +4496,7 @@ class TestEnsureHooksModulesGate:
     def test_write_failure_does_not_raise_or_leave_temp_files(self, tmp_path, monkeypatch):
         path = tmp_path / ".claude.json"
         path.write_text('{"numStartups": 7}')
-        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", path)
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
 
         def fail(src, dst):
             raise OSError("read-only")
@@ -4511,7 +4511,7 @@ class TestEnsureHooksModulesGate:
     def test_lock_timeout_does_not_raise(self, tmp_path, monkeypatch):
         path = tmp_path / ".claude.json"
         path.write_text("{}")
-        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", path)
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
 
         def busy(lock_file, *, timeout=None):
             raise TimeoutError
@@ -4525,7 +4525,7 @@ class TestEnsureHooksModulesGate:
     def test_locks_a_file_claude_code_does_not_use(self, tmp_path, monkeypatch):
         # Claude Code locks `<file>.lock` itself; ug's flock must not collide with it.
         path = tmp_path / ".claude.json"
-        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", path)
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
 
         claude.ensure_hooks_modules_gate()
 
@@ -4537,7 +4537,7 @@ class TestEnsureHooksModulesGate:
         path = tmp_path / ".claude.json"
         path.write_text("{}")
         path.chmod(0o644)
-        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", path)
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
 
         claude.ensure_hooks_modules_gate()
 
@@ -4547,7 +4547,7 @@ class TestEnsureHooksModulesGate:
     def test_concurrent_writers_keep_every_change(self, tmp_path, monkeypatch):
         path = tmp_path / ".claude.json"
         path.write_text(json.dumps({"numStartups": 7, "tengu_plugin_hooks_modules": False}))
-        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", path)
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
         context = multiprocessing.get_context("fork")
         workers = [
             context.Process(target=_add_mcp_servers, args=(f"w{index}", 20)) for index in range(4)
@@ -4571,7 +4571,7 @@ class TestEnsureHooksModulesGate:
         path.write_text(
             json.dumps({"cachedGrowthBookFeatures": {"tengu_plugin_hooks_modules": False}})
         )
-        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", path)
+        monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
         monkeypatch.setattr(claude, "_launch_relayed", lambda *args: None)
 
         claude.launch({"workspace": WS, "claude_relayed": True}, [], options=LaunchOptions())

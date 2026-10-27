@@ -123,7 +123,7 @@ GATEWAY_MODEL_DISCOVERY_ENV_VAR = "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"
 CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR = "CLAUDE_CODE_OAUTH_TOKEN"
 CLAUDE_CONFIG_DIR = Path.home() / ".claude"
 CLAUDE_SETTINGS_PATH = CLAUDE_CONFIG_DIR / "ucode-settings.json"
-CLAUDE_MCP_CONFIG_PATH = Path.home() / ".claude.json"
+CLAUDE_CODE_CONFIG_PATH = Path.home() / ".claude.json"
 # Claude Code locks `.claude.json` with its own `<file>.lock`; ug's flock must use another name.
 CLAUDE_CONFIG_LOCK_SUFFIX = ".ug.lock"
 CLAUDE_CONFIG_LOCK_TIMEOUT_SECONDS = 5
@@ -929,13 +929,14 @@ def user_stdio_mcp_entry(argv: list[str], *, always_load: bool = False) -> dict:
     return entry
 
 
-def claude_mcp_config_path() -> Path:
-    """The file Claude Code reads user-scope ``mcpServers`` from: ``$CLAUDE_CONFIG_DIR/.claude.json``
-    when that env var is set (the ``claude`` CLI honors it), else the default ``~/.claude.json``. ug
-    elsewhere shells out to the CLI, which resolves this itself; a direct write must resolve the same
-    path or it silently writes to a file Claude never reads."""
+def claude_code_config_path() -> Path:
+    """Claude Code's global config file (user-scope ``mcpServers``, feature cache, auth state):
+    ``$CLAUDE_CONFIG_DIR/.claude.json`` when that env var is set (the ``claude`` CLI honors it),
+    else the default ``~/.claude.json``. ug elsewhere shells out to the CLI, which resolves this
+    itself; a direct write must resolve the same path or it silently writes to a file Claude never
+    reads."""
     config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
-    return Path(config_dir) / ".claude.json" if config_dir else CLAUDE_MCP_CONFIG_PATH
+    return Path(config_dir) / ".claude.json" if config_dir else CLAUDE_CODE_CONFIG_PATH
 
 
 def _read_claude_config_for_rewrite(path: Path) -> dict | None:
@@ -1010,7 +1011,7 @@ def ensure_hooks_modules_gate() -> None:
         return True
 
     try:
-        _update_claude_config(claude_mcp_config_path(), mutate)
+        _update_claude_config(claude_code_config_path(), mutate)
     except RuntimeError:
         _debug("Could not enable the Claude Code mods gate", traceback.format_exc())
 
@@ -1037,7 +1038,7 @@ def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
         config["mcpServers"] = servers
         return True
 
-    if not _update_claude_config(claude_mcp_config_path(), mutate):
+    if not _update_claude_config(claude_code_config_path(), mutate):
         for name in remove:
             # Clean every scope (not short-circuited), recording the name if any scope had it.
             if [scope for scope in MCP_CLEANUP_SCOPES if remove_claude_mcp_server(name, scope)]:
@@ -1194,7 +1195,7 @@ def _register_web_search_mcp(
     Returns True if registration succeeded. Failures are non-blocking: we warn
     and return False so the rest of `ucode claude` setup can complete.
     """
-    config = _read_claude_config_for_rewrite(claude_mcp_config_path())
+    config = _read_claude_config_for_rewrite(claude_code_config_path())
     servers = config.get("mcpServers", {}) if config is not None else None
     existing = servers.get(WEB_SEARCH_MCP_NAME) if isinstance(servers, dict) else None
     if not isinstance(servers, dict) or (
@@ -1228,7 +1229,7 @@ def _web_search_mcp_is_current(state: dict, entry: dict) -> bool:
     """
     if state.get(WEB_SEARCH_MCP_STATE_KEY) != entry:
         return False
-    config = read_json_safe(claude_mcp_config_path())
+    config = read_json_safe(claude_code_config_path())
     servers = config.get("mcpServers")
     return isinstance(servers, dict) and servers.get(WEB_SEARCH_MCP_NAME) == entry
 
@@ -1303,7 +1304,7 @@ def _prepare_external_web_search_args(state: dict, tool_args: list[str]) -> list
     options = tool_args[:end]
     if "--strict-mcp-config" in options:
         return tool_args
-    config = _search_config(claude_mcp_config_path())
+    config = _search_config(claude_code_config_path())
     entry = _search_servers(config).get(WEB_SEARCH_MCP_NAME)
     if entry is None:
         return tool_args
@@ -2363,7 +2364,7 @@ def _relayed_mcp_config_args(tool_args: list[str]) -> list[str]:
     The flag is variadic, so callers must place it before another option (``--settings``)."""
     if "--strict-mcp-config" in tool_args:
         return []
-    servers = read_json_safe(claude_mcp_config_path()).get("mcpServers")
+    servers = read_json_safe(claude_code_config_path()).get("mcpServers")
     if not isinstance(servers, dict) or not servers:
         return []
     return ["--mcp-config", json.dumps({"mcpServers": servers}, separators=(",", ":"))]
