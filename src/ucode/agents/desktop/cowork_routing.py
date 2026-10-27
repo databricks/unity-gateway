@@ -1,4 +1,4 @@
-"""Inject configured Unity Gateway integrations before each Cowork prompt."""
+"""Inject configured Unity Gateway integrations when a Cowork session starts."""
 
 from __future__ import annotations
 
@@ -27,11 +27,11 @@ def routing_guidance(server_names: list[str]) -> str:
 
 
 def hook_output(payload: object, server_names: list[str]) -> dict:
-    if not isinstance(payload, dict) or payload.get("hook_event_name") != "UserPromptSubmit":
+    if not isinstance(payload, dict) or payload.get("hook_event_name") != "SessionStart":
         return {}
     return {
         "hookSpecificOutput": {
-            "hookEventName": "UserPromptSubmit",
+            "hookEventName": "SessionStart",
             "additionalContext": routing_guidance(server_names),
         }
     }

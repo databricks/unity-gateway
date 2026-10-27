@@ -276,6 +276,11 @@ reconciliation failures, and cleanup for unmanaged or non-Claude configurations.
 mock the Claude plugin CLI and do not establish native Desktop policy, account-feature,
 late MCP connection, tool discovery, or inference behavior.
 
+`test_cowork_routing.py` covers connector guidance on `SessionStart` for startup, resume,
+clear, and compact, and ignores prompt events or invalid payloads. It also executes the
+generated hook command in a real Python subprocess and checks its JSON output. Plugin
+generation registers only `SessionStart`. Native Cowork hook execution remains unverified.
+
 Model-source tests require Desktop-only, case-insensitive `\bclaude-` filtering
 instead of copying every catalog entry. Mixed static/discovered lists exclude GPT/OSS
 aliases and lookalikes while preserving Claude IDs, order, duplicates, and source lists.

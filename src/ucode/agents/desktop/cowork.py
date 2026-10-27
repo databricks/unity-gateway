@@ -331,7 +331,7 @@ def _routing_hooks(server_names: list[str]) -> dict:
     command = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
     return {
         "hooks": {
-            "UserPromptSubmit": [
+            "SessionStart": [
                 {
                     "hooks": [
                         {

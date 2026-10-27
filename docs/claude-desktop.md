@@ -54,6 +54,11 @@ may take a few seconds to appear, so a tool can be absent on the first model tur
 tool search or a retry after another tool call should find it. The resulting tool name follows
 Claude's `mcp__plugin_<plugin>_<server>__<tool>` pattern.
 
+The plugin's `SessionStart` hook adds routing guidance naming the configured connectors.
+It runs when a session starts, resumes, clears, or compacts, rather than on every prompt.
+It uses names saved during configure; it does not connect to MCP servers or check availability.
+Native Cowork execution of this hook still needs Desktop validation.
+
 Cowork plugin support can still be disabled by Anthropic account feature flags or managed
 Desktop policy. UG treats installation as best-effort: failure warns but does not fail Claude
 Code setup. If the current workspace has no Claude-targeted MCP servers or managed skills, UG
