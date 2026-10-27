@@ -6983,6 +6983,23 @@ class TestConfigureSharedStateSkipPreflight:
 
         assert purges == [{"same_host_switch": True}]
 
+    def test_explicit_selector_never_falls_back_to_the_saved_workspace(self, monkeypatch):
+        import ucode.workspace as workspace_mod
+
+        cli_mod, saved = self._stub(monkeypatch)
+        shared = "https://acme.cloud.databricks.com"
+        monkeypatch.setattr(
+            cli_mod, "load_state", lambda: {"workspace": shared, "workspace_id": "111"}
+        )
+
+        def unreachable(host):
+            raise workspace_mod.HostUnreachableError(f"{host} did not answer (timed out).")
+
+        monkeypatch.setattr(workspace_mod, "host_type", unreachable)
+        with pytest.raises(RuntimeError, match="Could not check"):
+            cli_mod.configure_shared_state(f"{shared}/?o=222", profile="acme", skip_preflight=True)
+        assert saved == []
+
     def test_classic_reconfigure_never_gains_a_workspace_id(self, monkeypatch):
         cli_mod, saved = self._stub(monkeypatch)
         monkeypatch.setattr(cli_mod, "load_state", lambda: {"workspace": self.WS})
@@ -7190,6 +7207,7 @@ class TestLaunchWorkspaceStateOnSharedHosts:
         )
         state = cli_mod._launch_workspace_state(shared)
         assert state["workspace_id"] == "111"
+        assert state_mod.load_full_state()[state_mod.CURRENT_WORKSPACE_KEY] == f"{shared}?w=111"
 
     def test_policy_for_another_workspace_on_the_same_host_refuses_the_launch(self, monkeypatch):
         """A policy installed for one workspace of a shared host doesn't admit its siblings."""

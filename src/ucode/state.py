@@ -30,8 +30,9 @@ MANAGED_OVERLAY_KEY = "_managed_overlay"
 # On a host that serves several workspaces, ``current_workspace`` holds the bare host (what older
 # ug versions and integrations read) and ``current_workspace_key`` the ``<host>?w=<id>`` block.
 CURRENT_WORKSPACE_KEY = "current_workspace_key"
-# The copy of a multi-workspace host's current block kept under the bare host for integrations that
-# look ucode state up by the host alone. ug itself never reads it.
+# Marks the copy of a multi-workspace host's current block kept under the bare host, for
+# integrations that look ucode state up by the host alone. ug follows it to that host's current
+# workspace and never treats a marked block as that host's own settings.
 ALIAS_OF_KEY = "alias_of"
 AUTH_COMMAND_TIMEOUT_MS = 5000
 AUTH_REFRESH_INTERVAL_MS = 900_000
@@ -90,6 +91,11 @@ def current_workspace_key(full: dict) -> str | None:
     key = full.get(CURRENT_WORKSPACE_KEY)
     if isinstance(key, str) and split_workspace_key(key)[0] == current:
         return key
+    workspaces = full.get("workspaces") or {}
+    block = workspaces.get(current)
+    aliased = block.get(ALIAS_OF_KEY) if isinstance(block, dict) else None
+    if isinstance(aliased, str) and aliased in workspaces:
+        return aliased
     return current
 
 
@@ -194,7 +200,10 @@ def _without_managed_overlay(state: dict) -> dict:
 
 
 def set_current_workspace(workspace: str | None) -> None:
-    """Select ``workspace`` (a ``workspaces`` key) without touching the per-workspace blocks.
+    """Select ``workspace`` (a ``workspaces`` key) without touching its block.
+
+    A multi-workspace key also refreshes the bare-host copy, and the bare host of such a host
+    selects its current workspace.
 
     Used by flows that operate on a non-current workspace and must not silently
     change which workspace ``ucode launch`` targets afterwards."""

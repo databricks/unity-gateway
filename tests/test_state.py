@@ -552,6 +552,13 @@ class TestMultiWorkspaceHostState:
         loaded = load_state()
         assert (loaded["workspace"], loaded["workspace_id"]) == (SHARED_WS, "111")
 
+    def test_a_bare_host_selection_follows_its_alias(self):
+        save_state({"workspace": SHARED_WS, "workspace_id": "111"})
+        raw = _raw_state()
+        del raw[state_mod.CURRENT_WORKSPACE_KEY]
+        state_mod.STATE_PATH.write_text(json.dumps(raw), encoding="utf-8")
+        assert load_state()["workspace_id"] == "111"
+
     def test_older_version_edits_to_the_alias_are_not_read(self):
         """An older ug can't select a workspace on such a host; its edits to the copy don't apply."""
         save_state({"workspace": SHARED_WS, "workspace_id": "111", "profile": "a"})

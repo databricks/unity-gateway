@@ -142,6 +142,14 @@ class TestHostType:
         ):
             host_type(CLASSIC)
 
+    def test_server_error_is_unreachable(self):
+        error = urllib_error.HTTPError(f"{SHARED}/x", 503, "Unavailable", None, None)  # type: ignore[arg-type]
+        with (
+            patch.object(workspace_mod.urllib_request, "urlopen", side_effect=error),
+            pytest.raises(workspace_mod.HostUnreachableError, match="503"),
+        ):
+            host_type(SHARED)
+
     def test_host_without_the_document_is_a_single_workspace_host(self):
         error = urllib_error.HTTPError(f"{CLASSIC}/x", 404, "Not Found", None, None)  # type: ignore[arg-type]
         with patch.object(workspace_mod.urllib_request, "urlopen", side_effect=error):

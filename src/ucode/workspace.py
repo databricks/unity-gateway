@@ -112,7 +112,7 @@ def host_type(host: str) -> str | None:
 
     Fetched without a workspace selector, which would replace the host-level answer. ``None`` when
     the host answers without one (an older or single-workspace host). Raises
-    :class:`HostUnreachableError` when there is no answer at all; that result isn't cached.
+    :class:`HostUnreachableError` on no answer or a server error; that result isn't cached.
     """
     if host in _host_types:
         return _host_types[host]
@@ -125,7 +125,11 @@ def host_type(host: str) -> str | None:
             payload = json.loads(response.read().decode("utf-8"))
         value = payload.get("host_type") if isinstance(payload, dict) else None
         result = value.lower() if isinstance(value, str) else None
-    except (urllib_error.HTTPError, ValueError):
+    except urllib_error.HTTPError as exc:
+        if exc.code >= 500:
+            raise HostUnreachableError(f"{host} answered HTTP {exc.code}.") from exc
+        result = None
+    except ValueError:
         result = None
     except (urllib_error.URLError, http.client.HTTPException, OSError) as exc:
         reason = exc.reason if isinstance(exc, urllib_error.URLError) else exc
