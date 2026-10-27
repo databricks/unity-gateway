@@ -234,7 +234,15 @@ def test_launch_paths_receive_external_override(search_config, monkeypatch, rout
     # External boundaries are captured; config reading and argument composition stay real.
     monkeypatch.setattr(claude, "get_databricks_token", lambda *a, **kw: "fixture")
     monkeypatch.setattr(claude, "_resolve_launch_binary", lambda binary: binary)
-    monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+
+    def capture_launch(argv, **_kwargs):
+        captured = list(argv)
+        index = captured.index("--settings") + 1
+        if captured[index] != str(claude.CLAUDE_SETTINGS_PATH):
+            captured[index] = Path(captured[index]).read_text(encoding="utf-8")
+        calls.append(captured)
+
+    monkeypatch.setattr(claude, "exec_or_spawn", capture_launch)
     monkeypatch.setattr(claude, "_launch_relayed", lambda state, binary, args: calls.append(args))
 
     def routed(state, args, **kwargs):

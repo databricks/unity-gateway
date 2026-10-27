@@ -6,13 +6,16 @@ still routing waiting for a later reply, distinct
 IDs for identical tasks, pending row and turn-spinner routing timers, and disabled/failed routing. These are not live
 parallel-agent TUI or gateway checks.
 
-`../test_claude_launch_settings.py` covers oversized Windows Claude launch
-settings with controlled process boundaries: UTF-16 command length, merged
+`../test_claude_launch_settings.py` covers Claude launch settings on simulated
+Linux, macOS, and Windows with controlled process boundaries: Windows command limits, merged
 settings, literal prompts, temporary-file lifetime and cleanup, launch failures,
 proxy cleanup, and simultaneous launches. Real Python children verify that the
-settings file can be read for large catalogs and non-BMP prompts. Short Windows
-commands and POSIX argv are preserved. This does not establish a live Windows
-Claude/Bedrock pass; `test_ug_claude_headless_allow_all_bedrock_provider` remains
+settings file can be read for large catalogs and non-BMP prompts. Small merged settings
+also use per-launch files; launches without overrides reuse the saved file.
+`../test_launcher.py` checks real child exit codes and cleanup while the parent waits.
+Smart-routing component checks verify private settings permissions and file lifetime.
+This does not establish a live Windows Claude/Bedrock pass;
+`test_ug_claude_headless_allow_all_bedrock_provider` remains
 the existing real-provider journey in the full Claude Windows lane.
 
 The spend-status client's workspace authentication, optional percentage handling,

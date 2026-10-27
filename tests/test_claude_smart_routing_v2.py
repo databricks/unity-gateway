@@ -476,6 +476,8 @@ class TestV2Launch:
                 settings_path = Path(argv[argv.index("--settings") + 1])
                 captured["settings_path"] = settings_path
                 captured["settings"] = json.loads(settings_path.read_text())
+                if sys.platform != "win32":
+                    assert settings_path.stat().st_mode & 0o777 == 0o600
                 plugin_dir = Path(argv[argv.index("--plugin-dir") + 1])
                 captured["plugin_dir"] = plugin_dir
                 captured["plugin_models"] = _plugin_agent_models(plugin_dir)
@@ -485,6 +487,7 @@ class TestV2Launch:
                 assert (plugin_dir / "hooks/register.ts").is_file()
 
             def wait(self):
+                assert captured["settings_path"].is_file()
                 return 4
 
             def send_signal(self, _signal):

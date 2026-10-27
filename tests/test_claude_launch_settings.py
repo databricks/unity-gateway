@@ -1,4 +1,4 @@
-"""Windows launch settings lifetime and command length, with process boundaries controlled."""
+"""Cross-platform launch settings lifetime, with process boundaries controlled."""
 
 from __future__ import annotations
 
@@ -19,8 +19,8 @@ from ucode.managed_files import OS
 PINNED_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 
 
-@pytest.fixture
-def large_settings(tmp_path, monkeypatch):
+@pytest.fixture(params=[OS.LINUX, OS.MACOS, OS.WINDOWS])
+def large_settings(tmp_path, monkeypatch, request):
     path = tmp_path / "saved settings.json"
     settings = {
         "availableModels": [f"catalog.schema.claude-model-{i:04d}-{'x' * 32}" for i in range(650)],
@@ -29,8 +29,15 @@ def large_settings(tmp_path, monkeypatch):
     }
     path.write_text(json.dumps(settings), encoding="utf-8")
     monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", path)
-    monkeypatch.setattr(claude, "current_os", lambda: OS.WINDOWS)
-    monkeypatch.setattr(launcher, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(claude, "current_os", lambda: request.param)
+    monkeypatch.setattr(
+        launcher,
+        "os",
+        SimpleNamespace(
+            name="nt" if request.param == OS.WINDOWS else "posix",
+            execvp=lambda *args: pytest.fail("temporary settings need parent-process cleanup"),
+        ),
+    )
     monkeypatch.setattr(
         claude.shutil, "which", lambda name: str(tmp_path / "Claude Code" / "claude.exe")
     )
@@ -38,9 +45,7 @@ def large_settings(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("outcome", [0, 7, "interrupt", "spawn-error"])
-def test_windows_pinned_model_spills_settings_until_process_exits(
-    large_settings, monkeypatch, outcome
-):
+def test_pinned_model_keeps_settings_until_process_exits(large_settings, monkeypatch, outcome):
     saved_path, original = large_settings
     saved_bytes = saved_path.read_bytes()
     seen = []
@@ -91,9 +96,7 @@ def test_windows_pinned_model_spills_settings_until_process_exits(
 
 
 @pytest.mark.parametrize("spawn_failure", [False, True])
-def test_windows_relayed_settings_and_proxy_are_cleaned_up(
-    large_settings, monkeypatch, spawn_failure
-):
+def test_relayed_settings_and_proxy_are_cleaned_up(large_settings, monkeypatch, spawn_failure):
     saved_path, original = large_settings
     saved_bytes = saved_path.read_bytes()
     server = SimpleNamespace(
@@ -204,21 +207,34 @@ def test_simultaneous_launches_keep_separate_settings(large_settings):
     assert saved_path.read_bytes() == saved_bytes
 
 
-@pytest.mark.parametrize("platform", [OS.LINUX, OS.MACOS])
-def test_posix_launch_keeps_inline_settings(large_settings, monkeypatch, platform):
+def test_caller_settings_use_private_file(large_settings):
     _, original = large_settings
-    monkeypatch.setattr(claude, "current_os", lambda: platform)
     with claude._claude_launch_argv("claude", ["--settings", "{}", "--print", "hello"]) as argv:
-        assert json.loads(argv[argv.index("--settings") + 1]) == original
+        settings_path = Path(argv[argv.index("--settings") + 1])
+        assert settings_path.name == "settings.json"
+        assert json.loads(settings_path.read_text(encoding="utf-8")) == original
+        if sys.platform != "win32":
+            assert settings_path.stat().st_mode & 0o777 == 0o600
         assert argv[-2:] == ["--print", "hello"]
+    assert not settings_path.parent.exists()
 
 
-def test_short_windows_launch_keeps_inline_settings(large_settings):
+def test_small_settings_also_use_file(large_settings):
     saved_path, _ = large_settings
     saved_path.write_text('{"env":{"USER_SETTING":"keep"}}', encoding="utf-8")
     with claude._claude_launch_argv(
         "claude", [], settings_override={"env": {"ANTHROPIC_MODEL": PINNED_MODEL}}
     ) as argv:
-        assert json.loads(argv[argv.index("--settings") + 1]) == {
+        settings_path = Path(argv[argv.index("--settings") + 1])
+        assert json.loads(settings_path.read_text(encoding="utf-8")) == {
             "env": {"USER_SETTING": "keep", "ANTHROPIC_MODEL": PINNED_MODEL}
         }
+    assert not settings_path.parent.exists()
+
+
+def test_saved_settings_are_reused_without_overrides(large_settings):
+    saved_path, _ = large_settings
+    saved_bytes = saved_path.read_bytes()
+    with claude._claude_launch_argv("claude", ["--print", "hello"]) as argv:
+        assert argv == ["claude", "--settings", str(saved_path), "--print", "hello"]
+    assert saved_path.read_bytes() == saved_bytes

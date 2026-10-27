@@ -2,14 +2,36 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from ucode import launcher
+from ucode.claude_launch_settings import write_launch_settings
 
 
 class TestExecOrSpawn:
+    @pytest.mark.parametrize("returncode", [0, 42])
+    def test_can_wait_for_real_child_to_allow_cleanup(self, tmp_path, returncode):
+        with TemporaryDirectory(dir=tmp_path) as directory:
+            path = write_launch_settings(Path(directory), {"env": {"VALUE": "résumé"}})
+            child = (
+                "import json, pathlib, sys; "
+                "assert json.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))"
+                "['env']['VALUE'] == 'résumé'; "
+                "sys.exit(int(sys.argv[2]))"
+            )
+            with pytest.raises(SystemExit) as exc:
+                launcher.exec_or_spawn(
+                    [sys.executable, "-c", child, str(path), str(returncode)], replace_process=False
+                )
+            assert path.is_file()
+            assert exc.value.code == returncode
+        assert not path.parent.exists()
+
     def test_posix_uses_execvp(self):
         # On POSIX the agent process replaces ucode via execvp — no Popen.
         with (

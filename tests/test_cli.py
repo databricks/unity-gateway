@@ -1942,9 +1942,9 @@ class TestClaudeModelFlag:
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_: "token")
         native_calls: list[list[str]] = []
 
-        def capture_launch(argv: list[str]) -> None:
+        def capture_launch(argv: list[str], **_kwargs) -> None:
             captured = list(argv)
-            if "ug-claude-settings-" in captured[2]:
+            if captured[2] != str(settings_path):
                 captured[2] = Path(captured[2]).read_text(encoding="utf-8")
             native_calls.append(captured)
 
