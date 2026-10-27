@@ -52,7 +52,10 @@ def atomic_write_json(path: Path, payload: object) -> None:
     must guard the call themselves.
     """
     ensure_parent_dir(path)
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    except OSError as exc:
+        raise RuntimeError(f"Failed to write file: {path}") from exc
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, indent=2))

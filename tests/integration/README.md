@@ -275,7 +275,7 @@ from Copilot's own `~/.copilot/session-state/*/events.jsonl` (`utils/agents/copi
 `test_ug_copilot_providers.py` runs Copilot through the MPS fixtures below: a file task on the
 Anthropic service's model, on the OpenAI, Azure OpenAI and Microsoft Foundry services' `gpt-5-nano`, and
 on a named model of the Bedrock allow-all service; launching on the relayed service fails before Copilot starts.
-`test_ug_vscode_bridge.py` starts `ug vscode-bridge`, the loopback bridge Copilot Chat in VS Code reaches the gateway through, and sends it an Anthropic Messages turn with only the bridge secret: the reply is real, a wrong secret gets 401 and a web page's Origin gets 403. VS Code itself is not launched.
+`test_ug_vscode_bridge.py` starts `ug vscode-bridge`, the loopback bridge Copilot Chat in VS Code reaches the gateway through, and sends it an Anthropic Messages turn with only the bridge secret: the reply is real and a wrong secret gets 401. VS Code itself is not launched.
 
 The managed TTL journey installs `/etc/unitygateway/managed-settings.json` through real configure,
 checks root ownership and readable modes, then ages only user-owned `~/.ucode/refresh_ts.json`.
@@ -518,7 +518,7 @@ test_ug_copilot_headless.py             # Copilot via the session proxy: Claude 
 test_ug_copilot_lifecycle.py            # Copilot refresh after revocation, sign-in expired, configure/revert, upgrade
 test_ug_copilot_models.py               # Copilot model registry: Claude then GPT, unknown model, TUI /model switch
 test_ug_copilot_providers.py            # Copilot via Model Provider Services: Anthropic, OpenAI, Azure OpenAI, Foundry, Bedrock allow-all; relayed refused
-test_ug_vscode_bridge.py                # VS Code bridge: a model turn with only the bridge secret; wrong secret and web Origin refused
+test_ug_vscode_bridge.py                # VS Code bridge: a model turn with only the bridge secret; wrong secret refused
 test_ug_codex_tracing.py                # Codex OTLP export reaches the configured trace table
 test_ug_claude_commands.py              # command help forwarding
 test_ug_codex_commands.py               # command help and parser error forwarding

@@ -165,6 +165,11 @@ class TestSaveLoadRoundTrip:
         assert state_mod.STATE_PATH.read_text(encoding="utf-8") == before
         assert not list(state_mod.STATE_PATH.parent.glob(".state.json.*"))
 
+    def test_unwritable_state_dir_is_an_actionable_error(self):
+        with patch("ucode.config_io.tempfile.mkstemp", side_effect=PermissionError("read-only")):
+            with pytest.raises(RuntimeError, match="Failed to write state file"):
+                save_state({"workspace": FAKE_WS})
+
 
 # ---------------------------------------------------------------------------
 # clear_state

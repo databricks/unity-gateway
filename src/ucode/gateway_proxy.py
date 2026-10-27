@@ -534,6 +534,7 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
     allowed_path_prefixes: tuple[str, ...]
     sign_in_hint: str
     dropped_chat_completions_fields: frozenset[str]
+    headers_provider: Callable[[], Mapping[str, str]] | None = None
     user_agent: Callable[[str | None], str] | None = None
 
     def _request_body(self, body: bytes | None) -> bytes | None:
@@ -601,7 +602,8 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
         return self.token_header, _SESSION_CREDENTIAL_HEADERS | added, "gateway"
 
     def _added_headers(self) -> dict[str, str]:
-        headers = dict(self.added_headers)
+        provider = self.headers_provider
+        headers = dict(provider() if provider is not None else self.added_headers)
         has_user_agent = any(name.lower() == "user-agent" for name in headers)
         if self.user_agent is not None and not has_user_agent:
             headers["User-Agent"] = self.user_agent(self.headers.get("User-Agent"))
@@ -730,14 +732,16 @@ def start_gateway_auth_proxy(
     dropped_chat_completions_fields: Iterable[str] = (),
     port: int = 0,
     user_agent: Callable[[str | None], str] | None = None,
+    headers_provider: Callable[[], Mapping[str, str]] | None = None,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     """Start a proxy for agents that only hold a static credential.
 
     The agent sends ``session_secret`` as its API key; the proxy accepts it only on
     gateway model paths and forwards with a fresh Databricks token plus
     ``added_headers``, after removing ``dropped_chat_completions_fields`` from Chat
-    Completions request bodies. ``user_agent`` derives the forwarded User-Agent from
-    the agent's own unless ``added_headers`` sets one. Binds ``port`` (0 for an
+    Completions request bodies. ``headers_provider``, when given, is called per request
+    in place of ``added_headers``. ``user_agent`` derives the forwarded User-Agent from
+    the agent's own unless the added headers set one. Binds ``port`` (0 for an
     OS-assigned one, read from ``server.server_address[1]``) without falling back.
     """
     return _start_proxy(
@@ -756,6 +760,7 @@ def start_gateway_auth_proxy(
             "sign_in_hint": sign_in_hint,
             "dropped_chat_completions_fields": frozenset(dropped_chat_completions_fields),
             # A plain function on the handler class would bind as a method.
+            "headers_provider": staticmethod(headers_provider) if headers_provider else None,
             "user_agent": staticmethod(user_agent) if user_agent else None,
         },
         on_refresh_failure=on_refresh_failure,

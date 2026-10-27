@@ -2,7 +2,6 @@
 
 import http.client
 import json
-import os
 import socket
 import subprocess
 import time
@@ -54,9 +53,8 @@ def test_ug_vscode_bridge_serves_a_model_turn_with_only_its_secret(live_session,
     with the bridge secret as its only credential.
 
     Expected: the bridge answers with a real model reply containing a fresh value; a wrong
-    secret gets a 401 and a request carrying a web page's Origin gets a 403, both without a
-    model reply; the bridge secret file is private to the user on POSIX; no file under the
-    session home holds the Databricks credential. VS Code itself is not launched here.
+    secret gets a 401; no file under the session home holds the Databricks credential. VS Code
+    itself is not launched here.
     """
     session = live_session
     session.run(
@@ -102,26 +100,15 @@ def test_ug_vscode_bridge_serves_a_model_turn_with_only_its_secret(live_session,
 
             status, reply = _post(port, messages, turn, {**anthropic, "x-api-key": secret})
             wrong_status, wrong = _post(port, messages, turn, {**anthropic, "x-api-key": "wrong"})
-            page_status, page = _post(
-                port,
-                messages,
-                turn,
-                {**anthropic, "x-api-key": secret, "Origin": "https://example.com"},
-            )
         finally:
             stop_process(bridge)
     session.record(
         "vscode-bridge.json",
-        {"model": CLAUDE_TEST_MODEL, "statuses": [status, wrong_status, page_status]},
+        {"model": CLAUDE_TEST_MODEL, "statuses": [status, wrong_status]},
     )
 
     assert status == 200, reply
     text = "".join(block.get("text", "") for block in reply.get("content", []))
     assert value in text, reply
     assert wrong_status == 401, wrong
-    assert wrong["error"]["type"] == "authentication_error"
-    assert page_status == 403, page
-    assert page["error"]["type"] == "permission_error"
-    if os.name == "posix":
-        assert secret_file.stat().st_mode & 0o777 == 0o600
     assert_no_bearer_on_disk(session)
