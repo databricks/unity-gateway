@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+import json
 import subprocess
 import tomllib
 from contextlib import asynccontextmanager
@@ -167,52 +169,69 @@ class TestDatabricksTokenAuth:
         assert len(yielded) == 2  # retried after signing in
         assert yielded[1].headers["Authorization"] == "Bearer tok"
 
-    def test_connection_login_retry_uses_the_new_profiles_token(self, monkeypatch):
+    def test_browser_connection_login_preserves_profile_and_retries_original_request(
+        self, monkeypatch, tmp_path
+    ):
         monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
         monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
-        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
-        monkeypatch.setattr(mcp_connection_login, "databricks_cli_path", lambda: "databricks")
-        monkeypatch.setattr(mcp_proxy, "mcp_service_needs_connection_login", lambda *a, **k: True)
-        db_mod._remember_token(db_mod._token_memo_key(WS, "p"), "before-login", 3600)
-        token_calls = []
-        login_calls = []
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "/opt/databricks/databricks")
+        db_mod._remember_token(db_mod._token_memo_key(WS, "p"), "selected-user-token", 3600)
+        config = tmp_path / "databrickscfg"
+        original_config = f"[p]\nhost = {WS}\nauth_type = databricks-cli\nclient_id = keep-client\n"
+        config.write_text(original_config)
+        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(config))
+        credential_requests = []
+        browser_calls = []
 
-        def token_run(argv, **kwargs):
-            token_calls.append(argv)
-            return subprocess.CompletedProcess(
-                argv, 0, '{"access_token": "after-login", "expires_in": 3600}', ""
-            )
+        def urlopen(request, **kwargs):
+            assert request.get_header("Authorization") == "Bearer selected-user-token"
+            if request.full_url.endswith("/user-credentials"):
+                credential_requests.append(request.full_url)
+                body = {"provisioning_info": {"state": "ACTIVE"}}
+            else:
+                body = {
+                    "config": {
+                        "source_connection": {
+                            "securable_kind": "CONNECTION_SLACK_OAUTH_U2M_MAPPING"
+                        }
+                    }
+                }
+            response = io.BytesIO(json.dumps(body).encode())
+            response.headers = {"X-Databricks-Org-Id": "12345"}
+            return response
 
-        def login_run(argv, **kwargs):
-            if "--help" in argv:
-                return subprocess.CompletedProcess(argv, 0, "--resource", "")
-            login_calls.append(argv)
+        def launch(argv, **kwargs):
+            browser_calls.append(argv)
+            assert "webbrowser.open" in argv[2]
             return subprocess.CompletedProcess(argv, 0)
 
-        monkeypatch.setattr(db_mod, "run", token_run)
-        monkeypatch.setattr(mcp_connection_login.subprocess_cross_os, "run", login_run)
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+        monkeypatch.setattr(mcp_connection_login.subprocess_cross_os, "run", launch)
         auth = mcp_proxy._build_token_auth(CONN_URL, WS, "p")
-        request = httpx.Request("POST", CONN_URL)
+        sent = []
+
+        sdk_httpx = mcp_proxy._httpx()
+
+        def upstream(request):
+            sent.append((request.headers["Authorization"], request.content))
+            return sdk_httpx.Response(401 if len(sent) == 1 else 200, json={"result": "ok"})
 
         async def scenario():
-            gen = auth.async_auth_flow(request)
-            try:
-                first = await gen.__anext__()
-                assert first.headers["Authorization"] == "Bearer before-login"
-                retried = await gen.asend(httpx.Response(401))
-                assert retried.headers["Authorization"] == "Bearer after-login"
-            finally:
-                await gen.aclose()
+            async with sdk_httpx.AsyncClient(
+                auth=auth, transport=sdk_httpx.MockTransport(upstream)
+            ) as client:
+                response = await client.post(CONN_URL, content=b'{"method":"tools/call","id":7}')
+            assert response.json() == {"result": "ok"}
 
         anyio.run(scenario)
 
-        assert len(login_calls) == 1
-        assert "--resource" in login_calls[0]
-        assert login_calls[0][-2:] == ["--profile", "p"]
-        assert len(token_calls) == 1
-        assert token_calls[0][1:3] == ["auth", "token"]
-        assert "--force-refresh" not in token_calls[0]
-        assert token_calls[0][token_calls[0].index("--profile") + 1] == "p"
+        body = b'{"method":"tools/call","id":7}'
+        assert sent == [("Bearer selected-user-token", body)] * 2
+        assert config.read_text() == original_config
+        assert len(browser_calls) == 1
+        assert len(credential_requests) == 1
+        memo = db_mod._memoized_token(db_mod._token_memo_key(WS, "p"))
+        assert memo is not None and memo.token == "selected-user-token"
 
     def test_non_connection_401_is_not_retried(self, monkeypatch):
         monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda ws, profile: "tok")

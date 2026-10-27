@@ -182,6 +182,8 @@ def _fetch_token(
             env=build_databricks_cli_env(host, profile),
             timeout=timeout,
         )
+    except RuntimeError as exc:
+        raise ClaudeDesktopAuthError(str(exc), kind="config") from None
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise _subprocess_error(exc) from None
     return _read_token(result)
@@ -205,6 +207,8 @@ def _run_login(
             env=build_databricks_cli_env(host, profile),
             timeout=timeout,
         )
+    except RuntimeError as exc:
+        raise ClaudeDesktopAuthError(str(exc), kind="config") from None
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise _subprocess_error(exc) from None
 

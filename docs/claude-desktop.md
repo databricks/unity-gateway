@@ -69,6 +69,21 @@ Claude's `mcp__plugin_<plugin>_<server>__<tool>` pattern. When the plugin has MC
 also generates a `unity-gateway-connectors` skill whose description names them, so Claude knows
 the connectors exist on the first turn instead of asking whether they are connected.
 
+Connector sign-in opens the workspace's MCP service sign-in page. Sign in with the same
+Databricks account as the selected CLI profile, then complete the provider flow. The proxy
+checks that profile user's credential for up to five minutes and retries the original request
+when it is active. Browser launch alone does not establish success. If the browser or provider
+popup does not open, follow the URL in the MCP server log and click Login. On timeout, complete
+sign-in and retry authentication in the agent. This flow does not run CLI `auth login --resource`
+or replace the workspace session. Before CLI token refresh or workspace login, UG removes
+legacy MCP resources saved by the old flow from the selected OAuth profile. Other profile
+settings, resource values, and unrelated profiles are preserved.
+
+Also rerun `ug configure --profile <your-profile> --agents claude` with a profile previously
+used for connector login. Workspace sign-in must not request Atlassian or another connector.
+Confirm its old MCP `resources` entries are gone and other settings remain. In a fresh task,
+request Jira issues to validate connector sign-in and same-turn retry through the browser flow.
+
 Cowork plugin support can still be disabled by Anthropic account feature flags or managed
 Desktop policy. UG treats installation as best-effort: failure warns but does not fail Claude
 Code setup. If the current workspace has no Claude-targeted MCP servers or managed skills, UG

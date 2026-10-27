@@ -1,12 +1,13 @@
-"""Tests for the per-connection MCP login helpers (mcp_connection_login).
-
-Network-free: URL/connection parsing and the login runner with the subprocess
-monkeypatched.
-"""
+"""Browser connector sign-in with network, browser, and clock boundaries controlled."""
 
 from __future__ import annotations
 
+import io
+import json
 import subprocess
+import sys
+from urllib import error as urllib_error
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -15,7 +16,9 @@ from ucode import mcp_connection_login as mcl
 
 WS = "https://ws.staging.cloud.databricks.com"
 AIGW_URL = f"{WS}/ai-gateway/mcp-services/system.ai.github"
-RESOLVED_CLI = "/opt/databricks/bin/databricks"
+SERVICE_URL = f"{WS}/api/2.1/unity-catalog/mcp-services/system.ai.github"
+ACTIVE = {"provisioning_info": {"state": "ACTIVE"}}
+FAILED = {"provisioning_info": {"state": "FAILED"}}
 
 
 class TestConnectionFromUrl:
@@ -32,122 +35,239 @@ class TestConnectionFromUrl:
         assert mcl.connection_from_url(f"{WS}/ai-gateway/mcp-services/") is None
 
 
+@pytest.fixture
+def sign_in(monkeypatch):
+    monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+    monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+    now = [100.0]
+    monkeypatch.setattr(mcl.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(mcl.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds))
+    monkeypatch.setattr(mcl, "_LOGIN_TIMEOUT_SECONDS", 6)
+    db_mod._remember_token(db_mod._token_memo_key(WS, "selected"), "selected-user-token", 3600)
+    requests = []
+    launches = []
+    states = [ACTIVE]
+    metadata = [{}]
+
+    def urlopen(request, **kwargs):
+        requests.append(request)
+        if request.full_url.endswith("/user-credentials"):
+            result = states.pop(0) if len(states) > 1 else states[0]
+        else:
+            result = metadata[0]
+        if isinstance(result, Exception):
+            raise result
+        if isinstance(result, int):
+            raise urllib_error.HTTPError(request.full_url, result, "test error", {}, None)
+        body = result if isinstance(result, bytes) else json.dumps(result).encode()
+        response = io.BytesIO(body)
+        response.headers = {"X-Databricks-Org-Id": "12345"}
+        return response
+
+    def launch(argv, **kwargs):
+        launches.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+    monkeypatch.setattr(mcl.subprocess_cross_os, "run", launch)
+    return states, requests, launches, metadata
+
+
 class TestRunConnectionLogin:
-    @pytest.fixture(autouse=True)
-    def _resolved_cli(self, monkeypatch):
-        monkeypatch.setattr(mcl, "databricks_cli_path", lambda: RESOLVED_CLI)
+    @pytest.mark.parametrize("credential", [ACTIVE, 403, FAILED])
+    def test_browser_sign_in_preserves_workspace_profile(
+        self, sign_in, monkeypatch, tmp_path, credential
+    ):
+        states, _, launches, _ = sign_in
+        states[:] = [credential]
+        config = tmp_path / "databrickscfg"
+        original = f"# user-owned\n[selected]\nhost = {WS}\nauth_type = databricks-cli\nclient_id = custom\n"
+        config.write_text(original)
+        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(config))
 
-    def _fake_run(self, captured, *, returncode, stderr=""):
-        def _run(argv, **kwargs):
-            # The `--resource`-support pre-check runs `auth login --help` first.
-            if "--help" in argv:
-                return subprocess.CompletedProcess(
-                    argv, 0, stdout="--resource stringArray", stderr=""
-                )
-            captured.append(argv)
-            return subprocess.CompletedProcess(argv, returncode, stdout="", stderr=stderr)
+        ok, _ = mcl.run_connection_login(AIGW_URL, WS, profile="selected")
 
-        return _run
+        assert ok == (credential == ACTIVE)
+        assert config.read_text() == original
+        assert len(launches) == 1
+        assert launches[0][0][0] == sys.executable
+        memo = db_mod._memoized_token(db_mod._token_memo_key(WS, "selected"))
+        assert memo is not None and memo.token == "selected-user-token"
 
-    def test_success_sends_resource_and_host_without_client_id(self, monkeypatch):
-        captured: list[list[str]] = []
-        monkeypatch.setattr(mcl.subprocess, "run", self._fake_run(captured, returncode=0))
+    def test_opens_workspace_page_then_checks_selected_user(self, sign_in, capsys):
+        states, requests, launches, _ = sign_in
+        states[:] = [404, FAILED, ACTIVE]
 
-        ok, message = mcl.run_connection_login(AIGW_URL, WS, profile="p")
+        assert mcl.run_connection_login(AIGW_URL, WS, profile="selected") == (True, "signed in")
 
-        assert ok and message == "signed in"
-        argv = captured[0]
-        assert argv[0] == RESOLVED_CLI
-        assert argv[1:3] == ["auth", "login"]
-        assert "--resource" in argv and AIGW_URL in argv
-        assert "--host" in argv and WS in argv
-        assert "--profile" in argv and "p" in argv
-        # Uses the CLI's default client (its own registered redirect), so no --client-id.
-        assert "--client-id" not in argv
+        argv, kwargs = launches[0]
+        assert argv[0] == sys.executable
+        assert "webbrowser.open" in argv[2]
+        assert "--resource" not in argv
+        parsed = urlsplit(argv[-1])
+        assert f"{parsed.scheme}://{parsed.netloc}{parsed.path}" == f"{WS}/mcp-service-login"
+        assert parse_qs(parsed.query) == {"name": ["system.ai.github"], "o": ["12345"]}
+        assert [r.full_url for r in requests] == [SERVICE_URL] + [
+            f"{SERVICE_URL}/user-credentials"
+        ] * 3
+        assert {r.get_header("Authorization") for r in requests} == {"Bearer selected-user-token"}
+        assert kwargs["stdin"] == subprocess.DEVNULL
+        assert kwargs["stdout"] is sys.stderr
+        assert kwargs["stderr"] is sys.stderr
+        output = capsys.readouterr()
+        assert output.out == ""
+        assert argv[-1] in output.err
+        assert "same Databricks account" in output.err
+        assert "selected" in output.err
+        assert db_mod._memoized_token(db_mod._token_memo_key(WS, "selected")) is not None
 
-    def test_nonzero_exit_reports_failure(self, monkeypatch):
-        # The CLI's own output streams live to stderr (the agent's MCP log), so on
-        # failure we return a pointer to that log rather than captured text.
-        captured: list[list[str]] = []
-        monkeypatch.setattr(mcl.subprocess, "run", self._fake_run(captured, returncode=1))
-        ok, message = mcl.run_connection_login(AIGW_URL, WS)
-        assert not ok
-        assert "did not complete" in message and "1" in message
-
-    def test_output_is_routed_to_stderr_not_stdout(self, monkeypatch):
-        # stdout must never be captured to the proxy's stdout (the MCP wire); the
-        # CLI's URL/prompts go to this process's stderr.
-        seen: dict = {}
-
-        def _run(argv, **kw):
-            if "--help" in argv:  # the --resource pre-check; not the login call under test
-                return subprocess.CompletedProcess(argv, 0, stdout="--resource", stderr="")
-            seen.update(kw)
-            return subprocess.CompletedProcess(argv, 0)
-
-        monkeypatch.setattr(mcl.subprocess, "run", _run)
-        ok, _ = mcl.run_connection_login(AIGW_URL, WS)
+    def test_percent_encoded_name_and_workspace_origin(self, sign_in):
+        _, requests, launches, _ = sign_in
+        db_mod._remember_token(
+            db_mod._token_memo_key(f"{WS}/?o=wrong", "selected"), "selected-user-token", 3600
+        )
+        ok, _ = mcl.run_connection_login(
+            f"{WS}/ai-gateway/mcp-services/my%20catalog.schema.slack%2Bprod/tools/list?ignored=1",
+            f"{WS}/?o=wrong",
+            profile="selected",
+        )
         assert ok
-        assert seen.get("stdout") is mcl.sys.stderr
-        assert seen.get("stderr") is mcl.sys.stderr
-        assert "capture_output" not in seen
+        parsed = urlsplit(launches[0][0][-1])
+        assert parse_qs(parsed.query) == {"name": ["my catalog.schema.slack+prod"], "o": ["12345"]}
+        assert requests[0].full_url.endswith("/my%20catalog.schema.slack%2Bprod")
 
-    def test_timeout_is_reported(self, monkeypatch):
-        def _run(argv, **kwargs):
-            raise subprocess.TimeoutExpired(argv, 1)
+    def test_cached_workspace_id_avoids_metadata_lookup(self, sign_in):
+        _, requests, _, _ = sign_in
+        db_mod._WORKSPACE_ORG_IDS[urlsplit(WS).hostname] = "777"
+        assert mcl.run_connection_login(AIGW_URL, WS, profile="selected")[0]
+        assert [r.full_url for r in requests] == [f"{SERVICE_URL}/user-credentials"]
 
-        monkeypatch.setattr(mcl.subprocess, "run", _run)
-        ok, message = mcl.run_connection_login(AIGW_URL, WS)
-        assert not ok and "timed out" in message
+    @pytest.mark.parametrize(
+        "outcome", [1, OSError("no browser"), subprocess.TimeoutExpired("browser", 10)]
+    )
+    def test_manual_url_survives_browser_failure(self, sign_in, monkeypatch, capsys, outcome):
+        def launch(*args, **kwargs):
+            if isinstance(outcome, Exception):
+                raise outcome
+            return subprocess.CompletedProcess(args[0], outcome)
 
-    def test_binary_missing_is_reported(self, monkeypatch):
-        def _run(argv, **kwargs):
-            raise OSError("not found")
+        monkeypatch.setattr(mcl.subprocess_cross_os, "run", launch)
+        assert mcl.run_connection_login(AIGW_URL, WS, profile="selected")[0]
+        output = capsys.readouterr()
+        assert output.out == ""
+        assert "manually" in output.err
+        assert f"{WS}/mcp-service-login?name=system.ai.github&o=12345" in output.err
 
-        monkeypatch.setattr(mcl.subprocess, "run", _run)
-        ok, message = mcl.run_connection_login(AIGW_URL, WS)
-        assert not ok and "could not run" in message
-
-    @pytest.mark.parametrize("outcome", ["success", "nonzero", "timeout", "oserror"])
-    def test_login_attempt_clears_shared_tokens_and_failures(self, monkeypatch, outcome):
-        token_key = db_mod._token_memo_key(WS, "p")
-        failure_key = db_mod._token_memo_key(WS, "failed-profile")
-        db_mod._remember_token(token_key, "before-login", 3600)
-        db_mod._remember_token_failure(failure_key, "invalid refresh token")
-        assert db_mod._memoized_token(token_key) is not None
-        assert db_mod._memoized_token(failure_key) is not None
-
-        def fake_run(argv, **kwargs):
-            if "--help" in argv:
-                return subprocess.CompletedProcess(argv, 0, "--resource", "")
-            if outcome == "timeout":
-                raise subprocess.TimeoutExpired(argv, 300)
-            if outcome == "oserror":
-                raise OSError("not found")
-            return subprocess.CompletedProcess(argv, 0 if outcome == "success" else 1)
-
-        monkeypatch.setattr(mcl.subprocess, "run", fake_run)
-
-        ok, _ = mcl.run_connection_login(AIGW_URL, WS, profile="p")
-
-        assert ok == (outcome == "success")
-        assert db_mod._memoized_token(token_key) is None
-        assert db_mod._memoized_token(failure_key) is None
-
-    def test_old_cli_without_resource_flag_reports_clearly(self, monkeypatch):
-        # `auth login --help` lacking `--resource` => an old CLI (no databricks/cli#6621).
-        # We must report that clearly and never attempt the login (the flag would error).
-        def _run(argv, **kwargs):
-            if "--help" in argv:
-                return subprocess.CompletedProcess(
-                    argv, 0, stdout="usage: login [--host]", stderr=""
-                )
-            raise AssertionError("login must not run when --resource is unsupported")
-
-        monkeypatch.setattr(mcl.subprocess, "run", _run)
-        token_key = db_mod._token_memo_key(WS, "p")
-        db_mod._remember_token(token_key, "unchanged", 3600)
-        ok, message = mcl.run_connection_login(AIGW_URL, WS)
+    @pytest.mark.parametrize("state", [404, FAILED])
+    def test_browser_login_for_another_user_does_not_succeed(self, sign_in, state):
+        states, requests, _, _ = sign_in
+        states[:] = [state]
+        ok, message = mcl.run_connection_login(AIGW_URL, WS, profile="selected")
         assert not ok
-        assert "--resource" in message and "Upgrade" in message
-        assert db_mod._memoized_token(token_key) is not None
+        assert "timed out" in message
+        assert "same Databricks account" in message
+        assert "selected" in message
+        assert "/mcp-service-login?" in message
+        assert len(requests) == 4
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            401,
+            403,
+            400,
+            b"invalid json",
+            [],
+            {},
+            {"provisioning_info": None},
+            {"provisioning_info": {"state": "UNKNOWN"}},
+        ],
+    )
+    def test_inconclusive_or_denied_status_never_reports_success(self, sign_in, failure):
+        states, requests, _, _ = sign_in
+        states[:] = [failure]
+        ok, message = mcl.run_connection_login(AIGW_URL, WS, profile="selected")
+        assert not ok
+        assert "could not check connection sign-in" in message
+        assert len(requests) == 2
+
+    @pytest.mark.parametrize(
+        "failure", [429, 500, 502, 503, 504, urllib_error.URLError("offline"), TimeoutError("slow")]
+    )
+    def test_transient_status_errors_can_recover(self, sign_in, failure):
+        states, _, _, _ = sign_in
+        states[:] = [failure, ACTIVE]
+        assert mcl.run_connection_login(AIGW_URL, WS, profile="selected")[0]
+
+    def test_transient_status_errors_are_bounded(self, sign_in):
+        states, requests, _, _ = sign_in
+        states[:] = [503]
+        ok, message = mcl.run_connection_login(AIGW_URL, WS, profile="selected")
+        assert not ok and "timed out" in message
+        assert len(requests) == 4
+
+    def test_missing_workspace_id_does_not_open_wrong_workspace(self, sign_in, monkeypatch):
+        _, _, launches, _ = sign_in
+        monkeypatch.setattr(
+            db_mod.urllib_request, "urlopen", lambda *args, **kwargs: io.BytesIO(b"{}")
+        )
+        ok, message = mcl.run_connection_login(AIGW_URL, WS, profile="selected")
+        assert not ok and "workspace ID" in message
+        assert not launches
+
+    def test_metadata_denied_does_not_open_browser(self, sign_in):
+        _, _, launches, metadata = sign_in
+        metadata[:] = [403]
+        ok, message = mcl.run_connection_login(AIGW_URL, WS, profile="selected")
+        assert not ok and "HTTP 403" in message
+        assert not launches
+
+    def test_token_refresh_keeps_selected_profile(self, sign_in, monkeypatch):
+        states, requests, _, _ = sign_in
+        states[:] = [404, ACTIVE]
+        calls = []
+        tokens = iter(["initial", "initial", "refreshed"])
+
+        def get_token(workspace, profile):
+            calls.append((workspace, profile))
+            return next(tokens)
+
+        monkeypatch.setattr(mcl, "get_databricks_token", get_token)
+        assert mcl.run_connection_login(AIGW_URL, WS, profile="selected")[0]
+        assert calls == [(WS, "selected")] * 3
+        assert [r.get_header("Authorization") for r in requests] == [
+            "Bearer initial",
+            "Bearer initial",
+            "Bearer refreshed",
+        ]
+
+    @pytest.mark.parametrize("fail_during_poll", [False, True])
+    def test_workspace_auth_failure_is_reported(self, sign_in, monkeypatch, fail_during_poll):
+        _, _, launches, _ = sign_in
+        calls = []
+
+        def get_token(*args):
+            calls.append(args)
+            if not fail_during_poll or len(calls) > 1:
+                raise RuntimeError("selected profile sign-in expired")
+            return "token"
+
+        monkeypatch.setattr(mcl, "get_databricks_token", get_token)
+        ok, message = mcl.run_connection_login(AIGW_URL, WS, profile="selected")
+        assert not ok and "sign-in expired" in message
+        assert bool(launches) == fail_during_poll
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            WS,
+            f"{WS}/ai-gateway/mcp-services/",
+            f"{WS}/ai-gateway/mcp-services/invalid",
+            f"{WS}/ai-gateway/mcp-services/catalog..service",
+        ],
+    )
+    def test_invalid_service_does_not_launch(self, sign_in, url):
+        _, requests, launches, _ = sign_in
+        ok, message = mcl.run_connection_login(url, WS, profile="selected")
+        assert not ok and "catalog.schema.service" in message
+        assert not requests and not launches

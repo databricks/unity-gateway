@@ -364,11 +364,22 @@ Concurrent callers share a per-profile fetch, and an in-flight result cannot
 restore a memo invalidated by login.
 Fake CLI subprocesses check that re-auth runs only when a successful help probe
 advertises `--no-browser`. Search component tests verify token reuse and transient
-timeout retries. `test_mcp_connection_login.py` verifies token/failure invalidation
-after successful and failed login attempts; `test_mcp_proxy.py` checks fresh tokens
-on async post-login retries and recovery when a connection-backed service returns
-the MCP authentication-required error. These checks do not establish live login or
-launch-time savings.
+timeout retries. Saved-resource cleanup regressions use real temporary config files
+to check matching OAuth profiles, literal `DEFAULT`, mixed/multiline resource lists,
+comments, LF/CRLF, permissions, and preservation of unrelated profiles and settings.
+Workspace login and Desktop-helper cases verify cleanup before invoking CLI authentication;
+atomic-write failures preserve the original config and fail without starting CLI auth.
+`test_mcp_connection_login.py` controls only browser, HTTP, and clock boundaries. It checks
+service-name encoding, workspace-ID resolution, the selected profile user's credential,
+pending/FAILED/404 states, transient errors, denial, malformed responses, wrong-account
+timeout, manual URL fallback, and workspace-token failures. Success requires an ACTIVE
+credential; success, denial, and timeout preserve the workspace profile and token memo.
+These replace obsolete resource-flag support, CLI resource-login, and token-invalidation
+cases because connector browser sign-in no longer runs CLI login or replaces its session.
+`test_mcp_proxy.py` checks credential readiness, preserved workspace profile/token, and
+replay of the original HTTP request after browser sign-in. The existing MCP
+authentication-required recovery remains covered. These checks do not establish live
+provider sign-in, deployed credential API availability, or native Desktop behavior.
 
 `test_mcp_web_search_concurrency.py` drives the real stdio dispatcher with controlled
 HTTP and authentication boundaries. It covers concurrent results and catalog requests,
