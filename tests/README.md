@@ -904,3 +904,5 @@ unrelated profile hosts remain unchanged; malformed retained resource lists fail
 without changing the file. Polling bounds each HTTP call by the remaining deadline
 and never reports success from a late response. These component tests control external boundaries
 and do not establish live browser sign-in or endpoint availability.
+
+Pre-browser credential reads retry transient HTTP/network failures twice before reporting failure.

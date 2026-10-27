@@ -201,6 +201,13 @@ class TestRunConnectionLogin:
         states[:] = [404, failure, ACTIVE]
         assert mcl.run_connection_login(AIGW_URL, WS, profile="selected")[0]
 
+    @pytest.mark.parametrize("failure", [429, 503, urllib_error.URLError("offline")])
+    def test_transient_pre_browser_credential_error_retries(self, sign_in, failure):
+        states, _, launches, _ = sign_in
+        states[:] = [failure, 404, ACTIVE]
+        assert mcl.run_connection_login(AIGW_URL, WS, profile="selected")[0]
+        assert len(launches) == 1
+
     def test_transient_status_errors_are_bounded(self, sign_in):
         states, requests, _, _ = sign_in
         states[:] = [404, 503]

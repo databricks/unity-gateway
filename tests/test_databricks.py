@@ -2611,7 +2611,7 @@ class TestGetDatabricksToken:
         monkeypatch.setattr(
             db_mod.subprocess_cross_os, "run", lambda *_a, **_k: pytest.fail("login ran")
         )
-        assert db_mod._browser_login(WS, None, {}, lambda: ("fresh-token", None)) == (
+        assert db_mod._browser_login(WS, None, lambda: ("fresh-token", None)) == (
             "fresh-token",
             None,
         )
@@ -2626,7 +2626,7 @@ class TestGetDatabricksToken:
         monkeypatch.setattr(
             db_mod.subprocess_cross_os, "run", lambda *_a, **_k: pytest.fail("login ran")
         )
-        assert db_mod._browser_login(WS, None, {}, lambda: ("", None)) == ("", None)
+        assert db_mod._browser_login(WS, None, lambda: ("", None)) == ("", None)
 
     def test_retries_on_cache_lock_contention(self, tmp_path, monkeypatch):
         # Concurrent `databricks auth token` calls racing on the shared token

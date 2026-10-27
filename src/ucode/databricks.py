@@ -818,7 +818,7 @@ def _clear_mcp_login_resources(workspace: str, profile: str | None) -> None:
 def prepare_databricks_login_env(workspace: str, profile: str | None) -> dict[str, str]:
     # CLI login inherits saved resources, which would sign in unrelated connectors.
     _clear_mcp_login_resources(workspace, profile)
-    return build_databricks_cli_env(workspace)
+    return build_databricks_cli_env(workspace, profile)
 
 
 def build_databricks_cli_env(workspace: str, profile: str | None = None) -> dict[str, str]:
@@ -1707,7 +1707,6 @@ def _auth_login_supports_no_browser(cli: str) -> bool:
 def _browser_login(
     workspace: str,
     profile: str | None,
-    env: dict[str, str],
     fetch: Callable[[], tuple[str, float | None]],
 ) -> tuple[str, float | None]:
     """Serialize browser sign-in across helpers sharing the CLI's callback port."""
@@ -1877,7 +1876,7 @@ def _fetch_databricks_token_for_profile(
     token, lifetime_s = _fetch_with_lock_retry()
     if not token and browser_login and not transient_failure:
         # A desktop app's helper has no terminal to finish a non-browser login.
-        token, lifetime_s = _browser_login(workspace, profile, env, _fetch_with_lock_retry)
+        token, lifetime_s = _browser_login(workspace, profile, _fetch_with_lock_retry)
     elif not token and _auth_login_supports_no_browser(cli):
         # Session may have expired — attempt non-interactive re-auth and retry once.
         _debug("auth token", "empty on first fetch; attempting auth login --no-browser")
@@ -2864,8 +2863,7 @@ def mcp_service_needs_connection_login(workspace: str, token: str, full_name: st
     failed lookup all return ``False`` — the safe default: such services work with only the
     Databricks token that ``ug mcp-proxy`` injects, and must not be pushed into a connection-login
     OAuth flow they can't complete (AIGTWY-4856)."""
-    prefix = f"https://{workspace_hostname(workspace)}/api/2.1/unity-catalog"
-    details, err = _http_get_json(f"{prefix}/mcp-services/{quote(full_name, safe='')}", token)
+    details, err = get_mcp_service(workspace, token, full_name)
     if err is not None or not isinstance(details, dict):
         return False
     kind = ((details.get("config") or {}).get("source_connection") or {}).get("securable_kind")

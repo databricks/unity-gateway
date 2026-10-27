@@ -25,6 +25,12 @@ _LOGIN_TIMEOUT_SECONDS = 300
 _POLL_INTERVAL_SECONDS = 2
 
 
+def _retryable_credential_error(reason: str) -> bool:
+    return reason.startswith(
+        ("HTTP 429 ", "HTTP 500 ", "HTTP 502 ", "HTTP 503 ", "HTTP 504 ", "network error:")
+    )
+
+
 def connection_from_url(url: str) -> str | None:
     """Return the connection FQN of an AI Gateway MCP service URL, or ``None``.
 
@@ -72,7 +78,11 @@ def run_connection_login(
             False,
             "could not determine workspace ID for connection sign-in (workspace response omitted its ID)",
         )
-    initial_credential, reason = get_mcp_service_user_credential(workspace, token, connection)
+    for attempt in range(3):
+        initial_credential, reason = get_mcp_service_user_credential(workspace, token, connection)
+        if not reason or not _retryable_credential_error(reason) or attempt == 2:
+            break
+        time.sleep(_POLL_INTERVAL_SECONDS)
     if reason and not reason.startswith("HTTP 404 "):
         return False, f"could not check connection sign-in: {reason}"
     initial_active = (
@@ -120,18 +130,9 @@ def run_connection_login(
         )
         if time.monotonic() >= deadline:
             break
+        state = None
         if reason:
-            if not reason.startswith(
-                (
-                    "HTTP 404 ",
-                    "HTTP 429 ",
-                    "HTTP 500 ",
-                    "HTTP 502 ",
-                    "HTTP 503 ",
-                    "HTTP 504 ",
-                    "network error:",
-                )
-            ):
+            if not reason.startswith("HTTP 404 ") and not _retryable_credential_error(reason):
                 return False, f"could not check connection sign-in: {reason}"
         else:
             provisioning = (
