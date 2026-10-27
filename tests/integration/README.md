@@ -1393,3 +1393,8 @@ For a managed workspace other than the two CI workspaces, set
 `UCODE_TEST_CODEX_ROUTING_FIXTURE` to the basename of a checked-in fixture whose model menu has
 been validated in that workspace. The suite never guesses a model menu or silently changes the
 workspace.
+
+Authentication-check reason diagnostics have component coverage in `tests/test_databricks.py`:
+CLI rejection, missing tokens, malformed JSON, timeout, process failure, privacy, and a broken
+logging sink. A child-process case verifies the bounded marker reaches launcher stderr with
+no stdout or opt-in debug flag. Live consent and dashboard ingestion remain uncovered here.

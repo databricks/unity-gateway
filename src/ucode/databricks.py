@@ -1147,6 +1147,24 @@ def save_databricks_cli_oauth_profile(workspace: str, profile: str, client_id: s
         raise RuntimeError(f"Could not save Databricks CLI profile '{profile}'.") from exc
 
 
+def _report_auth_check_failure(
+    reason: Literal["cli_exit", "missing_token", "invalid_response", "timeout", "process_error"],
+    *,
+    exception: Exception | None = None,
+    exit_code: int | None = None,
+) -> None:
+    """Write bounded launcher evidence to stderr without CLI output or credentials."""
+    try:
+        logging.getLogger(__name__).warning(
+            "ug_auth_check_failed reason=%s exception_type=%s exit_code=%s",
+            reason,
+            type(exception).__name__[:80] if exception is not None else "none",
+            exit_code if exit_code is not None else "none",
+        )
+    except Exception:
+        pass
+
+
 def has_valid_databricks_auth(workspace: str, profile: str | None = None) -> bool:
     return check_databricks_auth(workspace, profile) is True
 
@@ -1203,17 +1221,24 @@ def check_databricks_auth(workspace: str, profile: str | None = None) -> bool | 
                 _format_subprocess_result(result),
             )
             if result.returncode != 0:
+                _report_auth_check_failure("cli_exit", exit_code=result.returncode)
                 return False
             data = json.loads(result.stdout or "{}")
             token = data.get("access_token")
             if not token:
+                _report_auth_check_failure("missing_token")
                 return False
             _remember_token(memo_key, token, _token_lifetime_s(data), _token_epoch=epoch)
             return True
         except json.JSONDecodeError as exc:
+            _report_auth_check_failure("invalid_response", exception=exc)
             _debug("has_valid_databricks_auth", f"exception: {type(exc).__name__}: {exc}")
             return False
         except (OSError, subprocess.TimeoutExpired) as exc:
+            _report_auth_check_failure(
+                "timeout" if isinstance(exc, subprocess.TimeoutExpired) else "process_error",
+                exception=exc,
+            )
             _debug("has_valid_databricks_auth", f"exception: {type(exc).__name__}: {exc}")
             return None
 

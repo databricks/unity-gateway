@@ -854,3 +854,8 @@ rejects stale or unrelated panels. Live audit correlation and child answers rema
 After Codex compaction removes a prompt, display correlation may instead use the
 native Spawned row immediately following the routing box. Unit checks reject later
 answer text, intervening prompts, and nonadjacent or unrelated spawn rows.
+
+Authentication-check reason diagnostics have component coverage in `tests/test_databricks.py`:
+CLI rejection, missing tokens, malformed JSON, timeout, process failure, privacy, and a broken
+logging sink. A child-process case verifies the bounded marker reaches launcher stderr with
+no stdout or opt-in debug flag. Live consent and dashboard ingestion remain uncovered here.
