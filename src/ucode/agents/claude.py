@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import re
@@ -19,6 +20,7 @@ from pathlib import Path
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
+    atomic_write_json,
     backup_existing_file,
     deep_merge_dict,
     is_dry_run,
@@ -119,6 +121,7 @@ CLAUDE_MCP_CONFIG_PATH = Path.home() / ".claude.json"
 # The default model is stored in Claude's default user settings, not the ucode settings.
 CLAUDE_USER_SETTINGS_PATH = CLAUDE_CONFIG_DIR / "settings.json"
 CLAUDE_BACKUP_PATH = APP_DIR / "claude-ucode-settings.backup.json"
+CLAUDE_LAUNCH_SETTINGS_DIR = APP_DIR / "claude-launch-settings"
 WEB_SEARCH_MCP_STATE_KEY = "claude_web_search_mcp"
 MINIMUM_CLAUDE_VERSION = (2, 1, 290)
 MINIMUM_CLAUDE_VERSION_TEXT = "2.1.290"
@@ -2312,7 +2315,8 @@ def _build_claude_argv(
     of the two silently dropped. To let ucode compose with any prior command,
     we merge a caller-supplied ``--settings`` with ucode's — ucode's gateway
     keys win, hooks and denies from both are unioned — and hand Claude a single merged
-    ``--settings`` (inline JSON). The merge is per-launch and is never written
+    ``--settings`` (inline JSON, or a launch file when inline would overflow the Windows
+    command line). The merge is per-launch and is never written
     back to the shared ucode settings file, so concurrent launches cannot
     accumulate one another's hooks. A caller ``--settings`` value ucode cannot
     resolve raises (see :func:`_load_caller_settings`) rather than being passed
@@ -2345,13 +2349,15 @@ def _build_claude_argv(
     merged_env = merged.get("env")
     if isinstance(merged_env, dict):
         merged_env.pop("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", None)
-    return [
-        binary,
-        *source_args,
-        "--settings",
-        json.dumps(merged, separators=(",", ":")),
-        *remaining,
-    ]
+    settings_json = json.dumps(merged, separators=(",", ":"))
+    argv = [binary, *source_args, "--settings", settings_json, *remaining]
+    if subprocess_cross_os.fits_windows_command_line(argv):
+        return argv
+    # Content-hashed so concurrent launches never clobber each other's file.
+    digest = hashlib.sha256(settings_json.encode()).hexdigest()[:16]
+    settings_path = CLAUDE_LAUNCH_SETTINGS_DIR / f"{digest}.json"
+    atomic_write_json(settings_path, merged)
+    return [binary, *source_args, "--settings", str(settings_path), *remaining]
 
 
 def _has_subscription_login() -> bool:

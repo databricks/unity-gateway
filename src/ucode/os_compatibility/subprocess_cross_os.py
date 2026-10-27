@@ -62,6 +62,16 @@ def resolve_command(argv: list[str]) -> list[str]:
     return [resolved, *argv[1:]]
 
 
+# CreateProcess rejects command lines over 32,767 chars (WinError 206). The headroom covers
+# Windows resolution expanding argv[0] to a full path or an unwrapped npm shim.
+WINDOWS_COMMAND_LINE_BUDGET = 32_767 - 1024
+
+
+def fits_windows_command_line(argv: list[str]) -> bool:
+    """True when ``argv`` quoted for CreateProcess stays inside the Windows length budget."""
+    return len(subprocess.list2cmdline(argv)) <= WINDOWS_COMMAND_LINE_BUDGET
+
+
 def shell_command(argv: list[str]) -> str:
     """Quote ``argv`` as one command string for the platform's shell."""
     if platform.system() == "Windows":

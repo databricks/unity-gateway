@@ -16,6 +16,7 @@ import pytest
 from ucode import databricks as db_mod
 from ucode import gateway_proxy, managed_files
 from ucode.agents import LaunchOptions, claude
+from ucode.os_compatibility import subprocess_cross_os
 from ucode.smart_routing import claude_routing, v2
 from ucode.state import MANAGED_OVERLAY_KEY
 from ucode.telemetry import client_platform
@@ -3720,6 +3721,26 @@ class TestBuildClaudeArgv:
         merged = json.loads(argv[2])
         assert merged["permissions"]["deny"] == ["WebSearch"]
         assert merged["permissions"].get("allow") == permissions.get("allow")
+
+    def test_oversized_merged_settings_use_launch_file(self, tmp_path, monkeypatch):
+        settings_path = tmp_path / "ucode-settings.json"
+        models = [f"global.anthropic.claude-model-{i:04d}-v1:0" for i in range(2000)]
+        settings_path.write_text(json.dumps({"apiKeyHelper": "u", "availableModels": models}))
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", settings_path)
+        monkeypatch.setattr(claude, "CLAUDE_LAUNCH_SETTINGS_DIR", tmp_path / "launch")
+        override = {"env": {"ANTHROPIC_MODEL": "pinned"}}
+
+        argv = claude._build_claude_argv("claude", ["-p", "hi"], settings_override=override)
+        again = claude._build_claude_argv("claude", ["-p", "hi"], settings_override=override)
+
+        assert subprocess_cross_os.fits_windows_command_line(argv)
+        launch_file = Path(argv[argv.index("--settings") + 1])
+        assert launch_file.parent == tmp_path / "launch"
+        assert again == argv
+        merged = json.loads(launch_file.read_text())
+        assert merged["availableModels"] == models
+        assert merged["env"] == {"ANTHROPIC_MODEL": "pinned"}
+        assert argv[-2:] == ["-p", "hi"]
 
     def test_no_caller_settings_uses_ucode_file(self, monkeypatch):
         monkeypatch.setattr(claude, "read_json_safe", lambda p: {"apiKeyHelper": "u"})
