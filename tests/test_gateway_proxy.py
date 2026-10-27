@@ -608,3 +608,36 @@ class TestRelayedOssRouting:
         assert sent["Authorization"] == "Bearer anthropic-oauth"
         assert sent[gateway_proxy.AI_GATEWAY_TOKEN_HEADER] == "Bearer tok1"
         assert sent["Databricks-Model-Provider-Service"] == "cat.s.relayed_mps"
+
+
+class TestLocalRequestGuard:
+    @pytest.mark.parametrize(
+        "host", ["127.0.0.1", "127.0.0.1:43199", "localhost:43199", "LOCALHOST:1"]
+    )
+    def test_loopback_hosts_are_local(self, host):
+        assert gateway_proxy._is_loopback_host(host)
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            None,
+            "",
+            "attacker.example:43199",
+            "127.0.0.1.attacker.example",
+            "user@127.0.0.1:43199",
+            "127.0.0.1:port",
+            "0.0.0.0:43199",
+        ],
+    )
+    def test_other_hosts_are_not_local(self, host):
+        assert not gateway_proxy._is_loopback_host(host)
+
+    @pytest.mark.parametrize(
+        "origin", ["https://attacker.example", "http://localhost:3000", "null", " HTTPS://x "]
+    )
+    def test_page_origins_are_web(self, origin):
+        assert gateway_proxy._is_web_origin(origin)
+
+    @pytest.mark.parametrize("origin", [None, "vscode-file://vscode-app", "app://desktop"])
+    def test_absent_and_app_origins_are_not_web(self, origin):
+        assert not gateway_proxy._is_web_origin(origin)

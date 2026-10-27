@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import cast
 
-from ucode.config_io import APP_DIR, is_dry_run
+from ucode.config_io import APP_DIR, atomic_write_json, is_dry_run
 from ucode.custom_oauth import (
     CUSTOM_OAUTH_TIMEOUT_MS,
     CustomOAuthConfig,
@@ -43,6 +43,15 @@ def load_full_state() -> dict:
     return data
 
 
+def _write_full_state(full: dict) -> None:
+    # Atomic, because a long-running reader (`ug vscode-bridge`, `ug otel-proxy`) must never see
+    # a half-written file: `load_full_state` reads that as an empty state.
+    try:
+        atomic_write_json(STATE_PATH, full)
+    except RuntimeError as exc:
+        raise RuntimeError(f"Failed to write state file: {STATE_PATH}") from exc
+
+
 def load_config_scope() -> str:
     scope = load_full_state().get(CONFIG_SCOPE_KEY)
     return scope if scope in CONFIG_SCOPES else DEFAULT_CONFIG_SCOPE
@@ -53,11 +62,7 @@ def save_config_scope(scope: str) -> None:
         return
     full = load_full_state()
     full[CONFIG_SCOPE_KEY] = scope
-    try:
-        APP_DIR.mkdir(parents=True, exist_ok=True)
-        STATE_PATH.write_text(json.dumps(full, indent=2), encoding="utf-8")
-    except OSError as exc:
-        raise RuntimeError(f"Failed to write state file: {STATE_PATH}") from exc
+    _write_full_state(full)
 
 
 def load_state() -> dict:
@@ -87,11 +92,7 @@ def save_state(state: dict) -> None:
     if workspace:
         full["current_workspace"] = workspace
         full["workspaces"][workspace] = hydrate_state(_without_managed_overlay(state))
-    try:
-        APP_DIR.mkdir(parents=True, exist_ok=True)
-        STATE_PATH.write_text(json.dumps(full, indent=2), encoding="utf-8")
-    except OSError as exc:
-        raise RuntimeError(f"Failed to write state file: {STATE_PATH}") from exc
+    _write_full_state(full)
 
 
 def _without_managed_overlay(state: dict) -> dict:
@@ -124,11 +125,7 @@ def set_current_workspace(workspace: str | None) -> None:
     if full.get("current_workspace") == workspace:
         return
     full["current_workspace"] = workspace
-    try:
-        APP_DIR.mkdir(parents=True, exist_ok=True)
-        STATE_PATH.write_text(json.dumps(full, indent=2), encoding="utf-8")
-    except OSError as exc:
-        raise RuntimeError(f"Failed to write state file: {STATE_PATH}") from exc
+    _write_full_state(full)
 
 
 def hydrate_state(state: dict) -> dict:
@@ -267,9 +264,8 @@ def clear_state() -> None:
         full.get("workspaces", {}).pop(workspace, None)
         full["current_workspace"] = None
     try:
-        APP_DIR.mkdir(parents=True, exist_ok=True)
-        STATE_PATH.write_text(json.dumps(full, indent=2), encoding="utf-8")
-    except OSError as exc:
+        atomic_write_json(STATE_PATH, full)
+    except RuntimeError as exc:
         raise RuntimeError(f"Failed to clear state file: {STATE_PATH}") from exc
 
 

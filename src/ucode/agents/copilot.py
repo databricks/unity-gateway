@@ -29,7 +29,7 @@ import re
 import secrets
 import threading
 import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -810,9 +810,16 @@ def _token_provider(state: dict) -> Callable[[bool], str]:
 
 def proxy_headers(state: dict) -> dict[str, str]:
     """Headers the proxy adds to every gateway request; admin-managed headers win by name."""
-    headers = {
-        "User-Agent": ucode_user_agent(ug_version(), f"copilot/{agent_version(SPEC['binary'])}")
-    }
+    return gateway_headers(
+        state,
+        {"User-Agent": ucode_user_agent(ug_version(), f"copilot/{agent_version(SPEC['binary'])}")},
+    )
+
+
+def gateway_headers(state: dict, headers: Mapping[str, str] | None = None) -> dict[str, str]:
+    """``headers`` plus the request tags and Copilot's admin-managed headers, which win by
+    name. Copilot Chat in VS Code shares them: it reads the same managed config."""
+    headers = dict(headers or {})
     request_tags = request_tags_header_value()
     if request_tags:
         headers[AI_GATEWAY_REQUEST_TAGS_HEADER] = request_tags

@@ -153,6 +153,18 @@ class TestSaveLoadRoundTrip:
         result = load_state()
         assert result == {}
 
+    def test_failed_write_keeps_the_previous_state(self):
+        # Long-running readers (`ug vscode-bridge`) must never see a half-written file.
+        save_state({"workspace": FAKE_WS, "profile": "before"})
+        before = state_mod.STATE_PATH.read_text(encoding="utf-8")
+
+        with patch("ucode.config_io.os.replace", side_effect=OSError("disk full")):
+            with pytest.raises(RuntimeError, match="Failed to write state file"):
+                save_state({"workspace": FAKE_WS, "profile": "after"})
+
+        assert state_mod.STATE_PATH.read_text(encoding="utf-8") == before
+        assert not list(state_mod.STATE_PATH.parent.glob(".state.json.*"))
+
 
 # ---------------------------------------------------------------------------
 # clear_state

@@ -40,6 +40,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     from ucode.agents import claude as claude_mod
     from ucode.agents import codex as codex_mod
     from ucode.agents.desktop import claude as desktop_mod
+    from ucode.agents.desktop import vscode as vscode_mod
 
     state_dir = tmp_path / ".ucode"
     state_dir.mkdir()
@@ -47,6 +48,8 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.setattr(config_io_mod, "APP_DIR", state_dir)
     monkeypatch.setattr(codex_mod, "_otel_service_path", lambda: state_dir / "otel.service")
     monkeypatch.setattr(desktop_mod, "APP_DIR", state_dir)
+    monkeypatch.setattr(vscode_mod, "BRIDGE_STATE_PATH", state_dir / "vscode-bridge.json")
+    monkeypatch.setattr(vscode_mod, "BRIDGE_LOG_PATH", state_dir / "logs" / "vscode-bridge.log")
     monkeypatch.setattr(desktop_auth_mod, "_AUTH_LOCK_PATH", state_dir / "claude-desktop-auth.lock")
     # The workspace policy lives outside APP_DIR; rebind it, and its user-owned refresh stamps,
     # so no test reads or installs the machine-wide copy.

@@ -535,6 +535,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_copilot_refreshes_a_revoked_token_mid_session`, `test_ug_copilot_reports_expired_sign_in` | Sign in through `DATABRICKS_BEARER_COMMAND` minting short-lived PATs; mid-task the agent revokes them (or also signs out) | Revoked: a token is minted after the revocation and the task completes without restarting Copilot. Signed out: output shows "Databricks sign-in expired" with `databricks auth login`; the failure is in `~/.ucode/logs/copilot-proxy.log`, not the terminal (non-blocking CI lane) |
 | `test_ug_configure_copilot_repeat_and_revert` | Configure Copilot twice over a user-owned `~/.copilot/mcp-config.json`, run a GPT task, revert twice | Task completes; no file holds the bearer; revert removes `~/.copilot/ucode.env`, leaves the user file byte-identical and reports Not Configured. (non-blocking CI lane) |
 | `test_ug_copilot_upgrade_scrubs_token_saved_by_older_ug` | Configure Copilot with ug v0.2.0 (pinned commit; saves the bearer in `~/.copilot/ucode.env`), then configure with this ug, run a GPT task, revert | v0.2.0 left the bearer; after this ug's configure no file holds it; task completes; revert leaves no token and no `ucode.env` (non-blocking CI lane) |
+| `test_ug_vscode_bridge_serves_a_model_turn_with_only_its_secret` | Configure Copilot, start `ug vscode-bridge`, then send an Anthropic Messages turn the way a VS Code Custom Endpoint model does, with only the bridge secret | Real model reply contains a fresh value; a wrong secret gets 401 and a web page's Origin gets 403; the secret file is mode 0600 on POSIX; no file holds the bearer. VS Code itself is not launched (non-blocking CI lane) |
 | `test_ug_opencode_headless_prompt_argument` | Run OpenCode from a script (`run --format json --auto`) with an argument prompt | Completed Read tool call; final text answer contains the file value; exit zero (non-blocking CI lane) |
 | `test_ug_agents_self_managed_opencode_journey` | Under the injected `managed_workspace_default` config (enables Claude/Codex, not OpenCode): bare configure, `ug agents list`, refused OpenCode launch, `ug agents add opencode`, real headless task, `ug agents remove opencode` (marker `managed_fixture and opencode`, non-blocking CI lane) | OpenCode absent from the list and launch fails with "doesn't enable OpenCode" / `ug agents add opencode`; after add it is listed self-managed and the headless Read task returns the fixture value; after remove it is hidden and refused again |
 | `test_ug_agents_admin_managed_guardrails` | `ug agents add` / `remove` on an agent the admin config enables | Add is a no-op noting the admin manages it; remove is rejected with nonzero exit |
@@ -750,7 +751,13 @@ callers retain their prior behavior.
 
 Gateway proxy tests exercise a busy cached port falling back to a free port with
 address reuse disabled, plus the platform-specific reuse policy. Linux runs do
-not establish native Windows socket behavior.
+not establish native Windows socket behavior. Over real sockets, every proxy flavor
+refuses a non-loopback `Host` (DNS rebinding) and a web page's `Origin` before
+forwarding, and the gateway-auth proxy binds a requested port and derives its
+User-Agent from the client's. `test_vscode_bridge.py` covers the `ug vscode-bridge`
+secret (created once at mode 0600, rotated, replaced when unusable), its Copilot Chat
+User-Agent, and its wiring to the configured workspace; `test_state.py` checks that a
+failed `state.json` write leaves the previous file intact.
 
 `test_managed_files.py` covers a lazy sudo worker shared across multiple managed-file writes,
 no elevation for unchanged files, target/symlink rejection, bounded shutdown and cancellation,

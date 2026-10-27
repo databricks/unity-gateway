@@ -13,11 +13,14 @@ subscription models keep the OAuth passthrough, so one Claude Code session can u
 both.
 
 The gateway-auth proxy serves agents that can only hold a static credential
-(Copilot CLI): the agent authenticates to the proxy with a per-session secret,
-and the proxy swaps it for a fresh Databricks token on allowlisted gateway paths.
+(Copilot CLI, and Copilot Chat in VS Code through `ug vscode-bridge`): the agent
+authenticates to the proxy with a secret, and the proxy swaps it for a fresh
+Databricks token on allowlisted gateway paths.
 
 Security invariants (mirroring `databricks.py` token handling):
   - Binds 127.0.0.1 only; never exposed off-host.
+  - Serves only requests addressed to a loopback Host and carrying no web-page
+    Origin, so a browser page can't reach it, even through DNS rebinding.
   - Never logs header values or bodies. The Databricks token lives in memory,
     refreshed off the request path; the Anthropic OAuth in `Authorization` is
     passed through untouched in relayed mode and never logged.
@@ -37,7 +40,7 @@ import uuid
 from collections.abc import Callable, Iterable, Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import cast
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
 import httpx
 
@@ -250,6 +253,30 @@ def _request_model(body: bytes | None) -> str | None:
     return model if isinstance(model, str) else None
 
 
+_LOOPBACK_HOSTNAMES = frozenset({"127.0.0.1", "localhost"})
+
+
+def _is_loopback_host(value: str | None) -> bool:
+    """True when a ``Host`` header names this loopback listener. A DNS-rebinding page
+    reaches 127.0.0.1 under its own hostname, which this rejects."""
+    if not value:
+        return False
+    try:
+        parsed = urlsplit(f"//{value}")
+        parsed.port  # noqa: B018 - raises ValueError on a malformed port
+    except ValueError:
+        return False
+    return parsed.username is None and parsed.hostname in _LOOPBACK_HOSTNAMES
+
+
+def _is_web_origin(value: str | None) -> bool:
+    """True for an ``Origin`` a browser page attaches; agent clients send none."""
+    if value is None:
+        return False
+    origin = value.strip().lower()
+    return origin == "null" or origin.startswith(("http://", "https://"))
+
+
 class _ProxyHandler(BaseHTTPRequestHandler):
     # Set by the server factory.
     cache: TokenCache
@@ -281,6 +308,20 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         """Report a failed forced refresh; True means a response was already sent."""
         log_token_refresh_failure(exc)
         return False
+
+    def _reject(self, status: int, message: str) -> None:
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        if length:
+            self.rfile.read(length)
+        self._safe_send_error(status, message)
+
+    def _serve(self) -> None:
+        if not _is_loopback_host(self.headers.get("Host")) or _is_web_origin(
+            self.headers.get("Origin")
+        ):
+            self._reject(403, "Unity Gateway proxies accept only local agent requests.")
+            return
+        self._handle()
 
     def _handle(self) -> None:
         diagnostic_id = uuid.uuid4().hex[:12]
@@ -442,10 +483,10 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             return
 
     # Forward every method: this is a transparent pass-through, so routing any
-    # `do_<METHOD>` lookup to `_handle` lets the gateway reject unsupported methods.
+    # `do_<METHOD>` lookup to `_serve` lets the gateway reject unsupported methods.
     def __getattr__(self, name: str):
         if name.startswith("do_"):
-            return self._handle
+            return self._serve
         raise AttributeError(name)
 
 
@@ -466,6 +507,7 @@ GATEWAY_MODEL_PATH_PREFIXES = (
 _ANTHROPIC_PATH_PREFIX = "/ai-gateway/anthropic/"
 # The agent's credential headers carry the session secret, never a Databricks token.
 _SESSION_CREDENTIAL_HEADERS = frozenset({"authorization", "x-api-key"})
+_ANTHROPIC_ERROR_TYPES = {401: "authentication_error", 403: "permission_error"}
 
 
 def _is_allowed_gateway_path(path: str, prefixes: tuple[str, ...]) -> bool:
@@ -492,6 +534,7 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
     allowed_path_prefixes: tuple[str, ...]
     sign_in_hint: str
     dropped_chat_completions_fields: frozenset[str]
+    user_agent: Callable[[str | None], str] | None = None
 
     def _request_body(self, body: bytes | None) -> bytes | None:
         if not body or not self.dropped_chat_completions_fields:
@@ -530,7 +573,7 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
         # Shaped like the upstream dialect so the agent shows the message instead of
         # a generic transport failure.
         if self.path.startswith(_ANTHROPIC_PATH_PREFIX):
-            error_type = "authentication_error" if status == 401 else "not_found_error"
+            error_type = _ANTHROPIC_ERROR_TYPES.get(status, "not_found_error")
             payload = {"type": "error", "error": {"type": error_type, "message": message}}
         else:
             payload = {"error": {"message": message, "type": "invalid_request_error"}}
@@ -554,11 +597,15 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
         super()._handle()
 
     def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
-        added = frozenset(name.lower() for name in self.added_headers)
+        added = frozenset(name.lower() for name in self._added_headers())
         return self.token_header, _SESSION_CREDENTIAL_HEADERS | added, "gateway"
 
     def _added_headers(self) -> dict[str, str]:
-        return dict(self.added_headers)
+        headers = dict(self.added_headers)
+        has_user_agent = any(name.lower() == "user-agent" for name in headers)
+        if self.user_agent is not None and not has_user_agent:
+            headers["User-Agent"] = self.user_agent(self.headers.get("User-Agent"))
+        return headers
 
     def _on_refresh_failure(self, exc: RuntimeError) -> bool:
         self.cache.report_refresh_failure(exc)
@@ -681,19 +728,22 @@ def start_gateway_auth_proxy(
     sign_in_hint: str,
     on_refresh_failure: Callable[[BaseException], None] = log_token_refresh_failure,
     dropped_chat_completions_fields: Iterable[str] = (),
+    port: int = 0,
+    user_agent: Callable[[str | None], str] | None = None,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
-    """Start a per-session proxy for agents that only hold a static credential.
+    """Start a proxy for agents that only hold a static credential.
 
     The agent sends ``session_secret`` as its API key; the proxy accepts it only on
     gateway model paths and forwards with a fresh Databricks token plus
     ``added_headers``, after removing ``dropped_chat_completions_fields`` from Chat
-    Completions request bodies. Binds an OS-assigned port, read from
-    ``server.server_address[1]``.
+    Completions request bodies. ``user_agent`` derives the forwarded User-Agent from
+    the agent's own unless ``added_headers`` sets one. Binds ``port`` (0 for an
+    OS-assigned one, read from ``server.server_address[1]``) without falling back.
     """
     return _start_proxy(
         workspace,
         token_provider,
-        0,
+        port,
         upstream_path="",
         token_header=AUTHORIZATION_HEADER,
         handler_type=_GatewayAuthProxyHandler,
@@ -705,6 +755,8 @@ def start_gateway_auth_proxy(
             "allowed_path_prefixes": GATEWAY_MODEL_PATH_PREFIXES,
             "sign_in_hint": sign_in_hint,
             "dropped_chat_completions_fields": frozenset(dropped_chat_completions_fields),
+            # A plain function on the handler class would bind as a method.
+            "user_agent": staticmethod(user_agent) if user_agent else None,
         },
         on_refresh_failure=on_refresh_failure,
     )

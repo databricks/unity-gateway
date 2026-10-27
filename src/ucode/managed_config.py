@@ -1036,10 +1036,10 @@ def _save_user_cache(workspace: str, config: dict, *, outcome: str) -> None:
             f"{json.dumps(payload, indent=2)}\n"
         )
         return
-    config_io.ensure_parent_dir(USER_MANAGED_CONFIG_PATH)
+    # Atomic, so a concurrent launch never reads a half-written cache.
     try:
-        USER_MANAGED_CONFIG_PATH.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    except OSError as exc:
+        config_io.atomic_write_json(USER_MANAGED_CONFIG_PATH, payload)
+    except RuntimeError as exc:
         raise RuntimeError(
             f"Failed to write managed state file: {USER_MANAGED_CONFIG_PATH}"
         ) from exc

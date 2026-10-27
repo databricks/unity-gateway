@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -281,6 +282,8 @@ def _running_gateway_auth_proxy(
     added_headers=None,
     on_refresh_failure=None,
     dropped_chat_completions_fields=(),
+    port=0,
+    user_agent=None,
 ):
     server, cache, client = gateway_proxy.start_gateway_auth_proxy(
         gateway.base_url,
@@ -290,6 +293,8 @@ def _running_gateway_auth_proxy(
         sign_in_hint="Run `databricks auth login`.",
         on_refresh_failure=on_refresh_failure or (lambda exc: None),
         dropped_chat_completions_fields=dropped_chat_completions_fields,
+        port=port,
+        user_agent=user_agent,
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -466,3 +471,121 @@ class TestGatewayAuthProxyEndToEnd:
         assert failures == ["refresh token revoked"]
         assert len(gw.requests) == 1
         assert capsys.readouterr().err == ""
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+class TestGatewayAuthProxyForLongLivedClients:
+    def test_binds_the_requested_port(self, make_gateway):
+        gw = make_gateway()
+        port = _free_port()
+        with _running_gateway_auth_proxy(gw, port=port) as proxy_url:
+            resp = httpx.post(
+                f"{proxy_url}/ai-gateway/anthropic/v1/messages",
+                headers={"x-api-key": _SESSION_SECRET},
+                content=b"{}",
+                timeout=10,
+            )
+        assert proxy_url == f"http://127.0.0.1:{port}"
+        assert resp.status_code == 200
+
+    def test_derives_the_user_agent_from_the_client(self, make_gateway):
+        gw = make_gateway()
+        with _running_gateway_auth_proxy(
+            gw, user_agent=lambda client: f"ucode/1 derived-from({client})"
+        ) as proxy_url:
+            httpx.post(
+                f"{proxy_url}/ai-gateway/anthropic/v1/messages",
+                headers={"x-api-key": _SESSION_SECRET, "User-Agent": "GitHubCopilotChat/0.71.0"},
+                content=b"{}",
+                timeout=10,
+            )
+        assert gw.requests[-1].header("User-Agent") == (
+            "ucode/1 derived-from(GitHubCopilotChat/0.71.0)"
+        )
+
+    def test_an_added_user_agent_wins_over_the_derived_one(self, make_gateway):
+        gw = make_gateway()
+        with _running_gateway_auth_proxy(
+            gw,
+            added_headers={"user-agent": "admin-managed/1"},
+            user_agent=lambda client: "ucode/1 derived",
+        ) as proxy_url:
+            httpx.post(
+                f"{proxy_url}/ai-gateway/anthropic/v1/messages",
+                headers={"x-api-key": _SESSION_SECRET, "User-Agent": "GitHubCopilotChat/0.71.0"},
+                content=b"{}",
+                timeout=10,
+            )
+        assert gw.requests[-1].header("User-Agent") == "admin-managed/1"
+
+
+class TestProxiesRefuseBrowserPages:
+    @pytest.mark.parametrize("host", ["attacker.example", "attacker.example:443", "127.0.0.2"])
+    def test_otel_proxy_refuses_a_foreign_host(self, make_gateway, host):
+        # A DNS-rebinding page reaches the loopback port under its own hostname. The OTLP
+        # route takes no secret, so the Host check is what keeps the page from writing spans.
+        gw = make_gateway()
+        with _running_otel_proxy(gw) as proxy_url:
+            resp = httpx.post(
+                f"{proxy_url}/v1/traces", headers={"Host": host}, content=b"\x0a", timeout=10
+            )
+        assert resp.status_code == 403
+        assert gw.requests == []
+
+    @pytest.mark.parametrize(
+        "origin", ["https://attacker.example", "http://127.0.0.1:8000", "null"]
+    )
+    def test_otel_proxy_refuses_a_web_origin(self, make_gateway, origin):
+        gw = make_gateway()
+        with _running_otel_proxy(gw) as proxy_url:
+            resp = httpx.post(
+                f"{proxy_url}/v1/traces",
+                headers={"Origin": origin, "Content-Type": "text/plain"},
+                content=b"\x0a",
+                timeout=10,
+            )
+        assert resp.status_code == 403
+        assert gw.requests == []
+
+    @pytest.mark.parametrize("host", [None, "localhost"])
+    def test_otel_proxy_serves_local_agents(self, make_gateway, host):
+        gw = make_gateway()
+        with _running_otel_proxy(gw) as proxy_url:
+            port = proxy_url.rsplit(":", 1)[1]
+            headers = {"Host": f"{host}:{port}"} if host else {}
+            headers["Origin"] = "vscode-file://vscode-app"
+            resp = httpx.post(
+                f"{proxy_url}/v1/traces", headers=headers, content=b"\x0a", timeout=10
+            )
+        assert resp.status_code == 200
+        assert len(gw.requests) == 1
+
+    def test_gateway_auth_proxy_refuses_a_web_origin_even_with_the_secret(self, make_gateway):
+        gw = make_gateway()
+        with _running_gateway_auth_proxy(gw) as proxy_url:
+            resp = httpx.post(
+                f"{proxy_url}/ai-gateway/anthropic/v1/messages",
+                headers={"x-api-key": _SESSION_SECRET, "Origin": "https://attacker.example"},
+                content=b"{}",
+                timeout=10,
+            )
+        assert resp.status_code == 403
+        assert resp.json()["error"]["type"] == "permission_error"
+        assert gw.requests == []
+
+    def test_relay_proxy_refuses_a_foreign_host(self, make_gateway):
+        gw = make_gateway()
+        with _running_proxy(gw) as proxy_url:
+            resp = httpx.post(
+                f"{proxy_url}/v1/messages",
+                headers={"Host": "attacker.example", "Authorization": "Bearer oauth"},
+                content=b"{}",
+                timeout=10,
+            )
+        assert resp.status_code == 403
+        assert gw.requests == []

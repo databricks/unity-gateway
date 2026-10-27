@@ -2620,6 +2620,21 @@ def otel_proxy_cmd(
         raise typer.Exit(1) from None
 
 
+@app.command("vscode-bridge", hidden=True)
+def vscode_bridge_cmd(
+    host: Annotated[str, typer.Option("--host")],
+    port: Annotated[int, typer.Option("--port", min=1, max=65535)],
+) -> None:
+    """Serve Copilot Chat in VS Code's gateway requests with a fresh Databricks token."""
+    from ucode.agents.desktop import vscode
+
+    try:
+        vscode.run_bridge(host, port)
+    except (OSError, RuntimeError) as exc:
+        print_err(str(exc))
+        raise typer.Exit(1) from None
+
+
 @app.command("otel-headers", hidden=True)
 def otel_headers_cmd(
     host: Annotated[
