@@ -86,6 +86,26 @@ class TestAddCodexMcpServer:
         assert args[4] == "--"
         assert args[5:] == _proxy_argv()
 
+    def test_timeout_is_actionable(self, monkeypatch):
+        def timeout(*args, **kwargs):
+            raise mcp.subprocess.TimeoutExpired(args[0], 30)
+
+        monkeypatch.setattr(mcp.subprocess, "run", timeout)
+
+        with pytest.raises(RuntimeError, match="Timed out adding MCP server 'github'"):
+            mcp.add_codex_mcp_server("github", _proxy_argv())
+
+
+class TestAddCodexHttpMcpServer:
+    def test_timeout_is_actionable(self, monkeypatch):
+        def timeout(*args, **kwargs):
+            raise mcp.subprocess.TimeoutExpired(args[0], 30)
+
+        monkeypatch.setattr(mcp.subprocess, "run", timeout)
+
+        with pytest.raises(RuntimeError, match="Timed out adding HTTP MCP server 'github'"):
+            mcp.add_codex_http_mcp_server("github", AIGW_MCP_URL, mcp.CODEX_CLI_OAUTH_CLIENT_ID)
+
 
 class TestAddGeminiMcpServer:
     def test_registers_stdio_proxy_command(self, monkeypatch):
@@ -657,19 +677,19 @@ class TestApplyMcpServerChanges:
         monkeypatch.setattr(mcp, "configure_client_mcp_server", fake_configure)
 
         working = [
-            self._server("a", ["claude", "codex"]),
-            self._server("b", ["claude", "codex"]),
-            self._server("c", ["claude", "codex"]),
+            self._server("a", ["claude", "gemini"]),
+            self._server("b", ["claude", "gemini"]),
+            self._server("c", ["claude", "gemini"]),
         ]
 
-        changed = mcp.apply_mcp_server_changes([], working, ["claude", "codex"], WS)
+        changed = mcp.apply_mcp_server_changes([], working, ["claude", "gemini"], WS)
 
         assert changed is True
         # 3 servers x 2 clients = 6 operations.
         assert len(recorded) == 6
         # Within each client, the server order is preserved.
         assert [n for c, n in recorded if c == "claude"] == ["a", "b", "c"]
-        assert [n for c, n in recorded if c == "codex"] == ["a", "b", "c"]
+        assert [n for c, n in recorded if c == "gemini"] == ["a", "b", "c"]
 
     def test_removes_servers_dropped_from_working_set(self, monkeypatch):
         removed: list[tuple[str, str]] = []
@@ -735,7 +755,7 @@ class TestApplyMcpServerChanges:
         # cursor is not in batch_agents, so it keeps the per-server path.
         assert sorted(per_server) == [("cursor", "a"), ("cursor", "b")]
 
-    def test_without_batch_agents_everything_stays_per_server(self, monkeypatch):
+    def test_client_without_batch_preference_stays_per_server(self, monkeypatch):
         monkeypatch.setattr(
             mcp.claude, "write_user_mcp_servers", lambda a, r: pytest.fail("must not batch")
         )
@@ -749,6 +769,23 @@ class TestApplyMcpServerChanges:
         mcp.apply_mcp_server_changes([], [self._server("a", ["claude"])], ["claude"], WS)
 
         assert per_server == [("claude", "a")]
+
+    def test_client_batch_preference_uses_one_write_without_batch_agents(self, monkeypatch):
+        writes: list[tuple[dict, set]] = []
+        monkeypatch.setattr(mcp.codex, "write_user_mcp_servers", lambda a, r: writes.append((a, r)))
+        monkeypatch.setattr(mcp, "oauth_client_available", lambda *a, **k: False)
+        monkeypatch.setattr(
+            mcp,
+            "configure_client_mcp_server",
+            lambda *a, **k: pytest.fail("must use the client adapter's batched writer"),
+        )
+        working = [self._server("a", ["codex"]), self._server("b", ["codex"])]
+
+        mcp.apply_mcp_server_changes([], working, ["codex"], WS)
+
+        assert len(writes) == 1
+        assert set(writes[0][0]) == {"a", "b"}
+        assert writes[0][1] == set()
 
     def test_batch_uses_http_entry_when_oauth_available(self, monkeypatch):
         # Batch case with oauth_client_available -> True: the connection-backed mcp-services URL
@@ -965,6 +1002,7 @@ class TestConfigureMcpCommand:
     def test_registers_discovered_external_server(self, monkeypatch):
         saved_states: list[dict] = []
         configured: list[tuple[str, str, str, dict]] = []
+        codex_writes: list[tuple[dict, set]] = []
 
         monkeypatch.setattr(
             mcp,
@@ -986,6 +1024,12 @@ class TestConfigureMcpCommand:
             return []
 
         monkeypatch.setattr(mcp, "configure_client_mcp_server", fake_configure_client_mcp_server)
+        monkeypatch.setattr(mcp, "oauth_client_available", lambda *args: False)
+        monkeypatch.setattr(
+            mcp.codex,
+            "write_user_mcp_servers",
+            lambda add, remove: codex_writes.append((add, remove)) or set(),
+        )
         monkeypatch.setattr(mcp, "save_state", lambda state: saved_states.append(state.copy()))
 
         assert mcp.configure_mcp_command() == 0
@@ -993,12 +1037,13 @@ class TestConfigureMcpCommand:
         assert sorted(configured) == sorted(
             [
                 ("claude", "github-mcp", f"{WS}/api/2.0/mcp/external/github-mcp"),
-                ("codex", "github-mcp", f"{WS}/api/2.0/mcp/external/github-mcp"),
                 ("gemini", "github-mcp", f"{WS}/api/2.0/mcp/external/github-mcp"),
                 ("opencode", "github-mcp", f"{WS}/api/2.0/mcp/external/github-mcp"),
                 ("copilot", "github-mcp", f"{WS}/api/2.0/mcp/external/github-mcp"),
             ]
         )
+        assert list(codex_writes[0][0]) == ["github-mcp"]
+        assert codex_writes[0][1] == set()
         assert saved_states[-1]["mcp_servers"] == [
             {
                 "name": "github-mcp",
@@ -1508,6 +1553,7 @@ class TestConfigureMcpCommand:
     def test_configures_only_ucode_configured_clients(self, monkeypatch, capsys):
         saved_states: list[dict] = []
         configured: list[tuple[str, str, str, dict]] = []
+        codex_writes: list[tuple[dict, set]] = []
         monkeypatch.setattr(
             mcp,
             "load_state",
@@ -1523,13 +1569,20 @@ class TestConfigureMcpCommand:
             "configure_client_mcp_server",
             lambda client, name, url, *a, **kw: configured.append((client, name, url)) or [],
         )
+        monkeypatch.setattr(mcp, "oauth_client_available", lambda *args: False)
+        monkeypatch.setattr(
+            mcp.codex,
+            "write_user_mcp_servers",
+            lambda add, remove: codex_writes.append((add, remove)) or set(),
+        )
         monkeypatch.setattr(mcp, "save_state", lambda state: saved_states.append(state.copy()))
 
         assert mcp.configure_mcp_command() == 0
 
         output = capsys.readouterr().out
         assert "Configuring for: Claude Code, Codex" in output
-        assert [call[0] for call in configured] == ["claude", "codex"]
+        assert [call[0] for call in configured] == ["claude"]
+        assert list(codex_writes[0][0]) == ["databricks-sql"]
         assert saved_states[-1]["mcp_servers"] == [
             {
                 "name": "databricks-sql",
@@ -1806,6 +1859,7 @@ class TestConfigureMcpFromLocation:
         get registered for that agent on the next --location run."""
         saved_states: list[dict] = []
         configured: list[tuple[str, str, str, dict]] = []
+        codex_writes: list[tuple[dict, set]] = []
         existing = {
             "name": "system-ai-github",
             "url": f"{WS}/ai-gateway/mcp-services/system.ai.github",
@@ -1831,11 +1885,18 @@ class TestConfigureMcpFromLocation:
             "configure_client_mcp_server",
             lambda client, name, url, *a, **kw: configured.append((client, name, url)) or [],
         )
+        monkeypatch.setattr(mcp, "oauth_client_available", lambda *args: False)
+        monkeypatch.setattr(
+            mcp.codex,
+            "write_user_mcp_servers",
+            lambda add, remove: codex_writes.append((add, remove)) or set(),
+        )
         monkeypatch.setattr(mcp, "save_state", lambda state: saved_states.append(state.copy()))
 
         assert mcp.configure_mcp_command(location="system.ai") == 0
 
-        assert [c[0] for c in configured] == ["claude", "codex"]
+        assert [c[0] for c in configured] == ["claude"]
+        assert list(codex_writes[0][0]) == ["system-ai-github"]
         assert saved_states[-1]["mcp_servers"] == [
             {
                 "name": "system-ai-github",
@@ -2115,6 +2176,49 @@ class TestRemoveMcpCommand:
 
 class TestConfigureMcpServicesSubset:
     """`--location <schema> --names a,b,...` configures exactly the named subset."""
+
+    def test_codex_writes_config_without_starting_login(self, monkeypatch):
+        state = {"workspace": WS, "available_tools": ["codex"]}
+        writes: list[tuple[dict, set]] = []
+        _stub_location_base(monkeypatch, state)
+        monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["codex"])
+        monkeypatch.setattr(mcp, "managed_mcp_server_names", lambda *args: set())
+        monkeypatch.setattr(
+            mcp,
+            "list_mcp_services",
+            lambda workspace, token, parent: (["system.ai.github"], None),
+        )
+        monkeypatch.setattr(mcp, "oauth_client_available", lambda *args: True)
+        monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *args: True)
+        monkeypatch.setattr(
+            mcp,
+            "configure_client_mcp_server",
+            lambda *args, **kwargs: pytest.fail("must not invoke codex mcp add"),
+        )
+        monkeypatch.setattr(
+            mcp.codex,
+            "write_user_mcp_servers",
+            lambda add, remove: writes.append((add, remove)) or set(),
+        )
+        monkeypatch.setattr(mcp, "save_state", lambda state: None)
+
+        assert (
+            mcp.configure_mcp_command(
+                location="system.ai", services={"system.ai.github"}, agents={"codex"}
+            )
+            == 0
+        )
+
+        assert writes == [
+            (
+                {
+                    "system-ai-github": mcp.codex.managed_mcp_http_entry(
+                        AIGW_MCP_URL, mcp.CODEX_CLI_OAUTH_CLIENT_ID
+                    )
+                },
+                set(),
+            )
+        ]
 
     def test_configures_only_the_requested_subset(self, monkeypatch):
         configured: list[tuple[str, str, str, dict]] = []
