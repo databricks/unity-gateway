@@ -6,18 +6,23 @@ import json
 import os
 import shutil
 import tempfile
+from collections import Counter
 from pathlib import Path
+from urllib.parse import unquote
 
 from ucode import config_io
 from ucode.agents.desktop.claude import claude_desktop_root_directory
 from ucode.databricks import build_mcp_proxy_argv
+from ucode.mcp_connection_login import connection_from_url
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.skills_state import records_for_scope
 from ucode.ui import print_warning
 
 MARKETPLACE_NAME = "unity-gateway-cowork"
-PLUGIN_NAME = "unity-gateway"
+PLUGIN_NAME = "ug"
+PLUGIN_DISPLAY_NAME = "ug"
 PLUGIN_ID = f"{PLUGIN_NAME}@{MARKETPLACE_NAME}"
+LEGACY_PLUGIN_ID = f"unity-gateway@{MARKETPLACE_NAME}"
 STATE_FILENAME = "claude-cowork.json"
 MARKETPLACE_DIRECTORY_NAME = "claude-cowork-marketplace"
 
@@ -113,12 +118,15 @@ def _remove_plugin_registration(cowork_root: Path) -> bool:
     claude = _claude_binary()
     env = os.environ.copy()
     env["CLAUDE_CONFIG_DIR"] = str(cowork_root)
-    plugin_result = _run_claude_json(
-        claude,
-        ["plugin", "uninstall", PLUGIN_ID, "--cowork", "--json"],
-        env,
-        accepted_failures=("not installed", "not_installed", "not found"),
-    )
+    plugin_result = False
+    for plugin_id in (PLUGIN_ID, LEGACY_PLUGIN_ID):
+        result = _run_claude_json(
+            claude,
+            ["plugin", "uninstall", plugin_id, "--cowork", "--json"],
+            env,
+            accepted_failures=("not installed", "not_installed", "not found"),
+        )
+        plugin_result = bool(result) or plugin_result
     marketplace_result = _run_claude_json(
         claude,
         [
@@ -222,6 +230,7 @@ def _cowork_mcp_config(
     custom_oauth: bool = False,
 ) -> dict:
     entries: dict[str, dict] = {}
+    urls: dict[str, str] = {}
     for server in servers:
         name = server.get("name")
         url = server.get("url")
@@ -245,7 +254,37 @@ def _cowork_mcp_config(
                 "Could not resolve the absolute `ug` executable required by Claude Cowork."
             )
         entries[name] = {"type": "stdio", "command": str(executable), "args": argv[1:]}
-    return {"mcpServers": entries}
+        urls[name] = url
+    aliases = _cowork_mcp_aliases(urls)
+    return {"mcpServers": {aliases[name]: entry for name, entry in entries.items()}}
+
+
+def _cowork_mcp_aliases(urls: dict[str, str]) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for name, url in urls.items():
+        full_name = unquote(connection_from_url(url) or "")
+        parts = full_name.split(".")
+        aliases[name] = (
+            parts[-1]
+            if len(parts) == 3 and all(parts) and name == full_name.replace(".", "-")
+            else name
+        )
+
+    counts = Counter(aliases.values())
+    used = set(aliases.values())  # Reserve custom names before allocating qualifiers.
+    for name in sorted(aliases):
+        alias = aliases[name]
+        if alias == name or counts[alias] == 1:
+            continue
+        qualified = f"{alias}-{name.removesuffix(f'-{alias}')}"
+        candidate = qualified
+        suffix = 2
+        while candidate in used:
+            candidate = f"{qualified}-{suffix}"
+            suffix += 1
+        aliases[name] = candidate
+        used.add(candidate)
+    return aliases
 
 
 def _write_marketplace(
@@ -269,6 +308,7 @@ def _write_marketplace(
             "plugins": [
                 {
                     "name": PLUGIN_NAME,
+                    "displayName": PLUGIN_DISPLAY_NAME,
                     "description": "Unity Gateway workspace skills and MCP servers for Cowork",
                     "source": f"./plugins/{PLUGIN_NAME}",
                 }
@@ -276,6 +316,7 @@ def _write_marketplace(
         }
         plugin: dict[str, object] = {
             "name": PLUGIN_NAME,
+            "displayName": PLUGIN_DISPLAY_NAME,
             "description": "Unity Gateway workspace skills and MCP servers for Cowork",
             "author": {"name": "Databricks"},
         }
@@ -367,6 +408,13 @@ def _install_plugin(cowork_root: Path, marketplace_root: Path) -> None:
         ["plugin", action, PLUGIN_ID, "--cowork", "--json"],
         env,
     )
+    if _contains_plugin_id(installed, plugin_id=LEGACY_PLUGIN_ID):
+        _run_claude_json(
+            claude,
+            ["plugin", "uninstall", LEGACY_PLUGIN_ID, "--cowork", "--json"],
+            env,
+            accepted_failures=("not installed", "not_installed", "not found"),
+        )
 
 
 def _claude_binary() -> str:
@@ -428,18 +476,19 @@ def _run_claude_json(
     return payload
 
 
-def _contains_plugin_id(payload: object) -> bool:
+def _contains_plugin_id(payload: object, *, plugin_id: str = PLUGIN_ID) -> bool:
     if isinstance(payload, str):
-        return payload == PLUGIN_ID
+        return payload == plugin_id
     if isinstance(payload, list):
-        return any(_contains_plugin_id(value) for value in payload)
+        return any(_contains_plugin_id(value, plugin_id=plugin_id) for value in payload)
     if isinstance(payload, dict):
-        plugin_id = payload.get("pluginId") or payload.get("id")
-        if plugin_id == PLUGIN_ID:
+        installed_id = payload.get("pluginId") or payload.get("id")
+        if installed_id == plugin_id:
             return True
-        if payload.get("name") == PLUGIN_NAME and payload.get("marketplace") == MARKETPLACE_NAME:
+        name, _, marketplace = plugin_id.partition("@")
+        if payload.get("name") == name and payload.get("marketplace") == marketplace:
             return True
-        return any(_contains_plugin_id(value) for value in payload.values())
+        return any(_contains_plugin_id(value, plugin_id=plugin_id) for value in payload.values())
     return False
 
 

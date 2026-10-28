@@ -13,8 +13,10 @@ import subprocess
 import sys
 import threading
 import traceback
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from ucode.config_io import (
     APP_DIR,
@@ -1400,8 +1402,7 @@ def write_tool_config(
         backup_existing_file(CLAUDE_SETTINGS_PATH, CLAUDE_BACKUP_PATH)
     # A managed config makes ug authoritative over the whole custom-header value, so it is
     # overwritten wholesale; without one, preserve the developer's own pre-existing headers. Reuses
-    # this launch's warm managed-config cache (no extra round trip); a failed fetch degrades to None
-    # (treated as unmanaged), never blocking the write.
+    # the managed config `ug configure` saved (no network round trip unless none is saved yet).
     managed_config_present = refresh_managed_config(state).manifest is not None
     previous_keys = ((state.get("managed_configs") or {}).get("claude") or {}).get("keys", [])
     web_search_model = _resolve_web_search_model(state)
@@ -2279,6 +2280,23 @@ def _resolve_launch_binary(binary: str) -> str:
     )
 
 
+def _relayed_mcp_config_args(tool_args: list[str]) -> list[str]:
+    """``--mcp-config`` args that re-supply Claude's user-scope MCP servers to a relayed launch.
+
+    ``--setting-sources project,local`` excludes the user scope, which is where ``ug mcp add``
+    registers every managed server (``~/.claude.json`` top-level ``mcpServers``), so without this a
+    relayed session starts none of them while ``claude mcp list`` still reports them Connected.
+    Only ``mcpServers`` is passed back, never user settings, so the apiKeyHelper exclusion holds.
+    Skipped when the caller passes ``--strict-mcp-config``, which asks for only its own servers.
+    The flag is variadic, so callers must place it before another option (``--settings``)."""
+    if "--strict-mcp-config" in tool_args:
+        return []
+    servers = read_json_safe(claude_mcp_config_path()).get("mcpServers")
+    if not isinstance(servers, dict) or not servers:
+        return []
+    return ["--mcp-config", json.dumps({"mcpServers": servers}, separators=(",", ":"))]
+
+
 def _build_claude_argv(
     binary: str,
     tool_args: list[str],
@@ -2303,9 +2321,15 @@ def _build_claude_argv(
 
     ``relayed`` adds ``--setting-sources`` to exclude the user scope (see
     :data:`_RELAYED_SETTING_SOURCES`), so a stale user-scope apiKeyHelper cannot
-    filter through and shadow the subscription OAuth.
+    filter through and shadow the subscription OAuth. That also drops the user-scope
+    MCP servers, so they are handed back via ``--mcp-config`` (see
+    :func:`_relayed_mcp_config_args`).
     """
-    source_args = ["--setting-sources", _RELAYED_SETTING_SOURCES] if relayed else []
+    source_args = (
+        ["--setting-sources", _RELAYED_SETTING_SOURCES, *_relayed_mcp_config_args(tool_args)]
+        if relayed
+        else []
+    )
     caller_values, remaining = _extract_caller_settings(tool_args)
     if not caller_values and settings_override is None:
         # No caller --settings: hand Claude ucode's settings file directly (the
@@ -2329,6 +2353,33 @@ def _build_claude_argv(
         json.dumps(merged, separators=(",", ":")),
         *remaining,
     ]
+
+
+@contextmanager
+def _claude_launch_argv(
+    binary: str,
+    tool_args: list[str],
+    *,
+    relayed: bool = False,
+    settings_override: dict | None = None,
+) -> Iterator[list[str]]:
+    """Keep oversized Windows settings off the command line for the child's lifetime."""
+    argv = _build_claude_argv(binary, tool_args, relayed, settings_override)
+    settings_index = argv.index("--settings") + 1
+    if current_os() != OS.WINDOWS or not argv[settings_index].startswith("{"):
+        yield argv
+        return
+    command_line = subprocess.list2cmdline(argv)
+    # CreateProcess includes the terminating NUL in its 32,767 UTF-16 code unit limit.
+    if len(command_line.encode("utf-16-le", errors="surrogatepass")) // 2 < 32_767:
+        yield argv
+        return
+    with TemporaryDirectory(prefix="ug-claude-") as directory:
+        settings_path = Path(directory) / "settings.json"
+        settings_path.touch(mode=0o600)
+        settings_path.write_text(argv[settings_index], encoding="utf-8")
+        argv[settings_index] = str(settings_path)
+        yield argv
 
 
 def _has_subscription_login() -> bool:
@@ -2422,12 +2473,14 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
 
-    proc = subprocess_cross_os.popen(_build_claude_argv(binary, tool_args, relayed=True))
     try:
-        returncode = proc.wait()
-    except KeyboardInterrupt:
-        proc.send_signal(signal.SIGINT)
-        returncode = proc.wait()
+        with _claude_launch_argv(binary, tool_args, relayed=True) as argv:
+            proc = subprocess_cross_os.popen(argv)
+            try:
+                returncode = proc.wait()
+            except KeyboardInterrupt:
+                proc.send_signal(signal.SIGINT)
+                returncode = proc.wait()
     finally:
         cache.stop()
         server.shutdown()
@@ -2523,7 +2576,8 @@ def launch(
         }
         settings_override = _merge_claude_settings(settings_override or {}, {"env": fallback_env})
         os.environ.update(fallback_env)
-    exec_or_spawn(_build_claude_argv(binary, launch_args, settings_override=settings_override))
+    with _claude_launch_argv(binary, launch_args, settings_override=settings_override) as argv:
+        exec_or_spawn(argv)
 
 
 def validate_cmd(binary: str) -> list[str]:

@@ -30,7 +30,7 @@ launches and `ug agents add` do not configure Desktop.
 ## Cowork workspace skills and MCP servers
 
 Whenever Claude is configured, `ug configure` also installs a generated
-`unity-gateway@unity-gateway-cowork` plugin into that account's Cowork scope. This applies
+`ug@unity-gateway-cowork` plugin into that account's Cowork scope. This applies
 to managed and unmanaged workspaces. Start one Cowork session before configuring so Desktop
 creates its active account/organization directory. If several Cowork profiles exist and UG
 cannot identify one active profile, setup warns without changing any of them.
@@ -43,6 +43,17 @@ Databricks AI Tools, and other-workspace skills are not copied. `ug configure --
 `ug mcp-proxy` executable with the selected workspace and CLI profile; no bearer token is
 stored in the plugin. Saved PAT mode is supported. Custom OAuth is not yet supported for
 Cowork MCP servers.
+
+The plugin's name and display name are `ug`, shortening the connector prefix to
+`ug plugin:`. Reconfigure installs the new plugin before uninstalling the old
+`unity-gateway@unity-gateway-cowork` registration, if present. This also changes
+the tool namespace from `mcp__plugin_unity-gateway_...` to `mcp__plugin_ug_...`.
+
+Cowork shortens generated UC connector names, for example `system-ai-slack` becomes
+`slack`. If service names collide, aliases include their catalog/schema, such as
+`slack-system-ai` and `slack-main-team`; numeric suffixes avoid conflicts with custom
+names. Custom registration names and full proxy URLs are preserved. Reconfigure and
+start a new Cowork session to refresh connector and tool names.
 
 UG owns these local files:
 
@@ -192,7 +203,8 @@ otherwise it clears the selection. A later selection of another profile is prese
 Only this previous-selection ID is saved in `~/.ucode/claude-desktop.json`.
 Repeated configure retains it while UG remains selected.
 
-Revert also uninstalls `unity-gateway@unity-gateway-cowork`, removes its marketplace
+Revert also uninstalls `ug@unity-gateway-cowork` and any legacy
+`unity-gateway@unity-gateway-cowork` registration, removes their marketplace
 registration, and deletes UG's generated marketplace. This removes the MCP connectors and
 skills delivered by that plugin. It also cleans up an exact UG registration left in another
 Cowork profile by an older failed revert. Unrelated Desktop plugins, connectors, and skills are
