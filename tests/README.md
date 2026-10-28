@@ -424,8 +424,9 @@ live telemetry-export coverage.
 header mod, a headless launch still leaving the file alone, a denied write failing configure with
 root/sudo/`--user` guidance, the write policy on each OS, root running privileged commands without
 sudo, and `ug configure`/`ug revert` requesting explicit writes. `test_agent_codex.py` covers the
-same write and failure for Codex. The CUJ `Session.configure` helper sets `UG_SKIP_OS_SETTINGS` to
-keep its user-local isolation. No automated test runs a real root or sudo-policy configure.
+same write and failure for Codex. The CUJ `Session.configure` helper runs headless and so now
+writes machine-wide settings with the runner's passwordless sudo, which the `cuj` teardown reverts.
+No automated test runs a real root configure.
 
 Managed smart defaults are covered by `test_managed_config.py`, `test_cli.py`,
 `test_managed_setup.py`, `test_databricks.py`, and `test_managed_budget.py`: parsing the
