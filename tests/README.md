@@ -52,7 +52,8 @@ description switches after both native commands and CLI session toggles, includi
 native toggles after resuming a saved prompt-snapshot fixture. The description includes
 instructions to end the current turn while awaiting a
 background completion notification, and retains native follow-up guidance and the Agent
-schema, including routing-only, Omni, and missing-marker launches.
+schema, including routing-only and missing-marker launches. Omni launches get the
+orchestrator description like other eligible launches.
 These deliberately unauthenticated requests do not establish
 successful inference or delegation quality.
 See [the mod guide](../docs/claude-mod.md).

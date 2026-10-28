@@ -65,8 +65,6 @@ def enabled(env: Mapping[str, str] | None = None, *, agent: str) -> bool:
     source = os.environ if env is None else env
     if not feature_enabled(source, agent=agent):
         return False
-    if source.get("ISAAC_LAUNCH_MODE", "").strip().lower() == "omni":
-        return False
     try:
         # The marker is created only after UG selects a supported routing launch.
         if not session_env_path(source).is_file():

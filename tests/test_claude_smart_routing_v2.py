@@ -541,6 +541,59 @@ class TestV2Launch:
         # The model-setting guard is a first-prompt concern; user settings stay untouched.
         assert json.loads(user_settings.read_text()) == {"model": "opus"}
 
+    def test_subagent_only_launch_keeps_the_forwarded_model(self, tmp_path, monkeypatch):
+        model = "system.ai.claude-opus-5-5"
+        monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        monkeypatch.setattr(
+            v2,
+            "_model_picker_catalog",
+            lambda: AnthropicModelCatalog(
+                model_ids=["system.ai.claude-opus-4-8"], model_id_to_display_name={}
+            ),
+        )
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
+        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
+        if sys.platform != "win32":
+            monkeypatch.setattr(
+                claude_pty,
+                "run_claude_pty",
+                lambda *_args, **_kwargs: pytest.fail("subagent-only routing must not use the PTY"),
+            )
+        captured: dict = {}
+
+        class FakeProcess:
+            def __init__(self, argv, **_kwargs):
+                captured["argv"] = argv
+                captured["settings"] = json.loads(
+                    Path(argv[argv.index("--settings") + 1]).read_text()
+                )
+
+            def wait(self):
+                return 0
+
+        monkeypatch.setattr(v2.subprocess, "Popen", FakeProcess)
+
+        with pytest.raises(SystemExit) as exc:
+            v2.launch_claude(
+                {"workspace": "https://example.com"},
+                ["--model", model],
+                binary="claude",
+                user_settings_path=tmp_path / "settings.json",
+                launch_model=model,
+                compose_settings=lambda args: ({}, list(args)),
+                launch_model_args=claude._launch_model_args,
+                model_name=claude._maybe_add_1m_suffix,
+            )
+
+        assert exc.value.code == 0
+        argv = captured["argv"]
+        assert argv.count("--model") == 1
+        assert argv[argv.index("--model") + 1] == model
+        assert captured["settings"]["env"][v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
+        assert claude_hooks.FIRST_PROMPT_SOCKET_ENV not in captured["settings"]["env"]
+
 
 class TestV2ModelPickerDiscovery:
     """modelPicker takes priority over gateway model discovery for smart routing."""
@@ -821,7 +874,6 @@ class TestSubagentRouting:
         monkeypatch.setenv("UCODE_SESSION_ENV_FILE", str(session_file))
         monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "1")
         monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", orchestrator_enabled)
-        monkeypatch.delenv("ISAAC_LAUNCH_MODE", raising=False)
         selected_model = "system.ai.claude-haiku-5-5"
         requested_agent = v2._routed_claude_agent_name("system.ai.glm-5-3-flash")
         routed_agent = v2._routed_claude_agent_name(selected_model)

@@ -3196,7 +3196,9 @@ def _should_launch_smart_routing(
     explicit_prompt: bool,
     model: str | None,
 ) -> bool:
-    if model is not None or has_explicit_model_arg(tool_args):
+    pinned = model is not None or has_explicit_model_arg(tool_args)
+    # Subagent-only routing keeps a pinned root model; first-prompt routing would replace it.
+    if pinned and smart_routing_v2.first_prompt_routing_enabled(agent=tool):
         return False
     return _smart_routing_launch_shape(tool, tool_args, explicit_prompt)
 
@@ -3779,8 +3781,8 @@ def _launch_tool(
             ctx.args,
             smart_routing_enabled=smart_routing_enabled,
             explicit_prompt=explicit_prompt,
-            # Only a developer's explicit model disables routing. A managed default is the
-            # initial/fallback model and still participates in a routed session.
+            # A developer's explicit model allows only subagent-only routing. A managed default is
+            # the initial/fallback model and still participates in a routed session.
             user_pinned_model=model or forwarded_model,
             provider=provider,
             # Copilot picks its start model from its own catalog; the admin's or budget pick leads.
