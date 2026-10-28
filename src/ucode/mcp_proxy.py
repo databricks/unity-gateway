@@ -36,7 +36,6 @@ from __future__ import annotations
 import json
 import re
 import sys
-import time
 from collections.abc import AsyncIterator
 from threading import Lock
 from types import ModuleType, TracebackType
@@ -66,7 +65,6 @@ CONNECTION_AUTH_REQUIRED_ERROR_CODE = -32006
 URL_ELICITATION_REQUIRED_ERROR_CODE = -32042
 AUTHENTICATE_TOOL_NAME = "authenticate"
 TOOLS_REFRESH_TIMEOUT_SECONDS = 5.0
-METADATA_RETRY_INTERVAL_SECONDS = 5.0
 
 
 def _httpx() -> ModuleType:
@@ -148,30 +146,17 @@ class _ConnectionLogin:
         self.connection = None if use_pat else connection_from_url(url)
         self._login_attempted = False
         self._completed = False
-        self._login_supported: bool | None = None
-        self._metadata_retry_at = 0.0
-        self._metadata_lock = Lock()
         self._lock = Lock()
 
-    def supports_login(self, *, force: bool = False) -> bool:
+    def supports_login(self) -> bool:
         """Check connection metadata without opening a browser."""
         if self.connection is None:
             return False
-        with self._metadata_lock:
-            if self._login_supported is None:
-                if not force and time.monotonic() < self._metadata_retry_at:
-                    return False
-                try:
-                    token = get_databricks_token(self.workspace, self.profile)
-                except RuntimeError:
-                    self._metadata_retry_at = time.monotonic() + METADATA_RETRY_INTERVAL_SECONDS
-                    return False
-                self._login_supported = mcp_service_needs_connection_login(
-                    self.workspace, token, self.connection
-                )
-                if self._login_supported is None:
-                    self._metadata_retry_at = time.monotonic() + METADATA_RETRY_INTERVAL_SECONDS
-            return self._login_supported is True
+        try:
+            token = get_databricks_token(self.workspace, self.profile)
+        except RuntimeError:
+            return False
+        return mcp_service_needs_connection_login(self.workspace, token, self.connection)
 
     def is_login_url(self, url: str) -> bool:
         if self.connection is None:
@@ -203,7 +188,7 @@ class _ConnectionLogin:
                 return False
             if self._completed and not retry:
                 return True
-            if check_service and not self.supports_login(force=True):
+            if check_service and not self.supports_login():
                 return False
             if self._login_attempted and not retry:
                 return False

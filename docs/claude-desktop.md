@@ -83,8 +83,9 @@ reclassify upstream permission/network errors or validate their root cause.
 For OAuth U2M services, the proxy keeps a local `authenticate` tool alongside the service's
 normal tools, including after successful login. Calling it starts a fresh login even if an
 earlier login succeeded in the same session. Discovery checks service metadata without
-opening a browser or waiting for an interactive login already in progress. Failed metadata
-requests remain retryable on later discovery or authentication errors.
+opening a browser or waiting for an interactive login already in progress. Service metadata
+is looked up again on each discovery or authentication error, so failed requests can recover
+on the next operation.
 PAT and non-U2M services do not gain this action, and an upstream tool
 named `authenticate` keeps its own behavior. Discovery auth errors (`-32006`) and login-URL
 challenges (`-32042`) expose recovery, including after earlier login success. Login challenges
@@ -343,5 +344,5 @@ means the selected user has not signed in yet and continues polling until the ti
 
 The generated connector skill keeps its discovery description within 1,024 characters;
 the body lists every configured connector and carries sign-in recovery instructions.
-Failed metadata discovery retries after five seconds; a tool-call auth failure can
-recheck immediately. Slow metadata discovery does not delay unrelated MCP responses.
+Service metadata is looked up when needed, without caching or a retry cooldown.
+Slow metadata discovery does not delay unrelated MCP responses.

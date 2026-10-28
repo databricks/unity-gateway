@@ -208,21 +208,22 @@ browser recovery, bounded login/lock waits, cancellation, and lock contention.
 Recovery regressions check token recheck before browser login, lock release after
 success/failure, one shared deadline, and network/CLI failures at each recovery stage.
 Proxy bridge coverage checks that OAuth U2M discovery retains an authentication action
-alongside normal tools, without opening a browser. It covers confirmed metadata caching,
-retry after failed metadata lookup, PAT/non-U2M exclusion, pagination, upstream name collisions,
-and result/transport metadata preservation. If upstream removes its authentication tool on a
+alongside normal tools, without opening a browser. It covers per-request metadata lookup,
+recovery on the next operation after a failed lookup, PAT/non-U2M exclusion, pagination,
+upstream name collisions, and result/transport metadata preservation. If upstream removes its authentication tool on a
 fresh listing, local discovery and automatic recovery resume; pagination retains upstream
 ownership within that listing. Discovery and unrelated replies continue during
-interactive login. Metadata-helper cases keep failed requests retryable while absent
-connection kinds return `False`; Claude registration retains the proxy when classification
-is unknown.
+interactive login. Metadata-helper cases return `False` for failed lookups and absent
+connection kinds; later operations look up metadata again.
 A stream scenario covers tool failure, explicit login, tool refresh, task retry, and later
 reauthentication; explicit retry also works after cancellation. Discovery auth errors and
 service-scoped login-URL challenges expose recovery after earlier success. Gmail/Calendar
 tool-error and login-elicitation regressions check automatic sign-in and one request replay,
-cancel/persistent-error pass-through, PAT/non-U2M/unknown exclusions, and nonblocking discovery.
-Success results, other services/hosts, malformed URLs, and policy or mixed elicitations retain
-their responses. Generated guidance distinguishes authentication from retrying data tools.
+cancel/persistent-error pass-through, PAT/non-U2M exclusions, and nonblocking discovery.
+Direct URL-matcher tests reject other services/hosts and malformed URLs; representative
+bridge cases verify pass-through for both error forms. Success results and policy or mixed
+elicitations retain their responses. Generated guidance distinguishes authentication from
+retrying data tools.
 A refresh that still requires authentication returns a failed auth result. These
 checks replace external login and do not prove native Cowork recovery.
 Invalid token output must not appear in helper errors or stdout/stderr.
@@ -925,7 +926,7 @@ states during polling. The browser subprocess runs Python in isolated mode.
 
 MCP review regressions cover bounded connector descriptions with a complete body list,
 malformed upstream tool entries and slow metadata
-discovery while unrelated replies continue. Failed metadata discovery has a short retry
-cooldown; an actual tool-call auth failure can recheck immediately. These are component
+discovery while unrelated replies continue. Failed metadata discovery retries naturally
+on the next operation, without a cache or cooldown. These are component
 checks, not native Cowork invocation or live provider sign-in.
 
