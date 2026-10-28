@@ -1409,6 +1409,14 @@ Checkpoints and each calculation's unique marker correlate parent/child inferenc
 requests to the on/off/on phases. All matched tool-capable inference payloads must carry the
 launch recipe, `DISABLED`, then the launch recipe again, omit the recipe header, and reach non-empty HTTP 200
 responses, with only the existing verified native compatibility retries accepted.
+The same requests must carry the orchestrator's Agent/Task guidance only while
+orchestration is active, with the native "When in doubt, don't spawn" advice absent.
+Background completion and native follow-up guidance must remain present, including
+instructions to end the current turn and wait for a later completion notification.
+Native request-construction component checks also compare the Agent schema across
+native commands, CLI session toggles, and native toggles after resuming a saved
+prompt-snapshot fixture. They also check ineligible launches; their
+unauthenticated requests are not live inference coverage.
 The expected launch recipe comes from the recorded routing request, so a default
 recipe change does not require editing the test.
 Local Claude mod confirmation replaces the old saved-control-file/assistant-turn wait;
