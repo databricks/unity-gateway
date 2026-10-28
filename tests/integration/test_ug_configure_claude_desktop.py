@@ -103,7 +103,7 @@ def test_ug_configure_claude_desktop_profile_lifecycle(live_session, workspace):
     finally:
         stop_process(process)
     assert process.returncode == 0, session.redact(diagnostics)
-    token_matches = token_output == session.env["DATABRICKS_BEARER"] + "\n"
+    token_matches = token_output == session.env["DATABRICKS_BEARER"].strip() + "\n"
     assert token_matches, "Desktop helper must emit only the configured CI bearer"
     assert session.redact(diagnostics, strip_ansi=False) == ""
     request = urllib.request.Request(
