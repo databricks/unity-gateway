@@ -36,10 +36,15 @@ def enable_claude_desktop(session, workspace: str) -> Path:
 
 
 def assert_claude_desktop_unchanged(session, config_library: Path) -> None:
-    assert {
-        path.name: path.read_bytes() for path in config_library.iterdir()
-    } == PERSONAL_DESKTOP_FILES
+    _assert_personal_profile_preserved(config_library)
+    assert (config_library / "_meta.json").read_bytes() == PERSONAL_DESKTOP_FILES["_meta.json"]
+    assert {path.name for path in config_library.iterdir()} == set(PERSONAL_DESKTOP_FILES)
     assert not (session.home / ".ucode/claude-desktop.json").exists()
+
+
+def _assert_personal_profile_preserved(config_library: Path) -> None:
+    personal_name = f"{PERSONAL_PROFILE_ID}.json"
+    assert (config_library / personal_name).read_bytes() == PERSONAL_DESKTOP_FILES[personal_name]
 
 
 def assert_claude_desktop_profile(
@@ -100,8 +105,7 @@ def assert_claude_desktop_profile(
         ],
         "appliedId": PROFILE_ID,
     }, metadata
-    personal_name = f"{PERSONAL_PROFILE_ID}.json"
-    assert (config_library / personal_name).read_bytes() == PERSONAL_DESKTOP_FILES[personal_name]
+    _assert_personal_profile_preserved(config_library)
     assert {path.name for path in config_library.iterdir()} == {
         *PERSONAL_DESKTOP_FILES,
         f"{PROFILE_ID}.json",
