@@ -2332,6 +2332,86 @@ class TestCodexManagedConfig:
         assert "otel" not in read_toml_safe(app_path)
         assert not unit_path.exists()
 
+    @pytest.mark.skipif(sys.platform != "linux", reason="Linux systemd configuration")
+    def test_desktop_relay_lifecycle(self, tmp_path, monkeypatch):
+        managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
+        app_path = codex._legacy_config_path()
+        app_path.parent.mkdir(parents=True, exist_ok=True)
+        unit_path = codex._otel_service_path()
+        ports = iter(range(43198, 43298))
+        monkeypatch.setattr(codex, "_allocate_otel_port", lambda: next(ports))
+        monkeypatch.setattr(codex, "ug_binary", lambda: "/opt/ug")
+        monkeypatch.setattr(codex.subprocess_cross_os, "run", Mock())
+        relayed = {"workspace": WS}
+
+        codex.write_tool_config(dict(relayed), provider="cat.s.mps", relayed=True)
+        provider = read_toml_safe(app_path)["model_providers"]["Databricks"]
+        assert read_toml_safe(app_path)["model_provider"] == "Databricks"
+        assert provider["base_url"] == "http://127.0.0.1:43198/v1"
+        assert provider["requires_openai_auth"] is True
+        assert "auth" not in provider
+        assert provider["http_headers"][codex.MODEL_PROVIDER_SERVICE_HEADER] == "cat.s.mps"
+        assert f'--host "{WS}" --relay-port 43198 --port 43199' in unit_path.read_text()
+
+        # The ports are stable across reconfigures, and tracing shares the one service.
+        codex.write_tool_config(
+            {**relayed, "codex_otel_tracing": True}, provider="cat.s.mps", relayed=True
+        )
+        assert read_toml_safe(app_path)["model_providers"]["Databricks"] == provider
+        assert "--relay-port 43198 --port 43199" in unit_path.read_text()
+        assert read_toml_safe(app_path)["otel"]["trace_exporter"]
+
+        # Dropping relay keeps the service for tracing and removes only ug's provider entries.
+        codex.write_tool_config({**relayed, "codex_otel_tracing": True})
+        doc = read_toml_safe(app_path)
+        assert "model_provider" not in doc and "model_providers" not in doc
+        assert "--relay-port" not in unit_path.read_text()
+        assert "--port 43199" in unit_path.read_text()
+
+        managed_path.unlink(missing_ok=True)  # a non-relayed run owns it; relay refuses that file
+        codex.write_tool_config(dict(relayed), provider="cat.s.mps", relayed=True)
+        codex.write_tool_config(dict(relayed))
+        assert not unit_path.exists()
+        assert "model_providers" not in read_toml_safe(app_path)
+
+        managed_path.unlink(missing_ok=True)
+        codex.write_tool_config(dict(relayed), provider="cat.s.mps", relayed=True)
+        assert codex.revert_legacy_shared_config() is True
+        assert "model_providers" not in read_toml_safe(app_path)
+        assert not unit_path.exists()
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="Linux systemd configuration")
+    def test_desktop_relay_preserves_user_provider_and_dry_run(self, tmp_path, monkeypatch, capsys):
+        self._sudo_counting_env(tmp_path, monkeypatch)
+        app_path = codex._legacy_config_path()
+        app_path.parent.mkdir(parents=True, exist_ok=True)
+        user = 'model_provider = "mine"\n[model_providers.mine]\nbase_url = "https://x"\n'
+        app_path.write_text(user)
+        monkeypatch.setattr(codex.subprocess_cross_os, "run", Mock())
+        monkeypatch.setattr(codex, "ug_binary", lambda: "/opt/ug")
+
+        codex.write_tool_config({"workspace": WS}, provider="cat.s.mps", relayed=True)
+        assert app_path.read_text() == user
+        assert "model provider" in capsys.readouterr().err
+        assert not codex._otel_service_path().exists()
+
+        app_path.write_text("")
+        monkeypatch.setattr(codex, "is_dry_run", lambda: True)
+        assert codex._sync_desktop_relay({}, WS, "cat.s.mps") is False
+        assert app_path.read_text() == ""
+
+    def test_desktop_relay_service_argv_includes_relay_port(self, tmp_path, monkeypatch):
+        self._sudo_counting_env(tmp_path, monkeypatch)
+        ensure = Mock()
+        monkeypatch.setattr(codex, "_ensure_launch_agent", ensure)
+        monkeypatch.setattr(codex, "_ensure_scheduled_task", ensure)
+        monkeypatch.setattr(codex, "ug_binary", lambda: str(tmp_path / "ug"))
+        for target in (managed_files.OS.MACOS, managed_files.OS.WINDOWS):
+            monkeypatch.setattr(codex, "current_os", lambda target=target: target)
+            codex._ensure_otel_service(WS, 43199, 43198)
+            argv = ensure.call_args.args[1]
+            assert argv[argv.index("--host") + 2 :] == ["--relay-port", "43198", "--port", "43199"]
+
     def test_desktop_tracing_launch_agent_lifecycle(self, tmp_path, monkeypatch):
         self._sudo_counting_env(tmp_path, monkeypatch)
         app_path = codex._legacy_config_path()

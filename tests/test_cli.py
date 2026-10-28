@@ -3837,6 +3837,27 @@ class TestOtelProxyCommand:
         token.assert_called_once_with(workspace, "saved-profile", force_refresh=True)
         server.serve_forever.assert_called_once()
 
+    def test_relay_port_also_starts_the_codex_relay_proxy(self):
+        workspace = "https://configured.example"
+        real_save_state({"workspace": workspace, "profile": "saved-profile"})
+        otel, relay = (
+            (MagicMock(), MagicMock(), MagicMock()),
+            (MagicMock(), MagicMock(), MagicMock()),
+        )
+        with (
+            patch("ucode.gateway_proxy.start_otel_proxy", return_value=otel),
+            patch("ucode.gateway_proxy.start_relay_proxy", return_value=relay) as start_relay,
+        ):
+            result = runner.invoke(
+                app,
+                ["otel-proxy", "--host", workspace, "--relay-port", "43198", "--port", "43199"],
+            )
+        assert result.exit_code == 0, result.output
+        assert start_relay.call_args.args[0] == workspace
+        assert start_relay.call_args.args[2] == 43198
+        assert start_relay.call_args.kwargs == {"codex": True}
+        otel[0].serve_forever.assert_called_once()
+
 
 class TestDoctorCommand:
     def test_invokes_doctor(self):
