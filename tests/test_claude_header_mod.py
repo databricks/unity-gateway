@@ -46,7 +46,7 @@ def _managed_env(tmp_path, monkeypatch, managed_doc=None):
         claude, "refresh_managed_config", lambda *a, **kw: SimpleNamespace(manifest={"claude": {}})
     )
     # As `ug configure` runs it.
-    monkeypatch.setattr(claude, "_header_mod_requested", True)
+    monkeypatch.setattr(claude, "_explicit_configure", True)
     monkeypatch.delenv("UG_HEADERS", raising=False)
     return managed_path, root, writes
 
@@ -75,7 +75,7 @@ def test_configure_installs_and_enables_mod_then_stays_put(tmp_path, monkeypatch
 
 def test_launch_never_installs_or_enables_the_mod(tmp_path, monkeypatch):
     managed_path, root, writes = _managed_env(tmp_path, monkeypatch)
-    monkeypatch.setattr(claude, "_header_mod_requested", False)
+    monkeypatch.setattr(claude, "_explicit_configure", False)
     state = {"workspace": WS, "codex_models": []}
 
     claude.write_tool_config(state, "databricks-claude-sonnet-4")
@@ -101,7 +101,7 @@ def test_launch_leaves_a_stale_mod_alone_and_reads_it_as_inactive(tmp_path, monk
     # A ug upgrade changes register.ts; a launch must not rewrite the root-owned copy.
     register = root / "ug-headers/hooks/register.ts"
     register.write_text("// old version\n", encoding="utf-8")
-    monkeypatch.setattr(claude, "_header_mod_requested", False)
+    monkeypatch.setattr(claude, "_explicit_configure", False)
     monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: testenv://liteswap/unit")
     count = len(writes)
     claude.write_tool_config(state, "databricks-claude-sonnet-4")
@@ -110,7 +110,7 @@ def test_launch_leaves_a_stale_mod_alone_and_reads_it_as_inactive(tmp_path, monk
     assert not claude.header_mod_active()
 
     # Configure upgrades it.
-    monkeypatch.setattr(claude, "_header_mod_requested", True)
+    monkeypatch.setattr(claude, "_explicit_configure", True)
     claude.write_tool_config(state, "databricks-claude-sonnet-4")
     assert claude.header_mod_active()
 

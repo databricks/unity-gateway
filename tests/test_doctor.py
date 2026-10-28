@@ -252,13 +252,17 @@ class TestAnthropicEnvCollision:
             monkeypatch.delenv(var, raising=False)
         assert _check_anthropic_env_collision() is None
 
-    def test_warns_when_set(self, monkeypatch):
+    def test_notes_when_set(self, monkeypatch):
         for var in doctor_mod._CLAUDE_TOKEN_ENV_VARS:
             monkeypatch.delenv(var, raising=False)
         monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "secret")
         check = _check_anthropic_env_collision()
-        assert check.status == "warn"
-        assert "ANTHROPIC_AUTH_TOKEN" in check.detail
+        assert check.status == "info"  # advisory: ug blanks it for Claude Code
+        assert check.detail == (
+            "ANTHROPIC_AUTH_TOKEN is set; Claude Code launched via ug ignores it. To use your own "
+            "Databricks token, set DATABRICKS_BEARER or run `ug configure --profile <name> "
+            "--use-pat` (re-run `ug configure` if bare `claude` still fails with a 401)"
+        )
         # Advisory only — no auto-fix for a parent shell's env.
         assert check.suggestion is None
 

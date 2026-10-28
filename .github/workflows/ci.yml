@@ -87,7 +87,7 @@ jobs:
       - name: Validate and test the mod entry point
         run: |
           export UCODE_TEST_CLAUDE_BINARY="$(command -v claude)"
-          uv run pytest tests/native_claude/test_mod.py -q
+          uv run pytest tests/native_claude/test_mod.py tests/native_claude/test_credentials.py -q
 
   e2e-shards:
     name: ${{ matrix.name }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}
