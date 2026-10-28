@@ -332,14 +332,16 @@ Desktop summary while profile and previous-selection files survive. Retry return
 exit code 0, deletes the UG profile, and restores the previous selection without
 workspace state; a repeated revert also returns 0.
 
-`test_cowork_hooks.py` covers SessionStart guidance naming every connector, reporting
-connectors whose probe failed or exceeded the time bound, and skipping probes when the token
-cannot be minted. UserPromptSubmit cases cover doing nothing after a short gap (measured from
-Claude's last reply, so an already-recorded prompt does not count), probing and flagging stale
-disconnect notices after an idle gap, keeping that guidance without a token, and doing nothing
-without a readable transcript or previous reply. Other events are ignored and CLI stdout holds
-only the hook JSON. Probes and token minting are faked; native Cowork hook execution remains
-unverified.
+`test_cowork_hooks.py` covers SessionStart guidance naming every connector without reporting
+unanswered or timed-out probes, a timestamped sign-in line for connectors whose probe returns a
+sign-in error, sign-in error recognition (`-32006`, `-32042`, HTTP 401, nested exception
+groups) versus other errors, and skipping probes when the token cannot be minted.
+UserPromptSubmit cases cover doing nothing after a short gap (measured from Claude's last
+reply, so an already-recorded prompt does not count), probing and flagging stale disconnect
+notices and sign-in needs after an idle gap, keeping that guidance without a token, and doing
+nothing without a readable transcript or previous reply. Other events are ignored and CLI
+stdout holds only the hook JSON. Probes and token minting are faked; native Cowork hook
+execution remains unverified.
 
 `test_cowork_plugin.py` covers active Cowork-root discovery, ambiguous-profile refusal,
 generated marketplace/plugin/MCP manifests, the generated connector skill naming Claude-only

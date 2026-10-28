@@ -73,12 +73,14 @@ When the plugin has MCP servers, UG adds two things so Claude uses them on the f
   sooner, and they never open a browser or block the prompt.
   - On `SessionStart`, the hook refreshes the profile's Databricks token, sends each upstream
     MCP server an `initialize` and `tools/list` (15 seconds total), and tells Claude which
-    connectors exist and which did not answer.
+    connectors exist. It does not report which ones answered, because that goes stale after
+    the first turn. If a probe gets a sign-in error (`-32006`, `-32042`, or HTTP 401), the
+    note adds a timestamped line telling Claude to call that connector's `authenticate` tool.
   - On `UserPromptSubmit`, the hook reads the session transcript. If Claude's last reply was
     under 3 minutes ago, it does nothing. After a longer idle gap it probes every connector
     (10 seconds total) and tells Claude that earlier "MCP servers disconnected" notices may
-    be stale, which connectors answered, and to check current tools before calling one
-    unavailable.
+    be stale, which connectors answered or needed sign-in, and to check current tools before
+    calling one unavailable.
 - A `unity-gateway-connectors` skill. On every connector request, including after a break,
   Claude checks the tools exposed now and calls a relevant one. If only `authenticate`
   appears, it signs in. If tools are missing or `pending`, it actually waits 5 seconds

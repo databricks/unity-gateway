@@ -96,7 +96,7 @@ def _run_resumed_request(tmp_path, claude_messages, *, availability, skill_loade
         checked_at = datetime(2026, 10, 28, 14, 2, tzinfo=UTC)
         note = (
             "<system-reminder>UserPromptSubmit hook additional context: "
-            f"{idle_resume_context(['slack'], {'slack'}, checked_at)}</system-reminder>\n"
+            f"{idle_resume_context(['slack'], {'slack': 'ready'}, checked_at)}</system-reminder>\n"
         )
     conversation.append(
         {
