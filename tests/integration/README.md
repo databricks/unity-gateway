@@ -578,6 +578,11 @@ sign-in/retry guidance. These component tests replace external login and do not 
 native Cowork browser recovery.
 Generated-guidance checks include one sign-in attempt for access/IP denials and stopping
 authentication retries if the denial persists. They verify the instructions, not model compliance.
+The separately selected `../connector_behavior/` suite tests model compliance using a real Claude
+model and synthetic Slack tools: available tools despite a stale notice, tools appearing after
+an actual wait, and tools absent through the wait limit. It does not establish native Desktop
+sleep/resume, discovery, or proxy reconnection coverage. Run instructions and explicit
+workspace/profile/model requirements are in `../README.md`.
 Gmail/Calendar component regressions cover service-scoped login URLs in failed tool results
 and structured login elicitations: automatic sign-in, one request replay, cancellation,
 persistent failures, and unrelated replies during login. Direct URL-matcher tests reject
