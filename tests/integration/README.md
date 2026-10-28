@@ -56,7 +56,9 @@ and call both read-only fixture tools with receipts tied to a fresh run ID. CI r
 on Linux and Windows in required **Desktop Cowork MCP** jobs, using the runner's existing M2M
 support with `UG_CUJ_SP_CLIENT_ID` / `UG_CUJ_SP_CLIENT_SECRET` and
 `https://dbc-bbdd5508-648e.cloud.databricks.com`. Only the short-lived bearer reaches test processes.
-The full lane excludes `desktop_mcp` because its workspace has different fixtures.
+The full lane excludes `desktop_mcp` because its workspace has different fixtures. That workspace
+uses model aliases that do not match Desktop's `claude-` filter, so this case asserts Cowork
+installation and MCP calls; the other Desktop cases assert inference profiles and credentials.
 
 These tests do not launch Desktop or establish GUI, skill execution, or browser-consent
 coverage. See the [native testing plan](../../docs/claude-desktop-integration-testing.md) for

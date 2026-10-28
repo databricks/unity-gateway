@@ -2,6 +2,7 @@
 
 import json
 import re
+from pathlib import Path
 
 import anyio
 import pytest
@@ -233,12 +234,12 @@ class TestMcpRegistration(BaseCujTest):
         session, workspace, _recorder = cuj
         session.configure(["configure", "--workspace", workspace.url, "--skip-upgrade"])
         config = json.loads((session.home / ".claude" / ".claude.json").read_text())
-        task = McpFixtureTask()
+        run_id = fresh_id()
 
         async def scenario():
             for service, tool in SERVICES.items():
                 registration = config["mcpServers"][registered_name(service)]
-                await assert_mcp_fixture_call(session, registration, tool, task.run_id)
+                await assert_mcp_fixture_call(session, registration, tool, run_id)
 
         anyio.run(scenario)
 
@@ -250,7 +251,13 @@ class TestMcpRegistration(BaseCujTest):
         """
         session, workspace, _recorder = cuj
         root = prepare_cowork_home(session)
-        session.configure(["configure", "--workspace", workspace.url, "--skip-upgrade"])
+        profile = "cuj3-desktop"
+        Path(session.env["DATABRICKS_CONFIG_FILE"]).write_text(
+            f"[{profile}]\nhost = {workspace.url}\nauth_type = databricks-cli\n"
+        )
+        session.configure(
+            ["configure", "--profile", profile, "--workspace", workspace.url, "--skip-upgrade"]
+        )
         servers = installed_cowork_servers(session, root)
         run_id = fresh_id()
 

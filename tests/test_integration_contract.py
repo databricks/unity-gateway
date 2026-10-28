@@ -174,6 +174,8 @@ def test_soft_fail_ci_selectors_preserve_coverage(job_name, agent, retained_test
     assert marker is not None
     expression = marker.group(1).replace("${{ matrix.agent }}", agent).replace("$AGENT", agent)
     cases = _collect_integration_cases(expression)
+    if job_name == "full":
+        assert not any("::test_ug_configure_claude_desktop_cowork_mcp" in case for case in cases)
     if retained_test is not None:
         assert any(f"::{retained_test}" in case for case in cases), cases
         assert not any(f"::{toggle}[" in case for case in cases for toggle in CLAUDE_TOGGLE_TESTS)

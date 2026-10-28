@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -42,7 +43,44 @@ def _run_credential_helper(session, profile):
         stop_process(process)
     assert process.returncode == 0, session.redact(diagnostics)
     assert session.redact(diagnostics, strip_ansi=False) == ""
+    session.record("desktop-credential-helper.json", {"exit_code": process.returncode})
     return token_output
+
+
+def _assert_desktop_message(session, profile, model, headers, evidence_name):
+    marker = fresh_id()
+    request = urllib.request.Request(
+        profile["inferenceGatewayBaseUrl"] + "/v1/messages",
+        data=json.dumps(
+            {
+                "model": model,
+                "max_tokens": 32,
+                "messages": [{"role": "user", "content": f"Reply with exactly: {marker}"}],
+            }
+        ).encode(),
+        headers={
+            **profile["inferenceCustomHeaders"],
+            **headers,
+            "Anthropic-Version": "2023-06-01",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            assert response.status == 200
+            message = json.load(response)
+    except urllib.error.HTTPError as error:
+        details = session.redact(error.read().decode("utf-8", errors="replace"))
+        session.record(evidence_name, {"status": error.code, "error": details})
+        raise AssertionError(f"Desktop Messages failed ({error.code}): {details}") from None
+    session.record(evidence_name, {"marker": marker, "response": message})
+    assert message["type"] == "message" and message["role"] == "assistant"
+    assert message["model"] == model
+    assert message["stop_reason"] == "end_turn"
+    assert (
+        "".join(part["text"] for part in message["content"] if part["type"] == "text").strip()
+        == marker
+    )
 
 
 def test_ug_configure_claude_desktop_profile_lifecycle(live_session, workspace):
@@ -116,8 +154,11 @@ def test_ug_configure_claude_desktop_profile_lifecycle(live_session, workspace):
     )
     with urllib.request.urlopen(request, timeout=30) as response:
         assert response.status == 200
-        assert json.load(response)["data"]
-    session.record("desktop-helper.json", {"exit_code": 0, "models_status": 200})
+        catalog = json.load(response)["data"]
+        assert catalog
+        session.record(
+            "desktop-helper.json", {"models_status": response.status, "model_count": len(catalog)}
+        )
 
     models = profile["inferenceModels"]
     assert models and all("claude-" in model["name"].lower() for model in models)
@@ -238,34 +279,12 @@ def test_ug_configure_claude_desktop_subscription_relay(
     )
     assert claude_provider_model in {model["name"] for model in profile["inferenceModels"]}
 
-    marker = fresh_id()
-    request = urllib.request.Request(
-        profile["inferenceGatewayBaseUrl"] + "/v1/messages",
-        data=json.dumps(
-            {
-                "model": claude_provider_model,
-                "max_tokens": 32,
-                "messages": [{"role": "user", "content": f"Reply with exactly: {marker}"}],
-            }
-        ).encode(),
-        headers={
-            **profile["inferenceCustomHeaders"],
-            **credential["headers"],
-            "Authorization": "Bearer " + credential["token"],
-            "Anthropic-Version": "2023-06-01",
-            "Content-Type": "application/json",
-        },
-    )
-    with urllib.request.urlopen(request, timeout=120) as response:
-        assert response.status == 200
-        message = json.load(response)
-    session.record("desktop-relay-message.json", {"marker": marker, "response": message})
-    assert message["type"] == "message" and message["role"] == "assistant"
-    assert message["model"] == claude_provider_model
-    assert message["stop_reason"] == "end_turn"
-    assert (
-        "".join(part["text"] for part in message["content"] if part["type"] == "text").strip()
-        == marker
+    _assert_desktop_message(
+        session,
+        profile,
+        claude_provider_model,
+        {**credential["headers"], "Authorization": "Bearer " + credential["token"]},
+        "desktop-relay-message.json",
     )
 
 
@@ -309,42 +328,21 @@ def test_ug_configure_claude_desktop_anthropic_mps(
     token_matches = token_output == session.env["DATABRICKS_BEARER"].strip() + "\n"
     assert token_matches, "Non-relayed helper must emit only the Databricks bearer"
 
-    marker = fresh_id()
-    request = urllib.request.Request(
-        profile["inferenceGatewayBaseUrl"] + "/v1/messages",
-        data=json.dumps(
-            {
-                "model": claude_provider_model,
-                "max_tokens": 32,
-                "messages": [{"role": "user", "content": f"Reply with exactly: {marker}"}],
-            }
-        ).encode(),
-        headers={
-            **profile["inferenceCustomHeaders"],
-            "Authorization": "Bearer " + token_output.strip(),
-            "Anthropic-Version": "2023-06-01",
-            "Content-Type": "application/json",
-        },
-    )
-    with urllib.request.urlopen(request, timeout=120) as response:
-        assert response.status == 200
-        message = json.load(response)
-    session.record("desktop-mps-message.json", {"marker": marker, "response": message})
-    assert message["type"] == "message" and message["role"] == "assistant"
-    assert message["model"] == claude_provider_model
-    assert message["stop_reason"] == "end_turn"
-    assert (
-        "".join(part["text"] for part in message["content"] if part["type"] == "text").strip()
-        == marker
+    _assert_desktop_message(
+        session,
+        profile,
+        claude_provider_model,
+        {"Authorization": "Bearer " + token_output.strip()},
+        "desktop-mps-message.json",
     )
 
 
 @pytest.mark.desktop_mcp
 def test_ug_configure_claude_desktop_cowork_mcp(live_session, workspace):
-    """Scenario: configure Desktop beside an existing Cowork account in the MCP fixture workspace.
+    """Scenario: configure Cowork beside an existing Desktop account in the MCP fixture workspace.
 
-    Expected: the public configure command writes a native Desktop profile and installs the
-    Cowork plugin through the real Claude CLI. Commands read from that installed plugin discover
+    Expected: the public configure command installs the Cowork plugin through the real Claude
+    CLI. Commands read from that installed plugin discover
     and call both live MCP fixtures with fresh-run receipts. This does not launch the Desktop GUI,
     execute its discovery skill, or run browser OAuth consent.
     """
@@ -363,8 +361,6 @@ def test_ug_configure_claude_desktop_cowork_mcp(live_session, workspace):
         "--disable-databricks-ai-tools",
         timeout=240,
     )
-    profile = json.loads((desktop_config_library(session) / f"{UG_PROFILE_ID}.json").read_text())
-    assert profile["inferenceGatewayBaseUrl"] == workspace + "/ai-gateway/anthropic"
     servers = installed_cowork_servers(session, root)
     run_id = fresh_id()
 
