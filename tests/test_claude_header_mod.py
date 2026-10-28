@@ -234,9 +234,10 @@ def test_headless_configure_installs_and_enables_beside_an_existing_managed_file
     claude.write_tool_config({"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4")
 
     assert (root / "ug-headers/hooks/register.ts").is_file()
-    assert json.loads(managed_path.read_text())["enabledPlugins"] == {
-        "ug-headers@ucode-managed": True
-    }
+    doc = json.loads(managed_path.read_text())
+    assert doc["enabledPlugins"] == {"ug-headers@ucode-managed": True}
+    # Only the mod's entries: a headless run still leaves the rest of ug's settings out.
+    assert set(doc) == {"extraKnownMarketplaces", "enabledPlugins", "prependPlugins"}
     assert claude.header_mod_active()
 
 
@@ -313,18 +314,15 @@ def _another_tools_mod(tmp_path, monkeypatch):
     """Managed settings enabling Isaac's copy of the mod, from its own marketplace folder."""
     marketplace = tmp_path / "isaac-plugins"
     (marketplace / "ug-headers/hooks").mkdir(parents=True)
+    (marketplace / "ug-headers/hooks/hooks.json").write_text("{}", encoding="utf-8")
     managed_path = tmp_path / "managed-settings.json"
-    managed_path.write_text(
-        json.dumps(
-            {
-                "extraKnownMarketplaces": {
-                    "isaac-managed": {"source": {"source": "directory", "path": str(marketplace)}}
-                },
-                "enabledPlugins": {"ug-headers@isaac-managed": True},
-            }
-        ),
-        encoding="utf-8",
-    )
+    # ug's own entry comes first, so its folder is checked before Isaac's.
+    doc = claude._enable_header_mod({}, tmp_path / "ucode-plugins")
+    doc["extraKnownMarketplaces"]["isaac-managed"] = {
+        "source": {"source": "directory", "path": str(marketplace)}
+    }
+    doc["enabledPlugins"]["ug-headers@isaac-managed"] = True
+    managed_path.write_text(json.dumps(doc), encoding="utf-8")
     monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
     return marketplace
 
@@ -335,8 +333,22 @@ def test_another_tools_header_mod_counts_even_when_os_settings_are_skipped(tmp_p
     monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
     assert claude.header_mod_active()
 
-    shutil.rmtree(marketplace / "ug-headers")
+    # An empty folder isn't a mod.
+    (marketplace / "ug-headers/hooks/hooks.json").unlink()
     assert not claude.header_mod_active()
+
+
+def test_an_unreadable_mod_folder_does_not_hide_another_tools_mod(tmp_path, monkeypatch):
+    _another_tools_mod(tmp_path, monkeypatch)
+    is_file = claude.Path.is_file
+
+    def denied_in_ug_folder(self):
+        if "ucode-plugins" in self.parts:
+            raise PermissionError(13, "Permission denied", str(self))
+        return is_file(self)
+
+    monkeypatch.setattr(claude.Path, "is_file", denied_in_ug_folder)
+    assert claude.header_mod_active()
 
 
 def test_missing_mod_warning_matches_why_ug_cant_install_it(tmp_path, monkeypatch):

@@ -14,7 +14,7 @@ import sys
 import threading
 import traceback
 from collections.abc import Callable, Iterable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -2078,29 +2078,31 @@ def header_mod_active() -> bool:
         return False
     try:
         settings = _parse_managed_settings(read_managed_file(path) or "{}")
-        plugins = settings.get("enabledPlugins")
-        marketplaces = settings.get("extraKnownMarketplaces")
-        if not isinstance(plugins, dict) or not isinstance(marketplaces, dict):
-            return False
-        for plugin_id, enabled in plugins.items():
-            name, _, marketplace = plugin_id.partition("@")
-            entry = marketplaces.get(marketplace)
-            source = entry.get("source") if isinstance(entry, dict) else None
-            if name != "ug-headers" or enabled is not True or not isinstance(source, dict):
-                continue
-            if source.get("source") != "directory" or not isinstance(source.get("path"), str):
-                continue
-            root = Path(source["path"])
+    except RuntimeError:
+        return False
+    plugins = settings.get("enabledPlugins")
+    marketplaces = settings.get("extraKnownMarketplaces")
+    if not isinstance(plugins, dict) or not isinstance(marketplaces, dict):
+        return False
+    for plugin_id, enabled in plugins.items():
+        name, _, marketplace = plugin_id.partition("@")
+        entry = marketplaces.get(marketplace)
+        source = entry.get("source") if isinstance(entry, dict) else None
+        if name != "ug-headers" or enabled is not True or not isinstance(source, dict):
+            continue
+        if source.get("source") != "directory" or not isinstance(source.get("path"), str):
+            continue
+        root = Path(source["path"])
+        # One unreadable folder must not hide another tool's working copy.
+        with suppress(OSError):
             if marketplace != CLAUDE_HEADER_MOD_MARKETPLACE:
-                if (root / "ug-headers").is_dir():
+                if (root / "ug-headers/hooks/hooks.json").is_file():
                     return True
             elif all(
                 file.is_file() and file.read_text(encoding="utf-8") == content
                 for file, content in _header_mod_files(root).items()
             ):
                 return True
-    except (OSError, RuntimeError):
-        return False
     return False
 
 
@@ -2263,13 +2265,25 @@ def _reconcile_managed_settings(
         owned_paths = [*owned_paths, *CLAUDE_HEADER_MOD_PATHS]
     _preserve_permission_denies(managed_before, desired_settings, withdrawn=withdrawn_denies or [])
     conflicts = _managed_settings_conflicts(managed_before, desired_settings, owned_paths)
-    # A headless configure that installed the mod enables it too, repairing the file in place.
-    enables_mod = installed and (
-        _enable_header_mod(copy.deepcopy(managed_before), header_mod_root) != managed_before
-    )
-    if not managed_writes_allowed() and not conflicts and not enables_mod:
+    if not managed_writes_allowed() and not conflicts:
         warn_managed_write_skipped(path, managed_before, desired_settings)
         mark_managed_file_verified(state, "claude", path, scope="local-compatible")
+        # A headless configure enables only the mod it installed, repairing the file in place.
+        mod_only = _enable_header_mod(
+            copy.deepcopy(managed_before), header_mod_root if installed else None
+        )
+        if mod_only != managed_before:
+            try:
+                reconcile_managed_file(
+                    path,
+                    _dump_managed_settings(mod_only),
+                    tool="claude",
+                    display="Claude Code",
+                    owned_paths=owned_paths,
+                    parser=_parse_managed_settings,
+                )
+            except ManagedFileWriteUnavailable as exc:
+                print_warning(str(exc))
         return
     try:
         reconcile_managed_file(
