@@ -146,10 +146,11 @@ def test_smoke_and_full_together_cover_every_blocking_live_case(agent):
     assert smoke | full == _collect_integration_cases(f"live and {agent} and not soft_fail")
 
 
-def test_full_journeys_run_every_agent_and_os_in_parallel():
-    job = _integration_jobs()["full"]
-    assert "concurrency:" not in job
-    assert "max-parallel: 4" in job
+def test_smoke_and_full_journeys_run_every_agent_and_os_in_parallel():
+    jobs = _integration_jobs()
+    assert "concurrency:" not in jobs["smoke"]
+    assert "concurrency:" not in jobs["full"]
+    assert "max-parallel: 4" in jobs["full"]
 
 
 @pytest.mark.parametrize(
