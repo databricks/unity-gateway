@@ -143,6 +143,7 @@ def upstream():
         server.server_close()
         thread.join(timeout=5)
         assert not thread.is_alive()
+        assert set(state["headers"]) == {f"Bearer {TOKEN}"}
 
 
 @pytest.fixture
@@ -256,7 +257,6 @@ def test_generated_cowork_proxy_authenticates_and_replays_original_call(
             assert len(upstream["browsers"]) == 1
 
     anyio.run(scenario)
-    assert set(upstream["headers"]) == {f"Bearer {TOKEN}"}
 
 
 def test_generated_proxy_discovery_exposes_explicit_authentication(
