@@ -176,12 +176,12 @@ def test_orchestrator_instructions_follow_native_toggles(native_binary, tmp_path
                 result = session.send(f"/smart-router {action}")
                 assert f"Smart Router is {action}" in result["result"]
                 assert agent_tool(session) == (routed_tool if action == "on" else native_tool)
-        for label, overrides in (
-            ("omni", {"ISAAC_LAUNCH_MODE": "omni"}),
-            ("no-marker", {"UCODE_SESSION_ENV_FILE": str(tmp_path / "missing.json")}),
+        for label, overrides, expected in (
+            ("omni", {"ISAAC_LAUNCH_MODE": "omni"}, routed_tool),
+            ("no-marker", {"UCODE_SESSION_ENV_FILE": str(tmp_path / "missing.json")}, native_tool),
         ):
             with Session(native_binary, tmp_path / label, {**env, **overrides}) as session:
-                assert agent_tool(session) == native_tool
+                assert agent_tool(session) == expected
     finally:
         shutil.rmtree(controls.parent)
 
