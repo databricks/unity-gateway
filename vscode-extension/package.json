@@ -60,6 +60,16 @@
                   "responses"
                 ],
                 "description": "The AI Gateway API the model is called through."
+              },
+              "maxInputTokens": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Prompt tokens the model accepts. Defaults to 128000."
+              },
+              "maxOutputTokens": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Tokens the model can write in one reply. Defaults to 32000."
               }
             }
           },

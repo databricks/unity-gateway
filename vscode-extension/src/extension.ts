@@ -7,6 +7,8 @@ import { streamEvents } from "./gateway";
 export interface ModelSetting {
   readonly id: string;
   readonly api: "chat_completions" | "responses";
+  readonly maxInputTokens?: number;
+  readonly maxOutputTokens?: number;
 }
 
 export interface Settings {
@@ -15,14 +17,24 @@ export interface Settings {
   readonly authCommand: string;
 }
 
+const tokenLimits = (model: ModelSetting): Partial<ModelSetting> =>
+  Object.fromEntries(
+    (["maxInputTokens", "maxOutputTokens"] as const).flatMap((key) => {
+      const value: unknown = model[key];
+      return typeof value === "number" && Number.isInteger(value) && value > 0 ? [[key, value]] : [];
+    }),
+  );
+
 export const readSettings = (get: (key: string) => unknown): Settings => {
   const models = get("models");
   return {
     workspace: String(get("workspace") ?? "").replace(/\/+$/, ""),
-    models: (Array.isArray(models) ? models : []).filter(
-      (model): model is ModelSetting =>
-        typeof model?.id === "string" && model.id !== "" && (model.api === "chat_completions" || model.api === "responses"),
-    ),
+    models: (Array.isArray(models) ? models : [])
+      .filter(
+        (model): model is ModelSetting =>
+          typeof model?.id === "string" && model.id !== "" && (model.api === "chat_completions" || model.api === "responses"),
+      )
+      .map((model) => ({ id: model.id, api: model.api, ...tokenLimits(model) })),
     authCommand: String(get("authCommand") ?? ""),
   };
 };
@@ -56,7 +68,7 @@ export class DatabricksModels implements vscode.LanguageModelChatProvider<Model>
       this.log("No Databricks models: run `ug configure --agents vscode` to set them up.");
       return [];
     }
-    return models.map(({ id, api }) => ({
+    return models.map(({ id, api, maxInputTokens, maxOutputTokens }) => ({
       id,
       api,
       name: id,
@@ -64,9 +76,9 @@ export class DatabricksModels implements vscode.LanguageModelChatProvider<Model>
       family: id.split(".").pop() ?? id,
       version,
       detail: "Databricks",
-      // The gateway reports no limits for these models.
-      maxInputTokens: 128_000,
-      maxOutputTokens: 32_000,
+      // The gateway reports no limits, so a model ug configure has none for gets Copilot's 128K default.
+      maxInputTokens: maxInputTokens ?? 128_000,
+      maxOutputTokens: maxOutputTokens ?? 32_000,
       capabilities: { toolCalling: true, imageInput: api === "responses" || id.includes("claude") },
     }));
   }
