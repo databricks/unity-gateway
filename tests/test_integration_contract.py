@@ -198,6 +198,7 @@ def test_full_claude_lane_runs_desktop_mcp_with_step_scoped_credentials():
     jobs = _integration_jobs()
     full = jobs["full"]
     assert "os: [ubuntu-22.04, windows-latest]" in full
+    assert "timeout-minutes: 90" in full
     assert "RUN_DESKTOP_MCP: ${{ matrix.agent == 'claude' }}" in full
     assert "steps: *live-steps" in full
     step = (
@@ -206,6 +207,7 @@ def test_full_claude_lane_runs_desktop_mcp_with_step_scoped_credentials():
         .split("      - name:", 1)[0]
     )
     assert "if: ${{ !cancelled() && env.RUN_DESKTOP_MCP == 'true' }}" in step
+    assert "timeout-minutes: 20" in step
     environment = dict(re.findall(r"(?m)^          ([A-Z_]+): (.+)$", step))
     assert environment == {
         "UCODE_TEST_WORKSPACE": "https://dbc-bbdd5508-648e.cloud.databricks.com",
@@ -653,7 +655,6 @@ def test_windows_integration_ci_uses_shared_claude_version():
         "installation",
         "installation-windows",
         "headless-windows",
-        "desktop-mcp",
         "workspace",
         "smoke",
         "full",
@@ -674,7 +675,6 @@ def test_integration_ci_gate_requires_every_job(failed_job, job_result):
             "installation",
             "installation-windows",
             "headless-windows",
-            "desktop-mcp",
             "workspace",
             "smoke",
             "full",
@@ -683,6 +683,9 @@ def test_integration_ci_gate_requires_every_job(failed_job, job_result):
             "dedicated-cuj",
         )
     }
+    needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", gate)
+    assert needs is not None
+    assert set(results) == {job.strip() for job in needs.group(1).split(",")}
     results[failed_job]["result"] = job_result
     result = subprocess.run(
         [sys.executable, "-c", textwrap.dedent(script.group(1))],
