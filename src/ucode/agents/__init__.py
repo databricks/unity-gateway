@@ -466,7 +466,7 @@ def configure_tool(
     result: dict | tuple[dict, str]
     if tool == AGENT_CODEX:
         result = codex.write_tool_config(
-            state, model, provider=provider, parent_schema=parent_schema
+            state, model, provider=provider, parent_schema=parent_schema, relayed=relayed
         )
     elif tool == AGENT_CLAUDE:
         # A Model Provider Service or parent schema routes by header and discovers models natively,

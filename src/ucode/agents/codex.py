@@ -7,6 +7,7 @@ import hashlib
 import os
 import plistlib
 import re
+import shutil
 import signal
 import socket
 import sys
@@ -14,7 +15,7 @@ import tempfile
 import threading
 from collections.abc import Callable
 from pathlib import Path
-from subprocess import CalledProcessError, list2cmdline
+from subprocess import CalledProcessError, TimeoutExpired, list2cmdline
 from xml.sax.saxutils import escape
 
 import tomlkit
@@ -94,7 +95,7 @@ from ucode.smart_routing.routing import configured_router_name
 from ucode.state import get_provider_service, is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
 from ucode.ug_headers import ug_headers
-from ucode.ui import print_warning_err
+from ucode.ui import print_note, print_success, print_warning_err
 
 from .args import LaunchOptions
 from .codex_catalog import prepare_codex_catalog, validate_codex_catalog
@@ -109,10 +110,12 @@ LEGACY_CODEX_CONFIG_PATH = CODEX_CONFIG_DIR / "config.toml"
 LEGACY_CODEX_BACKUP_PATH = APP_DIR / "codex-config.backup.toml"
 CODEX_MODEL_PROVIDER_NAME = "Databricks"
 LEGACY_CODEX_MODEL_PROVIDER_NAME = "ucode-databricks"
-# ug owns the whole provider http_headers table, so it is pruned before each merge and rewritten
-# from render_overlay — dropping stale routing and admin headers that deep_merge cannot delete.
+# ug owns the provider http_headers table and its auth/requires_openai_auth mode, so they are
+# pruned before each merge and rewritten from render_overlay — dropping stale routing and admin
+# headers or a previous relayed/non-relayed mode that deep_merge cannot delete.
 _PROVIDER_HTTP_HEADERS_KEY_PATHS = [
-    ["model_providers", CODEX_MODEL_PROVIDER_NAME, "http_headers"],
+    ["model_providers", CODEX_MODEL_PROVIDER_NAME, key]
+    for key in ("http_headers", "auth", "requires_openai_auth")
 ]
 # Windows requirements.toml replaces the whole provider entry, so launch-scoped headers set with
 # `-c` would be dropped; Codex reads them from these variables instead.
@@ -220,6 +223,7 @@ def _provider_block(
     parent_schema: str | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
     managed_http_headers: dict[str, str] | None = None,
+    relayed: bool = False,
 ) -> dict:
     if custom_oauth:
         auth_argv = build_custom_auth_token_argv(workspace, custom_oauth)
@@ -228,7 +232,8 @@ def _provider_block(
         if not use_pat:
             # Desktop helpers have no terminal for interactive sign-in.
             auth_argv.append("--browser-login")
-    base_url = build_tool_base_url("codex", workspace)
+    # A relayed launch points base_url at its loopback proxy's bound port.
+    base_url = f"http://{LOOPBACK_HOST}/v1" if relayed else build_tool_base_url("codex", workspace)
     http_headers = {
         "User-Agent": ucode_user_agent(ug_version(), f"codex/{agent_version('codex')}"),
     }
@@ -242,11 +247,18 @@ def _provider_block(
     if request_tags:
         http_headers[AI_GATEWAY_REQUEST_TAGS_HEADER] = request_tags
     _apply_managed_headers(http_headers, managed_http_headers)
-    return {
+    block = {
         "name": "Databricks AI Gateway",
         "base_url": base_url,
         "wire_api": "responses",
         "http_headers": http_headers,
+    }
+    if relayed:
+        # Codex sends its own ChatGPT login; a provider `auth` command can't be combined with it.
+        block["requires_openai_auth"] = True
+        return block
+    return {
+        **block,
         # Run the `ug auth-token` executable directly (not via `sh -c`) so the
         # helper works on Windows, where there is no POSIX shell (issue #116).
         "auth": {
@@ -267,6 +279,7 @@ def render_overlay(
     parent_schema: str | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
     managed_http_headers: dict[str, str] | None = None,
+    relayed: bool = False,
 ) -> dict:
     overlay: dict = {"model_provider": CODEX_MODEL_PROVIDER_NAME}
     if model:
@@ -280,6 +293,7 @@ def render_overlay(
             parent_schema=parent_schema,
             custom_oauth=custom_oauth,
             managed_http_headers=managed_http_headers,
+            relayed=relayed,
         ),
     }
     return overlay
@@ -438,6 +452,7 @@ def write_tool_config(
     model: str | None = None,
     provider: str | None = None,
     parent_schema: str | None = None,
+    relayed: bool = False,
 ) -> dict:
     workspace = state["workspace"]
     # Leave model selection to Codex. The gateway still receives the configured
@@ -450,6 +465,11 @@ def write_tool_config(
     static_models = static_models if isinstance(static_models, list) and static_models else None
 
     if _use_legacy_layout():
+        if relayed:
+            raise RuntimeError(
+                "A ChatGPT subscription relay needs Codex "
+                f"{LEGACY_LAYOUT_CODEX_VERSION_TEXT} or newer. Upgrade Codex and retry."
+            )
         if static_models and not provider:
             raise RuntimeError(
                 "This Codex version cannot use the managed static model catalog. "
@@ -516,6 +536,7 @@ def write_tool_config(
         parent_schema=parent_schema,
         custom_oauth=state.get("custom_oauth"),
         managed_http_headers=state.get("codex_http_headers"),
+        relayed=relayed,
     )
 
     def compose(base: dict, *, include_catalog: bool = True) -> dict:
@@ -550,7 +571,14 @@ def write_tool_config(
         enabled=False,
     )
     write_toml_file(CODEX_CONFIG_PATH, doc)
-    _reconcile_managed_config(state, lambda base: compose(base, include_catalog=False))
+    _reconcile_managed_config(
+        state, lambda base: compose(base, include_catalog=False), relayed=relayed
+    )
+    # Persisted so launch() wires the relay proxy and ChatGPT login; cleared on a non-relayed run.
+    if relayed:
+        state["codex_relayed"] = True
+    else:
+        state.pop("codex_relayed", None)
     state = mark_tool_managed(state, "codex", MANAGED_KEYS)
     save_state(state)
     # The desktop proxy reads authentication from the saved workspace.
@@ -604,7 +632,10 @@ def managed_config_is_current(state: dict) -> bool:
     path = codex_managed_config_path()
     if path is None:
         return True
-    required_scope = "managed" if managed_writes_allowed() else None
+    if state.get("codex_relayed"):
+        required_scope = "relay-compatible"
+    else:
+        required_scope = "managed" if managed_writes_allowed() else None
     return managed_file_is_verified(state, "codex", path, required_scope=required_scope)
 
 
@@ -893,7 +924,30 @@ def _sync_desktop_tracing(workspace: str | None) -> bool:
         return False
 
 
-def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> None:
+def _managed_relayed_conflicts(path: Path) -> list[str]:
+    """Return managed settings that would override a ChatGPT relay launch's ``-c`` provider."""
+    text = read_managed_file(path)
+    if text is None:
+        return []
+    try:
+        doc = _parse_managed_config(text)
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"Cannot safely inspect Codex managed settings at {path}: {exc}. Repair the file or "
+            "contact your administrator."
+        ) from exc
+    conflicts = ["model_provider"] if "model_provider" in doc else []
+    provider = (doc.get("model_providers") or {}).get(CODEX_MODEL_PROVIDER_NAME) or {}
+    return conflicts + [
+        f"model_providers.{CODEX_MODEL_PROVIDER_NAME}.{key}"
+        for key in ("base_url", "auth")
+        if key in provider
+    ]
+
+
+def _reconcile_managed_config(
+    state: dict, compose: Callable[[dict], dict], relayed: bool = False
+) -> None:
     """Reconcile Codex's highest-precedence config while preserving unrelated policy."""
     path = codex_managed_config_path()
     if path is not None and path.name == CODEX_REQUIREMENTS_FILE:
@@ -912,6 +966,18 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
             f"Refusing to use Codex managed settings through symlink {path}. Replace it with a "
             "regular file or contact your administrator."
         )
+    if relayed:
+        # The relay's loopback proxy only runs during `ug codex`, so skip the machine-wide file.
+        conflicts = _managed_relayed_conflicts(path)
+        if conflicts:
+            raise RuntimeError(
+                "Codex ChatGPT relay cannot start because enterprise managed settings define "
+                f"{', '.join(conflicts)} at {path}. Ask your administrator to remove those "
+                "entries or use standard Databricks authentication. If ucode previously created "
+                "them, run `ug revert` first."
+            )
+        mark_managed_file_verified(state, "codex", path, scope="relay-compatible")
+        return
     current_text = read_managed_file(path)
     try:
         existing = _parse_managed_config(current_text) if current_text is not None else {}
@@ -1417,34 +1483,70 @@ def _launch_codex_with_otel_proxy(
     base_argv: list[str],
     tool_args: list[str],
     workspace: str,
+    *,
+    otel_tracing: bool = True,
+    relay: tuple | None = None,
 ) -> None:
-    """Run the loopback OTLP refresh proxy for the session, with Codex as a child.
+    """Run the loopback proxies for the session (OTLP refresh and/or the started ChatGPT
+    ``relay``), with Codex as a child.
 
-    The proxy must outlive the launch, so Codex runs as a child rather than
-    exec-replacing this process; mirrors Claude's relayed launch. The proxy binds an
-    OS-assigned port and tears everything down when Codex exits (or fails to spawn).
+    The proxies must outlive the launch, so Codex runs as a child rather than
+    exec-replacing this process; mirrors Claude's relayed launch. Each binds an
+    OS-assigned port and everything is torn down when Codex exits (or fails to spawn).
     """
-    # Only tracing launches need the proxy (and its `httpx` import).
-    from ucode import gateway_proxy
-
-    server, cache, client = gateway_proxy.start_otel_proxy(
-        workspace, _otel_token_provider(state, workspace)
-    )
-    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
-    server_thread.start()
-    endpoint = f"http://{LOOPBACK_HOST}:{server.server_address[1]}/v1/traces"
-    otel_args = codex_config_args(_otel_proxy_overlay(endpoint))
-    proc = subprocess_cross_os.popen([*base_argv, *otel_args, *tool_args])
+    proxies = [relay] if relay else []
+    otel_args: list[str] = []
     try:
-        returncode = proc.wait()
-    except KeyboardInterrupt:
-        proc.send_signal(signal.SIGINT)
-        returncode = proc.wait()
+        if otel_tracing:
+            # Only tracing launches need the proxy (and its `httpx` import).
+            from ucode import gateway_proxy
+
+            otel = gateway_proxy.start_otel_proxy(workspace, _otel_token_provider(state, workspace))
+            proxies.append(otel)
+            threading.Thread(target=otel[0].serve_forever, daemon=True).start()
+            endpoint = f"http://{LOOPBACK_HOST}:{otel[0].server_address[1]}/v1/traces"
+            otel_args = codex_config_args(_otel_proxy_overlay(endpoint))
+        proc = subprocess_cross_os.popen([*base_argv, *otel_args, *tool_args])
+        try:
+            returncode = proc.wait()
+        except KeyboardInterrupt:
+            proc.send_signal(signal.SIGINT)
+            returncode = proc.wait()
     finally:
-        cache.stop()
-        server.shutdown()
-        client.close()
+        for server, cache, client in proxies:
+            cache.stop()
+            server.shutdown()
+            client.close()
     raise SystemExit(returncode)
+
+
+def _has_chatgpt_login(binary: str) -> bool:
+    """True when Codex holds a ChatGPT login (not an API key) that a relayed launch will use."""
+    try:
+        result = subprocess_cross_os.run(
+            [shutil.which(binary) or binary, "login", "status"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, TimeoutExpired):
+        return False
+    return result.returncode == 0 and "ChatGPT" in f"{result.stdout}{result.stderr}"
+
+
+def _ensure_chatgpt_login(binary: str) -> None:
+    """Run Codex's browser sign-in if it has no ChatGPT login. ug never sees the token."""
+    if _has_chatgpt_login(binary):
+        return
+    print_note("Opening browser to sign in with your ChatGPT subscription...")
+    try:
+        subprocess_cross_os.run([shutil.which(binary) or binary, "login"], check=True, timeout=300)
+    except CalledProcessError as exc:
+        raise RuntimeError("`codex login` failed.") from exc
+    except TimeoutExpired as exc:
+        raise RuntimeError("`codex login` timed out.") from exc
+    print_success("ChatGPT subscription authenticated")
 
 
 def _run_codex(
@@ -1454,13 +1556,16 @@ def _run_codex(
     *,
     otel_tracing: bool,
     workspace: str | None,
+    relay: tuple | None = None,
 ) -> None:
-    """Launch Codex — via the loopback proxy when OTLP tracing is on, else exec-replace."""
+    """Launch Codex — via loopback proxies when OTLP tracing or a relay is on, else exec-replace."""
     if tool_args[:1] == ["update"]:
         # exec replaces ug, so reattach only on a later validated refresh.
         detach_app_model_catalog()
-    if otel_tracing and workspace:
-        _launch_codex_with_otel_proxy(state, base_argv, tool_args, workspace)
+    if (otel_tracing or relay) and workspace:
+        _launch_codex_with_otel_proxy(
+            state, base_argv, tool_args, workspace, otel_tracing=otel_tracing, relay=relay
+        )
     else:
         exec_or_spawn([*base_argv, *tool_args])
 
@@ -1471,7 +1576,13 @@ def launch(
     *,
     options: LaunchOptions,
 ) -> None:
+    relayed = bool(state.get("codex_relayed"))
     if options.launch_smart_routing:
+        if relayed:
+            raise RuntimeError(
+                "Smart routing can't be used with a ChatGPT subscription relay. Re-run with "
+                "`--disable-smart-routing` or pick another provider."
+            )
         _launch_smart_routing(state, tool_args)
         return
     clear_model_preferences(state)
@@ -1500,7 +1611,8 @@ def launch(
     otel_tracing = bool(workspace and state.get("codex_otel_tracing"))
     if workspace:
         token = _launch_token(state, workspace)
-        os.environ["OAUTH_TOKEN"] = token
+        if not relayed:  # Codex authenticates with its ChatGPT login, not this token.
+            os.environ["OAUTH_TOKEN"] = token
     if _use_legacy_layout():
         print_warning_err(
             f"Codex {agent_version(binary)} is outdated. Upgrade Codex to "
@@ -1532,7 +1644,7 @@ def launch(
     updating = tool_args[:1] == ["update"]
     if updating and _is_ucode_catalog_reference(profile_doc.get("model_catalog_json")):
         profile_doc.pop("model_catalog_json")
-    if workspace and token and (provider or parent_schema) and not updating:
+    if workspace and token and (provider or parent_schema) and not updating and not relayed:
         try:
             if provider is not None:
                 catalog_source = CodexCatalogSource.PROVIDER
@@ -1571,12 +1683,30 @@ def launch(
                 slugs = catalog_slugs(catalog)
                 if slugs:
                     profile_doc["model"] = slugs[0]
+    relay = None
+    if relayed and workspace and not updating:
+        _ensure_chatgpt_login(binary)
+        # Only relayed launches need the proxy (and its `httpx` import).
+        from ucode import gateway_proxy
+
+        relay = gateway_proxy.start_relay_proxy(
+            workspace,
+            lambda force: _launch_token(state, workspace, force_refresh=force),
+            0,
+            codex=True,
+        )
+        threading.Thread(target=relay[0].serve_forever, daemon=True).start()
+        port = relay[0].server_address[1]
+        profile_doc["model_providers"][CODEX_MODEL_PROVIDER_NAME]["base_url"] = (
+            f"http://{LOOPBACK_HOST}:{port}/v1"
+        )
     _run_codex(
         state,
         [binary, *codex_config_args(profile_doc)],
         tool_args,
         otel_tracing=otel_tracing,
         workspace=workspace,
+        relay=relay,
     )
 
 

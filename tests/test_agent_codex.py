@@ -1641,6 +1641,68 @@ class TestCodexLaunch:
         assert "Authorization" not in otel  # no credential in argv; the proxy injects it
         assert argv[-2:] == ["exec", "hi"]
 
+    def test_relayed_launch_checks_login_and_routes_through_relay_proxy(
+        self, tmp_path, monkeypatch
+    ):
+        self._patch(tmp_path, monkeypatch)
+        server = Mock(server_address=("127.0.0.1", 54321))
+        cache, client = Mock(), Mock()
+        process = Mock()
+        process.wait.return_value = 0
+        popen = Mock(return_value=process)
+        started = {}
+
+        def start_relay_proxy(workspace, token_provider, port, *, codex=False):
+            started.update(workspace=workspace, token=token_provider(False), codex=codex)
+            return server, cache, client
+
+        monkeypatch.setattr(gateway_proxy, "start_relay_proxy", start_relay_proxy)
+        monkeypatch.setattr(codex.subprocess_cross_os, "popen", popen)
+        monkeypatch.setattr(codex, "_has_chatgpt_login", lambda binary: True)
+        monkeypatch.setattr(
+            codex, "_fetch_codex_model_catalog", Mock(side_effect=AssertionError("no catalog"))
+        )
+        monkeypatch.delenv("OAUTH_TOKEN", raising=False)
+
+        with pytest.raises(SystemExit):
+            codex.launch(
+                {
+                    "workspace": WS,
+                    "codex_relayed": True,
+                    "_codex_launch_provider": "cat.s.mps",
+                },
+                ["exec", "hi"],
+                options=LaunchOptions(),
+            )
+
+        assert started == {"workspace": WS, "token": "tok", "codex": True}
+        assert "OAUTH_TOKEN" not in os.environ
+        argv = popen.call_args.args[0]
+        assert any("http://127.0.0.1:54321/v1" in arg for arg in argv)
+        assert argv[-2:] == ["exec", "hi"]
+        cache.stop.assert_called_once_with()
+        server.shutdown.assert_called_once_with()
+
+    def test_relayed_launch_logs_in_when_not_chatgpt(self, tmp_path, monkeypatch):
+        self._patch(tmp_path, monkeypatch)
+        run = Mock(return_value=Mock(returncode=0, stdout="", stderr="Logged in using an API key"))
+        monkeypatch.setattr(codex.subprocess_cross_os, "run", run)
+        assert codex._has_chatgpt_login("codex") is False
+        run.return_value = Mock(returncode=0, stdout="", stderr="Logged in using ChatGPT")
+        assert codex._has_chatgpt_login("codex") is True
+        run.return_value = Mock(returncode=1, stdout="", stderr="Not logged in")
+        codex._ensure_chatgpt_login("codex")
+        assert run.call_args.args[0][1:] == ["login"]
+
+    def test_relayed_launch_rejects_smart_routing(self, tmp_path, monkeypatch):
+        self._patch(tmp_path, monkeypatch)
+        with pytest.raises(RuntimeError, match="Smart routing can't be used"):
+            codex.launch(
+                {"workspace": WS, "codex_relayed": True},
+                [],
+                options=LaunchOptions(launch_smart_routing=True),
+            )
+
     def test_no_otel_config_when_tracing_disabled(self, tmp_path, monkeypatch):
         launches = self._patch(tmp_path, monkeypatch)
 
@@ -1760,6 +1822,56 @@ class TestCodexManagedConfig:
         assert "model" not in doc
         assert "Databricks" in doc["model_providers"]
         assert read_toml_safe(config_path)["model_provider"] == "Databricks"
+
+    def test_relayed_writes_proxyless_provider_and_skips_managed_file(self, tmp_path, monkeypatch):
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            '[model_providers.Databricks]\nauth = { command = "old" }\n', encoding="utf-8"
+        )
+        marked = []
+        monkeypatch.setattr(
+            codex, "mark_managed_file_verified", lambda *a, **k: marked.append(k.get("scope"))
+        )
+        state = {"workspace": WS}
+
+        codex.write_tool_config(state, provider="cat.s.mps", relayed=True)
+
+        provider = read_toml_safe(config_path)["model_providers"]["Databricks"]
+        assert provider["requires_openai_auth"] is True
+        assert "auth" not in provider
+        assert not managed_path.exists()
+        assert marked == ["relay-compatible"]
+        assert state["codex_relayed"] is True
+
+        marked.clear()
+        codex.write_tool_config(state, provider="cat.s.mps")
+        provider = read_toml_safe(config_path)["model_providers"]["Databricks"]
+        assert "requires_openai_auth" not in provider
+        assert "auth" in provider
+        assert "codex_relayed" not in state
+
+    def test_relayed_rejects_managed_provider_override(self, tmp_path, monkeypatch):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        managed_path.parent.mkdir(parents=True)
+        managed_path.write_text(
+            'model_provider = "Databricks"\n[model_providers.Databricks]\nbase_url = "x"\n',
+            encoding="utf-8",
+        )
+
+        with pytest.raises(RuntimeError, match=r"model_provider, .*base_url.*ug revert"):
+            codex.write_tool_config({"workspace": WS}, provider="cat.s.mps", relayed=True)
+
+    def test_relayed_state_requires_relay_compatible_scope(self, tmp_path, monkeypatch):
+        self._patch(tmp_path, monkeypatch)
+        scopes = []
+        monkeypatch.setattr(
+            codex,
+            "managed_file_is_verified",
+            lambda state, tool, path, required_scope=None: scopes.append(required_scope) or True,
+        )
+        codex.managed_config_is_current({"codex_relayed": True})
+        assert scopes == ["relay-compatible"]
 
     def test_windows_writes_requirements_shaped_config(self, tmp_path, monkeypatch):
         config_path, _ = self._patch(tmp_path, monkeypatch)
