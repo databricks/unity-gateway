@@ -376,6 +376,7 @@ def _write_connector_skill(destination: Path, server_names: list[str]) -> None:
         "Load this skill for the full connector list and sign-in recovery."
     )
     visible = []
+    # Skill descriptions have a 1,024-character limit; the full list stays in the body.
     for name in server_names:
         candidate = ", ".join([*visible, f"`{name}`"])
         if len(prefix + candidate + suffix) > 1024:
