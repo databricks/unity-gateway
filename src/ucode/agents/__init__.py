@@ -89,21 +89,19 @@ _NATIVE_UPGRADE_COMMANDS = {
 # required-upgrade confirmation; declining it would only fail the launch.
 AUTO_UPGRADE_AGENT_ENV = "UG_AUTO_UPGRADE_AGENT"
 
-# ucode tool -> `databricks aitools` agent id. Kilo is not supported.
+# ucode tool -> `databricks aitools` agent id.
 AITOOLS_AGENT_TOKENS = {
     "claude": "claude-code",
     "codex": "codex",
     "opencode": "opencode",
     "copilot": "copilot",
-    "gemini": "gemini",
-    "pi": "pi",
 }
 
 
 def install_databricks_ai_tools_for_agents(tools: list[str], state: dict) -> None:
     """Install Databricks AI Tools for supported agents.
 
-    Kilo has no ``aitools`` support and is dropped.
+    Only agents in ``AITOOLS_AGENT_TOKENS`` are forwarded.
 
     This runs only during ``ug configure`` and applies to managed workspaces too.
     """

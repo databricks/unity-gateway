@@ -94,15 +94,12 @@ class TestInstallAiToolsForAgents:
 
     def test_maps_supported_tools_and_drops_others(self, monkeypatch):
         captured = self._capture(monkeypatch)
-        # Kilo is not supported by `databricks aitools`.
+        # The default-on change keeps UG's existing agent coverage.
         install_databricks_ai_tools_for_agents(
             ["claude", "codex", "gemini", "pi", "kilo"],
             {"profile": "prof", "databricks_ai_tools_enabled": True},
         )
-        assert captured == {
-            "agents": ["claude-code", "codex", "gemini", "pi"],
-            "profile": "prof",
-        }
+        assert captured == {"agents": ["claude-code", "codex"], "profile": "prof"}
 
     def test_skipped_by_default(self, monkeypatch):
         captured = self._capture(monkeypatch)
