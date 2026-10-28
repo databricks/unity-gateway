@@ -17,7 +17,7 @@ from typing import cast
 from xml.sax.saxutils import escape
 
 from ucode import config_io
-from ucode.agents.copilot import uses_responses_api
+from ucode.agents.copilot import copilot_model_limits, uses_responses_api
 from ucode.custom_oauth import CustomOAuthConfig, build_custom_auth_shell_command, launch_token
 from ucode.databricks import build_auth_shell_command, discover_model_services
 from ucode.managed_files import OS, current_os
@@ -153,15 +153,24 @@ def install_extension(code: Path) -> str:
     return f"installed {EXTENSION_ID} {version}"
 
 
-def model_settings(workspace: str, token: str) -> tuple[list[dict[str, str]], str | None]:
+def _model_entry(model: str) -> dict[str, object]:
+    entry: dict[str, object] = {
+        "id": model,
+        "api": "responses" if uses_responses_api(model) else "chat_completions",
+    }
+    # Claude's limits hold on Chat Completions too. Models without known limits get the
+    # extension's 128K-in, 32K-out default.
+    if limits := copilot_model_limits(model):
+        entry["maxInputTokens"], entry["maxOutputTokens"] = limits
+    return entry
+
+
+def model_settings(workspace: str, token: str) -> tuple[list[dict[str, object]], str | None]:
     """The workspace's Claude, GPT and open models, each with the API the extension calls it on."""
     # Gemini is left out: the gateway rejects the requests Copilot sends to it.
     claude, gpt, _gemini, oss, reason = discover_model_services(workspace, token)
     models = dict.fromkeys([*claude.values(), *gpt, *oss])
-    return [
-        {"id": model, "api": "responses" if uses_responses_api(model) else "chat_completions"}
-        for model in models
-    ], reason
+    return [_model_entry(model) for model in models], reason
 
 
 def auth_command(state: dict) -> str:

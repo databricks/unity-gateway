@@ -103,7 +103,12 @@ class TestConfigure:
             "editor.fontSize": 14,
             "unityGateway.workspace": WS,
             "unityGateway.models": [
-                {"id": "system.ai.claude-sonnet-5-5", "api": "chat_completions"},
+                {
+                    "id": "system.ai.claude-sonnet-5-5",
+                    "api": "chat_completions",
+                    "maxInputTokens": 872_000,
+                    "maxOutputTokens": 128_000,
+                },
                 {"id": "system.ai.gpt-6-luna", "api": "responses"},
                 {"id": "system.ai.gpt-oss-120b", "api": "chat_completions"},
                 {"id": "system.ai.deepseek-v4-1-flash", "api": "chat_completions"},
