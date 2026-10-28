@@ -3792,10 +3792,25 @@ def _raise_model_service_permission_failure(workspace: str, model_service_reason
     )
 
 
+# Successful probes for this process, keyed by workspace. `ucode codex` configures once for
+# auto-setup and again on the launch path; re-probing a gateway that just answered only gives the
+# flaky listing another chance to fail. Failures are never cached.
+_GATEWAY_PROBE_CACHE: dict[str, GatewayProbe] = {}
+
+
+def clear_gateway_probe_cache() -> None:
+    """Forget successful gateway probes (used by tests)."""
+    _GATEWAY_PROBE_CACHE.clear()
+
+
 def probe_unity_gateway_capabilities(workspace: str, token: str) -> GatewayProbe:
     """Return the model service probe, raising if model service access can't be verified."""
+    cached = _GATEWAY_PROBE_CACHE.get(workspace)
+    if cached is not None:
+        return cached
     model_service_probe = _probe_model_services(workspace, token)
     if model_service_probe.reachable:
+        _GATEWAY_PROBE_CACHE[workspace] = model_service_probe
         # resource_available, reachable-but-empty, and inconclusive are all non-fatal: the
         # caller surfaces the detail as a warning when no accessible model service came back.
         return model_service_probe
@@ -3815,9 +3830,14 @@ def probe_unity_gateway_capabilities(workspace: str, token: str) -> GatewayProbe
             "--skip-preflight to launch without this check."
         )
 
+    if _is_not_found_reason(reason):
+        raise RuntimeError(
+            "Databricks Unity Gateway is not enabled on this workspace: model services "
+            f"({reason}) are not available. See {AI_GATEWAY_DOCS_URL}"
+        )
     raise RuntimeError(
-        "Databricks Unity Gateway is not enabled on this workspace: model services "
-        f"({reason}) are not available. See {AI_GATEWAY_DOCS_URL}"
+        f"Could not verify Databricks Unity Gateway model services on {workspace} "
+        f"({reason}). See {AI_GATEWAY_DOCS_URL}"
     )
 
 

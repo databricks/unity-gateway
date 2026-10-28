@@ -24,6 +24,7 @@ _REAL_SUDO_REPLACE = managed_files._sudo_replace
 _REAL_MANAGED_FILES_SUPPORTED = managed_files.managed_files_supported
 _REAL_WINDOWS_REPLACE = managed_files._windows_replace
 _REAL_SUBPROCESS_RUN = managed_files.subprocess_cross_os.run
+_REAL_SUDO_NEEDS_PASSWORD = managed_files._sudo_needs_password
 
 
 @pytest.fixture(autouse=True)
@@ -2028,3 +2029,65 @@ def test_sudo_command_derives_prompt_policy(monkeypatch, interactive):
 
     expected = ["/usr/bin/sudo", *([] if interactive else ["-n"]), "cp", "a", "b"]
     assert managed_files._sudo_command("cp", "a", "b") == expected
+
+
+class TestPasswordNote:
+    @pytest.fixture(autouse=True)
+    def _real_check(self, monkeypatch):
+        monkeypatch.setattr(managed_files, "_sudo_needs_password", _REAL_SUDO_NEEDS_PASSWORD)
+        monkeypatch.setattr(managed_files, "_sudo_needs_password_cache", None)
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
+
+    @staticmethod
+    def _fake_sudo(monkeypatch, returncode):
+        commands: list[list[str]] = []
+
+        def run(command, **kwargs):
+            commands.append(command)
+            return subprocess.CompletedProcess(command, returncode)
+
+        monkeypatch.setattr(managed_files.subprocess_cross_os, "run", run)
+        return commands
+
+    def test_passwordless_sudo_suppresses_the_note_and_is_checked_once(self, monkeypatch):
+        notes: list[str] = []
+        commands = self._fake_sudo(monkeypatch, 0)
+        monkeypatch.setattr(managed_files, "print_note", notes.append)
+
+        managed_files._print_managed_write_permission("Claude Code")
+        managed_files._print_managed_write_permission("Codex")
+
+        assert notes == []
+        assert commands == [["/usr/bin/sudo", "-n", "true"]]
+
+    def test_sudo_needing_a_password_still_prints_the_note(self, monkeypatch):
+        notes: list[str] = []
+        self._fake_sudo(monkeypatch, 1)
+        monkeypatch.setattr(managed_files, "print_note", notes.append)
+
+        managed_files._print_managed_write_permission("Codex")
+
+        assert notes == ["Enter password to configure settings for Codex."]
+
+    def test_passwordless_batch_still_reports_success(self, monkeypatch):
+        successes: list[str] = []
+        self._fake_sudo(monkeypatch, 0)
+        monkeypatch.setattr(managed_files, "print_note", lambda _message: None)
+        monkeypatch.setattr(managed_files, "print_success", successes.append)
+
+        with managed_files.managed_write_batch(["Codex"]):
+            managed_files._print_managed_write_permission("Codex")
+
+        assert successes == ["Settings configured for Codex"]
+
+    def test_no_sudo_call_on_windows_or_in_dry_run(self, monkeypatch):
+        commands = self._fake_sudo(monkeypatch, 0)
+
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.WINDOWS)
+        assert managed_files._sudo_needs_password() is True
+
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
+        config_io.set_dry_run(True)
+        assert managed_files._sudo_needs_password() is True
+
+        assert commands == []

@@ -3689,6 +3689,45 @@ class TestProbeUnityGatewayCapabilities:
         assert "legacy" not in message.lower()
         assert calls == [f"https://{WS_HOST}/api/2.1/unity-catalog/model-services?page_size=50"]
 
+    def test_non_404_non_transient_failure_does_not_claim_not_enabled(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda url, token, **kwargs: (None, "HTTP 400 Bad Request: malformed"),
+        )
+
+        with pytest.raises(RuntimeError, match="Could not verify") as excinfo:
+            db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
+
+        message = str(excinfo.value)
+        assert "HTTP 400 Bad Request: malformed" in message
+        assert "not enabled" not in message
+        assert "transient" not in message
+
+    def test_successful_probe_is_memoized_per_workspace_and_failures_are_not(self, monkeypatch):
+        calls: list[str] = []
+        outcomes = iter(
+            [
+                (None, "HTTP 400 Bad Request: malformed"),
+                ({"model_services": [{"name": "model-services/system.ai.gpt-5"}]}, None),
+            ]
+        )
+
+        def fake_get(url, token, **kwargs):
+            calls.append(url)
+            return next(outcomes)
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        with pytest.raises(RuntimeError):
+            db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
+        first = db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
+        second = db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
+
+        assert first.resource_available
+        assert second == first
+        assert len(calls) == 2
+
     def test_model_service_auth_failure_raises(self, monkeypatch):
         calls: list[str] = []
 
