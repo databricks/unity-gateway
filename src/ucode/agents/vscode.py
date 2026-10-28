@@ -23,7 +23,7 @@ from ucode.databricks import build_auth_shell_command, discover_model_services
 from ucode.managed_files import OS, current_os
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.system_cross_os import windows_program_files_dir
-from ucode.ui import print_kv, print_note, print_warning
+from ucode.ui import console, print_heading, print_kv, print_warning
 
 EXTENSION_DIR = Path(__file__).resolve().parent.parent / "vscode" / "extension"
 EXTENSION_ID = "databricks.unity-gateway"
@@ -197,6 +197,22 @@ def _edit_settings(path: Path, values: dict[str, object], remove: tuple[str, ...
     return True
 
 
+def next_steps() -> list[str]:
+    """What to do in VS Code once the extension is installed, with this OS's shortcuts."""
+    if current_os() is OS.MACOS:
+        palette, restart = "Cmd+Shift+P", "Or quit VS Code (Cmd+Q) and open it again."
+    else:
+        palette, restart = "Ctrl+Shift+P", "Or close VS Code and open it again."
+    return [
+        # A first install shows up in an open window by itself, but a reinstall doesn't: the
+        # window keeps running the build it loaded until it reloads.
+        "1. If VS Code is already open, reload each window:",
+        f'   press {palette}, type "Reload Window", and press Enter.',
+        f"   {restart}",
+        "2. Open Chat, click the model picker, and choose a Databricks model.",
+    ]
+
+
 def configure(state: dict) -> bool:
     """Write the extension's settings and install it. Returns False, after a warning, when VS
     Code isn't found or the settings can't be updated."""
@@ -230,8 +246,9 @@ def configure(state: dict) -> bool:
             f"{exc} Install it from VS Code's Extensions view, or rerun `ug configure --agents vscode`."
         )
         return False
-    # Settings apply live, but an open window keeps running the extension build it loaded.
-    print_note("Reload open VS Code windows (Developer: Reload Window) to use the extension.")
+    print_heading("Next, in VS Code:")
+    for line in next_steps():
+        console.print(f"  {line}", highlight=False)
     return True
 
 

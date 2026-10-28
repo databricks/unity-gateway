@@ -129,7 +129,9 @@ class TestConfigure:
             "extension/out/extension.js",
             "extension/package.json",
         ]
-        assert "Developer: Reload Window" in _printed(capsys)
+        assert "Next, in VS Code: 1. If VS Code is already open, reload each window" in _printed(
+            capsys
+        )
 
     def test_reruns_update_values_and_reinstall_the_same_version(self, code):
         vscode.configure(STATE)
@@ -258,6 +260,25 @@ class TestSettingsPath:
             REAL_SETTINGS_PATH("Code - Insiders")
             == tmp_path / "Library/Application Support/Code - Insiders/User/settings.json"
         )
+
+
+class TestNextSteps:
+    @pytest.mark.parametrize(
+        ("system", "palette", "restart"),
+        [
+            (OS.MACOS, "Cmd+Shift+P", "quit VS Code (Cmd+Q)"),
+            (OS.WINDOWS, "Ctrl+Shift+P", "close VS Code"),
+            (OS.LINUX, "Ctrl+Shift+P", "close VS Code"),
+        ],
+    )
+    def test_uses_the_shortcuts_for_the_os(self, monkeypatch, system, palette, restart):
+        monkeypatch.setattr(vscode, "current_os", lambda: system)
+
+        steps = " ".join(vscode.next_steps())
+
+        assert f'press {palette}, type "Reload Window"' in steps
+        assert restart in steps
+        assert "choose a Databricks model" in steps
 
 
 class TestAuthCommand:
