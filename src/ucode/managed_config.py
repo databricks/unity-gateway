@@ -6,14 +6,17 @@ machine-wide file, ``/etc/unitygateway/managed-settings.json`` (root-owned, 0644
 
 - fetching the raw manifest (via :func:`ucode.databricks.fetch_managed_coding_agent_configs`),
 - normalizing the proto-JSON into a stable internal dict keyed by ucode's own tool names,
-- persisting it via :func:`save_managed_state` / :func:`load_managed_state` — the launch path pulls
+- persisting it via :func:`save_managed_state` / :func:`load_managed_state` — ``ug configure`` pulls
   the published copy into this file only when its workspace or configuration changes, and
-- re-reading it on each launch (reusing a read younger than :data:`MANAGED_CONFIG_TTL` rather than
-  re-fetching), falling back to the persisted copy when the read fails.
+- replaying it on each launch without a network read, falling back to the persisted copy when a
+  read fails. A launch never refreshes it: an admin's later edit reaches a machine when the
+  developer re-runs ``ug configure``. Only when nothing is saved for the workspace yet does a launch
+  read the control plane once.
 
-Refresh timestamps live separately in ``~/.ucode/refresh_ts.json`` (0600), keyed by workspace.
-Unchanged remote reads never rewrite the protected policy. Non-root launches never invoke sudo;
-they retain installed policy and request an administrator update when remote policy changes.
+The last read's outcome (published / none / feature_disabled) lives separately in
+``~/.ucode/refresh_ts.json`` (0600), keyed by workspace, so a launch can tell "no managed config"
+from "feature disabled" without a request. Unchanged remote reads never rewrite the protected
+policy. Non-root launches never invoke sudo.
 
 :func:`refresh_managed_config` is the launch path's entry point. It is called before model discovery,
 because the manifest decides whether that discovery is needed at all; the launch path then hands the
@@ -28,7 +31,6 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from typing import NamedTuple, cast
@@ -82,10 +84,9 @@ AGENT_NAME_TO_TOOL: dict[str, str] = {
 
 MAX_SPEC_VERSION = 1
 
-# Launch-path cache TTL. `ug` / `ug <agent>` reuse a managed-config read younger than this instead of
-# hitting the control plane every launch; `ug configure` forces a fresh read (force_refresh=True).
-MANAGED_CONFIG_TTL = timedelta(minutes=5)
-
+# The last authoritative read's outcome, persisted alongside the config so a launch can replay it
+# without a GET. "none" and "feature_disabled" both persist an empty config, so the outcome is what
+# tells them apart.
 _OUTCOME_PUBLISHED = "published"
 _OUTCOME_NONE = "none"
 _OUTCOME_FEATURE_DISABLED = "feature_disabled"
@@ -644,11 +645,6 @@ def _is_unsupported_spec(reason: str) -> bool:
     return "spec_version" in reason.lower()
 
 
-def _utcnow() -> datetime:
-    """Current UTC time. A seam so the launch-path cache TTL can be exercised deterministically."""
-    return datetime.now(UTC)
-
-
 def _policy_content(config: dict) -> dict:
     return {key: value for key, value in config.items() if key != "retrieved_time"}
 
@@ -830,16 +826,14 @@ def managed_launch_workspace(workspace: str | None) -> str | None:
     return installed or selected
 
 
-def _cached_result_if_fresh(workspace: str) -> ManagedConfigResult | None:
-    """Reuse a recent user-owned refresh stamp only while the installed policy is unchanged."""
+def _saved_result(workspace: str) -> ManagedConfigResult | None:
+    """Replay the saved read for ``workspace`` while the installed policy is unchanged.
+
+    None when nothing is saved: no outcome record for this workspace, or the installed policy
+    changed since it was recorded.
+    """
     entry = config_io.read_json_safe(REFRESH_TS_PATH).get(normalize_workspace_url(workspace))
     if not isinstance(entry, dict):
-        return None
-    checked_at = parse_update_time(_str(entry.get("last_checked_at")))
-    if checked_at is None:
-        return None
-    age = _utcnow() - checked_at
-    if age < timedelta(0) or age >= MANAGED_CONFIG_TTL:
         return None
     if entry.get("policy_fingerprint") != managed_file_fingerprint(MANAGED_CONFIG_PATH):
         return None
@@ -864,7 +858,6 @@ def _record_refresh(
         return
     data = config_io.read_json_safe(REFRESH_TS_PATH)
     data[normalize_workspace_url(workspace)] = {
-        "last_checked_at": _utcnow().isoformat(),
         # Disabled first: an installed policy whose removal failed still replays as disabled.
         "outcome": (
             _OUTCOME_FEATURE_DISABLED
@@ -881,22 +874,24 @@ def _record_refresh(
         config_io.atomic_write_json(REFRESH_TS_PATH, data)
         _restrict_permissions(REFRESH_TS_PATH)
     except RuntimeError as exc:
-        print_warning(f"Could not save the workspace policy refresh timestamp: {exc}")
+        print_warning(f"Could not save the workspace policy refresh record: {exc}")
 
 
 def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> ManagedConfigResult:
-    """Refresh workspace policy, reusing user-owned timestamps for five-minute launch throttling.
+    """Read the workspace policy; a launch replays what ``ug configure`` saved.
 
-    ``force_refresh`` bypasses throttling for explicit configuration. The installed policy changes
+    A launch reads the control plane only when nothing is saved for the workspace yet; it never
+    refreshes on a timer, so an admin's edit reaches a machine with the next ``ug configure``.
+    ``force_refresh`` (explicit configuration) always reads fresh. The installed policy changes
     only when the workspace or configuration changes; unchanged reads update only refresh metadata.
     Only explicit configuration writes the machine policy. Launches are read-only regardless of
     privilege, terminal attachment, or cached sudo access.
 
     The installed workspace is authoritative for launches; mismatched selections fail before
-    cached reads or remote requests. Explicit configure can change the machine workspace.
+    saved reads or remote requests. Explicit configure can change the machine workspace.
     Failed launch writes warn once per distinct pending policy and return the installed policy,
-    recording the attempt for throttling. Explicit configuration write failures raise instead.
-    Fetch failures retain the existing installed-policy fallback and do not advance the timestamp.
+    recording the outcome. Explicit configuration write failures raise instead.
+    Fetch failures retain the existing installed-policy fallback and record nothing.
     No-config and ``FEATURE_DISABLED`` remove a matching installed policy; if removal fails, launches
     keep using it with a warning rather than pretending it was removed.
     """
@@ -912,7 +907,7 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
     if config_io.is_dry_run() and not force_refresh:
         return ManagedConfigResult(load_managed_state(workspace), False)
     if not force_refresh:
-        cached = _cached_result_if_fresh(workspace)
+        cached = _saved_result(workspace)
         if cached is not None:
             return cached
     try:
@@ -1013,12 +1008,12 @@ def _can_install_policy(explicit_configure: bool) -> bool:
 def _refresh_user_cache(state: dict, workspace: str, *, force_refresh: bool) -> ManagedConfigResult:
     """Cache policy per user when machine installation is unavailable.
 
-    A launch reuses a read younger than
-    :data:`MANAGED_CONFIG_TTL`, ``ug configure`` always reads fresh, a failed read falls back to the
-    last saved config for this workspace, and no-config or ``FEATURE_DISABLED`` replaces it.
+    A launch replays the saved read and only reads the control plane when none is saved,
+    ``ug configure`` always reads fresh, a failed read falls back to the last saved config for this
+    workspace, and no-config or ``FEATURE_DISABLED`` replaces it.
     """
     if not force_refresh:
-        cached = _cached_user_result_if_fresh(workspace)
+        cached = _saved_user_result(workspace)
         if cached is not None:
             return cached
     try:
@@ -1046,7 +1041,6 @@ def _save_user_cache(workspace: str, config: dict, *, outcome: str) -> None:
     payload = {
         "workspace": workspace,
         "config": config,
-        "retrieved_at": _utcnow().isoformat(),
         "outcome": outcome,
     }
     if config_io.is_dry_run():
@@ -1065,27 +1059,28 @@ def _save_user_cache(workspace: str, config: dict, *, outcome: str) -> None:
     _restrict_permissions(USER_MANAGED_CONFIG_PATH)
 
 
-def _cached_user_result_if_fresh(workspace: str) -> ManagedConfigResult | None:
-    """The per-user cache's read for ``workspace`` replayed as a result, if within the TTL."""
+def _saved_user_result(workspace: str) -> ManagedConfigResult | None:
+    """The per-user cache's read for ``workspace`` replayed as a result, or None when none is saved.
+
+    A file written before ug recorded the outcome counts as nothing saved, so the next read fetches
+    once and stamps it: an older empty file could be either "no config" or a disabled feature.
+    """
     data = config_io.read_json_safe(USER_MANAGED_CONFIG_PATH)
     stored = data.get("workspace")
     if not isinstance(stored, str) or normalize_workspace_url(stored) != normalize_workspace_url(
         workspace
     ):
         return None
-    retrieved_at = parse_update_time(_str(data.get("retrieved_at")))
-    if retrieved_at is None:
-        return None
-    age = _utcnow() - retrieved_at
-    if age < timedelta(0) or age >= MANAGED_CONFIG_TTL:
+    config = data.get("config")
+    if not isinstance(config, dict):
         return None
     outcome = data.get("outcome")
     if outcome == _OUTCOME_FEATURE_DISABLED:
         return ManagedConfigResult(None, True)
     if outcome == _OUTCOME_NONE:
         return ManagedConfigResult(None, False)
-    if outcome == _OUTCOME_PUBLISHED and isinstance(data.get("config"), dict):
-        return ManagedConfigResult(normalize_managed_config(data["config"]), False)
+    if outcome == _OUTCOME_PUBLISHED and config:
+        return ManagedConfigResult(normalize_managed_config(config), False)
     return None
 
 

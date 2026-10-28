@@ -1,36 +1,47 @@
-"""Per-connection login for AI Gateway MCP services, driven by the proxy on demand.
+"""Browser sign-in for connection-backed MCP services, driven by the proxy on demand.
 
-A connection-backed AI Gateway MCP service (e.g. ``system.ai.github``) needs a
-per-user connection credential before its tools can be used. Until the user has
-logged in to the underlying SaaS, AI Gateway reports missing connection authentication
-as an HTTP 401 or an MCP JSON-RPC authentication error.
-
-The ``ug mcp-proxy`` bridge (see ``mcp_proxy``) sees that failure and, for a
-connection-backed service, runs the Databricks CLI U2M login
-with an RFC 8707 ``resource`` indicator naming the service, then retries the
-request. A resource-aware ``/oidc`` drives the connection's own SaaS login
-before minting the token, so the credential exists on retry — transparently to
-the coding agent, which just sees the connection authenticate and succeed. This
-is the behaviour of a generic OAuth MCP bridge (e.g. ``mcp-remote``), done in
-ucode with the Databricks CLI so no extra library or per-agent OAuth app is
-needed. Requires the CLI ``--resource`` flag (databricks/cli#6621).
+The browser saves the user's SaaS credential; the selected CLI profile's workspace
+session stays unchanged. Poll that user's credential before retrying the MCP request.
 """
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
+import time
+from urllib.parse import unquote, urlencode
 
 from ucode.databricks import (
     AIGW_MCP_SERVICES_SEGMENT,
-    clear_databricks_token_cache,
-    databricks_cli_path,
+    get_databricks_token,
+    get_mcp_service,
+    get_mcp_service_user_credential,
+    workspace_org_id,
+    workspace_origin,
 )
 from ucode.os_compatibility import subprocess_cross_os
 
-# Login can pop a browser and wait for the user to complete the SaaS login, so
-# allow generously more than a token refresh would take.
 _LOGIN_TIMEOUT_SECONDS = 300
+_POLL_INTERVAL_SECONDS = 2
+
+
+def _retryable_credential_error(reason: str) -> bool:
+    return re.match(r"^(?:HTTP (?:429|5[0-9]{2}) |network error:)", reason) is not None
+
+
+def _credential_state(credential: object) -> str | None:
+    provisioning = credential.get("provisioning_info") if isinstance(credential, dict) else None
+    state = provisioning.get("state") if isinstance(provisioning, dict) else None
+    if isinstance(state, str) and state in {
+        "ACTIVE",
+        "FAILED",
+        "PROVISIONING",
+        "UPDATING",
+        "DELETING",
+    }:
+        return state
+    return None
 
 
 def connection_from_url(url: str) -> str | None:
@@ -49,96 +60,110 @@ def connection_from_url(url: str) -> str | None:
     return connection or None
 
 
-def _cli_supports_resource_flag(login_binary: str) -> bool:
-    """Whether ``<login_binary> auth login`` advertises the ``--resource`` flag.
-
-    The connection sign-in needs a Databricks CLI with ``--resource``
-    (databricks/cli#6621). An older CLI rejects the flag and the login exits with
-    a cryptic parse error, so we check ``--help`` up front to give a clear message
-    instead. Fail-open (assume supported) if ``--help`` can't be run — the real
-    login attempt will surface any genuine failure."""
-    try:
-        result = subprocess_cross_os.run(
-            [login_binary, "auth", "login", "--help"],
-            check=False,
-            timeout=20,
-            capture_output=True,
-            text=True,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return True
-    return "--resource" in f"{result.stdout or ''}{result.stderr or ''}"
-
-
 def run_connection_login(
     resource_url: str,
     workspace: str,
     *,
     profile: str | None = None,
-    login_binary: str | None = None,
 ) -> tuple[bool, str]:
-    """Run the CLI U2M login with an RFC 8707 resource indicator for this service.
+    """Open MCP service sign-in and wait for the selected profile's credential.
 
-    ``resource_url`` is the MCP service endpoint (also the proxy's upstream URL);
-    it is sent as ``--resource`` so a resource-aware ``/oidc`` drives the
-    connection's SaaS login before issuing the token. Uses the Databricks CLI's
-    own default client, whose loopback redirect is already registered — no
-    ``--client-id`` needed.
-
-    The CLI opens the browser to complete the login and prints the authorize URL.
-    We route its output to **stderr** (never stdout — that is the proxy's MCP
-    JSON-RPC wire), so a coding agent surfaces it in the server's log and the URL
-    stays visible when the browser can't open (e.g. a headless remote). Returns
-    ``(ok, message)``; on failure ``message`` points at that log.
+    All diagnostics go to stderr because stdout carries MCP JSON-RPC messages.
+    Browser launch alone never establishes successful authentication.
     """
-    login_binary = login_binary or databricks_cli_path()
-    connection = connection_from_url(resource_url) or resource_url
-    if not _cli_supports_resource_flag(login_binary):
-        return False, (
-            f"the Databricks CLI ('{login_binary}') has no `--resource` flag, so the "
-            f"'{connection}' connection sign-in can't run. Upgrade the CLI "
-            "(databricks/cli#6621) and retry."
+    connection = unquote(connection_from_url(resource_url) or "")
+    if len(connection.split(".")) != 3 or not all(connection.split(".")):
+        return False, "connection sign-in requires an MCP service name (catalog.schema.service)"
+    origin = workspace_origin(workspace)
+    try:
+        token = get_databricks_token(workspace, profile)
+    except RuntimeError as exc:
+        return False, str(exc)
+    service, reason = get_mcp_service(workspace, token, connection)
+    if reason or not isinstance(service, dict):
+        return (
+            False,
+            f"could not find MCP service for connection sign-in: {reason or 'invalid metadata'}",
         )
-    argv = [
-        login_binary,
-        "auth",
-        "login",
-        "--host",
-        workspace.rstrip("/"),
-        "--resource",
-        resource_url,
-    ]
-    if profile:
-        argv += ["--profile", profile]
+    org_id = workspace_org_id(workspace)
+    if not org_id:
+        return (
+            False,
+            "could not determine workspace ID for connection sign-in (workspace response omitted its ID)",
+        )
+    for attempt in range(3):
+        initial_credential, reason = get_mcp_service_user_credential(workspace, token, connection)
+        if not reason or not _retryable_credential_error(reason) or attempt == 2:
+            break
+        time.sleep(_POLL_INTERVAL_SECONDS)
+    if reason and not reason.startswith("HTTP 404 "):
+        return False, f"could not check connection sign-in: {reason}"
+    initial_state = _credential_state(initial_credential)
+    if not reason and initial_state is None:
+        return False, "could not check connection sign-in: missing or unknown credential state"
+    initial_active = initial_state == "ACTIVE"
+    login_url = f"{origin}/mcp-service-login?{urlencode({'name': connection, 'o': org_id})}"
     print(
-        f"Signing in to '{connection}' — opening your browser to complete the connection login; "
-        "if it doesn't open, use the authorization URL printed below.",
+        f"Signing in to '{connection}'. Complete provider sign-in using the same Databricks "
+        f"account as CLI profile '{profile or '(default)'}'. If the browser or provider popup "
+        f"doesn't open, visit this URL and click Login:\n{login_url}",
         file=sys.stderr,
         flush=True,
     )
+    deadline = time.monotonic() + _LOGIN_TIMEOUT_SECONDS
     try:
-        # stdout -> stderr: the CLI's prompts and authorize URL reach the agent's
-        # MCP log (fd 2) without corrupting this process's stdout (fd 1, the MCP
-        # JSON-RPC stream). stdin is closed since the flow is browser-driven.
+        # Isolate webbrowser's subprocess output from the MCP stdout wire, including text browsers.
         result = subprocess_cross_os.run(
-            argv,
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                "import sys, webbrowser; sys.exit(0 if webbrowser.open(sys.argv[1]) else 1)",
+                login_url,
+            ],
             check=False,
-            timeout=_LOGIN_TIMEOUT_SECONDS,
+            timeout=10,
             stdin=subprocess.DEVNULL,
             stdout=sys.stderr,
             stderr=sys.stderr,
         )
-    except OSError as exc:
-        return False, f"could not run '{login_binary} auth login': {exc}"
-    except subprocess.TimeoutExpired:
-        return False, "connection sign-in timed out waiting for the browser flow to complete"
-    finally:
-        clear_databricks_token_cache()
-    if result.returncode == 0:
-        return True, "signed in"
-    return (
-        False,
-        f"connection sign-in did not complete (CLI exited {result.returncode}; see the log above)",
+        browser_opened = result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        browser_opened = False
+    if not browser_opened:
+        print("Could not open a browser. Open the sign-in URL above manually.", file=sys.stderr)
+
+    while time.monotonic() < deadline:
+        try:
+            token = get_databricks_token(workspace, profile)
+        except RuntimeError as exc:
+            return False, str(exc)
+        credential, reason = get_mcp_service_user_credential(
+            workspace, token, connection, timeout=min(10, max(0.001, deadline - time.monotonic()))
+        )
+        if time.monotonic() >= deadline:
+            break
+        state = None
+        if reason:
+            if not reason.startswith("HTTP 404 ") and not _retryable_credential_error(reason):
+                return False, f"could not check connection sign-in: {reason}"
+        else:
+            state = _credential_state(credential)
+            if state == "ACTIVE":
+                if not initial_active or credential != initial_credential:
+                    return True, "signed in"
+            elif state is None:
+                return (
+                    False,
+                    "could not check connection sign-in: missing or unknown credential state",
+                )
+        if (reason and reason.startswith("HTTP 404 ")) or (not reason and state != "ACTIVE"):
+            initial_active = False
+        time.sleep(min(_POLL_INTERVAL_SECONDS, max(0, deadline - time.monotonic())))
+    return False, (
+        f"connection sign-in timed out after {_LOGIN_TIMEOUT_SECONDS} seconds. "
+        f"Finish sign-in at {login_url} using the same Databricks account as CLI profile "
+        f"'{profile or '(default)'}', then retry authentication in your agent."
     )
 
 

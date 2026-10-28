@@ -82,6 +82,9 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(managed_files_mod, "_config_scope", "global")
     monkeypatch.setattr(codex_mod, "codex_managed_config_path", lambda: None)
+    # Launch seeds Claude's feature cache in `.claude.json`; never touch the developer's copy.
+    monkeypatch.setattr(claude_mod, "CLAUDE_CODE_CONFIG_PATH", tmp_path / ".claude.json")
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     # The header mod installs beside the real managed file; tests opt in with a tmp root.
     monkeypatch.setattr(claude_mod, "claude_header_mod_root", lambda: None)
     monkeypatch.setattr(

@@ -1,6 +1,6 @@
 import type { EngineInterface, On, PluginOptions } from 'claude-code';
-import { registerStatusBand, showStatusBand } from './smart-routing-status.ts';
-import { registerSubagentRouting } from './subagent-routing.ts';
+import { endStatusBandTurn, registerStatusBand, showStatusBand } from './smart-routing-status.ts';
+import { endSubagentRoutingTurn, registerSubagentRouting } from './subagent-routing.ts';
 import {
   CLI_AGENT,
   CLI_MODULE,
@@ -131,4 +131,10 @@ export function register(on: On, options: PluginOptions): void {
   });
   registerStatusBand(on);
   registerSubagentRouting(on, options);
+  // Claude allows one unmatched turn.complete handler per plugin, so both modules share it.
+  on('turn.complete', ($, e, next) => {
+    endSubagentRoutingTurn(e.isAborted);
+    if (endStatusBandTurn()) $.ui.invalidate('ui.render');
+    return next(e);
+  });
 }
