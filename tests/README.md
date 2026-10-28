@@ -428,12 +428,11 @@ credential; success, denial, and timeout preserve the workspace profile and toke
 These replace obsolete resource-flag support, CLI resource-login, and token-invalidation
 cases because connector browser sign-in no longer runs CLI login or replaces its session.
 `test_mcp_proxy.py` checks async post-login retries and recovery when a service returns
-the MCP authentication-required error. HTTP 401 regressions cover silent workspace-token
-refresh before connector login, no browser on initialization/discovery/background requests,
-failed workspace refresh, and connector login only after a tool call still returns 401.
-Async HTTP-client checks replace the upstream network and verify refreshed bearer headers
-and unchanged tool-call bodies across retries. The combined browser-flow case verifies
-workspace refresh, connector readiness polling, profile/token preservation, and replay.
+the MCP authentication-required error. HTTP 401 regressions cover no browser on
+initialization/discovery/background requests, and connector login only for actual tool calls.
+Async HTTP-client checks replace the upstream network and verify unchanged tool-call bodies
+across retries. The combined browser-flow case verifies connector readiness polling,
+profile/token preservation, and replay without refreshing workspace credentials.
 PAT and non-401 errors retain their behavior.
 These checks do not establish live login or launch-time savings.
 
@@ -963,12 +962,8 @@ Pre-browser credential reads retry transient HTTP/network failures twice before 
 Credential validation rejects malformed initial responses before browser launch and non-string
 states during polling. The browser subprocess runs Python in isolated mode.
 
-Workspace-refresh failure coverage preserves the original HTTP 401 and verifies a later
-request can refresh successfully without opening connector sign-in or restarting the proxy.
-
-
 MCP review regressions cover bounded connector descriptions with a complete body list,
-malformed upstream tool entries, rate-limited workspace refresh, and slow metadata
+malformed upstream tool entries and slow metadata
 discovery while unrelated replies continue. Failed metadata discovery has a short retry
 cooldown; an actual tool-call auth failure can recheck immediately. These are component
 checks, not native Cowork invocation or live provider sign-in.

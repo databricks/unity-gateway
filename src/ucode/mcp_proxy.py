@@ -66,7 +66,6 @@ CONNECTION_AUTH_REQUIRED_ERROR_CODE = -32006
 URL_ELICITATION_REQUIRED_ERROR_CODE = -32042
 AUTHENTICATE_TOOL_NAME = "authenticate"
 TOOLS_REFRESH_TIMEOUT_SECONDS = 5.0
-WORKSPACE_REFRESH_INTERVAL_SECONDS = 30.0
 METADATA_RETRY_INTERVAL_SECONDS = 5.0
 
 
@@ -225,11 +224,10 @@ def _build_token_auth(
     use_pat: bool = False,
     connection_login: _ConnectionLogin | None = None,
 ):
-    """Inject workspace auth; persistent tool-call 401s may trigger connection login.
+    """Inject workspace auth; tool-call 401s may trigger connection login.
 
-    Initialization and discovery must never open connector login. A 401 first
-    retries with a silently refreshed workspace token. Only an actual tools/call
-    still returning 401 can drive per-user sign-in, once per proxy session.
+    Initialization and discovery must never open connector login. Only an actual
+    tools/call returning 401 can drive per-user sign-in, once per proxy session.
     JSON-RPC authentication errors are handled by the bridge below.
     """
     httpx = _httpx()
@@ -238,17 +236,14 @@ def _build_token_auth(
         url, workspace, profile, use_pat=use_pat
     )
 
-    def _mint(request, force_refresh=False):
+    def _mint(request):
         # get_databricks_token honors the DATABRICKS_BEARER short-circuit and PAT
         # profiles internally. A RuntimeError means the session is dead (expired
         # refresh token, logged-out profile); raising from inside auth_flow would
         # tear through the transport's task group and stall the process, so
         # translate it into a terminal ProxyAuthError.
         try:
-            if force_refresh:
-                token = get_databricks_token(workspace, profile, force_refresh=True)
-            else:
-                token = get_databricks_token(workspace, profile)
+            token = get_databricks_token(workspace, profile)
         except RuntimeError as exc:
             raise ProxyAuthError(str(exc)) from exc
         request.headers["Authorization"] = f"Bearer {token}"
@@ -257,11 +252,6 @@ def _build_token_auth(
         return response is not None and response.status_code == 401
 
     class _DatabricksTokenAuth(httpx.Auth):
-        def __init__(self):
-            self._refresh_lock = anyio.Lock()
-            self._refresh_at = 0.0
-            self._refresh_failed = False
-
         def sync_auth_flow(self, request):
             # The proxy always drives this Auth from an httpx AsyncClient (see `_run`), so only
             # `async_auth_flow` is implemented. Fail loudly on the sync entry point so a future sync
@@ -274,24 +264,7 @@ def _build_token_auth(
             await request.aread()
             _mint(request)
             response = yield request
-            if not _is_unauthorized(response) or use_pat:
-                return
-            authorization = request.headers["Authorization"]
-            async with self._refresh_lock:
-                refresh = time.monotonic() >= self._refresh_at
-                if refresh:
-                    self._refresh_at = time.monotonic() + WORKSPACE_REFRESH_INTERVAL_SECONDS
-                elif self._refresh_failed:
-                    return
-                try:
-                    await to_thread.run_sync(_mint, request, refresh)
-                except ProxyAuthError:
-                    self._refresh_failed = True
-                    return
-                self._refresh_failed = False
-            if refresh or request.headers["Authorization"] != authorization:
-                response = yield request
-            if not _is_unauthorized(response) or request.method != "POST":
+            if not _is_unauthorized(response) or use_pat or request.method != "POST":
                 return
             try:
                 payload = json.loads(request.content)
