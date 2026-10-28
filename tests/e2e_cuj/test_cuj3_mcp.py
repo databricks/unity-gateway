@@ -247,10 +247,12 @@ class TestMcpRegistration(BaseCujTest):
         async def scenario():
             for service, tool in SERVICES.items():
                 registration = config["mcpServers"][registered_name(service)]
+                parameters = StdioServerParameters(**registration)
+                parameters.env = {**session.env, **(parameters.env or {})}
                 with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as diagnostics:
                     with anyio.fail_after(60):
                         async with stdio_client(
-                            StdioServerParameters(**registration, env=session.env),
+                            parameters,
                             errlog=diagnostics,
                         ) as streams:
                             async with ClientSession(*streams) as client:
