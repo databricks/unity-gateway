@@ -244,6 +244,11 @@ CLAUDE_CONDITIONAL_ENV_KEYS = ("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",)
 # Env keys ucode used to write but no longer does; stripped from the managed
 # settings file on every launch so stale values never linger.
 CLAUDE_REMOVED_ENV_KEYS = ("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",)
+# Claude Code ranks these shell variables above `apiKeyHelper` and the subscription login, so a
+# stray one (e.g. a LiteLLM key) would be sent to the gateway instead of ug's credential. A
+# settings `env` value beats the shell's, so ug blanks them for the Claude process only.
+CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS = ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY")
+CLAUDE_BLANKED_CREDENTIAL_PATHS = [["env", key] for key in CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS]
 CLAUDE_MANAGED_PICKER_KEYS = ("availableModels", "enforceAvailableModels", "modelPicker")
 CLAUDE_PERMISSIONS_DENY_PATH = ["permissions", "deny"]
 CLAUDE_ALLOWED_MCP_SERVERS_KEY = "allowedMcpServers"
@@ -573,6 +578,8 @@ def render_overlay(
         "ENABLE_PROMPT_CACHING_1H": "1",
         "ENABLE_TOOL_SEARCH": "true",
         "CLAUDE_CODE_USE_GATEWAY": "1",
+        # Also outrank the subscription login, so relayed launches blank them too.
+        **dict.fromkeys(CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS, ""),
     }
     # Intentionally NOT setting ANTHROPIC_MODEL by default. Setting it produces a
     # duplicate catalog row in Claude Code's /model picker (e.g. "Opus 4.8 (1M
@@ -1830,7 +1837,11 @@ def _required_custom_headers(value: object) -> dict[str, str] | None:
 def _managed_settings_conflicts(
     existing: dict, desired: dict, owned_paths: list[list[str]]
 ) -> list[str]:
-    owned_paths = [path for path in owned_paths if path not in CLAUDE_HEADER_MOD_PATHS]
+    owned_paths = [
+        path
+        for path in owned_paths
+        if path not in CLAUDE_HEADER_MOD_PATHS and path not in CLAUDE_BLANKED_CREDENTIAL_PATHS
+    ]
     conflicts = managed_file_conflicts(existing, desired, owned_paths)
     header_path = f"env.{ANTHROPIC_CUSTOM_HEADERS_ENV_KEY}"
     if header_path in conflicts:
@@ -1951,13 +1962,17 @@ def _enable_header_mod(settings: dict, root: Path | None) -> dict:
     return settings
 
 
-_header_mod_requested = False
+_explicit_configure = False
 
 
-def request_header_mod() -> None:
-    """Have this run add the header mod even without headers, as ``ug configure`` does."""
-    global _header_mod_requested
-    _header_mod_requested = True
+def request_explicit_configure(requested: bool = True) -> None:
+    """Mark this run as an explicit ``ug configure`` (``False`` clears it).
+
+    Only an explicit configure adds the header mod without ``UG_HEADERS`` and writes the credential
+    blanks into the managed file; a plain launch never re-adds either.
+    """
+    global _explicit_configure
+    _explicit_configure = requested
 
 
 def _install_header_mod(root: Path | None) -> bool:
@@ -1999,6 +2014,36 @@ def header_mod_active() -> bool:
         return False
     plugins = settings.get("enabledPlugins")
     return isinstance(plugins, dict) and plugins.get(CLAUDE_HEADER_MOD_ID) is True
+
+
+def _settle_credential_blanks(desired: dict, existing: dict, *, add: bool) -> None:
+    """Add ug's credential blanks to the managed file only when asked; otherwise keep it as found.
+
+    Like the header mod, they are written by ``ug configure`` and never by a plain launch: another
+    writer of the file drops keys it doesn't template, and re-adding them would rewrite the
+    root-owned file (and prompt for sudo) on every launch. ``ucode-settings.json`` always has them.
+    """
+    env = desired.get("env")
+    if not isinstance(env, dict):
+        return
+    existing_env = existing.get("env")
+    existing_env = existing_env if isinstance(existing_env, dict) else {}
+    for key in CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS:
+        held = existing_env.get(key)
+        if add and isinstance(held, str) and held.strip():
+            # Someone else's explicit value (e.g. IT's): never replace it silently.
+            env[key] = held
+            print_warning(
+                f"Claude Code managed settings at {_managed_settings_path()} set env.{key}; "
+                f"ug left it as is, so Claude may use it instead of the gateway credential and "
+                f"fail with a 401. Ask your administrator to remove it, or blank it yourself."
+            )
+        elif add:
+            env[key] = ""
+        elif key in existing_env:
+            env[key] = existing_env[key]
+        else:
+            env.pop(key, None)
 
 
 def _is_shared_claude_list(path: list[str]) -> bool:
@@ -2099,11 +2144,13 @@ def _reconcile_managed_settings(
     header_mod_root = claude_header_mod_root()
     # Only `ug configure` and a launch with headers add the mod: another writer of this file
     # drops entries it doesn't know, and re-adding them would rewrite it on every launch.
-    wants_mod = _header_mod_requested or bool(os.environ.get(UG_HEADERS_ENV_VAR, "").strip())
+    wants_mod = _explicit_configure or bool(os.environ.get(UG_HEADERS_ENV_VAR, "").strip())
     # Install the files before the settings name them, so a failed install never enables a
     # plugin that isn't there; a run that can't write as root leaves any earlier entries as is.
     installed = wants_mod and _install_header_mod(header_mod_root)
     desired_settings = _enable_header_mod(compose(existing), header_mod_root if installed else None)
+    # Only the explicit `ug configure` path adds the blanks.
+    _settle_credential_blanks(desired_settings, managed_before, add=_explicit_configure)
     if header_mod_root is not None:
         owned_paths = [*owned_paths, *CLAUDE_HEADER_MOD_PATHS]
     _preserve_permission_denies(managed_before, desired_settings, withdrawn=withdrawn_denies or [])

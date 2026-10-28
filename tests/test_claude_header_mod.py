@@ -46,7 +46,7 @@ def _managed_env(tmp_path, monkeypatch, managed_doc=None):
         claude, "refresh_managed_config", lambda *a, **kw: SimpleNamespace(manifest={"claude": {}})
     )
     # As `ug configure` runs it.
-    monkeypatch.setattr(claude, "_header_mod_requested", True)
+    monkeypatch.setattr(claude, "_explicit_configure", True)
     monkeypatch.delenv("UG_HEADERS", raising=False)
     return managed_path, root, writes
 
@@ -75,7 +75,7 @@ def test_configure_installs_and_enables_mod_then_stays_put(tmp_path, monkeypatch
 
 def test_launch_adds_the_mod_only_with_headers_and_keeps_configures(tmp_path, monkeypatch):
     managed_path, root, writes = _managed_env(tmp_path, monkeypatch)
-    monkeypatch.setattr(claude, "_header_mod_requested", False)
+    monkeypatch.setattr(claude, "_explicit_configure", False)
     state = {"workspace": WS, "codex_models": []}
 
     # Another writer of the managed file drops entries it doesn't know; a plain launch mustn't
