@@ -160,8 +160,9 @@ Nothing is written to a config file.
 
 - **Codex**: added to the launch's `-c` provider headers.
 - **Claude Code**: added by a mod, even when managed settings set `ANTHROPIC_CUSTOM_HEADERS`.
-  `ug configure` installs it beside the managed settings (Linux and macOS, with sudo, not under
-  `--user`); without it the launch warns and Claude doesn't send them.
+  Only `ug configure` installs or upgrades it beside the managed settings (Linux and macOS, with
+  sudo, not under `--user`); a launch never writes there. When it is missing or out of date the
+  launch warns and Claude doesn't send them.
 
 Available coding agents are `codex`, `claude`, `gemini`, `opencode`,
 `copilot`, and `pi`. `cursor` can be included in `--agents` for MCP-only setup;
@@ -498,9 +499,9 @@ preferences are ignored and their files are left untouched. See the bundled
 | Unity Gateway | `/etc/unitygateway/managed-settings.json` (Linux and macOS), `~/.ucode/refresh_ts.json`, `~/.ucode/managed-state.json`, `~/.ucode/managed-backups/` |
 
 Workspace policy is root-owned but readable without sudo. Configure installs it only when the
-workspace publishes a policy; launches check for updates every five minutes. Non-root launches
-never invoke sudo for workspace policy: they warn about changes and keep the installed policy
-until an administrator or IT provisioning run updates it. Each distinct pending change warns once.
+workspace publishes a policy; launches check for updates every five minutes. Launches never
+write workspace policy, even as root: they warn about changes and keep the installed policy
+until `ug configure` (by an administrator or an IT provisioning run) updates it. Each distinct pending change warns once.
 The installed workspace is authoritative: selecting a different one fails launch instead of
 falling back to unmanaged behavior.
 Refresh timestamps and pending-change hashes live in user-owned `~/.ucode/refresh_ts.json`,
