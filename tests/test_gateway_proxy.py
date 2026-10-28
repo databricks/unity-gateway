@@ -608,3 +608,61 @@ class TestRelayedOssRouting:
         assert sent["Authorization"] == "Bearer anthropic-oauth"
         assert sent[gateway_proxy.AI_GATEWAY_TOKEN_HEADER] == "Bearer tok1"
         assert sent["Databricks-Model-Provider-Service"] == "cat.s.relayed_mps"
+
+
+class TestCodexRelayProxy:
+    def test_codex_relay_upstream_and_plain_handler(self, monkeypatch):
+        captured = {}
+
+        def fake_start(workspace, token_provider, port, **kwargs):
+            captured.update(kwargs)
+            return None
+
+        monkeypatch.setattr(gateway_proxy, "_start_proxy", fake_start)
+        gateway_proxy.start_relay_proxy("https://w", lambda _f: "t", 0, codex=True)
+        assert captured["upstream_path"] == "ai-gateway/codex/"
+        assert captured["handler_type"] is gateway_proxy._ProxyHandler
+        assert captured["token_header"] == gateway_proxy.AI_GATEWAY_TOKEN_HEADER
+
+    def test_codex_request_path_joins_upstream_once(self, monkeypatch):
+        class _StubCache:
+            def run_refresher(self):
+                return None
+
+            def stop(self):
+                return None
+
+        monkeypatch.setattr(gateway_proxy, "TokenCache", lambda *_a, **_k: _StubCache())
+        server, _cache, client = gateway_proxy.start_relay_proxy(
+            "https://w", lambda _f: "t", 0, codex=True
+        )
+        try:
+            # The handler requests the client's path minus its leading slash.
+            url = client.build_request("POST", "/v1/responses".lstrip("/")).url
+            assert str(url) == "https://w/ai-gateway/codex/v1/responses"
+        finally:
+            server.server_close()
+            client.close()
+
+    def test_passes_chatgpt_headers_and_swaps_databricks_token(self):
+        client = _FakeClient([_FakeResp(200, b"ok")])
+        h = object.__new__(gateway_proxy._ProxyHandler)
+        h.client, h.cache = client, _FakeCache()
+        h.token_header = gateway_proxy.AI_GATEWAY_TOKEN_HEADER
+        body = b'{"model": "claude-opus-4-1"}'  # not rerouted: no Anthropic hybrid logic
+        h.headers = {
+            "Authorization": "Bearer chatgpt-token",
+            "ChatGPT-Account-ID": "acct",
+            "Databricks-Model-Provider-Service": "cat.s.mps",
+            "Content-Length": str(len(body)),
+        }
+        h.rfile = io.BytesIO(body)
+        h.path, h.command = "/v1/responses", "POST"
+        h.wfile = _Collect()
+        h.request_version, h.requestline, h._headers_buffer = "HTTP/1.1", "POST /", []
+        h._handle()
+        sent = client.sent_headers[0]
+        assert sent["Authorization"] == "Bearer chatgpt-token"
+        assert sent["ChatGPT-Account-ID"] == "acct"
+        assert sent[gateway_proxy.AI_GATEWAY_TOKEN_HEADER] == "Bearer tok1"
+        assert sent["Databricks-Model-Provider-Service"] == "cat.s.mps"
