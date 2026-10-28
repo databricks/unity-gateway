@@ -36,7 +36,6 @@ from ucode.databricks import (
     fetch_ai_gateway_claude_models,
     fetch_codex_models,
     fetch_gemini_models,
-    get_databricks_token,
     has_valid_databricks_auth,
     is_model_provider_feature_unavailable,
     list_model_provider_services,
@@ -552,7 +551,7 @@ def _per_model_params(lister, empty_message: str) -> list:
             )
         ]
     try:
-        cases = lister(e2e_state_for(workspace, get_databricks_token(workspace)))
+        cases = lister(e2e_state_for(workspace))
     except Exception as exc:  # an auth/catalog outage must stay red, not vanish at collection
         error = _CatalogFetchError(f"{type(exc).__name__}: {exc}")
         return [pytest.param(error, id="catalog-fetch-error")]

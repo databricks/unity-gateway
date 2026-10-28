@@ -158,11 +158,14 @@ def e2e_token(e2e_workspace):
 
 
 @functools.cache
-def e2e_state_for(workspace: str, token: str) -> dict:
+def e2e_state_for(workspace: str) -> dict:
     """Full state dict mirroring what configure_shared_state produces.
 
     Cached per process so collection-time parametrization (tests/test_e2e.py) and the
-    ``e2e_state`` fixture query the live catalogs once. A failed fetch raises and is not cached."""
+    ``e2e_state`` fixture query the live catalogs once. Keyed on the workspace only: a bearer
+    command mints a fresh token per call, so a token key would miss and fetch a second snapshot.
+    A failed fetch raises and is not cached."""
+    token = get_databricks_token(workspace)
     claude_models = fetch_ai_gateway_claude_models(workspace, token)
     gemini_models = fetch_gemini_models(workspace, token)
     codex_models = fetch_codex_models(workspace, token)
@@ -185,7 +188,7 @@ def e2e_state_for(workspace: str, token: str) -> dict:
 
 
 @pytest.fixture(scope="session")
-def e2e_state(e2e_workspace, e2e_token):
+def e2e_state(e2e_workspace):
     """Full state dict mirroring what configure_shared_state produces."""
     # Copy so a test mutating its state cannot leak into the cached catalog.
-    return dict(e2e_state_for(e2e_workspace, e2e_token))
+    return dict(e2e_state_for(e2e_workspace))

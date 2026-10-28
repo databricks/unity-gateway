@@ -625,17 +625,19 @@ def test_smart_router_skill_turns_claude_subagent_routing_back_on(
 ):
     """Scenario: launch Claude with the legacy flags, a subagent selector, or only the managed
     config's smart routing default, spawn a child, invoke the installed Smart Router skill to turn
-    routing off and back on, and spawn a second child in the same real TUI session.
+    routing off, spawn a second child, turn routing back on, and spawn a third child in the same
+    real TUI session.
 
     Expected: routing-only cases install Smart Router; enabling orchestration also installs
-    Smart Router Orchestrator. Each local invocation confirms the new state in the TUI. Both
-    uniquely tagged calculations complete in native parent and child sessions and show native
-    model/rationale rows with live gateway decisions correlated with those children. The
-    second child is routed again with the same recipe as the launch child, and both children's
-    recorded inference payloads carry that recipe, without a recipe header, and receive
-    non-empty HTTP 200 responses (including verified native compatibility retries). Claude's
-    native task view reports no running tasks before /exit. No first-prompt routing wrapper
-    starts.
+    Smart Router Orchestrator. Each local invocation confirms the new state in the TUI. All
+    uniquely tagged calculations complete in native parent and child sessions. The second
+    child's recorded inference payloads carry smart_router_recipe_name DISABLED, with no
+    native model/rationale row and no live gateway decision. The first and third children show
+    native model/rationale rows with live gateway decisions correlated with them; the third is
+    routed again with the same recipe as the first, and both carry that recipe. All payloads
+    omit a recipe header and receive non-empty HTTP 200 responses (including verified native
+    compatibility retries). Claude's native task view reports no running tasks before /exit.
+    No first-prompt routing wrapper starts.
     """
     session = live_session
     _select_smart_router_version(
@@ -669,6 +671,18 @@ def test_smart_router_skill_turns_claude_subagent_routing_back_on(
             _toggle_with_skill(
                 tui, session, "claude", enabled=False, orchestration_enabled=orchestration_enabled
             )
+            # Prove "off" takes effect after a routed child before turning routing back on.
+            checkpoint = recorder.checkpoint()
+            off_task = _run_calculation(tui, session, "claude", "1+2", "3", False, routed=False)
+            recipe = _assert_claude_calculation_requests(
+                recorder,
+                checkpoint,
+                off_task,
+                routed=False,
+                launch_recipe=None,
+                orchestration_enabled=orchestration_enabled,
+            )
+            assert recipe == "DISABLED", recipe
             _toggle_with_skill(
                 tui, session, "claude", enabled=True, orchestration_enabled=orchestration_enabled
             )
@@ -780,16 +794,17 @@ def test_smart_router_skill_turns_codex_subagent_routing_back_on(
     live_session, workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
 ):
     """Scenario: launch Codex with the legacy flags, a subagent selector, or only the managed
-    config's smart routing default, invoke the installed Smart Router skill to turn routing off and
-    back on, then spawn a child in the same real TUI session.
+    config's smart routing default, spawn a child, invoke the installed Smart Router skill to turn
+    routing off, spawn a second child, turn routing back on, and spawn a third child in the same
+    real TUI session.
 
     Expected: routing-only cases install Smart Router; enabling orchestration also installs
     Smart Router Orchestrator. Each invocation records the CLI confirmation in the native
     transcript and changes the saved routing controls (off, then restored), even with collapsed
-    terminal output. The uniquely tagged calculation completes in a native child session, shows
-    the subagent-routing banner (including [orchestrator on] when orchestration is enabled),
-    and produces one live gateway decision correlated with that child. No first-prompt
-    interposer starts.
+    terminal output. Each uniquely tagged calculation completes in a native child session. The
+    first and third show the subagent-routing banner (including [orchestrator on] when
+    orchestration is enabled) and produce one live gateway decision correlated with that child;
+    the second shows no banner and produces no decision. No first-prompt interposer starts.
     """
     session = live_session
     _select_smart_router_version(
@@ -807,9 +822,12 @@ def test_smart_router_skill_turns_codex_subagent_routing_back_on(
         session, "codex", [str(session.binary), "codex"], "smart-router-skill-back-on"
     ) as tui:
         tui.boot()
+        _run_calculation(tui, session, "codex", "1+1", "2", orchestration_enabled, routed=True)
         _toggle_with_skill(
             tui, session, "codex", enabled=False, orchestration_enabled=orchestration_enabled
         )
+        # Prove "off" takes effect after a routed child before turning routing back on.
+        _run_calculation(tui, session, "codex", "1+2", "3", False, routed=False)
         _toggle_with_skill(
             tui, session, "codex", enabled=True, orchestration_enabled=orchestration_enabled
         )
