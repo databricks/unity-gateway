@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { afterEach, describe, it } from "node:test";
 import type * as vscode from "vscode";
 import packageJson from "../package.json";
@@ -71,6 +72,12 @@ describe("settings", () => {
   it("are read from user settings only", () => {
     const properties = Object.values(packageJson.contributes.configuration.properties);
     assert.deepEqual(properties.map((property) => property.scope), ["application", "application", "application"]);
+  });
+});
+
+describe("provider", () => {
+  it("ships the icon it names", () => {
+    assert.ok(packageJson.contributes.languageModelChatProviders.every((provider) => existsSync(provider.icon)));
   });
 });
 
