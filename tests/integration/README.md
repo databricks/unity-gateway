@@ -565,12 +565,44 @@ preservation on install failure, scoped cleanup, and unrelated-plugin preservati
 cleanup. Both are mocked component coverage; the integration suite does not launch Cowork,
 connect a plugin MCP server, discover its deferred tool, or run a task through it.
 
+`../test_mcp_proxy.py` covers persistent OAuth U2M authentication-tool discovery, explicit
+reauthentication after success/cancellation, refresh and task retry over in-memory MCP
+streams, and renewed discovery-auth failures. Failed metadata lookups remain retryable, and
+discovery and unrelated replies continue during interactive login. Metadata/pagination and
+upstream tool names are preserved. A fresh listing that removes upstream `authenticate`
+restores local recovery, while continuation pages preserve ownership from earlier pages.
+PAT/non-U2M discovery, permission errors, and policy URL
+elicitation stay unchanged. `../test_databricks.py` returns `False` for unsupported services
+and failed requests; later operations look up metadata again. `../test_cowork_plugin.py` also checks generated
+sign-in/retry guidance. These component tests replace external login and do not establish
+native Cowork browser recovery.
+Generated-guidance checks include one sign-in attempt for access/IP denials and stopping
+authentication retries if the denial persists. They verify the instructions, not model compliance.
+The separately selected `../connector_behavior/` suite tests model compliance using a real Claude
+model and synthetic Slack tools: available tools despite a stale notice, tools appearing after
+an actual wait, and tools absent through the wait limit. It does not establish native Desktop
+sleep/resume, discovery, or proxy reconnection coverage. Run instructions and explicit
+workspace/profile/model requirements are in `../README.md`.
+Gmail/Calendar component regressions cover service-scoped login URLs in failed tool results
+and structured login elicitations: automatic sign-in, one request replay, cancellation,
+persistent failures, and unrelated replies during login. Direct URL-matcher tests reject
+other services/hosts and malformed URLs, with representative bridge pass-through cases for
+both error forms. Success results, unsupported services, failed
+metadata lookups, PAT profiles, and policy or mixed challenges stay unchanged.
+Discovery login elicitations expose `authenticate` without starting login. No live signed-out
+Gmail/Calendar operation or native browser flow was exercised by these component tests.
+HTTP 401 component coverage verifies no connector login during initialization, discovery,
+notifications, or background requests. Actual tool-call 401s can open connector login;
+PAT mode, malformed requests, and other HTTP failures do not open it. Async HTTP-client
+cases replace only external network/login boundaries and verify identical request bodies.
+They do not establish native logout/relogin behavior.
+
 `../test_mcp_connection_login.py` substitutes browser, HTTP, and clock boundaries to check
 workspace sign-in URL construction and polling the selected CLI user's credential. Pending,
 FAILED, and 404 states keep waiting; transient errors can recover; denied/malformed states,
 workspace-token failures, and timeout fail. A blocked browser retains the manual URL.
 Success requires ACTIVE; browser launch alone is insufficient. Proxy coverage combines
-this browser flow with request replay, preserving the profile and token
+this browser flow and replay, preserving the profile and token
 memo. These are component tests; live provider sign-in, popup behavior, and native
 Desktop/Cowork recovery remain unverified.
 
@@ -1529,3 +1561,10 @@ Pre-browser credential reads retry transient HTTP/network failures twice before 
 
 Credential validation rejects malformed initial responses before browser launch and non-string
 states during polling. The browser subprocess runs Python in isolated mode.
+
+MCP review regressions cover bounded connector descriptions with a complete body list,
+malformed upstream tool entries and slow metadata
+discovery while unrelated replies continue. Failed metadata discovery retries naturally
+on the next operation, without a cache or cooldown. These are component
+checks, not native Cowork invocation or live provider sign-in.
+

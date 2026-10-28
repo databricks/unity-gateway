@@ -401,26 +401,62 @@ def _write_connector_skill(destination: Path, server_names: list[str]) -> None:
     if skill_dir.exists():
         return
     connectors = ", ".join(f"`{name}`" for name in server_names)
-    description = (
-        f"Unity Gateway connectors are available in this session: {connectors}. "
-        "Use this skill whenever a request needs one of them, such as the user's own pull "
-        "requests, issues, tickets, pages, mail, or files, and always before saying a "
-        "connector is unavailable or asking whether the service is connected."
+    prefix = (
+        "Use for requests about these Unity Gateway connectors, including after a break. "
+        "Check current tools and call a relevant available tool before answering. "
+        "Load this skill for missing tools or sign-in recovery; never stop at a promise to retry. "
+        "Connectors: "
     )
+    suffix = "."
+    visible = []
+    # Skill descriptions have a 1,024-character limit; the full list stays in the body.
+    for name in server_names:
+        candidate = ", ".join([*visible, f"`{name}`"])
+        if len(prefix + candidate + suffix) > 1024:
+            break
+        visible.append(f"`{name}`")
+    description = prefix + (", ".join(visible) or "configured workspace services") + suffix
     guidance = (
-        f"Unity Gateway connectors configured for this session: {connectors}.\n\n"
-        "These connectors start in the background when the session opens, so their tools "
-        "can be missing for the first few seconds. A missing tool is not evidence that the "
-        "connector is disconnected.\n\n"
-        "1. Search for the connector's tools by its name and call the one that fits.\n"
-        "2. If no matching tool is found, or the call fails because the tool or server is "
-        "not available, wait 5 seconds (for example, run `sleep 5` in the shell), then "
-        "search and try again.\n"
-        "3. If it is still not available, wait another 5 seconds and try once more.\n"
-        "4. If it is still not available after that, tell the user which connector did not "
-        "load and quote any error you saw. Do not guess at the cause.\n\n"
-        "Only these not-yet-loaded cases need the wait. If the tool returns a real result "
-        "or error, such as a permission denial or a sign-in request, handle that instead."
+        "Act on the requested connector in this turn, including after a break. Do not ask "
+        "whether to check or retry. Never end the turn promising to wait or retry: perform "
+        "the action. Old connection-status notices do not establish current availability.\n\n"
+        "1. Check the tools exposed now. Use supported discovery if available (`ToolSearch` only "
+        "if exposed). Use exact exposed or discovered tool names only; plugin/catalog search "
+        "results alone do not make service tools callable. Call a relevant service tool if present, "
+        "even if an earlier notice says the connector disconnected.\n"
+        "2. If only the connector's `authenticate` tool appears, call that exact tool once.\n"
+        "3. If no matching tools are exposed at startup, after resume, or while `pending`, your "
+        "next action is an actual wait: wait 5 seconds by running `sleep 5` through an exposed "
+        "shell or an exposed wait tool, then recheck tools. If they are still missing, wait "
+        "another 5 seconds and recheck once more. Stop waiting as soon as tools appear.\n"
+        "4. If tools remain absent after both waits, or no supported wait action exists, report "
+        "only that the connector's tools are not exposed in this session. Do not infer "
+        "disconnection, missing sign-in, or expired credentials.\n\n"
+        f"Configured Unity Gateway connectors: {connectors}. Configured does not mean signed in.\n\n"
+        "Connectors start in the background when the session opens, and a session-start note "
+        "may list ones that had not answered yet. Tools may appear asynchronously after startup "
+        "or resume. Missing tools or `pending` "
+        "alone do not identify the cause. Base connection and sign-in claims on current discovery "
+        "and actual tool errors. Never claim to have waited or refreshed tools without doing so. "
+        "Do not guess tool names, authenticate another connector, or spawn a subagent to make "
+        "tools appear. If a call reports an unavailable tool, do not repeat it; recheck tools. "
+        "An unavailable name alone does not establish an authentication failure.\n\n"
+        "If a connector returns a sign-in URL or asks the user to reconnect, use its discovered "
+        "`authenticate` tool before falling back to manual login instructions. A warning not to "
+        "retry service tools applies until sign-in succeeds; `authenticate` is the recovery "
+        "action. Do not ask the user to report back after signing in.\n\n"
+        "On an access denial, including an IP-address denial, try the connector's discovered "
+        "`authenticate` tool once before recommending administrator or network changes. Describe "
+        "this as a sign-in recovery attempt; the error alone does not establish its root cause. "
+        "If the denial persists after successful sign-in and retry, report the original error "
+        "and stop retrying authentication. Do not recommend disabling access controls.\n\n"
+        "After any successful sign-in, rediscover tools and continue the original task in the "
+        "same turn. Do not ask the user to send another message. If sign-in is canceled, fails, "
+        "or times out, explain the observed failure and the "
+        "recovery instructions returned by the tool. Do not claim success.\n\n"
+        "If no authentication tool is available, relay any sign-in link or recovery instructions "
+        "returned by the connector. Do not invent a settings path or assume an access denial or "
+        "generic tool failure means the user's token expired."
     )
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
