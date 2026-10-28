@@ -4742,6 +4742,30 @@ class TestGetFamilyDefaults:
         managed_file(None if settings is None else json.dumps(settings))
         assert claude.get_family_defaults({}, **self.NO_SOURCE) == expected
 
+    @pytest.mark.parametrize("edited", [False, True])
+    def test_only_unchanged_ug_picker_is_ignored(self, managed_file, monkeypatch, edited):
+        settings = {"modelPicker": self.PICKER, "env": self.WRITER_ENV}
+        if edited:
+            settings["modelPicker"] = {"options": [{"model": "admin-model"}]}
+        managed_file(json.dumps(settings))
+        monkeypatch.setattr(
+            claude,
+            "managed_file_snapshots",
+            lambda tool, parser: managed_files.ManagedFileSnapshots(
+                None, settings, {"modelPicker": self.PICKER}
+            ),
+        )
+
+        expected = (
+            {
+                "opus": self.WRITER_ENV["ANTHROPIC_DEFAULT_OPUS_MODEL"],
+                "haiku": self.WRITER_ENV["ANTHROPIC_DEFAULT_HAIKU_MODEL"],
+            }
+            if edited
+            else None
+        )
+        assert claude.get_family_defaults({}, **self.NO_SOURCE) == expected
+
     def test_invalid_file_counts_as_no_picker(self, managed_file):
         managed_file("not json{")
         assert claude.get_family_defaults({}, **self.NO_SOURCE) is None

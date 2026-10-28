@@ -442,6 +442,9 @@ sign-in or TUI test.
 
 Claude picker composition is checked directly through the catalog and renderer functions in
 `test_agent_claude.py`; focused CLI cases cover source selection and launch precedence.
+Ownership regressions there and in `test_managed_model_lifecycle.py` keep UG's discovered
+picker refreshable across three launch cycles while preserving unrecorded or edited admin
+pickers. These are component checks, not repeated live `/model` validation.
 Explicit Claude/GPT `--model` regressions in `test_cli.py` exercise the real launcher
 without a managed catalog and preserve family defaults; these are component checks.
 Managed UC schema regressions in `test_cli.py` retain non-default catalog models with an overall

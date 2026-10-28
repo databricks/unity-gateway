@@ -337,9 +337,9 @@ def get_family_defaults(
 
     A ``modelPicker`` in that file (e.g. one a launcher wrote) means its writer chooses Claude's
     models, so ug uses that file's ``ANTHROPIC_DEFAULT_*_MODEL`` values as they are instead of
-    discovering its own. Returns them by family, or None when ug picks the defaults: a managed config, its static
-    model list (whose picker is ug's own), a provider, or a model location supplies the models,
-    or the file has no picker with family defaults.
+    discovering its own. Returns them by family, or None when ug picks the defaults: a managed
+    config, a static model list, a provider, or a model location supplies the models,
+    or the file has no externally owned picker with family defaults.
     """
     if managed_config or state.get("claude_static_models") or provider or parent_schema:
         return None
@@ -353,6 +353,12 @@ def get_family_defaults(
         return None
     env = settings.get("env")
     if "modelPicker" not in settings or not isinstance(env, dict):
+        return None
+    ug_picker = managed_file_snapshots("claude", _parse_managed_settings).ug_picker or {}
+    if "modelPicker" in ug_picker and all(
+        settings.get(key) == value for key, value in ug_picker.items()
+    ):
+        # Our own discovered picker must not suppress discovery on the next launch.
         return None
     defaults = {
         family: model
