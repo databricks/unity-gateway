@@ -461,6 +461,7 @@ def configure_tool(
     coding_agent_config_defaults: dict[str, str] | None = None,
     parent_schema: str | None = None,
     picker_catalog: AnthropicModelCatalog | None = None,
+    derive_managed_model_inputs: bool = False,
 ) -> dict:
     result: dict | tuple[dict, str]
     if tool == AGENT_CODEX:
@@ -483,6 +484,7 @@ def configure_tool(
             coding_agent_config_defaults=coding_agent_config_defaults,
             parent_schema=parent_schema,
             picker_catalog=picker_catalog,
+            derive_managed_model_inputs=derive_managed_model_inputs,
         )
     elif tool == "copilot":
         # Under a model provider service or a model location, Copilot starts on one of its models,
@@ -640,6 +642,9 @@ def _configure_one(
     if tool == "codex":
         return configure_tool("codex", state)
     state, model = resolve_launch_model(tool, state, None)
+    if tool == AGENT_CLAUDE:
+        # `ug configure` writes the managed model keys a plain launch would.
+        return configure_tool(tool, state, model, derive_managed_model_inputs=True)
     return configure_tool(tool, state, model)
 
 

@@ -15,6 +15,7 @@ import threading
 import traceback
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -88,6 +89,7 @@ from ucode.managed_files import (
     windows_claude_managed_settings_path,
     withdrawn_list_items,
 )
+from ucode.managed_resolve import managed_claude_family_models, managed_default_model
 from ucode.mcp_oauth import (
     CLAUDE_CODE_CIMD_CLIENT_ID,
     MCP_OAUTH_CALLBACK_PORT,
@@ -598,7 +600,7 @@ def render_overlay(
     # A Bedrock-backed provider needs its provider-side ids pinned verbatim
     # (Claude Code's canonical names aren't routable there). These come from the
     # service's targets, already de-duped to one id per family upstream.
-    elif provider and provider_models:
+    if provider and provider_models and not route_root_model:
         if provider_models.get("opus"):
             env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = provider_models["opus"]
         if provider_models.get("sonnet"):
@@ -608,7 +610,8 @@ def render_overlay(
     # With an Anthropic Model Provider Service, the header routes to the external
     # provider and Claude Code's own canonical model names are sent verbatim —
     # pinning a Databricks model id here would mislabel the picker and isn't
-    # routable.
+    # routable. A pinned root model (ANTHROPIC_MODEL) does not displace the family defaults:
+    # configure and a plain launch must write the same ones.
     elif claude_models and not provider and not parent_schema:
         # Picker rows show the raw routable id (e.g. "system.ai.claude-opus-4-8[1m]")
         # so users can see which gateway-routable model is behind each shortcut.
@@ -763,6 +766,47 @@ def default_model_picker_catalog(
         model_id_to_description=descriptions,
         error_msg=discovered_catalog.error_msg if discovered_catalog is not None else None,
     )
+
+
+@dataclass(frozen=True)
+class ManagedModelInputs:
+    """Model inputs ``write_tool_config`` derives from a managed config for the plain source.
+
+    ``ug configure`` and a plain launch both build this, so the files Claude reads cannot differ
+    between them. Per-launch choices (budget recommendation, ``--model``) are not part of it.
+    """
+
+    coding_agent_config_defaults: dict[str, str]
+    route_root_model: str | None
+    picker_catalog: AnthropicModelCatalog | None
+
+
+def managed_model_inputs(state: dict, managed: dict | None) -> ManagedModelInputs:
+    """The managed-file model inputs for a Claude source with no provider or UC location.
+
+    The root model is the admin's ``default_model`` only. A budget recommendation or ``--model``
+    must reach the session through Claude Code's own ``--model`` flag, never the managed file.
+    """
+    if managed is None:
+        return ManagedModelInputs({}, None, None)
+    defaults = managed_claude_family_models(managed) or {}
+    root_model = managed_default_model(managed, "claude")
+    picker_catalog = None
+    if defaults and not state.get("claude_static_models"):
+        picker_catalog = default_model_picker_catalog(defaults, launch_model=root_model)
+    return ManagedModelInputs(defaults, root_model, picker_catalog)
+
+
+def picker_row_model(catalog: AnthropicModelCatalog | None, model: str) -> str:
+    """``model`` as the picker catalog lists it, so Claude Code matches that row and adds none.
+
+    A family row may carry a ``[1m]`` suffix the model lacks; only the exact id counts as a match.
+    """
+    if catalog is not None:
+        for row in catalog.model_ids:
+            if row.removesuffix("[1m]") == model.removesuffix("[1m]"):
+                return row
+    return model
 
 
 def _enforce_model_default_hierarchy(
@@ -1449,7 +1493,15 @@ def write_tool_config(
     coding_agent_config_defaults: dict[str, str] | None = None,
     parent_schema: str | None = None,
     picker_catalog: AnthropicModelCatalog | None = None,
+    derive_managed_model_inputs: bool = False,
 ) -> dict:
+    """Write Claude's config.
+
+    The model inputs (``coding_agent_config_defaults``, ``route_root_model``, ``picker_catalog``)
+    are used as given, so a caller passing none gets no managed model keys. ``ug configure`` sets
+    ``derive_managed_model_inputs`` to build them from the managed config read below; a launch
+    passes them explicitly (see ``managed_model_inputs``).
+    """
     external_search = external_provider_selected()
     # Back up only a file that predates ucode's management of the tool. A
     # re-configure would otherwise snapshot ucode's own generated file, and
@@ -1459,7 +1511,14 @@ def write_tool_config(
     # A managed config makes ug authoritative over the whole custom-header value, so it is
     # overwritten wholesale; without one, preserve the developer's own pre-existing headers. Reuses
     # the managed config `ug configure` saved (no network round trip unless none is saved yet).
-    managed_config_present = refresh_managed_config(state).manifest is not None
+    managed_manifest = refresh_managed_config(state).manifest
+    managed_config_present = managed_manifest is not None
+    if derive_managed_model_inputs and not (provider or parent_schema or relayed):
+        # `ug configure` supplies no model inputs; derive the ones a plain launch passes explicitly.
+        derived = managed_model_inputs(state, managed_manifest)
+        coding_agent_config_defaults = derived.coding_agent_config_defaults
+        route_root_model = derived.route_root_model
+        picker_catalog = derived.picker_catalog
     previous_keys = ((state.get("managed_configs") or {}).get("claude") or {}).get("keys", [])
     web_search_model = _resolve_web_search_model(state)
     should_write_tracing_settings = (
@@ -2617,6 +2676,14 @@ def launch(
     pinned_model = (
         maybe_add_gpt_1m_suffix(options.user_pinned_model) if options.user_pinned_model else None
     )
+    # Launch-only start model (e.g. a budget recommendation) that differs from the model `ug
+    # configure` wrote to ANTHROPIC_MODEL. A managed ANTHROPIC_MODEL outranks the process env and
+    # --settings, so only Claude Code's own `--model` flag can override it without a file write.
+    session_model = (
+        maybe_add_gpt_1m_suffix(options.launch_model)
+        if options.launch_model and not pinned_model
+        else None
+    )
     routing_setup_failed = False
     if options.launch_smart_routing:
         try:
@@ -2628,7 +2695,11 @@ def launch(
                 # With no user pin, let Claude resolve its starting model from its own settings.
                 launch_model=pinned_model,
                 compose_settings=_compose_v2_settings,
-                launch_model_args=_launch_model_args,
+                launch_model_args=(
+                    _launch_model_args
+                    if not session_model
+                    else lambda args, model: _launch_model_args(args, model or session_model)
+                ),
                 model_name=_maybe_add_1m_suffix,
             )
         except smart_routing_v2.ClaudeRoutingSetupError:
@@ -2640,12 +2711,12 @@ def launch(
         os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
     settings_override = None
     launch_args = list(tool_args)
-    if pinned_model:
+    if start_model := pinned_model or session_model:
         # Pass the exact ID: managed family defaults can override temporary aliases.
-        os.environ["ANTHROPIC_MODEL"] = pinned_model
-        settings_override = {"env": {"ANTHROPIC_MODEL": pinned_model}}
+        os.environ["ANTHROPIC_MODEL"] = start_model
+        settings_override = {"env": {"ANTHROPIC_MODEL": start_model}}
         launch_args = [
-            *_launch_model_args(tool_args, pinned_model),
+            *_launch_model_args(tool_args, start_model),
             *tool_args,
         ]
     else:
