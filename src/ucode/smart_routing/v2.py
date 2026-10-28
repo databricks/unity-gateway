@@ -339,9 +339,19 @@ def _claude_mod_launch_options(env: Mapping[str, str] | None = None) -> dict:
         "unset": [key for key in SMART_ROUTING_ENV_KEYS if key not in source],
         "recipe": source.get(routing.ROUTER_NAME_ENV_VAR, "").strip() or routing.ROUTER_NAME,
         "routeCommand": [],
+        "orchestratorInstructions": (
+            orchestrator.CLAUDE_AGENT_DESCRIPTION
+            if orchestrator.enabled(source, agent=AGENT_CLAUDE)
+            else ""
+        ),
         "isaacExecutable": str(Path(isaac).absolute()) if isaac else "",
         "isaacFeedbackDirectory": str(Path.home() / ".isaac" / "feedback"),
     }
+
+
+def _claude_mod_launch_args(options: Mapping[str, object]) -> list[str]:
+    # Replayed prompt snapshots bypass tool.describe, even after cache invalidation.
+    return ["--system-prompt-snapshot", "off"] if options.get("orchestratorInstructions") else []
 
 
 def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
@@ -354,6 +364,12 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
             "description": "Launch-scoped agents for Unity Gateway smart routing.",
             "author": {"name": "Databricks"},
             "userConfig": {
+                "orchestratorInstructions": {
+                    "type": "string",
+                    "default": "",
+                    "title": "Orchestrator delegation instructions",
+                    "description": "Agent tool guidance for an eligible orchestration launch",
+                },
                 "isaacExecutable": {
                     "type": "string",
                     "default": "",
@@ -726,12 +742,13 @@ def launch_claude(
             session_path = _prepare_smart_router_session("claude")
             env[SESSION_ENV_VAR] = str(session_path)
             env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
-            settings.setdefault("pluginConfigs", {}).setdefault(CLAUDE_ROUTING_PLUGIN_NAME, {})[
-                "options"
-            ] = {
+            mod_options = {
                 **_claude_mod_launch_options({**resolve_environment(agent=AGENT_CLAUDE), **env}),
                 "routeCommand": routing_hook_argv(routing_state, ROUTE_SUBAGENT_MOD_EVENT),
             }
+            settings.setdefault("pluginConfigs", {}).setdefault(CLAUDE_ROUTING_PLUGIN_NAME, {})[
+                "options"
+            ] = mod_options
             try:
                 write_json_file(settings_path, settings)
                 _write_routed_claude_plugin(plugin_dir, model_ids)
@@ -742,6 +759,7 @@ def launch_claude(
                 binary,
                 "--settings",
                 str(settings_path),
+                *_claude_mod_launch_args(mod_options),
                 *model_args,
                 "--plugin-dir",
                 str(plugin_dir),

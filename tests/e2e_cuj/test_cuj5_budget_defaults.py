@@ -4,10 +4,10 @@ import json
 import re
 from decimal import ROUND_HALF_UP, Decimal
 
-from tests.integration.utils.terminal import AgentTerminal
+from tests.integration.utils.terminal import AgentTerminal, TerminalProcess
 
 from .base import BaseCujTest
-from .helpers.constants import CLAUDE, CODEX, CodingAgent
+from .helpers.constants import CLAUDE, CODEX, MANAGED_PATHS, CodingAgent
 from .helpers.workspace import Workspace
 
 CUJ_NAME = "CUJ 5 · Budget-driven defaults"
@@ -231,3 +231,90 @@ class TestCujBudgetDefaultsExplicitClaude(_BudgetDefaultsBase):
                 "Claude's native Sonnet model header",
             )
             tui.exit_normally()
+
+
+class TestCujBudgetDefaultsExplicitClaudeModel(_BudgetDefaultsBase):
+    def test_ug_claude_model_flag_keeps_settings_under_budget_tier(self, cuj):
+        """Scenario: above the tier, launch ``ug claude --model <Sonnet id>``, then plain
+        ``ug claude``.
+
+        Expected: the backend still recommends Codex/Luna and the launch displays it, and Claude's
+        native header selects Sonnet. Neither launch changes the user settings file or the
+        OS-managed settings file: both stay byte-identical to what ``ug configure`` wrote, with
+        Sonnet as ``ANTHROPIC_MODEL``. Configure runs in a terminal so it writes the OS-managed
+        file. The workspace publishes Sonnet as its only Claude model, so
+        the explicit model equals the admin default; this checks that an explicit ``--model``
+        writes no file, not that it switches models. No task is submitted.
+        """
+        session, workspace, _ = cuj
+        config = workspace.config()
+        claude = Workspace.agent_configs(config)[CodingAgent.CLAUDE_CODE]
+        assert claude["default_models"]["default_model"] == self.SONNET_MODEL, config
+        assert claude["models"]["model_services"] == [self.SONNET_MODEL], config
+
+        # Unlike `session.configure`, a terminal lets configure write the OS-managed file through
+        # the runner's passwordless sudo, as an interactive user's configure does.
+        with TerminalProcess(
+            session,
+            "ug",
+            [
+                str(session.binary),
+                "configure",
+                "--workspace",
+                self.WORKSPACE_URL,
+                "--skip-upgrade",
+                "--disable-databricks-ai-tools",
+            ],
+            "configure-with-managed-settings",
+        ) as terminal:
+            terminal.finish(timeout=240)
+        recommendation = workspace.client.api_client.do(
+            "POST", path="/api/ai-gateway/v2/coding-agent-configs:recommendModel", body={}
+        )
+        assert recommendation.get("recommended_agent") == CodingAgent.CODEX, recommendation
+        assert recommendation.get("recommended_model") == self.LUNA_MODEL, recommendation
+
+        user_settings = session.home / ".claude" / "ucode-settings.json"
+        managed_settings = MANAGED_PATHS[0]
+        assert managed_settings.is_file(), "configure in a terminal wrote no managed settings"
+        configured = {path: path.read_bytes() for path in (user_settings, managed_settings)}
+        for path, content in configured.items():
+            assert json.loads(content)["env"]["ANTHROPIC_MODEL"] == self.SONNET_MODEL, path
+
+        with AgentTerminal(
+            session,
+            CLAUDE,
+            [str(session.binary), CLAUDE, "--model", self.SONNET_MODEL],
+            "explicit-claude-model",
+        ) as tui:
+            tui.boot(timeout=240)
+            transcript = session.redact(
+                "".join(tui.output) + "\n" + tui.visible,
+                strip_ansi=True,
+            )
+            assert re.search(
+                rf"Recommended agent is Codex with model {re.escape(self.LUNA_MODEL)}\.",
+                transcript,
+            ), (
+                "Claude launch did not display the backend recommendation "
+                f"for {self.LUNA_MODEL!r}:\n{transcript}"
+            )
+            tui.wait_for(
+                lambda text: re.search(r"Claude Sonnet 4\.6\s*·", text),
+                "Claude's native Sonnet model header",
+            )
+            tui.exit_normally()
+        for path, content in configured.items():
+            assert path.read_bytes() == content, f"`--model` launch rewrote {path}"
+
+        with AgentTerminal(
+            session, CLAUDE, [str(session.binary), CLAUDE], "plain-claude-after-model"
+        ) as tui:
+            tui.boot(timeout=240)
+            tui.wait_for(
+                lambda text: re.search(r"Claude Sonnet 4\.6\s*·", text),
+                "Claude's native Sonnet model header",
+            )
+            tui.exit_normally()
+        for path, content in configured.items():
+            assert path.read_bytes() == content, f"plain launch rewrote {path}"

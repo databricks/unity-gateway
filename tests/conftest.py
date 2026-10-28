@@ -75,8 +75,6 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     # The installer is faked above, so let every host take the installable (Linux/macOS) path;
     # tests for Windows or UG_SKIP_OS_SETTINGS override this.
     monkeypatch.setattr(managed_config_mod, "current_os", lambda: managed_files_mod.OS.LINUX)
-    # Likewise let any run install the faked policy, as root may; non-root launch tests override it.
-    monkeypatch.setattr(managed_config_mod, "is_admin", lambda: True)
     backup_dir = state_dir / "managed-backups"
     monkeypatch.setattr(managed_files_mod, "MANAGED_BACKUP_DIR", backup_dir)
     monkeypatch.setattr(
